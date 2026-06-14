@@ -4,12 +4,10 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# Конфигурация
+# Конфигурация — теперь через OpenRouter
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
-DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
-DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
-
-# URL вебхука (ваш адрес на Render)
+OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY')  # новое имя переменной
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 WEBHOOK_URL = os.environ.get('RENDER_EXTERNAL_URL', 'https://ваш-бот.onrender.com')
 
 @app.route('/')
@@ -18,83 +16,63 @@ def home():
 
 @app.route(f'/webhook/{TELEGRAM_TOKEN}', methods=['POST'])
 def webhook():
-    """Принимает сообщения из Telegram"""
     try:
         data = request.get_json()
-        
-        # Проверяем, что это сообщение от пользователя
         if 'message' in data and 'text' in data['message']:
             chat_id = data['message']['chat']['id']
             user_text = data['message']['text']
-            
-            # Получаем ответ от DeepSeek
-            bot_reply = get_deepseek_response(user_text)
-            
-            # Отправляем ответ в Telegram
+            bot_reply = get_ai_response(user_text)
             send_telegram_message(chat_id, bot_reply)
-        
         return jsonify({'status': 'ok'}), 200
     except Exception as e:
         print(f"Ошибка: {e}")
         return jsonify({'status': 'error'}), 500
 
-def get_deepseek_response(prompt):
-    """Отправляет запрос к DeepSeek API"""
+def get_ai_response(prompt):
+    """Отправляет запрос к бесплатному DeepSeek через OpenRouter"""
     headers = {
-        'Authorization': f'Bearer {DEEPSEEK_API_KEY}',
-        'Content-Type': 'application/json'
+        'Authorization': f'Bearer {OPENROUTER_API_KEY}',
+        'Content-Type': 'application/json',
+        'HTTP-Referer': WEBHOOK_URL,
     }
     
     payload = {
-        'model': 'deepseek-chat',
-        'messages': [
-            {'role': 'user', 'content': prompt}
-        ],
-        'stream': False
+        'model': 'deepseek/deepseek-r1:free',  # бесплатная версия!
+        'messages': [{'role': 'user', 'content': prompt}],
+        'max_tokens': 1000,
+        'temperature': 0.7
     }
     
     try:
-        response = requests.post(DEEPSEEK_URL, json=payload, headers=headers, timeout=30)
+        response = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=45)
         response.raise_for_status()
         result = response.json()
         return result['choices'][0]['message']['content']
     except Exception as e:
-        print(f"DeepSeek ошибка: {e}")
-        return "Извините, я сейчас не могу ответить. Попробуйте позже."
+        print(f"OpenRouter ошибка: {e}")
+        return "Извините, сейчас проблема с подключением к ИИ. Попробуйте позже."
 
 def send_telegram_message(chat_id, text):
-    """Отправляет сообщение в Telegram"""
     url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
-    payload = {
-        'chat_id': chat_id,
-        'text': text,
-        'parse_mode': 'HTML'
-    }
-    
+    payload = {'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'}
     try:
         requests.post(url, json=payload, timeout=10)
     except Exception as e:
         print(f"Telegram ошибка: {e}")
 
 def set_webhook():
-    """Устанавливает вебхук при запуске"""
     if not TELEGRAM_TOKEN:
         print("❌ TELEGRAM_TOKEN не установлен!")
         return
-    
     webhook_url = f"{WEBHOOK_URL}/webhook/{TELEGRAM_TOKEN}"
     url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook'
-    
     response = requests.post(url, json={'url': webhook_url})
     if response.ok:
         print(f"✅ Вебхук установлен: {webhook_url}")
     else:
-        print(f"❌ Ошибка установки вебхука: {response.text}")
+        print(f"❌ Ошибка: {response.text}")
 
 if __name__ == '__main__':
-    # Устанавливаем вебхук при запуске
     set_webhook()
-    
-    # Запускаем Flask сервер
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
