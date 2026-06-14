@@ -293,7 +293,59 @@ def generate_new_function(description: str, chat_id: int) -> str:
             
             # Добавляем функцию перед process_command
             old_code = bot_file['content']
-            insert_point = old_code.find('def process_command')
+            insert_point = old_code.find('def search_via_requests(query: str) -> str:
+    """
+    Perform a simple web search using the DuckDuckGo Instant Answer API.
+    Returns a textual response or an error message.
+    """
+    import json
+    import requests
+
+    if not isinstance(query, str) or not query.strip():
+        return "❗️ Ошибка: запрос должен быть непустой строкой."
+
+    url = "https://api.duckduckgo.com/"
+    params = {
+        "q": query,
+        "format": "json",
+        "no_html": 1,
+        "skip_disambig": 1,
+    }
+
+    try:
+        response = requests.get(url, params=params, timeout=8)
+        response.raise_for_status()
+    except requests.exceptions.Timeout:
+        return "⏱️ Ошибка: запрос превысил время ожидания."
+    except requests.exceptions.ConnectionError:
+        return "🌐 Ошибка: проблема с соединением."
+    except requests.exceptions.HTTPError as e:
+        return f"🚫 HTTP ошибка: {e.response.status_code}."
+    except Exception as e:
+        return f"❓ Неизвестная ошибка: {e}"
+
+    try:
+        data = response.json()
+    except json.JSONDecodeError:
+        return "📦 Ошибка: получен некорректный JSON."
+
+    # Try to get a concise answer
+    abstract = data.get("AbstractText")
+    if abstract:
+        return abstract.strip()
+
+    # Fallback to related topics
+    related = data.get("RelatedTopics")
+    if isinstance(related, list) and related:
+        first = related[0]
+        if isinstance(first, dict):
+            text = first.get("Text") or first.get("Name")
+            if text:
+                return text.strip()
+
+    return "🔎 По вашему запросу ничего не найдено."
+
+def process_command')
             if insert_point == -1:
                 insert_point = old_code.find('def direct_answer')
             
