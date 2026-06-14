@@ -1,5 +1,4 @@
 flask
 requests
 gunicorn
-pyunbrowser
-beautifulsoup4
+b4n1-web
