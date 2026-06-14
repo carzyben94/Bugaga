@@ -3,7 +3,7 @@ import re
 import requests
 from flask import Flask, request, jsonify
 from datetime import datetime, timedelta
-from b4n1web import AgentBrowser, BrowserMode
+from pylightpanda import LightpandaClient
 
 app = Flask(__name__)
 
@@ -17,37 +17,34 @@ active_chats = {}
 ACTIVE_TIMEOUT = 10
 
 # ============================================================
-# ПОИСК ЧЕРЕЗ b4n1web (ЛЁГКИЙ БРАУЗЕР)
+# БРАУЗЕР Lightpanda (через Python SDK)
 # ============================================================
-def search_web(query: str) -> str:
-    """Ищет в интернете через b4n1web (режим Light)"""
+async def search_lightpanda(query: str) -> str:
+    """Поиск через Lightpanda (быстро и легко)"""
     try:
-        print(f"🔍 Ищу: {query}")
-        
-        # Используем лёгкий режим (HTTP + парсинг)
-        browser = AgentBrowser(mode=BrowserMode.LIGHT)
-        page = browser.goto(f"https://html.duckduckgo.com/html/?q={query}")
-        
-        # Получаем текст в формате Markdown
-        content = page.markdown[:2000] if page.markdown else "Ничего не найдено"
-        browser.close()
-        
-        if content and len(content) > 50:
-            return f"🔍 <b>Результаты поиска '{query}':</b>\n\n{content}"
-        return f"😕 Ничего не найдено по запросу: {query}"
-        
+        async with LightpandaClient() as client:
+            session = await client.create_session()
+            # Используем DuckDuckGo — Lightpanda с ним работает [citation:4]
+            result = await session.navigate(f"https://html.duckduckgo.com/html/?q={query}")
+            content = await session.get_content()
+            await session.destroy()
+            
+            if content and content.text:
+                return f"🔍 <b>Результаты поиска '{query}':</b>\n\n{content.text[:2000]}"
+            return f"😕 Ничего не найдено по запросу: {query}"
     except Exception as e:
-        return f"❌ Ошибка поиска: {str(e)}"
+        return f"❌ Ошибка: {str(e)}"
 
-def open_url(url: str) -> str:
-    """Открывает конкретный сайт через b4n1web"""
+async def open_url_lightpanda(url: str) -> str:
+    """Открывает сайт через Lightpanda"""
     try:
-        print(f"🌐 Открываю: {url}")
-        browser = AgentBrowser(mode=BrowserMode.LIGHT)
-        page = browser.goto(url)
-        content = page.markdown[:2000] if page.markdown else "Не удалось получить содержимое"
-        browser.close()
-        return f"📄 <b>Содержимое {url}:</b>\n\n{content}"
+        async with LightpandaClient() as client:
+            session = await client.create_session()
+            nav = await session.navigate(url)
+            content = await session.get_content()
+            await session.destroy()
+            
+            return f"📄 <b>Содержимое {url}:</b>\n\n{content.text[:1500]}"
     except Exception as e:
         return f"❌ Ошибка: {str(e)}"
 
@@ -55,13 +52,14 @@ def get_current_time() -> str:
     return datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
 # ============================================================
-# МОЗГ (ИИ)
+# МОЗГ (ИИ) — ПРИНИМАЕТ РЕШЕНИЯ, ГАВРЮША — ИСПОЛНЯЕТ
 # ============================================================
 class Brain:
     def __init__(self):
         self.memory = {}
     
     def think(self, prompt: str, chat_id: int) -> str:
+        import asyncio
         prompt_lower = prompt.lower()
         
         # Время
@@ -71,19 +69,18 @@ class Brain:
         # Ссылка
         urls = re.findall(r'https?://[^\s]+', prompt)
         if urls:
-            return open_url(urls[0])
+            return asyncio.run(open_url_lightpanda(urls[0]))
         
         # Поиск в интернете
-        search_keywords = ['найди', 'поищи', 'загугли', 'новости', 'что такое', 'кто такой', 'сколько стоит']
-        if any(keyword in prompt_lower for keyword in search_keywords):
+        if any(word in prompt_lower for word in ['найди', 'поищи', 'загугли', 'новости']):
             clean_query = prompt
-            for word in search_keywords:
+            for word in ['найди', 'поищи', 'загугли', 'найди в интернете']:
                 clean_query = clean_query.lower().replace(word, '').strip()
-            if not clean_query or len(clean_query) < 3:
+            if not clean_query:
                 clean_query = prompt
-            return search_web(clean_query)
+            return asyncio.run(search_lightpanda(clean_query))
         
-        # Обычный ответ через ИИ
+        # Обычный ответ
         return self.direct_answer(prompt)
     
     def direct_answer(self, prompt: str) -> str:
@@ -95,7 +92,7 @@ class Brain:
         payload = {
             'model': 'openrouter/free',
             'messages': [
-                {'role': 'system', 'content': f'Ты — Гаврюша, умный помощник. Сегодня {current_time}. Отвечай кратко, 2-3 предложения.'},
+                {'role': 'system', 'content': f'Ты — Гаврюша. Сегодня {current_time}. Отвечай кратко, 2-3 предложения.'},
                 {'role': 'user', 'content': prompt}
             ],
             'max_tokens': 300,
@@ -105,9 +102,9 @@ class Brain:
             response = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=45)
             if response.status_code == 200:
                 return response.json()['choices'][0]['message']['content']
-            return f"❌ Ошибка API: {response.status_code}"
+            return f"Ошибка: {response.status_code}"
         except Exception as e:
-            return f"❌ Ошибка: {str(e)}"
+            return f"Ошибка: {str(e)}"
 
 brain = Brain()
 
@@ -140,7 +137,7 @@ def deactivate_expired_chats():
 
 @app.route('/')
 def home():
-    return '🐶 Гаврюша с b4n1web браузером работает!'
+    return '🐶 Гаврюша с Lightpanda браузером!'
 
 @app.route(f'/webhook/{TELEGRAM_TOKEN}', methods=['POST'])
 def webhook():
@@ -159,7 +156,7 @@ def webhook():
                 set_chat_active(chat_id)
                 clean_text = re.sub(re.escape(ACTIVATION_WORD), '', user_text, flags=re.IGNORECASE).strip()
                 if not clean_text:
-                    reply = "🐶 Гаврюша здесь! Могу искать в интернете, открывать сайты, отвечать на вопросы. Что нужно?"
+                    reply = "🐶 Гаврюша здесь! Могу искать в интернете через Lightpanda, открывать сайты, отвечать на вопросы."
                 else:
                     reply = brain.think(clean_text, chat_id)
                 send_message(chat_id, reply)
@@ -189,7 +186,7 @@ def set_webhook():
         print(f"❌ Ошибка: {e}")
 
 if __name__ == '__main__':
-    print("🚀 Запуск Гаврюши с b4n1web браузером...")
+    print("🚀 Запуск Гаврюши с Lightpanda...")
     set_webhook()
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
