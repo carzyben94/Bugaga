@@ -16,6 +16,18 @@ WEBHOOK_URL = os.environ.get('RENDER_EXTERNAL_URL', 'https://ваш-бот.onren
 # Ключевая фраза для активации
 ACTIVATION_PHRASE = "гаврюша ко мне"
 
+# Список бесплатных моделей (в порядке приоритета)
+FREE_MODELS = [
+    'openrouter/free',                        # Роутер (самый надёжный)
+    'nvidia/nemotron-3-ultra:free',           # NVIDIA Nemotron 3 Ultra
+    'google/gemma-4-31b-it:free',             # Google Gemma 4
+    'meta-llama/llama-3.3-70b-instruct:free', # Meta Llama 3.3
+    'z-ai/glm-4.5-air:free',                  # GLM-4.5-Air
+    'openai/gpt-oss-120b:free',               # OpenAI GPT-OSS
+    'microsoft/phi-3-medium-128k:free',       # Microsoft Phi-3
+    'qwen/qwen-2.5-72b-instruct:free',        # Qwen 2.5
+]
+
 # ============================================================
 # ЛЁГКИЙ БРАУЗЕР ЧЕРЕЗ UNBROWSER
 # ============================================================
@@ -50,6 +62,50 @@ def remove_activation_phrase(message: str) -> str:
     return pattern.sub('', message).strip()
 
 # ============================================================
+# ЗАПРОС К API С АВТОПЕРЕКЛЮЧЕНИЕМ
+# ============================================================
+def call_llm_with_fallback(messages, is_browser=False):
+    """Отправляет запрос к LLM, переключая модели при ошибках"""
+    last_error = None
+    
+    for model in FREE_MODELS:
+        try:
+            print(f"🔄 Пробую модель: {model}")
+            
+            headers = {
+                'Authorization': f'Bearer {OPENROUTER_API_KEY}',
+                'Content-Type': 'application/json',
+            }
+            
+            # Для браузера увеличиваем таймаут
+            timeout = 60 if is_browser else 45
+            
+            payload = {
+                'model': model,
+                'messages': messages,
+                'max_tokens': 1000,
+                'temperature': 0.7
+            }
+            
+            response = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=timeout)
+            
+            if response.status_code == 200:
+                result = response.json()
+                print(f"✅ Модель {model} ответила успешно!")
+                return result['choices'][0]['message']['content']
+            else:
+                print(f"❌ Модель {model} вернула ошибку {response.status_code}")
+                last_error = f"Ошибка {response.status_code}"
+                
+        except Exception as e:
+            print(f"❌ Модель {model} упала с ошибкой: {str(e)}")
+            last_error = str(e)
+            continue
+    
+    # Если все модели не сработали
+    return f"❌ Все модели временно недоступны. Последняя ошибка: {last_error}"
+
+# ============================================================
 # ОСНОВНАЯ ЛОГИКА
 # ============================================================
 def get_ai_response(prompt: str) -> str:
@@ -60,53 +116,25 @@ def get_ai_response(prompt: str) -> str:
         print(f"🌐 Открываю: {url}")
         page_content = fetch_url(url)
         
-        headers = {
-            'Authorization': f'Bearer {OPENROUTER_API_KEY}',
-            'Content-Type': 'application/json',
-        }
-        payload = {
-            'model': 'nvidia/nemotron-3-ultra:free',
-            'messages': [
-                {'role': 'user', 'content': f"""Пользователь отправил: {prompt}
+        messages = [
+            {'role': 'user', 'content': f"""Пользователь отправил: {prompt}
 
 Содержимое сайта {url}:
 {page_content}
 
 Ответь на вопрос, используя информацию с этой страницы."""}
-            ],
-            'max_tokens': 1000,
-            'temperature': 0.7
-        }
-        try:
-            response = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=60)
-            if response.status_code == 200:
-                return response.json()['choices'][0]['message']['content']
-            return f"📄 Содержимое сайта:\n\n{page_content}"
-        except Exception as e:
-            return f"📄 Содержимое сайта:\n\n{page_content}\n\n(Ошибка ИИ: {str(e)})"
+        ]
+        
+        return call_llm_with_fallback(messages, is_browser=True)
     
     # Обычный ответ без ссылки
-    headers = {
-        'Authorization': f'Bearer {OPENROUTER_API_KEY}',
-        'Content-Type': 'application/json',
-    }
     current_time = datetime.now().strftime("%d.%m.%Y %H:%M")
-    payload = {
-        'model': 'nvidia/nemotron-3-ultra:free',
-        'messages': [
-            {'role': 'system', 'content': f'Ты — помощник по имени Гаврюша. Сегодня {current_time}. Отвечай дружелюбно и по делу.'},
-            {'role': 'user', 'content': prompt}
-        ],
-        'max_tokens': 1000,
-        'temperature': 0.7
-    }
-    try:
-        response = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=45)
-        if response.status_code == 200:
-            return response.json()['choices'][0]['message']['content']
-        return f"❌ Ошибка API: {response.status_code}"
-    except Exception as e:
-        return f"❌ Ошибка: {str(e)}"
+    messages = [
+        {'role': 'system', 'content': f'Ты — помощник по имени Гаврюша. Сегодня {current_time}. Отвечай дружелюбно и по делу.'},
+        {'role': 'user', 'content': prompt}
+    ]
+    
+    return call_llm_with_fallback(messages, is_browser=False)
 
 # ============================================================
 # TELEGRAM С АКТИВАЦИЕЙ
@@ -173,7 +201,7 @@ def set_webhook():
         print(f"❌ Ошибка: {e}")
 
 if __name__ == '__main__':
-    print("🚀 Запуск Гаврюши на модели Nemotron-3 Ultra...")
+    print("🚀 Запуск Гаврюши с автопереключением моделей...")
     set_webhook()
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
