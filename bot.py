@@ -1,122 +1,140 @@
 import os
+import re
+import asyncio
+import gc
 import requests
 from flask import Flask, request, jsonify
-from bs4 import BeautifulSoup
+from datetime import datetime
+from playwright.async_api import async_playwright
 
 app = Flask(__name__)
 
-# Конфигурация
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY')
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 WEBHOOK_URL = os.environ.get('RENDER_EXTERNAL_URL', 'https://ваш-бот.onrender.com')
 
 # ============================================================
-# Функция поиска через DuckDuckGo
+# ОПТИМИЗИРОВАННЫЙ БРАУЗЕР
 # ============================================================
-def duckduckgo_search(query: str, max_results: int = 5) -> str:
-    """Ищет в интернете через DuckDuckGo"""
-    url = f"https://html.duckduckgo.com/html/?q={query}"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-    
+async def browse_website(url: str, wait_for: str = None) -> str:
+    """Максимально оптимизированный браузер для Render"""
     try:
-        response = requests.get(url, headers=headers, timeout=15)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        results = []
-        for result in soup.find_all('div', class_='result')[:max_results]:
-            title_tag = result.find('a', class_='result__a')
-            snippet_tag = result.find('a', class_='result__snippet')
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    '--disable-gpu',
+                    '--disable-dev-shm-usage',
+                    '--disable-setuid-sandbox',
+                    '--no-first-run',
+                    '--no-sandbox',
+                    '--disable-accelerated-2d-canvas',
+                    '--disable-webgl',
+                    '--max_old_space_size=64'
+                ]
+            )
+            page = await browser.new_page()
+            await page.set_viewport_size({"width": 800, "height": 600})
+            await page.goto(url, timeout=20000, wait_until='domcontentloaded')
             
-            if title_tag:
-                title = title_tag.get_text(strip=True)
-                link = title_tag.get('href', '')
-                snippet = snippet_tag.get_text(strip=True) if snippet_tag else ''
-                results.append(f"🔹 <b>{title}</b>\n   {link}\n   {snippet[:300]}")
-        
-        if results:
-            return "🔍 <b>Результаты поиска:</b>\n\n" + "\n\n".join(results)
-        return f"😕 Ничего не найдено по запросу: {query}"
+            if wait_for:
+                try:
+                    await page.wait_for_selector(wait_for, timeout=5000)
+                except:
+                    pass
+            
+            text = await page.evaluate('document.body.innerText')
+            text = text[:1500]
+            
+            await browser.close()
+            gc.collect()
+            
+            return f"🌐 Содержимое сайта {url}:\n\n{text}"
     except Exception as e:
-        return f"❌ Ошибка поиска: {str(e)}"
+        return f"❌ Ошибка: {str(e)}"
+
+def extract_urls(text: str):
+    """Находит все ссылки в тексте"""
+    url_pattern = r'https?://[^\s]+'
+    return re.findall(url_pattern, text)
 
 # ============================================================
-# Функция ответа ИИ
+# ОСНОВНАЯ ЛОГИКА
 # ============================================================
-def get_ai_response(prompt):
-    # Проверяем, просит ли пользователь найти что-то в интернете
-    search_keywords = ['найди в интернете', 'поищи', 'загугли', 'найди информацию', 'посмотри в сети', 'найди в сети', 'search', 'найди']
-    need_search = any(keyword in prompt.lower() for keyword in search_keywords)
+def get_ai_response(prompt, chat_id=None):
+    urls = extract_urls(prompt)
     
-    # Если пользователь явно попросил поискать — сразу идём в DuckDuckGo
-    if need_search:
-        # Убираем ключевые слова из запроса
-        search_query = prompt
-        for keyword in search_keywords:
-            search_query = search_query.lower().replace(keyword, '').strip()
-        if not search_query or len(search_query) < 3:
-            search_query = prompt
+    if urls:
+        url = urls[0]
+        print(f"🌐 Открываю: {url}")
         
-        print(f"🔍 Поиск: {search_query}")
-        search_results = duckduckgo_search(search_query)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        page_content = loop.run_until_complete(browse_website(url))
+        loop.close()
         
-        # Отправляем результаты в Gemma для красивого ответа
         headers = {
             'Authorization': f'Bearer {OPENROUTER_API_KEY}',
             'Content-Type': 'application/json',
         }
-        final_payload = {
+        
+        payload = {
             'model': 'google/gemma-4-31b-it:free',
             'messages': [
-                {'role': 'user', 'content': f"""Вопрос пользователя: {prompt}
+                {'role': 'user', 'content': f"""Пользователь отправил ссылку: {prompt}
 
-Вот результаты поиска из интернета:
-{search_results}
+Содержимое страницы:
+{page_content}
 
-Пожалуйста, ответь на вопрос пользователя, используя информацию из результатов поиска. Ответ должен быть понятным и полезным. Если информации недостаточно — скажи об этом честно."""}
+Ответь на вопрос, используя информацию с этой страницы. Если информации нет — скажи честно."""}
             ],
-            'max_tokens': 1500,
+            'max_tokens': 1000,
             'temperature': 0.7
         }
+        
         try:
-            response = requests.post(OPENROUTER_URL, json=final_payload, headers=headers, timeout=60)
+            response = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=45)
             if response.status_code == 200:
                 result = response.json()
                 return result['choices'][0]['message']['content']
-            else:
-                return f"{search_results}\n\n(не удалось обработать ИИ, но вот результаты поиска)"
-        except Exception as e:
-            return f"{search_results}\n\n(Ошибка ИИ: {str(e)})"
+            return f"{page_content}"
+        except:
+            return page_content
     
-    # Обычный ответ без поиска
+    # Обычный ответ
     headers = {
         'Authorization': f'Bearer {OPENROUTER_API_KEY}',
         'Content-Type': 'application/json',
     }
     
+    current_time = datetime.now().strftime("%d.%m.%Y %H:%M")
+    
     payload = {
         'model': 'google/gemma-4-31b-it:free',
-        'messages': [{'role': 'user', 'content': prompt}],
+        'messages': [
+            {'role': 'system', 'content': f'Ты — помощник. Сегодня {current_time}. Отвечай кратко и по делу.'},
+            {'role': 'user', 'content': prompt}
+        ],
         'max_tokens': 1000,
         'temperature': 0.7
     }
     
     try:
-        response = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=60)
+        response = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=45)
         if response.status_code != 200:
-            return f"❌ Ошибка API ({response.status_code}): {response.text[:200]}"
-        
+            return f"❌ Ошибка API ({response.status_code})"
         result = response.json()
         return result['choices'][0]['message']['content']
     except Exception as e:
         return f"❌ Ошибка: {str(e)}"
 
 # ============================================================
-# Telegram обработка
+# TELEGRAM
 # ============================================================
 @app.route('/')
 def home():
-    return '🤖 Бот работает с поиском! Напишите "найди в интернете ..."'
+    return '🤖 Оптимизированный агент работает!'
 
 @app.route(f'/webhook/{TELEGRAM_TOKEN}', methods=['POST'])
 def webhook():
@@ -125,22 +143,22 @@ def webhook():
         if 'message' in data and 'text' in data['message']:
             chat_id = data['message']['chat']['id']
             user_text = data['message']['text']
-            bot_reply = get_ai_response(user_text)
+            
+            if user_text.startswith('/'):
+                return jsonify({'status': 'ok'}), 200
+            
+            bot_reply = get_ai_response(user_text, chat_id)
             send_telegram_message(chat_id, bot_reply)
+        
         return jsonify({'status': 'ok'}), 200
     except Exception as e:
-        print(f"Ошибка в webhook: {e}")
+        print(f"Ошибка: {e}")
         return jsonify({'status': 'error'}), 500
 
 def send_telegram_message(chat_id, text):
     url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
-    payload = {
-        'chat_id': chat_id,
-        'text': text,
-        'parse_mode': 'HTML'
-    }
     try:
-        requests.post(url, json=payload, timeout=10)
+        requests.post(url, json={'chat_id': chat_id, 'text': text[:4000], 'parse_mode': 'HTML'}, timeout=10)
     except Exception as e:
         print(f"Telegram ошибка: {e}")
 
@@ -160,7 +178,7 @@ def set_webhook():
         print(f"❌ Ошибка: {e}")
 
 if __name__ == '__main__':
-    print("🚀 Запуск бота с поиском DuckDuckGo...")
+    print("🚀 Запуск оптимизированного агента...")
     set_webhook()
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
