@@ -1,7 +1,5 @@
 import os
 import re
-import json
-import time
 import requests
 from flask import Flask, request, jsonify
 from datetime import datetime, timedelta
@@ -19,41 +17,20 @@ active_chats = {}
 ACTIVE_TIMEOUT = 10
 
 # ============================================================
-# РАСШИРЕННЫЕ ИНСТРУМЕНТЫ АГЕНТА
+# ИНСТРУМЕНТЫ АГЕНТА
 # ============================================================
 
-def google_search(query: str) -> str:
-    """Открывает Google, ищет запрос и возвращает результаты"""
+def search_web(query: str) -> str:
+    """Поиск через DuckDuckGo (не блокирует)"""
     try:
-        search_url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
-        print(f"🔍 Гаврюша открывает Google: {search_url}")
+        search_url = f"https://html.duckduckgo.com/html/?q={query}"
+        print(f"🔍 Ищу в DuckDuckGo: {query}")
         
         with Client() as ub:
             result = ub.navigate(search_url)
-            
-            # Ждём загрузки результатов
-            time.sleep(2)
-            
             if hasattr(result, 'blockmap') and result.blockmap:
-                content = result.blockmap
-                # Извлекаем только результаты поиска (регуляркой)
-                results_match = re.search(r'(?i)(about.*results|результатов.*найдено)(.+?)(?=\n\n|\Z)', content, re.DOTALL)
-                if results_match:
-                    return f"🔎 Результаты поиска Google по запросу '{query}':\n\n{results_match.group(2)[:1500]}"
-                return f"🔎 Результаты поиска Google по запросу '{query}':\n\n{content[:1500]}"
-        
-        return f"Не удалось выполнить поиск в Google"
-    except Exception as e:
-        return f"Ошибка Google поиска: {str(e)}"
-
-def search_web(query: str) -> str:
-    """Универсальный поиск (DuckDuckGo, быстрее)"""
-    try:
-        url = f"https://html.duckduckgo.com/html/?q={query}"
-        with Client() as ub:
-            result = ub.navigate(url)
-            if hasattr(result, 'blockmap') and result.blockmap:
-                return f"🔍 Результаты поиска '{query}':\n\n{result.blockmap[:1500]}"
+                content = result.blockmap[:2000]
+                return f"🔍 Результаты поиска '{query}':\n\n{content}"
         return f"Не удалось найти: {query}"
     except Exception as e:
         return f"Ошибка поиска: {str(e)}"
@@ -85,23 +62,20 @@ class Brain:
         if urls:
             return open_url(urls[0])
         
-        # Проверяем явные команды
-        prompt_lower = prompt.lower()
-        
-        if any(word in prompt_lower for word in ['время', 'дата', 'который час']):
+        # Проверяем время
+        if any(word in prompt.lower() for word in ['время', 'дата', 'который час']):
             return get_current_time()
         
-        # Для поиска пробуем Google
-        if any(word in prompt_lower for word in ['найди', 'поищи', 'загугли', 'найди в интернете', 'google', 'новости']):
-            # Убираем слова-команды
+        # Для поиска используем DuckDuckGo
+        if any(word in prompt.lower() for word in ['найди', 'поищи', 'загугли', 'найди в интернете', 'новости', 'что такое']):
             clean_query = prompt
             for word in ['найди', 'поищи', 'загугли', 'найди в интернете', 'google']:
                 clean_query = clean_query.lower().replace(word, '').strip()
-            if not clean_query:
+            if not clean_query or len(clean_query) < 3:
                 clean_query = prompt
             
-            print(f"🧠 Мозг решил: поискать в Google '{clean_query}'")
-            return google_search(clean_query)
+            print(f"🧠 Мозг: поиск '{clean_query}'")
+            return search_web(clean_query)
         
         # Обычный ответ через ИИ
         return self.direct_answer(prompt)
@@ -115,7 +89,7 @@ class Brain:
         payload = {
             'model': 'openrouter/free',
             'messages': [
-                {'role': 'system', 'content': f'Ты — Гаврюша, умный помощник. Сегодня {current_time}. Отвечай кратко, 2-3 предложения.'},
+                {'role': 'system', 'content': f'Ты — Гаврюша. Сегодня {current_time}. Отвечай кратко, 2-3 предложения.'},
                 {'role': 'user', 'content': prompt}
             ],
             'max_tokens': 300,
@@ -125,18 +99,11 @@ class Brain:
             response = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=45)
             if response.status_code == 200:
                 return response.json()['choices'][0]['message']['content']
-            return f"Ошибка: {response.status_code}"
+            return f"Ошибка API: {response.status_code}"
         except Exception as e:
             return f"Ошибка: {str(e)}"
 
 brain = Brain()
-
-# ============================================================
-# АГЕНТ ГАВРЮША
-# ============================================================
-def process_message(text: str, chat_id: int) -> str:
-    print(f"🐶 Гаврюша обрабатывает: {text[:50]}...")
-    return brain.think(text, chat_id)
 
 # ============================================================
 # TELEGRAM
@@ -167,7 +134,7 @@ def deactivate_expired_chats():
 
 @app.route('/')
 def home():
-    return '🐶 Гаврюша с Google поиском!'
+    return '🐶 Гаврюша с DuckDuckGo поиском!'
 
 @app.route(f'/webhook/{TELEGRAM_TOKEN}', methods=['POST'])
 def webhook():
@@ -186,12 +153,12 @@ def webhook():
                 set_chat_active(chat_id)
                 clean_text = re.sub(re.escape(ACTIVATION_WORD), '', user_text, flags=re.IGNORECASE).strip()
                 if not clean_text:
-                    reply = "🐶 Гаврюша здесь! Могу искать в Google, открывать сайты, отвечать на вопросы. Что нужно?"
+                    reply = "🐶 Гаврюша здесь! Могу искать в интернете, открывать сайты, отвечать на вопросы. Что нужно?"
                 else:
-                    reply = process_message(clean_text, chat_id)
+                    reply = brain.think(clean_text, chat_id)
                 send_message(chat_id, reply)
             elif is_chat_active(chat_id):
-                reply = process_message(user_text, chat_id)
+                reply = brain.think(user_text, chat_id)
                 send_message(chat_id, reply)
                 set_chat_active(chat_id)
         
@@ -216,7 +183,7 @@ def set_webhook():
         print(f"❌ Ошибка: {e}")
 
 if __name__ == '__main__':
-    print("🚀 Запуск Гаврюши с Google поиском...")
+    print("🚀 Запуск Гаврюши с DuckDuckGo поиском...")
     set_webhook()
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
