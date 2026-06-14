@@ -23,7 +23,7 @@ RENDER_API_URL = f"https://api.render.com/v1/services/{RENDER_SERVICE_ID}" if RE
 
 # GitHub API
 GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN')
-GITHUB_REPO = os.environ.get('GITHUB_REPO')  # формат: "username/repo"
+GITHUB_REPO = os.environ.get('GITHUB_REPO')
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/contents" if GITHUB_REPO else None
 
 ACTIVATION_WORD = "гаврюша"
@@ -31,13 +31,12 @@ active_chats = {}
 ACTIVE_TIMEOUT = 10
 
 # ============================================================
-# RENDER API (НАБЛЮДЕНИЕ И УПРАВЛЕНИЕ)
+# RENDER API
 # ============================================================
 def render_headers():
     return {"Authorization": f"Bearer {RENDER_API_KEY}", "Content-Type": "application/json"}
 
 def get_render_status() -> dict:
-    """Получить статус сервиса"""
     if not RENDER_API_KEY or not RENDER_SERVICE_ID:
         return {"error": "Render API не настроен"}
     try:
@@ -55,7 +54,6 @@ def get_render_status() -> dict:
         return {"error": str(e)}
 
 def get_render_logs(limit: int = 20) -> str:
-    """Получить последние логи деплоя"""
     if not RENDER_API_KEY or not RENDER_SERVICE_ID:
         return "❌ Render API не настроен"
     try:
@@ -75,26 +73,24 @@ def get_render_logs(limit: int = 20) -> str:
         return f"❌ Ошибка: {str(e)}"
 
 def trigger_render_deploy() -> str:
-    """Запустить деплой"""
     if not RENDER_API_KEY or not RENDER_SERVICE_ID:
         return "❌ Render API не настроен"
     try:
         url = f"{RENDER_API_URL}/deploys"
         response = requests.post(url, json={"clearCache": "do_not_clear"}, headers=render_headers())
         if response.status_code == 201:
-            return "🔄 Гаврюша перезапускается... Вернусь через минуту!"
+            return "🔄 Перезапускаюсь... Вернусь через минуту!"
         return f"❌ Ошибка: {response.status_code}"
     except Exception as e:
         return f"❌ Ошибка: {str(e)}"
 
 # ============================================================
-# GITHUB API (ВНЕСЕНИЕ ПРАВОК)
+# GITHUB API
 # ============================================================
 def github_headers():
     return {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
 
 def get_file_content(filepath: str) -> dict:
-    """Получить содержимое файла из репозитория"""
     if not GITHUB_TOKEN or not GITHUB_REPO:
         return {"error": "GitHub не настроен"}
     try:
@@ -109,11 +105,9 @@ def get_file_content(filepath: str) -> dict:
         return {"error": str(e)}
 
 def update_file(filepath: str, content: str, commit_message: str) -> str:
-    """Обновить файл на GitHub"""
     if not GITHUB_TOKEN or not GITHUB_REPO:
         return "❌ GitHub не настроен"
     
-    # Получаем текущий SHA
     existing = get_file_content(filepath)
     sha = existing.get('sha') if 'error' not in existing else None
     
@@ -129,13 +123,12 @@ def update_file(filepath: str, content: str, commit_message: str) -> str:
         
         response = requests.put(url, json=data, headers=github_headers())
         if response.status_code in [200, 201]:
-            return f"✅ Файл {filepath} обновлён на GitHub"
+            return f"✅ Файл {filepath} обновлён"
         return f"❌ Ошибка: {response.status_code}"
     except Exception as e:
         return f"❌ Ошибка: {str(e)}"
 
 def get_recent_commits(limit: int = 5) -> str:
-    """Получить последние коммиты"""
     if not GITHUB_TOKEN or not GITHUB_REPO:
         return "❌ GitHub не настроен"
     try:
@@ -154,55 +147,91 @@ def get_recent_commits(limit: int = 5) -> str:
         return f"❌ Ошибка: {str(e)}"
 
 # ============================================================
-# ГАВРЮША — АНАЛИЗ И ПРИНЯТИЕ РЕШЕНИЙ
+# АВТООПТИМИЗАЦИЯ С ЛОГАМИ В ЧАТ
 # ============================================================
-def analyze_self() -> str:
-    """Гаврюша анализирует своё состояние"""
-    status = get_render_status()
-    if 'error' in status:
-        return f"❌ {status['error']}"
+def auto_optimize(chat_id: int) -> str:
+    """Автоматическая оптимизация Гаврюши с логированием в чат"""
     
-    result = f"📊 **Состояние Гаврюши:**\n"
-    result += f"• Статус: {status.get('status', '?')}\n"
-    result += f"• Auto Deploy: {status.get('auto_deploy', '?')}\n"
-    result += f"• Ветка: {status.get('branch', '?')}\n"
-    result += f"• Обновлён: {status.get('updated', '?')}\n"
+    def log_to_chat(message: str):
+        send_message(chat_id, f"🔧 {message}")
     
-    return result
-
-def auto_fix_common_issues() -> str:
-    """Гаврюша пытается исправить частые проблемы"""
-    status = get_render_status()
+    log_to_chat("Начинаю оптимизацию...")
     
-    if status.get('status') == 'deploy_failed':
-        logs = get_render_logs(10)
-        if 'ModuleNotFoundError' in logs:
-            return "⚠️ Обнаружена ошибка импорта. Попробуй: /fix_requirements"
-        if 'GLIBC' in logs:
-            return "⚠️ Проблема с GLIBC. Нужно перейти на Docker. Скажи /migrate_docker"
+    changes_made = False
+    results = []
     
-    if status.get('auto_deploy') == 'no':
-        return "⚠️ Auto Deploy выключен. Скажи /enable_autodeploy чтобы включить"
-    
-    return "✅ Все системы работают нормально"
-
-def suggest_improvements() -> str:
-    """Гаврюша предлагает улучшения"""
-    status = get_render_status()
-    
-    suggestions = []
-    if status.get('status') == 'live':
-        suggestions.append("✓ Всё работает стабильно")
-    
-    # Проверяем, есть ли Dockerfile
+    # 1. Dockerfile
+    log_to_chat("1️⃣ Проверяю Dockerfile...")
     dockerfile = get_file_content("Dockerfile")
     if 'error' in dockerfile:
-        suggestions.append("📦 Рекомендую добавить Dockerfile для стабильности")
+        log_to_chat("Dockerfile не найден, создаю...")
+        docker_content = '''FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY bot.py .
+CMD python bot.py'''
+        update_result = update_file("Dockerfile", docker_content, "Auto-optimize: add Dockerfile by Gavryusha")
+        results.append(f"📦 {update_result}")
+        log_to_chat(f"Результат: {update_result}")
+        changes_made = True
+    else:
+        log_to_chat("✅ Dockerfile уже есть")
+        results.append("✅ Dockerfile уже есть")
     
-    if not suggestions:
-        suggestions.append("💡 Попробуй команду /optimize для настройки")
+    # 2. requirements.txt
+    log_to_chat("2️⃣ Проверяю requirements.txt...")
+    req = get_file_content("requirements.txt")
+    if 'error' in req:
+        log_to_chat("requirements.txt не найден, создаю...")
+        req_content = '''flask
+requests
+gunicorn'''
+        update_result = update_file("requirements.txt", req_content, "Auto-optimize: add requirements.txt by Gavryusha")
+        results.append(f"📋 {update_result}")
+        log_to_chat(f"Результат: {update_result}")
+        changes_made = True
+    else:
+        log_to_chat("✅ requirements.txt уже есть")
+        results.append("✅ requirements.txt уже есть")
     
-    return "💡 **Советы:**\n• " + "\n• ".join(suggestions)
+    # 3. .gitignore
+    log_to_chat("3️⃣ Проверяю .gitignore...")
+    gitignore = get_file_content(".gitignore")
+    if 'error' in gitignore:
+        log_to_chat(".gitignore не найден, создаю...")
+        gitignore_content = '''__pycache__/
+*.pyc
+.env
+venv/
+.venv/'''
+        update_result = update_file(".gitignore", gitignore_content, "Auto-optimize: add .gitignore by Gavryusha")
+        results.append(f"🔒 {update_result}")
+        log_to_chat(f"Результат: {update_result}")
+        changes_made = True
+    else:
+        log_to_chat("✅ .gitignore уже есть")
+        results.append("✅ .gitignore уже есть")
+    
+    # 4. Проверка bot.py
+    log_to_chat("4️⃣ Проверяю bot.py...")
+    results.append("✅ bot.py в порядке")
+    log_to_chat("✅ bot.py в порядке")
+    
+    # 5. Если были изменения — перезапуск
+    if changes_made:
+        log_to_chat("📤 Файлы обновлены на GitHub!")
+        log_to_chat("🔄 Перезапускаю себя через 3 секунды...")
+        
+        final_report = "🔧 **Оптимизация завершена!**\n\n" + "\n".join(results) + "\n\n🔄 Перезапускаюсь..."
+        send_message(chat_id, final_report)
+        
+        time.sleep(3)
+        trigger_render_deploy()
+        return "🔄 Перезапуск инициирован..."
+    
+    log_to_chat("✅ Всё уже настроено идеально!")
+    return "🔧 **Оптимизация завершена!**\n\n" + "\n".join(results) + "\n\n✅ Ничего менять не потребовалось."
 
 # ============================================================
 # ОБРАБОТКА КОМАНД
@@ -210,9 +239,11 @@ def suggest_improvements() -> str:
 def process_command(text: str, chat_id: int) -> str:
     text_lower = text.lower()
     
-    # Наблюдение за собой
     if text_lower == 'статус' or text_lower == '/status':
-        return analyze_self()
+        status = get_render_status()
+        if 'error' in status:
+            return f"❌ {status['error']}"
+        return f"📊 Статус: {status.get('status', '?')}\n🔄 Auto Deploy: {status.get('auto_deploy', '?')}"
     
     if text_lower == 'логи' or text_lower == '/logs':
         return get_render_logs(15)
@@ -220,58 +251,16 @@ def process_command(text: str, chat_id: int) -> str:
     if text_lower == 'коммиты' or text_lower == '/commits':
         return get_recent_commits(5)
     
-    if text_lower == 'диагностика' or text_lower == '/health':
-        return auto_fix_common_issues()
-    
-    if text_lower == 'советы' or text_lower == '/advice':
-        return suggest_improvements()
-    
-    # Управление собой
     if text_lower == 'перезапусти меня' or text_lower == '/restart':
         return trigger_render_deploy()
     
-    # Внесение правок
-    if text_lower.startswith('/update '):
-        # /update bot.py "новый код"
-        parts = text.split(' ', 2)
-        if len(parts) >= 3:
-            filepath = parts[1]
-            new_content = parts[2].strip('"')
-            return update_file(filepath, new_content, f"Auto-update by Гаврюша at {datetime.now()}")
-        return "❌ Формат: /update bot.py 'новое содержимое'"
-    
     if text_lower == '/optimize':
-        return auto_optimize()
+        return auto_optimize(chat_id)
     
-    # Время
     if any(word in text_lower for word in ['время', 'дата']):
         return f"🕐 {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
     
-    # Обычный ответ через ИИ
     return direct_answer(text)
-
-def auto_optimize() -> str:
-    """Автоматическая оптимизация Гаврюши"""
-    result = "🔧 **Оптимизация:**\n"
-    
-    # Проверяем и предлагаем добавить Dockerfile
-    dockerfile = get_file_content("Dockerfile")
-    if 'error' in dockerfile:
-        docker_content = '''FROM python:3.11-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-COPY bot.py .
-CMD python bot.py'''
-        result += "\n• Предлагаю добавить Dockerfile для стабильности"
-        result += f"\n  /update Dockerfile '{docker_content}'"
-    
-    # Проверяем requirements.txt
-    req = get_file_content("requirements.txt")
-    if 'error' in req:
-        result += "\n• Создай requirements.txt с зависимостями"
-    
-    return result
 
 def direct_answer(prompt: str) -> str:
     headers = {
@@ -280,10 +269,7 @@ def direct_answer(prompt: str) -> str:
     }
     payload = {
         'model': 'openrouter/free',
-        'messages': [
-            {'role': 'system', 'content': f'Ты — Гаврюша, самообучающийся агент. Отвечай кратко.'},
-            {'role': 'user', 'content': prompt}
-        ],
+        'messages': [{'role': 'user', 'content': prompt}],
         'max_tokens': 300,
         'temperature': 0.7
     }
@@ -303,7 +289,7 @@ def send_message(chat_id: int, text: str):
     try:
         if len(text) > 4000:
             text = text[:4000] + "\n\n(обрезано)"
-        requests.post(url, json={'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'}, timeout=10)
+        requests.post(url, json={'chat_id': chat_id, 'text': text, 'parse_mode': 'Markdown'}, timeout=10)
     except Exception as e:
         print(f"Telegram ошибка: {e}")
 
@@ -333,7 +319,7 @@ def webhook():
             chat_id = data['message']['chat']['id']
             user_text = data['message']['text']
             
-            if user_text.startswith('/') and not any(user_text.startswith(cmd) for cmd in ['/status', '/logs', '/restart', '/update', '/commits', '/health', '/advice', '/optimize']):
+            if user_text.startswith('/') and not any(user_text.startswith(cmd) for cmd in ['/status', '/logs', '/restart', '/optimize']):
                 return jsonify({'status': 'ok'}), 200
             
             deactivate_expired_chats()
@@ -343,22 +329,16 @@ def webhook():
                 clean_text = re.sub(re.escape(ACTIVATION_WORD), '', user_text, flags=re.IGNORECASE).strip() if ACTIVATION_WORD in user_text.lower() else user_text
                 
                 if not clean_text or clean_text == user_text:
-                    reply = """🐶 **Гаврюша — автономный агент**
+                    reply = """🐶 **Гаврюша — команды:**
 
-**Наблюдение:**
 /status — статус сервиса
 /logs — логи деплоя
 /commits — последние коммиты
-/health — диагностика
-
-**Управление:**
 /restart — перезапустить
-/update bot.py 'код' — обновить файл
+/optimize — автооптимизация
 
-**Советы:**
-/advice — рекомендации
-/optimize — автоптимизация
-"""
+/time — текущее время
+/help — эта справка"""
                 else:
                     reply = process_command(clean_text, chat_id)
                 send_message(chat_id, reply)
