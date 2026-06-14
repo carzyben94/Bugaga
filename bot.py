@@ -125,7 +125,7 @@ def update_file(filepath: str, content: str, commit_message: str) -> str:
         
         response = requests.put(url, json=data, headers=github_headers())
         if response.status_code in [200, 201]:
-            return f"✅ Файл {filepath} обновлён"
+            return f"✅ {filepath} обновлён"
         return f"❌ Ошибка: {response.status_code}"
     except Exception as e:
         return f"❌ Ошибка: {str(e)}"
@@ -166,7 +166,7 @@ class LightpandaClient:
     
     def search(self, query):
         if not self.ws and not self.connect():
-            return "❌ Браузер не доступен"
+            return "❌ Браузер временно недоступен. Напиши /browser_fix для исправления"
         url = f"https://lite.duckduckgo.com/lite/?q={query.replace(' ', '+')}"
         self.msg_id += 1
         msg = {"id": self.msg_id, "method": "Page.navigate", "params": {"url": url}}
@@ -198,169 +198,133 @@ def search_with_browser(query: str) -> str:
     return browser.search(query)
 
 # ============================================================
-# САМОУЛУЧШЕНИЕ
+# ДИАГНОСТИКА И ИСПРАВЛЕНИЕ БРАУЗЕРА
 # ============================================================
-def analyze_self(chat_id: int) -> dict:
-    """Анализирует состояние Гаврюши"""
-    issues = []
-    improvements = []
+def diagnose_browser(chat_id: int) -> dict:
+    """Диагностирует проблемы с браузером"""
     
+    def log(msg): send_message(chat_id, f"🔍 {msg}")
+    
+    log("Диагностирую браузер...")
+    
+    issues = []
+    fixes = []
+    
+    # 1. Проверяем Dockerfile
+    log("1️⃣ Проверяю Dockerfile...")
     dockerfile = get_file_content("Dockerfile")
     if 'error' in dockerfile:
         issues.append("❌ Dockerfile отсутствует")
-        improvements.append("📦 Добавить Dockerfile")
+        fixes.append("📦 Создать Dockerfile с Lightpanda")
+    elif 'lightpanda' not in dockerfile['content']:
+        issues.append("❌ Dockerfile не содержит Lightpanda")
+        fixes.append("🔄 Обновить Dockerfile")
+    else:
+        log("✅ Dockerfile в порядке")
     
+    # 2. Проверяем requirements.txt
+    log("2️⃣ Проверяю requirements.txt...")
     req = get_file_content("requirements.txt")
     if 'error' in req:
         issues.append("❌ requirements.txt отсутствует")
-        improvements.append("📋 Добавить requirements.txt")
-    
-    report = f"🔍 **Самоанализ:**\n• Проблем: {len(issues)}\n• Улучшений: {len(improvements)}\n\n"
-    if improvements:
-        report += "**Нужно:**\n" + "\n".join(f"• {i}" for i in improvements)
+        fixes.append("📋 Создать requirements.txt с websocket-client")
+    elif 'websocket-client' not in req['content']:
+        issues.append("❌ Нет websocket-client")
+        fixes.append("➕ Добавить websocket-client")
     else:
-        report += "✅ Всё хорошо!"
+        log("✅ requirements.txt в порядке")
     
-    return {"issues": issues, "improvements": improvements, "report": report}
-
-def execute_improvement(improvement: str, chat_id: int) -> dict:
-    """Выполняет одно улучшение"""
-    if "Dockerfile" in improvement:
-        content = '''FROM lightpanda/browser:nightly
-WORKDIR /app
-RUN apt-get update && apt-get install -y python3 python3-pip
-COPY requirements.txt .
-RUN pip3 install -r requirements.txt --break-system-packages
-COPY bot.py .
-CMD lightpanda serve --host 0.0.0.0 --port 9222 & sleep 3 && python3 bot.py'''
-        result = update_file("Dockerfile", content, "Self-improve: add Dockerfile")
-        return {"success": "✅" in result, "message": result}
+    # 3. Проверяем код бота
+    log("3️⃣ Проверяю bot.py...")
+    bot = get_file_content("bot.py")
+    if 'error' in bot:
+        issues.append("❌ bot.py не найден")
+    elif 'LightpandaClient' not in bot['content']:
+        issues.append("❌ Нет класса LightpandaClient")
+        fixes.append("🔧 Добавить код браузера")
+    elif 'search_with_browser' not in bot['content']:
+        issues.append("❌ Нет функции поиска")
+        fixes.append("🔧 Добавить функцию поиска")
+    else:
+        log("✅ bot.py в порядке")
     
-    if "requirements.txt" in improvement:
-        content = "flask\nrequests\ngunicorn\nwebsocket-client"
-        result = update_file("requirements.txt", content, "Self-improve: add requirements.txt")
-        return {"success": "✅" in result, "message": result}
+    # 4. Проверяем статус Render
+    log("4️⃣ Проверяю Render...")
+    status = get_render_status()
+    if 'error' not in status and status.get('status') != 'live':
+        issues.append(f"⚠️ Статус: {status.get('status')}")
+        fixes.append("🔄 Перезапустить сервис")
     
-    return {"success": False, "message": "Неизвестное улучшение"}
-
-def self_improve_step(chat_id: int) -> str:
-    """Один шаг самоулучшения"""
-    analysis = analyze_self(chat_id)
-    if not analysis["improvements"]:
-        return "✅ Гаврюша уже в идеальном состоянии!"
-    
-    imp = analysis["improvements"][0]
-    send_message(chat_id, f"🔧 Выполняю: {imp}")
-    result = execute_improvement(imp, chat_id)
-    
-    if result["success"]:
-        if "Dockerfile" in imp:
-            trigger_render_deploy()
-            return f"✅ {result['message']}\n🔄 Перезапускаюсь..."
-        return f"✅ {result['message']}\n📝 Напиши /step для следующего шага"
-    return f"❌ {result['message']}"
-
-# ============================================================
-# ГЕНЕРАЦИЯ НОВЫХ ФУНКЦИЙ
-# ============================================================
-def generate_new_function(description: str, chat_id: int) -> str:
-    """Генерирует новую функцию через ИИ"""
-    send_message(chat_id, f"🧠 Генерирую функцию: {description}")
-    
-    prompt = f"""Напиши функцию на Python для телеграм-бота.
-Запрос: {description}
-
-Функция должна:
-- Принимать строку text (текст сообщения пользователя)
-- Возвращать строку с ответом
-- Иметь понятное имя (на английском)
-- Содержать обработку ошибок
-
-Верни ТОЛЬКО код функции, без пояснений.
-Начинай с def и заканчивай return."""
-    
-    headers = {'Authorization': f'Bearer {OPENROUTER_API_KEY}', 'Content-Type': 'application/json'}
-    payload = {'model': 'openrouter/free', 'messages': [{'role': 'user', 'content': prompt}], 'max_tokens': 800}
-    
-    try:
-        response = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=45)
-        if response.status_code == 200:
-            new_function = response.json()['choices'][0]['message']['content']
-            
-            bot_file = get_file_content("bot.py")
-            if 'error' in bot_file:
-                return "❌ Не найден bot.py на GitHub"
-            
-            # Добавляем функцию перед process_command
-            old_code = bot_file['content']
-            insert_point = old_code.find('def search_via_requests(query: str) -> str:
-    """
-    Perform a simple web search using the DuckDuckGo Instant Answer API.
-    Returns a textual response or an error message.
-    """
-    import json
-    import requests
-
-    if not isinstance(query, str) or not query.strip():
-        return "❗️ Ошибка: запрос должен быть непустой строкой."
-
-    url = "https://api.duckduckgo.com/"
-    params = {
-        "q": query,
-        "format": "json",
-        "no_html": 1,
-        "skip_disambig": 1,
+    return {
+        "issues": issues,
+        "fixes": fixes,
+        "has_issues": len(issues) > 0,
+        "report": f"🔍 **Диагностика:**\n" + ("\n".join(issues) if issues else "✅ Всё работает") +
+                  ("\n\n🔧 **План:**\n" + "\n".join(fixes) if fixes else "")
     }
 
+def fix_browser(chat_id: int) -> str:
+    """Автоматически исправляет проблемы с браузером"""
+    
+    def log(msg): send_message(chat_id, f"🔧 {msg}")
+    
+    log("Исправляю браузер...")
+    
+    diagnosis = diagnose_browser(chat_id)
+    
+    if not diagnosis["has_issues"]:
+        return "✅ Браузер уже работает!"
+    
+    fixes_made = []
+    
+    for fix in diagnosis["fixes"]:
+        log(f"Выполняю: {fix}")
+        
+        if "Создать Dockerfile" in fix or "Обновить Dockerfile" in fix:
+            docker_content = '''FROM lightpanda/browser:nightly
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y python3 python3-pip -y
+
+COPY requirements.txt .
+
+RUN pip3 install --no-cache-dir -r requirements.txt --break-system-packages
+
+COPY bot.py .
+
+CMD lightpanda serve --host 0.0.0.0 --port 9222 & sleep 5 && python3 bot.py'''
+            result = update_file("Dockerfile", docker_content, "Fix: add Lightpanda")
+            fixes_made.append(f"📦 {result}")
+        
+        elif "websocket-client" in fix:
+            req_content = "flask\nrequests\ngunicorn\nwebsocket-client"
+            result = update_file("requirements.txt", req_content, "Fix: add websocket-client")
+            fixes_made.append(f"📋 {result}")
+        
+        elif "Перезапустить" in fix:
+            fixes_made.append("🔄 Перезапускаю...")
+            trigger_render_deploy()
+            return "🔄 Перезапуск. Через минуту браузер заработает.\n\n" + "\n".join(fixes_made)
+    
+    if fixes_made:
+        result_msg = "🔧 **Исправлено:**\n" + "\n".join(fixes_made)
+        result_msg += "\n\n🔄 Напиши /restart для применения"
+        return result_msg
+    
+    return "❌ Не удалось исправить. Проверь логи /logs"
+
+def check_and_fix_browser(chat_id: int) -> str:
+    """Проверяет браузер и чинит"""
     try:
-        response = requests.get(url, params=params, timeout=8)
-        response.raise_for_status()
-    except requests.exceptions.Timeout:
-        return "⏱️ Ошибка: запрос превысил время ожидания."
-    except requests.exceptions.ConnectionError:
-        return "🌐 Ошибка: проблема с соединением."
-    except requests.exceptions.HTTPError as e:
-        return f"🚫 HTTP ошибка: {e.response.status_code}."
-    except Exception as e:
-        return f"❓ Неизвестная ошибка: {e}"
-
-    try:
-        data = response.json()
-    except json.JSONDecodeError:
-        return "📦 Ошибка: получен некорректный JSON."
-
-    # Try to get a concise answer
-    abstract = data.get("AbstractText")
-    if abstract:
-        return abstract.strip()
-
-    # Fallback to related topics
-    related = data.get("RelatedTopics")
-    if isinstance(related, list) and related:
-        first = related[0]
-        if isinstance(first, dict):
-            text = first.get("Text") or first.get("Name")
-            if text:
-                return text.strip()
-
-    return "🔎 По вашему запросу ничего не найдено."
-
-def process_command')
-            if insert_point == -1:
-                insert_point = old_code.find('def direct_answer')
-            
-            new_code = old_code[:insert_point] + new_function + "\n\n" + old_code[insert_point:]
-            result = update_file("bot.py", new_code, f"Add: {description[:50]}")
-            
-            if "✅" in result:
-                send_message(chat_id, f"✅ Функция добавлена!\n```python\n{new_function[:300]}\n```")
-                time.sleep(2)
-                trigger_render_deploy()
-                return "🔄 Перезапускаюсь... Новая функция появится через минуту."
-            return f"❌ {result}"
-        return f"❌ Ошибка ИИ: {response.status_code}"
-    except Exception as e:
-        return f"❌ Ошибка: {str(e)}"
+        test_result = browser.search("test")
+        if "Результаты" in test_result or "ничего" in test_result:
+            return "✅ Браузер работает!"
+    except:
+        pass
+    
+    send_message(chat_id, "⚠️ Браузер не отвечает. Исправляю...")
+    return fix_browser(chat_id)
 
 # ============================================================
 # ОСНОВНЫЕ ФУНКЦИИ
@@ -379,10 +343,61 @@ def direct_answer(prompt: str) -> str:
     except Exception as e:
         return f"❌ Ошибка: {str(e)}"
 
+def self_improve_step(chat_id: int) -> str:
+    """Один шаг самоулучшения"""
+    analysis = diagnose_browser(chat_id)
+    if not analysis["has_issues"]:
+        return "✅ Гаврюша уже в идеальном состоянии!"
+    return fix_browser(chat_id)
+
+def generate_new_function(description: str, chat_id: int) -> str:
+    """Генерирует новую функцию через ИИ"""
+    send_message(chat_id, f"🧠 Генерирую: {description}")
+    
+    prompt = f"""Напиши функцию на Python.
+Запрос: {description}
+
+Функция должна:
+- Принимать строку text
+- Возвращать строку с ответом
+- Иметь понятное имя
+
+ТОЛЬКО код, без пояснений."""
+    
+    headers = {'Authorization': f'Bearer {OPENROUTER_API_KEY}', 'Content-Type': 'application/json'}
+    payload = {'model': 'openrouter/free', 'messages': [{'role': 'user', 'content': prompt}], 'max_tokens': 800}
+    
+    try:
+        response = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=45)
+        if response.status_code == 200:
+            new_function = response.json()['choices'][0]['message']['content']
+            
+            bot_file = get_file_content("bot.py")
+            if 'error' in bot_file:
+                return "❌ Не найден bot.py"
+            
+            old_code = bot_file['content']
+            insert_point = old_code.find('def process_command')
+            if insert_point == -1:
+                insert_point = old_code.find('def direct_answer')
+            
+            new_code = old_code[:insert_point] + new_function + "\n\n" + old_code[insert_point:]
+            result = update_file("bot.py", new_code, f"Add: {description[:50]}")
+            
+            if "✅" in result:
+                send_message(chat_id, f"✅ Функция добавлена!\n```\n{new_function[:300]}\n```")
+                time.sleep(2)
+                trigger_render_deploy()
+                return "🔄 Перезапускаюсь..."
+            return f"❌ {result}"
+        return f"❌ Ошибка ИИ: {response.status_code}"
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)}"
+
 def process_command(text: str, chat_id: int) -> str:
     text_lower = text.lower()
     
-    # Наблюдение
+    # Команды
     if text_lower in ['/status', 'статус']:
         s = get_render_status()
         return f"📊 Статус: {s.get('status', '?')}" if 'error' not in s else f"❌ {s['error']}"
@@ -393,20 +408,23 @@ def process_command(text: str, chat_id: int) -> str:
     if text_lower in ['/commits', 'коммиты']:
         return get_recent_commits(5)
     
-    # Управление
     if text_lower in ['/restart', 'перезапусти меня']:
         return trigger_render_deploy()
     
     if text_lower in ['/step', 'шаг']:
         return self_improve_step(chat_id)
     
-    if text_lower in ['/analyze', 'анализ']:
-        return analyze_self(chat_id)['report']
+    if text_lower in ['/browser_check', 'проверь браузер']:
+        return check_and_fix_browser(chat_id)
     
-    # Добавление функций
+    if text_lower in ['/browser_diagnose', 'диагностика браузера']:
+        return diagnose_browser(chat_id)["report"]
+    
+    if text_lower in ['/browser_fix', 'почини браузер']:
+        return fix_browser(chat_id)
+    
     if text_lower.startswith('/add '):
-        desc = text[5:]
-        return generate_new_function(desc, chat_id)
+        return generate_new_function(text[5:], chat_id)
     
     # Поиск через браузер
     if any(word in text_lower for word in ['найди', 'поищи', 'загугли']):
@@ -415,7 +433,6 @@ def process_command(text: str, chat_id: int) -> str:
             clean = text
         return search_with_browser(clean)
     
-    # Время
     if any(word in text_lower for word in ['время', 'дата']):
         return f"🕐 {get_current_time()}"
     
@@ -449,7 +466,7 @@ def deactivate_expired_chats():
 
 @app.route('/')
 def home():
-    return '🐶 Гаврюша — автономный агент с браузером!'
+    return '🐶 Гаврюша с самодиагностикой!'
 
 @app.route(f'/webhook/{TELEGRAM_TOKEN}', methods=['POST'])
 def webhook():
@@ -459,25 +476,18 @@ def webhook():
             chat_id = data['message']['chat']['id']
             user_text = data['message']['text']
             
-            if user_text.startswith('/') and not any(user_text.startswith(cmd) for cmd in ['/status', '/logs', '/restart', '/step', '/add', '/analyze']):
-                if user_text == '/help' or user_text == '/start':
+            if user_text.startswith('/') and not any(user_text.startswith(cmd) for cmd in ['/status', '/logs', '/restart', '/step', '/add', '/browser_check', '/browser_diagnose', '/browser_fix']):
+                if user_text in ['/help', '/start']:
                     send_message(chat_id, """🐶 **Гаврюша — команды:**
 
-📊 **Наблюдение:**
-/status — статус на Render
-/logs — логи деплоя
-/commits — последние коммиты
-/analyze — анализ состояния
-
-⚙️ **Управление:**
-/restart — перезапустить
-/step — шаг самоулучшения
-
-➕ **Самообновление:**
-/add описание — добавить новую функцию
-
-🌐 **Поиск:**
-найди, поищи, загугли — через браузер""")
+📊 /status, /logs, /commits
+⚙️ /restart, /step
+🌐 /browser_check — проверить браузер
+🔧 /browser_fix — починить браузер
+🔍 /browser_diagnose — диагностика
+➕ /add описание — добавить функцию
+🔎 найди/поищи/загугли — поиск
+""")
                 return jsonify({'status': 'ok'}), 200
             
             deactivate_expired_chats()
@@ -486,7 +496,7 @@ def webhook():
                 set_chat_active(chat_id)
                 clean_text = re.sub(re.escape(ACTIVATION_WORD), '', user_text, flags=re.IGNORECASE).strip() if ACTIVATION_WORD in user_text.lower() else user_text
                 
-                if not clean_text or clean_text == user_text:
+                if not clean_text:
                     reply = "🐶 Гаврюша здесь! /help"
                 else:
                     reply = process_command(clean_text, chat_id)
@@ -517,7 +527,7 @@ def set_webhook():
         print(f"❌ Ошибка: {e}")
 
 if __name__ == '__main__':
-    print("🚀 Запуск Гаврюши с браузером и самообновлением...")
+    print("🚀 Запуск Гаврюши с самодиагностикой...")
     set_webhook()
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
