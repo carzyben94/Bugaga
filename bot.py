@@ -1,6 +1,7 @@
 import os
 import requests
 from flask import Flask, request, jsonify
+from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 
@@ -10,9 +11,112 @@ OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY')
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 WEBHOOK_URL = os.environ.get('RENDER_EXTERNAL_URL', 'https://ваш-бот.onrender.com')
 
+# ============================================================
+# Функция поиска через DuckDuckGo
+# ============================================================
+def duckduckgo_search(query: str, max_results: int = 5) -> str:
+    """Ищет в интернете через DuckDuckGo"""
+    url = f"https://html.duckduckgo.com/html/?q={query}"
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        results = []
+        for result in soup.find_all('div', class_='result')[:max_results]:
+            title_tag = result.find('a', class_='result__a')
+            snippet_tag = result.find('a', class_='result__snippet')
+            
+            if title_tag:
+                title = title_tag.get_text(strip=True)
+                link = title_tag.get('href', '')
+                snippet = snippet_tag.get_text(strip=True) if snippet_tag else ''
+                results.append(f"🔹 <b>{title}</b>\n   {link}\n   {snippet[:300]}")
+        
+        if results:
+            return "🔍 <b>Результаты поиска:</b>\n\n" + "\n\n".join(results)
+        return f"😕 Ничего не найдено по запросу: {query}"
+    except Exception as e:
+        return f"❌ Ошибка поиска: {str(e)}"
+
+# ============================================================
+# Функция ответа ИИ
+# ============================================================
+def get_ai_response(prompt):
+    # Проверяем, просит ли пользователь найти что-то в интернете
+    search_keywords = ['найди в интернете', 'поищи', 'загугли', 'найди информацию', 'посмотри в сети', 'найди в сети', 'search', 'найди']
+    need_search = any(keyword in prompt.lower() for keyword in search_keywords)
+    
+    # Если пользователь явно попросил поискать — сразу идём в DuckDuckGo
+    if need_search:
+        # Убираем ключевые слова из запроса
+        search_query = prompt
+        for keyword in search_keywords:
+            search_query = search_query.lower().replace(keyword, '').strip()
+        if not search_query or len(search_query) < 3:
+            search_query = prompt
+        
+        print(f"🔍 Поиск: {search_query}")
+        search_results = duckduckgo_search(search_query)
+        
+        # Отправляем результаты в Gemma для красивого ответа
+        headers = {
+            'Authorization': f'Bearer {OPENROUTER_API_KEY}',
+            'Content-Type': 'application/json',
+        }
+        final_payload = {
+            'model': 'google/gemma-4-31b-it:free',
+            'messages': [
+                {'role': 'user', 'content': f"""Вопрос пользователя: {prompt}
+
+Вот результаты поиска из интернета:
+{search_results}
+
+Пожалуйста, ответь на вопрос пользователя, используя информацию из результатов поиска. Ответ должен быть понятным и полезным. Если информации недостаточно — скажи об этом честно."""}
+            ],
+            'max_tokens': 1500,
+            'temperature': 0.7
+        }
+        try:
+            response = requests.post(OPENROUTER_URL, json=final_payload, headers=headers, timeout=60)
+            if response.status_code == 200:
+                result = response.json()
+                return result['choices'][0]['message']['content']
+            else:
+                return f"{search_results}\n\n(не удалось обработать ИИ, но вот результаты поиска)"
+        except Exception as e:
+            return f"{search_results}\n\n(Ошибка ИИ: {str(e)})"
+    
+    # Обычный ответ без поиска
+    headers = {
+        'Authorization': f'Bearer {OPENROUTER_API_KEY}',
+        'Content-Type': 'application/json',
+    }
+    
+    payload = {
+        'model': 'google/gemma-4-31b-it:free',
+        'messages': [{'role': 'user', 'content': prompt}],
+        'max_tokens': 1000,
+        'temperature': 0.7
+    }
+    
+    try:
+        response = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=60)
+        if response.status_code != 200:
+            return f"❌ Ошибка API ({response.status_code}): {response.text[:200]}"
+        
+        result = response.json()
+        return result['choices'][0]['message']['content']
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)}"
+
+# ============================================================
+# Telegram обработка
+# ============================================================
 @app.route('/')
 def home():
-    return '🤖 Бот работает! Отправьте сообщение в Telegram.'
+    return '🤖 Бот работает с поиском! Напишите "найди в интернете ..."'
 
 @app.route(f'/webhook/{TELEGRAM_TOKEN}', methods=['POST'])
 def webhook():
@@ -28,60 +132,7 @@ def webhook():
         print(f"Ошибка в webhook: {e}")
         return jsonify({'status': 'error'}), 500
 
-def get_ai_response(prompt):
-    """Отправляет запрос к OpenRouter и возвращает ответ"""
-    headers = {
-        'Authorization': f'Bearer {OPENROUTER_API_KEY}',
-        'Content-Type': 'application/json',
-    }
-    
-    payload = {
-        'model': 'google/gemma-4-31b-it:free',
-        'messages': [
-            {'role': 'user', 'content': prompt}
-        ],
-        'max_tokens': 1000,
-        'temperature': 0.7
-    }
-    
-    try:
-        print(f"📤 Отправка запроса к OpenRouter...")
-        response = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=60)
-        
-        print(f"📥 Статус ответа: {response.status_code}")
-        
-        # Если статус не 200 — возвращаем ошибку
-        if response.status_code != 200:
-            return f"❌ Ошибка API ({response.status_code}): {response.text[:300]}"
-        
-        # Парсим JSON
-        result = response.json()
-        
-        # Проверяем структуру ответа
-        if 'choices' not in result:
-            return f"❌ Неожиданный ответ API: {str(result)[:300]}"
-        
-        if len(result['choices']) == 0:
-            return "❌ API вернул пустой ответ"
-        
-        # Получаем текст ответа
-        message = result['choices'][0].get('message', {})
-        content = message.get('content', '')
-        
-        if not content:
-            return "❌ Ответ от API пустой"
-        
-        return content
-        
-    except requests.exceptions.Timeout:
-        return "❌ Таймаут: OpenRouter не ответил за 60 секунд"
-    except requests.exceptions.ConnectionError:
-        return "❌ Ошибка подключения к OpenRouter"
-    except Exception as e:
-        return f"❌ Ошибка: {type(e).__name__}: {str(e)}"
-
 def send_telegram_message(chat_id, text):
-    """Отправляет сообщение в Telegram"""
     url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
     payload = {
         'chat_id': chat_id,
@@ -89,33 +140,27 @@ def send_telegram_message(chat_id, text):
         'parse_mode': 'HTML'
     }
     try:
-        response = requests.post(url, json=payload, timeout=10)
-        if response.status_code != 200:
-            print(f"Ошибка отправки в Telegram: {response.text}")
+        requests.post(url, json=payload, timeout=10)
     except Exception as e:
         print(f"Telegram ошибка: {e}")
 
 def set_webhook():
-    """Устанавливает вебхук при запуске"""
     if not TELEGRAM_TOKEN:
         print("❌ TELEGRAM_TOKEN не установлен!")
         return
-    
     webhook_url = f"{WEBHOOK_URL}/webhook/{TELEGRAM_TOKEN}"
     url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook'
-    
     try:
         response = requests.post(url, json={'url': webhook_url})
         if response.ok:
             print(f"✅ Вебхук установлен: {webhook_url}")
         else:
-            print(f"❌ Ошибка установки вебхука: {response.text}")
+            print(f"❌ Ошибка: {response.text}")
     except Exception as e:
-        print(f"❌ Ошибка при установке вебхука: {e}")
+        print(f"❌ Ошибка: {e}")
 
 if __name__ == '__main__':
-    print("🚀 Запуск бота...")
+    print("🚀 Запуск бота с поиском DuckDuckGo...")
     set_webhook()
     port = int(os.environ.get('PORT', 5000))
-    print(f"📡 Сервер запущен на порту {port}")
     app.run(host='0.0.0.0', port=port)
