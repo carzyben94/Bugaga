@@ -3,7 +3,7 @@ import re
 import requests
 from flask import Flask, request, jsonify
 from datetime import datetime, timedelta
-from bs4 import BeautifulSoup
+from b4n1web import AgentBrowser, BrowserMode
 
 app = Flask(__name__)
 
@@ -17,41 +17,45 @@ active_chats = {}
 ACTIVE_TIMEOUT = 10
 
 # ============================================================
-# ПОИСК ЧЕРЕЗ DUCKDUCKGO (HTTP, БЕЗ БРАУЗЕРА)
+# ПОИСК ЧЕРЕЗ b4n1web (ЛЁГКИЙ БРАУЗЕР)
 # ============================================================
-def search_duckduckgo(query: str) -> str:
-    """Ищет через DuckDuckGo HTML (без браузера)"""
+def search_web(query: str) -> str:
+    """Ищет в интернете через b4n1web (режим Light)"""
     try:
-        url = f"https://lite.duckduckgo.com/lite/?q={query.replace(' ', '+')}"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        response = requests.get(url, headers=headers, timeout=15)
-        soup = BeautifulSoup(response.text, 'html.parser')
+        print(f"🔍 Ищу: {query}")
         
-        results = []
-        rows = soup.find_all('tr')
-        for row in rows:
-            link_tag = row.find('a', href=True)
-            if link_tag and '//' in link_tag['href']:
-                title = link_tag.get_text(strip=True)
-                link = link_tag['href']
-                desc = row.find_all('td')[-1].get_text(strip=True) if row.find_all('td') else ''
-                results.append(f"• <b>{title}</b>\n  {link}\n  {desc[:200]}")
-                if len(results) >= 5:
-                    break
+        # Используем лёгкий режим (HTTP + парсинг)
+        browser = AgentBrowser(mode=BrowserMode.LIGHT)
+        page = browser.goto(f"https://html.duckduckgo.com/html/?q={query}")
         
-        if results:
-            return f"🔍 <b>Результаты поиска '{query}':</b>\n\n" + "\n\n".join(results)
-        return f"😕 Ничего не найдено: {query}"
+        # Получаем текст в формате Markdown
+        content = page.markdown[:2000] if page.markdown else "Ничего не найдено"
+        browser.close()
+        
+        if content and len(content) > 50:
+            return f"🔍 <b>Результаты поиска '{query}':</b>\n\n{content}"
+        return f"😕 Ничего не найдено по запросу: {query}"
+        
     except Exception as e:
         return f"❌ Ошибка поиска: {str(e)}"
+
+def open_url(url: str) -> str:
+    """Открывает конкретный сайт через b4n1web"""
+    try:
+        print(f"🌐 Открываю: {url}")
+        browser = AgentBrowser(mode=BrowserMode.LIGHT)
+        page = browser.goto(url)
+        content = page.markdown[:2000] if page.markdown else "Не удалось получить содержимое"
+        browser.close()
+        return f"📄 <b>Содержимое {url}:</b>\n\n{content}"
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)}"
 
 def get_current_time() -> str:
     return datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
 # ============================================================
-# МОЗГ
+# МОЗГ (ИИ)
 # ============================================================
 class Brain:
     def __init__(self):
@@ -64,14 +68,20 @@ class Brain:
         if any(word in prompt_lower for word in ['время', 'дата', 'который час']):
             return f"🕐 {get_current_time()}"
         
-        # Поиск
-        if any(word in prompt_lower for word in ['найди', 'поищи', 'загугли', 'новости', 'что такое', 'кто такой']):
+        # Ссылка
+        urls = re.findall(r'https?://[^\s]+', prompt)
+        if urls:
+            return open_url(urls[0])
+        
+        # Поиск в интернете
+        search_keywords = ['найди', 'поищи', 'загугли', 'новости', 'что такое', 'кто такой', 'сколько стоит']
+        if any(keyword in prompt_lower for keyword in search_keywords):
             clean_query = prompt
-            for word in ['найди', 'поищи', 'загугли', 'найди в интернете', 'google']:
+            for word in search_keywords:
                 clean_query = clean_query.lower().replace(word, '').strip()
             if not clean_query or len(clean_query) < 3:
                 clean_query = prompt
-            return search_duckduckgo(clean_query)
+            return search_web(clean_query)
         
         # Обычный ответ через ИИ
         return self.direct_answer(prompt)
@@ -85,7 +95,7 @@ class Brain:
         payload = {
             'model': 'openrouter/free',
             'messages': [
-                {'role': 'system', 'content': f'Ты — Гаврюша. Сегодня {current_time}. Отвечай кратко, 2-3 предложения.'},
+                {'role': 'system', 'content': f'Ты — Гаврюша, умный помощник. Сегодня {current_time}. Отвечай кратко, 2-3 предложения.'},
                 {'role': 'user', 'content': prompt}
             ],
             'max_tokens': 300,
@@ -95,9 +105,9 @@ class Brain:
             response = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=45)
             if response.status_code == 200:
                 return response.json()['choices'][0]['message']['content']
-            return f"Ошибка: {response.status_code}"
+            return f"❌ Ошибка API: {response.status_code}"
         except Exception as e:
-            return f"Ошибка: {str(e)}"
+            return f"❌ Ошибка: {str(e)}"
 
 brain = Brain()
 
@@ -130,7 +140,7 @@ def deactivate_expired_chats():
 
 @app.route('/')
 def home():
-    return '🐶 Гаврюша с DuckDuckGo поиском!'
+    return '🐶 Гаврюша с b4n1web браузером работает!'
 
 @app.route(f'/webhook/{TELEGRAM_TOKEN}', methods=['POST'])
 def webhook():
@@ -149,7 +159,7 @@ def webhook():
                 set_chat_active(chat_id)
                 clean_text = re.sub(re.escape(ACTIVATION_WORD), '', user_text, flags=re.IGNORECASE).strip()
                 if not clean_text:
-                    reply = "🐶 Гаврюша здесь! Что найти?"
+                    reply = "🐶 Гаврюша здесь! Могу искать в интернете, открывать сайты, отвечать на вопросы. Что нужно?"
                 else:
                     reply = brain.think(clean_text, chat_id)
                 send_message(chat_id, reply)
@@ -179,7 +189,7 @@ def set_webhook():
         print(f"❌ Ошибка: {e}")
 
 if __name__ == '__main__':
-    print("🚀 Запуск Гаврюши с поиском...")
+    print("🚀 Запуск Гаврюши с b4n1web браузером...")
     set_webhook()
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
