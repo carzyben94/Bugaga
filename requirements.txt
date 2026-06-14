@@ -1,5 +1,4 @@
 flask
 requests
 gunicorn
-pylightpanda
 websocket-client
