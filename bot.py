@@ -65,7 +65,7 @@ def get_ai_response(prompt: str) -> str:
             'Content-Type': 'application/json',
         }
         payload = {
-            'model': 'google/gemma-4-31b-it:free',
+            'model': 'nvidia/nemotron-3-ultra:free',
             'messages': [
                 {'role': 'user', 'content': f"""Пользователь отправил: {prompt}
 
@@ -92,9 +92,9 @@ def get_ai_response(prompt: str) -> str:
     }
     current_time = datetime.now().strftime("%d.%m.%Y %H:%M")
     payload = {
-        'model': 'google/gemma-4-31b-it:free',
+        'model': 'nvidia/nemotron-3-ultra:free',
         'messages': [
-            {'role': 'system', 'content': f'Ты — помощник по имени Гаврюша. Сегодня {current_time}. Отвечай дружелюбно, кратко и по делу.'},
+            {'role': 'system', 'content': f'Ты — помощник по имени Гаврюша. Сегодня {current_time}. Отвечай дружелюбно и по делу.'},
             {'role': 'user', 'content': prompt}
         ],
         'max_tokens': 1000,
@@ -109,7 +109,7 @@ def get_ai_response(prompt: str) -> str:
         return f"❌ Ошибка: {str(e)}"
 
 # ============================================================
-# TELEGRAM С АКТИВАЦИЕЙ (после ответа засыпает)
+# TELEGRAM С АКТИВАЦИЕЙ
 # ============================================================
 @app.route('/')
 def home():
@@ -131,15 +131,11 @@ def webhook():
             if is_activated(user_text):
                 # Убираем фразу активации
                 clean_text = remove_activation_phrase(user_text)
-                
                 if not clean_text:
-                    # Если только фраза без вопроса
-                    reply = "🐶 Гаврюша здесь! Чем могу помочь? (напиши вопрос после 'гаврюша ко мне')"
+                    reply = "🐶 Гаврюша здесь! Чем могу помочь?"
                 else:
                     reply = get_ai_response(clean_text)
-                
                 send_message(chat_id, reply)
-                # После ответа бот снова засыпает до следующего "гаврюша ко мне"
             else:
                 # Не позвали — молчим
                 print(f"🔇 Бот проигнорировал: {user_text[:50]}")
@@ -151,6 +147,7 @@ def webhook():
         return jsonify({'status': 'error'}), 500
 
 def send_message(chat_id: int, text: str):
+    """Отправляет сообщение в Telegram"""
     url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
     try:
         if len(text) > 4000:
@@ -160,6 +157,7 @@ def send_message(chat_id: int, text: str):
         print(f"Telegram ошибка: {e}")
 
 def set_webhook():
+    """Устанавливает вебхук"""
     if not TELEGRAM_TOKEN:
         print("❌ TELEGRAM_TOKEN не установлен!")
         return
@@ -175,7 +173,7 @@ def set_webhook():
         print(f"❌ Ошибка: {e}")
 
 if __name__ == '__main__':
-    print("🚀 Запуск Гаврюши...")
+    print("🚀 Запуск Гаврюши на модели Nemotron-3 Ultra...")
     set_webhook()
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
