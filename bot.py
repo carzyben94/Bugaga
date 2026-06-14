@@ -13,6 +13,9 @@ OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY')
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 WEBHOOK_URL = os.environ.get('RENDER_EXTERNAL_URL', 'https://ваш-бот.onrender.com')
 
+# Ключевая фраза для активации
+ACTIVATION_PHRASE = "гаврюша ко мне"
+
 # ============================================================
 # ЛЁГКИЙ БРАУЗЕР ЧЕРЕЗ UNBROWSER
 # ============================================================
@@ -33,6 +36,18 @@ def extract_urls(text: str):
     """Находит ссылки в тексте"""
     url_pattern = r'https?://[^\s]+'
     return re.findall(url_pattern, text)
+
+# ============================================================
+# ПРОВЕРКА АКТИВАЦИИ
+# ============================================================
+def is_activated(message: str) -> bool:
+    """Проверяет, позвали ли бота"""
+    return ACTIVATION_PHRASE.lower() in message.lower()
+
+def remove_activation_phrase(message: str) -> str:
+    """Убирает фразу активации из сообщения"""
+    pattern = re.compile(re.escape(ACTIVATION_PHRASE), re.IGNORECASE)
+    return pattern.sub('', message).strip()
 
 # ============================================================
 # ОСНОВНАЯ ЛОГИКА
@@ -79,7 +94,7 @@ def get_ai_response(prompt: str) -> str:
     payload = {
         'model': 'google/gemma-4-31b-it:free',
         'messages': [
-            {'role': 'system', 'content': f'Ты — помощник. Сегодня {current_time}.'},
+            {'role': 'system', 'content': f'Ты — помощник по имени Гаврюша. Сегодня {current_time}. Отвечай дружелюбно, кратко и по делу.'},
             {'role': 'user', 'content': prompt}
         ],
         'max_tokens': 1000,
@@ -94,11 +109,11 @@ def get_ai_response(prompt: str) -> str:
         return f"❌ Ошибка: {str(e)}"
 
 # ============================================================
-# TELEGRAM
+# TELEGRAM С АКТИВАЦИЕЙ (после ответа засыпает)
 # ============================================================
 @app.route('/')
 def home():
-    return '🤖 Агент работает! Отправьте ссылку или вопрос.'
+    return '🤖 Гаврюша ждёт команду "гаврюша ко мне"'
 
 @app.route(f'/webhook/{TELEGRAM_TOKEN}', methods=['POST'])
 def webhook():
@@ -108,11 +123,27 @@ def webhook():
             chat_id = data['message']['chat']['id']
             user_text = data['message']['text']
             
+            # Игнорируем команды
             if user_text.startswith('/'):
                 return jsonify({'status': 'ok'}), 200
             
-            reply = get_ai_response(user_text)
-            send_message(chat_id, reply)
+            # Проверяем, позвали ли бота
+            if is_activated(user_text):
+                # Убираем фразу активации
+                clean_text = remove_activation_phrase(user_text)
+                
+                if not clean_text:
+                    # Если только фраза без вопроса
+                    reply = "🐶 Гаврюша здесь! Чем могу помочь? (напиши вопрос после 'гаврюша ко мне')"
+                else:
+                    reply = get_ai_response(clean_text)
+                
+                send_message(chat_id, reply)
+                # После ответа бот снова засыпает до следующего "гаврюша ко мне"
+            else:
+                # Не позвали — молчим
+                print(f"🔇 Бот проигнорировал: {user_text[:50]}")
+                pass
         
         return jsonify({'status': 'ok'}), 200
     except Exception as e:
@@ -144,7 +175,7 @@ def set_webhook():
         print(f"❌ Ошибка: {e}")
 
 if __name__ == '__main__':
-    print("🚀 Запуск агента с Unbrowser...")
+    print("🚀 Запуск Гаврюши...")
     set_webhook()
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
