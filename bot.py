@@ -9,7 +9,7 @@ from datetime import datetime
 app = Flask(__name__)
 
 # ============================================================
-# КОНФИГУРАЦИЯ
+# КОНФИГУРАЦИЯ (все API)
 # ============================================================
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY')
@@ -29,13 +29,9 @@ GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/contents" if GITHU
 ACTIVATION_WORD = "гаврюша"
 
 # ============================================================
-# СПИСОК БРАУЗЕРОВ
+# LIGHTPANDA НАСТРОЙКИ
 # ============================================================
-BROWSERS = {
-    "1": {
-        "name": "Lightpanda",
-        "description": "Лёгкий браузер для AI-агентов, мало памяти (~30 MB)",
-        "dockerfile": '''FROM lightpanda/browser:nightly
+LIGHTPANDA_DOCKERFILE = '''FROM lightpanda/browser:nightly
 
 WORKDIR /app
 
@@ -47,43 +43,12 @@ RUN pip3 install --no-cache-dir -r requirements.txt --break-system-packages
 
 COPY bot.py .
 
-CMD lightpanda serve --host 0.0.0.0 --port 9222 & sleep 5 && python3 bot.py''',
-        "requirements": "websocket-client"
-    },
-    "2": {
-        "name": "Playwright",
-        "description": "Мощный браузер, но тяжёлый (~500 MB)",
-        "dockerfile": '''FROM python:3.11-slim
+CMD lightpanda serve --host 0.0.0.0 --port 9222 & sleep 5 && python3 bot.py'''
 
-WORKDIR /app
-
-RUN apt-get update && apt-get install -y python3 python3-pip && pip3 install playwright && playwright install chromium
-
-COPY requirements.txt .
-
-RUN pip3 install -r requirements.txt
-
-COPY bot.py .
-
-CMD python3 bot.py''',
-        "requirements": "playwright"
-    },
-    "3": {
-        "name": "BeautifulSoup",
-        "description": "Только парсинг, без браузера (самый лёгкий)",
-        "dockerfile": '''FROM python:3.11-slim
-
-WORKDIR /app
-
-COPY requirements.txt .
-RUN pip3 install -r requirements.txt
-
-COPY bot.py .
-
-CMD python3 bot.py''',
-        "requirements": "beautifulsoup4"
-    }
-}
+LIGHTPANDA_REQUIREMENTS = '''flask
+requests
+gunicorn
+websocket-client'''
 
 # ============================================================
 # RENDER API
@@ -158,20 +123,17 @@ def search_with_browser(query: str) -> str:
         
         search_url = f"https://lite.duckduckgo.com/lite/?q={query.replace(' ', '+')}"
         
-        # Навигация
         msg_id = 1
         ws.send(json.dumps({"id": msg_id, "method": "Page.navigate", "params": {"url": search_url}}))
         ws.recv()
         time.sleep(2)
         
-        # Получение содержимого
         msg_id += 1
         ws.send(json.dumps({"id": msg_id, "method": "Runtime.evaluate", "params": {"expression": "document.body.innerText"}}))
         result = json.loads(ws.recv())
         text = result.get('result', {}).get('value', '')
         ws.close()
         
-        # Парсинг результатов
         lines = text.split('\n')
         results = []
         for line in lines:
@@ -185,7 +147,7 @@ def search_with_browser(query: str) -> str:
         return f"😕 Ничего не найдено: {query}"
         
     except Exception as e:
-        return f"❌ Браузер не доступен. Установи командой /install 1\nОшибка: {str(e)}"
+        return f"❌ Браузер не установлен. Напиши /install_panda\nОшибка: {str(e)}"
 
 # ============================================================
 # ИИ ОТВЕТЫ
@@ -202,70 +164,32 @@ def ask_ai(prompt: str) -> str:
         return f"Ошибка: {str(e)}"
 
 # ============================================================
-# УСТАНОВКА БРАУЗЕРОВ
+# УСТАНОВКА LIGHTPANDA
 # ============================================================
-def show_browsers_list() -> str:
-    message = "🌐 **Доступные браузеры:**\n\n"
-    for key, browser in BROWSERS.items():
-        message += f"**{key}. {browser['name']}**\n"
-        message += f"   {browser['description']}\n\n"
-    message += "📝 **Установка:** `/install 1`\n"
-    return message
-
-def install_browser(chat_id: int, choice: str) -> str:
-    selected = BROWSERS.get(choice)
-    if not selected:
-        for key, browser in BROWSERS.items():
-            if choice.lower() in browser['name'].lower():
-                selected = browser
-                break
+def install_lightpanda(chat_id: int) -> str:
+    """Устанавливает Lightpanda браузер"""
     
-    if not selected:
-        return f"❌ Браузер '{choice}' не найден. Напиши /browsers"
-    
-    send_message(chat_id, f"🔧 Устанавливаю {selected['name']}...")
+    send_message(chat_id, "🔧 Устанавливаю Lightpanda браузер...")
     
     changes = []
-    result = update_file("Dockerfile", selected['dockerfile'], f"Install {selected['name']}")
+    
+    # 1. Обновляем Dockerfile
+    result = update_file("Dockerfile", LIGHTPANDA_DOCKERFILE, "Install Lightpanda browser")
     changes.append(f"📦 {result}")
     
-    req_content = f"flask\nrequests\ngunicorn\n{selected['requirements']}"
-    result2 = update_file("requirements.txt", req_content, f"Add requirements for {selected['name']}")
+    # 2. Обновляем requirements.txt
+    result2 = update_file("requirements.txt", LIGHTPANDA_REQUIREMENTS, "Add websocket-client for Lightpanda")
     changes.append(f"📋 {result2}")
     
+    # 3. Перезапускаем
     time.sleep(2)
     trigger_render_deploy()
     
-    return f"✅ **{selected['name']} установлен!**\n\n" + "\n".join(changes) + "\n\n🔄 Перезапускаюсь..."
-
-# ============================================================
-# ОБРАБОТКА СООБЩЕНИЙ
-# ============================================================
-def handle_message(text: str, chat_id: int) -> str:
-    text_lower = text.lower()
+    result_msg = f"✅ **Lightpanda браузер установлен!**\n\n"
+    result_msg += "\n".join(changes)
+    result_msg += "\n\n🔄 Перезапускаюсь для применения...\n\nПосле перезапуска используй: `Гаврюша G запрос`"
     
-    if text_lower == '/browsers':
-        return show_browsers_list()
-    
-    if text_lower.startswith('/install '):
-        choice = text[9:].strip()
-        return install_browser(chat_id, choice)
-    
-    if text_lower in ['/help', '/start']:
-        return """🐶 **Гаврюша — команды:**
-
-🌐 **Браузеры:**
-/browsers — список браузеров
-/install 1 — установить Lightpanda
-
-🔍 **Поиск в интернете:**
-Гаврюша G запрос
-
-💬 **Обычный диалог:**
-Гаврюша привет
-"""
-    
-    return ask_ai(text)
+    return result_msg
 
 def send_message(chat_id: int, text: str):
     url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
@@ -276,9 +200,12 @@ def send_message(chat_id: int, text: str):
     except Exception as e:
         print(f"Ошибка: {e}")
 
+# ============================================================
+# ОСНОВНОЙ ВЕБХУК
+# ============================================================
 @app.route('/')
 def home():
-    return '🐶 Гаврюша работает!'
+    return '🐶 Гаврюша со всеми API и установкой браузера!'
 
 @app.route(f'/webhook/{TELEGRAM_TOKEN}', methods=['POST'])
 def webhook():
@@ -287,6 +214,12 @@ def webhook():
         if 'message' in data and 'text' in data['message']:
             chat_id = data['message']['chat']['id']
             user_text = data['message']['text']
+            
+            # ========== КОМАНДА /INSTALL_PANDA ==========
+            if user_text.lower() == '/install_panda':
+                reply = install_lightpanda(chat_id)
+                send_message(chat_id, reply)
+                return jsonify({'status': 'ok'}), 200
             
             # ========== КОМАНДА "ГАВРЮША G" (ПОИСК) ==========
             if user_text.lower().startswith('гаврюша g'):
@@ -300,11 +233,22 @@ def webhook():
             
             # ========== ОБЫЧНЫЕ КОМАНДЫ ==========
             if user_text.startswith('/'):
-                reply = handle_message(user_text, chat_id)
-                send_message(chat_id, reply)
+                if user_text.lower() in ['/help', '/start']:
+                    reply = """🐶 **Гаврюша — команды:**
+
+🔧 **Установка:**
+/install_panda — установить Lightpanda браузер
+
+🔍 **Поиск (после установки):**
+Гаврюша G запрос
+
+💬 **Обычный диалог:**
+Гаврюша привет
+"""
+                    send_message(chat_id, reply)
                 return jsonify({'status': 'ok'}), 200
             
-            # ========== АКТИВАЦИЯ "ГАВРЮША" (ОБЫЧНЫЙ ИИ) ==========
+            # ========== АКТИВАЦИЯ "ГАВРЮША" ==========
             if ACTIVATION_WORD.lower() in user_text.lower():
                 clean = re.sub(re.escape(ACTIVATION_WORD), '', user_text, flags=re.IGNORECASE).strip()
                 if not clean:
@@ -334,7 +278,7 @@ def set_webhook():
         print(f"❌ Ошибка: {e}")
 
 if __name__ == '__main__':
-    print("🚀 Запуск Гаврюши...")
+    print("🚀 Запуск Гаврюши с установкой браузера...")
     set_webhook()
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
