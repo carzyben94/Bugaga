@@ -29,30 +29,30 @@ def webhook():
         return jsonify({'status': 'error'}), 500
 
 def get_ai_response(prompt):
-    """Отправляет запрос к DeepSeek R1 через OpenRouter"""
-    headers = {
-        'Authorization': f'Bearer {OPENROUTER_API_KEY}',
-        'Content-Type': 'application/json',
-        'HTTP-Referer': WEBHOOK_URL,
-    }
-    
-    payload = {
-        'model': 'deepseek/deepseek-r1:free',   # ← DeepSeek R1
-        'messages': [
-            {'role': 'user', 'content': prompt}
-        ],
-        'max_tokens': 1000,
-        'temperature': 0.7
-    }
-    
     try:
+        headers = {
+            'Authorization': f'Bearer {OPENROUTER_API_KEY}',
+            'Content-Type': 'application/json',
+            'HTTP-Referer': WEBHOOK_URL,
+        }
+        
+        payload = {
+            'model': 'deepseek/deepseek-r1:free',
+            'messages': [{'role': 'user', 'content': prompt}],
+            'max_tokens': 1000,
+            'temperature': 0.7
+        }
+        
         response = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=45)
-        response.raise_for_status()
+        
+        if response.status_code != 200:
+            return f"❌ Код ошибки {response.status_code}\nОтвет: {response.text[:300]}"
+        
         result = response.json()
         return result['choices'][0]['message']['content']
+        
     except Exception as e:
-        print(f"OpenRouter ошибка: {e}")
-        return "Извините, сейчас проблема с подключением к ИИ. Попробуйте позже."
+        return f"❌ Исключение: {type(e).__name__}: {str(e)}"
 
 def send_telegram_message(chat_id, text):
     url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
