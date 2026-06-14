@@ -4,9 +4,9 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# Конфигурация — теперь через OpenRouter
+# Конфигурация
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
-OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY')  # новое имя переменной
+OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY')
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 WEBHOOK_URL = os.environ.get('RENDER_EXTERNAL_URL', 'https://ваш-бот.onrender.com')
 
@@ -29,7 +29,7 @@ def webhook():
         return jsonify({'status': 'error'}), 500
 
 def get_ai_response(prompt):
-    """Отправляет запрос к бесплатному DeepSeek через OpenRouter"""
+    """Отправляет запрос к DeepSeek R1 через OpenRouter"""
     headers = {
         'Authorization': f'Bearer {OPENROUTER_API_KEY}',
         'Content-Type': 'application/json',
@@ -37,8 +37,10 @@ def get_ai_response(prompt):
     }
     
     payload = {
-        'model': 'deepseek/deepseek-r1:free',  # бесплатная версия!
-        'messages': [{'role': 'user', 'content': prompt}],
+        'model': 'deepseek/deepseek-r1:free',   # ← DeepSeek R1
+        'messages': [
+            {'role': 'user', 'content': prompt}
+        ],
         'max_tokens': 1000,
         'temperature': 0.7
     }
