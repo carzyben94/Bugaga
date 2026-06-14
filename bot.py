@@ -29,20 +29,23 @@ def webhook():
         return jsonify({'status': 'error'}), 500
 
 def get_ai_response(prompt):
+    """Отправляет запрос к Gemma 4 31B через OpenRouter"""
+    headers = {
+        'Authorization': f'Bearer {OPENROUTER_API_KEY}',
+        'Content-Type': 'application/json',
+        'HTTP-Referer': WEBHOOK_URL,
+    }
+    
+    payload = {
+        'model': 'google/gemma-4-31b-it:free',   # ← Gemma 4 от Google
+        'messages': [
+            {'role': 'user', 'content': prompt}
+        ],
+        'max_tokens': 1000,
+        'temperature': 0.7
+    }
+    
     try:
-        headers = {
-            'Authorization': f'Bearer {OPENROUTER_API_KEY}',
-            'Content-Type': 'application/json',
-            'HTTP-Referer': WEBHOOK_URL,
-        }
-        
-        payload = {
-            'model': 'deepseek/deepseek-r1:free',
-            'messages': [{'role': 'user', 'content': prompt}],
-            'max_tokens': 1000,
-            'temperature': 0.7
-        }
-        
         response = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=45)
         
         if response.status_code != 200:
