@@ -1,131 +1,95 @@
 import os
 import re
-import asyncio
-import gc
 import requests
 from flask import Flask, request, jsonify
 from datetime import datetime
-from playwright.async_api import async_playwright
+from unbrowser import Client
 
 app = Flask(__name__)
 
+# Конфигурация
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY')
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 WEBHOOK_URL = os.environ.get('RENDER_EXTERNAL_URL', 'https://ваш-бот.onrender.com')
 
 # ============================================================
-# ОПТИМИЗИРОВАННЫЙ БРАУЗЕР
+# ЛЁГКИЙ БРАУЗЕР ЧЕРЕЗ UNBROWSER
 # ============================================================
-async def browse_website(url: str, wait_for: str = None) -> str:
-    """Максимально оптимизированный браузер для Render"""
+def fetch_url(url: str) -> str:
+    """Получает содержимое сайта через Unbrowser"""
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=[
-                    '--disable-gpu',
-                    '--disable-dev-shm-usage',
-                    '--disable-setuid-sandbox',
-                    '--no-first-run',
-                    '--no-sandbox',
-                    '--disable-accelerated-2d-canvas',
-                    '--disable-webgl',
-                    '--max_old_space_size=64'
-                ]
-            )
-            page = await browser.new_page()
-            await page.set_viewport_size({"width": 800, "height": 600})
-            await page.goto(url, timeout=20000, wait_until='domcontentloaded')
-            
-            if wait_for:
-                try:
-                    await page.wait_for_selector(wait_for, timeout=5000)
-                except:
-                    pass
-            
-            text = await page.evaluate('document.body.innerText')
-            text = text[:1500]
-            
-            await browser.close()
-            gc.collect()
-            
-            return f"🌐 Содержимое сайта {url}:\n\n{text}"
+        with Client() as ub:
+            result = ub.navigate(url)
+            if hasattr(result, 'blockmap') and result.blockmap:
+                return result.blockmap[:2000]
+            elif hasattr(result, 'text') and result.text:
+                return result.text[:2000]
+            return f"Не удалось извлечь содержимое с {url}"
     except Exception as e:
-        return f"❌ Ошибка: {str(e)}"
+        return f"Ошибка: {str(e)}"
 
 def extract_urls(text: str):
-    """Находит все ссылки в тексте"""
+    """Находит ссылки в тексте"""
     url_pattern = r'https?://[^\s]+'
     return re.findall(url_pattern, text)
 
 # ============================================================
 # ОСНОВНАЯ ЛОГИКА
 # ============================================================
-def get_ai_response(prompt, chat_id=None):
+def get_ai_response(prompt: str) -> str:
+    # Проверяем, есть ли ссылка
     urls = extract_urls(prompt)
-    
     if urls:
         url = urls[0]
         print(f"🌐 Открываю: {url}")
-        
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        page_content = loop.run_until_complete(browse_website(url))
-        loop.close()
+        page_content = fetch_url(url)
         
         headers = {
             'Authorization': f'Bearer {OPENROUTER_API_KEY}',
             'Content-Type': 'application/json',
         }
-        
         payload = {
             'model': 'google/gemma-4-31b-it:free',
             'messages': [
-                {'role': 'user', 'content': f"""Пользователь отправил ссылку: {prompt}
+                {'role': 'user', 'content': f"""Пользователь отправил: {prompt}
 
-Содержимое страницы:
+Содержимое сайта {url}:
 {page_content}
 
-Ответь на вопрос, используя информацию с этой страницы. Если информации нет — скажи честно."""}
+Ответь на вопрос, используя информацию с этой страницы."""}
             ],
             'max_tokens': 1000,
             'temperature': 0.7
         }
-        
         try:
-            response = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=45)
+            response = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=60)
             if response.status_code == 200:
-                result = response.json()
-                return result['choices'][0]['message']['content']
-            return f"{page_content}"
-        except:
-            return page_content
+                return response.json()['choices'][0]['message']['content']
+            return f"📄 Содержимое сайта:\n\n{page_content}"
+        except Exception as e:
+            return f"📄 Содержимое сайта:\n\n{page_content}\n\n(Ошибка ИИ: {str(e)})"
     
-    # Обычный ответ
+    # Обычный ответ без ссылки
     headers = {
         'Authorization': f'Bearer {OPENROUTER_API_KEY}',
         'Content-Type': 'application/json',
     }
-    
     current_time = datetime.now().strftime("%d.%m.%Y %H:%M")
-    
     payload = {
         'model': 'google/gemma-4-31b-it:free',
         'messages': [
-            {'role': 'system', 'content': f'Ты — помощник. Сегодня {current_time}. Отвечай кратко и по делу.'},
+            {'role': 'system', 'content': f'Ты — помощник. Сегодня {current_time}.'},
             {'role': 'user', 'content': prompt}
         ],
         'max_tokens': 1000,
         'temperature': 0.7
     }
-    
     try:
         response = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=45)
-        if response.status_code != 200:
-            return f"❌ Ошибка API ({response.status_code})"
-        result = response.json()
-        return result['choices'][0]['message']['content']
+        if response.status_code == 200:
+            return response.json()['choices'][0]['message']['content']
+        return f"❌ Ошибка API: {response.status_code}"
     except Exception as e:
         return f"❌ Ошибка: {str(e)}"
 
@@ -134,7 +98,7 @@ def get_ai_response(prompt, chat_id=None):
 # ============================================================
 @app.route('/')
 def home():
-    return '🤖 Оптимизированный агент работает!'
+    return '🤖 Агент работает! Отправьте ссылку или вопрос.'
 
 @app.route(f'/webhook/{TELEGRAM_TOKEN}', methods=['POST'])
 def webhook():
@@ -147,18 +111,20 @@ def webhook():
             if user_text.startswith('/'):
                 return jsonify({'status': 'ok'}), 200
             
-            bot_reply = get_ai_response(user_text, chat_id)
-            send_telegram_message(chat_id, bot_reply)
+            reply = get_ai_response(user_text)
+            send_message(chat_id, reply)
         
         return jsonify({'status': 'ok'}), 200
     except Exception as e:
         print(f"Ошибка: {e}")
         return jsonify({'status': 'error'}), 500
 
-def send_telegram_message(chat_id, text):
+def send_message(chat_id: int, text: str):
     url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
     try:
-        requests.post(url, json={'chat_id': chat_id, 'text': text[:4000], 'parse_mode': 'HTML'}, timeout=10)
+        if len(text) > 4000:
+            text = text[:4000] + "\n\n(обрезано)"
+        requests.post(url, json={'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'}, timeout=10)
     except Exception as e:
         print(f"Telegram ошибка: {e}")
 
@@ -178,7 +144,7 @@ def set_webhook():
         print(f"❌ Ошибка: {e}")
 
 if __name__ == '__main__':
-    print("🚀 Запуск оптимизированного агента...")
+    print("🚀 Запуск агента с Unbrowser...")
     set_webhook()
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
