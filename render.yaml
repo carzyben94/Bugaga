@@ -1,6 +1,9 @@
 services:
   - type: web
     name: telegram-bot
-    env: python
+    runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn bot:app_flask
+    startCommand: python bot.py
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false  # Будет задано вручную в UI Render
