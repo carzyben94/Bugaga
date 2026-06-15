@@ -6,7 +6,6 @@ import base64
 import time
 import re
 import threading
-import subprocess
 from datetime import datetime
 from flask import Flask, request
 import telebot
@@ -318,7 +317,6 @@ def help_command(message):
 **🤖 ОСНОВНЫЕ:**
 /ai [вопрос] - спросить ИИ
 /models - список моделей
-/search [платформа] "[запрос]" - поиск (twitter, reddit, github, youtube)
 
 **🛠️ УПРАВЛЕНИЕ:**
 /addcmd [описание] - добавить команду
@@ -360,47 +358,6 @@ def models_command(message):
     models_list = "\n".join([f"• {m.replace(':free', '')}" for m in FREE_MODELS])
     bot.reply_to(message, f"🤖 **Модели (16 шт):**\n\n{models_list}")
 
-# ===== ПОИСК ЧЕРЕЗ AGENT-REACH =====
-@bot.message_handler(commands=['search'])
-def search_command(message):
-    args = message.text.replace('/search', '').strip().split('"')
-    
-    if len(args) < 3:
-        bot.reply_to(message, "❌ /search [платформа] \"[запрос]\"\nПример: /search twitter \"AI\"")
-        return
-    
-    platform = args[0].strip().lower()
-    query = args[1].strip()
-    
-    status_msg = bot.reply_to(message, f"🔍 Ищу на {platform}...")
-    
-    try:
-        result = subprocess.run(
-            ["agent-reach", platform, "search", query, "--json"],
-            capture_output=True, text=True, timeout=30
-        )
-        
-        if result.returncode == 0:
-            data = json.loads(result.stdout)
-            items = data.get("items", [])[:5]
-            
-            if not items:
-                bot.edit_message_text(f"❌ Ничего не найдено", chat_id=message.chat.id, message_id=status_msg.message_id)
-                return
-            
-            reply = f"🔍 **{platform} / {query}**\n\n"
-            for item in items:
-                title = item.get('title', 'Без названия')
-                url = item.get('url', '#')
-                reply += f"• [{title}]({url})\n"
-            
-            bot.edit_message_text(reply[:4000], chat_id=message.chat.id, message_id=status_msg.message_id, parse_mode="Markdown")
-        else:
-            bot.edit_message_text("❌ Ошибка поиска. Возможно agent-reach не установлен", 
-                                 chat_id=message.chat.id, message_id=status_msg.message_id)
-    except Exception as e:
-        bot.edit_message_text(f"❌ Ошибка: {e}", chat_id=message.chat.id, message_id=status_msg.message_id)
-
 @bot.message_handler(commands=['addcmd'])
 def addcmd_command(message):
     user_input = message.text.replace('/addcmd', '').strip()
@@ -421,7 +378,7 @@ def addcmd_command(message):
         return
     
     cmd_name = cmd_name_match.group(1)
-    PROTECTED = ['help', 'ai', 'models', 'search', 'addcmd', 'delcmd', 'update', 'restart', 'rollback', 'backups', 'test', 'health', 'status', 'logs', 'clearlogs', 'analyze_errors']
+    PROTECTED = ['help', 'ai', 'models', 'addcmd', 'delcmd', 'update', 'restart', 'rollback', 'backups', 'test', 'health', 'status', 'logs', 'clearlogs', 'analyze_errors']
     
     if cmd_name in PROTECTED:
         bot.edit_message_text(f"❌ /{cmd_name} защищена", chat_id=message.chat.id, message_id=status_msg.message_id)
@@ -476,7 +433,7 @@ def delcmd_command(message):
         return
     
     cmd_to_delete = args[0].lower()
-    PROTECTED = ['help', 'ai', 'models', 'search', 'addcmd', 'delcmd', 'update', 'restart', 'rollback', 'backups', 'test', 'health', 'status', 'logs', 'clearlogs', 'analyze_errors']
+    PROTECTED = ['help', 'ai', 'models', 'addcmd', 'delcmd', 'update', 'restart', 'rollback', 'backups', 'test', 'health', 'status', 'logs', 'clearlogs', 'analyze_errors']
     
     if cmd_to_delete in PROTECTED:
         bot.reply_to(message, f"❌ /{cmd_to_delete} защищена")
