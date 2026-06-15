@@ -40,6 +40,11 @@ logger.info("=" * 50)
 if not TELEGRAM_TOKEN:
     raise ValueError("❌ TELEGRAM_BOT_TOKEN не задан!")
 
+# ===== ID СЕРВИСА (ВЗЯТ ИЗ ТВОЕГО ОТВЕТА) =====
+BUGAGA_SERVICE_ID = "srv-d8n7h40js32c73dcoi8g"
+BUGAGA_SERVICE_NAME = "Bugaga"
+BUGAGA_SERVICE_URL = "https://bugaga.onrender.com"
+
 # ===== СОЗДАНИЕ БОТА И FLASK =====
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
@@ -167,21 +172,18 @@ def render_list_services() -> list:
     url = "https://api.render.com/v1/services"
     headers = {"Authorization": f"Bearer {RENDER_API_KEY}"}
     try:
-        logger.info(f"Запрос к Render API: {url}")
         resp = requests.get(url, headers=headers, timeout=30)
-        logger.info(f"Ответ Render API: статус {resp.status_code}")
-        
         if resp.status_code == 200:
             data = resp.json()
-            logger.info(f"Тип данных: {type(data)}")
-            
             services_list = []
             
             if isinstance(data, list):
-                for s in data:
-                    service_id = s.get("id")
-                    service_name = s.get("name")
-                    service_url = s.get("url", "N/A")
+                for item in data:
+                    # Проверяем структуру: может быть прямой объект сервиса или с ключом 'service'
+                    service = item.get("service", item)
+                    service_id = service.get("id")
+                    service_name = service.get("name")
+                    service_url = service.get("url", "N/A")
                     
                     if service_id and service_name:
                         services_list.append({
@@ -189,29 +191,12 @@ def render_list_services() -> list:
                             "name": service_name,
                             "url": service_url
                         })
-                        logger.info(f"Найден сервис: {service_name} (ID: {service_id})")
-                    else:
-                        logger.warning(f"Сервис без id или name: {s}")
-            elif isinstance(data, dict):
-                if "services" in data:
-                    for s in data["services"]:
-                        service_id = s.get("id")
-                        service_name = s.get("name")
-                        if service_id and service_name:
-                            services_list.append({
-                                "id": service_id,
-                                "name": service_name,
-                                "url": s.get("url", "N/A")
-                            })
-            
-            logger.info(f"Всего найдено сервисов: {len(services_list)}")
             return services_list
         else:
-            logger.error(f"Ошибка Render API: {resp.status_code} - {resp.text[:200]}")
+            logger.error(f"Ошибка Render API: {resp.status_code}")
             return []
     except Exception as e:
         logger.error(f"Исключение в render_list_services: {e}")
-        logger.error(traceback.format_exc())
         return []
 
 def render_restart_service(service_id: str) -> dict:
@@ -255,32 +240,14 @@ def render_set_env_var(service_id: str, key: str, value: str) -> dict:
         return {"error": str(e)}
 
 
-# ===== КОМАНДА /setup - АГЕНТ САМ СТАВИТ CAMOUFOX НА RENDER =====
-def agent_install_camoufox_on_render(service_name: str = None) -> dict:
-    """Агент сам заходит на Render и устанавливает Camoufox"""
-    logger.info("🦊 Агент начал установку Camoufox на Render...")
+# ===== ПРЯМАЯ УСТАНОВКА CAMOUFOX НА BUGAGA =====
+def install_camoufox_on_bugaga() -> dict:
+    """Прямая установка Camoufox на сервис Bugaga"""
+    logger.info("🦊 Установка Camoufox на Bugaga...")
     
     if not RENDER_API_KEY:
-        return {"error": "RENDER_API_KEY не настроен в переменных окружения"}
+        return {"error": "RENDER_API_KEY не настроен"}
     
-    # 1. Получаем список сервисов
-    services = render_list_services()
-    if not services:
-        return {"error": "Нет сервисов на Render. Проверь что API ключ правильный и есть сервисы"}
-    
-    # 2. Находим нужный сервис
-    target_service = None
-    if service_name:
-        target_service = next((s for s in services if s["name"].lower() == service_name.lower()), None)
-    else:
-        target_service = services[0] if services else None
-    
-    if not target_service:
-        return {"error": f"Сервис '{service_name}' не найден. Доступные: {', '.join([s['name'] for s in services])}"}
-    
-    logger.info(f"📡 Найден сервис: {target_service['name']} (ID: {target_service['id']})")
-    
-    # 3. Добавляем переменные окружения для Camoufox
     camouflage_envs = [
         {"key": "CAMOUFOX_ENABLED", "value": "true"},
         {"key": "CAMOUFOX_HEADLESS", "value": "true"},
@@ -290,45 +257,118 @@ def agent_install_camoufox_on_render(service_name: str = None) -> dict:
     ]
     
     added_count = 0
+    errors = []
+    
     for env in camouflage_envs:
-        result = render_set_env_var(target_service["id"], env["key"], env["value"])
+        result = render_set_env_var(BUGAGA_SERVICE_ID, env["key"], env["value"])
         if "success" in result:
             added_count += 1
             logger.info(f"✅ Добавлена переменная: {env['key']}")
         else:
-            logger.warning(f"❌ Не удалось добавить {env['key']}: {result.get('error')}")
+            errors.append(f"{env['key']}: {result.get('error')}")
     
-    # 4. Перезапускаем сервис
-    restart_result = render_restart_service(target_service["id"])
-    if "success" in restart_result:
-        logger.info(f"🔄 Сервис {target_service['name']} перезапущен")
+    # Перезапускаем сервис
+    restart_result = render_restart_service(BUGAGA_SERVICE_ID)
+    if "success" not in restart_result:
+        errors.append(f"Перезапуск: {restart_result.get('error')}")
     
     return {
-        "success": True,
-        "service": target_service["name"],
-        "service_url": target_service["url"],
-        "message": "Camoufox установлен и настроен на Render!",
-        "env_vars_added": added_count
+        "success": added_count > 0,
+        "service_name": BUGAGA_SERVICE_NAME,
+        "service_url": BUGAGA_SERVICE_URL,
+        "env_vars_added": added_count,
+        "errors": errors
     }
 
 
-# ===== КОМАНДЫ ДЛЯ ДИАГНОСТИКИ =====
+# ===== КОМАНДЫ =====
+@bot.message_handler(commands=['start'])
+def start(message):
+    bot.reply_to(
+        message,
+        "✅ **Бот-агент с доступом к Render и GitHub!**\n\n"
+        "📌 **Команды:**\n"
+        "/setup_bugaga - установить Camoufox на Bugaga\n"
+        "/check_key - проверить RENDER_API_KEY\n"
+        "/test_render - тест Render API\n"
+        "/ai [вопрос] - спросить ИИ\n"
+        "/browse [запрос] - поиск в интернете\n"
+        "/github list - список репозиториев\n"
+        "/render list - список сервисов\n"
+        "/models - список моделей ИИ\n"
+        "/help - помощь",
+        parse_mode="Markdown"
+    )
+
+@bot.message_handler(commands=['help'])
+def help_command(message):
+    bot.reply_to(
+        message,
+        "🤖 **Команды бота:**\n\n"
+        "**🦊 Camoufox:**\n"
+        "/setup_bugaga - установить Camoufox на сервис Bugaga\n\n"
+        "**🔑 Диагностика:**\n"
+        "/check_key - проверить RENDER_API_KEY\n"
+        "/test_render - тест Render API\n\n"
+        "**🧠 ИИ и поиск:**\n"
+        "/ai [вопрос] - задать вопрос ИИ\n"
+        "/browse [запрос] - поиск в интернете\n\n"
+        "**📁 GitHub:**\n"
+        "/github list - список репозиториев\n\n"
+        "**🖥️ Render:**\n"
+        "/render list - список сервисов\n\n"
+        "**📊 Прочее:**\n"
+        "/models - список моделей ИИ",
+        parse_mode="Markdown"
+    )
+
+@bot.message_handler(commands=['setup_bugaga'])
+def setup_bugaga(message):
+    """Установка Camoufox на сервис Bugaga"""
+    status_msg = bot.reply_to(message, "🦊 Устанавливаю Camoufox на Bugaga...\n\n⏱️ Это может занять 10-20 секунд")
+    
+    result = install_camoufox_on_bugaga()
+    
+    if result["success"]:
+        response = (
+            f"✅ **Camoufox успешно установлен!**\n\n"
+            f"📡 **Сервис:** {result['service_name']}\n"
+            f"🔗 **URL:** {result['service_url']}\n"
+            f"📊 **Добавлено переменных:** {result['env_vars_added']}/5\n\n"
+            f"🔄 Сервис перезапущен.\n"
+            f"🌐 Camoufox готов обходить блокировки Google!"
+        )
+    else:
+        response = (
+            f"❌ **Ошибка установки**\n\n"
+            f"Добавлено переменных: {result['env_vars_added']}/5\n"
+        )
+        if result['errors']:
+            response += f"\n**Ошибки:**\n" + "\n".join(result['errors'])
+    
+    bot.edit_message_text(
+        response,
+        chat_id=message.chat.id,
+        message_id=status_msg.message_id,
+        parse_mode="Markdown"
+    )
+
 @bot.message_handler(commands=['check_key'])
 def check_key(message):
     key = os.environ.get("RENDER_API_KEY")
     if key:
-        bot.reply_to(message, f"✅ RENDER_API_KEY найден в переменных!\n\nПервые 5 символов: `{key[:5]}...`\nДлина: {len(key)}", parse_mode="Markdown")
+        bot.reply_to(message, f"✅ RENDER_API_KEY найден!\n\nПервые 5 символов: `{key[:5]}...`\nДлина: {len(key)}", parse_mode="Markdown")
     else:
-        bot.reply_to(message, "❌ RENDER_API_KEY НЕ найден в переменных окружения!\n\nПроверь:\n1. Вкладка Environment в Render\n2. Название переменной: `RENDER_API_KEY`\n3. Нажми Save Changes и перезапусти сервис")
+        bot.reply_to(message, "❌ RENDER_API_KEY НЕ найден в переменных окружения!")
 
-@bot.message_handler(commands=['debug_render'])
-def debug_render(message):
-    """Детальная диагностика Render API"""
+@bot.message_handler(commands=['test_render'])
+def test_render(message):
+    """Тест Render API"""
     if not RENDER_API_KEY:
         bot.reply_to(message, "❌ RENDER_API_KEY не найден")
         return
     
-    status_msg = bot.reply_to(message, "📡 Получение данных от Render API...")
+    status_msg = bot.reply_to(message, "📡 Тестирую Render API...")
     
     try:
         headers = {"Authorization": f"Bearer {RENDER_API_KEY}"}
@@ -337,158 +377,99 @@ def debug_render(message):
         if resp.status_code == 200:
             data = resp.json()
             bot.edit_message_text(
-                f"✅ **Render API ответил**\n\n"
-                f"Тип ответа: `{type(data).__name__}`\n"
-                f"Количество элементов: {len(data) if isinstance(data, list) else 'не список'}\n\n"
-                f"**Первые 500 символов ответа:**\n```json\n{str(data)[:1500]}\n```",
+                f"✅ **Render API работает!**\n\n"
+                f"Статус: {resp.status_code}\n"
+                f"Найдено сервисов: {len(data)}",
                 chat_id=message.chat.id,
                 message_id=status_msg.message_id,
                 parse_mode="Markdown"
             )
         else:
             bot.edit_message_text(
-                f"❌ Ошибка {resp.status_code}\n\n{resp.text[:500]}",
+                f"❌ Ошибка {resp.status_code}",
                 chat_id=message.chat.id,
                 message_id=status_msg.message_id
             )
     except Exception as e:
         bot.edit_message_text(
-            f"❌ Исключение: {str(e)}",
+            f"❌ Ошибка: {str(e)}",
             chat_id=message.chat.id,
             message_id=status_msg.message_id
         )
 
-@bot.message_handler(commands=['test_render_api'])
-def test_render_api(message):
-    """Тест прямого запроса к Render API"""
-    key = os.environ.get("RENDER_API_KEY")
-    if not key:
-        bot.reply_to(message, "❌ RENDER_API_KEY не найден")
+@bot.message_handler(commands=['ai'])
+def ai_command(message):
+    user_text = message.text.replace('/ai', '').strip()
+    if not user_text:
+        bot.reply_to(message, "❌ Напиши вопрос после /ai")
         return
     
-    status_msg = bot.reply_to(message, "📡 Тестирую подключение к Render API...")
+    bot.send_chat_action(message.chat.id, 'typing')
+    status_msg = bot.reply_to(message, "🤔 Думаю...")
+    answer = ask_ai(user_text)
+    bot.edit_message_text(answer, chat_id=message.chat.id, message_id=status_msg.message_id)
+
+@bot.message_handler(commands=['browse'])
+def browse_command(message):
+    user_task = message.text.replace('/browse', '').strip()
+    if not user_task:
+        bot.reply_to(message, "❌ Напиши запрос после /browse")
+        return
     
+    bot.send_chat_action(message.chat.id, 'typing')
+    status_msg = bot.reply_to(message, "🔍 Ищу...")
+    
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        headers = {"Authorization": f"Bearer {key}"}
-        resp = requests.get("https://api.render.com/v1/services", headers=headers, timeout=30)
-        
-        if resp.status_code == 200:
-            services = resp.json()
-            if services and isinstance(services, list):
-                names = [s.get("name", "без имени") for s in services[:5]]
-                bot.edit_message_text(
-                    f"✅ **Render API работает!**\n\n"
-                    f"Статус: {resp.status_code}\n"
-                    f"Найдено сервисов: {len(services)}\n"
-                    f"Первые 5: {', '.join(names)}",
-                    chat_id=message.chat.id,
-                    message_id=status_msg.message_id,
-                    parse_mode="Markdown"
-                )
-            else:
-                bot.edit_message_text(
-                    f"✅ Render API ответил, но формат данных неожиданный\n\nСтатус: {resp.status_code}\nОтвет: {str(services)[:300]}",
-                    chat_id=message.chat.id,
-                    message_id=status_msg.message_id
-                )
-        else:
-            bot.edit_message_text(
-                f"❌ **Ошибка Render API**\n\n"
-                f"Статус: {resp.status_code}\n"
-                f"Ответ: {resp.text[:200]}",
-                chat_id=message.chat.id,
-                message_id=status_msg.message_id,
-                parse_mode="Markdown"
-            )
+        result = loop.run_until_complete(browse_lightpanda(user_task))
+        if len(result) > 4000:
+            result = result[:4000] + "..."
+        bot.edit_message_text(result, chat_id=message.chat.id, message_id=status_msg.message_id)
     except Exception as e:
-        bot.edit_message_text(
-            f"❌ **Исключение:** {str(e)}",
-            chat_id=message.chat.id,
-            message_id=status_msg.message_id
-        )
+        logger.error(f"Ошибка в browse_command: {e}")
+        bot.edit_message_text(f"❌ Ошибка: {str(e)}", chat_id=message.chat.id, message_id=status_msg.message_id)
+    finally:
+        loop.close()
 
-
-@bot.message_handler(commands=['setup'])
-def setup_command(message):
-    """Агент сам подключается к Render и устанавливает Camoufox"""
-    args = message.text.replace('/setup', '').strip().split()
-    service_name = args[0] if args else None
-    
-    status_msg = bot.reply_to(message, "🦊 Агент подключается к Render и устанавливает Camoufox...\n\n⏱️ Это может занять 10-20 секунд")
-    
-    result = agent_install_camoufox_on_render(service_name)
-    
-    if "success" in result:
-        bot.edit_message_text(
-            f"✅ **{result['message']}**\n\n"
-            f"📡 **Сервис:** {result['service']}\n"
-            f"🔗 **URL:** {result['service_url']}\n"
-            f"📊 **Добавлено переменных:** {result['env_vars_added']}/5\n\n"
-            f"🔄 Сервис перезапущен. Camoufox готов к использованию через 1-2 минуты.",
-            chat_id=message.chat.id,
-            message_id=status_msg.message_id,
-            parse_mode="Markdown"
-        )
-    else:
-        bot.edit_message_text(
-            f"❌ **Ошибка:** {result.get('error')}\n\n"
-            f"Проверь:\n"
-            f"• RENDER_API_KEY в переменных Render\n"
-            f"• Название переменной: `RENDER_API_KEY`\n"
-            f"• Ключ должен начинаться с `rnd_`\n\n"
-            f"Попробуй `/debug_render` для диагностики",
-            chat_id=message.chat.id,
-            message_id=status_msg.message_id,
-            parse_mode="Markdown"
-        )
-
-
-@bot.message_handler(commands=['setup_full'])
-def setup_full_command(message):
-    """Агент: обновляет код на GitHub И устанавливает Camoufox на Render"""
-    args = message.text.replace('/setup_full', '').strip().split()
-    
-    if len(args) < 2:
-        bot.reply_to(
-            message,
-            "❌ Использование: /setup_full username/repo имя_сервиса\n\n"
-            "Пример: /setup_full mygithub/telegram-bot my-bot-on-render"
-        )
+@bot.message_handler(commands=['github'])
+def github_command(message):
+    args = message.text.replace('/github', '').strip().split()
+    if not args or args[0] != "list":
+        bot.reply_to(message, "📁 Использование: /github list")
         return
     
-    repo = args[0]
-    service_name = args[1]
+    repos = github_list_repos()
+    if not repos:
+        bot.reply_to(message, "❌ Нет репозиториев или GITHUB_TOKEN не настроен")
+        return
     
-    status_msg = bot.reply_to(message, "🚀 Агент начал полную настройку...\n\n⏱️ Это может занять 1-2 минуты")
+    result = "📁 **Ваши репозитории:**\n\n" + "\n".join([f"• {r['name']}" for r in repos[:10]])
+    bot.reply_to(message, result, parse_mode="Markdown")
+
+@bot.message_handler(commands=['render'])
+def render_command(message):
+    args = message.text.replace('/render', '').strip().split()
+    if not args or args[0] != "list":
+        bot.reply_to(message, "🖥️ Использование: /render list")
+        return
     
-    results = []
+    services = render_list_services()
+    if not services:
+        bot.reply_to(message, "❌ Нет сервисов или RENDER_API_KEY не настроен")
+        return
     
-    if not GITHUB_TOKEN:
-        results.append("❌ GitHub: GITHUB_TOKEN не настроен в переменных Render")
-    else:
-        results.append("✅ GitHub: токен найден")
-    
-    if not RENDER_API_KEY:
-        results.append("❌ Render: RENDER_API_KEY не настроен в переменных Render")
-    else:
-        results.append("✅ Render: токен найден")
-    
-    if RENDER_API_KEY:
-        render_result = agent_install_camoufox_on_render(service_name)
-        
-        if "success" in render_result:
-            results.append(f"✅ Render: Camoufox установлен на {render_result['service']}")
-            results.append(f"📊 Добавлено переменных: {render_result['env_vars_added']}/5")
-        else:
-            results.append(f"❌ Render: {render_result.get('error')}")
-    
-    bot.edit_message_text(
-        "🔧 **Результаты настройки:**\n\n" + "\n".join(results) + "\n\n"
-        "📌 **Что дальше:**\n"
-        "• Перезапусти сервис на Render вручную или подожди 2 минуты\n"
-        "• Camoufox готов обходить блокировки Google",
-        chat_id=message.chat.id,
-        message_id=status_msg.message_id,
+    result = "🖥️ **Сервисы на Render:**\n\n" + "\n".join([f"• {s['name']} - {s['url']}" for s in services])
+    bot.reply_to(message, result, parse_mode="Markdown")
+
+@bot.message_handler(commands=['models'])
+def models_command(message):
+    models_list = "\n".join([f"• {m.replace(':free', '')}" for m in FREE_MODELS])
+    bot.reply_to(
+        message,
+        f"🤖 **Доступные модели:**\n\n{models_list}\n\n"
+        f"📊 Всего: {len(FREE_MODELS)} моделей\n"
+        f"🔄 При лимите автоматическое переключение",
         parse_mode="Markdown"
     )
 
@@ -568,130 +549,7 @@ async def ai_fallback(task: str) -> str:
         return f"❌ Ошибка: {str(e)}"
 
 
-# ===== ОБРАБОТЧИКИ КОМАНД ТЕЛЕГРАМ =====
-@bot.message_handler(commands=['start'])
-def start(message):
-    bot.reply_to(
-        message,
-        "✅ Бот-агент с доступом к Render и GitHub!\n\n"
-        "📌 **Команды:**\n"
-        "/check_key - проверить наличие RENDER_API_KEY\n"
-        "/debug_render - детальная диагностика Render API\n"
-        "/test_render_api - тест подключения к Render API\n"
-        "/setup [имя] - установить Camoufox на Render\n"
-        "/setup_full репо сервис - полная настройка\n"
-        "/ai [вопрос] - спросить ИИ\n"
-        "/browse [запрос] - поиск в интернете\n"
-        "/github list - список репозиториев\n"
-        "/render list - список сервисов\n"
-        "/models - список моделей ИИ\n"
-        "/help - помощь",
-        parse_mode="Markdown"
-    )
-
-@bot.message_handler(commands=['help'])
-def help_command(message):
-    bot.reply_to(
-        message,
-        "🤖 **Команды бота:**\n\n"
-        "**🔑 Диагностика:**\n"
-        "/check_key - проверить наличие RENDER_API_KEY\n"
-        "/debug_render - детальная диагностика Render API\n"
-        "/test_render_api - тест подключения к Render API\n\n"
-        "**🦊 Установка Camoufox:**\n"
-        "/setup - установить на первый сервис\n"
-        "/setup имя - установить на конкретный сервис\n"
-        "/setup_full репо сервис - полная настройка\n\n"
-        "**🧠 ИИ и поиск:**\n"
-        "/ai [вопрос] - задать вопрос ИИ\n"
-        "/browse [запрос] - поиск в интернете\n\n"
-        "**📁 GitHub:**\n"
-        "/github list - список репозиториев\n\n"
-        "**🖥️ Render:**\n"
-        "/render list - список сервисов\n\n"
-        "**📊 Прочее:**\n"
-        "/models - список моделей ИИ",
-        parse_mode="Markdown"
-    )
-
-@bot.message_handler(commands=['ai'])
-def ai_command(message):
-    user_text = message.text.replace('/ai', '').strip()
-    if not user_text:
-        bot.reply_to(message, "❌ Напиши вопрос после /ai")
-        return
-    
-    bot.send_chat_action(message.chat.id, 'typing')
-    status_msg = bot.reply_to(message, "🤔 Думаю...")
-    answer = ask_ai(user_text)
-    bot.edit_message_text(answer, chat_id=message.chat.id, message_id=status_msg.message_id)
-
-@bot.message_handler(commands=['browse'])
-def browse_command(message):
-    user_task = message.text.replace('/browse', '').strip()
-    if not user_task:
-        bot.reply_to(message, "❌ Напиши запрос после /browse")
-        return
-    
-    bot.send_chat_action(message.chat.id, 'typing')
-    status_msg = bot.reply_to(message, "🔍 Ищу...")
-    
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        result = loop.run_until_complete(browse_lightpanda(user_task))
-        if len(result) > 4000:
-            result = result[:4000] + "..."
-        bot.edit_message_text(result, chat_id=message.chat.id, message_id=status_msg.message_id)
-    except Exception as e:
-        logger.error(f"Ошибка в browse_command: {e}")
-        bot.edit_message_text(f"❌ Ошибка: {str(e)}", chat_id=message.chat.id, message_id=status_msg.message_id)
-    finally:
-        loop.close()
-
-@bot.message_handler(commands=['github'])
-def github_command(message):
-    args = message.text.replace('/github', '').strip().split()
-    if not args or args[0] != "list":
-        bot.reply_to(message, "📁 Использование: /github list")
-        return
-    
-    repos = github_list_repos()
-    if not repos:
-        bot.reply_to(message, "❌ Нет репозиториев или GITHUB_TOKEN не настроен")
-        return
-    
-    result = "📁 **Ваши репозитории:**\n\n" + "\n".join([f"• {r['name']}" for r in repos[:10]])
-    bot.reply_to(message, result, parse_mode="Markdown")
-
-@bot.message_handler(commands=['render'])
-def render_command(message):
-    args = message.text.replace('/render', '').strip().split()
-    if not args or args[0] != "list":
-        bot.reply_to(message, "🖥️ Использование: /render list")
-        return
-    
-    services = render_list_services()
-    if not services:
-        bot.reply_to(message, "❌ Нет сервисов или RENDER_API_KEY не настроен")
-        return
-    
-    result = "🖥️ **Сервисы на Render:**\n\n" + "\n".join([f"• {s['name']} - {s['url']}" for s in services])
-    bot.reply_to(message, result, parse_mode="Markdown")
-
-@bot.message_handler(commands=['models'])
-def models_command(message):
-    models_list = "\n".join([f"• {m.replace(':free', '')}" for m in FREE_MODELS])
-    bot.reply_to(
-        message,
-        f"🤖 **Доступные модели:**\n\n{models_list}\n\n"
-        f"📊 Всего: {len(FREE_MODELS)} моделей\n"
-        f"🔄 При лимите автоматическое переключение",
-        parse_mode="Markdown"
-    )
-
-
-# ===== ВЕБХУК ДЛЯ TELEGRAM =====
+# ===== ВЕБХУК =====
 @app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
 def webhook():
     try:
@@ -709,7 +567,7 @@ def health():
 
 @app.route('/')
 def index():
-    return 'Telegram Bot with Camoufox Setup Agent is running!', 200
+    return 'Telegram Bot with Camoufox is running!', 200
 
 
 # ===== ЗАПУСК =====
