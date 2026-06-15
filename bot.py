@@ -6,6 +6,7 @@ import base64
 import time
 import re
 import threading
+import subprocess
 from datetime import datetime
 from flask import Flask, request
 import telebot
@@ -256,7 +257,6 @@ def validate_code_syntax(code):
         return False, str(e)
 
 def test_code_in_sandbox(code):
-    """Проверяет код в песочнице"""
     try:
         compile(code, '<string>', 'exec')
         if 'while True:' in code and 'break' not in code and 'time.sleep' not in code:
@@ -318,6 +318,7 @@ def help_command(message):
 **🤖 ОСНОВНЫЕ:**
 /ai [вопрос] - спросить ИИ
 /models - список моделей
+/search [платформа] "[запрос]" - поиск (twitter, reddit, github, youtube)
 
 **🛠️ УПРАВЛЕНИЕ:**
 /addcmd [описание] - добавить команду
@@ -331,7 +332,6 @@ def help_command(message):
 /status - статус ключей
 /logs - логи действий
 /analyze_errors - анализ ошибок
-/error_knowledge - база знаний
 
 **💾 БЭКАПЫ:**
 /backups - список бэкапов
@@ -360,6 +360,47 @@ def models_command(message):
     models_list = "\n".join([f"• {m.replace(':free', '')}" for m in FREE_MODELS])
     bot.reply_to(message, f"🤖 **Модели (16 шт):**\n\n{models_list}")
 
+# ===== ПОИСК ЧЕРЕЗ AGENT-REACH =====
+@bot.message_handler(commands=['search'])
+def search_command(message):
+    args = message.text.replace('/search', '').strip().split('"')
+    
+    if len(args) < 3:
+        bot.reply_to(message, "❌ /search [платформа] \"[запрос]\"\nПример: /search twitter \"AI\"")
+        return
+    
+    platform = args[0].strip().lower()
+    query = args[1].strip()
+    
+    status_msg = bot.reply_to(message, f"🔍 Ищу на {platform}...")
+    
+    try:
+        result = subprocess.run(
+            ["agent-reach", platform, "search", query, "--json"],
+            capture_output=True, text=True, timeout=30
+        )
+        
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            items = data.get("items", [])[:5]
+            
+            if not items:
+                bot.edit_message_text(f"❌ Ничего не найдено", chat_id=message.chat.id, message_id=status_msg.message_id)
+                return
+            
+            reply = f"🔍 **{platform} / {query}**\n\n"
+            for item in items:
+                title = item.get('title', 'Без названия')
+                url = item.get('url', '#')
+                reply += f"• [{title}]({url})\n"
+            
+            bot.edit_message_text(reply[:4000], chat_id=message.chat.id, message_id=status_msg.message_id, parse_mode="Markdown")
+        else:
+            bot.edit_message_text("❌ Ошибка поиска. Возможно agent-reach не установлен", 
+                                 chat_id=message.chat.id, message_id=status_msg.message_id)
+    except Exception as e:
+        bot.edit_message_text(f"❌ Ошибка: {e}", chat_id=message.chat.id, message_id=status_msg.message_id)
+
 @bot.message_handler(commands=['addcmd'])
 def addcmd_command(message):
     user_input = message.text.replace('/addcmd', '').strip()
@@ -380,7 +421,7 @@ def addcmd_command(message):
         return
     
     cmd_name = cmd_name_match.group(1)
-    PROTECTED = ['help', 'ai', 'models', 'addcmd', 'delcmd', 'update', 'restart', 'rollback', 'backups', 'test', 'health', 'status', 'logs', 'clearlogs', 'analyze_errors', 'error_knowledge']
+    PROTECTED = ['help', 'ai', 'models', 'search', 'addcmd', 'delcmd', 'update', 'restart', 'rollback', 'backups', 'test', 'health', 'status', 'logs', 'clearlogs', 'analyze_errors']
     
     if cmd_name in PROTECTED:
         bot.edit_message_text(f"❌ /{cmd_name} защищена", chat_id=message.chat.id, message_id=status_msg.message_id)
@@ -394,7 +435,7 @@ def {cmd_name}_command(message):
     
     new_command = ask_ai(prompt)
     if not new_command or len(new_command) < 20:
-        bot.edit_message_text("❌ Ошибка", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text("❌ Не удалось создать", chat_id=message.chat.id, message_id=status_msg.message_id)
         return
     
     old_code = current["content"]
@@ -435,7 +476,7 @@ def delcmd_command(message):
         return
     
     cmd_to_delete = args[0].lower()
-    PROTECTED = ['help', 'ai', 'models', 'addcmd', 'delcmd', 'update', 'restart', 'rollback', 'backups', 'test', 'health', 'status', 'logs', 'clearlogs', 'analyze_errors', 'error_knowledge']
+    PROTECTED = ['help', 'ai', 'models', 'search', 'addcmd', 'delcmd', 'update', 'restart', 'rollback', 'backups', 'test', 'health', 'status', 'logs', 'clearlogs', 'analyze_errors']
     
     if cmd_to_delete in PROTECTED:
         bot.reply_to(message, f"❌ /{cmd_to_delete} защищена")
@@ -629,18 +670,6 @@ def analyze_errors_command(message):
         report += "\n⚠️ **Внимание:** частые ошибки! Используй /rollback"
     
     bot.reply_to(message, report)
-
-@bot.message_handler(commands=['error_knowledge'])
-def error_knowledge_command(message):
-    knowledge = load_error_knowledge()
-    if not knowledge:
-        bot.reply_to(message, "📭 База знаний пуста")
-        return
-    
-    text = "🧠 **База знаний:**\n\n"
-    for key, data in list(knowledge.items())[-5:]:
-        text += f"• {data.get('error', '???')[:60]}...\n"
-    bot.reply_to(message, text[:4000])
 
 # ===== ВЕБХУК =====
 @app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
