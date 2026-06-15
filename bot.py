@@ -1,34 +1,161 @@
 import os
 import logging
+import requests
 from flask import Flask, request
 import telebot
 
-# Настройка логов
+# ===== НАСТРОЙКА ЛОГОВ =====
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Берем токен из переменных окружения Render
-TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-if not TOKEN:
-    logger.error("TELEGRAM_BOT_TOKEN не найден!")
-    raise ValueError("TELEGRAM_BOT_TOKEN не задан")
+# ===== ПРОВЕРКА КЛЮЧЕЙ =====
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-# Создаем бота и Flask-приложение
-bot = telebot.TeleBot(TOKEN)
+if not TELEGRAM_TOKEN:
+    raise ValueError("❌ TELEGRAM_BOT_TOKEN не задан!")
+if not OPENROUTER_API_KEY:
+    logger.warning("⚠️ OPENROUTER_API_KEY не задан! Команда /ai не будет работать")
+
+# ===== СОЗДАНИЕ БОТА И FLASK =====
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
-# ===== ОБРАБОТЧИКИ КОМАНД =====
+# ===== АКТУАЛЬНЫЙ СПИСОК БЕСПЛАТНЫХ МОДЕЛЕЙ (июнь 2026) =====
+FREE_MODELS = [
+    "openrouter/free",                                    # автоматический роутер (рекомендую)
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "nvidia/nemotron-3-ultra:free",
+    "openai/gpt-oss-120b:free",
+    "openai/gpt-oss-20b:free",
+    "google/gemma-4-31b-it:free",
+    "google/gemma-4-26b-a4b-it:free",
+    "z-ai/glm-4.5-air:free",
+    "poolside/laguna-m1:free",
+    "poolside/laguna-xs2:free",
+    "moonshotai/kimi-k2.6:free",
+    "nvidia/nemotron-3-nano-30b-a3b:free",
+    "nvidia/nemotron-3-nano-omni:free",
+    "qwen/qwen3-coder:free",
+]
+
+# ===== ФУНКЦИЯ ЗАПРОСА К OPENROUTER (С АВТОПЕРЕКЛЮЧЕНИЕМ) =====
+def ask_ai(prompt, model_index=0):
+    """
+    Отправляет запрос к OpenRouter.
+    При ошибке (лимит, платная модель, таймаут) переключается на следующую модель.
+    """
+    if model_index >= len(FREE_MODELS):
+        return "😵 Извините, все бесплатные модели временно недоступны. Попробуйте позже."
+    
+    model = FREE_MODELS[model_index]
+    logger.info(f"Пробуем модель: {model}")
+    
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 1000,
+        "temperature": 0.7,
+    }
+    
+    try:
+        response = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=45)
+        
+        if response.status_code == 200:
+            result = response.json()
+            answer = result["choices"][0]["message"]["content"]
+            logger.info(f"✅ Модель {model} ответила успешно")
+            return answer
+        
+        elif response.status_code == 429:
+            logger.warning(f"⚠️ Модель {model}: лимит запросов (429), переключаем...")
+            return ask_ai(prompt, model_index + 1)
+        
+        elif response.status_code == 402:
+            logger.warning(f"⚠️ Модель {model}: требуется оплата (402), переключаем...")
+            return ask_ai(prompt, model_index + 1)
+        
+        else:
+            logger.warning(f"⚠️ Модель {model}: ошибка {response.status_code}, переключаем...")
+            return ask_ai(prompt, model_index + 1)
+            
+    except requests.exceptions.Timeout:
+        logger.warning(f"⚠️ Модель {model}: таймаут, переключаем...")
+        return ask_ai(prompt, model_index + 1)
+    except Exception as e:
+        logger.error(f"❌ Модель {model}: исключение {e}, переключаем...")
+        return ask_ai(prompt, model_index + 1)
+
+
+# ===== ОБРАБОТЧИКИ КОМАНД ТЕЛЕГРАМ =====
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.reply_to(message, "✅ Бот работает через вебхук!")
+    bot.reply_to(
+        message,
+        "✅ Бот работает через вебхук!\n\n"
+        "📌 Доступные команды:\n"
+        "/ai [вопрос] - спросить ИИ\n"
+        "/models - список бесплатных моделей\n"
+        "/help - помощь"
+    )
 
 @bot.message_handler(commands=['help'])
 def help_command(message):
-    bot.reply_to(message, "Напиши /start")
+    bot.reply_to(
+        message,
+        "🤖 Как пользоваться:\n"
+        "Напиши /ai и свой вопрос\n"
+        "Пример: /ai Как сделать пиццу?\n\n"
+        "Бот сам выберет лучшую бесплатную модель ИИ"
+    )
+
+@bot.message_handler(commands=['ai'])
+def ai_command(message):
+    # Получаем текст после /ai
+    user_text = message.text.replace('/ai', '').strip()
+    
+    if not user_text:
+        bot.reply_to(message, "❌ Напиши вопрос после /ai\nПример: /ai Как сделать пиццу?")
+        return
+    
+    # Отправляем статус "печатает"
+    bot.send_chat_action(message.chat.id, 'typing')
+    
+    # Отправляем временное сообщение
+    status_msg = bot.reply_to(message, "🤔 Думаю...")
+    
+    # Получаем ответ от ИИ
+    answer = ask_ai(user_text)
+    
+    # Обновляем сообщение с ответом
+    bot.edit_message_text(
+        chat_id=message.chat.id,
+        message_id=status_msg.message_id,
+        text=answer
+    )
+
+@bot.message_handler(commands=['models'])
+def models_command(message):
+    models_list = "\n".join([f"• {m.replace(':free', '')}" for m in FREE_MODELS])
+    bot.reply_to(
+        message,
+        f"🤖 Доступные бесплатные модели:\n\n{models_list}\n\n"
+        f"📊 Всего: {len(FREE_MODELS)} моделей\n"
+        f"🔄 При лимите бот автоматически переключается на следующую"
+    )
+
 
 # ===== ВЕБХУК ДЛЯ TELEGRAM =====
-@app.route(f'/{TOKEN}', methods=['POST'])
+@app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
 def webhook():
+    """Принимает обновления от Telegram"""
     try:
         json_str = request.stream.read().decode('utf-8')
         update = telebot.types.Update.de_json(json_str)
@@ -38,28 +165,38 @@ def webhook():
         logger.error(f"Ошибка вебхука: {e}")
         return 'error', 500
 
+
 # ===== HEALTHCHECK ДЛЯ RENDER =====
 @app.route('/health')
 def health():
+    """Проверка работоспособности для Render"""
     return 'OK', 200
+
+
+@app.route('/')
+def index():
+    """Корневой маршрут для информации"""
+    return 'Telegram Bot with OpenRouter AI is running!', 200
+
 
 # ===== ЗАПУСК =====
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
+    render_url = os.environ.get('RENDER_EXTERNAL_URL')
+    
+    # Для локального тестирования
+    if not render_url:
+        render_url = f"http://localhost:{port}"
+        logger.warning(f"RENDER_EXTERNAL_URL не найден, используем {render_url}")
+    
+    webhook_url = f"{render_url}/{TELEGRAM_TOKEN}"
     
     # Настраиваем вебхук
-    render_url = os.environ.get('RENDER_EXTERNAL_URL')
-    if not render_url:
-        logger.warning("RENDER_EXTERNAL_URL не найден, используем localhost для теста")
-        render_url = f"http://localhost:{port}"
-    
-    webhook_url = f"{render_url}/{TOKEN}"
-    
-    logger.info(f"Удаляем старый вебхук...")
+    logger.info("Удаляем старый вебхук...")
     bot.remove_webhook()
     
     logger.info(f"Устанавливаем новый вебхук: {webhook_url}")
     bot.set_webhook(url=webhook_url)
     
-    logger.info(f"Запускаем Flask на порту {port}")
+    logger.info(f"🚀 Запускаем Flask сервер на порту {port}")
     app.run(host='0.0.0.0', port=port)
