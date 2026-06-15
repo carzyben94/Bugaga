@@ -1,16 +1,14 @@
 import time
 import os
-import re
 import subprocess
 import json
 import requests
-from datetime import datetime
 from collections import Counter
 
 def register_status_full(bot):
     @bot.message_handler(commands=['status_full'])
     def status_full_command(message):
-        status_msg = bot.reply_to(message, "📊 Собираю полную статистику...")
+        status_msg = bot.reply_to(message, "📊 Собираю статистику...")
         
         try:
             # Время работы
@@ -25,24 +23,6 @@ def register_status_full(bot):
             hours = (uptime % 86400) // 3600
             minutes = (uptime % 3600) // 60
             seconds = uptime % 60
-            
-            # Статистика команд
-            logs = get_agent_logs(5000)
-            command_stats = Counter()
-            for log in logs:
-                if log.get("action", "").startswith("command_"):
-                    cmd = log["action"].replace("command_", "")
-                    command_stats[cmd] += 1
-            
-            total_commands = sum(command_stats.values())
-            top_commands = command_stats.most_common(5)
-            
-            # Ошибки
-            errors = [log for log in logs if log.get("status") == "error"]
-            error_types = Counter()
-            for err in errors[-200:]:
-                etype = err.get("action", "unknown")
-                error_types[etype] += 1
             
             # API ключи
             github_token = bool(os.environ.get("GITHUB_TOKEN"))
@@ -70,14 +50,6 @@ def register_status_full(bot):
                 backup_size = sum(os.path.getsize(os.path.join(BACKUP_DIR, f)) for f in files)
                 backup_size_kb = backup_size / 1024
             
-            # Пользователи
-            user_ids = set()
-            for log in logs:
-                details = log.get("details", "")
-                if "user_id" in str(details):
-                    ids = re.findall(r'user_id[=:]\s*(\d+)', str(details))
-                    user_ids.update(ids)
-            
             # Модели
             FREE_MODELS = [
                 "openrouter/free", "nvidia/nemotron-3-super-120b-a12b:free",
@@ -90,26 +62,11 @@ def register_status_full(bot):
                 "meta-llama/llama-3.3-70b-instruct:free", "qwen/qwen3-coder:free",
             ]
             
-            # Автономия
-            auto_fixes = sum(1 for log in logs if log.get("action") == "auto_fix")
-            rollbacks = sum(1 for log in logs if log.get("action") == "rollback")
-            
-            # Формируем отчёт (без спецсимволов, портящих Markdown)
-            top_cmds = ", ".join([f"/{c}" for c, _ in top_commands]) if top_commands else "нет"
-            error_types_str = ", ".join([f"{k}({v})" for k, v in error_types.most_common(3)]) if error_types else "нет"
-            
-            report = f"""📊 ПОЛНЫЙ СТАТУС БОТА
+            # Отчёт
+            report = f"""📊 СТАТУС БОТА
 
 ⏱️ ВРЕМЯ РАБОТЫ
 • {days}д {hours}ч {minutes}м {seconds}с
-
-📊 СТАТИСТИКА КОМАНД
-• Всего команд: {total_commands}
-• Топ-5: {top_cmds}
-
-❌ ОШИБКИ
-• Всего: {len(errors)}
-• Типы: {error_types_str}
 
 🔑 API КЛЮЧИ
 • OpenRouter: {'✅' if openrouter_key else '❌'}
@@ -125,33 +82,10 @@ def register_status_full(bot):
 • Размер: {backup_size_kb:.1f} KB
 
 🤖 ИИ МОДЕЛИ
-• Доступно: {len(FREE_MODELS)}
-
-👥 ПОЛЬЗОВАТЕЛИ
-• Уникальных: {len(user_ids)}
-
-🔄 АВТОНОМИЯ
-• Автоисправлений: {auto_fixes}
-• Откатов: {rollbacks}"""
+• Доступно: {len(FREE_MODELS)}"""
 
             bot.edit_message_text(report, chat_id=message.chat.id, message_id=status_msg.message_id)
             
         except Exception as e:
             bot.edit_message_text(f"❌ Ошибка: {e}", 
                                   chat_id=message.chat.id, message_id=status_msg.message_id)
-
-def get_agent_logs(limit=5000):
-    try:
-        if not os.path.exists("agent_actions.log"):
-            return []
-        with open("agent_actions.log", "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        logs = []
-        for line in lines[-limit:]:
-            try:
-                logs.append(json.loads(line))
-            except:
-                logs.append({"raw": line.strip()})
-        return logs
-    except:
-        return []
