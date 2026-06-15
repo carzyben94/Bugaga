@@ -1,35 +1,32 @@
 import os
-import logging
-from flask import Flask, request, jsonify
-from telegram import Update, Bot
-from telegram.ext import Dispatcher, CommandHandler, MessageHandler, filters
+import telebot
+from flask import Flask, request
 
+TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')  # ← изменено
+bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
-TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-bot = Bot(token=TOKEN)
-dispatcher = Dispatcher(bot, None, use_context=True)
 
-logging.basicConfig(level=logging.INFO)
+@bot.message_handler(commands=['start'])
+def start(message):
+    bot.reply_to(message, "Бот работает!")
 
-def start(update, context):
-    update.message.reply_text('Бот работает через webhook!')
-
-def echo(update, context):
-    update.message.reply_text(update.message.text)
-
-dispatcher.add_handler(CommandHandler("start", start))
-dispatcher.add_handler(MessageHandler(filters.TEXT, echo))
+@bot.message_handler(func=lambda m: True)
+def echo(message):
+    bot.reply_to(message, f"Вы: {message.text}")
 
 @app.route(f'/webhook/{TOKEN}', methods=['POST'])
 def webhook():
-    update = Update.de_json(request.get_json(force=True), bot)
-    dispatcher.process_update(update)
-    return 'ok', 200
+    if request.json:
+        update = telebot.types.Update.de_json(request.get_data().decode())
+        bot.process_new_updates([update])
+    return "ok", 200
 
 @app.route('/')
-def health():
-    return 'Bot is running', 200
+def home():
+    return "Bot is running"
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
+    url = f"https://{os.getenv('RENDER_EXTERNAL_URL')}/webhook/{TOKEN}"
+    bot.remove_webhook()
+    bot.set_webhook(url=url)
+    app.run(host='0.0.0.0', port=8080)
