@@ -326,7 +326,7 @@ def help_command(message):
 /rollback - откат к бэкапу
 
 **📊 МОНИТОРИНГ:**
-/health - состояние
+/health - состояние бота
 /status - статус ключей
 /logs - логи действий
 /analyze_errors - анализ ошибок
@@ -334,6 +334,7 @@ def help_command(message):
 **💾 БЭКАПЫ:**
 /backups - список бэкапов
 /test [код] - проверить код
+/clearlogs - очистить логи
 
 """
     user_cmds = load_user_commands()
@@ -362,29 +363,30 @@ def models_command(message):
 def addcmd_command(message):
     user_input = message.text.replace('/addcmd', '').strip()
     if not user_input:
-        bot.reply_to(message, "❌ /addcmd команда [название] [действие]")
+        bot.reply_to(message, "❌ /addcmd команда [название] [действие]\nПример: /addcmd команда hello отвечает Привет")
         return
     
-    status_msg = bot.reply_to(message, "🔧 Создаю...")
+    status_msg = bot.reply_to(message, "🔧 Создаю команду...")
     
     current = github_get_file("bot.py")
     if not current:
-        bot.edit_message_text("❌ Ошибка", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text("❌ Не могу прочитать код", chat_id=message.chat.id, message_id=status_msg.message_id)
         return
     
     cmd_name_match = re.search(r'команда\s+(\w+)', user_input)
     if not cmd_name_match:
-        bot.edit_message_text("❌ Укажи название", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text("❌ Укажи название команды.\nПример: команда hello отвечает Привет", 
+                              chat_id=message.chat.id, message_id=status_msg.message_id)
         return
     
     cmd_name = cmd_name_match.group(1)
     PROTECTED = ['help', 'ai', 'models', 'addcmd', 'delcmd', 'update', 'restart', 'rollback', 'backups', 'test', 'health', 'status', 'logs', 'clearlogs', 'analyze_errors']
     
     if cmd_name in PROTECTED:
-        bot.edit_message_text(f"❌ /{cmd_name} защищена", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text(f"❌ Команда /{cmd_name} защищена", chat_id=message.chat.id, message_id=status_msg.message_id)
         return
     
-    prompt = f"""Создай команду. Описание: {user_input}
+    prompt = f"""Создай команду для Telegram бота. Описание: {user_input}
 Верни ТОЛЬКО код:
 @bot.message_handler(commands=['{cmd_name}'])
 def {cmd_name}_command(message):
@@ -392,11 +394,11 @@ def {cmd_name}_command(message):
     
     new_command = ask_ai(prompt)
     if not new_command or len(new_command) < 20:
-        bot.edit_message_text("❌ Не удалось создать", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text("❌ Не удалось создать команду", chat_id=message.chat.id, message_id=status_msg.message_id)
         return
     
     old_code = current["content"]
-    save_backup(old_code, f"перед /{cmd_name}")
+    save_backup(old_code, f"перед добавлением /{cmd_name}")
     
     lines = old_code.split('\n')
     insert_pos = len(lines)
@@ -410,40 +412,41 @@ def {cmd_name}_command(message):
     
     ok, err = test_code_in_sandbox(new_code)
     if not ok:
-        bot.edit_message_text(f"❌ {err}", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text(f"❌ Ошибка в песочнице: {err}", chat_id=message.chat.id, message_id=status_msg.message_id)
         return
     
     ok, err = validate_code_syntax(new_code)
     if not ok:
-        bot.edit_message_text(f"❌ {err}", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text(f"❌ Ошибка синтаксиса: {err}", chat_id=message.chat.id, message_id=status_msg.message_id)
         return
     
-    if github_update_file("bot.py", new_code, f"Добавлена /{cmd_name}"):
+    if github_update_file("bot.py", new_code, f"Добавлена команда /{cmd_name}"):
         save_user_command(cmd_name, user_input[:50])
-        bot.edit_message_text(f"✅ /{cmd_name} добавлена!\n🔄 Перезапуск...", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text(f"✅ Команда /{cmd_name} добавлена!\n🔄 Перезапуск...", 
+                              chat_id=message.chat.id, message_id=status_msg.message_id)
         render_restart()
     else:
-        bot.edit_message_text("❌ Ошибка", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text("❌ Ошибка сохранения на GitHub", chat_id=message.chat.id, message_id=status_msg.message_id)
 
 @bot.message_handler(commands=['delcmd'])
 def delcmd_command(message):
     args = message.text.replace('/delcmd', '').strip().split()
     if not args:
-        bot.reply_to(message, "❌ /delcmd [название]")
+        bot.reply_to(message, "❌ /delcmd [название]\nПример: /delcmd hello")
         return
     
     cmd_to_delete = args[0].lower()
     PROTECTED = ['help', 'ai', 'models', 'addcmd', 'delcmd', 'update', 'restart', 'rollback', 'backups', 'test', 'health', 'status', 'logs', 'clearlogs', 'analyze_errors']
     
     if cmd_to_delete in PROTECTED:
-        bot.reply_to(message, f"❌ /{cmd_to_delete} защищена")
+        bot.reply_to(message, f"❌ Команда /{cmd_to_delete} защищена")
         return
     
-    status_msg = bot.reply_to(message, f"🗑️ Удаляю...")
+    status_msg = bot.reply_to(message, f"🗑️ Удаляю команду /{cmd_to_delete}...")
     
     current = github_get_file("bot.py")
     if not current:
-        bot.edit_message_text("❌ Ошибка", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text("❌ Не могу прочитать код", chat_id=message.chat.id, message_id=status_msg.message_id)
         return
     
     save_backup(current["content"], f"перед удалением /{cmd_to_delete}")
@@ -465,34 +468,35 @@ def delcmd_command(message):
         i += 1
     
     if not deleted:
-        bot.edit_message_text(f"❌ Не найдена", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text(f"❌ Команда /{cmd_to_delete} не найдена", chat_id=message.chat.id, message_id=status_msg.message_id)
         return
     
     new_code = '\n'.join(new_lines)
     ok, err = validate_code_syntax(new_code)
     if not ok:
-        bot.edit_message_text(f"❌ {err}", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text(f"❌ Ошибка синтаксиса: {err}", chat_id=message.chat.id, message_id=status_msg.message_id)
         return
     
-    if github_update_file("bot.py", new_code, f"Удалена /{cmd_to_delete}"):
+    if github_update_file("bot.py", new_code, f"Удалена команда /{cmd_to_delete}"):
         delete_user_command(cmd_to_delete)
-        bot.edit_message_text(f"✅ Удалена!\n🔄 Перезапуск...", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text(f"✅ Команда /{cmd_to_delete} удалена!\n🔄 Перезапуск...", 
+                              chat_id=message.chat.id, message_id=status_msg.message_id)
         render_restart()
     else:
-        bot.edit_message_text("❌ Ошибка", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text("❌ Ошибка сохранения", chat_id=message.chat.id, message_id=status_msg.message_id)
 
 @bot.message_handler(commands=['update'])
 def update_command(message):
     new_code = message.text.replace('/update', '').strip()
     if not new_code:
-        bot.reply_to(message, "❌ /update [код]")
+        bot.reply_to(message, "❌ /update [новый_код]")
         return
     
-    status_msg = bot.reply_to(message, "🔄 Обновляю...")
+    status_msg = bot.reply_to(message, "🔄 Обновляю код...")
     
     ok, err = test_code_in_sandbox(new_code)
     if not ok:
-        bot.edit_message_text(f"❌ {err}", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text(f"❌ Ошибка в песочнице: {err}", chat_id=message.chat.id, message_id=status_msg.message_id)
         return
     
     current = github_get_file("bot.py")
@@ -501,28 +505,29 @@ def update_command(message):
     
     ok, err = validate_code_syntax(new_code)
     if not ok:
-        bot.edit_message_text(f"❌ {err}", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text(f"❌ Ошибка синтаксиса: {err}", chat_id=message.chat.id, message_id=status_msg.message_id)
         return
     
-    if github_update_file("bot.py", new_code, "Обновление"):
-        bot.edit_message_text("✅ Обновлено!\n🔄 Перезапуск...", chat_id=message.chat.id, message_id=status_msg.message_id)
+    if github_update_file("bot.py", new_code, "Обновление через /update"):
+        bot.edit_message_text("✅ Код обновлён!\n🔄 Перезапуск...", chat_id=message.chat.id, message_id=status_msg.message_id)
         render_restart()
     else:
-        bot.edit_message_text("❌ Ошибка", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text("❌ Ошибка сохранения", chat_id=message.chat.id, message_id=status_msg.message_id)
 
 @bot.message_handler(commands=['rollback'])
 def rollback_command(message):
-    status_msg = bot.reply_to(message, "🔄 Откат...")
+    status_msg = bot.reply_to(message, "🔄 Выполняю откат...")
     if rollback():
-        bot.edit_message_text("✅ Откат выполнен!", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text("✅ Откат выполнен! Бот перезапускается...", 
+                              chat_id=message.chat.id, message_id=status_msg.message_id)
     else:
-        bot.edit_message_text("❌ Нет бэкапа", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text("❌ Нет сохранённых бэкапов", chat_id=message.chat.id, message_id=status_msg.message_id)
 
 @bot.message_handler(commands=['backups'])
 def backups_command(message):
     backups = sorted([f for f in os.listdir(BACKUP_DIR) if f.endswith('.py')])
     if backups:
-        text = "📦 **Бэкапы:**\n\n"
+        text = "📦 **Сохранённые бэкапы:**\n\n"
         for b in backups[-10:]:
             text += f"• {b}\n"
         bot.reply_to(message, text)
@@ -531,11 +536,11 @@ def backups_command(message):
 
 @bot.message_handler(commands=['restart'])
 def restart_command(message):
-    status_msg = bot.reply_to(message, "🔄 Перезапуск...")
+    status_msg = bot.reply_to(message, "🔄 Перезапускаю сервер...")
     if render_restart():
-        bot.edit_message_text("✅ Перезапущено", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text("✅ Сервер перезапущен", chat_id=message.chat.id, message_id=status_msg.message_id)
     else:
-        bot.edit_message_text("❌ Ошибка", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text("❌ Не удалось перезапустить", chat_id=message.chat.id, message_id=status_msg.message_id)
 
 @bot.message_handler(commands=['test'])
 def test_command(message):
@@ -544,12 +549,12 @@ def test_command(message):
         bot.reply_to(message, "❌ /test [код]")
         return
     
-    status_msg = bot.reply_to(message, "🧪 Тестирую...")
+    status_msg = bot.reply_to(message, "🧪 Тестирую код...")
     ok, msg = test_code_in_sandbox(code)
     if ok:
-        bot.edit_message_text("✅ Тест пройден!", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text("✅ Тест пройден! Код корректен.", chat_id=message.chat.id, message_id=status_msg.message_id)
     else:
-        bot.edit_message_text(f"❌ {msg}", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text(f"❌ Тест не пройден:\n{msg}", chat_id=message.chat.id, message_id=status_msg.message_id)
 
 @bot.message_handler(commands=['health'])
 def health_command(message):
@@ -561,42 +566,44 @@ def health_command(message):
     errors = sum(1 for log in logs if log.get("status") == "error")
     backups_count = len([f for f in os.listdir(BACKUP_DIR) if f.endswith('.py')])
     
-    status = f"""📊 **Мониторинг**
+    status = f"""📊 **Мониторинг бота**
 
-⏱️ Работает: {hours}ч {minutes}м
+⏱️ Время работы: {hours}ч {minutes}м
 ✅ Успешность: {round((len(logs)-errors)/max(len(logs),1)*100)}%
 ❌ Ошибок: {errors}
 📦 Бэкапов: {backups_count}
 
-🔑 Ключи:
+🔑 API ключи:
 • GitHub: {'✅' if GITHUB_TOKEN else '❌'}
 • Render: {'✅' if RENDER_API_KEY else '❌'}
 • OpenRouter: {'✅' if OPENROUTER_API_KEY else '❌'}
 
 🤖 Моделей: {len(FREE_MODELS)}
-➕ Команд: {len(load_user_commands())}"""
+➕ Пользовательских команд: {len(load_user_commands())}"""
     bot.reply_to(message, status)
 
 @bot.message_handler(commands=['status'])
 def status_command(message):
-    status = f"""📊 **Статус**
+    status = f"""📊 **Статус бота**
 
 GitHub: {'✅' if GITHUB_TOKEN else '❌'}
 Render: {'✅' if RENDER_API_KEY else '❌'}
-Репозиторий: {GITHUB_REPO or '-'}
-Сервис: {RENDER_SERVICE_ID or '-'}
+OpenRouter: {'✅' if OPENROUTER_API_KEY else '❌'}
+
+Репозиторий: {GITHUB_REPO or 'не задан'}
+Сервис: {RENDER_SERVICE_ID or 'не задан'}
 Моделей: {len(FREE_MODELS)}
 Бэкапов: {len([f for f in os.listdir(BACKUP_DIR) if f.endswith('.py')])}
-Команд: {len(load_user_commands())}"""
+Пользовательских команд: {len(load_user_commands())}"""
     bot.reply_to(message, status)
 
 @bot.message_handler(commands=['logs'])
 def logs_command(message):
     logs = get_agent_logs(20)
     if not logs:
-        bot.reply_to(message, "📭 Логов нет")
+        bot.reply_to(message, "📭 Логов пока нет")
         return
-    text = "📋 **Последние действия:**\n\n"
+    text = "📋 **Последние действия агента:**\n\n"
     for log in logs[-15:]:
         if "raw" in log:
             text += f"• {log['raw'][:80]}\n"
@@ -610,7 +617,7 @@ def clearlogs_command(message):
     if clear_agent_logs():
         bot.reply_to(message, "✅ Логи очищены")
     else:
-        bot.reply_to(message, "❌ Ошибка")
+        bot.reply_to(message, "❌ Ошибка очистки логов")
 
 @bot.message_handler(commands=['analyze_errors'])
 def analyze_errors_command(message):
@@ -624,7 +631,7 @@ def analyze_errors_command(message):
         report += f"• {error_type}: {count} раз\n"
     
     if any(c >= 5 for c in counts.values()):
-        report += "\n⚠️ **Внимание:** частые ошибки! Используй /rollback"
+        report += "\n⚠️ **Внимание:** частые ошибки! Используй /rollback для отката"
     
     bot.reply_to(message, report)
 
@@ -632,16 +639,21 @@ def analyze_errors_command(message):
 @app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
 def webhook():
     try:
-        update = telebot.types.Update.de_json(request.stream.read().decode('utf-8'))
+        json_str = request.stream.read().decode('utf-8')
+        update = telebot.types.Update.de_json(json_str)
         bot.process_new_updates([update])
         return 'ok', 200
     except Exception as e:
-        logger.error(f"Ошибка: {e}")
+        logger.error(f"Ошибка вебхука: {e}")
         return 'error', 500
 
 @app.route('/health')
 def health_check():
     return 'OK', 200
+
+@app.route('/')
+def index():
+    return 'Telegram Bot is running!', 200
 
 # ===== ЗАПУСК =====
 if __name__ == '__main__':
@@ -649,7 +661,11 @@ if __name__ == '__main__':
     render_url = os.environ.get('RENDER_EXTERNAL_URL', f"http://localhost:{port}")
     webhook_url = f"{render_url}/{TELEGRAM_TOKEN}"
     
+    logger.info("Удаляем старый вебхук...")
     bot.remove_webhook()
+    
+    logger.info(f"Устанавливаем новый вебхук: {webhook_url}")
     bot.set_webhook(url=webhook_url)
     
+    logger.info(f"🚀 Запускаем Flask сервер на порту {port}")
     app.run(host='0.0.0.0', port=port)
