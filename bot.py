@@ -169,6 +169,8 @@ def help_command(message):
     menu = """📋 **Команды бота:**
 
 /ai [вопрос] - спросить ИИ
+/hello [текст] - команда hello отвечает Привет
+
 /models - список моделей
 
 **🔄 Управление командами:**
@@ -407,6 +409,9 @@ def logs_command(message):
             text += f"{emoji} {log.get('action', '')}\n"
     bot.reply_to(message, text[:4000])
 
+@bot.message_handler(commands=['hello'])
+def hello_command(message):
+    bot.reply_to(message, "Привет")
 @bot.message_handler(commands=['clearlogs'])
 def clearlogs_command(message):
     if clear_agent_logs():
