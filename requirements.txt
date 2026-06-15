@@ -1,2 +1,1 @@
-pytelegrambotapi
-flask
+aiogram>=3.0.0
