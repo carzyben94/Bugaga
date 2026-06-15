@@ -7,7 +7,6 @@ from aiogram.types import Message
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY")
 
-# Бесплатные модели по порядку
 MODELS = [
     "nousresearch/hermes-3-llama-3.1-405b:free",
     "google/gemma-2-9b-it:free", 
@@ -35,15 +34,16 @@ async def ask_agent(message: Message):
         
         result = await ask_openrouter(message.text, model)
         
-        if result["success"]:
-            current_model_index = model_index
-            await message.answer(result["answer"])
-            return
-        else:
-            # Если модель не работает, пробуем следующую
+        # Отправляем ошибку в лог Render
+        if not result["success"]:
+            print(f"Ошибка модели {model}: {result.get('error')}")
             continue
+        
+        current_model_index = model_index
+        await message.answer(result["answer"])
+        return
     
-    await message.answer("Все модели временно недоступны. Попробуйте позже.")
+    await message.answer("Все модели недоступны. Ошибка: проверьте логи Render")
 
 async def ask_openrouter(prompt, model):
     url = "https://openrouter.ai/api/v1/chat/completions"
@@ -64,9 +64,10 @@ async def ask_openrouter(prompt, model):
                     result = await resp.json()
                     return {"success": True, "answer": result["choices"][0]["message"]["content"]}
                 else:
-                    return {"success": False, "error": f"Status {resp.status}"}
-        except:
-            return {"success": False, "error": "Timeout or connection error"}
+                    error_text = await resp.text()
+                    return {"success": False, "error": f"HTTP {resp.status}: {error_text[:200]}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
 async def main():
     await dp.start_polling(bot)
