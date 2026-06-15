@@ -164,7 +164,7 @@ def github_list_repos() -> list:
         return []
 
 
-# ===== ФУНКЦИИ ДЛЯ RENDER (ИСПРАВЛЕНЫ) =====
+# ===== ФУНКЦИИ ДЛЯ RENDER =====
 def render_list_services() -> list:
     if not RENDER_API_KEY:
         logger.error("RENDER_API_KEY не настроен в render_list_services")
@@ -179,7 +179,6 @@ def render_list_services() -> list:
             
             if isinstance(data, list):
                 for item in data:
-                    # Проверяем структуру: может быть прямой объект сервиса или с ключом 'service'
                     service = item.get("service", item)
                     service_id = service.get("id")
                     service_name = service.get("name")
@@ -225,17 +224,23 @@ def render_rerun_service(service_id: str) -> dict:
     except Exception as e:
         return {"error": str(e)}
 
-def render_set_env_var(service_id: str, key: str, value: str) -> dict:
+def render_set_env_vars(service_id: str, env_vars: list) -> dict:
+    """Устанавливает несколько переменных окружения за раз (PUT)"""
     if not RENDER_API_KEY:
         return {"error": "RENDER_API_KEY не настроен"}
+    
     url = f"https://api.render.com/v1/services/{service_id}/env-vars"
-    headers = {"Authorization": f"Bearer {RENDER_API_KEY}", "Content-Type": "application/json"}
-    payload = [{"key": key, "value": value}]
+    headers = {
+        "Authorization": f"Bearer {RENDER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
     try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=30)
-        if resp.status_code == 201:
+        # PUT заменяет все переменные
+        resp = requests.put(url, headers=headers, json=env_vars, timeout=30)
+        if resp.status_code in (200, 201):
             return {"success": True}
-        return {"error": f"Ошибка {resp.status_code}"}
+        return {"error": f"Ошибка {resp.status_code}: {resp.text[:100]}"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -246,9 +251,9 @@ def install_camoufox_on_bugaga() -> dict:
     logger.info("🦊 Установка Camoufox на Bugaga...")
     
     if not RENDER_API_KEY:
-        return {"error": "RENDER_API_KEY не настроен"}
+        return {"error": "RENDER_API_KEY не настроен", "success": False, "env_vars_added": 0, "errors": []}
     
-    camouflage_envs = [
+    env_vars = [
         {"key": "CAMOUFOX_ENABLED", "value": "true"},
         {"key": "CAMOUFOX_HEADLESS", "value": "true"},
         {"key": "CAMOUFOX_HUMANIZE", "value": "true"},
@@ -256,29 +261,26 @@ def install_camoufox_on_bugaga() -> dict:
         {"key": "CAMOUFOX_GEOIP", "value": "true"},
     ]
     
-    added_count = 0
-    errors = []
+    result = render_set_env_vars(BUGAGA_SERVICE_ID, env_vars)
     
-    for env in camouflage_envs:
-        result = render_set_env_var(BUGAGA_SERVICE_ID, env["key"], env["value"])
-        if "success" in result:
-            added_count += 1
-            logger.info(f"✅ Добавлена переменная: {env['key']}")
-        else:
-            errors.append(f"{env['key']}: {result.get('error')}")
-    
-    # Перезапускаем сервис
-    restart_result = render_restart_service(BUGAGA_SERVICE_ID)
-    if "success" not in restart_result:
-        errors.append(f"Перезапуск: {restart_result.get('error')}")
-    
-    return {
-        "success": added_count > 0,
-        "service_name": BUGAGA_SERVICE_NAME,
-        "service_url": BUGAGA_SERVICE_URL,
-        "env_vars_added": added_count,
-        "errors": errors
-    }
+    if "success" in result:
+        logger.info("✅ Переменные Camoufox добавлены")
+        render_restart_service(BUGAGA_SERVICE_ID)
+        return {
+            "success": True,
+            "service_name": BUGAGA_SERVICE_NAME,
+            "service_url": BUGAGA_SERVICE_URL,
+            "env_vars_added": 5,
+            "errors": []
+        }
+    else:
+        return {
+            "success": False,
+            "service_name": BUGAGA_SERVICE_NAME,
+            "service_url": BUGAGA_SERVICE_URL,
+            "env_vars_added": 0,
+            "errors": [result.get("error", "Неизвестная ошибка")]
+        }
 
 
 # ===== КОМАНДЫ =====
