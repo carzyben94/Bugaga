@@ -1,9 +1,9 @@
 services:
-  - type: web
+  - type: worker
     name: telegram-bot
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
     envVars:
       - key: TELEGRAM_BOT_TOKEN
-        sync: false  # Будет задано вручную в UI Render
+        sync: false
