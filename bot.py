@@ -40,7 +40,7 @@ logger.info("=" * 50)
 if not TELEGRAM_TOKEN:
     raise ValueError("❌ TELEGRAM_BOT_TOKEN не задан!")
 
-# ===== ID СЕРВИСА (ВЗЯТ ИЗ ТВОЕГО ОТВЕТА) =====
+# ===== ID СЕРВИСА =====
 BUGAGA_SERVICE_ID = "srv-d8n7h40js32c73dcoi8g"
 BUGAGA_SERVICE_NAME = "Bugaga"
 BUGAGA_SERVICE_URL = "https://bugaga.onrender.com"
@@ -236,7 +236,6 @@ def render_set_env_vars(service_id: str, env_vars: list) -> dict:
     }
     
     try:
-        # PUT заменяет все переменные
         resp = requests.put(url, headers=headers, json=env_vars, timeout=30)
         if resp.status_code in (200, 201):
             return {"success": True}
@@ -245,7 +244,7 @@ def render_set_env_vars(service_id: str, env_vars: list) -> dict:
         return {"error": str(e)}
 
 
-# ===== ПРЯМАЯ УСТАНОВКА CAMOUFOX НА BUGAGA =====
+# ===== УСТАНОВКА CAMOUFOX =====
 def install_camoufox_on_bugaga() -> dict:
     """Прямая установка Camoufox на сервис Bugaga"""
     logger.info("🦊 Установка Camoufox на Bugaga...")
@@ -283,18 +282,139 @@ def install_camoufox_on_bugaga() -> dict:
         }
 
 
-# ===== КОМАНДЫ =====
+# ===== ПОИСК В GOOGLE ЧЕРЕЗ CAMOUFOX =====
+async def search_google_camoufox(query: str) -> str:
+    """
+    Ищет в Google через Camoufox — обходит блокировки Google
+    """
+    try:
+        from camoufox.sync_api import Camoufox
+        
+        with Camoufox(
+            headless=True,
+            humanize=True,
+            block_webrtc=True,
+            geoip=True,
+        ) as browser:
+            page = browser.new_page()
+            
+            search_url = f"https://www.google.com/search?q={quote_plus(query)}"
+            
+            page.goto(search_url, wait_until="networkidle")
+            page.wait_for_selector("div#search", timeout=15000)
+            
+            results = []
+            for result in page.query_selector_all("div.g")[:5]:
+                title_elem = result.query_selector("h3")
+                link_elem = result.query_selector("a")
+                snippet_elem = result.query_selector("div.VwiC3b")
+                
+                title = title_elem.inner_text() if title_elem else ""
+                link = link_elem.get_attribute("href") if link_elem else ""
+                snippet = snippet_elem.inner_text()[:200] if snippet_elem else ""
+                
+                if title and link:
+                    results.append(f"🔹 **{title}**\n   📎 {link}\n   📝 {snippet}...")
+            
+            if results:
+                return f"🔍 **Результаты Google для «{query}»:**\n\n" + "\n\n".join(results)
+            else:
+                return "❌ Ничего не найдено"
+                
+    except ImportError:
+        return "❌ Camoufox не установлен. Установи через: pip install camoufox"
+    except Exception as e:
+        logger.error(f"Camoufox error: {e}")
+        return f"❌ Ошибка при поиске: {str(e)}"
+
+
+# ===== ФУНКЦИЯ ДЛЯ БРАУЗЕРА (DUCKDUCKGO) =====
+class MLStripper(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.text = []
+    def handle_data(self, d):
+        self.text.append(d)
+    def get_data(self):
+        return ' '.join(self.text)
+
+
+async def browse_lightpanda(task: str) -> str:
+    """Работает с любым запросом: URL, поиск, вопрос"""
+    try:
+        urls = re.findall(r'https?://[^\s]+', task)
+        if urls:
+            url = urls[0]
+            resp = requests.get(url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
+            if resp.status_code == 200:
+                stripper = MLStripper()
+                stripper.feed(resp.text)
+                text = stripper.get_data()
+                text = ' '.join(text.split())[:2000]
+                return f"📄 Содержимое {url}:\n\n{text}..."
+            return f"❌ Ошибка загрузки {url}"
+        
+        query = quote_plus(task)
+        search_url = f"https://html.duckduckgo.com/html/?q={query}"
+        resp = requests.get(search_url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
+        
+        if resp.status_code == 200:
+            titles = re.findall(r'<a class="result__a"[^>]*>([^<]+)</a>', resp.text)
+            snippets = re.findall(r'<a class="result__snippet"[^>]*>([^<]+)</a>', resp.text)
+            
+            results = []
+            for i in range(min(3, len(titles))):
+                title = titles[i] if i < len(titles) else ""
+                snippet = snippets[i] if i < len(snippets) else ""
+                if title:
+                    results.append(f"🔹 {title}\n   {snippet[:150]}...")
+            
+            if results:
+                return f"🔍 Результаты поиска:\n\n" + "\n\n".join(results)
+        
+        return await ai_fallback(task)
+        
+    except Exception as e:
+        logger.error(f"Ошибка в browse: {e}")
+        return await ai_fallback(task)
+
+
+async def ai_fallback(task: str) -> str:
+    """Резервный ответ через ИИ"""
+    if not OPENROUTER_API_KEY:
+        return f"🌐 Не удалось обработать запрос. API ключ не настроен."
+    
+    try:
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": "openrouter/free",
+            "messages": [{"role": "user", "content": task}],
+            "max_tokens": 500,
+        }
+        resp = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=30)
+        if resp.status_code == 200:
+            answer = resp.json()["choices"][0]["message"]["content"]
+            return f"🤖 {answer}"
+        return f"❌ Не удалось обработать запрос"
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)}"
+
+
+# ===== ОБРАБОТЧИКИ КОМАНД ТЕЛЕГРАМ =====
 @bot.message_handler(commands=['start'])
 def start(message):
     bot.reply_to(
         message,
-        "✅ **Бот-агент с доступом к Render и GitHub!**\n\n"
+        "✅ **Бот-агент с Camoufox!**\n\n"
         "📌 **Команды:**\n"
-        "/setup_bugaga - установить Camoufox на Bugaga\n"
-        "/check_key - проверить RENDER_API_KEY\n"
-        "/test_render - тест Render API\n"
+        "/google [запрос] - поиск в Google (обходит блокировки)\n"
         "/ai [вопрос] - спросить ИИ\n"
-        "/browse [запрос] - поиск в интернете\n"
+        "/browse [запрос] - быстрый поиск (DuckDuckGo)\n"
+        "/setup_bugaga - установить Camoufox на Render\n"
+        "/check_key - проверить ключи\n"
         "/github list - список репозиториев\n"
         "/render list - список сервисов\n"
         "/models - список моделей ИИ\n"
@@ -307,14 +427,14 @@ def help_command(message):
     bot.reply_to(
         message,
         "🤖 **Команды бота:**\n\n"
-        "**🦊 Camoufox:**\n"
-        "/setup_bugaga - установить Camoufox на сервис Bugaga\n\n"
-        "**🔑 Диагностика:**\n"
-        "/check_key - проверить RENDER_API_KEY\n"
-        "/test_render - тест Render API\n\n"
+        "**🦊 Поиск в Google:**\n"
+        "/google [запрос] - поиск через Google (Camoufox, обходит блокировки)\n\n"
         "**🧠 ИИ и поиск:**\n"
         "/ai [вопрос] - задать вопрос ИИ\n"
-        "/browse [запрос] - поиск в интернете\n\n"
+        "/browse [запрос] - быстрый поиск (DuckDuckGo)\n\n"
+        "**🔧 Настройка:**\n"
+        "/setup_bugaga - установить Camoufox на Render\n"
+        "/check_key - проверить ключи\n\n"
         "**📁 GitHub:**\n"
         "/github list - список репозиториев\n\n"
         "**🖥️ Render:**\n"
@@ -354,6 +474,45 @@ def setup_bugaga(message):
         message_id=status_msg.message_id,
         parse_mode="Markdown"
     )
+
+@bot.message_handler(commands=['google'])
+def google_command(message):
+    """Поиск в Google через Camoufox (обходит блокировки)"""
+    query = message.text.replace('/google', '').strip()
+    
+    if not query:
+        bot.reply_to(
+            message,
+            "❌ Напиши запрос после /google\n\n"
+            "Пример: `/google как сделать пиццу`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    bot.send_chat_action(message.chat.id, 'typing')
+    status_msg = bot.reply_to(message, f"🦊 Ищу в Google: {query[:50]}...\n\n⏱️ Это может занять 10-15 секунд")
+    
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        result = loop.run_until_complete(search_google_camoufox(query))
+        if len(result) > 4000:
+            result = result[:4000] + "..."
+        bot.edit_message_text(
+            result,
+            chat_id=message.chat.id,
+            message_id=status_msg.message_id,
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Ошибка в google_command: {e}")
+        bot.edit_message_text(
+            f"❌ Ошибка: {str(e)}",
+            chat_id=message.chat.id,
+            message_id=status_msg.message_id
+        )
+    finally:
+        loop.close()
 
 @bot.message_handler(commands=['check_key'])
 def check_key(message):
@@ -474,81 +633,6 @@ def models_command(message):
         f"🔄 При лимите автоматическое переключение",
         parse_mode="Markdown"
     )
-
-
-# ===== ФУНКЦИЯ ДЛЯ БРАУЗЕРА =====
-class MLStripper(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.text = []
-    def handle_data(self, d):
-        self.text.append(d)
-    def get_data(self):
-        return ' '.join(self.text)
-
-
-async def browse_lightpanda(task: str) -> str:
-    """Работает с любым запросом: URL, поиск, вопрос"""
-    try:
-        urls = re.findall(r'https?://[^\s]+', task)
-        if urls:
-            url = urls[0]
-            resp = requests.get(url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
-            if resp.status_code == 200:
-                stripper = MLStripper()
-                stripper.feed(resp.text)
-                text = stripper.get_data()
-                text = ' '.join(text.split())[:2000]
-                return f"📄 Содержимое {url}:\n\n{text}..."
-            return f"❌ Ошибка загрузки {url}"
-        
-        query = quote_plus(task)
-        search_url = f"https://html.duckduckgo.com/html/?q={query}"
-        resp = requests.get(search_url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
-        
-        if resp.status_code == 200:
-            titles = re.findall(r'<a class="result__a"[^>]*>([^<]+)</a>', resp.text)
-            snippets = re.findall(r'<a class="result__snippet"[^>]*>([^<]+)</a>', resp.text)
-            
-            results = []
-            for i in range(min(3, len(titles))):
-                title = titles[i] if i < len(titles) else ""
-                snippet = snippets[i] if i < len(snippets) else ""
-                if title:
-                    results.append(f"🔹 {title}\n   {snippet[:150]}...")
-            
-            if results:
-                return f"🔍 Результаты поиска:\n\n" + "\n\n".join(results)
-        
-        return await ai_fallback(task)
-        
-    except Exception as e:
-        logger.error(f"Ошибка в browse: {e}")
-        return await ai_fallback(task)
-
-
-async def ai_fallback(task: str) -> str:
-    """Резервный ответ через ИИ"""
-    if not OPENROUTER_API_KEY:
-        return f"🌐 Не удалось обработать запрос. API ключ не настроен."
-    
-    try:
-        headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": "openrouter/free",
-            "messages": [{"role": "user", "content": task}],
-            "max_tokens": 500,
-        }
-        resp = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=30)
-        if resp.status_code == 200:
-            answer = resp.json()["choices"][0]["message"]["content"]
-            return f"🤖 {answer}"
-        return f"❌ Не удалось обработать запрос"
-    except Exception as e:
-        return f"❌ Ошибка: {str(e)}"
 
 
 # ===== ВЕБХУК =====
