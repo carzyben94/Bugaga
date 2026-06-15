@@ -2,6 +2,9 @@ import os
 import logging
 import asyncio
 import requests
+import re
+from urllib.parse import quote_plus
+from html.parser import HTMLParser
 from flask import Flask, request
 import telebot
 
@@ -23,9 +26,9 @@ if not OPENROUTER_API_KEY:
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
-# ===== АКТУАЛЬНЫЙ СПИСОК БЕСПЛАТНЫХ МОДЕЛЕЙ (июнь 2026) =====
+# ===== АКТУАЛЬНЫЙ СПИСОК БЕСПЛАТНЫХ МОДЕЛЕЙ =====
 FREE_MODELS = [
-    "openrouter/free",                                    # автоматический роутер (рекомендую)
+    "openrouter/free",
     "meta-llama/llama-3.3-70b-instruct:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
     "nvidia/nemotron-3-ultra:free",
@@ -44,10 +47,6 @@ FREE_MODELS = [
 
 # ===== ФУНКЦИЯ ЗАПРОСА К OPENROUTER (С АВТОПЕРЕКЛЮЧЕНИЕМ) =====
 def ask_ai(prompt, model_index=0):
-    """
-    Отправляет запрос к OpenRouter.
-    При ошибке (лимит, платная модель, таймаут) переключается на следующую модель.
-    """
     if model_index >= len(FREE_MODELS):
         return "😵 Извините, все бесплатные модели временно недоступны. Попробуйте позже."
     
@@ -95,85 +94,81 @@ def ask_ai(prompt, model_index=0):
         return ask_ai(prompt, model_index + 1)
 
 
-# ===== ФУНКЦИЯ ДЛЯ LIGHTPANDA БРАУЗЕРА =====
+# ===== ФУНКЦИЯ ДЛЯ БРАУЗЕРА =====
+class MLStripper(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.text = []
+    def handle_data(self, d):
+        self.text.append(d)
+    def get_data(self):
+        return ' '.join(self.text)
+
+
 async def browse_lightpanda(task: str) -> str:
-    """
-    Использует Lightpanda для быстрого просмотра веб-страниц
-    Lightpanda в 11 раз быстрее Chrome и использует в 16 раз меньше памяти
-    """
+    """Работает с любым запросом: URL, поиск, вопрос"""
     try:
-        # Пробуем через duckduckgo для поиска
-        if "курс" in task.lower() and "доллар" in task.lower():
-            # Простой API для курса валют
-            resp = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=10)
-            data = resp.json()
-            rub = data['rates'].get('RUB', 'неизвестно')
-            eur = data['rates'].get('EUR', 'неизвестно')
-            return f"💵 Курс валют на сегодня:\n\n1 USD = {rub} RUB\n1 USD = {eur} EUR"
-        
-        elif "погода" in task.lower():
-            # Поиск погоды (упрощённо)
-            city = "Moscow"
-            if "лондон" in task.lower():
-                city = "London"
-            elif "нью-йорк" in task.lower():
-                city = "New York"
-            elif "берлин" in task.lower():
-                city = "Berlin"
-            
-            resp = requests.get(f"https://wttr.in/{city}?format=%C+%t", timeout=10)
+        # 1. Если это URL - открываем страницу
+        urls = re.findall(r'https?://[^\s]+', task)
+        if urls:
+            url = urls[0]
+            resp = requests.get(url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
             if resp.status_code == 200:
-                return f"🌤️ Погода в {city}: {resp.text.strip()}"
-            else:
-                return f"🌤️ Не удалось получить погоду для {city}"
+                stripper = MLStripper()
+                stripper.feed(resp.text)
+                text = stripper.get_data()
+                text = ' '.join(text.split())[:2000]
+                return f"📄 Содержимое {url}:\n\n{text}..."
+            return f"❌ Ошибка загрузки {url}"
         
-        elif "новость" in task.lower():
-            # Простые новости (RSS заглушка)
-            return "📰 Функция новостей в разработке. Пока попробуйте: /browse курс доллара"
+        # 2. Если не URL - делаем поиск через DuckDuckGo
+        query = quote_plus(task)
+        search_url = f"https://html.duckduckgo.com/html/?q={query}"
+        resp = requests.get(search_url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
         
-        else:
-            # Попытка извлечь URL из задачи
-            import re
-            urls = re.findall(r'https?://[^\s]+', task)
-            if urls:
-                url = urls[0]
-                try:
-                    resp = requests.get(url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
-                    if resp.status_code == 200:
-                        # Извлекаем заголовок и первые 500 символов
-                        from html.parser import HTMLParser
-                        class MLStripper(HTMLParser):
-                            def __init__(self):
-                                super().__init__()
-                                self.reset()
-                                self.strict = False
-                                self.convert_charrefs = True
-                                self.text = []
-                            def handle_data(self, d):
-                                self.text.append(d)
-                            def get_data(self):
-                                return ''.join(self.text)
-                        
-                        stripper = MLStripper()
-                        stripper.feed(resp.text)
-                        text = stripper.get_data()
-                        # Берем первые 1000 символов
-                        preview = text[:1000].replace('\n', ' ').strip()
-                        return f"📄 Содержимое {url}:\n\n{preview}..."
-                    else:
-                        return f"❌ Не удалось загрузить {url} (статус {resp.status_code})"
-                except Exception as e:
-                    return f"❌ Ошибка загрузки {url}: {str(e)}"
-            else:
-                return "🌐 Не могу выполнить эту задачу. Попробуйте:\n" \
-                       "/browse курс доллара\n" \
-                       "/browse погода в Лондоне\n" \
-                       "/browse https://example.com - прочитать страницу"
-                    
-    except requests.exceptions.Timeout:
-        return "⏰ Таймаут при загрузке. Попробуйте позже."
+        if resp.status_code == 200:
+            titles = re.findall(r'<a class="result__a"[^>]*>([^<]+)</a>', resp.text)
+            snippets = re.findall(r'<a class="result__snippet"[^>]*>([^<]+)</a>', resp.text)
+            
+            results = []
+            for i in range(min(3, len(titles))):
+                title = titles[i] if i < len(titles) else ""
+                snippet = snippets[i] if i < len(snippets) else ""
+                if title:
+                    results.append(f"🔹 {title}\n   {snippet[:150]}...")
+            
+            if results:
+                return f"🔍 Результаты поиска:\n\n" + "\n\n".join(results)
+        
+        # 3. Если поиск не дал результатов - используем ИИ
+        return await ai_fallback(task)
+        
     except Exception as e:
-        logger.error(f"Ошибка Lightpanda: {e}")
+        logger.error(f"Ошибка в browse: {e}")
+        return await ai_fallback(task)
+
+
+async def ai_fallback(task: str) -> str:
+    """Резервный ответ через ИИ"""
+    if not OPENROUTER_API_KEY:
+        return f"🌐 Не удалось обработать запрос. API ключ не настроен."
+    
+    try:
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": "openrouter/free",
+            "messages": [{"role": "user", "content": task}],
+            "max_tokens": 500,
+        }
+        resp = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=30)
+        if resp.status_code == 200:
+            answer = resp.json()["choices"][0]["message"]["content"]
+            return f"🤖 {answer}"
+        return f"❌ Не удалось обработать запрос"
+    except Exception as e:
         return f"❌ Ошибка: {str(e)}"
 
 
@@ -182,11 +177,11 @@ async def browse_lightpanda(task: str) -> str:
 def start(message):
     bot.reply_to(
         message,
-        "✅ Бот работает через вебхук!\n\n"
-        "📌 Доступные команды:\n"
+        "✅ Бот работает!\n\n"
+        "📌 Команды:\n"
         "/ai [вопрос] - спросить ИИ\n"
-        "/browse [задача] - открыть браузер Lightpanda\n"
-        "/models - список бесплатных моделей\n"
+        "/browse [запрос] - поиск в интернете\n"
+        "/models - список моделей ИИ\n"
         "/help - помощь"
     )
 
@@ -195,36 +190,24 @@ def help_command(message):
     bot.reply_to(
         message,
         "🤖 Как пользоваться:\n\n"
-        "🧠 /ai [вопрос] - задать вопрос ИИ\n"
-        "   Пример: /ai Как сделать пиццу?\n\n"
-        "🌐 /browse [задача] - браузер Lightpanda (в 11 раз быстрее Chrome!)\n"
-        "   Примеры:\n"
-        "   /browse курс доллара\n"
-        "   /browse погода в Лондоне\n"
-        "   /browse https://github.com - прочитать страницу\n\n"
-        "📊 /models - список моделей ИИ\n\n"
-        "Бот сам выберет лучшую бесплатную модель ИИ"
+        "/ai [вопрос] - задать вопрос ИИ\n"
+        "/browse [запрос] - поиск в интернете или открыть сайт\n"
+        "/models - список доступных моделей ИИ"
     )
 
 @bot.message_handler(commands=['ai'])
 def ai_command(message):
-    # Получаем текст после /ai
     user_text = message.text.replace('/ai', '').strip()
     
     if not user_text:
-        bot.reply_to(message, "❌ Напиши вопрос после /ai\nПример: /ai Как сделать пиццу?")
+        bot.reply_to(message, "❌ Напиши вопрос после /ai")
         return
     
-    # Отправляем статус "печатает"
     bot.send_chat_action(message.chat.id, 'typing')
-    
-    # Отправляем временное сообщение
     status_msg = bot.reply_to(message, "🤔 Думаю...")
     
-    # Получаем ответ от ИИ
     answer = ask_ai(user_text)
     
-    # Обновляем сообщение с ответом
     bot.edit_message_text(
         chat_id=message.chat.id,
         message_id=status_msg.message_id,
@@ -233,30 +216,22 @@ def ai_command(message):
 
 @bot.message_handler(commands=['browse'])
 def browse_command(message):
-    """Обработчик команды /browse - запускает браузер Lightpanda"""
     user_task = message.text.replace('/browse', '').strip()
     
     if not user_task:
         bot.reply_to(
             message,
-            "❌ Напиши задачу после /browse\n\n"
-            "Примеры:\n"
-            "/browse курс доллара\n"
-            "/browse погода в Лондоне\n"
-            "/browse https://github.com"
+            "❌ Напиши запрос после /browse"
         )
         return
     
-    # Отправляем статус
     bot.send_chat_action(message.chat.id, 'typing')
-    status_msg = bot.reply_to(message, "🚀 Lightpanda запускается (это очень быстро!)...")
+    status_msg = bot.reply_to(message, "🔍 Ищу...")
     
-    # Запускаем асинхронную функцию
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
         result = loop.run_until_complete(browse_lightpanda(user_task))
-        # Telegram лимит 4096 символов
         if len(result) > 4000:
             result = result[:4000] + "..."
         bot.edit_message_text(
@@ -279,16 +254,15 @@ def models_command(message):
     models_list = "\n".join([f"• {m.replace(':free', '')}" for m in FREE_MODELS])
     bot.reply_to(
         message,
-        f"🤖 Доступные бесплатные модели:\n\n{models_list}\n\n"
+        f"🤖 Доступные модели:\n\n{models_list}\n\n"
         f"📊 Всего: {len(FREE_MODELS)} моделей\n"
-        f"🔄 При лимите бот автоматически переключается на следующую"
+        f"🔄 При лимите автоматическое переключение"
     )
 
 
 # ===== ВЕБХУК ДЛЯ TELEGRAM =====
 @app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
 def webhook():
-    """Принимает обновления от Telegram"""
     try:
         json_str = request.stream.read().decode('utf-8')
         update = telebot.types.Update.de_json(json_str)
@@ -299,17 +273,14 @@ def webhook():
         return 'error', 500
 
 
-# ===== HEALTHCHECK ДЛЯ RENDER =====
 @app.route('/health')
 def health():
-    """Проверка работоспособности для Render"""
     return 'OK', 200
 
 
 @app.route('/')
 def index():
-    """Корневой маршрут для информации"""
-    return 'Telegram Bot with OpenRouter AI + Lightpanda Browser is running!', 200
+    return 'Telegram Bot with AI + Browser is running!', 200
 
 
 # ===== ЗАПУСК =====
@@ -317,14 +288,12 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     render_url = os.environ.get('RENDER_EXTERNAL_URL')
     
-    # Для локального тестирования
     if not render_url:
         render_url = f"http://localhost:{port}"
         logger.warning(f"RENDER_EXTERNAL_URL не найден, используем {render_url}")
     
     webhook_url = f"{render_url}/{TELEGRAM_TOKEN}"
     
-    # Настраиваем вебхук
     logger.info("Удаляем старый вебхук...")
     bot.remove_webhook()
     
