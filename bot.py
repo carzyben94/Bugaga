@@ -1,119 +1,65 @@
 import os
-import aiohttp
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiohttp import web
+import logging
+from flask import Flask, request
+import telebot
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY")
+# Настройка логов
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Модели (оставляем твой список)
-MODELS = [
-    "openrouter/free",
-    "openai/gpt-oss-120b:free",
-    "google/gemma-4-31b-it:free",
-    "nvidia/nemotron-3-super-120b-a9b:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
-]
+# Берем токен из переменных окружения Render
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+if not TOKEN:
+    logger.error("TELEGRAM_BOT_TOKEN не найден!")
+    raise ValueError("TELEGRAM_BOT_TOKEN не задан")
 
-# Кнопки меню
-menu_keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [types.KeyboardButton(text="🤖 Спросить ИИ")],
-        [types.KeyboardButton(text="📋 О боте"), types.KeyboardButton(text="🔄 Сменить модель")]
-    ],
-    resize_keyboard=True
-)
+# Создаем бота и Flask-приложение
+bot = telebot.TeleBot(TOKEN)
+app = Flask(__name__)
 
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
-current_model = 0
+# ===== ОБРАБОТЧИКИ КОМАНД =====
+@bot.message_handler(commands=['start'])
+def start(message):
+    bot.reply_to(message, "✅ Бот работает через вебхук!")
 
-# Webhook URL (Render сам подставит)
-WEBHOOK_PATH = f"/webhook/{TOKEN}"
-WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_URL") + WEBHOOK_PATH
+@bot.message_handler(commands=['help'])
+def help_command(message):
+    bot.reply_to(message, "Напиши /start")
 
-# --- Все твои старые хендлеры ---
-@dp.message(Command("start"))
-async def start(message: Message):
-    await message.answer(
-        f"Бот работает (webhook). Модель: {MODELS[current_model]}",
-        reply_markup=menu_keyboard
-    )
+# ===== ВЕБХУК ДЛЯ TELEGRAM =====
+@app.route(f'/{TOKEN}', methods=['POST'])
+def webhook():
+    try:
+        json_str = request.stream.read().decode('utf-8')
+        update = telebot.types.Update.de_json(json_str)
+        bot.process_new_updates([update])
+        return 'ok', 200
+    except Exception as e:
+        logger.error(f"Ошибка вебхука: {e}")
+        return 'error', 500
 
-@dp.message()
-async def handle_menu(message: Message):
-    global current_model
-    text = message.text
+# ===== HEALTHCHECK ДЛЯ RENDER =====
+@app.route('/health')
+def health():
+    return 'OK', 200
+
+# ===== ЗАПУСК =====
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 8080))
     
-    if text == "🤖 Спросить ИИ":
-        await message.answer("Напиши свой вопрос")
-    elif text == "📋 О боте":
-        await message.answer(f"Модель: {MODELS[current_model]}\nДоступно: {len(MODELS)}")
-    elif text == "🔄 Сменить модель":
-        current_model = (current_model + 1) % len(MODELS)
-        await message.answer(f"Модель: {MODELS[current_model]}")
-    else:
-        await ask_and_reply(message)
-
-async def ask_and_reply(message: Message):
-    global current_model
-    await message.answer("🤔 Думаю...")
+    # Настраиваем вебхук
+    render_url = os.environ.get('RENDER_EXTERNAL_URL')
+    if not render_url:
+        logger.warning("RENDER_EXTERNAL_URL не найден, используем localhost для теста")
+        render_url = f"http://localhost:{port}"
     
-    for i in range(len(MODELS)):
-        model_index = (current_model + i) % len(MODELS)
-        model = MODELS[model_index]
-        result = await ask_openrouter(message.text, model)
-        
-        if result["success"]:
-            current_model = model_index
-            await message.answer(result["answer"])
-            return
-        elif result["error"] == "limit":
-            continue
+    webhook_url = f"{render_url}/{TOKEN}"
     
-    await message.answer("Все модели недоступны")
-
-async def ask_openrouter(prompt, model):
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {OPENROUTER_KEY}"}
-    data = {"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 500}
+    logger.info(f"Удаляем старый вебхук...")
+    bot.remove_webhook()
     
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.post(url, headers=headers, json=data, timeout=30) as resp:
-                if resp.status == 200:
-                    result = await resp.json()
-                    return {"success": True, "answer": result["choices"][0]["message"]["content"]}
-                elif resp.status == 429:
-                    return {"success": False, "error": "limit"}
-                else:
-                    return {"success": False, "error": f"http_{resp.status}"}
-        except:
-            return {"success": False, "error": "timeout"}
-
-# --- Запуск через Webhook (а не polling) ---
-async def on_startup():
-    await bot.delete_webhook()  # Принудительно чистим старые хуки
-    await bot.set_webhook(WEBHOOK_URL)  # Устанавливаем новый
-
-async def main():
-    app = web.Application()
-    webhook_requests_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
-    webhook_requests_handler.register(app, path=WEBHOOK_PATH)
-    setup_application(app, dp, bot=bot)
-    app.on_startup.append(on_startup)
+    logger.info(f"Устанавливаем новый вебхук: {webhook_url}")
+    bot.set_webhook(url=webhook_url)
     
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
-    await site.start()
-    
-    print(f"Webhook set to {WEBHOOK_URL}")
-    await asyncio.Event().wait()  # Бесконечное ожидание
-
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    logger.info(f"Запускаем Flask на порту {port}")
+    app.run(host='0.0.0.0', port=port)
