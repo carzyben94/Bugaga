@@ -6,6 +6,7 @@ import re
 import json
 import base64
 import time
+import traceback
 from urllib.parse import quote_plus
 from html.parser import HTMLParser
 from flask import Flask, request
@@ -158,7 +159,7 @@ def github_list_repos() -> list:
         return []
 
 
-# ===== ФУНКЦИИ ДЛЯ RENDER =====
+# ===== ФУНКЦИИ ДЛЯ RENDER (ИСПРАВЛЕНЫ) =====
 def render_list_services() -> list:
     if not RENDER_API_KEY:
         logger.error("RENDER_API_KEY не настроен в render_list_services")
@@ -169,13 +170,48 @@ def render_list_services() -> list:
         logger.info(f"Запрос к Render API: {url}")
         resp = requests.get(url, headers=headers, timeout=30)
         logger.info(f"Ответ Render API: статус {resp.status_code}")
+        
         if resp.status_code == 200:
-            return [{"id": s["id"], "name": s["name"], "url": s.get("serviceDetails", {}).get("url", "N/A")} for s in resp.json()]
+            data = resp.json()
+            logger.info(f"Тип данных: {type(data)}")
+            
+            services_list = []
+            
+            if isinstance(data, list):
+                for s in data:
+                    service_id = s.get("id")
+                    service_name = s.get("name")
+                    service_url = s.get("url", "N/A")
+                    
+                    if service_id and service_name:
+                        services_list.append({
+                            "id": service_id,
+                            "name": service_name,
+                            "url": service_url
+                        })
+                        logger.info(f"Найден сервис: {service_name} (ID: {service_id})")
+                    else:
+                        logger.warning(f"Сервис без id или name: {s}")
+            elif isinstance(data, dict):
+                if "services" in data:
+                    for s in data["services"]:
+                        service_id = s.get("id")
+                        service_name = s.get("name")
+                        if service_id and service_name:
+                            services_list.append({
+                                "id": service_id,
+                                "name": service_name,
+                                "url": s.get("url", "N/A")
+                            })
+            
+            logger.info(f"Всего найдено сервисов: {len(services_list)}")
+            return services_list
         else:
-            logger.error(f"Ошибка Render API: {resp.text}")
-        return []
+            logger.error(f"Ошибка Render API: {resp.status_code} - {resp.text[:200]}")
+            return []
     except Exception as e:
         logger.error(f"Исключение в render_list_services: {e}")
+        logger.error(traceback.format_exc())
         return []
 
 def render_restart_service(service_id: str) -> dict:
@@ -259,6 +295,8 @@ def agent_install_camoufox_on_render(service_name: str = None) -> dict:
         if "success" in result:
             added_count += 1
             logger.info(f"✅ Добавлена переменная: {env['key']}")
+        else:
+            logger.warning(f"❌ Не удалось добавить {env['key']}: {result.get('error')}")
     
     # 4. Перезапускаем сервис
     restart_result = render_restart_service(target_service["id"])
@@ -274,7 +312,7 @@ def agent_install_camoufox_on_render(service_name: str = None) -> dict:
     }
 
 
-# ===== КОМАНДА ДЛЯ ПРОВЕРКИ КЛЮЧА =====
+# ===== КОМАНДЫ ДЛЯ ДИАГНОСТИКИ =====
 @bot.message_handler(commands=['check_key'])
 def check_key(message):
     key = os.environ.get("RENDER_API_KEY")
@@ -282,6 +320,43 @@ def check_key(message):
         bot.reply_to(message, f"✅ RENDER_API_KEY найден в переменных!\n\nПервые 5 символов: `{key[:5]}...`\nДлина: {len(key)}", parse_mode="Markdown")
     else:
         bot.reply_to(message, "❌ RENDER_API_KEY НЕ найден в переменных окружения!\n\nПроверь:\n1. Вкладка Environment в Render\n2. Название переменной: `RENDER_API_KEY`\n3. Нажми Save Changes и перезапусти сервис")
+
+@bot.message_handler(commands=['debug_render'])
+def debug_render(message):
+    """Детальная диагностика Render API"""
+    if not RENDER_API_KEY:
+        bot.reply_to(message, "❌ RENDER_API_KEY не найден")
+        return
+    
+    status_msg = bot.reply_to(message, "📡 Получение данных от Render API...")
+    
+    try:
+        headers = {"Authorization": f"Bearer {RENDER_API_KEY}"}
+        resp = requests.get("https://api.render.com/v1/services", headers=headers, timeout=30)
+        
+        if resp.status_code == 200:
+            data = resp.json()
+            bot.edit_message_text(
+                f"✅ **Render API ответил**\n\n"
+                f"Тип ответа: `{type(data).__name__}`\n"
+                f"Количество элементов: {len(data) if isinstance(data, list) else 'не список'}\n\n"
+                f"**Первые 500 символов ответа:**\n```json\n{str(data)[:1500]}\n```",
+                chat_id=message.chat.id,
+                message_id=status_msg.message_id,
+                parse_mode="Markdown"
+            )
+        else:
+            bot.edit_message_text(
+                f"❌ Ошибка {resp.status_code}\n\n{resp.text[:500]}",
+                chat_id=message.chat.id,
+                message_id=status_msg.message_id
+            )
+    except Exception as e:
+        bot.edit_message_text(
+            f"❌ Исключение: {str(e)}",
+            chat_id=message.chat.id,
+            message_id=status_msg.message_id
+        )
 
 @bot.message_handler(commands=['test_render_api'])
 def test_render_api(message):
@@ -299,8 +374,8 @@ def test_render_api(message):
         
         if resp.status_code == 200:
             services = resp.json()
-            if services:
-                names = [s["name"] for s in services[:5]]
+            if services and isinstance(services, list):
+                names = [s.get("name", "без имени") for s in services[:5]]
                 bot.edit_message_text(
                     f"✅ **Render API работает!**\n\n"
                     f"Статус: {resp.status_code}\n"
@@ -312,7 +387,7 @@ def test_render_api(message):
                 )
             else:
                 bot.edit_message_text(
-                    f"✅ Render API работает, но сервисов нет\n\nСтатус: {resp.status_code}",
+                    f"✅ Render API ответил, но формат данных неожиданный\n\nСтатус: {resp.status_code}\nОтвет: {str(services)[:300]}",
                     chat_id=message.chat.id,
                     message_id=status_msg.message_id
                 )
@@ -361,7 +436,7 @@ def setup_command(message):
             f"• RENDER_API_KEY в переменных Render\n"
             f"• Название переменной: `RENDER_API_KEY`\n"
             f"• Ключ должен начинаться с `rnd_`\n\n"
-            f"Попробуй `/test_render_api` для диагностики",
+            f"Попробуй `/debug_render` для диагностики",
             chat_id=message.chat.id,
             message_id=status_msg.message_id,
             parse_mode="Markdown"
@@ -388,19 +463,16 @@ def setup_full_command(message):
     
     results = []
     
-    # Шаг 1: Проверяем GitHub токен
     if not GITHUB_TOKEN:
         results.append("❌ GitHub: GITHUB_TOKEN не настроен в переменных Render")
     else:
         results.append("✅ GitHub: токен найден")
     
-    # Шаг 2: Проверяем Render токен
     if not RENDER_API_KEY:
         results.append("❌ Render: RENDER_API_KEY не настроен в переменных Render")
     else:
         results.append("✅ Render: токен найден")
     
-    # Шаг 3: Устанавливаем Camoufox на Render
     if RENDER_API_KEY:
         render_result = agent_install_camoufox_on_render(service_name)
         
@@ -504,8 +576,9 @@ def start(message):
         "✅ Бот-агент с доступом к Render и GitHub!\n\n"
         "📌 **Команды:**\n"
         "/check_key - проверить наличие RENDER_API_KEY\n"
+        "/debug_render - детальная диагностика Render API\n"
         "/test_render_api - тест подключения к Render API\n"
-        "/setup [имя_сервиса] - установить Camoufox на Render\n"
+        "/setup [имя] - установить Camoufox на Render\n"
         "/setup_full репо сервис - полная настройка\n"
         "/ai [вопрос] - спросить ИИ\n"
         "/browse [запрос] - поиск в интернете\n"
@@ -523,6 +596,7 @@ def help_command(message):
         "🤖 **Команды бота:**\n\n"
         "**🔑 Диагностика:**\n"
         "/check_key - проверить наличие RENDER_API_KEY\n"
+        "/debug_render - детальная диагностика Render API\n"
         "/test_render_api - тест подключения к Render API\n\n"
         "**🦊 Установка Camoufox:**\n"
         "/setup - установить на первый сервис\n"
