@@ -1,2 +1,5 @@
-python-telegram-bot>=21.0
-requests>=2.31.0
+python-telegram-bot==20.7
+openai==1.30.3
+requests
+flask==3.0.0
+gunicorn==21.2.0
