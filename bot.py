@@ -4,6 +4,7 @@ import logging
 import json
 import requests
 import threading
+import urllib.parse
 from flask import Flask, request
 import telebot
 
@@ -37,36 +38,27 @@ except Exception as e:
 
 # ===== ЛОГИ В ЧАТ =====
 def send_log_to_admin(action, details=None, status="info"):
-    """Отправляет лог в Telegram админу"""
     if not ADMIN_CHAT_ID:
         return
-    
     emoji = "✅" if status == "success" else "🔴" if status == "error" else "ℹ️"
     timestamp = time.strftime("%H:%M:%S")
-    
     try:
         bot.send_message(ADMIN_CHAT_ID, f"{emoji} [{timestamp}] {action}: {details}")
     except:
         pass
 
 def log_action(action, details=None, status="info", send=True):
-    """Логирование действия с отправкой в чат"""
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     log_entry = {"timestamp": timestamp, "action": action, "status": status, "details": details}
-    
-    # Пишем в файл
     try:
         with open("agent_actions.log", "a") as f:
             f.write(json.dumps(log_entry) + "\n")
     except:
         pass
-    
-    # Отправляем в Telegram
     if send:
         send_log_to_admin(action, details, status)
 
 def get_last_errors(limit=5):
-    """Читает последние ошибки из логов"""
     try:
         if not os.path.exists("agent_actions.log"):
             return []
@@ -86,77 +78,60 @@ def get_last_errors(limit=5):
     except:
         return []
 
-# ===== ФУНКЦИИ ДЛЯ ВЕБ-СЕРФИНГА =====
-def search_web(query, num_results=3):
-    """Поиск в интернете через DuckDuckGo"""
+# ===== ПОИСК ЧЕРЕЗ WIKIPEDIA =====
+def search_wikipedia(query, num_results=5):
+    """Поиск в Wikipedia"""
     try:
-        from urllib.parse import quote_plus
-        search_url = f"https://lite.duckduckgo.com/lite/?q={quote_plus(query)}"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        resp = requests.get(search_url, headers=headers, timeout=15)
-        
+        url = f"https://ru.wikipedia.org/w/api.php?action=query&list=search&srsearch={urllib.parse.quote(query)}&format=json"
+        resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
-            import re
-            results = []
-            links = re.findall(r'<a href="(https?://[^"]+)"', resp.text)
-            titles = re.findall(r'<td class="result-snippet">([^<]+)‹', resp.text)
-            
-            for i in range(min(num_results, len(links))):
-                title = titles[i] if i < len(titles) else "Результат"
-                results.append({"title": title, "url": links[i]})
-            return results
+            data = resp.json()
+            results = data.get('query', {}).get('search', [])
+            return results[:num_results]
         return []
     except Exception as e:
         log_action("search_error", str(e), "error")
         return []
 
-def get_page_content(url):
-    """Получает содержимое страницы"""
+def get_wikipedia_page(title):
+    """Получает содержимое страницы Wikipedia"""
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        resp = requests.get(url, headers=headers, timeout=15)
+        url = f"https://ru.wikipedia.org/w/api.php?action=query&prop=extracts&exintro&explaintext&titles={urllib.parse.quote(title)}&format=json"
+        resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
-            import re
-            text = re.sub(r'<[^>]+>', ' ', resp.text)
-            text = re.sub(r'\s+', ' ', text)
-            return text[:3000]
+            data = resp.json()
+            pages = data.get('query', {}).get('pages', {})
+            for page_id, page_data in pages.items():
+                if 'extract' in page_data:
+                    return page_data['extract'][:2000]
         return ""
     except:
         return ""
 
 # ===== ФУНКЦИЯ САМОУЛУЧШЕНИЯ =====
 def research_and_improve():
-    """Фоновый процесс самообучения"""
     log_action("self_improvement", "Начинаю поиск улучшений", "info")
-    
     errors = get_last_errors(3)
     if not errors:
         log_action("self_improvement", "Ошибок не найдено", "success")
         return
-    
     error_text = "\n".join(errors)
     log_action("self_improvement", f"Найдены ошибки: {error_text[:200]}", "warning")
+    log_action("self_improvement", "Поиск решений через Wikipedia...", "info")
     
-    search_query = f"Python telebot error fix {error_text[:100]}"
-    log_action("self_improvement", f"Ищу решение: {search_query}", "info")
-    
-    results = search_web(search_query, 2)
-    if not results:
+    # Ищем решение в Wikipedia
+    results = search_wikipedia(f"Python {error_text[:50]}", 2)
+    if results:
+        log_action("self_improvement", f"Найдено {len(results)} возможных статей", "success")
+        for r in results:
+            title = r.get('title', '')
+            content = get_wikipedia_page(title)
+            if content:
+                log_action("solution_found", f"{title}: {content[:200]}...", "info")
+    else:
         log_action("self_improvement", "Решений не найдено", "warning")
-        return
-    
-    solutions = []
-    for result in results:
-        content = get_page_content(result["url"])
-        if content:
-            solutions.append(content[:1000])
-    
-    if solutions:
-        log_action("self_improvement", f"Найдено {len(solutions)} решений", "success")
-        log_action("solution_example", solutions[0][:300], "info")
 
 def start_self_improvement_loop():
-    """Запускает цикл самообучения раз в час"""
     def loop():
         while True:
             time.sleep(3600)
@@ -165,19 +140,17 @@ def start_self_improvement_loop():
                 research_and_improve()
             except Exception as e:
                 log_action("auto_improve_error", str(e), "error")
-    
     thread = threading.Thread(target=loop, daemon=True)
     thread.start()
     log_action("self_improvement", "Фоновое самообучение запущено", "success")
 
-# Запускаем фоновое самообучение
 start_self_improvement_loop()
 
 # ===== КОМАНДЫ =====
 @bot.message_handler(commands=['start', 'help'])
 def menu_command(message):
     log_action("menu", f"user={message.from_user.id}", "info")
-    bot.reply_to(message, "📋 МЕНЮ БОТА\n\n/ai [вопрос] - спросить ИИ\n/status_full - полный статус\n/evolve - запустить самообучение\n/search [запрос] - поиск в интернете\n/read [url] - прочитать страницу\n/logs - показать последние логи")
+    bot.reply_to(message, "📋 МЕНЮ БОТА\n\n/ai [вопрос] - спросить ИИ\n/status_full - полный статус\n/evolve - запустить самообучение\n/search [запрос] - поиск в Wikipedia\n/read [запрос] - читать статью\n/logs - показать логи")
 
 @bot.message_handler(commands=['ai'])
 def ai_command(message):
@@ -206,7 +179,7 @@ def ai_command(message):
         if r.status_code == 200:
             answer = r.json()["choices"][0]["message"]["content"]
             bot.edit_message_text(answer, chat_id=message.chat.id, message_id=status_msg.message_id)
-            log_action("ai_response", f"ответ отправлен", "success")
+            log_action("ai_response", "ответ отправлен", "success")
         else:
             log_action("ai_api_error", f"status {r.status_code}", "error")
             bot.edit_message_text(f"API error: {r.status_code}", chat_id=message.chat.id, message_id=status_msg.message_id)
@@ -216,9 +189,8 @@ def ai_command(message):
 
 @bot.message_handler(commands=['evolve'])
 def evolve_command(message):
-    """Запускает процесс самообучения вручную"""
     log_action("evolve", f"user={message.from_user.id} запустил самообучение", "info")
-    status_msg = bot.reply_to(message, "🧬 Агент начал самоанализ и поиск улучшений...")
+    status_msg = bot.reply_to(message, "🧬 Агент начал самоанализ...")
     
     def do_research():
         research_and_improve()
@@ -233,51 +205,55 @@ def evolve_command(message):
 def search_command(message):
     query = message.text.replace('/search', '').strip()
     if not query:
-        bot.reply_to(message, "/search [запрос]\nПример: /search как работает ИИ")
+        bot.reply_to(message, "/search [запрос]\nПример: /search искусственный интеллект")
         return
     
     log_action("search", f"user={message.from_user.id} поиск: {query}", "info")
-    status_msg = bot.reply_to(message, f"🔍 Ищу: {query}")
+    status_msg = bot.reply_to(message, f"🔍 Ищу в Wikipedia: {query}")
     
-    results = search_web(query, 5)
+    results = search_wikipedia(query, 5)
     if not results:
-        log_action("search_no_results", query, "warning")
         bot.edit_message_text("❌ Ничего не найдено", chat_id=message.chat.id, message_id=status_msg.message_id)
+        log_action("search_no_results", query, "warning")
         return
     
-    response = f"🔍 РЕЗУЛЬТАТЫ ПОИСКА: {query}\n\n"
+    response = f"🔍 РЕЗУЛЬТАТЫ ПОИСКА (Wikipedia): {query}\n\n"
     for i, r in enumerate(results, 1):
-        response += f"{i}. {r['title']}\n{r['url']}\n\n"
+        title = r.get('title', 'Без названия')
+        response += f"{i}. {title}\nhttps://ru.wikipedia.org/wiki/{title.replace(' ', '_')}\n\n"
     
     bot.edit_message_text(response[:4000], chat_id=message.chat.id, message_id=status_msg.message_id)
     log_action("search_success", f"найдено {len(results)} результатов", "success")
 
 @bot.message_handler(commands=['read'])
 def read_command(message):
-    url = message.text.replace('/read', '').strip()
-    if not url:
-        bot.reply_to(message, "/read [url]\nПример: /read https://example.com")
+    query = message.text.replace('/read', '').strip()
+    if not query:
+        bot.reply_to(message, "/read [название статьи]\nПример: /read Искусственный интеллект")
         return
     
-    if not url.startswith('http'):
-        url = 'https://' + url
+    log_action("read", f"user={message.from_user.id} читает: {query}", "info")
+    status_msg = bot.reply_to(message, f"📖 Читаю статью: {query}")
     
-    log_action("read", f"user={message.from_user.id} читает {url}", "info")
-    status_msg = bot.reply_to(message, f"📖 Читаю: {url}")
+    # Сначала ищем статью
+    results = search_wikipedia(query, 1)
+    if not results:
+        bot.edit_message_text("❌ Статья не найдена", chat_id=message.chat.id, message_id=status_msg.message_id)
+        return
     
-    content = get_page_content(url)
+    title = results[0].get('title', query)
+    content = get_wikipedia_page(title)
+    
     if content:
-        bot.edit_message_text(f"📄 СОДЕРЖИМОЕ:\n\n{content[:3000]}", 
-                              chat_id=message.chat.id, message_id=status_msg.message_id)
+        response = f"📄 СТАТЬЯ: {title}\n\n{content[:3000]}"
+        bot.edit_message_text(response, chat_id=message.chat.id, message_id=status_msg.message_id)
         log_action("read_success", f"прочитано {len(content)} символов", "success")
     else:
-        log_action("read_error", f"не удалось прочитать {url}", "error")
-        bot.edit_message_text("❌ Не удалось прочитать страницу", 
-                              chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text("❌ Не удалось прочитать статью", chat_id=message.chat.id, message_id=status_msg.message_id)
+        log_action("read_error", f"не удалось прочитать {title}", "error")
 
 @bot.message_handler(commands=['logs'])
 def logs_command(message):
-    """Показывает последние логи в чате"""
     log_action("logs", f"user={message.from_user.id} запросил логи", "info")
     
     try:
@@ -288,9 +264,7 @@ def logs_command(message):
             bot.reply_to(message, "📭 Логов пока нет")
             return
         
-        # Берём последние 20 строк
         last_logs = lines[-20:]
-        
         response = "📋 ПОСЛЕДНИЕ ЛОГИ:\n\n"
         for line in last_logs:
             try:
@@ -302,7 +276,7 @@ def logs_command(message):
         
         bot.reply_to(message, response[:4000])
     except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка чтения логов: {e}")
+        bot.reply_to(message, f"❌ Ошибка: {e}")
 
 # ===== ВЕБХУК =====
 @app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
