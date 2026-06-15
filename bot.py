@@ -22,6 +22,20 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 RENDER_API_KEY = os.environ.get("RENDER_API_KEY")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
+# ===== ДИАГНОСТИКА =====
+logger.info("=" * 50)
+logger.info("DIAGNOSTIC START")
+logger.info(f"TELEGRAM_TOKEN exists: {bool(TELEGRAM_TOKEN)}")
+logger.info(f"OPENROUTER_API_KEY exists: {bool(OPENROUTER_API_KEY)}")
+logger.info(f"GITHUB_TOKEN exists: {bool(GITHUB_TOKEN)}")
+logger.info(f"RENDER_API_KEY exists: {bool(RENDER_API_KEY)}")
+if RENDER_API_KEY:
+    logger.info(f"RENDER_API_KEY first 5 chars: {RENDER_API_KEY[:5]}")
+    logger.info(f"RENDER_API_KEY length: {len(RENDER_API_KEY)}")
+else:
+    logger.warning("RENDER_API_KEY NOT FOUND in environment variables!")
+logger.info("=" * 50)
+
 if not TELEGRAM_TOKEN:
     raise ValueError("❌ TELEGRAM_BOT_TOKEN не задан!")
 
@@ -147,15 +161,21 @@ def github_list_repos() -> list:
 # ===== ФУНКЦИИ ДЛЯ RENDER =====
 def render_list_services() -> list:
     if not RENDER_API_KEY:
+        logger.error("RENDER_API_KEY не настроен в render_list_services")
         return []
     url = "https://api.render.com/v1/services"
     headers = {"Authorization": f"Bearer {RENDER_API_KEY}"}
     try:
+        logger.info(f"Запрос к Render API: {url}")
         resp = requests.get(url, headers=headers, timeout=30)
+        logger.info(f"Ответ Render API: статус {resp.status_code}")
         if resp.status_code == 200:
             return [{"id": s["id"], "name": s["name"], "url": s.get("serviceDetails", {}).get("url", "N/A")} for s in resp.json()]
+        else:
+            logger.error(f"Ошибка Render API: {resp.text}")
         return []
-    except Exception:
+    except Exception as e:
+        logger.error(f"Исключение в render_list_services: {e}")
         return []
 
 def render_restart_service(service_id: str) -> dict:
@@ -204,10 +224,13 @@ def agent_install_camoufox_on_render(service_name: str = None) -> dict:
     """Агент сам заходит на Render и устанавливает Camoufox"""
     logger.info("🦊 Агент начал установку Camoufox на Render...")
     
+    if not RENDER_API_KEY:
+        return {"error": "RENDER_API_KEY не настроен в переменных окружения"}
+    
     # 1. Получаем список сервисов
     services = render_list_services()
     if not services:
-        return {"error": "Нет сервисов на Render или RENDER_API_KEY не настроен"}
+        return {"error": "Нет сервисов на Render. Проверь что API ключ правильный и есть сервисы"}
     
     # 2. Находим нужный сервис
     target_service = None
@@ -219,7 +242,7 @@ def agent_install_camoufox_on_render(service_name: str = None) -> dict:
     if not target_service:
         return {"error": f"Сервис '{service_name}' не найден. Доступные: {', '.join([s['name'] for s in services])}"}
     
-    logger.info(f"📡 Найден сервис: {target_service['name']}")
+    logger.info(f"📡 Найден сервис: {target_service['name']} (ID: {target_service['id']})")
     
     # 3. Добавляем переменные окружения для Camoufox
     camouflage_envs = [
@@ -251,6 +274,65 @@ def agent_install_camoufox_on_render(service_name: str = None) -> dict:
     }
 
 
+# ===== КОМАНДА ДЛЯ ПРОВЕРКИ КЛЮЧА =====
+@bot.message_handler(commands=['check_key'])
+def check_key(message):
+    key = os.environ.get("RENDER_API_KEY")
+    if key:
+        bot.reply_to(message, f"✅ RENDER_API_KEY найден в переменных!\n\nПервые 5 символов: `{key[:5]}...`\nДлина: {len(key)}", parse_mode="Markdown")
+    else:
+        bot.reply_to(message, "❌ RENDER_API_KEY НЕ найден в переменных окружения!\n\nПроверь:\n1. Вкладка Environment в Render\n2. Название переменной: `RENDER_API_KEY`\n3. Нажми Save Changes и перезапусти сервис")
+
+@bot.message_handler(commands=['test_render_api'])
+def test_render_api(message):
+    """Тест прямого запроса к Render API"""
+    key = os.environ.get("RENDER_API_KEY")
+    if not key:
+        bot.reply_to(message, "❌ RENDER_API_KEY не найден")
+        return
+    
+    status_msg = bot.reply_to(message, "📡 Тестирую подключение к Render API...")
+    
+    try:
+        headers = {"Authorization": f"Bearer {key}"}
+        resp = requests.get("https://api.render.com/v1/services", headers=headers, timeout=30)
+        
+        if resp.status_code == 200:
+            services = resp.json()
+            if services:
+                names = [s["name"] for s in services[:5]]
+                bot.edit_message_text(
+                    f"✅ **Render API работает!**\n\n"
+                    f"Статус: {resp.status_code}\n"
+                    f"Найдено сервисов: {len(services)}\n"
+                    f"Первые 5: {', '.join(names)}",
+                    chat_id=message.chat.id,
+                    message_id=status_msg.message_id,
+                    parse_mode="Markdown"
+                )
+            else:
+                bot.edit_message_text(
+                    f"✅ Render API работает, но сервисов нет\n\nСтатус: {resp.status_code}",
+                    chat_id=message.chat.id,
+                    message_id=status_msg.message_id
+                )
+        else:
+            bot.edit_message_text(
+                f"❌ **Ошибка Render API**\n\n"
+                f"Статус: {resp.status_code}\n"
+                f"Ответ: {resp.text[:200]}",
+                chat_id=message.chat.id,
+                message_id=status_msg.message_id,
+                parse_mode="Markdown"
+            )
+    except Exception as e:
+        bot.edit_message_text(
+            f"❌ **Исключение:** {str(e)}",
+            chat_id=message.chat.id,
+            message_id=status_msg.message_id
+        )
+
+
 @bot.message_handler(commands=['setup'])
 def setup_command(message):
     """Агент сам подключается к Render и устанавливает Camoufox"""
@@ -267,9 +349,7 @@ def setup_command(message):
             f"📡 **Сервис:** {result['service']}\n"
             f"🔗 **URL:** {result['service_url']}\n"
             f"📊 **Добавлено переменных:** {result['env_vars_added']}/5\n\n"
-            f"🔄 Сервис перезапущен. Camoufox готов к использованию через 1-2 минуты.\n\n"
-            f"📌 Теперь можешь использовать:\n"
-            f"/google [запрос] - поиск через Google (с обходом блокировок)",
+            f"🔄 Сервис перезапущен. Camoufox готов к использованию через 1-2 минуты.",
             chat_id=message.chat.id,
             message_id=status_msg.message_id,
             parse_mode="Markdown"
@@ -277,9 +357,11 @@ def setup_command(message):
     else:
         bot.edit_message_text(
             f"❌ **Ошибка:** {result.get('error')}\n\n"
-            f"Проверь что в переменных Render есть:\n"
-            f"• `RENDER_API_KEY` - API ключ от Render\n"
-            f"• `GITHUB_TOKEN` - токен GitHub (для обновления кода)",
+            f"Проверь:\n"
+            f"• RENDER_API_KEY в переменных Render\n"
+            f"• Название переменной: `RENDER_API_KEY`\n"
+            f"• Ключ должен начинаться с `rnd_`\n\n"
+            f"Попробуй `/test_render_api` для диагностики",
             chat_id=message.chat.id,
             message_id=status_msg.message_id,
             parse_mode="Markdown"
@@ -319,13 +401,14 @@ def setup_full_command(message):
         results.append("✅ Render: токен найден")
     
     # Шаг 3: Устанавливаем Camoufox на Render
-    render_result = agent_install_camoufox_on_render(service_name)
-    
-    if "success" in render_result:
-        results.append(f"✅ Render: Camoufox установлен на {render_result['service']}")
-        results.append(f"📊 Добавлено переменных: {render_result['env_vars_added']}/5")
-    else:
-        results.append(f"❌ Render: {render_result.get('error')}")
+    if RENDER_API_KEY:
+        render_result = agent_install_camoufox_on_render(service_name)
+        
+        if "success" in render_result:
+            results.append(f"✅ Render: Camoufox установлен на {render_result['service']}")
+            results.append(f"📊 Добавлено переменных: {render_result['env_vars_added']}/5")
+        else:
+            results.append(f"❌ Render: {render_result.get('error')}")
     
     bot.edit_message_text(
         "🔧 **Результаты настройки:**\n\n" + "\n".join(results) + "\n\n"
@@ -420,12 +503,14 @@ def start(message):
         message,
         "✅ Бот-агент с доступом к Render и GitHub!\n\n"
         "📌 **Команды:**\n"
-        "/setup [имя_сервиса] - Агент установит Camoufox на Render\n"
-        "/setup_full репо сервис - Полная настройка (GitHub + Render)\n"
+        "/check_key - проверить наличие RENDER_API_KEY\n"
+        "/test_render_api - тест подключения к Render API\n"
+        "/setup [имя_сервиса] - установить Camoufox на Render\n"
+        "/setup_full репо сервис - полная настройка\n"
         "/ai [вопрос] - спросить ИИ\n"
         "/browse [запрос] - поиск в интернете\n"
         "/github list - список репозиториев\n"
-        "/render list - список сервисов на Render\n"
+        "/render list - список сервисов\n"
         "/models - список моделей ИИ\n"
         "/help - помощь",
         parse_mode="Markdown"
@@ -436,10 +521,13 @@ def help_command(message):
     bot.reply_to(
         message,
         "🤖 **Команды бота:**\n\n"
+        "**🔑 Диагностика:**\n"
+        "/check_key - проверить наличие RENDER_API_KEY\n"
+        "/test_render_api - тест подключения к Render API\n\n"
         "**🦊 Установка Camoufox:**\n"
-        "/setup - установить Camoufox на первый сервис Render\n"
-        "/setup имя_сервиса - установить на конкретный сервис\n"
-        "/setup_full репо сервис - обновить GitHub + установить Camoufox\n\n"
+        "/setup - установить на первый сервис\n"
+        "/setup имя - установить на конкретный сервис\n"
+        "/setup_full репо сервис - полная настройка\n\n"
         "**🧠 ИИ и поиск:**\n"
         "/ai [вопрос] - задать вопрос ИИ\n"
         "/browse [запрос] - поиск в интернете\n\n"
@@ -514,7 +602,7 @@ def render_command(message):
         bot.reply_to(message, "❌ Нет сервисов или RENDER_API_KEY не настроен")
         return
     
-    result = "🖥️ **Сервисы на Render:**\n\n" + "\n".join([f"• {s['name']}" for s in services])
+    result = "🖥️ **Сервисы на Render:**\n\n" + "\n".join([f"• {s['name']} - {s['url']}" for s in services])
     bot.reply_to(message, result, parse_mode="Markdown")
 
 @bot.message_handler(commands=['models'])
