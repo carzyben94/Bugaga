@@ -56,9 +56,7 @@ def menu_command(message):
 /ai [вопрос] — спросить ИИ
 
 **📊 МОНИТОРИНГ**
-/status_full — полный статус бота
-
-💡 Напиши /status_full для полной статистики"""
+/status_full — полный статус бота"""
     bot.reply_to(message, menu_text, parse_mode="Markdown")
 
 @bot.message_handler(commands=['ai'])
