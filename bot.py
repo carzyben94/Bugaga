@@ -1,32 +1,18 @@
 import os
-import telebot
-from flask import Flask, request
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
 
-TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')  # ← изменено
-bot = telebot.TeleBot(TOKEN)
-app = Flask(__name__)
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
 
-@bot.message_handler(commands=['start'])
-def start(message):
-    bot.reply_to(message, "Бот работает!")
+@dp.message(Command("start"))
+async def start_cmd(message: types.Message):
+    await message.answer("Бот работает")
 
-@bot.message_handler(func=lambda m: True)
-def echo(message):
-    bot.reply_to(message, f"Вы: {message.text}")
+async def main():
+    await dp.start_polling(bot)
 
-@app.route(f'/webhook/{TOKEN}', methods=['POST'])
-def webhook():
-    if request.json:
-        update = telebot.types.Update.de_json(request.get_data().decode())
-        bot.process_new_updates([update])
-    return "ok", 200
-
-@app.route('/')
-def home():
-    return "Bot is running"
-
-if __name__ == '__main__':
-    url = f"https://{os.getenv('RENDER_EXTERNAL_URL')}/webhook/{TOKEN}"
-    bot.remove_webhook()
-    bot.set_webhook(url=url)
-    app.run(host='0.0.0.0', port=8080)
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
