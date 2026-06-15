@@ -27,7 +27,7 @@ if not TELEGRAM_TOKEN:
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
-# ===== ПОДКЛЮЧАЕМ СТАТУС ИЗ ОТДЕЛЬНОГО ФАЙЛА =====
+# ===== ПОДКЛЮЧАЕМ СТАТУС =====
 try:
     from status import register_status_full
     register_status_full(bot)
@@ -35,19 +35,18 @@ try:
 except ImportError as e:
     logger.warning(f"❌ Не удалось загрузить status: {e}")
 
-# ===== ЛОГИРОВАНИЕ ДЕЙСТВИЙ =====
+# ===== ЛОГИРОВАНИЕ =====
 def log_action(action, details=None, status="info"):
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     log_entry = {"timestamp": timestamp, "action": action, "status": status, "details": details}
     try:
         with open("agent_actions.log", "a", encoding="utf-8") as f:
             f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
-        logger.info(f"[ЛОГ] {action}: {details}")
-    except Exception as e:
-        logger.error(f"Ошибка записи лога: {e}")
+    except:
+        pass
 
 # ===== КОМАНДЫ =====
-@bot.message_handler(commands=['start', 'help', 'menu'])
+@bot.message_handler(commands=['start', 'help'])
 def menu_command(message):
     log_action("command_menu", f"user_id={message.from_user.id}")
     menu_text = """📋 **МЕНЮ БОТА**
