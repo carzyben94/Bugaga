@@ -84,37 +84,20 @@ def ask_ai(prompt, model_index=0):
         return ask_ai(prompt, model_index + 1)
 
 
-# ===== МЕНЮ В ОДНОМ ОКНЕ =====
-MENU_TEXT = """
-🤖 **Бот с ИИ работает!**
-
-📌 **Команды:**
-
-/ai [вопрос] - спросить ИИ
-/models - список доступных моделей
-
-🔄 При лимите бот сам переключит модель
-
----
-
-**Примеры:**
-/ai Как работает ИИ?
-/ai Напиши стих про кота
-/ai Объясни квантовую физику
-
-**Модели:** openrouter/free, Llama 3.3 70B, Nemotron 3 Ultra, GPT-OSS-120B, Gemma 4 31B и ещё 11 моделей
-"""
-
 # ===== КОМАНДЫ =====
-@bot.message_handler(commands=['start'])
-def start(message):
-    bot.reply_to(message, MENU_TEXT, parse_mode="Markdown")
+@bot.message_handler(commands=['help'])
+def help_command(message):
+    bot.reply_to(
+        message,
+        "/ai [вопрос] - спросить ИИ\n"
+        "/models - список моделей"
+    )
 
 @bot.message_handler(commands=['ai'])
 def ai_command(message):
     user_text = message.text.replace('/ai', '').strip()
     if not user_text:
-        bot.reply_to(message, "❌ Напиши вопрос после /ai\n\nПример: /ai Как работает ИИ?")
+        bot.reply_to(message, "/ai [вопрос]")
         return
     
     bot.send_chat_action(message.chat.id, 'typing')
@@ -129,9 +112,8 @@ def models_command(message):
     models_list = "\n".join([f"• {m.replace(':free', '')}" for m in FREE_MODELS])
     bot.reply_to(
         message,
-        f"🤖 **Доступные модели (июнь 2026):**\n\n{models_list}\n\n"
-        f"📊 Всего: {len(FREE_MODELS)} моделей\n"
-        f"🔄 При лимите автоматическое переключение"
+        f"🤖 **Модели ИИ:**\n\n{models_list}\n\n"
+        f"📊 Всего: {len(FREE_MODELS)} моделей"
     )
 
 
