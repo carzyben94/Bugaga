@@ -391,6 +391,9 @@ def logs_command(message):
     
     bot.reply_to(message, log_text[:4000], parse_mode="Markdown")
 
+@bot.message_handler(commands=['privet'])
+def privet_command(message):
+    bot.reply_to(message, "привет")
 @bot.message_handler(commands=['clearlogs'])
 def clearlogs_command(message):
     if clear_agent_logs():
