@@ -4,6 +4,7 @@ import requests
 import json
 import base64
 import time
+import threading
 from datetime import datetime
 from flask import Flask, request
 import telebot
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 # ===== ЛОГИ ДЕЙСТВИЙ АГЕНТА =====
 AGENT_LOG_FILE = "agent_actions.log"
+start_time = time.time()
 
 def log_agent_action(action, details=None, status="info"):
     """Записывает действие агента в файл логов"""
@@ -24,7 +26,6 @@ def log_agent_action(action, details=None, status="info"):
         "status": status,
         "details": details
     }
-    
     try:
         with open(AGENT_LOG_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
@@ -58,12 +59,12 @@ def clear_agent_logs():
     except:
         return False
 
-
+# ===== ПРОВЕРКА КЛЮЧЕЙ =====
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-# ===== ДОПОЛНИТЕЛЬНЫЕ ПЕРЕМЕННЫЕ ДЛЯ РЕКУРСИВНОСТИ =====
+# ===== ДОПОЛНИТЕЛЬНЫЕ ПЕРЕМЕННЫЕ =====
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 RENDER_API_KEY = os.environ.get("RENDER_API_KEY")
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "carzyben94/Bugaga")
@@ -75,8 +76,8 @@ if not TELEGRAM_TOKEN:
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
-# Логируем запуск бота
-log_agent_action("bot_start", f"Бот запущен на Render", "info")
+# Логируем запуск
+log_agent_action("bot_start", "Бот запущен", "success")
 
 # ===== АКТУАЛЬНЫЕ БЕСПЛАТНЫЕ МОДЕЛИ (июнь 2026) =====
 FREE_MODELS = [
@@ -150,11 +151,9 @@ def ask_ai(prompt, model_index=0):
         return ask_ai(prompt, model_index + 1)
 
 
-# ===== ФУНКЦИИ ДЛЯ РЕКУРСИВНОСТИ (РАБОТА С GITHUB И RENDER) =====
+# ===== ФУНКЦИИ ДЛЯ РАБОТЫ С GITHUB =====
 def github_get_file(path):
-    """Получает файл из репозитория"""
     if not GITHUB_TOKEN:
-        log_agent_action("github_error", "Нет GITHUB_TOKEN", "error")
         return None
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
     headers = {"Authorization": f"Bearer {GITHUB_TOKEN}"}
@@ -163,18 +162,13 @@ def github_get_file(path):
         if resp.status_code == 200:
             data = resp.json()
             content = base64.b64decode(data["content"]).decode("utf-8")
-            log_agent_action("github_read", f"Файл {path}", "success")
             return {"content": content, "sha": data["sha"]}
-        else:
-            log_agent_action("github_read_error", f"Статус {resp.status_code}", "error")
     except Exception as e:
-        log_agent_action("github_exception", str(e), "error")
+        log_agent_action("github_error", str(e), "error")
     return None
 
 def github_update_file(path, content, commit_msg):
-    """Обновляет файл в репозитории"""
     if not GITHUB_TOKEN:
-        log_agent_action("github_error", "Нет GITHUB_TOKEN", "error")
         return False
     current = github_get_file(path)
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
@@ -185,78 +179,54 @@ def github_update_file(path, content, commit_msg):
     try:
         resp = requests.put(url, headers=headers, json=payload, timeout=30)
         if resp.status_code in (200, 201):
-            log_agent_action("github_write", f"Файл {path}: {commit_msg}", "success")
+            log_agent_action("github_write", f"{path}: {commit_msg[:50]}", "success")
             return True
-        else:
-            log_agent_action("github_write_error", f"Статус {resp.status_code}", "error")
     except Exception as e:
-        log_agent_action("github_exception", str(e), "error")
+        log_agent_action("github_write_error", str(e), "error")
     return False
 
+# ===== ФУНКЦИИ ДЛЯ РАБОТЫ С RENDER =====
 def render_restart():
-    """Перезапускает сервис на Render"""
     if not RENDER_API_KEY or not RENDER_SERVICE_ID:
-        log_agent_action("render_error", "Нет RENDER_API_KEY или RENDER_SERVICE_ID", "error")
         return False
     url = f"https://api.render.com/v1/services/{RENDER_SERVICE_ID}/restart"
     headers = {"Authorization": f"Bearer {RENDER_API_KEY}"}
     try:
         resp = requests.post(url, headers=headers, timeout=30)
         if resp.status_code == 200:
-            log_agent_action("render_restart", f"Сервис {RENDER_SERVICE_ID} перезапущен", "success")
+            log_agent_action("render_restart", f"Сервис {RENDER_SERVICE_ID}", "success")
             return True
-        else:
-            log_agent_action("render_restart_error", f"Статус {resp.status_code}", "error")
     except Exception as e:
-        log_agent_action("render_exception", str(e), "error")
+        log_agent_action("render_error", str(e), "error")
     return False
 
 def validate_code_syntax(code):
-    """Проверяет синтаксис Python кода"""
     try:
         compile(code, '<string>', 'exec')
         return True, None
     except SyntaxError as e:
         return False, str(e)
 
-def recursive_update(new_code, attempt=1, max_attempts=3):
-    """Рекурсивно обновляет код, проверяя синтаксис"""
-    log_agent_action("recursive_update_start", f"Попытка {attempt}/{max_attempts}", "info")
-    
-    # Проверяем синтаксис
-    is_valid, error = validate_code_syntax(new_code)
-    if not is_valid:
-        log_agent_action("syntax_error", error, "error")
-        if attempt < max_attempts:
-            # Просим ИИ исправить ошибку
-            prompt = f"Исправь синтаксическую ошибку в этом коде: {error}\n\nКод:\n{new_code}\n\nВерни только исправленный код."
-            fixed_code = ask_ai(prompt)
-            if fixed_code and fixed_code != new_code:
-                log_agent_action("ai_fix_attempt", f"Попытка {attempt+1}", "info")
-                return recursive_update(fixed_code, attempt + 1, max_attempts)
-        return False, f"Ошибка синтаксиса: {error}"
-    
-    # Сохраняем на GitHub
-    if not github_update_file("bot.py", new_code, f"Рекурсивное обновление: попытка {attempt}"):
-        return False, "Не удалось сохранить код на GitHub"
-    
-    log_agent_action("recursive_update_success", f"Код обновлён за {attempt} попыток", "success")
-    return True, "Код успешно обновлён"
-
-
-# ===== КОМАНДЫ =====
+# ===== ОСНОВНЫЕ КОМАНДЫ =====
 @bot.message_handler(commands=['help'])
 def help_command(message):
-    log_agent_action("command_help", f"Пользователь {message.from_user.id}", "info")
+    log_agent_action("help", f"User {message.from_user.id}", "info")
     bot.reply_to(
         message,
+        "📋 **Команды бота:**\n\n"
+        "**🤖 Основные:**\n"
         "/ai [вопрос] - спросить ИИ\n"
-        "/models - список моделей\n"
-        "/update [код] - обновить код бота (рекурсивно)\n"
-        "/restart - перезапустить сервер\n"
-        "/status - показать статус\n"
-        "/logs - показать логи действий агента\n"
-        "/clearlogs - очистить логи агента"
+        "/models - список моделей\n\n"
+        "**🔄 Управление:**\n"
+        "/addcmd [описание] - добавить новую команду\n"
+        "/update [код] - обновить код бота\n"
+        "/restart - перезапустить сервер\n\n"
+        "**📊 Мониторинг:**\n"
+        "/health - состояние бота\n"
+        "/status - статус ключей\n"
+        "/logs - логи агента\n"
+        "/clearlogs - очистить логи",
+        parse_mode="Markdown"
     )
 
 @bot.message_handler(commands=['ai'])
@@ -266,118 +236,168 @@ def ai_command(message):
         bot.reply_to(message, "/ai [вопрос]")
         return
     
-    log_agent_action("command_ai", f"Запрос: {user_text[:50]}...", "info")
+    log_agent_action("ai_query", user_text[:50], "info")
     bot.send_chat_action(message.chat.id, 'typing')
     status_msg = bot.reply_to(message, "🤔 Думаю...")
     
     answer = ask_ai(user_text)
-    
     bot.edit_message_text(answer, chat_id=message.chat.id, message_id=status_msg.message_id)
 
 @bot.message_handler(commands=['models'])
 def models_command(message):
-    log_agent_action("command_models", f"Пользователь {message.from_user.id}", "info")
     models_list = "\n".join([f"• {m.replace(':free', '')}" for m in FREE_MODELS])
-    bot.reply_to(
-        message,
-        f"🤖 **Модели ИИ:**\n\n{models_list}\n\n"
-        f"📊 Всего: {len(FREE_MODELS)} моделей"
-    )
+    bot.reply_to(message, f"🤖 **Модели ИИ (16 шт):**\n\n{models_list}")
 
+# ===== ДОБАВЛЕНИЕ КОМАНД =====
+@bot.message_handler(commands=['addcmd'])
+def addcmd_command(message):
+    user_input = message.text.replace('/addcmd', '').strip()
+    if not user_input:
+        bot.reply_to(message, "❌ /addcmd [описание команды]\n\nПример: /addcmd команда hello отвечает Привет")
+        return
+    
+    status_msg = bot.reply_to(message, "🔧 Создаю команду...")
+    
+    current = github_get_file("bot.py")
+    if not current:
+        bot.edit_message_text("❌ Не могу прочитать код", chat_id=message.chat.id, message_id=status_msg.message_id)
+        return
+    
+    prompt = f"""Создай команду для Telegram бота на Python с telebot.
+
+Описание: {user_input}
+
+Верни ТОЛЬКО код команды. Формат:
+@bot.message_handler(commands=['название'])
+def название_command(message):
+    bot.reply_to(message, "ответ")"""
+    
+    new_command = ask_ai(prompt)
+    
+    if not new_command or len(new_command) < 20:
+        bot.edit_message_text("❌ Не удалось создать команду", chat_id=message.chat.id, message_id=status_msg.message_id)
+        return
+    
+    old_code = current["content"]
+    lines = old_code.split('\n')
+    insert_pos = len(lines)
+    for i in range(len(lines) - 1, -1, -1):
+        if '@bot.message_handler' in lines[i]:
+            insert_pos = i
+            break
+    
+    new_lines = lines[:insert_pos] + [new_command] + lines[insert_pos:]
+    new_code = '\n'.join(new_lines)
+    
+    is_valid, error = validate_code_syntax(new_code)
+    if not is_valid:
+        bot.edit_message_text(f"❌ Ошибка синтаксиса: {error}", chat_id=message.chat.id, message_id=status_msg.message_id)
+        return
+    
+    if github_update_file("bot.py", new_code, f"Добавлена команда: {user_input[:50]}"):
+        log_agent_action("addcmd", user_input[:50], "success")
+        bot.edit_message_text("✅ Команда добавлена!\n🔄 Перезапуск...", chat_id=message.chat.id, message_id=status_msg.message_id)
+        render_restart()
+    else:
+        bot.edit_message_text("❌ Ошибка сохранения", chat_id=message.chat.id, message_id=status_msg.message_id)
+
+# ===== УПРАВЛЕНИЕ БОТОМ =====
 @bot.message_handler(commands=['update'])
 def update_command(message):
-    """Рекурсивное обновление кода бота"""
     new_code = message.text.replace('/update', '').strip()
     if not new_code:
         bot.reply_to(message, "❌ /update [новый_код]")
         return
     
-    log_agent_action("command_update", "Начало обновления кода", "info")
-    status_msg = bot.reply_to(message, "🔄 Рекурсивно обновляю код...")
+    status_msg = bot.reply_to(message, "🔄 Обновляю код...")
     
-    success, result = recursive_update(new_code)
+    is_valid, error = validate_code_syntax(new_code)
+    if not is_valid:
+        bot.edit_message_text(f"❌ Ошибка: {error}", chat_id=message.chat.id, message_id=status_msg.message_id)
+        return
     
-    if success:
-        log_agent_action("update_success", result, "success")
-        bot.edit_message_text(
-            f"✅ {result}\n🔄 Перезапускаю сервер...",
-            chat_id=message.chat.id,
-            message_id=status_msg.message_id
-        )
+    if github_update_file("bot.py", new_code, "Обновление через /update"):
+        log_agent_action("update", "Код обновлён", "success")
+        bot.edit_message_text("✅ Код обновлён!\n🔄 Перезапуск...", chat_id=message.chat.id, message_id=status_msg.message_id)
         render_restart()
     else:
-        log_agent_action("update_failed", result, "error")
-        bot.edit_message_text(
-            f"❌ {result}",
-            chat_id=message.chat.id,
-            message_id=status_msg.message_id
-        )
+        bot.edit_message_text("❌ Ошибка", chat_id=message.chat.id, message_id=status_msg.message_id)
 
 @bot.message_handler(commands=['restart'])
 def restart_command(message):
-    """Перезапуск сервера на Render"""
-    log_agent_action("command_restart", f"Пользователь {message.from_user.id}", "info")
-    status_msg = bot.reply_to(message, "🔄 Перезапускаю сервер...")
+    status_msg = bot.reply_to(message, "🔄 Перезапуск...")
     if render_restart():
         bot.edit_message_text("✅ Сервер перезапущен", chat_id=message.chat.id, message_id=status_msg.message_id)
     else:
-        bot.edit_message_text("❌ Не удалось перезапустить", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text("❌ Ошибка", chat_id=message.chat.id, message_id=status_msg.message_id)
+
+# ===== МОНИТОРИНГ =====
+@bot.message_handler(commands=['health'])
+def health_command(message):
+    uptime_seconds = time.time() - start_time
+    uptime_hours = int(uptime_seconds // 3600)
+    uptime_minutes = int((uptime_seconds % 3600) // 60)
+    
+    logs = get_agent_logs(500)
+    total_actions = len(logs)
+    errors = sum(1 for log in logs if log.get("status") == "error")
+    success_rate = round((total_actions - errors) / max(total_actions, 1) * 100)
+    
+    status = f"""📊 **Мониторинг бота**
+
+⏱️ **Работает:** {uptime_hours}ч {uptime_minutes}м
+📈 **Действий:** {total_actions}
+✅ **Успешность:** {success_rate}%
+❌ **Ошибок:** {errors}
+
+🔑 **Ключи:**
+• GitHub: {'✅' if GITHUB_TOKEN else '❌'}
+• Render: {'✅' if RENDER_API_KEY else '❌'}
+• OpenRouter: {'✅' if OPENROUTER_API_KEY else '❌'}
+
+🤖 **Моделей:** {len(FREE_MODELS)}
+📁 **Репозиторий:** {GITHUB_REPO or 'не задан'}
+"""
+    bot.reply_to(message, status, parse_mode="Markdown")
 
 @bot.message_handler(commands=['status'])
 def status_command(message):
-    """Показывает статус переменных окружения"""
-    log_agent_action("command_status", f"Пользователь {message.from_user.id}", "info")
     status = f"""📊 **Статус бота**
 
-Репозиторий: {GITHUB_REPO or 'не задан'}
-Render сервис: {RENDER_SERVICE_ID or 'не задан'}
-
-API ключи:
 GitHub: {'✅' if GITHUB_TOKEN else '❌'}
 Render: {'✅' if RENDER_API_KEY else '❌'}
 OpenRouter: {'✅' if OPENROUTER_API_KEY else '❌'}
 
-Всего моделей: {len(FREE_MODELS)}
+Репозиторий: {GITHUB_REPO or 'не задан'}
+Сервис: {RENDER_SERVICE_ID or 'не задан'}
+Моделей: {len(FREE_MODELS)}
 """
     bot.reply_to(message, status)
 
 @bot.message_handler(commands=['logs'])
 def logs_command(message):
-    """Показывает логи действий агента"""
-    log_agent_action("command_logs", f"Пользователь {message.from_user.id}", "info")
-    
     logs = get_agent_logs(30)
     if not logs:
-        bot.reply_to(message, "📭 Логов пока нет")
+        bot.reply_to(message, "📭 Логов нет")
         return
     
-    # Форматируем логи для вывода
-    log_text = "📋 **Последние действия агента:**\n\n"
-    for log in logs:
+    log_text = "📋 **Последние действия:**\n\n"
+    for log in logs[-15:]:
         if "raw" in log:
-            log_text += f"• {log['raw'][:100]}\n"
+            log_text += f"• {log['raw'][:80]}\n"
         else:
-            status_emoji = "✅" if log.get("status") == "success" else "⚠️" if log.get("status") == "warning" else "🔴" if log.get("status") == "error" else "ℹ️"
-            log_text += f"{status_emoji} `{log.get('timestamp', '')}` **{log.get('action', '')}**\n"
-            if log.get("details"):
-                details = str(log.get("details"))[:100]
-                log_text += f"   → {details}\n"
+            emoji = "✅" if log.get("status") == "success" else "⚠️" if log.get("status") == "warning" else "🔴" if log.get("status") == "error" else "ℹ️"
+            log_text += f"{emoji} {log.get('action', '')}\n"
     
-    if len(log_text) > 4000:
-        log_text = log_text[:4000] + "..."
-    
-    bot.reply_to(message, log_text, parse_mode="Markdown")
+    bot.reply_to(message, log_text[:4000], parse_mode="Markdown")
 
 @bot.message_handler(commands=['clearlogs'])
 def clearlogs_command(message):
-    """Очищает логи агента"""
-    log_agent_action("command_clearlogs", f"Пользователь {message.from_user.id}", "warning")
-    
     if clear_agent_logs():
-        bot.reply_to(message, "✅ Логи агента очищены")
+        log_agent_action("clearlogs", "Логи очищены", "info")
+        bot.reply_to(message, "✅ Логи очищены")
     else:
-        bot.reply_to(message, "❌ Не удалось очистить логи")
-
+        bot.reply_to(message, "❌ Ошибка")
 
 # ===== ВЕБХУК =====
 @app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
@@ -388,25 +408,22 @@ def webhook():
         bot.process_new_updates([update])
         return 'ok', 200
     except Exception as e:
-        logger.error(f"Ошибка вебхука: {e}")
+        logger.error(f"Ошибка: {e}")
         log_agent_action("webhook_error", str(e), "error")
         return 'error', 500
 
 @app.route('/health')
-def health():
+def health_check():
     return 'OK', 200
 
+# ===== ЗАПУСК =====
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     render_url = os.environ.get('RENDER_EXTERNAL_URL', f"http://localhost:{port}")
     webhook_url = f"{render_url}/{TELEGRAM_TOKEN}"
     
-    logger.info("Удаляем старый вебхук...")
     bot.remove_webhook()
-    
-    logger.info(f"Устанавливаем новый вебхук: {webhook_url}")
     bot.set_webhook(url=webhook_url)
     
-    logger.info(f"🚀 Запускаем Flask на порту {port}")
-    log_agent_action("server_start", f"Запуск на порту {port}", "success")
+    log_agent_action("server_start", f"Порт {port}", "success")
     app.run(host='0.0.0.0', port=port)
