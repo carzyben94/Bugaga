@@ -321,12 +321,13 @@ def help_command(message):
 **🛠️ УПРАВЛЕНИЕ:**
 /addcmd [описание] - добавить команду
 /delcmd [название] - удалить команду
+/replace [код] или ответ на файл - заменить код бота
 /update [код] - обновить код
 /restart - перезапустить
 /rollback - откат к бэкапу
 
 **📊 МОНИТОРИНГ:**
-/health - состояние бота
+/health - состояние
 /status - статус ключей
 /logs - логи действий
 /analyze_errors - анализ ошибок
@@ -343,6 +344,58 @@ def help_command(message):
         for cmd in user_cmds:
             menu += f"/{cmd['name']} - {cmd['description']}\n"
     bot.reply_to(message, menu, parse_mode="Markdown")
+
+@bot.message_handler(commands=['replace'])
+def replace_command(message):
+    """Заменяет код бота на присланный файл или текст"""
+    
+    new_code = None
+    source = None
+    
+    # Проверяем ответ на файл
+    if message.reply_to_message:
+        if message.reply_to_message.document:
+            file_info = bot.get_file(message.reply_to_message.document.file_id)
+            downloaded_file = bot.download_file(file_info.file_path)
+            new_code = downloaded_file.decode('utf-8')
+            source = "файла"
+        elif message.reply_to_message.text:
+            new_code = message.reply_to_message.text
+            source = "текста из ответа"
+    
+    # Если нет ответа, берём текст из команды
+    if not new_code:
+        new_code = message.text.replace('/replace', '').strip()
+        if new_code:
+            source = "текста команды"
+    
+    if not new_code:
+        bot.reply_to(message, "❌ Отправь новый код:\n1. Как текст после /replace\n2. Или пришли файл .py и ответь на него /replace")
+        return
+    
+    status_msg = bot.reply_to(message, f"🔄 Получил код из {source}, проверяю...")
+    
+    # Проверяем синтаксис
+    ok, err = validate_code_syntax(new_code)
+    if not ok:
+        bot.edit_message_text(f"❌ Ошибка синтаксиса:\n```\n{err}\n```", 
+                              chat_id=message.chat.id, message_id=status_msg.message_id,
+                              parse_mode="Markdown")
+        return
+    
+    # Сохраняем бэкап
+    current = github_get_file("bot.py")
+    if current:
+        save_backup(current["content"], f"перед /replace от {message.from_user.username}")
+    
+    # Сохраняем новый код
+    if github_update_file("bot.py", new_code, f"Replace via Telegram from {message.from_user.username}"):
+        bot.edit_message_text("✅ Код обновлён!\n🔄 Перезапускаю сервер...", 
+                              chat_id=message.chat.id, message_id=status_msg.message_id)
+        render_restart()
+    else:
+        bot.edit_message_text("❌ Ошибка сохранения на GitHub\nПроверь GITHUB_TOKEN", 
+                              chat_id=message.chat.id, message_id=status_msg.message_id)
 
 @bot.message_handler(commands=['ai'])
 def ai_command(message):
@@ -380,7 +433,7 @@ def addcmd_command(message):
         return
     
     cmd_name = cmd_name_match.group(1)
-    PROTECTED = ['help', 'ai', 'models', 'addcmd', 'delcmd', 'update', 'restart', 'rollback', 'backups', 'test', 'health', 'status', 'logs', 'clearlogs', 'analyze_errors']
+    PROTECTED = ['help', 'ai', 'models', 'addcmd', 'delcmd', 'replace', 'update', 'restart', 'rollback', 'backups', 'test', 'health', 'status', 'logs', 'clearlogs', 'analyze_errors']
     
     if cmd_name in PROTECTED:
         bot.edit_message_text(f"❌ Команда /{cmd_name} защищена", chat_id=message.chat.id, message_id=status_msg.message_id)
@@ -436,7 +489,7 @@ def delcmd_command(message):
         return
     
     cmd_to_delete = args[0].lower()
-    PROTECTED = ['help', 'ai', 'models', 'addcmd', 'delcmd', 'update', 'restart', 'rollback', 'backups', 'test', 'health', 'status', 'logs', 'clearlogs', 'analyze_errors']
+    PROTECTED = ['help', 'ai', 'models', 'addcmd', 'delcmd', 'replace', 'update', 'restart', 'rollback', 'backups', 'test', 'health', 'status', 'logs', 'clearlogs', 'analyze_errors']
     
     if cmd_to_delete in PROTECTED:
         bot.reply_to(message, f"❌ Команда /{cmd_to_delete} защищена")
