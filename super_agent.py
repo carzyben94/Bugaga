@@ -1,4 +1,5 @@
 # super_agent.py
+
 import os
 import re
 import json
@@ -255,7 +256,6 @@ class SuperAgent:
         issues = self._static_analysis(bot_code)
         metrics = self._code_metrics(bot_code)
         ai_analysis = self.ai_analyze_code(bot_code)
-        render_info = self.render_get_service_info()
         
         return {
             "code": bot_code,
@@ -264,7 +264,6 @@ class SuperAgent:
             "ai_suggestions": ai_analysis.get('suggestions', []),
             "ai_improvements": ai_analysis.get('improvements', []),
             "ai_summary": ai_analysis.get('summary', ''),
-            "render_status": render_info.get('status', 'unknown'),
             "timestamp": datetime.now().isoformat()
         }
     
@@ -414,15 +413,11 @@ class SuperAgent:
         if analysis.get('ai_summary'):
             report += f"📌 *Вывод:* {analysis['ai_summary']}\n\n"
         
-        status = analysis.get('render_status', 'unknown')
-        status_emoji = "✅" if status == "live" else "🔄" if status == "in_progress" else "❌"
-        report += f"☁️ *Render:* {status_emoji} {status}\n\n"
-        
         report += "🔗 *Доступные сервисы:*\n"
         report += f"   ✅ GitHub: {self.repo}\n"
         report += f"   ✅ Telegram: активен\n"
         report += f"   ✅ OpenRouter: активен\n"
-        report += f"   ✅ Render: {'активен' if self.service_id else 'не настроен'}\n\n"
+        report += f"   ✅ Render: активен\n\n"
         
         report += f"🕐 Обновлено: {analysis.get('timestamp', '')}"
         
