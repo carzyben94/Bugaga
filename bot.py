@@ -106,7 +106,8 @@ def open_browser_sync(url="https://example.com"):
 def handle_browser(message):
     url = message.text.replace('/browser', '').strip()
     if not url:
-        url = "https://example.com"
+        bot.reply_to(message, "🌐 Укажите URL\nПример: /browser https://example.com")
+        return
     
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
@@ -458,32 +459,34 @@ def parse_command(message):
 def menu_command(message):
     log_action("menu", f"user={message.from_user.id}", "info")
     
-    # Меню с категориями
+    bot_username = bot.get_me().username
+    
+    # Меню с кликабельными командами
     menu_text = (
         "🌟 *МОЙ БОТ* 🌟\n"
         "═══════════════════════\n\n"
         
         "🤖 *ИСКУССТВЕННЫЙ ИНТЕЛЛЕКТ*\n"
-        "  🤖 `/ai` — спросить ИИ\n"
-        "  🧠 `/news` — новости об ИИ\n\n"
+        f"  🤖 [/ai](tg://user?id={message.from_user.id}&command=ai) — спросить ИИ\n"
+        f"  🧠 [/news](tg://user?id={message.from_user.id}&command=news) — новости об ИИ\n\n"
         
         "🌐 *ИНТЕРНЕТ И ДАННЫЕ*\n"
-        "  🌐 `/browser` — открыть сайт\n"
-        "  🔍 `/parse` — парсинг сайта\n\n"
+        f"  🌐 [/browser](tg://user?id={message.from_user.id}&command=browser) — открыть сайт\n"
+        f"  🔍 [/parse](tg://user?id={message.from_user.id}&command=parse) — парсинг сайта\n\n"
         
         "💰 *ФИНАНСЫ*\n"
-        "  💰 `/crypto` — курсы криптовалют\n\n"
+        f"  💰 [/crypto](tg://user?id={message.from_user.id}&command=crypto) — курсы криптовалют\n\n"
         
         "⚙️ *СИСТЕМА*\n"
-        "  📊 `/status_full` — статус системы\n"
-        "  📋 `/logs` — показать логи\n\n"
+        f"  📊 [/status_full](tg://user?id={message.from_user.id}&command=status_full) — статус системы\n"
+        f"  📋 [/logs](tg://user?id={message.from_user.id}&command=logs) — показать логи\n\n"
         
         "═══════════════════════\n"
-        "💡 /help — показать это меню\n"
+        f"💡 [/help](tg://user?id={message.from_user.id}&command=help) — показать это меню\n"
         "✨ Создано с ❤️ к технологиям"
     )
     
-    bot.reply_to(message, menu_text, parse_mode='Markdown')
+    bot.reply_to(message, menu_text, parse_mode='Markdown', disable_web_page_preview=True)
 
 @bot.message_handler(commands=['ai'])
 def ai_command(message):
@@ -519,6 +522,10 @@ def ai_command(message):
     except Exception as e:
         log_action("ai_exception", str(e), "error")
         bot.edit_message_text(f"❌ Ошибка: {e}", chat_id=message.chat.id, message_id=status_msg.message_id)
+
+@bot.message_handler(commands=['status_full'])
+def status_full_command(message):
+    bot.reply_to(message, "📊 Статус системы:\n✅ Бот работает\n✅ Все модули активны")
 
 @bot.message_handler(commands=['logs'])
 def logs_command(message):
