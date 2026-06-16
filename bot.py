@@ -458,68 +458,22 @@ def parse_command(message):
 @bot.message_handler(commands=['start', 'help'])
 def menu_command(message):
     log_action("menu", f"user={message.from_user.id}", "info")
-    
-    menu_text = (
-        "🌟 *МОЙ БОТ* 🌟\n"
-        "═══════════════════════\n\n"
-        
-        "🤖 *ИСКУССТВЕННЫЙ ИНТЕЛЛЕКТ*\n"
-        "  🤖 /ai — спросить ИИ\n"
-        "  🧠 /news — новости об ИИ\n\n"
-        
-        "🌐 *ИНТЕРНЕТ И ДАННЫЕ*\n"
-        "  🌐 /browser — открыть сайт\n"
-        "  🔍 /parse — парсинг сайта\n\n"
-        
-        "💰 *ФИНАНСЫ*\n"
-        "  💰 /crypto — курсы криптовалют\n\n"
-        
-        "⚙️ *СИСТЕМА*\n"
-        "  📊 /status_full — статус системы\n"
-        "  📋 /logs — показать логи\n\n"
-        
-        "═══════════════════════\n"
-        "💡 /help — показать это меню\n"
-        "✨ Создано с ❤️ к технологиям"
+    bot.reply_to(message, 
+        "📋 МЕНЮ БОТА\n\n"
+        "/ai [вопрос] - спросить ИИ\n"
+        "/status_full - полный статус\n"
+        "/browser [url] - открыть сайт в браузере\n"
+        "/news - последние новости\n"
+        "/crypto - курсы Bitcoin и Ethereum\n"
+        "/parse [url] - парсинг любого сайта\n"
+        "/logs - показать логи"
     )
-    
-    keyboard = telebot.types.InlineKeyboardMarkup(row_width=2)
-    
-    keyboard.add(
-        telebot.types.InlineKeyboardButton("🤖 AI", callback_data="ai"),
-        telebot.types.InlineKeyboardButton("🧠 Новости", callback_data="news")
-    )
-    keyboard.add(
-        telebot.types.InlineKeyboardButton("🌐 Браузер", callback_data="browser"),
-        telebot.types.InlineKeyboardButton("🔍 Парсинг", callback_data="parse")
-    )
-    keyboard.add(
-        telebot.types.InlineKeyboardButton("💰 Крипто", callback_data="crypto")
-    )
-    keyboard.add(
-        telebot.types.InlineKeyboardButton("📊 Статус", callback_data="status_full"),
-        telebot.types.InlineKeyboardButton("📋 Логи", callback_data="logs")
-    )
-    keyboard.add(
-        telebot.types.InlineKeyboardButton("💡 Помощь", callback_data="help")
-    )
-    
-    bot.reply_to(message, menu_text, parse_mode='Markdown', reply_markup=keyboard)
-
-# ===== ОБРАБОТЧИК КНОПОК =====
-@bot.callback_query_handler(func=lambda call: True)
-def handle_menu_buttons(call):
-    bot.answer_callback_query(call.id)
-    
-    # Создаём новое сообщение с командой
-    command = "/" + call.data
-    bot.send_message(call.message.chat.id, command)
 
 @bot.message_handler(commands=['ai'])
 def ai_command(message):
     user_text = message.text.replace('/ai', '').strip()
     if not user_text:
-        bot.reply_to(message, "🤖 Введите вопрос после /ai\nПример: /ai что такое нейросеть")
+        bot.reply_to(message, "/ai [вопрос]")
         return
     
     log_action("ai", f"user={message.from_user.id} запрос: {user_text[:50]}", "info")
@@ -527,7 +481,7 @@ def ai_command(message):
     
     if not OPENROUTER_API_KEY:
         log_action("ai_error", "OpenRouter key not set", "error")
-        bot.edit_message_text("❌ OpenRouter API ключ не настроен", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text("OpenRouter key not set", chat_id=message.chat.id, message_id=status_msg.message_id)
         return
     
     try:
@@ -545,10 +499,10 @@ def ai_command(message):
             log_action("ai_response", "ответ отправлен", "success")
         else:
             log_action("ai_api_error", f"status {r.status_code}", "error")
-            bot.edit_message_text(f"❌ Ошибка API: {r.status_code}", chat_id=message.chat.id, message_id=status_msg.message_id)
+            bot.edit_message_text(f"API error: {r.status_code}", chat_id=message.chat.id, message_id=status_msg.message_id)
     except Exception as e:
         log_action("ai_exception", str(e), "error")
-        bot.edit_message_text(f"❌ Ошибка: {e}", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text(f"Error: {e}", chat_id=message.chat.id, message_id=status_msg.message_id)
 
 @bot.message_handler(commands=['status_full'])
 def status_full_command(message):
