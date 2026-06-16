@@ -239,9 +239,11 @@ def crypto_command(message):
     
     def do_crypto():
         try:
+            # Получаем BTC/USDT
             r1 = requests.get("https://api.binance.com/api/v3/ticker/price", 
                               params={"symbol": "BTCUSDT"}, timeout=10)
             
+            # Получаем ETH/USDT
             r2 = requests.get("https://api.binance.com/api/v3/ticker/price", 
                               params={"symbol": "ETHUSDT"}, timeout=10)
             
@@ -254,6 +256,7 @@ def crypto_command(message):
             btc_usd = float(r1.json().get('price', 0))
             eth_usd = float(r2.json().get('price', 0))
             
+            # Получаем курс USD/RUB
             r3 = requests.get("https://api.binance.com/api/v3/ticker/price", 
                               params={"symbol": "USDRUB"}, timeout=10)
             
@@ -262,22 +265,28 @@ def crypto_command(message):
             else:
                 usd_rub = 95
             
+            # Конвертируем в рубли
             btc_rub = round(btc_usd * usd_rub, 2)
             eth_rub = round(eth_usd * usd_rub, 2)
-            btc_eur = round(btc_usd * 0.92, 2)
-            eth_eur = round(eth_usd * 0.92, 2)
+            
+            # Форматируем с разделителями тысяч
+            btc_usd_str = f"${btc_usd:,.2f}"
+            btc_eur_str = f"€{btc_usd * 0.92:,.2f}"
+            btc_rub_str = f"{btc_rub:,.2f} ₽"
+            
+            eth_usd_str = f"${eth_usd:,.2f}"
+            eth_eur_str = f"€{eth_usd * 0.92:,.2f}"
+            eth_rub_str = f"{eth_rub:,.2f} ₽"
             
             result = (
-                "💰 КУРСЫ КРИПТОВАЛЮТ (Binance):\n\n"
-                f"🟡 BITCOIN (BTC):\n"
-                f"  • USD: ${btc_usd:,.2f}\n"
-                f"  • EUR: €{btc_eur:,.2f}\n"
-                f"  • RUB: {btc_rub:,.2f} ₽\n\n"
-                f"🔷 ETHEREUM (ETH):\n"
-                f"  • USD: ${eth_usd:,.2f}\n"
-                f"  • EUR: €{eth_eur:,.2f}\n"
-                f"  • RUB: {eth_rub:,.2f} ₽\n\n"
-                f"🔄 1 ETH = {btc_usd / eth_usd:.2f} BTC"
+                "🟡 BITCOIN (BTC):\n"
+                f"  • USD: {btc_usd_str}\n"
+                f"  • EUR: {btc_eur_str}\n"
+                f"  • RUB: {btc_rub_str}\n\n"
+                "🔷 ETHEREUM (ETH):\n"
+                f"  • USD: {eth_usd_str}\n"
+                f"  • EUR: {eth_eur_str}\n"
+                f"  • RUB: {eth_rub_str}"
             )
             
             bot.edit_message_text(result, 
