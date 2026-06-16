@@ -127,7 +127,7 @@ def handle_browser(message):
     thread = threading.Thread(target=do_browser, daemon=True)
     thread.start()
 
-# ===== КРАСИВЫЕ НОВОСТИ ПРО ИИ =====
+# ===== НОВОСТИ ПРО ИИ =====
 @bot.message_handler(commands=['news'])
 def news_command(message):
     status_msg = bot.reply_to(message, "🧠 Ищу свежие новости об искусственном интеллекте...")
@@ -459,34 +459,58 @@ def parse_command(message):
 def menu_command(message):
     log_action("menu", f"user={message.from_user.id}", "info")
     
-    bot_username = bot.get_me().username
-    
-    # Меню с кликабельными командами
     menu_text = (
         "🌟 *МОЙ БОТ* 🌟\n"
         "═══════════════════════\n\n"
         
         "🤖 *ИСКУССТВЕННЫЙ ИНТЕЛЛЕКТ*\n"
-        f"  🤖 [/ai](tg://user?id={message.from_user.id}&command=ai) — спросить ИИ\n"
-        f"  🧠 [/news](tg://user?id={message.from_user.id}&command=news) — новости об ИИ\n\n"
+        "  🤖 /ai — спросить ИИ\n"
+        "  🧠 /news — новости об ИИ\n\n"
         
         "🌐 *ИНТЕРНЕТ И ДАННЫЕ*\n"
-        f"  🌐 [/browser](tg://user?id={message.from_user.id}&command=browser) — открыть сайт\n"
-        f"  🔍 [/parse](tg://user?id={message.from_user.id}&command=parse) — парсинг сайта\n\n"
+        "  🌐 /browser — открыть сайт\n"
+        "  🔍 /parse — парсинг сайта\n\n"
         
         "💰 *ФИНАНСЫ*\n"
-        f"  💰 [/crypto](tg://user?id={message.from_user.id}&command=crypto) — курсы криптовалют\n\n"
+        "  💰 /crypto — курсы криптовалют\n\n"
         
         "⚙️ *СИСТЕМА*\n"
-        f"  📊 [/status_full](tg://user?id={message.from_user.id}&command=status_full) — статус системы\n"
-        f"  📋 [/logs](tg://user?id={message.from_user.id}&command=logs) — показать логи\n\n"
+        "  📊 /status_full — статус системы\n"
+        "  📋 /logs — показать логи\n\n"
         
         "═══════════════════════\n"
-        f"💡 [/help](tg://user?id={message.from_user.id}&command=help) — показать это меню\n"
+        "💡 /help — показать это меню\n"
         "✨ Создано с ❤️ к технологиям"
     )
     
-    bot.reply_to(message, menu_text, parse_mode='Markdown', disable_web_page_preview=True)
+    keyboard = telebot.types.InlineKeyboardMarkup(row_width=2)
+    
+    keyboard.add(
+        telebot.types.InlineKeyboardButton("🤖 AI", callback_data="ai"),
+        telebot.types.InlineKeyboardButton("🧠 Новости", callback_data="news")
+    )
+    keyboard.add(
+        telebot.types.InlineKeyboardButton("🌐 Браузер", callback_data="browser"),
+        telebot.types.InlineKeyboardButton("🔍 Парсинг", callback_data="parse")
+    )
+    keyboard.add(
+        telebot.types.InlineKeyboardButton("💰 Крипто", callback_data="crypto")
+    )
+    keyboard.add(
+        telebot.types.InlineKeyboardButton("📊 Статус", callback_data="status_full"),
+        telebot.types.InlineKeyboardButton("📋 Логи", callback_data="logs")
+    )
+    
+    bot.reply_to(message, menu_text, parse_mode='Markdown', reply_markup=keyboard)
+
+# ===== ОБРАБОТЧИК КНОПОК =====
+@bot.callback_query_handler(func=lambda call: True)
+def handle_menu_buttons(call):
+    bot.answer_callback_query(call.id)
+    
+    # Создаём новое сообщение с командой
+    command = "/" + call.data
+    bot.send_message(call.message.chat.id, command)
 
 @bot.message_handler(commands=['ai'])
 def ai_command(message):
