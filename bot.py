@@ -9,6 +9,7 @@ import xml.etree.ElementTree as ET
 from flask import Flask, request
 import telebot
 from bs4 import BeautifulSoup
+from datetime import datetime
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -80,7 +81,7 @@ def get_last_errors(limit=5):
     except:
         return []
 
-# ===== БРАУЗЕР МОДУЛЬ (через requests) =====
+# ===== БРАУЗЕР МОДУЛЬ =====
 def open_browser_sync(url="https://example.com"):
     """Открывает сайт через requests"""
     try:
@@ -125,33 +126,35 @@ def handle_browser(message):
     thread = threading.Thread(target=do_browser, daemon=True)
     thread.start()
 
-# ===== ПАРСИНГ НОВОСТЕЙ (DW и BBC на русском) =====
+# ===== КРАСИВЫЕ НОВОСТИ ПРО ИИ =====
 @bot.message_handler(commands=['news'])
 def news_command(message):
-    status_msg = bot.reply_to(message, "📰 Ищу последние новости...")
+    status_msg = bot.reply_to(message, "🧠 Ищу свежие новости об искусственном интеллекте...")
     
     def do_news():
         try:
-            # Новые источники: DW и BBC на русском
             rss_sources = [
-                "https://rss.dw.com/rdf/rss-ru-all",  # DW на русском
-                "https://www.bbc.com/russian/index.xml"  # BBC на русском
+                {"url": "https://habr.com/ru/rss/hub/artificial_intelligence/all/?fl=ru", "name": "Habr"},
+                {"url": "https://towardsdatascience.com/feed", "name": "DataScience"},
+                {"url": "https://www.analyticsvidhya.com/blog/category/artificial-intelligence/feed/", "name": "AnalyticsVidhya"},
+                {"url": "https://www.zdnet.com/topic/artificial-intelligence/rss.xml", "name": "ZDNet"}
             ]
             
-            result = "📰 ПОСЛЕДНИЕ НОВОСТИ:\n\n"
-            count = 0
-            used_titles = set()  # Для удаления дубликатов
+            news_items = []
+            ai_keywords = ['ai', 'ии', 'искусственный интеллект', 'нейросеть', 'нейронная', 
+                          'chatgpt', 'gpt', 'deep learning', 'machine learning', 'ml',
+                          'openai', 'anthropic', 'google ai', 'yandex ai', 'яндекс ии',
+                          'нейросети', 'искусственный', 'интеллект', 'робот', 'алгоритм']
             
-            for rss_url in rss_sources:
+            for source in rss_sources:
                 try:
                     headers = {
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                         'Accept': 'application/rss+xml, application/xml, text/xml'
                     }
-                    r = requests.get(rss_url, headers=headers, timeout=15)
+                    r = requests.get(source["url"], headers=headers, timeout=15)
                     
                     if r.status_code == 200:
-                        # Пробуем парсить RSS
                         try:
                             root = ET.fromstring(r.content)
                             items = root.findall('.//item')
@@ -160,138 +163,187 @@ def news_command(message):
                                 items = root.findall('.//entry')
                             
                             if items:
-                                for item in items[:10]:
+                                for item in items[:15]:
                                     title_elem = item.find('title')
                                     if title_elem is not None and title_elem.text:
-                                        text = title_elem.text.strip()
-                                        # Очищаем от CDATA
-                                        text = text.replace('<![CDATA[', '').replace(']]>', '')
-                                        # Очищаем от HTML тегов
-                                        text = BeautifulSoup(text, 'html.parser').get_text()
+                                        title = title_elem.text.strip()
+                                        title = title.replace('<![CDATA[', '').replace(']]>', '')
+                                        title = BeautifulSoup(title, 'html.parser').get_text()
                                         
-                                        if text and len(text) > 10 and len(text) < 500:
-                                            # Проверяем на дубликаты
-                                            if text not in used_titles:
-                                                used_titles.add(text)
-                                                count += 1
-                                                source = "DW" if "dw.com" in rss_url else "BBC"
-                                                result += f"{count}. {text} ({source})\n"
+                                        title_lower = title.lower()
+                                        is_ai = any(keyword in title_lower for keyword in ai_keywords)
+                                        
+                                        if title and len(title) > 10 and len(title) < 500 and is_ai:
+                                            link_elem = item.find('link')
+                                            link = link_elem.text if link_elem is not None else ""
                                             
-                                            if count >= 15:
+                                            pub_date = ""
+                                            date_elem = item.find('pubDate') or item.find('published')
+                                            if date_elem is not None and date_elem.text:
+                                                pub_date = date_elem.text[:16]
+                                            
+                                            news_items.append({
+                                                'title': title,
+                                                'source': source["name"],
+                                                'link': link[:80] + "..." if len(link) > 80 else link,
+                                                'date': pub_date
+                                            })
+                                            
+                                            if len(news_items) >= 20:
                                                 break
                         except ET.ParseError:
-                            # Если не RSS, пробуем парсить HTML
-                            soup = BeautifulSoup(r.text, 'lxml')
-                            titles = soup.find_all(['h1', 'h2', 'h3', 'a'])
-                            for title in titles[:20]:
-                                text = title.get_text(strip=True)
-                                if text and len(text) > 20 and len(text) < 300:
-                                    if text not in used_titles:
-                                        used_titles.add(text)
-                                        count += 1
-                                        source = "DW" if "dw.com" in rss_url else "BBC"
-                                        result += f"{count}. {text} ({source})\n"
-                                    
-                                    if count >= 15:
-                                        break
+                            continue
                     
                 except Exception as e:
-                    log_action("news_source_error", f"{rss_url}: {str(e)[:50]}", "warning")
+                    log_action("news_source_error", f"{source['name']}: {str(e)[:50]}", "warning")
                     continue
                 
-                if count >= 15:
+                if len(news_items) >= 20:
                     break
             
-            if count == 0:
-                # Если RSS не сработал, пробуем парсить HTML напрямую
-                result = get_news_from_html()
+            if len(news_items) < 5:
+                web_news = get_ai_news_from_web()
+                news_items.extend(web_news)
             
-            if count == 0 and result == "📰 ПОСЛЕДНИЕ НОВОСТИ:\n\n":
-                result = "❌ Новостей не найдено. Попробуйте позже."
+            seen = set()
+            unique_news = []
+            for item in news_items:
+                if item['title'] not in seen:
+                    seen.add(item['title'])
+                    unique_news.append(item)
             
-            bot.edit_message_text(result[:4000], 
-                                  chat_id=message.chat.id, 
-                                  message_id=status_msg.message_id)
-            log_action("news", f"найдено {count} новостей", "success" if count > 0 else "warning")
+            news_items = unique_news[:20]
+            
+            if not news_items:
+                bot.edit_message_text("❌ Свежих новостей про ИИ не найдено. Попробуйте позже.", 
+                                      chat_id=message.chat.id, 
+                                      message_id=status_msg.message_id)
+                return
+            
+            current_time = datetime.now().strftime("%d.%m.%Y %H:%M")
+            
+            result = "🧠 *НОВОСТИ ИСКУССТВЕННОГО ИНТЕЛЛЕКТА*\n"
+            result += f"📅 {current_time}\n"
+            result += "━" * 30 + "\n\n"
+            
+            source_emojis = {
+                "Habr": "📘",
+                "DataScience": "📊",
+                "AnalyticsVidhya": "📈",
+                "ZDNet": "💻"
+            }
+            
+            for i, item in enumerate(news_items[:15], 1):
+                source_emoji = source_emojis.get(item['source'], "📰")
+                
+                if i <= 3:
+                    num_emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉"
+                else:
+                    num_emoji = "▫️"
+                
+                result += f"{num_emoji} *{item['title']}*\n"
+                result += f"{source_emoji} {item['source']}"
+                
+                if item['date']:
+                    result += f"  ⏱ {item['date']}"
+                
+                result += "\n"
+                
+                if i < len(news_items[:15]):
+                    result += "· · · · · · · · · · · · ·\n"
+            
+            result += "\n━" * 30 + "\n"
+            result += "🔄 Обновлено: " + current_time
+            result += "\n💡 /news — обновить новости"
+            
+            bot.edit_message_text(
+                result, 
+                chat_id=message.chat.id, 
+                message_id=status_msg.message_id,
+                parse_mode='Markdown'
+            )
+            
+            log_action("news", f"найдено {len(news_items)} новостей про ИИ", "success")
             
         except Exception as e:
             log_action("news_error", str(e), "error")
-            bot.edit_message_text(f"❌ Ошибка: {str(e)[:100]}", 
+            bot.edit_message_text(f"❌ Ошибка при загрузке новостей: {str(e)[:100]}", 
                                   chat_id=message.chat.id, 
                                   message_id=status_msg.message_id)
     
     thread = threading.Thread(target=do_news, daemon=True)
     thread.start()
 
-def get_news_from_html():
-    """Запасной способ: парсинг HTML напрямую с DW и BBC"""
+def get_ai_news_from_web():
+    """Запасной способ: парсинг сайтов с ИИ-новостями"""
+    news_items = []
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept-Language': 'ru-RU,ru;q=0.9'
+            'Accept-Language': 'en-US,en;q=0.9'
         }
         
-        result = "📰 ПОСЛЕДНИЕ НОВОСТИ:\n\n"
-        count = 0
-        used_titles = set()
-        
-        # Пробуем DW
         try:
-            r = requests.get("https://www.dw.com/ru/top-stories/s-9097", headers=headers, timeout=10)
+            r = requests.get("https://habr.com/ru/hub/artificial_intelligence/", headers=headers, timeout=10)
             if r.status_code == 200:
                 soup = BeautifulSoup(r.text, 'lxml')
-                # Ищем заголовки статей
-                for selector in ['h2 a', '.teaser__headline a', 'article h2 a', '.news-item h2 a']:
+                for selector in ['h2 a', '.post__title a', '.tm-title__link']:
                     titles = soup.select(selector)
                     if titles:
                         for title in titles[:10]:
                             text = title.get_text(strip=True)
-                            if text and len(text) > 20 and len(text) < 300 and text not in used_titles:
-                                used_titles.add(text)
-                                count += 1
-                                result += f"{count}. {text} (DW)\n"
+                            if text and len(text) > 15 and len(text) < 300:
+                                link = title.get('href', '')
+                                if link and not link.startswith('http'):
+                                    link = "https://habr.com" + link
+                                news_items.append({
+                                    'title': text,
+                                    'source': 'Habr',
+                                    'link': link[:80] + "..." if len(link) > 80 else link,
+                                    'date': ''
+                                })
                         break
         except:
             pass
         
-        # Пробуем BBC
         try:
-            r = requests.get("https://www.bbc.com/russian", headers=headers, timeout=10)
+            r = requests.get("https://www.zdnet.com/topic/artificial-intelligence/", headers=headers, timeout=10)
             if r.status_code == 200:
                 soup = BeautifulSoup(r.text, 'lxml')
-                for selector in ['h2 a', '.gs-c-promo-heading', 'article a', '.bbc-news__title a']:
+                for selector in ['h3 a', '.item-title a', '.story-headline a']:
                     titles = soup.select(selector)
                     if titles:
                         for title in titles[:10]:
                             text = title.get_text(strip=True)
-                            if text and len(text) > 20 and len(text) < 300 and text not in used_titles:
-                                used_titles.add(text)
-                                count += 1
-                                result += f"{count}. {text} (BBC)\n"
+                            if text and len(text) > 15 and len(text) < 300:
+                                link = title.get('href', '')
+                                if link and not link.startswith('http'):
+                                    link = "https://www.zdnet.com" + link
+                                news_items.append({
+                                    'title': text,
+                                    'source': 'ZDNet',
+                                    'link': link[:80] + "..." if len(link) > 80 else link,
+                                    'date': ''
+                                })
                         break
         except:
             pass
         
-        if count == 0:
-            return "❌ Новостей не найдено"
-        
-        return result
     except Exception as e:
         log_action("news_html_error", str(e), "error")
-        return "❌ Новостей не найдено"
+    
+    return news_items
 
-# ===== КРИПТОВАЛЮТЫ (Binance) =====
+# ===== КРИПТОВАЛЮТЫ =====
 @bot.message_handler(commands=['crypto'])
 def crypto_command(message):
     status_msg = bot.reply_to(message, "💰 Узнаю курсы криптовалют...")
     
     def do_crypto():
         try:
-            # Получаем BTC/USDT
             r1 = requests.get("https://api.binance.com/api/v3/ticker/price", 
                               params={"symbol": "BTCUSDT"}, timeout=10)
             
-            # Получаем ETH/USDT
             r2 = requests.get("https://api.binance.com/api/v3/ticker/price", 
                               params={"symbol": "ETHUSDT"}, timeout=10)
             
@@ -304,7 +356,6 @@ def crypto_command(message):
             btc_usd = float(r1.json().get('price', 0))
             eth_usd = float(r2.json().get('price', 0))
             
-            # Получаем курс USD/RUB
             r3 = requests.get("https://api.binance.com/api/v3/ticker/price", 
                               params={"symbol": "USDRUB"}, timeout=10)
             
@@ -313,11 +364,9 @@ def crypto_command(message):
             else:
                 usd_rub = 95
             
-            # Конвертируем в рубли
             btc_rub = round(btc_usd * usd_rub, 2)
             eth_rub = round(eth_usd * usd_rub, 2)
             
-            # Форматируем с разделителями тысяч
             btc_usd_str = f"${btc_usd:,.2f}"
             btc_eur_str = f"€{btc_usd * 0.92:,.2f}"
             btc_rub_str = f"{btc_rub:,.2f} ₽"
@@ -408,22 +457,59 @@ def parse_command(message):
 @bot.message_handler(commands=['start', 'help'])
 def menu_command(message):
     log_action("menu", f"user={message.from_user.id}", "info")
-    bot.reply_to(message, 
-        "📋 МЕНЮ БОТА\n\n"
-        "/ai [вопрос] - спросить ИИ\n"
-        "/status_full - полный статус\n"
-        "/browser [url] - открыть сайт в браузере\n"
-        "/news - последние новости (DW, BBC)\n"
-        "/crypto - курсы Bitcoin и Ethereum\n"
-        "/parse [url] - парсинг любого сайта\n"
-        "/logs - показать логи"
+    
+    # Красивое меню с рамкой и иконками
+    menu_text = (
+        "╔══════════════════════════════════╗\n"
+        "║          🤖 *МОЙ БОТ*           ║\n"
+        "╚══════════════════════════════════╝\n\n"
+        
+        "┌──────────────────────────────────┐\n"
+        "│  ✨ *ОСНОВНЫЕ КОМАНДЫ*          │\n"
+        "├──────────────────────────────────┤\n"
+        "│  🤖 `/ai [вопрос]`              │\n"
+        "│     — спросить ИИ               │\n"
+        "├──────────────────────────────────┤\n"
+        "│  📊 `/status_full`              │\n"
+        "│     — полный статус системы     │\n"
+        "├──────────────────────────────────┤\n"
+        "│  🌐 `/browser [url]`            │\n"
+        "│     — открыть сайт в браузере   │\n"
+        "├──────────────────────────────────┤\n"
+        "│  🧠 `/news`                     │\n"
+        "│     — новости об ИИ             │\n"
+        "├──────────────────────────────────┤\n"
+        "│  💰 `/crypto`                   │\n"
+        "│     — курсы криптовалют         │\n"
+        "├──────────────────────────────────┤\n"
+        "│  🔍 `/parse [url]`              │\n"
+        "│     — парсинг любого сайта      │\n"
+        "├──────────────────────────────────┤\n"
+        "│  📋 `/logs`                     │\n"
+        "│     — показать логи             │\n"
+        "└──────────────────────────────────┘\n\n"
+        
+        "┌──────────────────────────────────┐\n"
+        "│  💡 *СОВЕТЫ*                    │\n"
+        "├──────────────────────────────────┤\n"
+        "│  • Нажми на команду для помощи  │\n"
+        "│  • Бот понимает русский язык    │\n"
+        "│  • Работает 24/7                │\n"
+        "└──────────────────────────────────┘\n\n"
+        
+        "╔══════════════════════════════════╗\n"
+        "║  ✨ Создано с любовью к ИИ ✨   ║\n"
+        "╚══════════════════════════════════╝"
     )
+    
+    # Отправляем с Markdown
+    bot.reply_to(message, menu_text, parse_mode='Markdown')
 
 @bot.message_handler(commands=['ai'])
 def ai_command(message):
     user_text = message.text.replace('/ai', '').strip()
     if not user_text:
-        bot.reply_to(message, "/ai [вопрос]")
+        bot.reply_to(message, "🤖 Введите вопрос после /ai\nПример: /ai что такое нейросеть")
         return
     
     log_action("ai", f"user={message.from_user.id} запрос: {user_text[:50]}", "info")
@@ -431,7 +517,7 @@ def ai_command(message):
     
     if not OPENROUTER_API_KEY:
         log_action("ai_error", "OpenRouter key not set", "error")
-        bot.edit_message_text("OpenRouter key not set", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text("❌ OpenRouter API ключ не настроен", chat_id=message.chat.id, message_id=status_msg.message_id)
         return
     
     try:
@@ -449,10 +535,10 @@ def ai_command(message):
             log_action("ai_response", "ответ отправлен", "success")
         else:
             log_action("ai_api_error", f"status {r.status_code}", "error")
-            bot.edit_message_text(f"API error: {r.status_code}", chat_id=message.chat.id, message_id=status_msg.message_id)
+            bot.edit_message_text(f"❌ Ошибка API: {r.status_code}", chat_id=message.chat.id, message_id=status_msg.message_id)
     except Exception as e:
         log_action("ai_exception", str(e), "error")
-        bot.edit_message_text(f"Error: {e}", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text(f"❌ Ошибка: {e}", chat_id=message.chat.id, message_id=status_msg.message_id)
 
 @bot.message_handler(commands=['logs'])
 def logs_command(message):
