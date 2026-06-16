@@ -213,7 +213,7 @@ def news_command(message):
                     seen.add(item['title'])
                     unique_news.append(item)
             
-            news_items = unique_news[:15]
+            news_items = unique_news[:20]
             
             if not news_items:
                 bot.edit_message_text("❌ Свежих новостей про ИИ не найдено. Попробуйте позже.", 
@@ -234,7 +234,7 @@ def news_command(message):
                 "ZDNet": "💻"
             }
             
-            for i, item in enumerate(news_items, 1):
+            for i, item in enumerate(news_items[:15], 1):
                 source_emoji = source_emojis.get(item['source'], "📰")
                 
                 if i <= 3:
@@ -242,18 +242,20 @@ def news_command(message):
                 else:
                     num_emoji = "▫️"
                 
-                result += f"{num_emoji} {item['title']}\n"
+                result += f"{num_emoji} *{item['title']}*\n"
                 result += f"{source_emoji} {item['source']}"
                 
                 if item['date']:
                     result += f"  ⏱ {item['date']}"
                 
-                if i < len(news_items):
-                    result += "\n\n"
+                result += "\n"
+                
+                if i < len(news_items[:15]):
+                    result += "· · · · · · · · · · · · ·\n"
             
-            result += "\n\n━" * 30 + "\n"
-            result += "🔄 Обновлено: " + current_time + "\n"
-            result += "💡 /news — обновить новости"
+            result += "\n━" * 30 + "\n"
+            result += "🔄 Обновлено: " + current_time
+            result += "\n💡 /news — обновить новости"
             
             bot.edit_message_text(
                 result, 
