@@ -458,22 +458,29 @@ def parse_command(message):
 @bot.message_handler(commands=['start', 'help'])
 def menu_command(message):
     log_action("menu", f"user={message.from_user.id}", "info")
-    bot.reply_to(message, 
+    
+    menu_text = (
         "📋 МЕНЮ БОТА\n\n"
+        "🤖 ИСКУССТВЕННЫЙ ИНТЕЛЛЕКТ\n"
         "/ai [вопрос] - спросить ИИ\n"
+        "/news - новости об ИИ\n\n"
+        "🌐 ИНТЕРНЕТ И ДАННЫЕ\n"
+        "/browser [url] - открыть сайт\n"
+        "/parse [url] - парсинг сайта\n\n"
+        "💰 ФИНАНСЫ\n"
+        "/crypto - курсы криптовалют\n\n"
+        "⚙️ СИСТЕМА\n"
         "/status_full - полный статус\n"
-        "/browser [url] - открыть сайт в браузере\n"
-        "/news - последние новости\n"
-        "/crypto - курсы Bitcoin и Ethereum\n"
-        "/parse [url] - парсинг любого сайта\n"
         "/logs - показать логи"
     )
+    
+    bot.reply_to(message, menu_text)
 
 @bot.message_handler(commands=['ai'])
 def ai_command(message):
     user_text = message.text.replace('/ai', '').strip()
     if not user_text:
-        bot.reply_to(message, "/ai [вопрос]")
+        bot.reply_to(message, "🤖 Введите вопрос после /ai\nПример: /ai что такое нейросеть")
         return
     
     log_action("ai", f"user={message.from_user.id} запрос: {user_text[:50]}", "info")
@@ -481,7 +488,7 @@ def ai_command(message):
     
     if not OPENROUTER_API_KEY:
         log_action("ai_error", "OpenRouter key not set", "error")
-        bot.edit_message_text("OpenRouter key not set", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text("❌ OpenRouter API ключ не настроен", chat_id=message.chat.id, message_id=status_msg.message_id)
         return
     
     try:
@@ -499,10 +506,10 @@ def ai_command(message):
             log_action("ai_response", "ответ отправлен", "success")
         else:
             log_action("ai_api_error", f"status {r.status_code}", "error")
-            bot.edit_message_text(f"API error: {r.status_code}", chat_id=message.chat.id, message_id=status_msg.message_id)
+            bot.edit_message_text(f"❌ Ошибка API: {r.status_code}", chat_id=message.chat.id, message_id=status_msg.message_id)
     except Exception as e:
         log_action("ai_exception", str(e), "error")
-        bot.edit_message_text(f"Error: {e}", chat_id=message.chat.id, message_id=status_msg.message_id)
+        bot.edit_message_text(f"❌ Ошибка: {e}", chat_id=message.chat.id, message_id=status_msg.message_id)
 
 @bot.message_handler(commands=['status_full'])
 def status_full_command(message):
