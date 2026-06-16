@@ -5,8 +5,10 @@ import json
 import requests
 import threading
 import urllib.parse
+import asyncio
 from flask import Flask, request
 import telebot
+from pyunbrowser import Browser
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -146,11 +148,46 @@ def start_self_improvement_loop():
 
 start_self_improvement_loop()
 
+# ===== БРАУЗЕР МОДУЛЬ =====
+async def open_browser(url="https://example.com"):
+    """Открывает браузер и возвращает заголовок страницы"""
+    try:
+        browser = await Browser.create()
+        page = await browser.new_page()
+        await page.goto(url, timeout=30000)
+        title = await page.title()
+        await browser.close()
+        return f"✅ Заголовок: {title}"
+    except Exception as e:
+        log_action("browser_error", str(e), "error")
+        return f"❌ Ошибка браузера: {str(e)[:100]}"
+
+@bot.message_handler(commands=['browser'])
+def handle_browser(message):
+    url = message.text.replace('/browser', '').strip()
+    if not url:
+        url = "https://example.com"
+    
+    log_action("browser", f"user={message.from_user.id} открывает {url}", "info")
+    status_msg = bot.reply_to(message, f"🌐 Открываю {url}...")
+    
+    def do_browser():
+        try:
+            result = asyncio.run(open_browser(url))
+            bot.edit_message_text(result, chat_id=message.chat.id, message_id=status_msg.message_id)
+            log_action("browser_success", "страница открыта", "success")
+        except Exception as e:
+            bot.edit_message_text(f"❌ Ошибка: {e}", chat_id=message.chat.id, message_id=status_msg.message_id)
+            log_action("browser_error", str(e), "error")
+    
+    thread = threading.Thread(target=do_browser, daemon=True)
+    thread.start()
+
 # ===== КОМАНДЫ =====
 @bot.message_handler(commands=['start', 'help'])
 def menu_command(message):
     log_action("menu", f"user={message.from_user.id}", "info")
-    bot.reply_to(message, "📋 МЕНЮ БОТА\n\n/ai [вопрос] - спросить ИИ\n/status_full - полный статус\n/evolve - запустить самообучение\n/search [запрос] - поиск в Wikipedia\n/read [запрос] - читать статью\n/logs - показать логи")
+    bot.reply_to(message, "📋 МЕНЮ БОТА\n\n/ai [вопрос] - спросить ИИ\n/status_full - полный статус\n/evolve - запустить самообучение\n/search [запрос] - поиск в Wikipedia\n/read [запрос] - читать статью\n/logs - показать логи\n/browser [url] - открыть сайт в браузере")
 
 @bot.message_handler(commands=['ai'])
 def ai_command(message):
@@ -300,33 +337,3 @@ if __name__ == '__main__':
     bot.set_webhook(url=f"{url}/{TELEGRAM_TOKEN}")
     log_action("bot_start", "Бот запущен", "success")
     app.run(host='0.0.0.0', port=port)
-
-import asyncio
-from pyunbrowser import Browser
-from telebot import TeleBot
-
-bot = TeleBot("ВАШ_ТОКЕН")
-
-@bot.message_handler(commands=['browser'])
-def handle_browser(message):
-    # Запускаем асинхронную функцию
-    result = asyncio.run(open_browser())
-    bot.reply_to(message, result)
-
-async def open_browser():
-    # Создаём браузер
-    browser = await Browser.create()
-    
-    # Открываем страницу
-    page = await browser.new_page()
-    await page.goto("https://example.com")
-    
-    # Получаем заголовок
-    title = await page.title()
-    
-    # Закрываем браузер
-    await browser.close()
-    
-    return f"Заголовок страницы: {title}"
-
-bot.infinity_polling()
