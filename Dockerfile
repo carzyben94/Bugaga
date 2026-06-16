@@ -1,7 +1,8 @@
 FROM python:3.11-slim
 
-# Устанавливаем все зависимости для браузера
-RUN apt-get update && apt-get install -y \
+# Устанавливаем все зависимости с исправлением ошибок
+RUN apt-get update --fix-missing && \
+    apt-get install -y \
     wget \
     unzip \
     xvfb \
@@ -14,7 +15,6 @@ RUN apt-get update && apt-get install -y \
     libxdamage1 \
     libxext6 \
     libxfixes3 \
-    libxi6 \
     libxrandr2 \
     libxrender1 \
     libxss1 \
@@ -24,6 +24,15 @@ RUN apt-get update && apt-get install -y \
     libdrm2 \
     libxkbcommon0 \
     libgbm1 \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# Остальная часть Dockerfile...
+# Устанавливаем Python-зависимости
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Копируем код
+COPY . .
+
+# Команда запуска
+CMD ["python", "bot.py"]
