@@ -10,6 +10,7 @@ from flask import Flask, request
 import telebot
 from bs4 import BeautifulSoup
 from datetime import datetime
+from super_agent import SuperAgent
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -30,6 +31,16 @@ if not TELEGRAM_TOKEN:
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
+
+# ===== СУПЕР-АГЕНТ =====
+super_agent = SuperAgent({
+    'GITHUB_TOKEN': GITHUB_TOKEN,
+    'RENDER_API_KEY': RENDER_API_KEY,
+    'TELEGRAM_TOKEN': TELEGRAM_TOKEN,
+    'OPENROUTER_API_KEY': OPENROUTER_API_KEY,
+    'GITHUB_REPO': GITHUB_REPO,
+    'RENDER_SERVICE_ID': RENDER_SERVICE_ID
+})
 
 # ===== СТАТУС МОДУЛЬ =====
 try:
@@ -448,6 +459,71 @@ def parse_command(message):
     thread = threading.Thread(target=do_parse, daemon=True)
     thread.start()
 
+# ===== СУПЕР-АГЕНТ: КОМАНДЫ =====
+@bot.message_handler(commands=['agent_report'])
+def agent_report_command(message):
+    """Полный отчёт супер-агента"""
+    if str(message.from_user.id) != str(ADMIN_CHAT_ID):
+        bot.reply_to(message, "⛔ Только администратор может использовать эту команду")
+        return
+    
+    status_msg = bot.reply_to(message, "🧠 Супер-агент собирает данные...")
+    
+    def do_report():
+        try:
+            report = super_agent.get_full_report()
+            bot.edit_message_text(
+                report,
+                chat_id=message.chat.id,
+                message_id=status_msg.message_id,
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            bot.edit_message_text(
+                f"❌ Ошибка: {str(e)[:200]}",
+                chat_id=message.chat.id,
+                message_id=status_msg.message_id
+            )
+    
+    threading.Thread(target=do_report, daemon=True).start()
+
+@bot.message_handler(commands=['fix'])
+def fix_command(message):
+    """Авто-исправление проблемы"""
+    if str(message.from_user.id) != str(ADMIN_CHAT_ID):
+        bot.reply_to(message, "⛔ Только администратор")
+        return
+    
+    issue = message.text.replace('/fix', '').strip()
+    if not issue:
+        bot.reply_to(message, "📝 Опишите проблему:\n/fix [описание]")
+        return
+    
+    status_msg = bot.reply_to(message, f"🔧 Исправляю: {issue[:50]}...")
+    
+    def do_fix():
+        try:
+            if super_agent.auto_improve_code(issue):
+                bot.edit_message_text(
+                    "✅ Код улучшен и задеплоен на Render!",
+                    chat_id=message.chat.id,
+                    message_id=status_msg.message_id
+                )
+            else:
+                bot.edit_message_text(
+                    "❌ Не удалось автоматически улучшить код",
+                    chat_id=message.chat.id,
+                    message_id=status_msg.message_id
+                )
+        except Exception as e:
+            bot.edit_message_text(
+                f"❌ Ошибка: {str(e)[:200]}",
+                chat_id=message.chat.id,
+                message_id=status_msg.message_id
+            )
+    
+    threading.Thread(target=do_fix, daemon=True).start()
+
 # ===== КОМАНДЫ =====
 @bot.message_handler(commands=['start', 'help'])
 def menu_command(message):
@@ -465,7 +541,9 @@ def menu_command(message):
         "💰 ФИНАНСЫ\n"
         "/crypto - курсы криптовалют\n\n"
         "⚙️ СИСТЕМА\n"
-        "/status_full - полный статус\n"
+        "/agent_report - отчёт супер-агента\n"
+        "/fix [описание] - авто-исправление\n"
+        "/status_full - статус системы\n"
         "/logs - показать логи"
     )
     
@@ -508,7 +586,7 @@ def ai_command(message):
 
 @bot.message_handler(commands=['status_full'])
 def status_full_command(message):
-    bot.reply_to(message, "📊 Статус системы:\n✅ Бот работает\n✅ Все модули активны")
+    bot.reply_to(message, "📊 Статус системы:\n✅ Бот работает\n✅ Все модули активны\n✅ Супер-агент активен")
 
 @bot.message_handler(commands=['logs'])
 def logs_command(message):
