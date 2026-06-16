@@ -5,6 +5,7 @@ import json
 import requests
 import threading
 import urllib.parse
+import xml.etree.ElementTree as ET
 from flask import Flask, request
 import telebot
 from bs4 import BeautifulSoup
@@ -191,42 +192,61 @@ def handle_browser(message):
     thread = threading.Thread(target=do_browser, daemon=True)
     thread.start()
 
-# ===== ПАРСИНГ НОВОСТЕЙ =====
+# ===== ПАРСИНГ НОВОСТЕЙ (НАДЁЖНЫЙ ЧЕРЕЗ RSS) =====
 @bot.message_handler(commands=['news'])
 def news_command(message):
     status_msg = bot.reply_to(message, "📰 Ищу последние новости...")
     
     def do_news():
         try:
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-            r = requests.get("https://lenta.ru", headers=headers, timeout=10)
+            # Пробуем несколько RSS-источников
+            rss_sources = [
+                "https://lenta.ru/rss",
+                "https://news.yandex.ru/news.rss",
+                "https://ria.ru/export/rss2/index.xml"
+            ]
             
-            if r.status_code != 200:
-                bot.edit_message_text(f"❌ Ошибка HTTP: {r.status_code}", 
-                                      chat_id=message.chat.id, 
-                                      message_id=status_msg.message_id)
-                return
-            
-            soup = BeautifulSoup(r.text, 'lxml')
-            titles = soup.find_all('a', class_='card-mini__title')
-            if not titles:
-                titles = soup.find_all('a', class_='_title')
-            
-            result = "📰 ПОСЛЕДНИЕ НОВОСТИ (Lenta.ru):\n\n"
+            result = "📰 ПОСЛЕДНИЕ НОВОСТИ:\n\n"
             count = 0
-            for title in titles[:10]:
-                text = title.get_text(strip=True)
-                if text and len(text) > 10:
-                    count += 1
-                    result += f"{count}. {text}\n"
+            
+            for rss_url in rss_sources:
+                try:
+                    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+                    r = requests.get(rss_url, headers=headers, timeout=10)
+                    
+                    if r.status_code == 200:
+                        root = ET.fromstring(r.content)
+                        items = root.findall('.//item')
+                        
+                        if not items:
+                            items = root.findall('.//entry')
+                        
+                        if items:
+                            for item in items[:10]:
+                                title_elem = item.find('title')
+                                if title_elem is not None and title_elem.text:
+                                    text = title_elem.text.strip()
+                                    text = text.replace('<![CDATA[', '').replace(']]>', '')
+                                    if text and len(text) > 5 and len(text) < 300:
+                                        count += 1
+                                        result += f"{count}. {text}\n"
+                            
+                            if count > 0:
+                                break
+                except:
+                    continue
             
             if count == 0:
-                result = "❌ Новостей не найдено (возможно, изменилась вёрстка)"
+                # Если RSS не сработал, пробуем парсить HTML
+                result = get_news_from_html()
+            
+            if result == "📰 ПОСЛЕДНИЕ НОВОСТИ:\n\n":
+                result = "❌ Новостей не найдено. Попробуйте позже."
             
             bot.edit_message_text(result[:4000], 
                                   chat_id=message.chat.id, 
                                   message_id=status_msg.message_id)
-            log_action("news", f"найдено {count} новостей", "success")
+            log_action("news", f"найдено {count} новостей", "success" if count > 0 else "warning")
             
         except Exception as e:
             log_action("news_error", str(e), "error")
@@ -236,6 +256,52 @@ def news_command(message):
     
     thread = threading.Thread(target=do_news, daemon=True)
     thread.start()
+
+def get_news_from_html():
+    """Запасной способ: парсинг HTML"""
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        
+        # Пробуем Яндекс.Новости
+        r = requests.get("https://news.yandex.ru", headers=headers, timeout=10)
+        
+        if r.status_code != 200:
+            return "❌ Новостей не найдено"
+        
+        soup = BeautifulSoup(r.text, 'lxml')
+        
+        # Ищем заголовки
+        titles = []
+        for selector in ['a.link.link_theme_normal', 'a.news__title', 'h2 a', '.news-item__title a']:
+            found = soup.select(selector)
+            if found:
+                titles = found
+                break
+        
+        if not titles:
+            all_links = soup.find_all('a')
+            for link in all_links:
+                text = link.get_text(strip=True)
+                if len(text) > 20 and 'http' not in text.lower():
+                    titles.append(link)
+                    if len(titles) >= 10:
+                        break
+        
+        result = "📰 ПОСЛЕДНИЕ НОВОСТИ (Яндекс):\n\n"
+        count = 0
+        
+        for title in titles[:10]:
+            text = title.get_text(strip=True)
+            if text and len(text) > 15 and 'http' not in text.lower():
+                count += 1
+                result += f"{count}. {text}\n"
+        
+        if count == 0:
+            return "❌ Новостей не найдено"
+        
+        return result
+    except:
+        return "❌ Новостей не найдено"
 
 # ===== ПОГОДА =====
 @bot.message_handler(commands=['weather'])
