@@ -344,60 +344,62 @@ def weather_command(message):
     thread = threading.Thread(target=do_weather, daemon=True)
     thread.start()
 
-# ===== КРИПТОВАЛЮТЫ (БИТКОИН И ЭФИР) =====
+# ===== КРИПТОВАЛЮТЫ (Binance) =====
 @bot.message_handler(commands=['crypto'])
 def crypto_command(message):
     status_msg = bot.reply_to(message, "💰 Узнаю курсы криптовалют...")
     
     def do_crypto():
         try:
-            # Получаем курсы через CoinGecko API (бесплатный)
-            r = requests.get(
-                "https://api.coingecko.com/api/v3/simple/price",
-                params={
-                    "ids": "bitcoin,ethereum",
-                    "vs_currencies": "usd,eur,rub"
-                },
-                timeout=10
-            )
+            # Получаем BTC/USDT
+            r1 = requests.get("https://api.binance.com/api/v3/ticker/price", 
+                              params={"symbol": "BTCUSDT"}, timeout=10)
             
-            if r.status_code != 200:
-                bot.edit_message_text(f"❌ Ошибка API: {r.status_code}", 
+            # Получаем ETH/USDT
+            r2 = requests.get("https://api.binance.com/api/v3/ticker/price", 
+                              params={"symbol": "ETHUSDT"}, timeout=10)
+            
+            if r1.status_code != 200 or r2.status_code != 200:
+                bot.edit_message_text("❌ Ошибка Binance API", 
                                       chat_id=message.chat.id, 
                                       message_id=status_msg.message_id)
                 return
             
-            data = r.json()
+            btc_usd = float(r1.json().get('price', 0))
+            eth_usd = float(r2.json().get('price', 0))
             
-            # Биткоин
-            btc = data.get('bitcoin', {})
-            btc_usd = btc.get('usd', 'Нет данных')
-            btc_eur = btc.get('eur', 'Нет данных')
-            btc_rub = btc.get('rub', 'Нет данных')
+            # Получаем курс USD/RUB через Binance
+            r3 = requests.get("https://api.binance.com/api/v3/ticker/price", 
+                              params={"symbol": "USDRUB"}, timeout=10)
             
-            # Эфир
-            eth = data.get('ethereum', {})
-            eth_usd = eth.get('usd', 'Нет данных')
-            eth_eur = eth.get('eur', 'Нет данных')
-            eth_rub = eth.get('rub', 'Нет данных')
+            if r3.status_code == 200:
+                usd_rub = float(r3.json().get('price', 95))
+            else:
+                usd_rub = 95
+            
+            # Переводим в рубли и евро
+            btc_rub = round(btc_usd * usd_rub, 2)
+            eth_rub = round(eth_usd * usd_rub, 2)
+            btc_eur = round(btc_usd * 0.92, 2)
+            eth_eur = round(eth_usd * 0.92, 2)
             
             result = (
-                "💰 КУРСЫ КРИПТОВАЛЮТ:\n\n"
+                "💰 КУРСЫ КРИПТОВАЛЮТ (Binance):\n\n"
                 f"🟡 BITCOIN (BTC):\n"
-                f"  • USD: ${btc_usd}\n"
-                f"  • EUR: €{btc_eur}\n"
-                f"  • RUB: {btc_rub} ₽\n\n"
+                f"  • USD: ${btc_usd:,.2f}\n"
+                f"  • EUR: €{btc_eur:,.2f}\n"
+                f"  • RUB: {btc_rub:,.2f} ₽\n\n"
                 f"🔷 ETHEREUM (ETH):\n"
-                f"  • USD: ${eth_usd}\n"
-                f"  • EUR: €{eth_eur}\n"
-                f"  • RUB: {eth_rub} ₽\n\n"
-                f"🔄 BTC/ETH: {btc_usd / eth_usd:.2f} BTC за 1 ETH" if btc_usd != 'Нет данных' and eth_usd != 'Нет данных' else ""
+                f"  • USD: ${eth_usd:,.2f}\n"
+                f"  • EUR: €{eth_eur:,.2f}\n"
+                f"  • RUB: {eth_rub:,.2f} ₽\n\n"
+                f"🔄 1 ETH = {btc_usd / eth_usd:.2f} BTC"
             )
             
             bot.edit_message_text(result, 
                                   chat_id=message.chat.id, 
                                   message_id=status_msg.message_id)
-            log_action("crypto", "курсы получены", "success")
+            log_action("crypto", "курсы получены (Binance)", "success")
             
         except Exception as e:
             log_action("crypto_error", str(e), "error")
