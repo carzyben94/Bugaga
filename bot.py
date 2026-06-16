@@ -9,6 +9,7 @@ import asyncio
 from flask import Flask, request
 import telebot
 from unbrowser import Client
+from bs4 import BeautifulSoup
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -121,7 +122,6 @@ def research_and_improve():
     log_action("self_improvement", f"Найдены ошибки: {error_text[:200]}", "warning")
     log_action("self_improvement", "Поиск решений через Wikipedia...", "info")
     
-    # Ищем решение в Wikipedia
     results = search_wikipedia(f"Python {error_text[:50]}", 2)
     if results:
         log_action("self_improvement", f"Найдено {len(results)} возможных статей", "success")
@@ -166,7 +166,6 @@ def handle_browser(message):
     if not url:
         url = "https://example.com"
     
-    # Добавляем http:// если нет протокола
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
     
@@ -185,11 +184,213 @@ def handle_browser(message):
     thread = threading.Thread(target=do_browser, daemon=True)
     thread.start()
 
+# ===== ПАРСИНГ НОВОСТЕЙ =====
+@bot.message_handler(commands=['news'])
+def news_command(message):
+    status_msg = bot.reply_to(message, "📰 Ищу последние новости...")
+    
+    def do_news():
+        try:
+            with Client() as ub:
+                r = ub.navigate("https://lenta.ru")
+                html = r.get("html", "")
+                
+                if not html:
+                    bot.edit_message_text("❌ Не удалось загрузить страницу", 
+                                          chat_id=message.chat.id, 
+                                          message_id=status_msg.message_id)
+                    return
+                
+                soup = BeautifulSoup(html, 'lxml')
+                titles = soup.find_all('a', class_='card-mini__title')
+                if not titles:
+                    titles = soup.find_all('a', class_='_title')
+                
+                result = "📰 ПОСЛЕДНИЕ НОВОСТИ (Lenta.ru):\n\n"
+                count = 0
+                for title in titles[:10]:
+                    text = title.get_text(strip=True)
+                    if text and len(text) > 10:
+                        count += 1
+                        result += f"{count}. {text}\n"
+                
+                if count == 0:
+                    result = "❌ Новостей не найдено (возможно, изменилась вёрстка)"
+                
+                bot.edit_message_text(result[:4000], 
+                                      chat_id=message.chat.id, 
+                                      message_id=status_msg.message_id)
+                log_action("news", f"найдено {count} новостей", "success")
+                
+        except Exception as e:
+            log_action("news_error", str(e), "error")
+            bot.edit_message_text(f"❌ Ошибка: {str(e)[:100]}", 
+                                  chat_id=message.chat.id, 
+                                  message_id=status_msg.message_id)
+    
+    thread = threading.Thread(target=do_news, daemon=True)
+    thread.start()
+
+# ===== ПОГОДА =====
+@bot.message_handler(commands=['weather'])
+def weather_command(message):
+    city = message.text.replace('/weather', '').strip()
+    if not city:
+        city = "Moscow"
+    
+    status_msg = bot.reply_to(message, f"🌤️ Узнаю погоду в {city}...")
+    
+    def do_weather():
+        try:
+            with Client() as ub:
+                r = ub.navigate(f"https://wttr.in/{city}?format=%C+%t&lang=ru")
+                weather = r.get("text", "").strip()
+                
+                if not weather or "error" in weather.lower():
+                    bot.edit_message_text(f"❌ Город '{city}' не найден", 
+                                          chat_id=message.chat.id, 
+                                          message_id=status_msg.message_id)
+                    return
+                
+                bot.edit_message_text(f"🌤️ ПОГОДА В {city.upper()}:\n\n{weather}", 
+                                      chat_id=message.chat.id, 
+                                      message_id=status_msg.message_id)
+                log_action("weather", f"{city}: {weather[:50]}", "success")
+                
+        except Exception as e:
+            log_action("weather_error", str(e), "error")
+            bot.edit_message_text(f"❌ Ошибка: {str(e)[:100]}", 
+                                  chat_id=message.chat.id, 
+                                  message_id=status_msg.message_id)
+    
+    thread = threading.Thread(target=do_weather, daemon=True)
+    thread.start()
+
+# ===== КУРС ВАЛЮТ =====
+@bot.message_handler(commands=['currency'])
+def currency_command(message):
+    status_msg = bot.reply_to(message, "💵 Узнаю курсы валют...")
+    
+    def do_currency():
+        try:
+            with Client() as ub:
+                r = ub.navigate("https://www.cbr.ru")
+                html = r.get("html", "")
+                
+                if not html:
+                    bot.edit_message_text("❌ Не удалось загрузить страницу", 
+                                          chat_id=message.chat.id, 
+                                          message_id=status_msg.message_id)
+                    return
+                
+                soup = BeautifulSoup(html, 'lxml')
+                
+                result = "💵 КУРСЫ ВАЛЮТ (ЦБ РФ):\n\n"
+                
+                usd = soup.find('div', string='USD')
+                eur = soup.find('div', string='EUR')
+                
+                if usd:
+                    parent = usd.find_parent()
+                    rate = parent.find('div', class_='value') if parent else None
+                    if rate:
+                        result += f"🇺🇸 USD: {rate.get_text(strip=True)}\n"
+                else:
+                    values = soup.find_all('div', class_='value')
+                    if len(values) >= 2:
+                        result += f"🇺🇸 USD: {values[0].get_text(strip=True)}\n"
+                        result += f"🇪🇺 EUR: {values[1].get_text(strip=True)}\n"
+                    else:
+                        result += "❌ Курсы не найдены (изменилась вёрстка)\n"
+                
+                result += "\n🔗 Подробнее: https://www.cbr.ru"
+                
+                bot.edit_message_text(result, 
+                                      chat_id=message.chat.id, 
+                                      message_id=status_msg.message_id)
+                log_action("currency", "курсы получены", "success")
+                
+        except Exception as e:
+            log_action("currency_error", str(e), "error")
+            bot.edit_message_text(f"❌ Ошибка: {str(e)[:100]}", 
+                                  chat_id=message.chat.id, 
+                                  message_id=status_msg.message_id)
+    
+    thread = threading.Thread(target=do_currency, daemon=True)
+    thread.start()
+
+# ===== ПАРСИНГ ЛЮБОГО URL =====
+@bot.message_handler(commands=['parse'])
+def parse_command(message):
+    url = message.text.replace('/parse', '').strip()
+    if not url:
+        bot.reply_to(message, "❌ Укажите URL\nПример: /parse https://example.com")
+        return
+    
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    
+    status_msg = bot.reply_to(message, f"🔍 Парсю {url}...")
+    
+    def do_parse():
+        try:
+            with Client() as ub:
+                r = ub.navigate(url)
+                html = r.get("html", "")
+                
+                if not html:
+                    bot.edit_message_text("❌ Не удалось загрузить страницу", 
+                                          chat_id=message.chat.id, 
+                                          message_id=status_msg.message_id)
+                    return
+                
+                soup = BeautifulSoup(html, 'lxml')
+                
+                title = soup.find('title')
+                title_text = title.get_text(strip=True) if title else "Без заголовка"
+                
+                paragraphs = soup.find_all('p')
+                text = " ".join([p.get_text(strip=True) for p in paragraphs[:5]])
+                
+                if not text or len(text) < 50:
+                    text = "⚠️ Контент не найден (возможно, сайт на JS)"
+                else:
+                    text = text[:2000] + "..." if len(text) > 2000 else text
+                
+                result = f"📄 {title_text}\n\n{text}"
+                
+                bot.edit_message_text(result[:4000], 
+                                      chat_id=message.chat.id, 
+                                      message_id=status_msg.message_id)
+                log_action("parse", f"{url} - {title_text[:50]}", "success")
+                
+        except Exception as e:
+            log_action("parse_error", str(e), "error")
+            bot.edit_message_text(f"❌ Ошибка: {str(e)[:100]}", 
+                                  chat_id=message.chat.id, 
+                                  message_id=status_msg.message_id)
+    
+    thread = threading.Thread(target=do_parse, daemon=True)
+    thread.start()
+
 # ===== КОМАНДЫ =====
 @bot.message_handler(commands=['start', 'help'])
 def menu_command(message):
     log_action("menu", f"user={message.from_user.id}", "info")
-    bot.reply_to(message, "📋 МЕНЮ БОТА\n\n/ai [вопрос] - спросить ИИ\n/status_full - полный статус\n/evolve - запустить самообучение\n/search [запрос] - поиск в Wikipedia\n/read [запрос] - читать статью\n/logs - показать логи\n/browser [url] - открыть сайт в браузере")
+    bot.reply_to(message, 
+        "📋 МЕНЮ БОТА\n\n"
+        "/ai [вопрос] - спросить ИИ\n"
+        "/status_full - полный статус\n"
+        "/evolve - запустить самообучение\n"
+        "/search [запрос] - поиск в Wikipedia\n"
+        "/read [запрос] - читать статью\n"
+        "/logs - показать логи\n"
+        "/browser [url] - открыть сайт в браузере\n"
+        "/news - последние новости\n"
+        "/weather [город] - погода\n"
+        "/currency - курсы валют\n"
+        "/parse [url] - парсинг любого сайта"
+    )
 
 @bot.message_handler(commands=['ai'])
 def ai_command(message):
@@ -274,7 +475,6 @@ def read_command(message):
     log_action("read", f"user={message.from_user.id} читает: {query}", "info")
     status_msg = bot.reply_to(message, f"📖 Читаю статью: {query}")
     
-    # Сначала ищем статью
     results = search_wikipedia(query, 1)
     if not results:
         bot.edit_message_text("❌ Статья не найдена", chat_id=message.chat.id, message_id=status_msg.message_id)
