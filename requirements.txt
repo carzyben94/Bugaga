@@ -5,3 +5,5 @@ psutil==5.9.5
 ai-dev-browser>=0.9.4
 pytelegrambotapi
 pyunbrowser
+beautifulsoup4
+lxml
