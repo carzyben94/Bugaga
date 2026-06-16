@@ -344,14 +344,22 @@ def weather_command(message):
     thread = threading.Thread(target=do_weather, daemon=True)
     thread.start()
 
-# ===== КУРС ВАЛЮТ =====
-@bot.message_handler(commands=['currency'])
-def currency_command(message):
-    status_msg = bot.reply_to(message, "💵 Узнаю курсы валют...")
+# ===== КРИПТОВАЛЮТЫ (БИТКОИН И ЭФИР) =====
+@bot.message_handler(commands=['crypto'])
+def crypto_command(message):
+    status_msg = bot.reply_to(message, "💰 Узнаю курсы криптовалют...")
     
-    def do_currency():
+    def do_crypto():
         try:
-            r = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=10)
+            # Получаем курсы через CoinGecko API (бесплатный)
+            r = requests.get(
+                "https://api.coingecko.com/api/v3/simple/price",
+                params={
+                    "ids": "bitcoin,ethereum",
+                    "vs_currencies": "usd,eur,rub"
+                },
+                timeout=10
+            )
             
             if r.status_code != 200:
                 bot.edit_message_text(f"❌ Ошибка API: {r.status_code}", 
@@ -360,23 +368,44 @@ def currency_command(message):
                 return
             
             data = r.json()
-            usd_to_rub = data['rates'].get('RUB', 'Нет данных')
-            eur_to_rub = data['rates'].get('EUR', 'Нет данных')
             
-            result = f"💵 КУРСЫ ВАЛЮТ:\n\n🇺🇸 USD → RUB: {usd_to_rub}\n🇪🇺 EUR → RUB: {eur_to_rub}\n\n🔄 1 USD = {eur_to_rub} EUR"
+            # Биткоин
+            btc = data.get('bitcoin', {})
+            btc_usd = btc.get('usd', 'Нет данных')
+            btc_eur = btc.get('eur', 'Нет данных')
+            btc_rub = btc.get('rub', 'Нет данных')
+            
+            # Эфир
+            eth = data.get('ethereum', {})
+            eth_usd = eth.get('usd', 'Нет данных')
+            eth_eur = eth.get('eur', 'Нет данных')
+            eth_rub = eth.get('rub', 'Нет данных')
+            
+            result = (
+                "💰 КУРСЫ КРИПТОВАЛЮТ:\n\n"
+                f"🟡 BITCOIN (BTC):\n"
+                f"  • USD: ${btc_usd}\n"
+                f"  • EUR: €{btc_eur}\n"
+                f"  • RUB: {btc_rub} ₽\n\n"
+                f"🔷 ETHEREUM (ETH):\n"
+                f"  • USD: ${eth_usd}\n"
+                f"  • EUR: €{eth_eur}\n"
+                f"  • RUB: {eth_rub} ₽\n\n"
+                f"🔄 BTC/ETH: {btc_usd / eth_usd:.2f} BTC за 1 ETH" if btc_usd != 'Нет данных' and eth_usd != 'Нет данных' else ""
+            )
             
             bot.edit_message_text(result, 
                                   chat_id=message.chat.id, 
                                   message_id=status_msg.message_id)
-            log_action("currency", "курсы получены", "success")
+            log_action("crypto", "курсы получены", "success")
             
         except Exception as e:
-            log_action("currency_error", str(e), "error")
+            log_action("crypto_error", str(e), "error")
             bot.edit_message_text(f"❌ Ошибка: {str(e)[:100]}", 
                                   chat_id=message.chat.id, 
                                   message_id=status_msg.message_id)
     
-    thread = threading.Thread(target=do_currency, daemon=True)
+    thread = threading.Thread(target=do_crypto, daemon=True)
     thread.start()
 
 # ===== ПАРСИНГ ЛЮБОГО URL =====
@@ -447,7 +476,7 @@ def menu_command(message):
         "/browser [url] - открыть сайт в браузере\n"
         "/news - последние новости\n"
         "/weather [город] - погода\n"
-        "/currency - курсы валют\n"
+        "/crypto - курсы Bitcoin и Ethereum\n"
         "/parse [url] - парсинг любого сайта"
     )
 
