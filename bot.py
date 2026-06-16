@@ -125,53 +125,88 @@ def handle_browser(message):
     thread = threading.Thread(target=do_browser, daemon=True)
     thread.start()
 
-# ===== ПАРСИНГ НОВОСТЕЙ (НАДЁЖНЫЙ ЧЕРЕЗ RSS) =====
+# ===== ПАРСИНГ НОВОСТЕЙ (DW и BBC на русском) =====
 @bot.message_handler(commands=['news'])
 def news_command(message):
     status_msg = bot.reply_to(message, "📰 Ищу последние новости...")
     
     def do_news():
         try:
+            # Новые источники: DW и BBC на русском
             rss_sources = [
-                "https://lenta.ru/rss",
-                "https://news.yandex.ru/news.rss",
-                "https://ria.ru/export/rss2/index.xml"
+                "https://rss.dw.com/rdf/rss-ru-all",  # DW на русском
+                "https://www.bbc.com/russian/index.xml"  # BBC на русском
             ]
             
             result = "📰 ПОСЛЕДНИЕ НОВОСТИ:\n\n"
             count = 0
+            used_titles = set()  # Для удаления дубликатов
             
             for rss_url in rss_sources:
                 try:
-                    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-                    r = requests.get(rss_url, headers=headers, timeout=10)
+                    headers = {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Accept': 'application/rss+xml, application/xml, text/xml'
+                    }
+                    r = requests.get(rss_url, headers=headers, timeout=15)
                     
                     if r.status_code == 200:
-                        root = ET.fromstring(r.content)
-                        items = root.findall('.//item')
-                        
-                        if not items:
-                            items = root.findall('.//entry')
-                        
-                        if items:
-                            for item in items[:10]:
-                                title_elem = item.find('title')
-                                if title_elem is not None and title_elem.text:
-                                    text = title_elem.text.strip()
-                                    text = text.replace('<![CDATA[', '').replace(']]>', '')
-                                    if text and len(text) > 5 and len(text) < 300:
-                                        count += 1
-                                        result += f"{count}. {text}\n"
+                        # Пробуем парсить RSS
+                        try:
+                            root = ET.fromstring(r.content)
+                            items = root.findall('.//item')
                             
-                            if count > 0:
-                                break
-                except:
+                            if not items:
+                                items = root.findall('.//entry')
+                            
+                            if items:
+                                for item in items[:10]:
+                                    title_elem = item.find('title')
+                                    if title_elem is not None and title_elem.text:
+                                        text = title_elem.text.strip()
+                                        # Очищаем от CDATA
+                                        text = text.replace('<![CDATA[', '').replace(']]>', '')
+                                        # Очищаем от HTML тегов
+                                        text = BeautifulSoup(text, 'html.parser').get_text()
+                                        
+                                        if text and len(text) > 10 and len(text) < 500:
+                                            # Проверяем на дубликаты
+                                            if text not in used_titles:
+                                                used_titles.add(text)
+                                                count += 1
+                                                source = "DW" if "dw.com" in rss_url else "BBC"
+                                                result += f"{count}. {text} ({source})\n"
+                                            
+                                            if count >= 15:
+                                                break
+                        except ET.ParseError:
+                            # Если не RSS, пробуем парсить HTML
+                            soup = BeautifulSoup(r.text, 'lxml')
+                            titles = soup.find_all(['h1', 'h2', 'h3', 'a'])
+                            for title in titles[:20]:
+                                text = title.get_text(strip=True)
+                                if text and len(text) > 20 and len(text) < 300:
+                                    if text not in used_titles:
+                                        used_titles.add(text)
+                                        count += 1
+                                        source = "DW" if "dw.com" in rss_url else "BBC"
+                                        result += f"{count}. {text} ({source})\n"
+                                    
+                                    if count >= 15:
+                                        break
+                    
+                except Exception as e:
+                    log_action("news_source_error", f"{rss_url}: {str(e)[:50]}", "warning")
                     continue
+                
+                if count >= 15:
+                    break
             
             if count == 0:
+                # Если RSS не сработал, пробуем парсить HTML напрямую
                 result = get_news_from_html()
             
-            if result == "📰 ПОСЛЕДНИЕ НОВОСТИ:\n\n":
+            if count == 0 and result == "📰 ПОСЛЕДНИЕ НОВОСТИ:\n\n":
                 result = "❌ Новостей не найдено. Попробуйте позже."
             
             bot.edit_message_text(result[:4000], 
@@ -189,47 +224,60 @@ def news_command(message):
     thread.start()
 
 def get_news_from_html():
-    """Запасной способ: парсинг HTML"""
+    """Запасной способ: парсинг HTML напрямую с DW и BBC"""
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept-Language': 'ru-RU,ru;q=0.9'
+        }
         
-        r = requests.get("https://news.yandex.ru", headers=headers, timeout=10)
-        
-        if r.status_code != 200:
-            return "❌ Новостей не найдено"
-        
-        soup = BeautifulSoup(r.text, 'lxml')
-        
-        titles = []
-        for selector in ['a.link.link_theme_normal', 'a.news__title', 'h2 a', '.news-item__title a']:
-            found = soup.select(selector)
-            if found:
-                titles = found
-                break
-        
-        if not titles:
-            all_links = soup.find_all('a')
-            for link in all_links:
-                text = link.get_text(strip=True)
-                if len(text) > 20 and 'http' not in text.lower():
-                    titles.append(link)
-                    if len(titles) >= 10:
-                        break
-        
-        result = "📰 ПОСЛЕДНИЕ НОВОСТИ (Яндекс):\n\n"
+        result = "📰 ПОСЛЕДНИЕ НОВОСТИ:\n\n"
         count = 0
+        used_titles = set()
         
-        for title in titles[:10]:
-            text = title.get_text(strip=True)
-            if text and len(text) > 15 and 'http' not in text.lower():
-                count += 1
-                result += f"{count}. {text}\n"
+        # Пробуем DW
+        try:
+            r = requests.get("https://www.dw.com/ru/top-stories/s-9097", headers=headers, timeout=10)
+            if r.status_code == 200:
+                soup = BeautifulSoup(r.text, 'lxml')
+                # Ищем заголовки статей
+                for selector in ['h2 a', '.teaser__headline a', 'article h2 a', '.news-item h2 a']:
+                    titles = soup.select(selector)
+                    if titles:
+                        for title in titles[:10]:
+                            text = title.get_text(strip=True)
+                            if text and len(text) > 20 and len(text) < 300 and text not in used_titles:
+                                used_titles.add(text)
+                                count += 1
+                                result += f"{count}. {text} (DW)\n"
+                        break
+        except:
+            pass
+        
+        # Пробуем BBC
+        try:
+            r = requests.get("https://www.bbc.com/russian", headers=headers, timeout=10)
+            if r.status_code == 200:
+                soup = BeautifulSoup(r.text, 'lxml')
+                for selector in ['h2 a', '.gs-c-promo-heading', 'article a', '.bbc-news__title a']:
+                    titles = soup.select(selector)
+                    if titles:
+                        for title in titles[:10]:
+                            text = title.get_text(strip=True)
+                            if text and len(text) > 20 and len(text) < 300 and text not in used_titles:
+                                used_titles.add(text)
+                                count += 1
+                                result += f"{count}. {text} (BBC)\n"
+                        break
+        except:
+            pass
         
         if count == 0:
             return "❌ Новостей не найдено"
         
         return result
-    except:
+    except Exception as e:
+        log_action("news_html_error", str(e), "error")
         return "❌ Новостей не найдено"
 
 # ===== КРИПТОВАЛЮТЫ (Binance) =====
@@ -365,7 +413,7 @@ def menu_command(message):
         "/ai [вопрос] - спросить ИИ\n"
         "/status_full - полный статус\n"
         "/browser [url] - открыть сайт в браузере\n"
-        "/news - последние новости\n"
+        "/news - последние новости (DW, BBC)\n"
         "/crypto - курсы Bitcoin и Ethereum\n"
         "/parse [url] - парсинг любого сайта\n"
         "/logs - показать логи"
