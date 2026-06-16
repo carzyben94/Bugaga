@@ -80,37 +80,7 @@ def get_last_errors(limit=5):
     except:
         return []
 
-# ===== ПОИСК ЧЕРЕЗ WIKIPEDIA =====
-def search_wikipedia(query, num_results=5):
-    """Поиск в Wikipedia"""
-    try:
-        url = f"https://ru.wikipedia.org/w/api.php?action=query&list=search&srsearch={urllib.parse.quote(query)}&format=json"
-        resp = requests.get(url, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            results = data.get('query', {}).get('search', [])
-            return results[:num_results]
-        return []
-    except Exception as e:
-        log_action("search_error", str(e), "error")
-        return []
-
-def get_wikipedia_page(title):
-    """Получает содержимое страницы Wikipedia"""
-    try:
-        url = f"https://ru.wikipedia.org/w/api.php?action=query&prop=extracts&exintro&explaintext&titles={urllib.parse.quote(title)}&format=json"
-        resp = requests.get(url, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            pages = data.get('query', {}).get('pages', {})
-            for page_id, page_data in pages.items():
-                if 'extract' in page_data:
-                    return page_data['extract'][:2000]
-        return ""
-    except:
-        return ""
-
-# ===== ФУНКЦИЯ САМОУЛУЧШЕНИЯ =====
+# ===== ФУНКЦИЯ САМОУЛУЧШЕНИЯ (без Wikipedia) =====
 def research_and_improve():
     log_action("self_improvement", "Начинаю поиск улучшений", "info")
     errors = get_last_errors(3)
@@ -119,18 +89,7 @@ def research_and_improve():
         return
     error_text = "\n".join(errors)
     log_action("self_improvement", f"Найдены ошибки: {error_text[:200]}", "warning")
-    log_action("self_improvement", "Поиск решений через Wikipedia...", "info")
-    
-    results = search_wikipedia(f"Python {error_text[:50]}", 2)
-    if results:
-        log_action("self_improvement", f"Найдено {len(results)} возможных статей", "success")
-        for r in results:
-            title = r.get('title', '')
-            content = get_wikipedia_page(title)
-            if content:
-                log_action("solution_found", f"{title}: {content[:200]}...", "info")
-    else:
-        log_action("self_improvement", "Решений не найдено", "warning")
+    log_action("self_improvement", "Анализ ошибок завершён", "info")
 
 def start_self_improvement_loop():
     def loop():
@@ -199,7 +158,6 @@ def news_command(message):
     
     def do_news():
         try:
-            # Пробуем несколько RSS-источников
             rss_sources = [
                 "https://lenta.ru/rss",
                 "https://news.yandex.ru/news.rss",
@@ -237,7 +195,6 @@ def news_command(message):
                     continue
             
             if count == 0:
-                # Если RSS не сработал, пробуем парсить HTML
                 result = get_news_from_html()
             
             if result == "📰 ПОСЛЕДНИЕ НОВОСТИ:\n\n":
@@ -262,7 +219,6 @@ def get_news_from_html():
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         
-        # Пробуем Яндекс.Новости
         r = requests.get("https://news.yandex.ru", headers=headers, timeout=10)
         
         if r.status_code != 200:
@@ -270,7 +226,6 @@ def get_news_from_html():
         
         soup = BeautifulSoup(r.text, 'lxml')
         
-        # Ищем заголовки
         titles = []
         for selector in ['a.link.link_theme_normal', 'a.news__title', 'h2 a', '.news-item__title a']:
             found = soup.select(selector)
@@ -351,11 +306,9 @@ def crypto_command(message):
     
     def do_crypto():
         try:
-            # Получаем BTC/USDT
             r1 = requests.get("https://api.binance.com/api/v3/ticker/price", 
                               params={"symbol": "BTCUSDT"}, timeout=10)
             
-            # Получаем ETH/USDT
             r2 = requests.get("https://api.binance.com/api/v3/ticker/price", 
                               params={"symbol": "ETHUSDT"}, timeout=10)
             
@@ -368,7 +321,6 @@ def crypto_command(message):
             btc_usd = float(r1.json().get('price', 0))
             eth_usd = float(r2.json().get('price', 0))
             
-            # Получаем курс USD/RUB через Binance
             r3 = requests.get("https://api.binance.com/api/v3/ticker/price", 
                               params={"symbol": "USDRUB"}, timeout=10)
             
@@ -377,7 +329,6 @@ def crypto_command(message):
             else:
                 usd_rub = 95
             
-            # Переводим в рубли и евро
             btc_rub = round(btc_usd * usd_rub, 2)
             eth_rub = round(eth_usd * usd_rub, 2)
             btc_eur = round(btc_usd * 0.92, 2)
@@ -472,9 +423,6 @@ def menu_command(message):
         "/ai [вопрос] - спросить ИИ\n"
         "/status_full - полный статус\n"
         "/evolve - запустить самообучение\n"
-        "/search [запрос] - поиск в Wikipedia\n"
-        "/read [запрос] - читать статью\n"
-        "/logs - показать логи\n"
         "/browser [url] - открыть сайт в браузере\n"
         "/news - последние новости\n"
         "/weather [город] - погода\n"
@@ -530,56 +478,6 @@ def evolve_command(message):
     
     thread = threading.Thread(target=do_research, daemon=True)
     thread.start()
-
-@bot.message_handler(commands=['search'])
-def search_command(message):
-    query = message.text.replace('/search', '').strip()
-    if not query:
-        bot.reply_to(message, "/search [запрос]\nПример: /search искусственный интеллект")
-        return
-    
-    log_action("search", f"user={message.from_user.id} поиск: {query}", "info")
-    status_msg = bot.reply_to(message, f"🔍 Ищу в Wikipedia: {query}")
-    
-    results = search_wikipedia(query, 5)
-    if not results:
-        bot.edit_message_text("❌ Ничего не найдено", chat_id=message.chat.id, message_id=status_msg.message_id)
-        log_action("search_no_results", query, "warning")
-        return
-    
-    response = f"🔍 РЕЗУЛЬТАТЫ ПОИСКА (Wikipedia): {query}\n\n"
-    for i, r in enumerate(results, 1):
-        title = r.get('title', 'Без названия')
-        response += f"{i}. {title}\nhttps://ru.wikipedia.org/wiki/{title.replace(' ', '_')}\n\n"
-    
-    bot.edit_message_text(response[:4000], chat_id=message.chat.id, message_id=status_msg.message_id)
-    log_action("search_success", f"найдено {len(results)} результатов", "success")
-
-@bot.message_handler(commands=['read'])
-def read_command(message):
-    query = message.text.replace('/read', '').strip()
-    if not query:
-        bot.reply_to(message, "/read [название статьи]\nПример: /read Искусственный интеллект")
-        return
-    
-    log_action("read", f"user={message.from_user.id} читает: {query}", "info")
-    status_msg = bot.reply_to(message, f"📖 Читаю статью: {query}")
-    
-    results = search_wikipedia(query, 1)
-    if not results:
-        bot.edit_message_text("❌ Статья не найдена", chat_id=message.chat.id, message_id=status_msg.message_id)
-        return
-    
-    title = results[0].get('title', query)
-    content = get_wikipedia_page(title)
-    
-    if content:
-        response = f"📄 СТАТЬЯ: {title}\n\n{content[:3000]}"
-        bot.edit_message_text(response, chat_id=message.chat.id, message_id=status_msg.message_id)
-        log_action("read_success", f"прочитано {len(content)} символов", "success")
-    else:
-        bot.edit_message_text("❌ Не удалось прочитать статью", chat_id=message.chat.id, message_id=status_msg.message_id)
-        log_action("read_error", f"не удалось прочитать {title}", "error")
 
 @bot.message_handler(commands=['logs'])
 def logs_command(message):
