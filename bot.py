@@ -80,32 +80,6 @@ def get_last_errors(limit=5):
     except:
         return []
 
-# ===== ФУНКЦИЯ САМОУЛУЧШЕНИЯ (без Wikipedia) =====
-def research_and_improve():
-    log_action("self_improvement", "Начинаю поиск улучшений", "info")
-    errors = get_last_errors(3)
-    if not errors:
-        log_action("self_improvement", "Ошибок не найдено", "success")
-        return
-    error_text = "\n".join(errors)
-    log_action("self_improvement", f"Найдены ошибки: {error_text[:200]}", "warning")
-    log_action("self_improvement", "Анализ ошибок завершён", "info")
-
-def start_self_improvement_loop():
-    def loop():
-        while True:
-            time.sleep(3600)
-            try:
-                log_action("auto_improve", "Автоматический цикл самообучения", "info")
-                research_and_improve()
-            except Exception as e:
-                log_action("auto_improve_error", str(e), "error")
-    thread = threading.Thread(target=loop, daemon=True)
-    thread.start()
-    log_action("self_improvement", "Фоновое самообучение запущено", "success")
-
-start_self_improvement_loop()
-
 # ===== БРАУЗЕР МОДУЛЬ (через requests) =====
 def open_browser_sync(url="https://example.com"):
     """Открывает сайт через requests"""
@@ -258,47 +232,6 @@ def get_news_from_html():
     except:
         return "❌ Новостей не найдено"
 
-# ===== ПОГОДА =====
-@bot.message_handler(commands=['weather'])
-def weather_command(message):
-    city = message.text.replace('/weather', '').strip()
-    if not city:
-        city = "Moscow"
-    
-    status_msg = bot.reply_to(message, f"🌤️ Узнаю погоду в {city}...")
-    
-    def do_weather():
-        try:
-            r = requests.get(f"https://wttr.in/{city}?format=%C+%t&lang=ru", timeout=10)
-            
-            if r.status_code != 200:
-                bot.edit_message_text(f"❌ Ошибка HTTP: {r.status_code}", 
-                                      chat_id=message.chat.id, 
-                                      message_id=status_msg.message_id)
-                return
-            
-            weather = r.text.strip()
-            
-            if not weather or "error" in weather.lower():
-                bot.edit_message_text(f"❌ Город '{city}' не найден", 
-                                      chat_id=message.chat.id, 
-                                      message_id=status_msg.message_id)
-                return
-            
-            bot.edit_message_text(f"🌤️ ПОГОДА В {city.upper()}:\n\n{weather}", 
-                                  chat_id=message.chat.id, 
-                                  message_id=status_msg.message_id)
-            log_action("weather", f"{city}: {weather[:50]}", "success")
-            
-        except Exception as e:
-            log_action("weather_error", str(e), "error")
-            bot.edit_message_text(f"❌ Ошибка: {str(e)[:100]}", 
-                                  chat_id=message.chat.id, 
-                                  message_id=status_msg.message_id)
-    
-    thread = threading.Thread(target=do_weather, daemon=True)
-    thread.start()
-
 # ===== КРИПТОВАЛЮТЫ (Binance) =====
 @bot.message_handler(commands=['crypto'])
 def crypto_command(message):
@@ -422,12 +355,11 @@ def menu_command(message):
         "📋 МЕНЮ БОТА\n\n"
         "/ai [вопрос] - спросить ИИ\n"
         "/status_full - полный статус\n"
-        "/evolve - запустить самообучение\n"
         "/browser [url] - открыть сайт в браузере\n"
         "/news - последние новости\n"
-        "/weather [город] - погода\n"
         "/crypto - курсы Bitcoin и Ethereum\n"
-        "/parse [url] - парсинг любого сайта"
+        "/parse [url] - парсинг любого сайта\n"
+        "/logs - показать логи"
     )
 
 @bot.message_handler(commands=['ai'])
@@ -464,20 +396,6 @@ def ai_command(message):
     except Exception as e:
         log_action("ai_exception", str(e), "error")
         bot.edit_message_text(f"Error: {e}", chat_id=message.chat.id, message_id=status_msg.message_id)
-
-@bot.message_handler(commands=['evolve'])
-def evolve_command(message):
-    log_action("evolve", f"user={message.from_user.id} запустил самообучение", "info")
-    status_msg = bot.reply_to(message, "🧬 Агент начал самоанализ...")
-    
-    def do_research():
-        research_and_improve()
-        bot.edit_message_text("✅ Цикл самообучения завершён", 
-                              chat_id=message.chat.id, message_id=status_msg.message_id)
-        log_action("evolve_complete", "самообучение завершено", "success")
-    
-    thread = threading.Thread(target=do_research, daemon=True)
-    thread.start()
 
 @bot.message_handler(commands=['logs'])
 def logs_command(message):
