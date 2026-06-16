@@ -300,3 +300,33 @@ if __name__ == '__main__':
     bot.set_webhook(url=f"{url}/{TELEGRAM_TOKEN}")
     log_action("bot_start", "Бот запущен", "success")
     app.run(host='0.0.0.0', port=port)
+
+import asyncio
+from pyunbrowser import Browser
+from telebot import TeleBot
+
+bot = TeleBot("ВАШ_ТОКЕН")
+
+@bot.message_handler(commands=['browser'])
+def handle_browser(message):
+    # Запускаем асинхронную функцию
+    result = asyncio.run(open_browser())
+    bot.reply_to(message, result)
+
+async def open_browser():
+    # Создаём браузер
+    browser = await Browser.create()
+    
+    # Открываем страницу
+    page = await browser.new_page()
+    await page.goto("https://example.com")
+    
+    # Получаем заголовок
+    title = await page.title()
+    
+    # Закрываем браузер
+    await browser.close()
+    
+    return f"Заголовок страницы: {title}"
+
+bot.infinity_polling()
