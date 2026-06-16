@@ -5,10 +5,8 @@ import json
 import requests
 import threading
 import urllib.parse
-import asyncio
 from flask import Flask, request
 import telebot
-from unbrowser import Client
 from bs4 import BeautifulSoup
 
 logging.basicConfig(level=logging.INFO)
@@ -148,17 +146,26 @@ def start_self_improvement_loop():
 
 start_self_improvement_loop()
 
-# ===== БРАУЗЕР МОДУЛЬ =====
+# ===== БРАУЗЕР МОДУЛЬ (через requests) =====
 def open_browser_sync(url="https://example.com"):
-    """Открывает браузер синхронно (для threading)"""
+    """Открывает сайт через requests"""
     try:
-        with Client() as ub:
-            r = ub.navigate(url)
-            title = r.get("title", "Без заголовка")
-            return f"✅ Заголовок: {title}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7'
+        }
+        r = requests.get(url, headers=headers, timeout=15)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, 'lxml')
+            title = soup.find('title')
+            title_text = title.get_text(strip=True) if title else "Без заголовка"
+            return f"✅ Заголовок: {title_text}"
+        else:
+            return f"❌ Ошибка HTTP: {r.status_code}"
     except Exception as e:
         log_action("browser_error", str(e), "error")
-        return f"❌ Ошибка браузера: {str(e)[:100]}"
+        return f"❌ Ошибка: {str(e)[:100]}"
 
 @bot.message_handler(commands=['browser'])
 def handle_browser(message):
@@ -191,37 +198,36 @@ def news_command(message):
     
     def do_news():
         try:
-            with Client() as ub:
-                r = ub.navigate("https://lenta.ru")
-                html = r.get("html", "")
-                
-                if not html:
-                    bot.edit_message_text("❌ Не удалось загрузить страницу", 
-                                          chat_id=message.chat.id, 
-                                          message_id=status_msg.message_id)
-                    return
-                
-                soup = BeautifulSoup(html, 'lxml')
-                titles = soup.find_all('a', class_='card-mini__title')
-                if not titles:
-                    titles = soup.find_all('a', class_='_title')
-                
-                result = "📰 ПОСЛЕДНИЕ НОВОСТИ (Lenta.ru):\n\n"
-                count = 0
-                for title in titles[:10]:
-                    text = title.get_text(strip=True)
-                    if text and len(text) > 10:
-                        count += 1
-                        result += f"{count}. {text}\n"
-                
-                if count == 0:
-                    result = "❌ Новостей не найдено (возможно, изменилась вёрстка)"
-                
-                bot.edit_message_text(result[:4000], 
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            r = requests.get("https://lenta.ru", headers=headers, timeout=10)
+            
+            if r.status_code != 200:
+                bot.edit_message_text(f"❌ Ошибка HTTP: {r.status_code}", 
                                       chat_id=message.chat.id, 
                                       message_id=status_msg.message_id)
-                log_action("news", f"найдено {count} новостей", "success")
-                
+                return
+            
+            soup = BeautifulSoup(r.text, 'lxml')
+            titles = soup.find_all('a', class_='card-mini__title')
+            if not titles:
+                titles = soup.find_all('a', class_='_title')
+            
+            result = "📰 ПОСЛЕДНИЕ НОВОСТИ (Lenta.ru):\n\n"
+            count = 0
+            for title in titles[:10]:
+                text = title.get_text(strip=True)
+                if text and len(text) > 10:
+                    count += 1
+                    result += f"{count}. {text}\n"
+            
+            if count == 0:
+                result = "❌ Новостей не найдено (возможно, изменилась вёрстка)"
+            
+            bot.edit_message_text(result[:4000], 
+                                  chat_id=message.chat.id, 
+                                  message_id=status_msg.message_id)
+            log_action("news", f"найдено {count} новостей", "success")
+            
         except Exception as e:
             log_action("news_error", str(e), "error")
             bot.edit_message_text(f"❌ Ошибка: {str(e)[:100]}", 
@@ -242,21 +248,27 @@ def weather_command(message):
     
     def do_weather():
         try:
-            with Client() as ub:
-                r = ub.navigate(f"https://wttr.in/{city}?format=%C+%t&lang=ru")
-                weather = r.get("text", "").strip()
-                
-                if not weather or "error" in weather.lower():
-                    bot.edit_message_text(f"❌ Город '{city}' не найден", 
-                                          chat_id=message.chat.id, 
-                                          message_id=status_msg.message_id)
-                    return
-                
-                bot.edit_message_text(f"🌤️ ПОГОДА В {city.upper()}:\n\n{weather}", 
+            r = requests.get(f"https://wttr.in/{city}?format=%C+%t&lang=ru", timeout=10)
+            
+            if r.status_code != 200:
+                bot.edit_message_text(f"❌ Ошибка HTTP: {r.status_code}", 
                                       chat_id=message.chat.id, 
                                       message_id=status_msg.message_id)
-                log_action("weather", f"{city}: {weather[:50]}", "success")
-                
+                return
+            
+            weather = r.text.strip()
+            
+            if not weather or "error" in weather.lower():
+                bot.edit_message_text(f"❌ Город '{city}' не найден", 
+                                      chat_id=message.chat.id, 
+                                      message_id=status_msg.message_id)
+                return
+            
+            bot.edit_message_text(f"🌤️ ПОГОДА В {city.upper()}:\n\n{weather}", 
+                                  chat_id=message.chat.id, 
+                                  message_id=status_msg.message_id)
+            log_action("weather", f"{city}: {weather[:50]}", "success")
+            
         except Exception as e:
             log_action("weather_error", str(e), "error")
             bot.edit_message_text(f"❌ Ошибка: {str(e)[:100]}", 
@@ -273,43 +285,25 @@ def currency_command(message):
     
     def do_currency():
         try:
-            with Client() as ub:
-                r = ub.navigate("https://www.cbr.ru")
-                html = r.get("html", "")
-                
-                if not html:
-                    bot.edit_message_text("❌ Не удалось загрузить страницу", 
-                                          chat_id=message.chat.id, 
-                                          message_id=status_msg.message_id)
-                    return
-                
-                soup = BeautifulSoup(html, 'lxml')
-                
-                result = "💵 КУРСЫ ВАЛЮТ (ЦБ РФ):\n\n"
-                
-                usd = soup.find('div', string='USD')
-                eur = soup.find('div', string='EUR')
-                
-                if usd:
-                    parent = usd.find_parent()
-                    rate = parent.find('div', class_='value') if parent else None
-                    if rate:
-                        result += f"🇺🇸 USD: {rate.get_text(strip=True)}\n"
-                else:
-                    values = soup.find_all('div', class_='value')
-                    if len(values) >= 2:
-                        result += f"🇺🇸 USD: {values[0].get_text(strip=True)}\n"
-                        result += f"🇪🇺 EUR: {values[1].get_text(strip=True)}\n"
-                    else:
-                        result += "❌ Курсы не найдены (изменилась вёрстка)\n"
-                
-                result += "\n🔗 Подробнее: https://www.cbr.ru"
-                
-                bot.edit_message_text(result, 
+            r = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=10)
+            
+            if r.status_code != 200:
+                bot.edit_message_text(f"❌ Ошибка API: {r.status_code}", 
                                       chat_id=message.chat.id, 
                                       message_id=status_msg.message_id)
-                log_action("currency", "курсы получены", "success")
-                
+                return
+            
+            data = r.json()
+            usd_to_rub = data['rates'].get('RUB', 'Нет данных')
+            eur_to_rub = data['rates'].get('EUR', 'Нет данных')
+            
+            result = f"💵 КУРСЫ ВАЛЮТ:\n\n🇺🇸 USD → RUB: {usd_to_rub}\n🇪🇺 EUR → RUB: {eur_to_rub}\n\n🔄 1 USD = {eur_to_rub} EUR"
+            
+            bot.edit_message_text(result, 
+                                  chat_id=message.chat.id, 
+                                  message_id=status_msg.message_id)
+            log_action("currency", "курсы получены", "success")
+            
         except Exception as e:
             log_action("currency_error", str(e), "error")
             bot.edit_message_text(f"❌ Ошибка: {str(e)[:100]}", 
@@ -334,36 +328,35 @@ def parse_command(message):
     
     def do_parse():
         try:
-            with Client() as ub:
-                r = ub.navigate(url)
-                html = r.get("html", "")
-                
-                if not html:
-                    bot.edit_message_text("❌ Не удалось загрузить страницу", 
-                                          chat_id=message.chat.id, 
-                                          message_id=status_msg.message_id)
-                    return
-                
-                soup = BeautifulSoup(html, 'lxml')
-                
-                title = soup.find('title')
-                title_text = title.get_text(strip=True) if title else "Без заголовка"
-                
-                paragraphs = soup.find_all('p')
-                text = " ".join([p.get_text(strip=True) for p in paragraphs[:5]])
-                
-                if not text or len(text) < 50:
-                    text = "⚠️ Контент не найден (возможно, сайт на JS)"
-                else:
-                    text = text[:2000] + "..." if len(text) > 2000 else text
-                
-                result = f"📄 {title_text}\n\n{text}"
-                
-                bot.edit_message_text(result[:4000], 
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            r = requests.get(url, headers=headers, timeout=10)
+            
+            if r.status_code != 200:
+                bot.edit_message_text(f"❌ Ошибка HTTP: {r.status_code}", 
                                       chat_id=message.chat.id, 
                                       message_id=status_msg.message_id)
-                log_action("parse", f"{url} - {title_text[:50]}", "success")
-                
+                return
+            
+            soup = BeautifulSoup(r.text, 'lxml')
+            
+            title = soup.find('title')
+            title_text = title.get_text(strip=True) if title else "Без заголовка"
+            
+            paragraphs = soup.find_all('p')
+            text = " ".join([p.get_text(strip=True) for p in paragraphs[:5]])
+            
+            if not text or len(text) < 50:
+                text = "⚠️ Контент не найден (возможно, сайт на JS)"
+            else:
+                text = text[:2000] + "..." if len(text) > 2000 else text
+            
+            result = f"📄 {title_text}\n\n{text}"
+            
+            bot.edit_message_text(result[:4000], 
+                                  chat_id=message.chat.id, 
+                                  message_id=status_msg.message_id)
+            log_action("parse", f"{url} - {title_text[:50]}", "success")
+            
         except Exception as e:
             log_action("parse_error", str(e), "error")
             bot.edit_message_text(f"❌ Ошибка: {str(e)[:100]}", 
