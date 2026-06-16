@@ -500,6 +500,9 @@ def menu_command(message):
         telebot.types.InlineKeyboardButton("📊 Статус", callback_data="status_full"),
         telebot.types.InlineKeyboardButton("📋 Логи", callback_data="logs")
     )
+    keyboard.add(
+        telebot.types.InlineKeyboardButton("💡 Помощь", callback_data="help")
+    )
     
     bot.reply_to(message, menu_text, parse_mode='Markdown', reply_markup=keyboard)
 
