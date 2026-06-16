@@ -463,10 +463,6 @@ def parse_command(message):
 @bot.message_handler(commands=['agent_report'])
 def agent_report_command(message):
     """Полный отчёт супер-агента"""
-    if str(message.from_user.id) != str(ADMIN_CHAT_ID):
-        bot.reply_to(message, "⛔ Только администратор может использовать эту команду")
-        return
-    
     status_msg = bot.reply_to(message, "🧠 Супер-агент собирает данные...")
     
     def do_report():
@@ -490,10 +486,6 @@ def agent_report_command(message):
 @bot.message_handler(commands=['fix'])
 def fix_command(message):
     """Авто-исправление проблемы"""
-    if str(message.from_user.id) != str(ADMIN_CHAT_ID):
-        bot.reply_to(message, "⛔ Только администратор")
-        return
-    
     issue = message.text.replace('/fix', '').strip()
     if not issue:
         bot.reply_to(message, "📝 Опишите проблему:\n/fix [описание]")
