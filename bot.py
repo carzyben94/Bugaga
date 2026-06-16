@@ -331,6 +331,84 @@ def get_ai_news_from_web():
     
     return news_items
 
+# ===== НОВЫЕ ИИ-МОДЕЛИ =====
+@bot.message_handler(commands=['newmodels'])
+def new_models_command(message):
+    status_msg = bot.reply_to(message, "🚀 Ищу новые ИИ-модели...")
+    
+    def do_new_models():
+        try:
+            # Запрос к API DemandSphere
+            url = "https://www.demandsphere.com/research/demandsphere-radar/ai-frontier-model-tracker/api.json"
+            response = requests.get(url, timeout=15)
+            response.raise_for_status()
+            
+            data = response.json()
+            models = data.get('models', [])
+            
+            # Сортируем по дате релиза (новые сверху)
+            sorted_models = sorted(models, key=lambda x: x.get('rel', ''), reverse=True)
+            
+            if not sorted_models:
+                bot.edit_message_text(
+                    "❌ Список моделей пуст. Попробуйте позже.",
+                    chat_id=message.chat.id,
+                    message_id=status_msg.message_id
+                )
+                return
+            
+            current_time = datetime.now().strftime("%d.%m.%Y %H:%M")
+            result = "🚀 *НОВЫЕ ИИ-МОДЕЛИ*\n"
+            result += f"📅 *Обновлено:* {current_time}\n\n"
+            
+            # Показываем последние 10 моделей
+            for i, model in enumerate(sorted_models[:10], 1):
+                name = model.get('name', 'Неизвестно')
+                provider = model.get('prov', 'Неизвестно')
+                model_type = model.get('type', 'N/A')
+                release_date = model.get('rel', 'N/A')
+                context = model.get('ctx', 'N/A')
+                is_multimodal = "✅ Да" if model.get('mm', False) else "❌ Нет"
+                
+                # Нумерация с эмодзи для первых трёх
+                if i == 1:
+                    num_emoji = "🥇"
+                elif i == 2:
+                    num_emoji = "🥈"
+                elif i == 3:
+                    num_emoji = "🥉"
+                else:
+                    num_emoji = f"{i}."
+                
+                result += f"{num_emoji} *{name}*\n"
+                result += f"   🏢 {provider}\n"
+                result += f"   📋 Тип: {model_type}\n"
+                result += f"   📅 Релиз: {release_date}\n"
+                result += f"   📚 Контекст: {context}K\n"
+                result += f"   🖼️ Мультимодальная: {is_multimodal}\n\n"
+            
+            result += "💡 /newmodels — обновить список"
+            
+            bot.edit_message_text(
+                result,
+                chat_id=message.chat.id,
+                message_id=status_msg.message_id,
+                parse_mode='Markdown'
+            )
+            
+            log_action("newmodels", f"показано {len(sorted_models[:10])} моделей", "success")
+            
+        except Exception as e:
+            log_action("newmodels_error", str(e), "error")
+            bot.edit_message_text(
+                f"❌ Ошибка при загрузке данных: {str(e)[:100]}",
+                chat_id=message.chat.id,
+                message_id=status_msg.message_id
+            )
+    
+    thread = threading.Thread(target=do_new_models, daemon=True)
+    thread.start()
+
 # ===== КРИПТОВАЛЮТЫ =====
 @bot.message_handler(commands=['crypto'])
 def crypto_command(message):
@@ -459,7 +537,8 @@ def menu_command(message):
         "📋 МЕНЮ БОТА\n\n"
         "🤖 ИСКУССТВЕННЫЙ ИНТЕЛЛЕКТ\n"
         "/ai [вопрос] - спросить ИИ\n"
-        "/news - новости об ИИ\n\n"
+        "/news - новости об ИИ\n"
+        "/newmodels - новые ИИ-модели\n\n"
         "🌐 ИНТЕРНЕТ И ДАННЫЕ\n"
         "/browser [url] - открыть сайт\n"
         "/parse [url] - парсинг сайта\n\n"
