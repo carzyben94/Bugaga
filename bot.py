@@ -127,209 +127,133 @@ def handle_browser(message):
     thread = threading.Thread(target=do_browser, daemon=True)
     thread.start()
 
-# ===== НОВОСТИ ПРО ИИ =====
-@bot.message_handler(commands=['news'])
-def news_command(message):
-    status_msg = bot.reply_to(message, "🧠 Ищу свежие новости об искусственном интеллекте...")
+# ===== ПОСТЫ ИЗ X (TWITTER) ЧЕРЕЗ NITTER =====
+@bot.message_handler(commands=['xposts'])
+def xposts_command(message):
+    status_msg = bot.reply_to(message, "🐦 Ищу последние посты из X...")
     
-    def do_news():
+    def do_xposts():
         try:
-            rss_sources = [
-                {"url": "https://habr.com/ru/rss/hub/artificial_intelligence/all/?fl=ru", "name": "Habr"},
-                {"url": "https://towardsdatascience.com/feed", "name": "DataScience"},
-                {"url": "https://www.analyticsvidhya.com/blog/category/artificial-intelligence/feed/", "name": "AnalyticsVidhya"},
-                {"url": "https://www.zdnet.com/topic/artificial-intelligence/rss.xml", "name": "ZDNet"}
+            # Только один аккаунт - Лентач
+            accounts = [
+                {"username": "the_lentach", "name": "Лентач"}
             ]
             
-            news_items = []
-            ai_keywords = ['ai', 'ии', 'искусственный интеллект', 'нейросеть', 'нейронная', 
-                          'chatgpt', 'gpt', 'deep learning', 'machine learning', 'ml',
-                          'openai', 'anthropic', 'google ai', 'yandex ai', 'яндекс ии',
-                          'нейросети', 'искусственный', 'интеллект', 'робот', 'алгоритм']
+            all_posts = []
             
-            for source in rss_sources:
+            for account in accounts:
                 try:
-                    headers = {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                        'Accept': 'application/rss+xml, application/xml, text/xml'
-                    }
-                    r = requests.get(source["url"], headers=headers, timeout=15)
+                    # Парсим RSS через Nitter
+                    url = f"https://nitter.net/{account['username']}/rss"
+                    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+                    response = requests.get(url, headers=headers, timeout=10)
                     
-                    if r.status_code == 200:
-                        try:
-                            root = ET.fromstring(r.content)
+                    if response.status_code == 200:
+                        root = ET.fromstring(response.content)
+                        items = root.findall('.//item')
+                        
+                        # Берём только 3 последних поста
+                        for item in items[:3]:
+                            title_elem = item.find('title')
+                            if title_elem is not None and title_elem.text:
+                                text = title_elem.text.strip()
+                                
+                                pub_date = item.find('pubDate')
+                                date = pub_date.text if pub_date is not None else ""
+                                
+                                link = item.find('link')
+                                post_url = link.text if link is not None else ""
+                                
+                                if len(text) > 500:
+                                    text = text[:500] + "..."
+                                
+                                all_posts.append({
+                                    'username': account['username'],
+                                    'name': account['name'],
+                                    'text': text,
+                                    'date': date[:16] if date else "",
+                                    'url': post_url
+                                })
+                                
+                    else:
+                        # Если Nitter не работает, пробуем альтернативный инстанс
+                        alt_url = f"https://nitter.poast.org/{account['username']}/rss"
+                        response = requests.get(alt_url, headers=headers, timeout=10)
+                        if response.status_code == 200:
+                            root = ET.fromstring(response.content)
                             items = root.findall('.//item')
                             
-                            if not items:
-                                items = root.findall('.//entry')
-                            
-                            if items:
-                                for item in items[:15]:
-                                    title_elem = item.find('title')
-                                    if title_elem is not None and title_elem.text:
-                                        title = title_elem.text.strip()
-                                        title = title.replace('<![CDATA[', '').replace(']]>', '')
-                                        title = BeautifulSoup(title, 'html.parser').get_text()
-                                        
-                                        title_lower = title.lower()
-                                        is_ai = any(keyword in title_lower for keyword in ai_keywords)
-                                        
-                                        if title and len(title) > 10 and len(title) < 500 and is_ai:
-                                            link_elem = item.find('link')
-                                            link = link_elem.text if link_elem is not None else ""
-                                            
-                                            pub_date = ""
-                                            date_elem = item.find('pubDate') or item.find('published')
-                                            if date_elem is not None and date_elem.text:
-                                                pub_date = date_elem.text[:16]
-                                            
-                                            news_items.append({
-                                                'title': title,
-                                                'source': source["name"],
-                                                'link': link[:80] + "..." if len(link) > 80 else link,
-                                                'date': pub_date
-                                            })
-                                            
-                                            if len(news_items) >= 20:
-                                                break
-                        except ET.ParseError:
-                            continue
+                            for item in items[:3]:
+                                title_elem = item.find('title')
+                                if title_elem is not None and title_elem.text:
+                                    text = title_elem.text.strip()
+                                    
+                                    pub_date = item.find('pubDate')
+                                    date = pub_date.text if pub_date is not None else ""
+                                    
+                                    link = item.find('link')
+                                    post_url = link.text if link is not None else ""
+                                    
+                                    if len(text) > 500:
+                                        text = text[:500] + "..."
+                                    
+                                    all_posts.append({
+                                        'username': account['username'],
+                                        'name': account['name'],
+                                        'text': text,
+                                        'date': date[:16] if date else "",
+                                        'url': post_url
+                                    })
                     
                 except Exception as e:
-                    log_action("news_source_error", f"{source['name']}: {str(e)[:50]}", "warning")
+                    log_action("xposts_account_error", f"{account['username']}: {str(e)[:50]}", "warning")
                     continue
-                
-                if len(news_items) >= 20:
-                    break
             
-            if len(news_items) < 5:
-                web_news = get_ai_news_from_web()
-                news_items.extend(web_news)
-            
-            seen = set()
-            unique_news = []
-            for item in news_items:
-                if item['title'] not in seen:
-                    seen.add(item['title'])
-                    unique_news.append(item)
-            
-            news_items = unique_news[:15]
-            
-            if not news_items:
-                bot.edit_message_text("❌ Свежих новостей про ИИ не найдено. Попробуйте позже.", 
-                                      chat_id=message.chat.id, 
-                                      message_id=status_msg.message_id)
+            if not all_posts:
+                bot.edit_message_text(
+                    "❌ Не удалось загрузить посты. Попробуйте позже.",
+                    chat_id=message.chat.id,
+                    message_id=status_msg.message_id
+                )
                 return
             
             current_time = datetime.now().strftime("%d.%m.%Y %H:%M")
-            
-            result = "🧠 *НОВОСТИ ИСКУССТВЕННОГО ИНТЕЛЛЕКТА*\n"
+            result = "🐦 *ПОСЛЕДНИЕ ПОСТЫ ИЗ X*\n"
             result += f"📅 {current_time}\n\n"
             
-            source_emojis = {
-                "Habr": "📘",
-                "DataScience": "📊",
-                "AnalyticsVidhya": "📈",
-                "ZDNet": "💻"
-            }
+            # Показываем только 3 поста
+            for i, post in enumerate(all_posts[:3], 1):
+                result += f"📌 *@{post['username']}*\n"
+                result += f"{post['text']}\n"
+                result += f"🕐 {post['date']}\n"
+                if post['url']:
+                    result += f"🔗 [Ссылка]({post['url']})\n"
+                
+                if i < len(all_posts[:3]):
+                    result += "—" * 30 + "\n\n"
             
-            for i, item in enumerate(news_items, 1):
-                source_emoji = source_emojis.get(item['source'], "📰")
-                
-                if i <= 3:
-                    num_emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉"
-                else:
-                    num_emoji = "▫️"
-                
-                result += f"{num_emoji} {item['title']}\n"
-                result += f"{source_emoji} {item['source']}"
-                
-                if item['date']:
-                    result += f"  ⏱ {item['date']}"
-                
-                if i < len(news_items):
-                    result += "\n\n"
-            
-            result += "\n\n🔄 Обновлено: " + current_time
-            result += "\n💡 /news — обновить новости"
+            result += "\n💡 /xposts — обновить посты"
             
             bot.edit_message_text(
-                result, 
-                chat_id=message.chat.id, 
+                result,
+                chat_id=message.chat.id,
                 message_id=status_msg.message_id,
-                parse_mode='Markdown'
+                parse_mode='Markdown',
+                disable_web_page_preview=True
             )
             
-            log_action("news", f"найдено {len(news_items)} новостей про ИИ", "success")
+            log_action("xposts", f"показано {len(all_posts[:3])} постов", "success")
             
         except Exception as e:
-            log_action("news_error", str(e), "error")
-            bot.edit_message_text(f"❌ Ошибка при загрузке новостей: {str(e)[:100]}", 
-                                  chat_id=message.chat.id, 
-                                  message_id=status_msg.message_id)
+            log_action("xposts_error", str(e), "error")
+            bot.edit_message_text(
+                f"❌ Ошибка при загрузке постов: {str(e)[:100]}",
+                chat_id=message.chat.id,
+                message_id=status_msg.message_id
+            )
     
-    thread = threading.Thread(target=do_news, daemon=True)
+    thread = threading.Thread(target=do_xposts, daemon=True)
     thread.start()
-
-def get_ai_news_from_web():
-    """Запасной способ: парсинг сайтов с ИИ-новостями"""
-    news_items = []
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept-Language': 'en-US,en;q=0.9'
-        }
-        
-        try:
-            r = requests.get("https://habr.com/ru/hub/artificial_intelligence/", headers=headers, timeout=10)
-            if r.status_code == 200:
-                soup = BeautifulSoup(r.text, 'lxml')
-                for selector in ['h2 a', '.post__title a', '.tm-title__link']:
-                    titles = soup.select(selector)
-                    if titles:
-                        for title in titles[:10]:
-                            text = title.get_text(strip=True)
-                            if text and len(text) > 15 and len(text) < 300:
-                                link = title.get('href', '')
-                                if link and not link.startswith('http'):
-                                    link = "https://habr.com" + link
-                                news_items.append({
-                                    'title': text,
-                                    'source': 'Habr',
-                                    'link': link[:80] + "..." if len(link) > 80 else link,
-                                    'date': ''
-                                })
-                        break
-        except:
-            pass
-        
-        try:
-            r = requests.get("https://www.zdnet.com/topic/artificial-intelligence/", headers=headers, timeout=10)
-            if r.status_code == 200:
-                soup = BeautifulSoup(r.text, 'lxml')
-                for selector in ['h3 a', '.item-title a', '.story-headline a']:
-                    titles = soup.select(selector)
-                    if titles:
-                        for title in titles[:10]:
-                            text = title.get_text(strip=True)
-                            if text and len(text) > 15 and len(text) < 300:
-                                link = title.get('href', '')
-                                if link and not link.startswith('http'):
-                                    link = "https://www.zdnet.com" + link
-                                news_items.append({
-                                    'title': text,
-                                    'source': 'ZDNet',
-                                    'link': link[:80] + "..." if len(link) > 80 else link,
-                                    'date': ''
-                                })
-                        break
-        except:
-            pass
-        
-    except Exception as e:
-        log_action("news_html_error", str(e), "error")
-    
-    return news_items
 
 # ===== НОВЫЕ ИИ-МОДЕЛИ =====
 @bot.message_handler(commands=['newmodels'])
@@ -338,7 +262,6 @@ def new_models_command(message):
     
     def do_new_models():
         try:
-            # Запрос к API DemandSphere
             url = "https://www.demandsphere.com/research/demandsphere-radar/ai-frontier-model-tracker/api.json"
             response = requests.get(url, timeout=15)
             response.raise_for_status()
@@ -346,7 +269,6 @@ def new_models_command(message):
             data = response.json()
             models = data.get('models', [])
             
-            # Сортируем по дате релиза (новые сверху)
             sorted_models = sorted(models, key=lambda x: x.get('rel', ''), reverse=True)
             
             if not sorted_models:
@@ -361,7 +283,6 @@ def new_models_command(message):
             result = "🚀 *НОВЫЕ ИИ-МОДЕЛИ*\n"
             result += f"📅 *Обновлено:* {current_time}\n\n"
             
-            # Показываем последние 10 моделей
             for i, model in enumerate(sorted_models[:10], 1):
                 name = model.get('name', 'Неизвестно')
                 provider = model.get('prov', 'Неизвестно')
@@ -370,7 +291,6 @@ def new_models_command(message):
                 context = model.get('ctx', 'N/A')
                 is_multimodal = "✅ Да" if model.get('mm', False) else "❌ Нет"
                 
-                # Нумерация с эмодзи для первых трёх
                 if i == 1:
                     num_emoji = "🥇"
                 elif i == 2:
@@ -537,7 +457,7 @@ def menu_command(message):
         "📋 МЕНЮ БОТА\n\n"
         "🤖 ИСКУССТВЕННЫЙ ИНТЕЛЛЕКТ\n"
         "/ai [вопрос] - спросить ИИ\n"
-        "/news - новости об ИИ\n"
+        "/xposts - посты из X\n"
         "/newmodels - новые ИИ-модели\n\n"
         "🌐 ИНТЕРНЕТ И ДАННЫЕ\n"
         "/browser [url] - открыть сайт\n"
