@@ -8,7 +8,7 @@ import urllib.parse
 import asyncio
 from flask import Flask, request
 import telebot
-from pyunbrowser import Browser
+from unbrowser import Client
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -149,15 +149,13 @@ def start_self_improvement_loop():
 start_self_improvement_loop()
 
 # ===== БРАУЗЕР МОДУЛЬ =====
-async def open_browser(url="https://example.com"):
-    """Открывает браузер и возвращает заголовок страницы"""
+def open_browser_sync(url="https://example.com"):
+    """Открывает браузер синхронно (для threading)"""
     try:
-        browser = await Browser.create()
-        page = await browser.new_page()
-        await page.goto(url, timeout=30000)
-        title = await page.title()
-        await browser.close()
-        return f"✅ Заголовок: {title}"
+        with Client() as ub:
+            r = ub.navigate(url)
+            title = r.get("title", "Без заголовка")
+            return f"✅ Заголовок: {title}"
     except Exception as e:
         log_action("browser_error", str(e), "error")
         return f"❌ Ошибка браузера: {str(e)[:100]}"
@@ -168,12 +166,16 @@ def handle_browser(message):
     if not url:
         url = "https://example.com"
     
+    # Добавляем http:// если нет протокола
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    
     log_action("browser", f"user={message.from_user.id} открывает {url}", "info")
     status_msg = bot.reply_to(message, f"🌐 Открываю {url}...")
     
     def do_browser():
         try:
-            result = asyncio.run(open_browser(url))
+            result = open_browser_sync(url)
             bot.edit_message_text(result, chat_id=message.chat.id, message_id=status_msg.message_id)
             log_action("browser_success", "страница открыта", "success")
         except Exception as e:
