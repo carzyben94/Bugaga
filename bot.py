@@ -9,11 +9,12 @@ import telebot
 from xposts import register_xposts
 from crypto import register_crypto
 from ai import register_ai
+from browser_ai import register_browser_ai
 
 logging.basicConfig(level=logging.INFO)
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-AGNES_API_KEY = os.environ.get("AGNES_API_KEY")          # ✅ Новая переменная
+AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 RENDER_API_KEY = os.environ.get("RENDER_API_KEY")
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "carzyben94/Bugaga")
@@ -29,7 +30,8 @@ app = Flask(__name__)
 # ===== РЕГИСТРАЦИЯ МОДУЛЕЙ =====
 register_xposts(bot)
 register_crypto(bot)
-register_ai(bot, AGNES_API_KEY)  # ✅ Передаём Agnes ключ
+register_ai(bot, AGNES_API_KEY)
+register_browser_ai(bot, AGNES_API_KEY)
 
 # ===== ЛОГИ =====
 def send_log_to_admin(action, details=None, status="info"):
@@ -58,13 +60,15 @@ def log_action(action, details=None, status="info", send=True):
 def menu_command(message):
     log_action("menu", f"user={message.from_user.id}", "info")
     bot.reply_to(message, (
-        "📋 МЕНЮ БОТА\n\n"
-        "🤖 ИСКУССТВЕННЫЙ ИНТЕЛЛЕКТ\n"
-        "/ai [вопрос] - спросить ИИ (Agnes AI)\n"
-        "/xposts - посты из X\n\n"
-        "💰 ФИНАНСЫ\n"
-        "/crypto - курсы криптовалют"
-    ))
+        "📋 *МЕНЮ БОТА BUGAGA*\n\n"
+        "🤖 *ИСКУССТВЕННЫЙ ИНТЕЛЛЕКТ*\n"
+        "/ai [вопрос] — спросить ИИ\n"
+        "/browser_ai [URL] [вопрос] — ИИ прочитает сайт\n\n"
+        "📰 *НОВОСТИ*\n"
+        "/xposts — посты из X (AteoBreaking)\n\n"
+        "💰 *ФИНАНСЫ*\n"
+        "/crypto — курсы BTC и ETH"
+    ), parse_mode='Markdown')
 
 # ===== ВЕБХУК =====
 @app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
@@ -86,5 +90,5 @@ if __name__ == '__main__':
     url = os.environ.get('RENDER_EXTERNAL_URL', f"http://localhost:{port}")
     bot.remove_webhook()
     bot.set_webhook(url=f"{url}/{TELEGRAM_TOKEN}")
-    log_action("bot_start", "Бот запущен с Agnes AI", "success")
+    log_action("bot_start", "Бот запущен с Agnes AI и браузер-ИИ", "success")
     app.run(host='0.0.0.0', port=port)
