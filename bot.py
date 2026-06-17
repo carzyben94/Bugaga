@@ -10,9 +10,6 @@ import telebot
 # Добавляем текущую папку в PATH
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-print(f"[DEBUG] Current dir: {os.getcwd()}")
-print(f"[DEBUG] Files: {os.listdir('.')}")
-
 from xposts import register_xposts
 from crypto import register_crypto
 from ai import register_ai
@@ -20,16 +17,7 @@ from browser_ai import register_browser_ai
 from crawler_ai import register_crawler_ai
 from render import register_render
 from github import register_github
-
-# Пробуем импортировать x_play
-try:
-    from x_play import register_x_play
-    X_PLAY_AVAILABLE = True
-    print("[DEBUG] x_play imported successfully")
-except Exception as e:
-    print(f"[DEBUG] x_play import FAILED: {e}")
-    X_PLAY_AVAILABLE = False
-    register_x_play = None
+from x_play import register_x_play
 
 logging.basicConfig(level=logging.INFO)
 
@@ -56,20 +44,9 @@ modules = [
     ("crawler_ai", register_crawler_ai, [AGNES_API_KEY]),
     ("render", register_render, []),
     ("github", register_github, []),
+    ("x_play", register_x_play, []),
 ]
 
-# x_play РЕГИСТРИРУЕМ ПЕРВЫМ (до других обработчиков)
-if X_PLAY_AVAILABLE and register_x_play:
-    try:
-        print("[DEBUG] Registering x_play FIRST...")
-        register_x_play(bot)
-        print("[DEBUG] x_play registered successfully")
-    except Exception as e:
-        print(f"[DEBUG] x_play registration FAILED: {e}")
-else:
-    print("[DEBUG] x_play SKIPPED")
-
-# Регистрируем остальные модули
 for name, register_func, args in modules:
     try:
         register_func(bot, *args)
@@ -82,13 +59,6 @@ for name, register_func, args in modules:
             print(f"[DEBUG] {name} error: {e}")
     except Exception as e:
         print(f"[DEBUG] {name} error: {e}")
-
-# ===== ОТЛАДОЧНЫЙ ОБРАБОТЧИК — ЛОВИТ ВСЕ КОМАНДЫ =====
-@bot.message_handler(commands=["x_trends", "x_timeline", "x_search", "x_screenshot", "x_help"])
-def x_debug_handler(message):
-    """Отладочный обработчик для X команд"""
-    print(f"[DEBUG FALLBACK] Command received: {message.text} from user={message.from_user.id}")
-    bot.reply_to(message, f"🐦 Команда {message.text} получена!\nЕсли видишь это — x_play не зарегистрировался.")
 
 # ===== ЛОГИ =====
 def send_log_to_admin(action, details=None, status="info"):
@@ -146,6 +116,7 @@ MENU_TEXT = (
     "  └ /gh_repo — Инфо о репо\n\n"
     
     "🐦 <b>X Agent</b>\n"
+    "  ├ /x_login — Авторизация в X\n"
     "  ├ /x_timeline [user] [N] — Лента X\n"
     "  ├ /x_search [запрос] [N] — Поиск X\n"
     "  ├ /x_trends — Тренды X\n"
