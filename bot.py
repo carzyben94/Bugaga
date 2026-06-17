@@ -13,7 +13,7 @@ from ai import register_ai
 logging.basicConfig(level=logging.INFO)
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
+AGNES_API_KEY = os.environ.get("AGNES_API_KEY")          # ✅ Новая переменная
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 RENDER_API_KEY = os.environ.get("RENDER_API_KEY")
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "carzyben94/Bugaga")
@@ -26,10 +26,12 @@ if not TELEGRAM_TOKEN:
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
+# ===== РЕГИСТРАЦИЯ МОДУЛЕЙ =====
 register_xposts(bot)
 register_crypto(bot)
-register_ai(bot, OPENROUTER_API_KEY)
+register_ai(bot, AGNES_API_KEY)  # ✅ Передаём Agnes ключ
 
+# ===== ЛОГИ =====
 def send_log_to_admin(action, details=None, status="info"):
     if not ADMIN_CHAT_ID:
         return
@@ -51,18 +53,20 @@ def log_action(action, details=None, status="info", send=True):
     if send:
         send_log_to_admin(action, details, status)
 
+# ===== КОМАНДЫ =====
 @bot.message_handler(commands=['start', 'help'])
 def menu_command(message):
     log_action("menu", f"user={message.from_user.id}", "info")
     bot.reply_to(message, (
         "📋 МЕНЮ БОТА\n\n"
         "🤖 ИСКУССТВЕННЫЙ ИНТЕЛЛЕКТ\n"
-        "/ai [вопрос] - спросить ИИ\n"
+        "/ai [вопрос] - спросить ИИ (Agnes AI)\n"
         "/xposts - посты из X\n\n"
         "💰 ФИНАНСЫ\n"
         "/crypto - курсы криптовалют"
     ))
 
+# ===== ВЕБХУК =====
 @app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
 def webhook():
     try:
@@ -82,5 +86,5 @@ if __name__ == '__main__':
     url = os.environ.get('RENDER_EXTERNAL_URL', f"http://localhost:{port}")
     bot.remove_webhook()
     bot.set_webhook(url=f"{url}/{TELEGRAM_TOKEN}")
-    log_action("bot_start", "Бот запущен", "success")
+    log_action("bot_start", "Бот запущен с Agnes AI", "success")
     app.run(host='0.0.0.0', port=port)
