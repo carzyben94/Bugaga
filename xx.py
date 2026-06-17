@@ -6,6 +6,7 @@ import json
 import re
 import asyncio
 import threading
+import time
 import telebot
 
 # === НАСТРОЙКА ПУТЕЙ ДЛЯ RENDER ===
@@ -14,10 +15,10 @@ if PLAYWRIGHT_BROWSERS_PATH:
     os.environ["PLAYWRIGHT_BROWSERS_PATH"] = PLAYWRIGHT_BROWSERS_PATH
     os.makedirs(PLAYWRIGHT_BROWSERS_PATH, exist_ok=True)
 
-# Env
-X_USERNAME = os.environ.get("X_USERNAME")
-X_PASSWORD = os.environ.get("X_PASSWORD")
-X_EMAIL = os.environ.get("X_EMAIL")
+# Env (fallback — можно задать через env, но чат приоритетнее)
+X_USERNAME_ENV = os.environ.get("X_USERNAME")
+X_PASSWORD_ENV = os.environ.get("X_PASSWORD")
+X_EMAIL_ENV = os.environ.get("X_EMAIL")
 
 COOKIES_FILE = "x_cookies.json"
 SCREENSHOT_DIR = "screenshots"
@@ -26,6 +27,9 @@ os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 PLAYWRIGHT_INSTALLED = False
 CHROMIUM_READY = False
 
+# === Хранилище для диалогов авторизации ===
+# {chat_id: {"step": "username|password|email|done", "username": "...", "password": "...", "email": "..."}}
+login_sessions = {}
 
 def check_chromium():
     """Проверить, запускается ли Chromium реально"""
@@ -94,7 +98,6 @@ def install_playwright():
         return False
 
 
-# === Проверка при импорте (не блокирует старт) ===
 try:
     from playwright.async_api import async_playwright
     PLAYWRIGHT_INSTALLED = True
@@ -163,22 +166,17 @@ class XXAgent:
         except:
             return False
 
-    async def _login(self, page):
+    async def _login(self, page, username, password, email=None):
         """
-        Авторизация на X с fallback-селекторами.
-        X часто меняет DOM, поэтому пробуем несколько вариантов.
+        Авторизация на X с переданными credentials.
+        username, password, email — из чата или env.
         """
-        if not X_USERNAME or not X_PASSWORD:
-            return False, "X_USERNAME или X_PASSWORD не настроены"
-        
         try:
-            print(f"[XX] Авторизация как {X_USERNAME}...")
+            print(f"[XX] Авторизация как {username}...")
             
             # 1. Открываем страницу логина
             await page.goto("https://x.com/i/flow/login", wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(3)  # Даём время на загрузку JS
-            
-            # Скриншот для отладки
+            await asyncio.sleep(3)
             await self._screenshot(page, "login_start")
             
             # 2. Ввод username — пробуем несколько селекторов
@@ -207,9 +205,8 @@ class XXAgent:
                 await self._screenshot(page, "login_no_username")
                 return False, "Не найдено поле для ввода логина. X мог изменить страницу."
             
-            # Кликаем и вводим username
             await username_input.click()
-            await username_input.fill(X_USERNAME)
+            await username_input.fill(username)
             await asyncio.sleep(1)
             
             # 3. Нажимаем Next
@@ -235,7 +232,6 @@ class XXAgent:
                     continue
             
             if not next_clicked:
-                # Пробуем нажать Enter
                 await username_input.press("Enter")
                 print("[XX] Pressed Enter instead of Next")
             
@@ -244,7 +240,6 @@ class XXAgent:
             
             # 4. Проверка на email/телефон (дополнительная проверка)
             try:
-                # Проверяем, не спрашивает ли дополнительный email/телефон
                 email_selectors = [
                     'input[data-testid="ocfEnterTextTextInput"]',
                     'input[name="text"]',
@@ -255,16 +250,14 @@ class XXAgent:
                 for selector in email_selectors:
                     try:
                         email_input = await page.wait_for_selector(selector, timeout=5000)
-                        if email_input and X_EMAIL:
-                            # Проверяем, что это действительно поле для email (плейсхолдер или контекст)
+                        if email_input and email:
                             placeholder = await email_input.get_attribute("placeholder") or ""
                             label = await page.evaluate('el => el.labels?.[0]?.textContent || el.getAttribute("aria-label") || ""', email_input)
                             
                             if any(kw in (placeholder + label).lower() for kw in ["phone", "email", "телефон", "почта"]):
-                                await email_input.fill(X_EMAIL)
+                                await email_input.fill(email)
                                 await asyncio.sleep(1)
                                 
-                                # Ищем кнопку Next после email
                                 for next_sel in next_selectors:
                                     try:
                                         next_btn = await page.query_selector(next_sel)
@@ -303,10 +296,10 @@ class XXAgent:
             
             if not password_input:
                 await self._screenshot(page, "login_no_password")
-                return False, "Не найдено поле для ввода пароля. Возможно, требуется email/телефон (установи X_EMAIL)."
+                return False, "Не найдено поле для ввода пароля. Возможно, требуется email/телефон."
             
             await password_input.click()
-            await password_input.fill(X_PASSWORD)
+            await password_input.fill(password)
             await asyncio.sleep(1)
             
             # 6. Нажимаем Log in
@@ -335,15 +328,13 @@ class XXAgent:
                 await password_input.press("Enter")
                 print("[XX] Pressed Enter instead of Login")
             
-            # 7. Ждём загрузки главной
+            # 7. Ждём загрузки
             await asyncio.sleep(4)
             await self._screenshot(page, "login_after_submit")
             
-            # Проверяем, что вошли
             try:
                 await page.wait_for_selector('[data-testid="primaryColumn"]', timeout=15000)
             except:
-                # Проверяем, нет ли ошибки
                 error_selectors = [
                     'span:has-text("Wrong password")',
                     'span:has-text("Неверный пароль")',
@@ -364,7 +355,6 @@ class XXAgent:
                 await self._screenshot(page, "login_failed")
                 return False, "Авторизация не удалась. Проверь логин/пароль или установи X_EMAIL."
             
-            # Финальная проверка — ищем кнопку Sign in (значит не вошли)
             signin = await page.query_selector('a[href="/i/flow/login"]')
             if signin:
                 await self._screenshot(page, "login_still_signin")
@@ -380,11 +370,18 @@ class XXAgent:
                 pass
             return False, f"Ошибка авторизации: {e}"
 
-    async def _ensure_auth(self, context, page):
+    async def _ensure_auth(self, context, page, username=None, password=None, email=None):
+        """Убедиться, что авторизованы. Можно передать credentials для принудительного входа."""
         is_auth = await self._check_auth(page)
         if not is_auth:
             print("[XX] Не авторизован, выполняю вход...")
-            success, error = await self._login(page)
+            # Используем переданные или из env
+            u = username or X_USERNAME_ENV
+            p = password or X_PASSWORD_ENV
+            e = email or X_EMAIL_ENV
+            if not u or not p:
+                return False, "Не указаны логин/пароль. Используй /x_login для ввода."
+            success, error = await self._login(page, u, p, e)
             if not success:
                 return False, error
             await self._save_cookies(context)
@@ -428,7 +425,7 @@ class XXAgent:
         except:
             return None
 
-    async def fetch_timeline(self, username=None, limit=10):
+    async def fetch_timeline(self, username=None, limit=10, credentials=None):
         if not await self._ensure_playwright():
             return None, "Playwright не установлен"
         try:
@@ -440,7 +437,16 @@ class XXAgent:
                 context = await browser.new_context(viewport={"width": 1280, "height": 800})
                 await self._load_cookies(context)
                 page = await context.new_page()
-                success, error = await self._ensure_auth(context, page)
+                
+                # Если переданы credentials — используем их, иначе из env/cookies
+                if credentials:
+                    success, error = await self._ensure_auth(context, page, 
+                        credentials.get("username"), 
+                        credentials.get("password"), 
+                        credentials.get("email"))
+                else:
+                    success, error = await self._ensure_auth(context, page)
+                    
                 if not success:
                     await browser.close()
                     return None, error
@@ -471,7 +477,7 @@ class XXAgent:
         except Exception as e:
             return None, f"Ошибка: {e}"
 
-    async def search(self, query, limit=10):
+    async def search(self, query, limit=10, credentials=None):
         if not await self._ensure_playwright():
             return None, "Playwright не установлен"
         try:
@@ -483,7 +489,15 @@ class XXAgent:
                 context = await browser.new_context(viewport={"width": 1280, "height": 800})
                 await self._load_cookies(context)
                 page = await context.new_page()
-                success, error = await self._ensure_auth(context, page)
+                
+                if credentials:
+                    success, error = await self._ensure_auth(context, page,
+                        credentials.get("username"),
+                        credentials.get("password"),
+                        credentials.get("email"))
+                else:
+                    success, error = await self._ensure_auth(context, page)
+                    
                 if not success:
                     await browser.close()
                     return None, error
@@ -576,27 +590,40 @@ def register_x_play(bot):
 
     @bot.message_handler(commands=["x_login"])
     def x_login_command(message):
-        """Проверить/выполнить авторизацию на X"""
-        if not CHROMIUM_READY:
-            bot.reply_to(message, "⏳ Chromium не найден, запускаю автоматическую установку...")
-            if not install_playwright():
-                bot.reply_to(message, "❌ Не удалось установить Playwright/Chromium.\nИспользуй /x_install для диагностики.")
-                return
-        if not X_USERNAME or not X_PASSWORD:
-            bot.reply_to(message,
-                "❌ Настрой X_USERNAME и X_PASSWORD в переменных окружения\n\n"
-                "На Render:\n"
-                "<code>X_USERNAME=your_login</code>\n"
-                "<code>X_PASSWORD=your_password</code>\n"
-                "<code>X_EMAIL=your_email</code> (если требуется)",
-                parse_mode="HTML"
-            )
+        """Запустить диалог авторизации в X"""
+        chat_id = message.chat.id
+        
+        # Если уже есть сессия — сбрасываем
+        if chat_id in login_sessions:
+            del login_sessions[chat_id]
+        
+        # Проверяем, есть ли env credentials
+        has_env = bool(X_USERNAME_ENV and X_PASSWORD_ENV)
+        
+        msg = (
+            "🔐 <b>Авторизация в X</b>\n\n"
+            "Введи свой <b>username</b> (без @):\n\n"
+        )
+        if has_env:
+            msg += f"💡 Или используй env: <code>{X_USERNAME_ENV}</code>\nОтправь <code>/x_login_env</code> для быстрого входа"
+        
+        bot.reply_to(message, msg, parse_mode="HTML")
+        login_sessions[chat_id] = {"step": "username"}
+
+    @bot.message_handler(commands=["x_login_env"])
+    def x_login_env_command(message):
+        """Быстрая авторизация через Environment Variables"""
+        if not X_USERNAME_ENV or not X_PASSWORD_ENV:
+            bot.reply_to(message, "❌ X_USERNAME и X_PASSWORD не настроены в Environment Variables")
             return
-        bot.reply_to(message, f"🔐 Авторизация как <code>{X_USERNAME}</code>...", parse_mode="HTML")
+        
+        bot.reply_to(message, f"🔐 Авторизация через env как <code>{X_USERNAME_ENV}</code>...", parse_mode="HTML")
+        
         if os.path.exists(COOKIES_FILE):
             os.remove(COOKIES_FILE)
             print("[XX] Старые cookies удалены")
-        async def do_login():
+        
+        async def do_login_env():
             async with async_playwright() as p:
                 browser = await p.chromium.launch(
                     headless=True,
@@ -604,12 +631,109 @@ def register_x_play(bot):
                 )
                 context = await browser.new_context(viewport={"width": 1280, "height": 800})
                 page = await context.new_page()
-                success, error = await xx_agent._login(page)
+                success, error = await xx_agent._login(page, X_USERNAME_ENV, X_PASSWORD_ENV, X_EMAIL_ENV)
                 if success:
                     await xx_agent._save_cookies(context)
                 await browser.close()
                 return success, error
-        success, error = run_async_task(do_login())
+        
+        success, error = run_async_task(do_login_env())
+        
+        if error:
+            bot.reply_to(message, f"❌ {error}")
+            return
+        if success:
+            bot.reply_to(message, "✅ Авторизация через env успешна! Cookies сохранены.")
+        else:
+            bot.reply_to(message, "❌ Авторизация не удалась")
+
+    @bot.message_handler(func=lambda m: m.chat.id in login_sessions and login_sessions[m.chat.id]["step"] == "username")
+    def x_login_username_step(message):
+        """Шаг 1: Получили username"""
+        chat_id = message.chat.id
+        username = message.text.strip()
+        
+        # Убираем @ если есть
+        if username.startswith("@"):
+            username = username[1:]
+        
+        login_sessions[chat_id]["username"] = username
+        login_sessions[chat_id]["step"] = "password"
+        
+        bot.reply_to(message, 
+            f"✅ Username: <code>{username}</code>\n\n"
+            f"Теперь введи <b>пароль</b>:\n"
+            f"<i>(сообщение с паролем будет удалено после авторизации для безопасности)</i>",
+            parse_mode="HTML"
+        )
+
+    @bot.message_handler(func=lambda m: m.chat.id in login_sessions and login_sessions[m.chat.id]["step"] == "password")
+    def x_login_password_step(message):
+        """Шаг 2: Получили password"""
+        chat_id = message.chat.id
+        password = message.text
+        
+        login_sessions[chat_id]["password"] = password
+        login_sessions[chat_id]["step"] = "email"
+        
+        bot.reply_to(message,
+            "✅ Пароль получен\n\n"
+            "Если у тебя настроена дополнительная проверка (email/телефон), введи email сейчас.\n"
+            "Или отправь <code>skip</code> чтобы пропустить:",
+            parse_mode="HTML"
+        )
+
+    @bot.message_handler(func=lambda m: m.chat.id in login_sessions and login_sessions[m.chat.id]["step"] == "email")
+    def x_login_email_step(message):
+        """Шаг 3: Получили email (или skip)"""
+        chat_id = message.chat.id
+        email = message.text.strip()
+        
+        if email.lower() == "skip":
+            email = None
+        
+        login_sessions[chat_id]["email"] = email
+        login_sessions[chat_id]["step"] = "done"
+        
+        # Получаем все данные
+        creds = login_sessions[chat_id]
+        username = creds["username"]
+        password = creds["password"]
+        email = creds.get("email")
+        
+        # Удаляем сообщение с паролем для безопасности
+        try:
+            bot.delete_message(chat_id, message.message_id - 1)  # Сообщение с паролем
+            bot.delete_message(chat_id, message.message_id)       # Сообщение с email/skip
+        except Exception as e:
+            print(f"[XX] Could not delete password message: {e}")
+        
+        bot.reply_to(message, f"🔐 Авторизация как <code>{username}</code>...", parse_mode="HTML")
+        
+        # Удаляем старые cookies
+        if os.path.exists(COOKIES_FILE):
+            os.remove(COOKIES_FILE)
+            print("[XX] Старые cookies удалены")
+        
+        async def do_login_chat():
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+                )
+                context = await browser.new_context(viewport={"width": 1280, "height": 800})
+                page = await context.new_page()
+                success, error = await xx_agent._login(page, username, password, email)
+                if success:
+                    await xx_agent._save_cookies(context)
+                await browser.close()
+                return success, error
+        
+        success, error = run_async_task(do_login_chat())
+        
+        # Очищаем сессию
+        del login_sessions[chat_id]
+        
         if error:
             bot.reply_to(message, f"❌ {error}")
             return
@@ -678,7 +802,7 @@ def register_x_play(bot):
         lines = [f"🔍 <b>{query}</b>\n"]
         for i, t in enumerate(tweets, 1):
             text = t.get("text", "")[:160]
-            if len(t.get("text", "")) > 160:
+            if len(t.get("text", "") > 160:
                 text += "..."
             lines.append(
                 f"{i}. <b>{t.get('author', '')}</b>\n"
@@ -698,22 +822,37 @@ def register_x_play(bot):
     @bot.message_handler(commands=["x_status"])
     def x_status_command(message):
         """Проверить статус Playwright и Chromium"""
+        # Проверяем, есть ли активная сессия
+        chat_id = message.chat.id
+        has_session = chat_id in login_sessions
+        
         status = (
             "📊 <b>Статус X Agent</b>\n\n"
             f"Playwright pip: {'✅' if PLAYWRIGHT_INSTALLED else '❌'}\n"
             f"Chromium бинарник: {'✅' if CHROMIUM_READY else '❌'}\n"
             f"Browsers path: <code>{PLAYWRIGHT_BROWSERS_PATH or 'default (эфемерный)'}</code>\n"
-            f"X_USERNAME: {'✅' if X_USERNAME else '❌'}\n"
-            f"X_PASSWORD: {'✅' if X_PASSWORD else '❌'}\n"
-            f"X_EMAIL: {'✅' if X_EMAIL else '❌ (не обязательно)'}\n\n"
+            f"Env логин: {'✅' if X_USERNAME_ENV else '❌'}\n"
+            f"Env пароль: {'✅' if X_PASSWORD_ENV else '❌'}\n"
+            f"Env email: {'✅' if X_EMAIL_ENV else '❌ (не обязательно)'}\n"
+            f"Активная сессия ввода: {'✅' if has_session else '❌'}\n\n"
         )
         if not CHROMIUM_READY:
             status += "⚠️ Chromium не установлен. Используй /x_install\n"
-        elif not X_USERNAME:
-            status += "⚠️ Не настроены логин/пароль. Добавь в Environment Variables.\n"
+        elif not X_USERNAME_ENV:
+            status += "ℹ️ Env логин не настроен. Используй /x_login для ввода в чате\n"
         else:
-            status += "✅ Всё готово к работе!\n"
+            status += "✅ Готов к работе! Используй /x_login или /x_login_env\n"
         bot.reply_to(message, status, parse_mode="HTML")
+
+    @bot.message_handler(commands=["x_cancel"])
+    def x_cancel_command(message):
+        """Отменить диалог авторизации"""
+        chat_id = message.chat.id
+        if chat_id in login_sessions:
+            del login_sessions[chat_id]
+            bot.reply_to(message, "❌ Ввод отменён. Данные очищены.")
+        else:
+            bot.reply_to(message, "Нет активного ввода.")
 
     @bot.message_handler(commands=["x_help"])
     def x_help_command(message):
@@ -723,14 +862,15 @@ def register_x_play(bot):
             "  /x_status — Проверить статус системы\n"
             "  /x_install — Установить Playwright + Chromium\n\n"
             "🔐 <b>Авторизация</b>\n"
-            "  /x_login — Войти в X (сохранить сессию)\n\n"
+            "  /x_login — Войти в X (ввод в чате: username → пароль → email)\n"
+            "  /x_login_env — Быстрый вход через Environment Variables\n"
+            "  /x_cancel — Отменить ввод\n\n"
             "📰 <b>Контент</b>\n"
             "  /x_timeline [user] [N] — Лента пользователя\n"
             "  /x_search [запрос] [N] — Поиск твитов\n\n"
-            "💡 <b>Советы:</b>\n"
-            "• Если авторизация не работает — проверь, что X_EMAIL установлен (для 2FA/верификации)\n"
-            "• На Render добавь: <code>PLAYWRIGHT_BROWSERS_PATH=/data/playwright-browsers</code>\n"
-            "• Скриншоты сохраняются в папку <code>screenshots/</code> для отладки"
+            "⚠️ <b>Внимание:</b> Сообщения с паролем удаляются после авторизации, "
+            "но остаются в истории Telegram-серверов. Для максимальной безопасности "
+            "используй Environment Variables."
         )
         bot.reply_to(message, msg, parse_mode="HTML")
 
