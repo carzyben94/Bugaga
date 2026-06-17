@@ -384,9 +384,7 @@ def menu_command(message):
         "🌐 ИНТЕРНЕТ И ДАННЫЕ\n"
         "/browser [url] - открыть сайт\n\n"
         "💰 ФИНАНСЫ\n"
-        "/crypto - курсы криптовалют\n\n"
-        "📊 СИСТЕМА\n"
-        "/status_full - статус системы"
+        "/crypto - курсы криптовалют"
     )
     
     bot.reply_to(message, menu_text)
@@ -425,10 +423,6 @@ def ai_command(message):
     except Exception as e:
         log_action("ai_exception", str(e), "error")
         bot.edit_message_text(f"❌ Ошибка: {e}", chat_id=message.chat.id, message_id=status_msg.message_id)
-
-@bot.message_handler(commands=['status_full'])
-def status_full_command(message):
-    bot.reply_to(message, "📊 Статус системы:\n✅ Бот работает\n✅ Все модули активны")
 
 # ===== ВЕБХУК =====
 @app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
