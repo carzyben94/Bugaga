@@ -49,7 +49,7 @@ def install_playwright():
             return True
         except Exception as e:
             print(f"[XX] Chromium missing: {e}")
-            PLAYWRIGHT_INSTALLED = False  # Переустановим
+            PLAYWRIGHT_INSTALLED = False
         finally:
             try:
                 loop.close()
@@ -58,21 +58,18 @@ def install_playwright():
     
     print("[XX] Installing Playwright...")
     try:
-        # Устанавливаем playwright
         subprocess.check_call(
             [sys.executable, "-m", "pip", "install", "playwright"],
             stdout=subprocess.DEVNULL, 
             stderr=subprocess.DEVNULL
         )
         
-        # Скачиваем Chromium
         subprocess.check_call(
             [sys.executable, "-m", "playwright", "install", "chromium", "--only-shell"],
             stdout=subprocess.DEVNULL, 
             stderr=subprocess.DEVNULL
         )
         
-        # Перезагружаем импорт
         import importlib
         import playwright
         importlib.reload(playwright)
@@ -89,12 +86,12 @@ def install_playwright():
 class XXAgent:
     def __init__(self):
         self._playwright_checked = False
+        self._cookies_valid = False
     
     async def _ensure_playwright(self):
         if not self._playwright_checked:
             self._playwright_checked = True
             if not PLAYWRIGHT_INSTALLED:
-                # Попробуем ещё раз (может уже установился в другом потоке)
                 try:
                     from playwright.async_api import async_playwright
                 except ImportError:
@@ -117,21 +114,44 @@ class XXAgent:
             cookies = await context.cookies()
             with open(COOKIES_FILE, "w") as f:
                 json.dump(cookies, f)
+            self._cookies_valid = True
         except:
             pass
     
+    async def _check_auth(self, page):
+        """Проверить, авторизованы ли мы"""
+        try:
+            await page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=15000)
+            await page.wait_for_selector('[data-testid="primaryColumn"]', timeout=8000)
+            
+            # Проверяем, есть ли кнопка "Sign in" (значит не авторизованы)
+            signin = await page.query_selector('a[href="/i/flow/login"]')
+            if signin:
+                return False
+            
+            return True
+        except:
+            return False
+    
     async def _login(self, page):
+        """Полная авторизация на X"""
         if not X_USERNAME or not X_PASSWORD:
             return False, "X_USERNAME или X_PASSWORD не настроены"
         
         try:
+            print(f"[XX] Авторизация как {X_USERNAME}...")
+            
             await page.goto("https://x.com/i/flow/login", wait_until="domcontentloaded", timeout=30000)
             
+            # Ввод username
             await page.wait_for_selector('input[autocomplete="username"]', timeout=10000)
             await page.fill('input[autocomplete="username"]', X_USERNAME)
+            
+            # Next
             await page.click('button:has-text("Next")')
             await asyncio.sleep(2)
             
+            # Проверка на email/телефон
             try:
                 email_input = await page.wait_for_selector('input[data-testid="ocfEnterTextTextInput"]', timeout=5000)
                 if email_input and X_EMAIL:
@@ -141,15 +161,39 @@ class XXAgent:
             except:
                 pass
             
+            # Ввод пароля
             await page.wait_for_selector('input[name="password"]', timeout=10000)
             await page.fill('input[name="password"]', X_PASSWORD)
+            
+            # Log in
             await page.click('button[data-testid="LoginForm_Login_Button"]')
+            
+            # Ждём загрузки
             await page.wait_for_selector('[data-testid="primaryColumn"]', timeout=15000)
             
+            # Проверим, что вошли
+            signin = await page.query_selector('a[href="/i/flow/login"]')
+            if signin:
+                return False, "Авторизация не удалась. Проверь логин/пароль."
+            
+            print("[XX] Авторизация успешна!")
             return True, None
             
         except Exception as e:
             return False, f"Ошибка авторизации: {e}"
+    
+    async def _ensure_auth(self, context, page):
+        """Убедиться, что авторизованы"""
+        is_auth = await self._check_auth(page)
+        
+        if not is_auth:
+            print("[XX] Не авторизован, выполняю вход...")
+            success, error = await self._login(page)
+            if not success:
+                return False, error
+            await self._save_cookies(context)
+        
+        return True, None
     
     async def _parse_tweet(self, article):
         tweet = {"text": "", "author": "", "handle": "", "time": "", "replies": "0", "retweets": "0", "likes": "0", "url": ""}
@@ -211,16 +255,11 @@ class XXAgent:
                 await self._load_cookies(context)
                 page = await context.new_page()
                 
-                # Проверка сессии
-                await page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=20000)
-                try:
-                    await page.wait_for_selector('[data-testid="primaryColumn"]', timeout=8000)
-                except:
-                    await page.goto("https://x.com/i/flow/login", wait_until="domcontentloaded", timeout=30000)
-                    success, error = await self._login(page)
-                    if not success:
-                        await browser.close()
-                        return None, error
+                # Проверка/авторизация
+                success, error = await self._ensure_auth(context, page)
+                if not success:
+                    await browser.close()
+                    return None, error
                 
                 # Загрузка ленты
                 url = f"https://x.com/{username}" if username else "https://x.com/home"
@@ -272,6 +311,13 @@ class XXAgent:
                 await self._load_cookies(context)
                 page = await context.new_page()
                 
+                # Проверка/авторизация
+                success, error = await self._ensure_auth(context, page)
+                if not success:
+                    await browser.close()
+                    return None, error
+                
+                # Поиск
                 encoded = query.replace(" ", "%20")
                 url = f"https://x.com/search?q={encoded}&src=typed_query&f=live"
                 
@@ -310,7 +356,7 @@ xx_agent = XXAgent()
 
 def run_async_task(coro):
     """Запустить async корутину в отдельном потоке с новым event loop"""
-    result = [None, None]  # [success, error]
+    result = [None, None]
     
     def target():
         try:
@@ -339,40 +385,63 @@ def register_x_play(bot):
 
     @bot.message_handler(commands=["x_login"])
     def x_login_command(message):
-        # Проверяем, установлен ли уже
-        if PLAYWRIGHT_INSTALLED:
-            # Проверим Chromium
-            def check():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                
-                async def test():
-                    async with async_playwright() as p:
-                        await p.chromium.launch(headless=True, args=["--no-sandbox"])
-                
-                try:
-                    loop.run_until_complete(test())
-                    loop.close()
-                    return True, None
-                except Exception as e:
-                    loop.close()
-                    return False, str(e)
-            
-            ok, err = check()
-            if ok:
-                bot.reply_to(message, "✅ Playwright уже установлен и работает!")
+        """Проверить/выполнить авторизацию на X"""
+        if not PLAYWRIGHT_INSTALLED:
+            bot.reply_to(message, "🔐 Установка Playwright...")
+            success = install_playwright()
+            if not success:
+                bot.reply_to(message, "❌ Не удалось установить Playwright")
                 return
         
-        bot.reply_to(message, "🔐 Установка Playwright... Это может занять минуту.")
+        if not X_USERNAME or not X_PASSWORD:
+            bot.reply_to(message,
+                "❌ Настрой X_USERNAME и X_PASSWORD в переменных окружения\n\n"
+                "На Render:\n"
+                "<code>X_USERNAME=your_login</code>\n"
+                "<code>X_PASSWORD=your_password</code>\n"
+                "<code>X_EMAIL=your_email</code> (если 2FA)",
+                parse_mode="HTML"
+            )
+            return
         
-        success = install_playwright()
+        bot.reply_to(message, f"🔐 Авторизация как <code>{X_USERNAME}</code>...", parse_mode="HTML")
+        
+        # Принудительная переавторизация — удаляем старые cookies
+        if os.path.exists(COOKIES_FILE):
+            os.remove(COOKIES_FILE)
+            print("[XX] Старые cookies удалены")
+        
+        # Запускаем авторизацию
+        async def do_login():
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+                )
+                context = await browser.new_context(viewport={"width": 1280, "height": 800})
+                page = await context.new_page()
+                
+                success, error = await xx_agent._login(page)
+                if success:
+                    await xx_agent._save_cookies(context)
+                
+                await browser.close()
+                return success, error
+        
+        success, error = run_async_task(do_login())
+        
+        if error:
+            bot.reply_to(message, f"❌ {error}")
+            return
+        
         if success:
-            bot.reply_to(message, "✅ Playwright установлен!")
+            bot.reply_to(message, "✅ Авторизация успешна! Cookies сохранены.\nТеперь можно использовать /x_timeline и /x_search")
         else:
-            bot.reply_to(message, "❌ Не удалось установить")
+            bot.reply_to(message, "❌ Авторизация не удалась")
 
     @bot.message_handler(commands=["x_timeline"])
     def x_timeline_command(message):
+        """Лента пользователя"""
         args = message.text.split()
         username = args[1] if len(args) > 1 else None
         limit = int(args[2]) if len(args) > 2 and args[2].isdigit() else 5
@@ -398,7 +467,7 @@ def register_x_play(bot):
             lines.append(
                 f"{i}. <b>{t.get('author', '')}</b> <code>{t.get('handle', '')}</code>\n"
                 f"   <i>{text}</i>\n"
-                f"   ❤️ {t.get('likes', '0')}  🔄 {t.get('retweets', '0')}\n"
+                f"   ❤️ {t.get('likes', '0')}  🔄 {t.get('retweets', '0')}  💬 {t.get('replies', '0')}\n"
                 f"   <a href='{t.get('url', '')}'>ссылка</a>\n"
             )
         
@@ -410,15 +479,16 @@ def register_x_play(bot):
 
     @bot.message_handler(commands=["x_search"])
     def x_search_command(message):
+        """Поиск по X"""
         args = message.text.split(maxsplit=2)
         if len(args) < 2:
-            bot.reply_to(message, "❌ /x_search [запрос]", parse_mode="HTML")
+            bot.reply_to(message, "❌ Укажи запрос: <code>/x_search python</code>", parse_mode="HTML")
             return
         
         query = args[1]
         limit = int(args[2]) if len(args) > 2 and args[2].isdigit() else 5
         
-        bot.reply_to(message, f"🔍 {query}...")
+        bot.reply_to(message, f"🔍 Ищу: <i>{query}</i>...", parse_mode="HTML")
         
         tweets, error = run_async_task(xx_agent.search(query, limit))
         
@@ -446,20 +516,23 @@ def register_x_play(bot):
 
     @bot.message_handler(commands=["x_trends"])
     def x_trends_command(message):
-        bot.reply_to(message, "📈 Используй /x_search")
+        bot.reply_to(message, "📈 Используй /x_search для поиска по темам")
 
     @bot.message_handler(commands=["x_screenshot"])
     def x_screenshot_command(message):
-        bot.reply_to(message, "📸 Используй /x_login для проверки")
+        bot.reply_to(message, "📸 Скриншоты в разработке")
 
     @bot.message_handler(commands=["x_help"])
     def x_help_command(message):
         msg = (
-            "🐦 <b>X Agent</b>\n\n"
-            "🔐 /x_login — Проверить/установить Playwright\n"
-            "📰 /x_timeline [user] [N] — Лента\n"
-            "🔍 /x_search [запрос] [N] — Поиск\n"
-            "⚠️ Первая установка ~1 минута"
+            "🐦 <b>X Agent — команды</b>\n\n"
+            "🔐 <b>Авторизация</b>\n"
+            "  /x_login — Войти в X (сохранить сессию)\n\n"
+            "📰 <b>Контент</b>\n"
+            "  /x_timeline [user] [N] — Лента пользователя\n"
+            "  /x_search [запрос] [N] — Поиск твитов\n\n"
+            f"Playwright: {'✅' if PLAYWRIGHT_INSTALLED else '❌'}\n"
+            f"Логин: {'✅' if X_USERNAME else '❌ не настроен'}"
         )
         bot.reply_to(message, msg, parse_mode="HTML")
 
