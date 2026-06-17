@@ -28,6 +28,7 @@ PLAYWRIGHT_INSTALLED = False
 CHROMIUM_READY = False
 
 # === Хранилище для диалогов авторизации ===
+# {chat_id: {"step": "username|password|email|done", "username": "...", "password": "...", "email": "..."}}
 login_sessions = {}
 
 def check_chromium():
@@ -549,6 +550,36 @@ def run_async_task(coro):
 def register_x_play(bot):
     print("[XX] === REGISTER START ===")
 
+    # === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
+    def is_in_login_dialog(chat_id, step):
+        """Проверить, находится ли пользователь на указанном шаге диалога"""
+        return chat_id in login_sessions and login_sessions[chat_id].get("step") == step
+
+    def do_login_with_creds(chat_id, username, password, email=None):
+        """Выполнить авторизацию с полученными credentials"""
+        # Удаляем старые cookies
+        if os.path.exists(COOKIES_FILE):
+            os.remove(COOKIES_FILE)
+            print("[XX] Старые cookies удалены")
+        
+        async def do_login_chat():
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+                )
+                context = await browser.new_context(viewport={"width": 1280, "height": 800})
+                page = await context.new_page()
+                success, error = await xx_agent._login(page, username, password, email)
+                if success:
+                    await xx_agent._save_cookies(context)
+                await browser.close()
+                return success, error
+        
+        return run_async_task(do_login_chat())
+
+    # === ОБРАБОТЧИКИ КОМАНД ===
+    
     @bot.message_handler(commands=["x_install"])
     def x_install_command(message):
         """Установить/проверить Playwright и Chromium"""
@@ -590,6 +621,7 @@ def register_x_play(bot):
         """Запустить диалог авторизации в X"""
         chat_id = message.chat.id
         
+        # Сбрасываем предыдущую сессию если есть
         if chat_id in login_sessions:
             del login_sessions[chat_id]
         
@@ -604,6 +636,7 @@ def register_x_play(bot):
         
         bot.reply_to(message, msg, parse_mode="HTML")
         login_sessions[chat_id] = {"step": "username"}
+        print(f"[XX] Login dialog started for chat {chat_id}, step: username")
 
     @bot.message_handler(commands=["x_login_env"])
     def x_login_env_command(message):
@@ -642,95 +675,39 @@ def register_x_play(bot):
         else:
             bot.reply_to(message, "❌ Авторизация не удалась")
 
-    @bot.message_handler(func=lambda m: m.chat.id in login_sessions and login_sessions[m.chat.id]["step"] == "username")
-    def x_login_username_step(message):
-        """Шаг 1: Получили username"""
+    @bot.message_handler(commands=["x_cancel"])
+    def x_cancel_command(message):
+        """Отменить диалог авторизации"""
         chat_id = message.chat.id
-        username = message.text.strip()
-        
-        if username.startswith("@"):
-            username = username[1:]
-        
-        login_sessions[chat_id]["username"] = username
-        login_sessions[chat_id]["step"] = "password"
-        
-        bot.reply_to(message, 
-            f"✅ Username: <code>{username}</code>\n\n"
-            f"Теперь введи <b>пароль</b>:\n"
-            f"<i>(сообщение с паролем будет удалено после авторизации для безопасности)</i>",
-            parse_mode="HTML"
-        )
-
-    @bot.message_handler(func=lambda m: m.chat.id in login_sessions and login_sessions[m.chat.id]["step"] == "password")
-    def x_login_password_step(message):
-        """Шаг 2: Получили password"""
-        chat_id = message.chat.id
-        password = message.text
-        
-        login_sessions[chat_id]["password"] = password
-        login_sessions[chat_id]["step"] = "email"
-        
-        bot.reply_to(message,
-            "✅ Пароль получен\n\n"
-            "Если у тебя настроена дополнительная проверка (email/телефон), введи email сейчас.\n"
-            "Или отправь <code>skip</code> чтобы пропустить:",
-            parse_mode="HTML"
-        )
-
-    @bot.message_handler(func=lambda m: m.chat.id in login_sessions and login_sessions[m.chat.id]["step"] == "email")
-    def x_login_email_step(message):
-        """Шаг 3: Получили email (или skip)"""
-        chat_id = message.chat.id
-        email = message.text.strip()
-        
-        if email.lower() == "skip":
-            email = None
-        
-        login_sessions[chat_id]["email"] = email
-        login_sessions[chat_id]["step"] = "done"
-        
-        creds = login_sessions[chat_id]
-        username = creds["username"]
-        password = creds["password"]
-        email = creds.get("email")
-        
-        try:
-            bot.delete_message(chat_id, message.message_id - 1)
-            bot.delete_message(chat_id, message.message_id)
-        except Exception as e:
-            print(f"[XX] Could not delete password message: {e}")
-        
-        bot.reply_to(message, f"🔐 Авторизация как <code>{username}</code>...", parse_mode="HTML")
-        
-        if os.path.exists(COOKIES_FILE):
-            os.remove(COOKIES_FILE)
-            print("[XX] Старые cookies удалены")
-        
-        async def do_login_chat():
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(
-                    headless=True,
-                    args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
-                )
-                context = await browser.new_context(viewport={"width": 1280, "height": 800})
-                page = await context.new_page()
-                success, error = await xx_agent._login(page, username, password, email)
-                if success:
-                    await xx_agent._save_cookies(context)
-                await browser.close()
-                return success, error
-        
-        success, error = run_async_task(do_login_chat())
-        
-        del login_sessions[chat_id]
-        
-        if error:
-            bot.reply_to(message, f"❌ {error}")
-            return
-        if success:
-            bot.reply_to(message, "✅ Авторизация успешна! Cookies сохранены.\nТеперь можно использовать /x_timeline и /x_search")
+        if chat_id in login_sessions:
+            del login_sessions[chat_id]
+            bot.reply_to(message, "❌ Ввод отменён. Данные очищены.")
         else:
-            bot.reply_to(message, "❌ Авторизация не удалась")
+            bot.reply_to(message, "Нет активного ввода.")
+
+    @bot.message_handler(commands=["x_status"])
+    def x_status_command(message):
+        """Проверить статус Playwright и Chromium"""
+        chat_id = message.chat.id
+        has_session = chat_id in login_sessions
+        
+        status = (
+            "📊 <b>Статус X Agent</b>\n\n"
+            f"Playwright pip: {'✅' if PLAYWRIGHT_INSTALLED else '❌'}\n"
+            f"Chromium бинарник: {'✅' if CHROMIUM_READY else '❌'}\n"
+            f"Browsers path: <code>{PLAYWRIGHT_BROWSERS_PATH or 'default (эфемерный)'}</code>\n"
+            f"Env логин: {'✅' if X_USERNAME_ENV else '❌'}\n"
+            f"Env пароль: {'✅' if X_PASSWORD_ENV else '❌'}\n"
+            f"Env email: {'✅' if X_EMAIL_ENV else '❌ (не обязательно)'}\n"
+            f"Активная сессия ввода: {'✅' if has_session else '❌'}\n\n"
+        )
+        if not CHROMIUM_READY:
+            status += "⚠️ Chromium не установлен. Используй /x_install\n"
+        elif not X_USERNAME_ENV:
+            status += "ℹ️ Env логин не настроен. Используй /x_login для ввода в чате\n"
+        else:
+            status += "✅ Готов к работе! Используй /x_login или /x_login_env\n"
+        bot.reply_to(message, status, parse_mode="HTML")
 
     @bot.message_handler(commands=["x_timeline"])
     def x_timeline_command(message):
@@ -809,40 +786,6 @@ def register_x_play(bot):
     def x_screenshot_command(message):
         bot.reply_to(message, "📸 Скриншоты в разработке")
 
-    @bot.message_handler(commands=["x_status"])
-    def x_status_command(message):
-        """Проверить статус Playwright и Chromium"""
-        chat_id = message.chat.id
-        has_session = chat_id in login_sessions
-        
-        status = (
-            "📊 <b>Статус X Agent</b>\n\n"
-            f"Playwright pip: {'✅' if PLAYWRIGHT_INSTALLED else '❌'}\n"
-            f"Chromium бинарник: {'✅' if CHROMIUM_READY else '❌'}\n"
-            f"Browsers path: <code>{PLAYWRIGHT_BROWSERS_PATH or 'default (эфемерный)'}</code>\n"
-            f"Env логин: {'✅' if X_USERNAME_ENV else '❌'}\n"
-            f"Env пароль: {'✅' if X_PASSWORD_ENV else '❌'}\n"
-            f"Env email: {'✅' if X_EMAIL_ENV else '❌ (не обязательно)'}\n"
-            f"Активная сессия ввода: {'✅' if has_session else '❌'}\n\n"
-        )
-        if not CHROMIUM_READY:
-            status += "⚠️ Chromium не установлен. Используй /x_install\n"
-        elif not X_USERNAME_ENV:
-            status += "ℹ️ Env логин не настроен. Используй /x_login для ввода в чате\n"
-        else:
-            status += "✅ Готов к работе! Используй /x_login или /x_login_env\n"
-        bot.reply_to(message, status, parse_mode="HTML")
-
-    @bot.message_handler(commands=["x_cancel"])
-    def x_cancel_command(message):
-        """Отменить диалог авторизации"""
-        chat_id = message.chat.id
-        if chat_id in login_sessions:
-            del login_sessions[chat_id]
-            bot.reply_to(message, "❌ Ввод отменён. Данные очищены.")
-        else:
-            bot.reply_to(message, "Нет активного ввода.")
-
     @bot.message_handler(commands=["x_help"])
     def x_help_command(message):
         msg = (
@@ -862,5 +805,104 @@ def register_x_play(bot):
             "используй Environment Variables."
         )
         bot.reply_to(message, msg, parse_mode="HTML")
+
+    # === ОБРАБОТЧИКИ ДИАЛОГА (func) — РЕГИСТРИРУЮТСЯ ПОСЛЕ КОМАНД ===
+    # ВАЖНО: telebot проверяет handler'ы в порядке регистрации!
+    # func handler'ы должны быть ПОСЛЕ commands, но ПЕРЕД fallback'ом
+
+    @bot.message_handler(func=lambda m: is_in_login_dialog(m.chat.id, "username"))
+    def x_login_username_step(message):
+        """Шаг 1: Получили username"""
+        chat_id = message.chat.id
+        username = message.text.strip()
+        
+        if username.startswith("@"):
+            username = username[1:]
+        
+        # Игнорируем команды
+        if username.startswith("/"):
+            bot.reply_to(message, "❌ Это похоже на команду. Введи username или /x_cancel для отмены.")
+            return
+        
+        login_sessions[chat_id]["username"] = username
+        login_sessions[chat_id]["step"] = "password"
+        
+        print(f"[XX] Chat {chat_id}: username received, moving to password")
+        
+        bot.reply_to(message, 
+            f"✅ Username: <code>{username}</code>\n\n"
+            f"Теперь введи <b>пароль</b>:\n"
+            f"<i>(сообщение с паролем будет удалено после авторизации)</i>",
+            parse_mode="HTML"
+        )
+
+    @bot.message_handler(func=lambda m: is_in_login_dialog(m.chat.id, "password"))
+    def x_login_password_step(message):
+        """Шаг 2: Получили password"""
+        chat_id = message.chat.id
+        password = message.text
+        
+        # Игнорируем команды
+        if password.startswith("/"):
+            bot.reply_to(message, "❌ Это похоже на команду. Введи пароль или /x_cancel для отмены.")
+            return
+        
+        login_sessions[chat_id]["password"] = password
+        login_sessions[chat_id]["step"] = "email"
+        
+        print(f"[XX] Chat {chat_id}: password received, moving to email")
+        
+        bot.reply_to(message,
+            "✅ Пароль получен\n\n"
+            "Если у тебя настроена дополнительная проверка (email/телефон), введи email сейчас.\n"
+            "Или отправь <code>skip</code> чтобы пропустить:",
+            parse_mode="HTML"
+        )
+
+    @bot.message_handler(func=lambda m: is_in_login_dialog(m.chat.id, "email"))
+    def x_login_email_step(message):
+        """Шаг 3: Получили email (или skip)"""
+        chat_id = message.chat.id
+        email_input_text = message.text.strip()
+        
+        # Игнорируем команды (кроме skip)
+        if email_input_text.startswith("/") and email_input_text.lower() != "/skip":
+            bot.reply_to(message, "❌ Это похоже на команду. Введи email, <code>skip</code> или /x_cancel для отмены.")
+            return
+        
+        email = None if email_input_text.lower() == "skip" else email_input_text
+        
+        login_sessions[chat_id]["email"] = email
+        login_sessions[chat_id]["step"] = "done"
+        
+        creds = login_sessions[chat_id]
+        username = creds["username"]
+        password = creds["password"]
+        email = creds.get("email")
+        
+        print(f"[XX] Chat {chat_id}: email received, starting login with username={username}")
+        
+        # Удаляем сообщения с паролем для безопасности
+        try:
+            bot.delete_message(chat_id, message.message_id - 1)  # Сообщение с паролем
+            bot.delete_message(chat_id, message.message_id)       # Сообщение с email/skip
+        except Exception as e:
+            print(f"[XX] Could not delete password message: {e}")
+        
+        bot.reply_to(message, f"🔐 Авторизация как <code>{username}</code>...\n⏳ Это может занять 10-20 секунд", parse_mode="HTML")
+        
+        # Выполняем авторизацию
+        success, error = do_login_with_creds(chat_id, username, password, email)
+        
+        # Очищаем сессию
+        del login_sessions[chat_id]
+        
+        if error:
+            bot.reply_to(message, f"❌ {error}")
+            return
+        if success:
+            bot.reply_to(message, "✅ Авторизация успешна! Cookies сохранены.\nТеперь можно использовать /x_timeline и /x_search")
+        else:
+            bot.reply_to(message, "❌ Авторизация не удалась")
 
     print("[XX] === REGISTER END ===")
