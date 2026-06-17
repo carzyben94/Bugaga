@@ -1,50 +1,24 @@
 # ai.py
 import requests
 import threading
-import random
 
-# ТОЛЬКО БЕСПЛАТНЫЕ МОДЕЛИ (проверено)
+# АКТУАЛЬНЫЕ БЕСПЛАТНЫЕ МОДЕЛИ (ИЮНЬ 2026)
 FREE_MODELS = [
-    "google/gemma-4-31b-it",             # 31B, 256K контекст
-    "google/gemma-4-26b-a4b-it",         # MoE версия
-    "nvidia/nemotron-3-ultra",           # 55B MoE, 1M контекст
-    "nvidia/nemotron-3-super",           # 120B MoE, 1M контекст
-    "nvidia/nemotron-3-nano-30b-a3b",    # MoE, 256K контекст
-    "nvidia/nemotron-nano-9b-v2",        # Унифицированная модель
-    "microsoft/phi-4",                   # 14B, бесплатно
-    "qwen/qwen-2.5-72b-instruct",        # 72B, бесплатно
-    "qwen/qwen-2.5-32b-instruct",        # 32B, бесплатно
-    "qwen/qwen-2.5-14b-instruct",        # 14B, бесплатно
-    "qwen/qwen-2.5-7b-instruct",         # 7B, бесплатно
-    "meta-llama/llama-4-maverick-17b",   # 17B, бесплатно
-    "meta-llama/llama-4-scout-17b",      # 17B, бесплатно
-    "deepseek/deepseek-r1-distill-qwen-32b",  # 32B
-    "deepseek/deepseek-r1-distill-llama-70b", # 70B
-    "mistralai/mistral-small-3.1-24b",   # 24B
-    "mistralai/mistral-large-3.1-123b",  # 123B (может быть платной)
-]
-
-# ГАРАНТИРОВАННО БЕСПЛАТНЫЕ (безлимитные)
-SAFE_FREE_MODELS = [
-    "google/gemma-4-31b-it",
-    "google/gemma-4-26b-a4b-it",
-    "nvidia/nemotron-3-ultra",
-    "nvidia/nemotron-3-super",
-    "microsoft/phi-4",
-    "qwen/qwen-2.5-72b-instruct",
-    "qwen/qwen-2.5-32b-instruct",
-    "meta-llama/llama-4-maverick-17b",
-    "deepseek/deepseek-r1-distill-qwen-32b",
-    "mistralai/mistral-small-3.1-24b",
+    "openrouter/free",                      # Автоматический роутер
+    "google/gemma-4-31b-it",                # 31B, 256K контекст
+    "google/gemma-4-26b-a4b-it",            # MoE версия
+    "nvidia/nemotron-3-ultra",              # 55B MoE, 1M контекст
+    "nvidia/nemotron-3-super",              # 120B MoE, 1M контекст
+    "openai/gpt-oss-120b",                  # 117B MoE
+    "openai/gpt-oss-20b",                   # 21B, Apache 2.0
+    "poolside/laguna-m1",                   # Кодинг-агент
+    "nex-agi/nex-n2-pro",                   # 397B MoE
+    "riverflow/riverflow-v2.5-pro",         # Новая бесплатная
+    "stepfun/step-3.7-flash",               # MoE, 256K контекст
 ]
 
 def register_ai(bot, openrouter_api_key):
     """Регистрирует обработчик команды /ai с автоматическим fallback"""
-
-    def get_models_for_fallback():
-        """Возвращает 3 случайные безопасные модели"""
-        selected = random.sample(SAFE_FREE_MODELS, min(3, len(SAFE_FREE_MODELS)))
-        return selected
 
     @bot.message_handler(commands=['ai'])
     def ai_command(message):
@@ -56,15 +30,15 @@ def register_ai(bot, openrouter_api_key):
         status_msg = bot.reply_to(message, "🤔 Думаю...")
 
         if not openrouter_api_key:
-            bot.edit_message_text("❌ OpenRouter API ключ не настроен",
-                                  chat_id=message.chat.id,
-                                  message_id=status_msg.message_id)
+            bot.edit_message_text(
+                "❌ OpenRouter API ключ не настроен",
+                chat_id=message.chat.id,
+                message_id=status_msg.message_id
+            )
             return
 
         def do_ai():
             try:
-                models = get_models_for_fallback()
-
                 headers = {
                     "Authorization": f"Bearer {openrouter_api_key}",
                     "Content-Type": "application/json",
@@ -73,7 +47,7 @@ def register_ai(bot, openrouter_api_key):
                 }
 
                 payload = {
-                    "models": models,
+                    "models": FREE_MODELS,  # 🔄 АВТОМАТИЧЕСКИЙ FALLBACK
                     "messages": [{"role": "user", "content": user_text}],
                     "max_tokens": 500,
                     "temperature": 0.7
@@ -88,43 +62,49 @@ def register_ai(bot, openrouter_api_key):
 
                 if r.status_code == 200:
                     answer = r.json()["choices"][0]["message"]["content"]
-                    used_model = r.json().get("model", models[0])
+                    used_model = r.json().get("model", "openrouter/free")
+                    
                     bot.edit_message_text(
                         f"{answer}\n\n🤖 *Модель:* `{used_model}`",
                         chat_id=message.chat.id,
                         message_id=status_msg.message_id,
                         parse_mode='Markdown'
                     )
-                elif r.status_code == 402:
-                    bot.edit_message_text(
-                        "⚠️ *Недостаточно кредитов*\n"
-                        "Используются только бесплатные модели.\n"
-                        "Попробуйте позже или добавьте баланс на https://openrouter.ai/settings/credits",
-                        chat_id=message.chat.id,
-                        message_id=status_msg.message_id,
-                        parse_mode='Markdown'
-                    )
+                    
                 elif r.status_code == 429:
                     bot.edit_message_text(
                         "⚠️ *Превышен лимит запросов*\n"
                         "OpenRouter Free: 20 запросов/мин, 50/день\n"
+                        "Попробуйте через минуту.",
+                        chat_id=message.chat.id,
+                        message_id=status_msg.message_id,
+                        parse_mode='Markdown'
+                    )
+                    
+                elif r.status_code == 402:
+                    bot.edit_message_text(
+                        "⚠️ *Недостаточно кредитов*\n"
+                        "Используются только бесплатные модели.\n"
                         "Попробуйте позже.",
                         chat_id=message.chat.id,
                         message_id=status_msg.message_id,
                         parse_mode='Markdown'
                     )
+                    
                 else:
                     bot.edit_message_text(
                         f"❌ Ошибка API: {r.status_code}\n{str(r.text)[:200]}",
                         chat_id=message.chat.id,
                         message_id=status_msg.message_id
                     )
+                    
             except requests.exceptions.Timeout:
                 bot.edit_message_text(
                     "⏰ Таймаут запроса. Попробуйте позже.",
                     chat_id=message.chat.id,
                     message_id=status_msg.message_id
                 )
+                
             except Exception as e:
                 bot.edit_message_text(
                     f"❌ Ошибка: {str(e)[:200]}",
