@@ -1,4 +1,4 @@
-
+# bot.py
 import os
 import time
 import logging
@@ -28,10 +28,25 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
 # ===== РЕГИСТРАЦИЯ МОДУЛЕЙ =====
-register_xposts(bot)
-register_crypto(bot)
-register_ai(bot, AGNES_API_KEY)
-register_browser_ai(bot, AGNES_API_KEY)
+try:
+    register_xposts(bot)
+except Exception as e:
+    print(f"xposts error: {e}")
+
+try:
+    register_crypto(bot)
+except Exception as e:
+    print(f"crypto error: {e}")
+
+try:
+    register_ai(bot, AGNES_API_KEY)
+except Exception as e:
+    print(f"ai error: {e}")
+
+try:
+    register_browser_ai(bot, AGNES_API_KEY)
+except Exception as e:
+    print(f"browser_ai error: {e}")
 
 # ===== ЛОГИ =====
 def send_log_to_admin(action, details=None, status="info"):
@@ -56,19 +71,49 @@ def log_action(action, details=None, status="info", send=True):
         send_log_to_admin(action, details, status)
 
 # ===== КОМАНДЫ =====
-@bot.message_handler(commands=['start', 'help'])
-def menu_command(message):
-    log_action("menu", f"user={message.from_user.id}", "info")
-    bot.reply_to(message, (
-        "📋 *МЕНЮ БОТА BUGAGA*\n\n"
-        "🤖 *ИСКУССТВЕННЫЙ ИНТЕЛЛЕКТ*\n"
-        "/ai [вопрос] — спросить ИИ\n"
-        "/browser_ai [URL] [вопрос] — ИИ прочитает сайт\n\n"
-        "📰 *НОВОСТИ*\n"
-        "/xposts — посты из X (AteoBreaking)\n\n"
-        "💰 *ФИНАНСЫ*\n"
-        "/crypto — курсы BTC и ETH"
-    ), parse_mode='Markdown')
+@bot.message_handler(commands=['start'])
+def start_command(message):
+    try:
+        log_action("start", f"user={message.from_user.id}", "info")
+        bot.reply_to(message, (
+            "👋 *Добро пожаловать в BUGAGA BOT!*\n\n"
+            "📋 *МЕНЮ БОТА*\n\n"
+            "🤖 *ИСКУССТВЕННЫЙ ИНТЕЛЛЕКТ*\n"
+            "▪️ /ai [вопрос] — спросить ИИ\n"
+            "▪️ /browser_ai [URL] [вопрос] — ИИ прочитает сайт\n\n"
+            "📰 *НОВОСТИ*\n"
+            "▪️ /xposts — посты из X (AteoBreaking)\n\n"
+            "💰 *ФИНАНСЫ*\n"
+            "▪️ /crypto — курсы BTC и ETH"
+        ), parse_mode='Markdown')
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {e}")
+
+@bot.message_handler(commands=['help'])
+def help_command(message):
+    try:
+        log_action("help", f"user={message.from_user.id}", "info")
+        bot.reply_to(message, (
+            "🆘 *ПОМОЩЬ BUGAGA BOT*\n\n"
+            "📋 *ДОСТУПНЫЕ КОМАНДЫ:*\n\n"
+            "🤖 *ИСКУССТВЕННЫЙ ИНТЕЛЛЕКТ*\n"
+            "▪️ /ai [вопрос] — задай вопрос ИИ\n"
+            "▪️ /browser_ai [URL] [вопрос] — ИИ прочитает сайт\n\n"
+            "📰 *НОВОСТИ*\n"
+            "▪️ /xposts — последние посты из X\n\n"
+            "💰 *ФИНАНСЫ*\n"
+            "▪️ /crypto — курсы BTC и ETH\n\n"
+            "📌 *ОСТАЛЬНОЕ*\n"
+            "▪️ /start — главное меню\n"
+            "▪️ /help — эта справка"
+        ), parse_mode='Markdown')
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {e}")
+
+# ===== ТЕСТОВАЯ КОМАНДА =====
+@bot.message_handler(commands=['test'])
+def test_command(message):
+    bot.reply_to(message, "✅ Бот работает!")
 
 # ===== ВЕБХУК =====
 @app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
@@ -78,7 +123,7 @@ def webhook():
         bot.process_new_updates([update])
         return 'ok', 200
     except Exception as e:
-        log_action("webhook_error", str(e), "error")
+        print(f"webhook error: {e}")
         return 'error', 500
 
 @app.route('/health')
@@ -88,7 +133,26 @@ def health():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     url = os.environ.get('RENDER_EXTERNAL_URL', f"http://localhost:{port}")
-    bot.remove_webhook()
-    bot.set_webhook(url=f"{url}/{TELEGRAM_TOKEN}")
-    log_action("bot_start", "Бот запущен с Agnes AI и браузер-ИИ", "success")
+    
+    print("🔄 Удаляю старый webhook...")
+    try:
+        bot.remove_webhook()
+        time.sleep(2)
+    except Exception as e:
+        print(f"remove webhook error: {e}")
+    
+    print(f"🔄 Устанавливаю webhook: {url}/{TELEGRAM_TOKEN}")
+    try:
+        bot.set_webhook(url=f"{url}/{TELEGRAM_TOKEN}")
+        print("✅ Webhook установлен!")
+    except Exception as e:
+        print(f"set webhook error: {e}")
+    
+    try:
+        info = bot.get_webhook_info()
+        print(f"📊 Webhook info: {info}")
+    except Exception as e:
+        print(f"get webhook info error: {e}")
+    
+    log_action("bot_start", "Бот запущен", "success")
     app.run(host='0.0.0.0', port=port)
