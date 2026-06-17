@@ -1,10 +1,18 @@
 # bot.py 
 import os
+import sys
 import time
 import logging
 import json
 from flask import Flask, request
 import telebot
+
+# Добавляем текущую папку в PATH (для Render)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Проверка рабочей директории (для отладки)
+print(f"[DEBUG] Current dir: {os.getcwd()}")
+print(f"[DEBUG] Files: {os.listdir('.')}")
 
 from xposts import register_xposts
 from crypto import register_crypto
@@ -13,7 +21,20 @@ from browser_ai import register_browser_ai
 from crawler_ai import register_crawler_ai
 from render import register_render
 from github import register_github
-from x_play import register_x_play
+
+# Пробуем импортировать x_play
+try:
+    from x_play import register_x_play
+    X_PLAY_AVAILABLE = True
+    print("[DEBUG] x_play imported successfully")
+except ModuleNotFoundError as e:
+    print(f"[DEBUG] x_play NOT FOUND: {e}")
+    X_PLAY_AVAILABLE = False
+    register_x_play = None
+except Exception as e:
+    print(f"[DEBUG] x_play import error: {e}")
+    X_PLAY_AVAILABLE = False
+    register_x_play = None
 
 logging.basicConfig(level=logging.INFO)
 
@@ -40,19 +61,27 @@ modules = [
     ("crawler_ai", register_crawler_ai, [AGNES_API_KEY]),
     ("render", register_render, []),
     ("github", register_github, []),
-    ("x_play", register_x_play, []),
 ]
+
+# Добавляем x_play только если доступен
+if X_PLAY_AVAILABLE and register_x_play:
+    modules.append(("x_play", register_x_play, []))
+    print("[DEBUG] x_play registered")
+else:
+    print("[DEBUG] x_play SKIPPED")
 
 for name, register_func, args in modules:
     try:
         register_func(bot, *args)
+        print(f"[DEBUG] Module {name} OK")
     except TypeError:
         try:
             register_func(bot)
+            print(f"[DEBUG] Module {name} OK (no args)")
         except Exception as e:
-            print(f"{name} error: {e}")
+            print(f"[DEBUG] {name} error: {e}")
     except Exception as e:
-        print(f"{name} error: {e}")
+        print(f"[DEBUG] {name} error: {e}")
 
 # ===== ЛОГИ =====
 def send_log_to_admin(action, details=None, status="info"):
