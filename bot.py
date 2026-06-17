@@ -1,8 +1,8 @@
+# bot.py
 import os
 import time
 import logging
 import json
-import requests
 import threading
 from flask import Flask, request
 import telebot
@@ -10,6 +10,7 @@ from datetime import datetime
 
 from xposts import register_xposts
 from crypto import register_crypto
+from ai import register_ai
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -32,15 +33,9 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
 # ===== РЕГИСТРАЦИЯ МОДУЛЕЙ =====
-try:
-    from status import register_status_full
-    register_status_full(bot)
-    print("Status module loaded")
-except Exception as e:
-    print(f"Status not loaded: {e}")
-
 register_xposts(bot)
 register_crypto(bot)
+register_ai(bot, OPENROUTER_API_KEY)
 
 # ===== ЛОГИ В ЧАТ =====
 def send_log_to_admin(action, details=None, status="info"):
@@ -76,41 +71,6 @@ def menu_command(message):
         "💰 ФИНАНСЫ\n"
         "/crypto - курсы криптовалют"
     ))
-
-@bot.message_handler(commands=['ai'])
-def ai_command(message):
-    user_text = message.text.replace('/ai', '').strip()
-    if not user_text:
-        bot.reply_to(message, "🤖 Введите вопрос после /ai\nПример: /ai что такое нейросеть")
-        return
-    
-    log_action("ai", f"user={message.from_user.id} запрос: {user_text[:50]}", "info")
-    status_msg = bot.reply_to(message, "🤔 Думаю...")
-    
-    if not OPENROUTER_API_KEY:
-        log_action("ai_error", "OpenRouter key not set", "error")
-        bot.edit_message_text("❌ OpenRouter API ключ не настроен", chat_id=message.chat.id, message_id=status_msg.message_id)
-        return
-    
-    try:
-        headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
-        payload = {
-            "model": "openrouter/free",
-            "messages": [{"role": "user", "content": user_text}],
-            "max_tokens": 500
-        }
-        r = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=30)
-        
-        if r.status_code == 200:
-            answer = r.json()["choices"][0]["message"]["content"]
-            bot.edit_message_text(answer, chat_id=message.chat.id, message_id=status_msg.message_id)
-            log_action("ai_response", "ответ отправлен", "success")
-        else:
-            log_action("ai_api_error", f"status {r.status_code}", "error")
-            bot.edit_message_text(f"❌ Ошибка API: {r.status_code}", chat_id=message.chat.id, message_id=status_msg.message_id)
-    except Exception as e:
-        log_action("ai_exception", str(e), "error")
-        bot.edit_message_text(f"❌ Ошибка: {e}", chat_id=message.chat.id, message_id=status_msg.message_id)
 
 # ===== ВЕБХУК =====
 @app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
