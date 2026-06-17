@@ -1,15 +1,12 @@
-# render.py — модуль управления Render через API
+# render.py — обновлённый с авто-определением сервиса
 import os
-import re
 import requests
 import telebot
 
 RENDER_API_KEY = os.environ.get("RENDER_API_KEY")
 RENDER_SERVICE_ID = os.environ.get("RENDER_SERVICE_ID")
+RENDER_SERVICE_NAME = os.environ.get("RENDER_SERVICE_NAME", "Bugaga")  # Имя для авто-поиска
 RENDER_API_URL = "https://api.render.com/v1"
-
-# Для парсинга логов через GraphQL (Dashboard API)
-RENDER_DASHBOARD_URL = "https://dashboard.render.com"
 RENDER_GRAPHQL_URL = "https://api.render.com/graphql"
 
 
@@ -41,7 +38,7 @@ def api_call(method, endpoint, payload=None):
         if resp.status_code == 403:
             return None, "403 — нет прав (нужен owner/admin)"
         if resp.status_code == 404:
-            return None, "404 — сервис не найден, проверь RENDER_SERVICE_ID через /render_list"
+            return None, "404 — сервис не найден"
 
         content_type = resp.headers.get("Content-Type", "")
         if "application/json" not in content_type:
@@ -56,8 +53,57 @@ def api_call(method, endpoint, payload=None):
         return None, f"Ошибка запроса: {e}"
 
 
+def find_service_id_by_name(name):
+    """Найти ID сервиса по имени"""
+    data, error = api_call("GET", "/services?limit=50")
+    if error:
+        return None, error
+    
+    services = data if isinstance(data, list) else data.get("services", [])
+    
+    for svc in services:
+        s = svc.get("service", svc)
+        if s.get("name", "").lower() == name.lower():
+            return s.get("id"), None
+    
+    # Если точное совпадение не найдено — ищем частичное
+    for svc in services:
+        s = svc.get("service", svc)
+        if name.lower() in s.get("name", "").lower():
+            return s.get("id"), None
+    
+    return None, f"Сервис с именем '{name}' не найден"
+
+
+def get_service_id():
+    """Получить актуальный service ID"""
+    global RENDER_SERVICE_ID
+    
+    # Если задан и работает — используем
+    if RENDER_SERVICE_ID:
+        data, error = api_call("GET", f"/services/{RENDER_SERVICE_ID}")
+        if not error:
+            return RENDER_SERVICE_ID, None
+    
+    # Пробуем найти по имени
+    if RENDER_SERVICE_NAME:
+        sid, error = find_service_id_by_name(RENDER_SERVICE_NAME)
+        if sid:
+            # Обновляем глобальную переменную для кэширования
+            RENDER_SERVICE_ID = sid
+            return sid, None
+    
+    # Пробуем найти по имени "Bugaga"
+    sid, error = find_service_id_by_name("Bugaga")
+    if sid:
+        RENDER_SERVICE_ID = sid
+        return sid, None
+    
+    return None, "Не удалось определить RENDER_SERVICE_ID. Задай его вручную или проверь /render_list"
+
+
 def graphql_call(query, variables=None):
-    """Вызов Render GraphQL API (используется Dashboard)"""
+    """Вызов Render GraphQL API"""
     headers = {
         "Authorization": f"Bearer {RENDER_API_KEY}",
         "Content-Type": "application/json",
@@ -119,23 +165,21 @@ def get_logs_via_graphql(service_id, limit=50):
 
 
 def get_logs_via_deploys(service_id, limit=20):
-    """Альтернативный способ: получить логи через последние deploys"""
+    """Альтернативный способ: получить логи через deploys"""
     data, error = api_call("GET", f"/services/{service_id}/deploys?limit=5")
     if error:
         return None, error
     
     deploys = data if isinstance(data, list) else data.get("deploys", [])
     if not deploys:
-        return None, "Нет deploys для получения логов"
+        return None, "Нет deploys"
     
-    # Берём последний deploy
     last_deploy = deploys[0].get("deploy", deploys[0]) if isinstance(deploys[0], dict) else deploys[0]
     deploy_id = last_deploy.get("id") if isinstance(last_deploy, dict) else None
     
     if not deploy_id:
         return None, "Не удалось получить ID deploy"
     
-    # Пробуем получить логи deploy
     data, error = api_call("GET", f"/services/{service_id}/deploys/{deploy_id}/logs?limit={limit}")
     if error:
         return None, error
@@ -153,15 +197,11 @@ def format_logs(logs, max_lines=20):
     
     for log in logs[:max_lines]:
         if isinstance(log, dict):
-            timestamp = log.get("timestamp", "")[:19]  # Обрезаем миллисекунды
+            timestamp = log.get("timestamp", "")[:19]
             level = log.get("level", "INFO")
             msg = log.get("message", str(log))
-            source = log.get("source", "")
             
-            # Эмодзи по уровню
             emoji = "🔴" if level in ("ERROR", "FATAL") else "🟡" if level == "WARN" else "🟢"
-            
-            # Обрезаем длинные сообщения
             msg_short = msg[:200] + "..." if len(msg) > 200 else msg
             
             lines.append(f"{emoji} <code>[{timestamp}]</code>\n{msg_short}\n")
@@ -197,17 +237,27 @@ def register_render(bot):
             name = s.get("name", "—")
             stype = s.get("type", "—")
             status = s.get("status", "—")
-            lines.append(f"\n<code>{sid}</code>\n  📛 {name} | {stype} | {status}")
+            # Отмечаем текущий активный сервис
+            active = " ✅" if sid == RENDER_SERVICE_ID else ""
+            lines.append(f"\n<code>{sid}</code>{active}\n  📛 {name} | {stype} | {status}")
 
+        # Добавляем подсказку
+        lines.append(f"\n\n<i>Активный сервис отмечен ✅</i>\n<i>Если неправильный — обнови RENDER_SERVICE_ID</i>")
+        
         bot.reply_to(message, "\n".join(lines), parse_mode="HTML")
 
     @bot.message_handler(commands=["render_status"])
     def render_status_command(message):
-        if not RENDER_API_KEY or not RENDER_SERVICE_ID:
-            bot.reply_to(message, "❌ Настрой RENDER_API_KEY и RENDER_SERVICE_ID\nПолучи ID через /render_list")
+        if not RENDER_API_KEY:
+            bot.reply_to(message, "❌ RENDER_API_KEY не настроен")
             return
 
-        data, error = api_call("GET", f"/services/{RENDER_SERVICE_ID}")
+        sid, error = get_service_id()
+        if error:
+            bot.reply_to(message, f"❌ {error}")
+            return
+
+        data, error = api_call("GET", f"/services/{sid}")
         if error:
             bot.reply_to(message, f"❌ {error}")
             return
@@ -227,13 +277,18 @@ def register_render(bot):
 
     @bot.message_handler(commands=["render_restart"])
     def render_restart_command(message):
-        if not RENDER_API_KEY or not RENDER_SERVICE_ID:
-            bot.reply_to(message, "❌ Настрой RENDER_API_KEY и RENDER_SERVICE_ID")
+        if not RENDER_API_KEY:
+            bot.reply_to(message, "❌ RENDER_API_KEY не настроен")
+            return
+
+        sid, error = get_service_id()
+        if error:
+            bot.reply_to(message, f"❌ {error}")
             return
 
         data, error = api_call(
             "POST",
-            f"/services/{RENDER_SERVICE_ID}/deploys",
+            f"/services/{sid}/deploys",
             {"clearCache": "do_not_clear"}
         )
         if error:
@@ -252,11 +307,16 @@ def register_render(bot):
 
     @bot.message_handler(commands=["render_env"])
     def render_env_command(message):
-        if not RENDER_API_KEY or not RENDER_SERVICE_ID:
-            bot.reply_to(message, "❌ Настрой RENDER_API_KEY и RENDER_SERVICE_ID")
+        if not RENDER_API_KEY:
+            bot.reply_to(message, "❌ RENDER_API_KEY не настроен")
             return
 
-        data, error = api_call("GET", f"/services/{RENDER_SERVICE_ID}/env-vars")
+        sid, error = get_service_id()
+        if error:
+            bot.reply_to(message, f"❌ {error}")
+            return
+
+        data, error = api_call("GET", f"/services/{sid}/env-vars")
         if error:
             bot.reply_to(message, f"❌ {error}")
             return
@@ -278,17 +338,22 @@ def register_render(bot):
 
     @bot.message_handler(commands=["render_logs"])
     def render_logs_command(message):
-        if not RENDER_API_KEY or not RENDER_SERVICE_ID:
-            bot.reply_to(message, "❌ Настрой RENDER_API_KEY и RENDER_SERVICE_ID")
+        if not RENDER_API_KEY:
+            bot.reply_to(message, "❌ RENDER_API_KEY не настроен")
             return
 
-        # Пробуем GraphQL API (Dashboard)
-        logs, error = get_logs_via_graphql(RENDER_SERVICE_ID, limit=20)
+        sid, error = get_service_id()
+        if error:
+            bot.reply_to(message, f"❌ {error}")
+            return
+
+        # Пробуем GraphQL API
+        logs, error = get_logs_via_graphql(sid, limit=20)
         
         # Если GraphQL не работает — пробуем через deploys
         if error or not logs:
             print(f"[Render Logs] GraphQL failed: {error}, trying deploys API...")
-            logs, error = get_logs_via_deploys(RENDER_SERVICE_ID, limit=20)
+            logs, error = get_logs_via_deploys(sid, limit=20)
         
         # Если и deploys не работают — ссылка на Dashboard
         if error or not logs:
@@ -296,7 +361,7 @@ def register_render(bot):
                 message,
                 f"⚠️ Не удалось получить логи через API.\n"
                 f"Причина: <code>{error or 'логи пусты'}</code>\n\n"
-                f"📋 <a href='https://dashboard.render.com/web/{RENDER_SERVICE_ID}/logs'>Открыть логи в Dashboard</a>",
+                f"📋 <a href='https://dashboard.render.com/web/{sid}/logs'>Открыть логи в Dashboard</a>",
                 parse_mode="HTML",
                 disable_web_page_preview=True
             )
@@ -305,7 +370,6 @@ def register_render(bot):
         # Форматируем и отправляем
         formatted = format_logs(logs, max_lines=15)
         
-        # Telegram ограничение ~4096 символов
         if len(formatted) > 4000:
             formatted = formatted[:4000] + "\n\n<i>...логи обрезаны</i>"
         
@@ -314,11 +378,15 @@ def register_render(bot):
     @bot.message_handler(commands=["render_logs_raw"])
     def render_logs_raw_command(message):
         """Показать сырой ответ от API (для отладки)"""
-        if not RENDER_API_KEY or not RENDER_SERVICE_ID:
-            bot.reply_to(message, "❌ Настрой RENDER_API_KEY и RENDER_SERVICE_ID")
+        if not RENDER_API_KEY:
+            bot.reply_to(message, "❌ RENDER_API_KEY не настроен")
             return
         
-        # Пробуем GraphQL
+        sid, error = get_service_id()
+        if error:
+            bot.reply_to(message, f"❌ {error}")
+            return
+        
         query = """
         query {
             service(id: "%s") {
@@ -331,13 +399,14 @@ def register_render(bot):
                 }
             }
         }
-        """ % RENDER_SERVICE_ID
+        """ % sid
         
         data, error = graphql_call(query)
         if error:
             bot.reply_to(message, f"❌ GraphQL error: {error}")
             return
         
+        import json
         raw = json.dumps(data, indent=2, ensure_ascii=False)[:3500]
         bot.reply_to(message, f"<pre>{raw}</pre>", parse_mode="HTML")
 
