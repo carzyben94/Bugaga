@@ -17,7 +17,7 @@ from browser_ai import register_browser_ai
 from crawler_ai import register_crawler_ai
 from render import register_render
 from github import register_github
-from xx import register_x_play  # ← импорт из xx.py
+from xx import register_x_play
 
 logging.basicConfig(level=logging.INFO)
 
@@ -44,7 +44,7 @@ modules = [
     ("crawler_ai", register_crawler_ai, [AGNES_API_KEY]),
     ("render", register_render, []),
     ("github", register_github, []),
-    ("xx", register_x_play, []),  # ← регистрация xx.py
+    ("xx", register_x_play, []),
 ]
 
 for name, register_func, args in modules:
@@ -116,14 +116,13 @@ MENU_TEXT = (
     "  └ /gh_repo — Инфо о репо\n\n"
     
     "🐦 <b>X Agent (Playwright)</b>\n"
-    "  ├ /x_status — Проверить статус системы\n"
-    "  ├ /x_install — Установить Playwright + Chromium\n"
-    "  ├ /x_login — Авторизация в X\n"
+    "  ├ /x_status — Проверить статус\n"
+    "  ├ /x_install — Установить Chromium\n"
+    "  ├ /x_login — Войти (ввод в чате)\n"
+    "  ├ /x_login_env — Быстрый вход (env)\n"
     "  ├ /x_timeline [user] [N] — Лента X\n"
     "  ├ /x_search [запрос] [N] — Поиск X\n"
-    "  ├ /x_trends — Тренды X\n"
-    "  ├ /x_screenshot [url] — Скриншот твита\n"
-    "  └ /x_help — Помощь X"
+    "  └ /x_help — Помощь"
 )
 
 @bot.message_handler(commands=["start", "help"])
