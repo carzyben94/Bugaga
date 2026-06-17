@@ -28,7 +28,6 @@ PLAYWRIGHT_INSTALLED = False
 CHROMIUM_READY = False
 
 # === Хранилище для диалогов авторизации ===
-# {chat_id: {"step": "username|password|email|done", "username": "...", "password": "...", "email": "..."}}
 login_sessions = {}
 
 def check_chromium():
@@ -375,7 +374,6 @@ class XXAgent:
         is_auth = await self._check_auth(page)
         if not is_auth:
             print("[XX] Не авторизован, выполняю вход...")
-            # Используем переданные или из env
             u = username or X_USERNAME_ENV
             p = password or X_PASSWORD_ENV
             e = email or X_EMAIL_ENV
@@ -438,7 +436,6 @@ class XXAgent:
                 await self._load_cookies(context)
                 page = await context.new_page()
                 
-                # Если переданы credentials — используем их, иначе из env/cookies
                 if credentials:
                     success, error = await self._ensure_auth(context, page, 
                         credentials.get("username"), 
@@ -593,11 +590,9 @@ def register_x_play(bot):
         """Запустить диалог авторизации в X"""
         chat_id = message.chat.id
         
-        # Если уже есть сессия — сбрасываем
         if chat_id in login_sessions:
             del login_sessions[chat_id]
         
-        # Проверяем, есть ли env credentials
         has_env = bool(X_USERNAME_ENV and X_PASSWORD_ENV)
         
         msg = (
@@ -653,7 +648,6 @@ def register_x_play(bot):
         chat_id = message.chat.id
         username = message.text.strip()
         
-        # Убираем @ если есть
         if username.startswith("@"):
             username = username[1:]
         
@@ -695,22 +689,19 @@ def register_x_play(bot):
         login_sessions[chat_id]["email"] = email
         login_sessions[chat_id]["step"] = "done"
         
-        # Получаем все данные
         creds = login_sessions[chat_id]
         username = creds["username"]
         password = creds["password"]
         email = creds.get("email")
         
-        # Удаляем сообщение с паролем для безопасности
         try:
-            bot.delete_message(chat_id, message.message_id - 1)  # Сообщение с паролем
-            bot.delete_message(chat_id, message.message_id)       # Сообщение с email/skip
+            bot.delete_message(chat_id, message.message_id - 1)
+            bot.delete_message(chat_id, message.message_id)
         except Exception as e:
             print(f"[XX] Could not delete password message: {e}")
         
         bot.reply_to(message, f"🔐 Авторизация как <code>{username}</code>...", parse_mode="HTML")
         
-        # Удаляем старые cookies
         if os.path.exists(COOKIES_FILE):
             os.remove(COOKIES_FILE)
             print("[XX] Старые cookies удалены")
@@ -731,7 +722,6 @@ def register_x_play(bot):
         
         success, error = run_async_task(do_login_chat())
         
-        # Очищаем сессию
         del login_sessions[chat_id]
         
         if error:
@@ -802,7 +792,7 @@ def register_x_play(bot):
         lines = [f"🔍 <b>{query}</b>\n"]
         for i, t in enumerate(tweets, 1):
             text = t.get("text", "")[:160]
-            if len(t.get("text", "") > 160:
+            if len(t.get("text", "")) > 160:
                 text += "..."
             lines.append(
                 f"{i}. <b>{t.get('author', '')}</b>\n"
@@ -822,7 +812,6 @@ def register_x_play(bot):
     @bot.message_handler(commands=["x_status"])
     def x_status_command(message):
         """Проверить статус Playwright и Chromium"""
-        # Проверяем, есть ли активная сессия
         chat_id = message.chat.id
         has_session = chat_id in login_sessions
         
