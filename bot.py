@@ -83,11 +83,10 @@ def start_command(message):
         log_action("start", f"user={message.from_user.id}", "info")
         bot.reply_to(message,
             "👋 Добро пожаловать в BUGAGA BOT!\n\n"
-            "📋 МЕНЮ БОТА\n\n"
-            "🤖 ИСКУССТВЕННЫЙ ИНТЕЛЛЕКТ\n"
-            "/ai [вопрос] - спросить ИИ\n"
-            "/browser_ai [URL] [вопрос] - ИИ прочитает сайт\n"
-            "/crawler_ai [URL] [вопрос] - ИИ исследует весь сайт\n\n"
+            "🤖 ИСКУССТВЕННЫЙ ИНТЕЛЛЕКТ\n\n"
+            "/ai [вопрос] = ответ\n"
+            "/browser_ai ссылка и вопрос = ответ\n"
+            "/crawler_ai ссылка = новости\n\n"
             "📰 НОВОСТИ\n"
             "/xposts - посты из X (AteoBreaking)\n\n"
             "💰 ФИНАНСЫ\n"
@@ -102,13 +101,12 @@ def help_command(message):
         log_action("help", f"user={message.from_user.id}", "info")
         bot.reply_to(message,
             "🆘 ПОМОЩЬ BUGAGA BOT\n\n"
-            "ДОСТУПНЫЕ КОМАНДЫ:\n\n"
             "🤖 ИСКУССТВЕННЫЙ ИНТЕЛЛЕКТ\n"
             "/ai [вопрос] - задай вопрос ИИ\n"
-            "/browser_ai [URL] [вопрос] - ИИ прочитает одну страницу\n"
-            "/crawler_ai [URL] [вопрос] - ИИ исследует весь сайт\n\n"
+            "/browser_ai [URL] [вопрос] - ИИ прочитает сайт\n"
+            "/crawler_ai [URL] - собрать заголовки новостей\n\n"
             "📰 НОВОСТИ\n"
-            "/xposts - последние посты из X\n\n"
+            "/xposts - посты из X\n\n"
             "💰 ФИНАНСЫ\n"
             "/crypto - курсы BTC и ETH\n\n"
             "📌 ОСТАЛЬНОЕ\n"
@@ -162,5 +160,5 @@ if __name__ == '__main__':
     except Exception as e:
         print(f"get webhook info error: {e}")
     
-    log_action("bot_start", "Бот запущен с Agnes AI, браузер-ИИ и краулером", "success")
+    log_action("bot_start", "Бот запущен", "success")
     app.run(host='0.0.0.0', port=port)
