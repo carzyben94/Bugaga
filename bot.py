@@ -8,7 +8,6 @@ from flask import Flask, request
 import telebot
 from datetime import datetime
 
-# Импорт модулей
 from xposts import register_xposts
 
 logging.basicConfig(level=logging.INFO)
@@ -39,7 +38,6 @@ try:
 except Exception as e:
     print(f"Status not loaded: {e}")
 
-# Регистрируем /xposts
 register_xposts(bot)
 
 # ===== ЛОГИ В ЧАТ =====
@@ -73,7 +71,6 @@ def crypto_command(message):
         try:
             r1 = requests.get("https://api.binance.com/api/v3/ticker/price", 
                               params={"symbol": "BTCUSDT"}, timeout=10)
-            
             r2 = requests.get("https://api.binance.com/api/v3/ticker/price", 
                               params={"symbol": "ETHUSDT"}, timeout=10)
             
@@ -88,38 +85,24 @@ def crypto_command(message):
             
             r3 = requests.get("https://api.binance.com/api/v3/ticker/price", 
                               params={"symbol": "USDRUB"}, timeout=10)
-            
-            if r3.status_code == 200:
-                usd_rub = float(r3.json().get('price', 95))
-            else:
-                usd_rub = 95
+            usd_rub = float(r3.json().get('price', 95)) if r3.status_code == 200 else 95
             
             btc_rub = round(btc_usd * usd_rub, 2)
             eth_rub = round(eth_usd * usd_rub, 2)
             
-            btc_usd_str = f"${btc_usd:,.2f}"
-            btc_eur_str = f"€{btc_usd * 0.92:,.2f}"
-            btc_rub_str = f"{btc_rub:,.2f} ₽"
-            
-            eth_usd_str = f"${eth_usd:,.2f}"
-            eth_eur_str = f"€{eth_usd * 0.92:,.2f}"
-            eth_rub_str = f"{eth_rub:,.2f} ₽"
-            
             result = (
                 "🟡 BITCOIN (BTC):\n"
-                f"  • USD: {btc_usd_str}\n"
-                f"  • EUR: {btc_eur_str}\n"
-                f"  • RUB: {btc_rub_str}\n\n"
+                f"  • USD: ${btc_usd:,.2f}\n"
+                f"  • EUR: €{btc_usd * 0.92:,.2f}\n"
+                f"  • RUB: {btc_rub:,.2f} ₽\n\n"
                 "🔷 ETHEREUM (ETH):\n"
-                f"  • USD: {eth_usd_str}\n"
-                f"  • EUR: {eth_eur_str}\n"
-                f"  • RUB: {eth_rub_str}"
+                f"  • USD: ${eth_usd:,.2f}\n"
+                f"  • EUR: €{eth_usd * 0.92:,.2f}\n"
+                f"  • RUB: {eth_rub:,.2f} ₽"
             )
             
-            bot.edit_message_text(result, 
-                                  chat_id=message.chat.id, 
-                                  message_id=status_msg.message_id)
-            log_action("crypto", "курсы получены (Binance)", "success")
+            bot.edit_message_text(result, chat_id=message.chat.id, message_id=status_msg.message_id)
+            log_action("crypto", "курсы получены", "success")
             
         except Exception as e:
             log_action("crypto_error", str(e), "error")
@@ -127,24 +110,20 @@ def crypto_command(message):
                                   chat_id=message.chat.id, 
                                   message_id=status_msg.message_id)
     
-    thread = threading.Thread(target=do_crypto, daemon=True)
-    thread.start()
+    threading.Thread(target=do_crypto, daemon=True).start()
 
 # ===== КОМАНДЫ =====
 @bot.message_handler(commands=['start', 'help'])
 def menu_command(message):
     log_action("menu", f"user={message.from_user.id}", "info")
-    
-    menu_text = (
+    bot.reply_to(message, (
         "📋 МЕНЮ БОТА\n\n"
         "🤖 ИСКУССТВЕННЫЙ ИНТЕЛЛЕКТ\n"
         "/ai [вопрос] - спросить ИИ\n"
         "/xposts - посты из X\n\n"
         "💰 ФИНАНСЫ\n"
         "/crypto - курсы криптовалют"
-    )
-    
-    bot.reply_to(message, menu_text)
+    ))
 
 @bot.message_handler(commands=['ai'])
 def ai_command(message):
