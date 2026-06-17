@@ -35,9 +35,7 @@ def register_crawler_ai(bot, agnes_api_key):
                     href = link['href']
                     full_url = urljoin(current_url, href)
                     
-                    # Только ссылки на том же домене
                     if urlparse(full_url).netloc == domain:
-                        # Убираем якоря и дубликаты
                         full_url = full_url.split('#')[0]
                         if full_url not in visited and full_url not in to_visit:
                             to_visit.append(full_url)
@@ -59,7 +57,6 @@ def register_crawler_ai(bot, agnes_api_key):
         except:
             pass
             
-        # Fallback на BeautifulSoup
         try:
             headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
             response = requests.get(url, headers=headers, timeout=10)
@@ -78,21 +75,17 @@ def register_crawler_ai(bot, agnes_api_key):
     def crawler_ai_command(message):
         args = message.text.replace('/crawler_ai', '').strip()
         if not args:
-            bot.reply_to(message, "🌐 Использование: /crawler_ai [URL] [вопрос]")
+            bot.reply_to(message, "🌐 Использование: /crawler_ai [URL]\n\n"
+                                 "Пример: /crawler_ai https://lenta.ru\n"
+                                 "Бот сам соберет новости и сделает дайджест")
             return
 
-        parts = args.split(' ', 1)
-        if len(parts) < 2:
-            bot.reply_to(message, "❌ Укажите URL и вопрос\nПример: /crawler_ai https://news.ycombinator.com Какие новости?")
-            return
-
-        url = parts[0]
-        question = parts[1]
+        url = args
 
         if not url.startswith(('http://', 'https://')):
             url = 'https://' + url
 
-        status_msg = bot.reply_to(message, f"🕷️ Исследую сайт {url}...")
+        status_msg = bot.reply_to(message, f"🕷️ Исследую сайт {url} и собираю новости...")
 
         if not agnes_api_key:
             bot.edit_message_text("❌ Agnes API ключ не настроен", chat_id=message.chat.id, message_id=status_msg.message_id)
@@ -100,7 +93,6 @@ def register_crawler_ai(bot, agnes_api_key):
 
         def do_crawler_ai():
             try:
-                # 1. Собираем все страницы
                 bot.edit_message_text("🔍 Собираю все страницы сайта...", chat_id=message.chat.id, message_id=status_msg.message_id)
                 pages = get_all_links(url, max_pages=15)
                 
@@ -110,7 +102,6 @@ def register_crawler_ai(bot, agnes_api_key):
 
                 bot.edit_message_text(f"📄 Найдено {len(pages)} страниц. Читаю содержимое...", chat_id=message.chat.id, message_id=status_msg.message_id)
 
-                # 2. Собираем текст со всех страниц
                 all_text = ""
                 for i, page in enumerate(pages[:15]):
                     text = extract_text_from_url(page)
@@ -123,19 +114,18 @@ def register_crawler_ai(bot, agnes_api_key):
                     bot.edit_message_text("❌ Не удалось извлечь содержимое сайта.", chat_id=message.chat.id, message_id=status_msg.message_id)
                     return
 
-                # 3. Ограничиваем текст
                 if len(all_text) > 15000:
                     all_text = all_text[:15000] + "\n...(текст обрезан)"
 
-                bot.edit_message_text(f"📖 Всего {len(all_text)} символов. Анализирую...", chat_id=message.chat.id, message_id=status_msg.message_id)
+                bot.edit_message_text(f"📖 Всего {len(all_text)} символов. Составляю дайджест новостей...", chat_id=message.chat.id, message_id=status_msg.message_id)
 
-                # 4. Запрос к ИИ
                 prompt = (
-                    "Ты — ИИ-ассистент. Я дам тебе содержимое нескольких страниц сайта. "
-                    "Проанализируй всё и ответь на вопрос пользователя.\n\n"
+                    "Ты — ИИ-ассистент. Я дам тебе содержимое нескольких страниц новостного сайта. "
+                    "Составь краткий дайджест главных новостей.\n\n"
                     f"Содержимое сайта {url}:\n\n{all_text}\n\n"
-                    f"Вопрос: {question}\n\n"
-                    "Ответь кратко, только на основе содержимого сайта."
+                    "Составь список главных новостей (5-7 пунктов). "
+                    "Каждый пункт: кратко о чем новость (1-2 предложения). "
+                    "В конце добавь общий вывод. Ответ на русском языке."
                 )
 
                 headers_ai = {
@@ -160,12 +150,11 @@ def register_crawler_ai(bot, agnes_api_key):
                 if r.status_code == 200:
                     answer = r.json()["choices"][0]["message"]["content"]
                     bot.edit_message_text(
-                        f"🌐 *Результат исследования:*\n\n{answer}\n\n"
-                        f"📄 Изучено страниц: {len(pages)}\n🔗 {url}",
+                        f"📰 НОВОСТИ С {url}\n\n{answer}\n\n"
+                        f"📄 Изучено страниц: {len(pages)}\n"
+                        f"🔗 Источник: {url}",
                         chat_id=message.chat.id,
-                        message_id=status_msg.message_id,
-                        parse_mode='Markdown',
-                        disable_web_page_preview=True
+                        message_id=status_msg.message_id
                     )
                 else:
                     bot.edit_message_text(f"❌ Ошибка ИИ: {r.status_code}\n{str(r.text)[:200]}", chat_id=message.chat.id, message_id=status_msg.message_id)
