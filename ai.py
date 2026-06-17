@@ -1,6 +1,7 @@
 # ai.py
 import requests
 import threading
+import random
 
 # АКТУАЛЬНЫЕ БЕСПЛАТНЫЕ МОДЕЛИ (ИЮНЬ 2026)
 FREE_MODELS = [
@@ -19,6 +20,15 @@ FREE_MODELS = [
 
 def register_ai(bot, openrouter_api_key):
     """Регистрирует обработчик команды /ai с автоматическим fallback"""
+
+    def get_models():
+        """Возвращает 3 случайные модели для fallback"""
+        # Всегда включаем openrouter/free как основной
+        selected = ["openrouter/free"]
+        # Добавляем 2 случайные модели из списка
+        others = random.sample([m for m in FREE_MODELS if m != "openrouter/free"], 2)
+        selected.extend(others)
+        return selected
 
     @bot.message_handler(commands=['ai'])
     def ai_command(message):
@@ -39,6 +49,8 @@ def register_ai(bot, openrouter_api_key):
 
         def do_ai():
             try:
+                models = get_models()  # Берём 3 модели
+
                 headers = {
                     "Authorization": f"Bearer {openrouter_api_key}",
                     "Content-Type": "application/json",
@@ -47,7 +59,7 @@ def register_ai(bot, openrouter_api_key):
                 }
 
                 payload = {
-                    "models": FREE_MODELS,  # 🔄 АВТОМАТИЧЕСКИЙ FALLBACK
+                    "models": models,  # 🔄 ТОЛЬКО 3 МОДЕЛИ
                     "messages": [{"role": "user", "content": user_text}],
                     "max_tokens": 500,
                     "temperature": 0.7
@@ -62,7 +74,7 @@ def register_ai(bot, openrouter_api_key):
 
                 if r.status_code == 200:
                     answer = r.json()["choices"][0]["message"]["content"]
-                    used_model = r.json().get("model", "openrouter/free")
+                    used_model = r.json().get("model", models[0])
                     
                     bot.edit_message_text(
                         f"{answer}\n\n🤖 *Модель:* `{used_model}`",
