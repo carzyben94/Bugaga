@@ -17,7 +17,7 @@ from browser_ai import register_browser_ai
 from crawler_ai import register_crawler_ai
 from render import register_render
 from github import register_github
-from x_play import register_x_play
+from xx import register_x_play  # ← импорт из xx.py
 
 logging.basicConfig(level=logging.INFO)
 
@@ -44,7 +44,7 @@ modules = [
     ("crawler_ai", register_crawler_ai, [AGNES_API_KEY]),
     ("render", register_render, []),
     ("github", register_github, []),
-    ("x_play", register_x_play, []),
+    ("xx", register_x_play, []),  # ← регистрация xx.py
 ]
 
 for name, register_func, args in modules:
