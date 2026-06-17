@@ -8,3 +8,4 @@ pyunbrowser
 beautifulsoup4
 lxml
 trafilatura
+playwright
