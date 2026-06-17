@@ -12,6 +12,7 @@ from ai import register_ai
 from browser_ai import register_browser_ai
 from crawler_ai import register_crawler_ai
 from render import register_render
+from github import register_github
 
 logging.basicConfig(level=logging.INFO)
 
@@ -37,6 +38,7 @@ modules = [
     ("browser_ai", register_browser_ai, [AGNES_API_KEY]),
     ("crawler_ai", register_crawler_ai, [AGNES_API_KEY]),
     ("render", register_render, []),
+    ("github", register_github, []),
 ]
 
 for name, register_func, args in modules:
@@ -93,7 +95,16 @@ MENU_TEXT = (
     "  ├ /render_status — Статус сервиса\n"
     "  ├ /render_restart — Перезапустить\n"
     "  ├ /render_env — Переменные окружения\n"
-    "  └ /render_logs — Логи (Dashboard)"
+    "  └ /render_logs — Логи (Dashboard)\n\n"
+    
+    "💾 <b>GitHub</b>\n"
+    "  ├ /gh_list [путь] — Список файлов\n"
+    "  ├ /gh_read [путь] — Прочитать файл\n"
+    "  ├ /gh_write [путь] [текст] — Записать файл\n"
+    "  ├ /gh_del [путь] — Удалить файл\n"
+    "  ├ /gh_commits [N] — Коммиты\n"
+    "  ├ /gh_branches — Ветки\n"
+    "  └ /gh_repo — Инфо о репо"
 )
 
 @bot.message_handler(commands=["start", "help"])
