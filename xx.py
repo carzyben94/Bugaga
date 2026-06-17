@@ -9,10 +9,6 @@ import threading
 import telebot
 
 # === НАСТРОЙКА ПУТЕЙ ДЛЯ RENDER ===
-# Для Render Disk: добавь в Environment Variables:
-# PLAYWRIGHT_BROWSERS_PATH=/data/playwright-browsers
-# И подключи Render Disk, смонтированный в /data
-
 PLAYWRIGHT_BROWSERS_PATH = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "")
 if PLAYWRIGHT_BROWSERS_PATH:
     os.environ["PLAYWRIGHT_BROWSERS_PATH"] = PLAYWRIGHT_BROWSERS_PATH
@@ -32,7 +28,7 @@ CHROMIUM_READY = False
 
 
 def check_chromium():
-    """Проверить, запускается ли Chromium реально (не just import)"""
+    """Проверить, запускается ли Chromium реально"""
     global CHROMIUM_READY
     try:
         from playwright.async_api import async_playwright
@@ -145,6 +141,17 @@ class XXAgent:
         except:
             pass
 
+    async def _screenshot(self, page, name):
+        """Сделать скриншот для отладки"""
+        try:
+            path = f"{SCREENSHOT_DIR}/{name}_{int(time.time())}.png"
+            await page.screenshot(path=path, full_page=True)
+            print(f"[XX] Screenshot saved: {path}")
+            return path
+        except Exception as e:
+            print(f"[XX] Screenshot failed: {e}")
+            return None
+
     async def _check_auth(self, page):
         try:
             await page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=15000)
@@ -157,33 +164,220 @@ class XXAgent:
             return False
 
     async def _login(self, page):
+        """
+        Авторизация на X с fallback-селекторами.
+        X часто меняет DOM, поэтому пробуем несколько вариантов.
+        """
         if not X_USERNAME or not X_PASSWORD:
             return False, "X_USERNAME или X_PASSWORD не настроены"
+        
         try:
             print(f"[XX] Авторизация как {X_USERNAME}...")
+            
+            # 1. Открываем страницу логина
             await page.goto("https://x.com/i/flow/login", wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_selector('input[autocomplete="username"]', timeout=10000)
-            await page.fill('input[autocomplete="username"]', X_USERNAME)
-            await page.click('button:has-text("Next")')
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)  # Даём время на загрузку JS
+            
+            # Скриншот для отладки
+            await self._screenshot(page, "login_start")
+            
+            # 2. Ввод username — пробуем несколько селекторов
+            username_selectors = [
+                'input[autocomplete="username"]',
+                'input[name="text"]',
+                'input[type="text"]',
+                'input[autocapitalize="none"]',
+                'input[data-testid="ocfEnterTextTextInput"]',
+                'input[placeholder*="phone" i]',
+                'input[placeholder*="email" i]',
+                'input[placeholder*="username" i]',
+            ]
+            
+            username_input = None
+            for selector in username_selectors:
+                try:
+                    username_input = await page.wait_for_selector(selector, timeout=5000)
+                    if username_input:
+                        print(f"[XX] Found username input: {selector}")
+                        break
+                except:
+                    continue
+            
+            if not username_input:
+                await self._screenshot(page, "login_no_username")
+                return False, "Не найдено поле для ввода логина. X мог изменить страницу."
+            
+            # Кликаем и вводим username
+            await username_input.click()
+            await username_input.fill(X_USERNAME)
+            await asyncio.sleep(1)
+            
+            # 3. Нажимаем Next
+            next_selectors = [
+                'button:has-text("Next")',
+                'button:has-text("Далее")',
+                'button[role="button"]:nth-child(2)',
+                'button[type="button"]:nth-child(2)',
+                'div[role="button"]:has-text("Next")',
+                'div[role="button"]:has-text("Далее")',
+            ]
+            
+            next_clicked = False
+            for selector in next_selectors:
+                try:
+                    next_btn = await page.query_selector(selector)
+                    if next_btn:
+                        await next_btn.click()
+                        next_clicked = True
+                        print(f"[XX] Clicked Next: {selector}")
+                        break
+                except:
+                    continue
+            
+            if not next_clicked:
+                # Пробуем нажать Enter
+                await username_input.press("Enter")
+                print("[XX] Pressed Enter instead of Next")
+            
+            await asyncio.sleep(3)
+            await self._screenshot(page, "login_after_username")
+            
+            # 4. Проверка на email/телефон (дополнительная проверка)
             try:
-                email_input = await page.wait_for_selector('input[data-testid="ocfEnterTextTextInput"]', timeout=5000)
-                if email_input and X_EMAIL:
-                    await email_input.fill(X_EMAIL)
-                    await page.click('button:has-text("Next")')
-                    await asyncio.sleep(1)
+                # Проверяем, не спрашивает ли дополнительный email/телефон
+                email_selectors = [
+                    'input[data-testid="ocfEnterTextTextInput"]',
+                    'input[name="text"]',
+                    'input[type="text"]',
+                    'input[autocomplete="on"]',
+                ]
+                
+                for selector in email_selectors:
+                    try:
+                        email_input = await page.wait_for_selector(selector, timeout=5000)
+                        if email_input and X_EMAIL:
+                            # Проверяем, что это действительно поле для email (плейсхолдер или контекст)
+                            placeholder = await email_input.get_attribute("placeholder") or ""
+                            label = await page.evaluate('el => el.labels?.[0]?.textContent || el.getAttribute("aria-label") || ""', email_input)
+                            
+                            if any(kw in (placeholder + label).lower() for kw in ["phone", "email", "телефон", "почта"]):
+                                await email_input.fill(X_EMAIL)
+                                await asyncio.sleep(1)
+                                
+                                # Ищем кнопку Next после email
+                                for next_sel in next_selectors:
+                                    try:
+                                        next_btn = await page.query_selector(next_sel)
+                                        if next_btn:
+                                            await next_btn.click()
+                                            break
+                                    except:
+                                        continue
+                                
+                                await asyncio.sleep(3)
+                                await self._screenshot(page, "login_after_email")
+                                break
+                    except:
+                        continue
+                        
+            except Exception as e:
+                print(f"[XX] Email step skipped or failed: {e}")
+            
+            # 5. Ввод пароля
+            password_selectors = [
+                'input[name="password"]',
+                'input[type="password"]',
+                'input[autocomplete="current-password"]',
+                'input[data-testid="LoginForm_Password_Input"]',
+            ]
+            
+            password_input = None
+            for selector in password_selectors:
+                try:
+                    password_input = await page.wait_for_selector(selector, timeout=8000)
+                    if password_input:
+                        print(f"[XX] Found password input: {selector}")
+                        break
+                except:
+                    continue
+            
+            if not password_input:
+                await self._screenshot(page, "login_no_password")
+                return False, "Не найдено поле для ввода пароля. Возможно, требуется email/телефон (установи X_EMAIL)."
+            
+            await password_input.click()
+            await password_input.fill(X_PASSWORD)
+            await asyncio.sleep(1)
+            
+            # 6. Нажимаем Log in
+            login_selectors = [
+                'button[data-testid="LoginForm_Login_Button"]',
+                'button:has-text("Log in")',
+                'button:has-text("Войти")',
+                'button:has-text("Sign in")',
+                'div[role="button"]:has-text("Log in")',
+                'div[role="button"]:has-text("Войти")',
+            ]
+            
+            login_clicked = False
+            for selector in login_selectors:
+                try:
+                    login_btn = await page.query_selector(selector)
+                    if login_btn:
+                        await login_btn.click()
+                        login_clicked = True
+                        print(f"[XX] Clicked Login: {selector}")
+                        break
+                except:
+                    continue
+            
+            if not login_clicked:
+                await password_input.press("Enter")
+                print("[XX] Pressed Enter instead of Login")
+            
+            # 7. Ждём загрузки главной
+            await asyncio.sleep(4)
+            await self._screenshot(page, "login_after_submit")
+            
+            # Проверяем, что вошли
+            try:
+                await page.wait_for_selector('[data-testid="primaryColumn"]', timeout=15000)
             except:
-                pass
-            await page.wait_for_selector('input[name="password"]', timeout=10000)
-            await page.fill('input[name="password"]', X_PASSWORD)
-            await page.click('button[data-testid="LoginForm_Login_Button"]')
-            await page.wait_for_selector('[data-testid="primaryColumn"]', timeout=15000)
+                # Проверяем, нет ли ошибки
+                error_selectors = [
+                    'span:has-text("Wrong password")',
+                    'span:has-text("Неверный пароль")',
+                    'span:has-text("Incorrect")',
+                    '[data-testid="toast"]',
+                    'div[role="alert"]',
+                ]
+                
+                for selector in error_selectors:
+                    try:
+                        error_elem = await page.query_selector(selector)
+                        if error_elem:
+                            error_text = await error_elem.inner_text()
+                            return False, f"Ошибка входа: {error_text}"
+                    except:
+                        continue
+                
+                await self._screenshot(page, "login_failed")
+                return False, "Авторизация не удалась. Проверь логин/пароль или установи X_EMAIL."
+            
+            # Финальная проверка — ищем кнопку Sign in (значит не вошли)
             signin = await page.query_selector('a[href="/i/flow/login"]')
             if signin:
-                return False, "Авторизация не удалась. Проверь логин/пароль."
+                await self._screenshot(page, "login_still_signin")
+                return False, "Авторизация не удалась. Возможно, требуется верификация."
+            
             print("[XX] Авторизация успешна!")
             return True, None
+            
         except Exception as e:
+            try:
+                await self._screenshot(page, "login_exception")
+            except:
+                pass
             return False, f"Ошибка авторизации: {e}"
 
     async def _ensure_auth(self, context, page):
@@ -510,7 +704,8 @@ def register_x_play(bot):
             f"Chromium бинарник: {'✅' if CHROMIUM_READY else '❌'}\n"
             f"Browsers path: <code>{PLAYWRIGHT_BROWSERS_PATH or 'default (эфемерный)'}</code>\n"
             f"X_USERNAME: {'✅' if X_USERNAME else '❌'}\n"
-            f"X_PASSWORD: {'✅' if X_PASSWORD else '❌'}\n\n"
+            f"X_PASSWORD: {'✅' if X_PASSWORD else '❌'}\n"
+            f"X_EMAIL: {'✅' if X_EMAIL else '❌ (не обязательно)'}\n\n"
         )
         if not CHROMIUM_READY:
             status += "⚠️ Chromium не установлен. Используй /x_install\n"
@@ -532,8 +727,10 @@ def register_x_play(bot):
             "📰 <b>Контент</b>\n"
             "  /x_timeline [user] [N] — Лента пользователя\n"
             "  /x_search [запрос] [N] — Поиск твитов\n\n"
-            "💡 <b>На Render:</b> Добавь <code>PLAYWRIGHT_BROWSERS_PATH=/data/playwright-browsers</code>\n"
-            "и подключи Render Disk к <code>/data</code> для сохранения между рестартами."
+            "💡 <b>Советы:</b>\n"
+            "• Если авторизация не работает — проверь, что X_EMAIL установлен (для 2FA/верификации)\n"
+            "• На Render добавь: <code>PLAYWRIGHT_BROWSERS_PATH=/data/playwright-browsers</code>\n"
+            "• Скриншоты сохраняются в папку <code>screenshots/</code> для отладки"
         )
         bot.reply_to(message, msg, parse_mode="HTML")
 
