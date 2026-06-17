@@ -3,20 +3,14 @@ import os
 import time
 import logging
 import json
-import threading
 from flask import Flask, request
 import telebot
-from datetime import datetime
 
 from xposts import register_xposts
 from crypto import register_crypto
 from ai import register_ai
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-with open("start_time.txt", "w") as f:
-    f.write(str(time.time()))
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -32,12 +26,10 @@ if not TELEGRAM_TOKEN:
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
-# ===== РЕГИСТРАЦИЯ МОДУЛЕЙ =====
 register_xposts(bot)
 register_crypto(bot)
 register_ai(bot, OPENROUTER_API_KEY)
 
-# ===== ЛОГИ В ЧАТ =====
 def send_log_to_admin(action, details=None, status="info"):
     if not ADMIN_CHAT_ID:
         return
@@ -59,7 +51,6 @@ def log_action(action, details=None, status="info", send=True):
     if send:
         send_log_to_admin(action, details, status)
 
-# ===== КОМАНДЫ =====
 @bot.message_handler(commands=['start', 'help'])
 def menu_command(message):
     log_action("menu", f"user={message.from_user.id}", "info")
@@ -72,7 +63,6 @@ def menu_command(message):
         "/crypto - курсы криптовалют"
     ))
 
-# ===== ВЕБХУК =====
 @app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
 def webhook():
     try:
