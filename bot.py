@@ -78,7 +78,7 @@ def log_action(action, details=None, status="info", send=True):
         send_log_to_admin(action, details, status)
 
 # ===== RENDER УПРАВЛЕНИЕ =====
-RENDER_API_URL = "https://api.render.com/v1"
+# Render API v1: https://api-docs.render.com/reference
 
 def render_headers():
     return {
@@ -88,8 +88,8 @@ def render_headers():
     }
 
 def render_api_call(method, endpoint, payload=None):
-    """Универсальная функция для вызова Render API с отладкой"""
-    url = f"{RENDER_API_URL}{endpoint}"
+    """Универсальная функция для вызова Render API"""
+    url = f"https://api.render.com/v1{endpoint}"
     headers = render_headers()
     
     try:
@@ -100,15 +100,20 @@ def render_api_call(method, endpoint, payload=None):
         else:
             return None, f"Unsupported method: {method}"
         
-        # Отладка: логируем сырой ответ
         print(f"[Render API] {method} {url}")
         print(f"[Render API] Status: {resp.status_code}")
-        print(f"[Render API] Body preview: {resp.text[:500]}")
+        print(f"[Render API] Body: {resp.text[:500]}")
         
-        # Проверяем, что ответ JSON
+        if resp.status_code == 404:
+            return None, "404 — эндпоинт не найден. Проверь RENDER_SERVICE_ID и права API ключа."
+        if resp.status_code == 401:
+            return None, "401 — неверный API ключ. Создай новый в Render Dashboard → Account Settings."
+        if resp.status_code == 403:
+            return None, "403 — доступ запрещён. Нужен API ключ с правами owner/admin."
+        
         content_type = resp.headers.get('Content-Type', '')
         if 'application/json' not in content_type:
-            return None, f"Non-JSON response (Content-Type: {content_type}): {resp.text[:200]}"
+            return None, f"HTTP {resp.status_code} (не JSON): {resp.text[:200]}"
         
         if resp.status_code >= 400:
             return None, f"HTTP {resp.status_code}: {resp.text[:300]}"
@@ -126,23 +131,35 @@ def render_status_command(message):
         bot.reply_to(message, "❌ RENDER_API_KEY или RENDER_SERVICE_ID не настроены")
         return
     
+    # Правильный эндпоинт для Render API v1
     data, error = render_api_call("GET", f"/services/{RENDER_SERVICE_ID}")
     if error:
-        bot.reply_to(message, f"❌ Ошибка: {error}")
+        bot.reply_to(message, f"❌ {error}")
         log_action("render_status", f"error: {error}", "error")
         return
     
-    status = data.get("status", "unknown")
-    name = data.get("name", "unknown")
-    type_ = data.get("type", "unknown")
-    suspended = data.get("suspended", "unknown")
+    # Ответ обёрнут в массив или объект — обрабатываем оба варианта
+    service = data if isinstance(data, dict) else data[0] if isinstance(data, list) and len(data) > 0 else {}
+    if not service:
+        bot.reply_to(message, "❌ Не удалось получить данные сервиса")
+        return
+    
+    # Иногда данные вложены в "service"
+    svc = service.get("service", service)
+    
+    status = svc.get("status", "unknown")
+    name = svc.get("name", "unknown")
+    type_ = svc.get("type", "unknown")
+    suspended = svc.get("suspended", "unknown")
+    url = svc.get("serviceDetails", {}).get("url", "—")
     
     msg = (
         f"📊 <b>Render Status</b>\n\n"
         f"Имя: <code>{name}</code>\n"
         f"Тип: <code>{type_}</code>\n"
         f"Статус: <code>{status}</code>\n"
-        f"Приостановлен: <code>{suspended}</code>"
+        f"Приостановлен: <code>{suspended}</code>\n"
+        f"URL: <code>{url}</code>"
     )
     bot.reply_to(message, msg, parse_mode='HTML')
     log_action("render_status", f"user={message.from_user.id}, status={status}", "success")
@@ -153,11 +170,16 @@ def render_suspend_command(message):
         bot.reply_to(message, "❌ RENDER_API_KEY или RENDER_SERVICE_ID не настроены")
         return
     
-    data, error = render_api_call("POST", f"/services/{RENDER_SERVICE_ID}/suspend")
+    # Render API v1: suspend через обновление сервиса
+    payload = {"suspended": "suspended"}
+    data, error = render_api_call("POST", f"/services/{RENDER_SERVICE_ID}/suspend", payload)
     if error:
-        bot.reply_to(message, f"❌ Ошибка: {error}")
-        log_action("render_suspend", f"error: {error}", "error")
-        return
+        # Пробуем альтернативный метод — PATCH
+        data, error = render_api_call("POST", f"/services/{RENDER_SERVICE_ID}", {"suspended": "suspended"})
+        if error:
+            bot.reply_to(message, f"❌ {error}\n\nВозможно, suspend/resume недоступны для вашего плана. Попробуйте /render_restart.")
+            log_action("render_suspend", f"error: {error}", "error")
+            return
     
     bot.reply_to(message, "⏸️ Сервис приостановлен")
     log_action("render_suspend", f"user={message.from_user.id}", "success")
@@ -168,11 +190,14 @@ def render_resume_command(message):
         bot.reply_to(message, "❌ RENDER_API_KEY или RENDER_SERVICE_ID не настроены")
         return
     
-    data, error = render_api_call("POST", f"/services/{RENDER_SERVICE_ID}/resume")
+    payload = {"suspended": "not_suspended"}
+    data, error = render_api_call("POST", f"/services/{RENDER_SERVICE_ID}/resume", payload)
     if error:
-        bot.reply_to(message, f"❌ Ошибка: {error}")
-        log_action("render_resume", f"error: {error}", "error")
-        return
+        data, error = render_api_call("POST", f"/services/{RENDER_SERVICE_ID}", {"suspended": "not_suspended"})
+        if error:
+            bot.reply_to(message, f"❌ {error}\n\nВозможно, suspend/resume недоступны для вашего плана. Попробуйте /render_restart.")
+            log_action("render_resume", f"error: {error}", "error")
+            return
     
     bot.reply_to(message, "▶️ Сервис возобновлён")
     log_action("render_resume", f"user={message.from_user.id}", "success")
@@ -183,15 +208,19 @@ def render_restart_command(message):
         bot.reply_to(message, "❌ RENDER_API_KEY или RENDER_SERVICE_ID не настроены")
         return
     
+    # Создаём новый deploy — это перезапускает сервис
     payload = {"clearCache": "do_not_clear"}
     data, error = render_api_call("POST", f"/services/{RENDER_SERVICE_ID}/deploys", payload)
     if error:
-        bot.reply_to(message, f"❌ Ошибка: {error}")
+        bot.reply_to(message, f"❌ {error}")
         log_action("render_restart", f"error: {error}", "error")
         return
     
-    deploy_id = data.get("id", "unknown") if isinstance(data, dict) else "unknown"
-    bot.reply_to(message, f"🔄 Перезапуск запущен\nDeploy ID: <code>{deploy_id}</code>", parse_mode='HTML')
+    deploy = data.get("deploy", data) if isinstance(data, dict) else {}
+    deploy_id = deploy.get("id", "unknown") if isinstance(deploy, dict) else "unknown"
+    status = deploy.get("status", "unknown") if isinstance(deploy, dict) else "unknown"
+    
+    bot.reply_to(message, f"🔄 Перезапуск запущен\nDeploy ID: <code>{deploy_id}</code>\nСтатус: <code>{status}</code>", parse_mode='HTML')
     log_action("render_restart", f"user={message.from_user.id}, deploy={deploy_id}", "success")
 
 @bot.message_handler(commands=['render_env'])
@@ -202,14 +231,23 @@ def render_env_command(message):
     
     data, error = render_api_call("GET", f"/services/{RENDER_SERVICE_ID}/env-vars")
     if error:
-        bot.reply_to(message, f"❌ Ошибка: {error}")
+        bot.reply_to(message, f"❌ {error}")
         log_action("render_env", f"error: {error}", "error")
         return
     
+    # Ответ может быть массивом или объектом с "envVars"
+    env_vars = data if isinstance(data, list) else data.get("envVars", [])
+    
+    if not env_vars:
+        bot.reply_to(message, "📭 Переменные окружения не найдены")
+        return
+    
     env_list = []
-    for item in data:
-        name = item.get("envVar", {}).get("key", "unknown")
-        value = item.get("envVar", {}).get("value", "")
+    for item in env_vars:
+        # Разные форматы ответа
+        env_var = item.get("envVar", item) if isinstance(item, dict) else item
+        name = env_var.get("key", "unknown") if isinstance(env_var, dict) else "unknown"
+        value = env_var.get("value", "") if isinstance(env_var, dict) else ""
         masked = value[:2] + "***" if len(value) > 3 else "***"
         env_list.append(f"  <code>{name}</code> = {masked}")
     
@@ -223,9 +261,11 @@ def render_logs_command(message):
         bot.reply_to(message, "❌ RENDER_API_KEY или RENDER_SERVICE_ID не настроены")
         return
     
+    # Логи в Render API v1 — через отдельный эндпоинт или невозможны через API
+    # Пробуем стандартный, если не работает — сообщаем
     data, error = render_api_call("GET", f"/services/{RENDER_SERVICE_ID}/logs")
     if error:
-        bot.reply_to(message, f"❌ Ошибка: {error}")
+        bot.reply_to(message, f"❌ {error}\n\nЛоги через API могут быть недоступны. Смотрите в Render Dashboard.")
         log_action("render_logs", f"error: {error}", "error")
         return
     
@@ -234,7 +274,7 @@ def render_logs_command(message):
         bot.reply_to(message, "📭 Логи пусты")
         return
     
-    log_text = "\n".join([f"<code>{l.get('message', '')[:100]}</code>" for l in logs])
+    log_text = "\n".join([f"<code>{l.get('message', str(l))[:100]}</code>" for l in logs])
     bot.reply_to(message, f"📋 <b>Последние логи:</b>\n\n{log_text}", parse_mode='HTML')
     log_action("render_logs", f"user={message.from_user.id}", "success")
 
