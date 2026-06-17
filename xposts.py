@@ -1,3 +1,4 @@
+
 # xposts.py
 import requests
 import xml.etree.ElementTree as ET
@@ -15,7 +16,7 @@ def register_xposts(bot):
         def do_xposts():
             try:
                 accounts = [
-                    {"username": "the_lentach", "name": "Лентач"}
+                    {"username": "AteoBreaking", "name": "AteoBreaking"}
                 ]
                 
                 all_posts = []
@@ -30,7 +31,7 @@ def register_xposts(bot):
                             root = ET.fromstring(response.content)
                             items = root.findall('.//item')
                             
-                            for item in items[:3]:
+                            for item in items[:5]:
                                 title_elem = item.find('title')
                                 if title_elem is not None and title_elem.text:
                                     text = title_elem.text.strip()
@@ -59,7 +60,7 @@ def register_xposts(bot):
                                 root = ET.fromstring(response.content)
                                 items = root.findall('.//item')
                                 
-                                for item in items[:3]:
+                                for item in items[:5]:
                                     title_elem = item.find('title')
                                     if title_elem is not None and title_elem.text:
                                         text = title_elem.text.strip()
@@ -80,7 +81,7 @@ def register_xposts(bot):
                                             'date': date[:16] if date else "",
                                             'url': post_url
                                         })
-                        
+                    
                     except Exception as e:
                         print(f"xposts_account_error: {account['username']}: {str(e)[:50]}")
                         continue
@@ -97,14 +98,14 @@ def register_xposts(bot):
                 result = "🐦 *ПОСЛЕДНИЕ ПОСТЫ ИЗ X*\n"
                 result += f"📅 {current_time}\n\n"
                 
-                for i, post in enumerate(all_posts[:3], 1):
+                for i, post in enumerate(all_posts[:5], 1):
                     result += f"📌 *@{post['username']}*\n"
                     result += f"{post['text']}\n"
                     result += f"🕐 {post['date']}\n"
                     if post['url']:
                         result += f"🔗 [Ссылка]({post['url']})\n"
                     
-                    if i < len(all_posts[:3]):
+                    if i < len(all_posts[:5]):
                         result += "—" * 30 + "\n\n"
                 
                 result += "\n💡 /xposts — обновить посты"
