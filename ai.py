@@ -3,31 +3,23 @@ import requests
 import threading
 import random
 
-# АКТУАЛЬНЫЕ БЕСПЛАТНЫЕ МОДЕЛИ (ИЮНЬ 2026)
+# ТОЛЬКО БЕСПЛАТНЫЕ МОДЕЛИ (ПРОВЕРЕНО)
 FREE_MODELS = [
-    "openrouter/free",                      # Автоматический роутер
-    "google/gemma-4-31b-it",                # 31B, 256K контекст
-    "google/gemma-4-26b-a4b-it",            # MoE версия
-    "nvidia/nemotron-3-ultra",              # 55B MoE, 1M контекст
-    "nvidia/nemotron-3-super",              # 120B MoE, 1M контекст
-    "openai/gpt-oss-120b",                  # 117B MoE
-    "openai/gpt-oss-20b",                   # 21B, Apache 2.0
-    "poolside/laguna-m1",                   # Кодинг-агент
-    "nex-agi/nex-n2-pro",                   # 397B MoE
-    "riverflow/riverflow-v2.5-pro",         # Новая бесплатная
-    "stepfun/step-3.7-flash",               # MoE, 256K контекст
+    "google/gemma-4-31b-it",                # ✅ Бесплатно
+    "google/gemma-4-26b-a4b-it",            # ✅ Бесплатно
+    "microsoft/phi-4",                      # ✅ Бесплатно
+    "qwen/qwen-2.5-72b-instruct",           # ✅ Бесплатно
+    "qwen/qwen-2.5-32b-instruct",           # ✅ Бесплатно
+    "meta-llama/llama-4-maverick-17b",      # ✅ Бесплатно
+    "meta-llama/llama-4-scout-17b",         # ✅ Бесплатно
+    "deepseek/deepseek-r1-distill-qwen-32b", # ✅ Бесплатно
+    "mistralai/mistral-small-3.1-24b",      # ✅ Бесплатно
 ]
 
 def register_ai(bot, openrouter_api_key):
-    """Регистрирует обработчик команды /ai с автоматическим fallback"""
-
     def get_models():
-        """Возвращает 3 случайные модели для fallback"""
-        # Всегда включаем openrouter/free как основной
-        selected = ["openrouter/free"]
-        # Добавляем 2 случайные модели из списка
-        others = random.sample([m for m in FREE_MODELS if m != "openrouter/free"], 2)
-        selected.extend(others)
+        """Возвращает 3 модели для fallback"""
+        selected = random.sample(FREE_MODELS, min(3, len(FREE_MODELS)))
         return selected
 
     @bot.message_handler(commands=['ai'])
@@ -49,7 +41,7 @@ def register_ai(bot, openrouter_api_key):
 
         def do_ai():
             try:
-                models = get_models()  # Берём 3 модели
+                models = get_models()
 
                 headers = {
                     "Authorization": f"Bearer {openrouter_api_key}",
@@ -59,7 +51,7 @@ def register_ai(bot, openrouter_api_key):
                 }
 
                 payload = {
-                    "models": models,  # 🔄 ТОЛЬКО 3 МОДЕЛИ
+                    "models": models,
                     "messages": [{"role": "user", "content": user_text}],
                     "max_tokens": 500,
                     "temperature": 0.7
@@ -75,48 +67,38 @@ def register_ai(bot, openrouter_api_key):
                 if r.status_code == 200:
                     answer = r.json()["choices"][0]["message"]["content"]
                     used_model = r.json().get("model", models[0])
-                    
                     bot.edit_message_text(
                         f"{answer}\n\n🤖 *Модель:* `{used_model}`",
                         chat_id=message.chat.id,
                         message_id=status_msg.message_id,
                         parse_mode='Markdown'
                     )
-                    
+                elif r.status_code == 402:
+                    bot.edit_message_text(
+                        "⚠️ *Дневной лимит OpenRouter Free исчерпан*\n"
+                        "50 запросов/день. Попробуйте завтра.\n\n"
+                        "💡 Альтернативы:\n"
+                        "• Groq — console.groq.com (бесплатно)\n"
+                        "• Google AI Studio — aistudio.google.com\n"
+                        "• Hugging Face — huggingface.co",
+                        chat_id=message.chat.id,
+                        message_id=status_msg.message_id,
+                        parse_mode='Markdown'
+                    )
                 elif r.status_code == 429:
                     bot.edit_message_text(
                         "⚠️ *Превышен лимит запросов*\n"
-                        "OpenRouter Free: 20 запросов/мин, 50/день\n"
-                        "Попробуйте через минуту.",
+                        "20 запросов/мин. Попробуйте через минуту.",
                         chat_id=message.chat.id,
                         message_id=status_msg.message_id,
                         parse_mode='Markdown'
                     )
-                    
-                elif r.status_code == 402:
-                    bot.edit_message_text(
-                        "⚠️ *Недостаточно кредитов*\n"
-                        "Используются только бесплатные модели.\n"
-                        "Попробуйте позже.",
-                        chat_id=message.chat.id,
-                        message_id=status_msg.message_id,
-                        parse_mode='Markdown'
-                    )
-                    
                 else:
                     bot.edit_message_text(
                         f"❌ Ошибка API: {r.status_code}\n{str(r.text)[:200]}",
                         chat_id=message.chat.id,
                         message_id=status_msg.message_id
                     )
-                    
-            except requests.exceptions.Timeout:
-                bot.edit_message_text(
-                    "⏰ Таймаут запроса. Попробуйте позже.",
-                    chat_id=message.chat.id,
-                    message_id=status_msg.message_id
-                )
-                
             except Exception as e:
                 bot.edit_message_text(
                     f"❌ Ошибка: {str(e)[:200]}",
