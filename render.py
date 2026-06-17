@@ -1,4 +1,4 @@
-# render.py — модуль управления Render через API
+# render.py — модуль управления Render через API (только публичный REST API)
 import os
 import json
 import requests
@@ -8,9 +8,8 @@ RENDER_API_KEY = os.environ.get("RENDER_API_KEY")
 RENDER_SERVICE_ID = os.environ.get("RENDER_SERVICE_ID")
 RENDER_SERVICE_NAME = os.environ.get("RENDER_SERVICE_NAME", "Bugaga")
 RENDER_API_URL = "https://api.render.com/v1"
-RENDER_GRAPHQL_URL = "https://api.render.com/graphql"
 
-# Кэш для service ID (чтобы не искать каждый раз)
+# Кэш для service ID
 _CACHED_SERVICE_ID = None
 
 
@@ -107,104 +106,56 @@ def find_service_id():
 
 
 def get_service_id():
-    """Получить актуальный service ID с приоритетами:
-    1. Проверить заданный RENDER_SERVICE_ID
-    2. Найти по имени
-    3. Вернуть первый web_service
-    """
-    global RENDER_SERVICE_ID
+    """Получить актуальный service ID"""
+    global RENDER_SERVICE_ID, _CACHED_SERVICE_ID
     
-    # Приоритет 1: Проверяем заданный ID
+    # Приоритет 1: Кэш
+    if _CACHED_SERVICE_ID:
+        return _CACHED_SERVICE_ID, None
+    
+    # Приоритет 2: Проверяем заданный ID
     if RENDER_SERVICE_ID:
         data, error = api_call("GET", f"/services/{RENDER_SERVICE_ID}")
         if not error:
             print(f"[Render] Using configured ID: {RENDER_SERVICE_ID}")
+            _CACHED_SERVICE_ID = RENDER_SERVICE_ID
             return RENDER_SERVICE_ID, None
         print(f"[Render] Configured ID invalid: {error}")
     
-    # Приоритет 2-4: Ищем автоматически
+    # Приоритет 3: Ищем автоматически
     sid, error = find_service_id()
     if sid:
-        # Сохраняем найденный ID
         RENDER_SERVICE_ID = sid
+        _CACHED_SERVICE_ID = sid
         return sid, None
     
     return None, f"Не удалось найти сервис: {error}"
 
 
-def graphql_call(query, variables=None):
-    """Вызов Render GraphQL API"""
-    if not RENDER_API_KEY:
-        return None, "RENDER_API_KEY не настроен"
-    
-    headers = {
-        "Authorization": f"Bearer {RENDER_API_KEY}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-    
-    payload = {
-        "query": query,
-        "variables": variables or {}
-    }
-    
-    try:
-        resp = requests.post(
-            RENDER_GRAPHQL_URL,
-            headers=headers,
-            json=payload,
-            timeout=15
-        )
-        
-        print(f"[Render GraphQL] Status: {resp.status_code}")
-        print(f"[Render GraphQL] Body: {resp.text[:500]}")
-        
-        if resp.status_code != 200:
-            return None, f"GraphQL HTTP {resp.status_code}: {resp.text[:200]}"
-        
-        data = resp.json()
-        if "errors" in data:
-            return None, f"GraphQL error: {data['errors']}"
-        
-        return data.get("data"), None
-        
-    except Exception as e:
-        return None, f"GraphQL error: {e}"
-
-
-def get_logs_via_graphql(service_id, limit=50):
-    """Получить логи через Render GraphQL API"""
-    query = """
-    query GetLogs($serviceId: String!, $limit: Int) {
-        service(id: $serviceId) {
-            logs(limit: $limit) {
-                timestamp
-                message
-                level
-                source
-            }
-        }
-    }
-    """
-    
-    variables = {
-        "serviceId": service_id,
-        "limit": limit
-    }
-    
-    data, error = graphql_call(query, variables)
+def get_logs_via_events(service_id, limit=50):
+    """Получить события/логи через events API (если доступен)"""
+    data, error = api_call("GET", f"/services/{service_id}/events?limit={limit}")
     if error:
         return None, error
     
-    if not data or not data.get("service"):
-        return None, "GraphQL: service not found or no data"
+    events = data if isinstance(data, list) else data.get("events", [])
+    # Конвертируем events в формат логов
+    logs = []
+    for ev in events:
+        e = ev.get("event", ev) if isinstance(ev, dict) else ev
+        if isinstance(e, dict):
+            logs.append({
+                "timestamp": e.get("createdAt", e.get("timestamp", "")),
+                "message": e.get("message", e.get("details", str(e))),
+                "level": "INFO"
+            })
     
-    logs = data["service"].get("logs", [])
     return logs, None
 
 
 def get_logs_via_deploys(service_id, limit=20):
-    """Альтернативный способ: получить логи через deploys"""
+    """Получить логи через последний deploy"""
+    # Получаем список deploys
     data, error = api_call("GET", f"/services/{service_id}/deploys?limit=5")
     if error:
         return None, error
@@ -213,15 +164,26 @@ def get_logs_via_deploys(service_id, limit=20):
     if not deploys:
         return None, "Нет deploys"
     
+    # Берём последний deploy
     last_deploy = deploys[0].get("deploy", deploys[0]) if isinstance(deploys[0], dict) else deploys[0]
     deploy_id = last_deploy.get("id") if isinstance(last_deploy, dict) else None
     
     if not deploy_id:
         return None, "Не удалось получить ID deploy"
     
+    # Пробуем получить логи deploy
     data, error = api_call("GET", f"/services/{service_id}/deploys/{deploy_id}/logs?limit={limit}")
     if error:
-        return None, error
+        # Пробуем без /logs — иногда логи внутри deploy объекта
+        data, error = api_call("GET", f"/services/{service_id}/deploys/{deploy_id}")
+        if error:
+            return None, error
+        
+        d = data.get("deploy", data)
+        # Проверяем, есть ли логи внутри
+        if isinstance(d, dict) and "logs" in d:
+            return d["logs"], None
+        return None, "Логи deploy недоступны через API"
     
     logs = data if isinstance(data, list) else data.get("logs", [])
     return logs, None
@@ -236,9 +198,9 @@ def format_logs(logs, max_lines=20):
     
     for log in logs[:max_lines]:
         if isinstance(log, dict):
-            timestamp = log.get("timestamp", "")[:19]
+            timestamp = log.get("timestamp", log.get("createdAt", ""))[:19]
             level = log.get("level", "INFO")
-            msg = log.get("message", str(log))
+            msg = log.get("message", log.get("details", str(log)))
             
             emoji = "🔴" if level in ("ERROR", "FATAL") else "🟡" if level == "WARN" else "🟢"
             msg_short = msg[:200] + "..." if len(msg) > 200 else msg
@@ -389,19 +351,19 @@ def register_render(bot):
             bot.reply_to(message, f"❌ {error}")
             return
 
-        # Пробуем GraphQL API
-        logs, error = get_logs_via_graphql(sid, limit=20)
+        # Пробуем events API
+        logs, error = get_logs_via_events(sid, limit=20)
         
-        # Если GraphQL не работает — пробуем через deploys
+        # Если events не работают — пробуем deploys
         if error or not logs:
-            print(f"[Render Logs] GraphQL failed: {error}, trying deploys API...")
+            print(f"[Render Logs] Events failed: {error}, trying deploys...")
             logs, error = get_logs_via_deploys(sid, limit=20)
         
-        # Если и deploys не работают — ссылка на Dashboard
+        # Если ничего не работает — ссылка на Dashboard
         if error or not logs:
             bot.reply_to(
                 message,
-                f"⚠️ Не удалось получить логи через API.\n"
+                f"⚠️ Логи через API недоступны.\n"
                 f"Причина: <code>{error or 'логи пусты'}</code>\n\n"
                 f"📋 <a href='https://dashboard.render.com/web/{sid}/logs'>Открыть логи в Dashboard</a>",
                 parse_mode="HTML",
@@ -429,37 +391,21 @@ def register_render(bot):
             bot.reply_to(message, f"❌ {error}")
             return
         
-        # Пробуем получить список сервисов (проверка API)
-        data, error = api_call("GET", f"/services/{sid}")
-        if error:
-            bot.reply_to(message, f"❌ API error: {error}")
-            return
+        # Проверяем events API
+        events_data, events_error = api_call("GET", f"/services/{sid}/events?limit=5")
         
-        # Пробуем GraphQL
-        query = """
-        query {
-            service(id: "%s") {
-                id
-                name
-                logs(limit: 3) {
-                    timestamp
-                    message
-                    level
-                }
-            }
-        }
-        """ % sid
-        
-        gql_data, gql_error = graphql_call(query)
+        # Проверяем deploys API
+        deploys_data, deploys_error = api_call("GET", f"/services/{sid}/deploys?limit=3")
         
         msg = (
             f"<b>Отладка Render API</b>\n\n"
-            f"Service ID: <code>{sid}</code>\n"
-            f"API Status: <code>OK</code>\n\n"
-            f"<b>REST API:</b>\n<pre>{json.dumps(data, indent=2, ensure_ascii=False)[:1500]}</pre>\n\n"
-            f"<b>GraphQL:</b>\n"
-            f"Error: <code>{gql_error or 'None'}</code>\n"
-            f"Data: <pre>{json.dumps(gql_data, indent=2, ensure_ascii=False)[:1500] if gql_data else 'No data'}</pre>"
+            f"Service ID: <code>{sid}</code>\n\n"
+            f"<b>Events API:</b>\n"
+            f"Error: <code>{events_error or 'None'}</code>\n"
+            f"Data: <pre>{json.dumps(events_data, indent=2, ensure_ascii=False)[:1000] if events_data else 'No data'}</pre>\n\n"
+            f"<b>Deploys API:</b>\n"
+            f"Error: <code>{deploys_error or 'None'}</code>\n"
+            f"Data: <pre>{json.dumps(deploys_data, indent=2, ensure_ascii=False)[:1000] if deploys_data else 'No data'}</pre>"
         )
         
         bot.reply_to(message, msg, parse_mode="HTML")
