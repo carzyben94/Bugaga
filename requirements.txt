@@ -5,4 +5,5 @@ beautifulsoup4
 lxml
 trafilatura
 psutil
+playwright
 
