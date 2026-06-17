@@ -11,16 +11,13 @@ def register_browser_ai(bot, agnes_api_key):
     def browser_ai_command(message):
         args = message.text.replace('/browser_ai', '').strip()
         if not args:
-            bot.reply_to(message, "🌐 Использование: /browser_ai [URL] [вопрос]\n\n"
-                                 "Пример:\n"
-                                 "/browser_ai https://github.com Что это за сайт?\n"
-                                 "/browser_ai https://news.ycombinator.com Главные новости?")
+            bot.reply_to(message, "🌐 Использование: /browser_ai [URL] [вопрос]")
             return
 
+        # Разделяем URL и вопрос
         parts = args.split(' ', 1)
         if len(parts) < 2:
-            bot.reply_to(message, "❌ Укажите URL и вопрос\n"
-                                 "Пример: /browser_ai https://example.com О чём этот сайт?")
+            bot.reply_to(message, "❌ Укажите URL и вопрос\nПример: /browser_ai https://example.com О чём этот сайт?")
             return
 
         url = parts[0]
@@ -99,7 +96,6 @@ def register_browser_ai(bot, agnes_api_key):
                     message_id=status_msg.message_id
                 )
 
-                # ✅ ИСПРАВЛЕНО: правильное закрытие f-строки
                 prompt = (
                     "Ты — ИИ-ассистент с доступом в интернет. "
                     "Проанализируй содержимое сайта и ответь на вопрос пользователя.\n\n"
