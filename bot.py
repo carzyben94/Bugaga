@@ -10,7 +10,6 @@ from flask import Flask, request
 import telebot
 from bs4 import BeautifulSoup
 from datetime import datetime
-from super_agent import SuperAgent
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -31,16 +30,6 @@ if not TELEGRAM_TOKEN:
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
-
-# ===== СУПЕР-АГЕНТ =====
-super_agent = SuperAgent({
-    'GITHUB_TOKEN': GITHUB_TOKEN,
-    'RENDER_API_KEY': RENDER_API_KEY,
-    'TELEGRAM_TOKEN': TELEGRAM_TOKEN,
-    'OPENROUTER_API_KEY': OPENROUTER_API_KEY,
-    'GITHUB_REPO': GITHUB_REPO,
-    'RENDER_SERVICE_ID': RENDER_SERVICE_ID
-})
 
 # ===== СТАТУС МОДУЛЬ =====
 try:
@@ -71,26 +60,6 @@ def log_action(action, details=None, status="info", send=True):
         pass
     if send:
         send_log_to_admin(action, details, status)
-
-def get_last_errors(limit=5):
-    try:
-        if not os.path.exists("agent_actions.log"):
-            return []
-        with open("agent_actions.log", "r") as f:
-            lines = f.readlines()
-        errors = []
-        for line in reversed(lines[-100:]):
-            try:
-                log = json.loads(line)
-                if log.get("status") == "error":
-                    errors.append(log.get("details", ""))
-                    if len(errors) >= limit:
-                        break
-            except:
-                pass
-        return errors
-    except:
-        return []
 
 # ===== БРАУЗЕР МОДУЛЬ =====
 def open_browser_sync(url="https://example.com"):
@@ -145,7 +114,6 @@ def xposts_command(message):
     
     def do_xposts():
         try:
-            # Только один аккаунт - Лентач
             accounts = [
                 {"username": "the_lentach", "name": "Лентач"}
             ]
@@ -154,7 +122,6 @@ def xposts_command(message):
             
             for account in accounts:
                 try:
-                    # Парсим RSS через Nitter
                     url = f"https://nitter.net/{account['username']}/rss"
                     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
                     response = requests.get(url, headers=headers, timeout=10)
@@ -163,7 +130,6 @@ def xposts_command(message):
                         root = ET.fromstring(response.content)
                         items = root.findall('.//item')
                         
-                        # Берём только 3 последних поста
                         for item in items[:3]:
                             title_elem = item.find('title')
                             if title_elem is not None and title_elem.text:
@@ -187,7 +153,6 @@ def xposts_command(message):
                                 })
                                 
                     else:
-                        # Если Nitter не работает, пробуем альтернативный инстанс
                         alt_url = f"https://nitter.poast.org/{account['username']}/rss"
                         response = requests.get(alt_url, headers=headers, timeout=10)
                         if response.status_code == 200:
@@ -232,7 +197,6 @@ def xposts_command(message):
             result = "🐦 *ПОСЛЕДНИЕ ПОСТЫ ИЗ X*\n"
             result += f"📅 {current_time}\n\n"
             
-            # Показываем только 3 поста
             for i, post in enumerate(all_posts[:3], 1):
                 result += f"📌 *@{post['username']}*\n"
                 result += f"{post['text']}\n"
@@ -406,195 +370,6 @@ def crypto_command(message):
     thread = threading.Thread(target=do_crypto, daemon=True)
     thread.start()
 
-# ===== ПАРСИНГ ЛЮБОГО URL =====
-@bot.message_handler(commands=['parse'])
-def parse_command(message):
-    url = message.text.replace('/parse', '').strip()
-    if not url:
-        bot.reply_to(message, "❌ Укажите URL\nПример: /parse https://example.com")
-        return
-    
-    if not url.startswith(("http://", "https://")):
-        url = "https://" + url
-    
-    status_msg = bot.reply_to(message, f"🔍 Парсю {url}...")
-    
-    def do_parse():
-        try:
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-            r = requests.get(url, headers=headers, timeout=10)
-            
-            if r.status_code != 200:
-                bot.edit_message_text(f"❌ Ошибка HTTP: {r.status_code}", 
-                                      chat_id=message.chat.id, 
-                                      message_id=status_msg.message_id)
-                return
-            
-            soup = BeautifulSoup(r.text, 'lxml')
-            
-            title = soup.find('title')
-            title_text = title.get_text(strip=True) if title else "Без заголовка"
-            
-            paragraphs = soup.find_all('p')
-            text = " ".join([p.get_text(strip=True) for p in paragraphs[:5]])
-            
-            if not text or len(text) < 50:
-                text = "⚠️ Контент не найден (возможно, сайт на JS)"
-            else:
-                text = text[:2000] + "..." if len(text) > 2000 else text
-            
-            result = f"📄 {title_text}\n\n{text}"
-            
-            bot.edit_message_text(result[:4000], 
-                                  chat_id=message.chat.id, 
-                                  message_id=status_msg.message_id)
-            log_action("parse", f"{url} - {title_text[:50]}", "success")
-            
-        except Exception as e:
-            log_action("parse_error", str(e), "error")
-            bot.edit_message_text(f"❌ Ошибка: {str(e)[:100]}", 
-                                  chat_id=message.chat.id, 
-                                  message_id=status_msg.message_id)
-    
-    thread = threading.Thread(target=do_parse, daemon=True)
-    thread.start()
-
-# ===== СУПЕР-АГЕНТ: КОМАНДЫ =====
-@bot.message_handler(commands=['agent_report'])
-def agent_report_command(message):
-    """Полный отчёт супер-агента"""
-    status_msg = bot.reply_to(message, "🧠 Супер-агент собирает данные...")
-    
-    def do_report():
-        try:
-            report = super_agent.get_full_report()
-            bot.edit_message_text(
-                report,
-                chat_id=message.chat.id,
-                message_id=status_msg.message_id,
-                parse_mode='Markdown'
-            )
-        except Exception as e:
-            bot.edit_message_text(
-                f"❌ Ошибка: {str(e)[:200]}",
-                chat_id=message.chat.id,
-                message_id=status_msg.message_id
-            )
-    
-    threading.Thread(target=do_report, daemon=True).start()
-
-@bot.message_handler(commands=['fix'])
-def fix_command(message):
-    """Авто-исправление проблемы"""
-    issue = message.text.replace('/fix', '').strip()
-    if not issue:
-        bot.reply_to(message, "📝 Опишите проблему:\n/fix [описание]")
-        return
-    
-    status_msg = bot.reply_to(message, f"🔧 Исправляю: {issue[:50]}...")
-    
-    def do_fix():
-        try:
-            if super_agent.auto_improve_code(issue):
-                bot.edit_message_text(
-                    "✅ Код улучшен и задеплоен на Render!",
-                    chat_id=message.chat.id,
-                    message_id=status_msg.message_id
-                )
-            else:
-                bot.edit_message_text(
-                    "❌ Не удалось автоматически улучшить код",
-                    chat_id=message.chat.id,
-                    message_id=status_msg.message_id
-                )
-        except Exception as e:
-            bot.edit_message_text(
-                f"❌ Ошибка: {str(e)[:200]}",
-                chat_id=message.chat.id,
-                message_id=status_msg.message_id
-            )
-    
-    threading.Thread(target=do_fix, daemon=True).start()
-
-@bot.message_handler(commands=['backup'])
-def backup_command(message):
-    """Создаёт бэкап кода"""
-    status_msg = bot.reply_to(message, "💾 Создаю бэкап...")
-    
-    def do_backup():
-        try:
-            if super_agent.backup_code():
-                bot.edit_message_text(
-                    "✅ Бэкап создан!",
-                    chat_id=message.chat.id,
-                    message_id=status_msg.message_id
-                )
-            else:
-                bot.edit_message_text(
-                    "❌ Не удалось создать бэкап",
-                    chat_id=message.chat.id,
-                    message_id=status_msg.message_id
-                )
-        except Exception as e:
-            bot.edit_message_text(
-                f"❌ Ошибка: {str(e)[:200]}",
-                chat_id=message.chat.id,
-                message_id=status_msg.message_id
-            )
-    
-    threading.Thread(target=do_backup, daemon=True).start()
-
-@bot.message_handler(commands=['test'])
-def test_command(message):
-    """Запускает тесты"""
-    status_msg = bot.reply_to(message, "🧪 Запускаю тесты...")
-    
-    def do_test():
-        try:
-            result = super_agent.run_tests()
-            bot.edit_message_text(
-                result,
-                chat_id=message.chat.id,
-                message_id=status_msg.message_id,
-                parse_mode='Markdown'
-            )
-        except Exception as e:
-            bot.edit_message_text(
-                f"❌ Ошибка: {str(e)[:200]}",
-                chat_id=message.chat.id,
-                message_id=status_msg.message_id
-            )
-    
-    threading.Thread(target=do_test, daemon=True).start()
-
-@bot.message_handler(commands=['optimize'])
-def optimize_command(message):
-    """Оптимизирует код"""
-    status_msg = bot.reply_to(message, "⚡ Оптимизирую код...")
-    
-    def do_optimize():
-        try:
-            if super_agent.optimize_code():
-                bot.edit_message_text(
-                    "✅ Код оптимизирован!",
-                    chat_id=message.chat.id,
-                    message_id=status_msg.message_id
-                )
-            else:
-                bot.edit_message_text(
-                    "❌ Не удалось оптимизировать код",
-                    chat_id=message.chat.id,
-                    message_id=status_msg.message_id
-                )
-        except Exception as e:
-            bot.edit_message_text(
-                f"❌ Ошибка: {str(e)[:200]}",
-                chat_id=message.chat.id,
-                message_id=status_msg.message_id
-            )
-    
-    threading.Thread(target=do_optimize, daemon=True).start()
-
 # ===== КОМАНДЫ =====
 @bot.message_handler(commands=['start', 'help'])
 def menu_command(message):
@@ -607,18 +382,11 @@ def menu_command(message):
         "/xposts - посты из X\n"
         "/newmodels - новые ИИ-модели\n\n"
         "🌐 ИНТЕРНЕТ И ДАННЫЕ\n"
-        "/browser [url] - открыть сайт\n"
-        "/parse [url] - парсинг сайта\n\n"
+        "/browser [url] - открыть сайт\n\n"
         "💰 ФИНАНСЫ\n"
         "/crypto - курсы криптовалют\n\n"
-        "⚙️ СИСТЕМА\n"
-        "/agent_report - отчёт супер-агента\n"
-        "/fix [описание] - авто-исправление\n"
-        "/backup - создать бэкап\n"
-        "/test - запустить тесты\n"
-        "/optimize - оптимизировать код\n"
-        "/status_full - статус системы\n"
-        "/logs - показать логи"
+        "📊 СИСТЕМА\n"
+        "/status_full - статус системы"
     )
     
     bot.reply_to(message, menu_text)
@@ -660,33 +428,7 @@ def ai_command(message):
 
 @bot.message_handler(commands=['status_full'])
 def status_full_command(message):
-    bot.reply_to(message, "📊 Статус системы:\n✅ Бот работает\n✅ Все модули активны\n✅ Супер-агент активен")
-
-@bot.message_handler(commands=['logs'])
-def logs_command(message):
-    log_action("logs", f"user={message.from_user.id} запросил логи", "info")
-    
-    try:
-        with open("agent_actions.log", "r") as f:
-            lines = f.readlines()
-        
-        if not lines:
-            bot.reply_to(message, "📭 Логов пока нет")
-            return
-        
-        last_logs = lines[-20:]
-        response = "📋 ПОСЛЕДНИЕ ЛОГИ:\n\n"
-        for line in last_logs:
-            try:
-                log = json.loads(line)
-                emoji = "✅" if log.get("status") == "success" else "🔴" if log.get("status") == "error" else "ℹ️"
-                response += f"{emoji} {log.get('timestamp', '')} {log.get('action', '')}\n"
-            except:
-                response += f"• {line[:100]}\n"
-        
-        bot.reply_to(message, response[:4000])
-    except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: {e}")
+    bot.reply_to(message, "📊 Статус системы:\n✅ Бот работает\n✅ Все модули активны")
 
 # ===== ВЕБХУК =====
 @app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
