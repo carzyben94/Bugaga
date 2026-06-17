@@ -165,21 +165,95 @@ class XXAgent:
         except:
             return False
 
+    async def _smart_fill(self, page, selectors, value, field_name="поле"):
+        """
+        Умное заполнение поля: пробуем разные селекторы, 
+        используем fill() без клика, с fallback на type().
+        """
+        for selector in selectors:
+            try:
+                # Пробуем найти через locator (более надёжно)
+                locator = page.locator(selector).first
+                if await locator.count() > 0:
+                    print(f"[XX] Found {field_name} via locator: {selector}")
+                    # Очищаем и заполняем без клика
+                    await locator.clear()
+                    await locator.fill(value)
+                    await asyncio.sleep(0.5)
+                    return True
+            except Exception as e:
+                print(f"[XX] Locator failed for {selector}: {e}")
+                try:
+                    # Fallback на старый метод
+                    elem = await page.wait_for_selector(selector, timeout=5000)
+                    if elem:
+                        print(f"[XX] Found {field_name} via query_selector: {selector}")
+                        # Используем evaluate для прямой установки value
+                        await page.evaluate(f'document.querySelector("{selector.replace('"', '\\"')}")?.setAttribute("value", "{value.replace('"', '\\"')}")')
+                        # Также пробуем fill
+                        try:
+                            await elem.fill(value)
+                        except:
+                            await page.evaluate(f'document.querySelector("{selector.replace('"', '\\"')}")?.value = "{value.replace('"', '\\"')}"')
+                        await asyncio.sleep(0.5)
+                        return True
+                except:
+                    continue
+        
+        return False
+
+    async def _smart_click(self, page, selectors, button_name="кнопка"):
+        """
+        Умный клик: пробуем разные селекторы, 
+        используем force=True и разные способы клика.
+        """
+        for selector in selectors:
+            try:
+                # Пробуем locator с force
+                locator = page.locator(selector).first
+                if await locator.count() > 0:
+                    print(f"[XX] Clicking {button_name} via locator: {selector}")
+                    await locator.click(force=True, timeout=5000)
+                    return True
+            except Exception as e:
+                print(f"[XX] Locator click failed for {selector}: {e}")
+                try:
+                    # Fallback
+                    elem = await page.wait_for_selector(selector, timeout=3000)
+                    if elem:
+                        print(f"[XX] Clicking {button_name} via query_selector: {selector}")
+                        # Пробуем разные способы клика
+                        try:
+                            await elem.click(force=True)
+                        except:
+                            await page.evaluate("el => el.click()", elem)
+                        return True
+                except:
+                    continue
+        
+        return False
+
     async def _login(self, page, username, password, email=None):
         """
-        Авторизация на X с переданными credentials.
-        username, password, email — из чата или env.
+        Авторизация на X с поддержкой новой формы (jf-element, Janrain).
         """
         try:
             print(f"[XX] Авторизация как {username}...")
             
             # 1. Открываем страницу логина
             await page.goto("https://x.com/i/flow/login", wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(3)
+            await asyncio.sleep(4)  # Даём больше времени на загрузку JS
             await self._screenshot(page, "login_start")
             
-            # 2. Ввод username — пробуем несколько селекторов
+            # 2. Ввод username — пробуем ВСЕ возможные селекторы (новые + старые)
             username_selectors = [
+                # Новая форма (Janrain/ForgeRock)
+                'input[name="username_or_email"]',
+                'input#jf-input-username_or_email',
+                'input.jf-element.jf-float-input',
+                'input[autocomplete="username webauthn"]',
+                'input[inputmode="text"]',
+                # Старая форма
                 'input[autocomplete="username"]',
                 'input[name="text"]',
                 'input[type="text"]',
@@ -190,119 +264,100 @@ class XXAgent:
                 'input[placeholder*="username" i]',
             ]
             
-            username_input = None
-            for selector in username_selectors:
-                try:
-                    username_input = await page.wait_for_selector(selector, timeout=5000)
-                    if username_input:
-                        print(f"[XX] Found username input: {selector}")
-                        break
-                except:
-                    continue
-            
-            if not username_input:
+            filled = await self._smart_fill(page, username_selectors, username, "username")
+            if not filled:
                 await self._screenshot(page, "login_no_username")
                 return False, "Не найдено поле для ввода логина. X мог изменить страницу."
             
-            await username_input.click()
-            await username_input.fill(username)
             await asyncio.sleep(1)
             
             # 3. Нажимаем Next
             next_selectors = [
+                # Новая форма
+                'button[type="submit"]',
+                'button.jf-button',
                 'button:has-text("Next")',
                 'button:has-text("Далее")',
+                # Старая форма
                 'button[role="button"]:nth-child(2)',
                 'button[type="button"]:nth-child(2)',
                 'div[role="button"]:has-text("Next")',
                 'div[role="button"]:has-text("Далее")',
             ]
             
-            next_clicked = False
-            for selector in next_selectors:
+            clicked = await self._smart_click(page, next_selectors, "Next")
+            if not clicked:
+                # Fallback: жмём Enter на поле username
                 try:
-                    next_btn = await page.query_selector(selector)
-                    if next_btn:
-                        await next_btn.click()
-                        next_clicked = True
-                        print(f"[XX] Clicked Next: {selector}")
-                        break
-                except:
-                    continue
+                    await page.keyboard.press("Enter")
+                    print("[XX] Pressed Enter on keyboard")
+                    clicked = True
+                except Exception as e:
+                    print(f"[XX] Enter failed: {e}")
             
-            if not next_clicked:
-                await username_input.press("Enter")
-                print("[XX] Pressed Enter instead of Next")
+            if not clicked:
+                return False, "Не удалось нажать кнопку Next. Попробуй позже."
             
-            await asyncio.sleep(3)
+            await asyncio.sleep(4)
             await self._screenshot(page, "login_after_username")
             
-            # 4. Проверка на email/телефон (дополнительная проверка)
+            # 4. Проверка на дополнительный email/телефон
             try:
-                email_selectors = [
+                # Проверяем, не появилось ли поле для дополнительной верификации
+                verify_selectors = [
+                    'input[name="email"]',
+                    'input[name="phone"]',
                     'input[data-testid="ocfEnterTextTextInput"]',
-                    'input[name="text"]',
                     'input[type="text"]',
-                    'input[autocomplete="on"]',
                 ]
                 
-                for selector in email_selectors:
+                for selector in verify_selectors:
                     try:
-                        email_input = await page.wait_for_selector(selector, timeout=5000)
-                        if email_input and email:
-                            placeholder = await email_input.get_attribute("placeholder") or ""
-                            label = await page.evaluate('el => el.labels?.[0]?.textContent || el.getAttribute("aria-label") || ""', email_input)
+                        verify_input = await page.wait_for_selector(selector, timeout=5000)
+                        if verify_input and email:
+                            # Проверяем, что это действительно поле верификации
+                            placeholder = await verify_input.get_attribute("placeholder") or ""
+                            name_attr = await verify_input.get_attribute("name") or ""
                             
-                            if any(kw in (placeholder + label).lower() for kw in ["phone", "email", "телефон", "почта"]):
-                                await email_input.fill(email)
-                                await asyncio.sleep(1)
-                                
-                                for next_sel in next_selectors:
-                                    try:
-                                        next_btn = await page.query_selector(next_sel)
-                                        if next_btn:
-                                            await next_btn.click()
-                                            break
-                                    except:
-                                        continue
-                                
-                                await asyncio.sleep(3)
-                                await self._screenshot(page, "login_after_email")
+                            if any(kw in (placeholder + name_attr).lower() for kw in ["phone", "email", "телефон", "почта", "verification"]):
+                                print(f"[XX] Found verification field: {selector}")
+                                filled = await self._smart_fill(page, [selector], email, "verification")
+                                if filled:
+                                    await asyncio.sleep(1)
+                                    # Нажимаем Next снова
+                                    await self._smart_click(page, next_selectors, "Next after verification")
+                                    await asyncio.sleep(3)
+                                    await self._screenshot(page, "login_after_verification")
                                 break
                     except:
                         continue
                         
             except Exception as e:
-                print(f"[XX] Email step skipped or failed: {e}")
+                print(f"[XX] Verification step skipped or failed: {e}")
             
             # 5. Ввод пароля
             password_selectors = [
+                # Новая форма
                 'input[name="password"]',
                 'input[type="password"]',
                 'input[autocomplete="current-password"]',
+                # Старая форма
                 'input[data-testid="LoginForm_Password_Input"]',
             ]
             
-            password_input = None
-            for selector in password_selectors:
-                try:
-                    password_input = await page.wait_for_selector(selector, timeout=8000)
-                    if password_input:
-                        print(f"[XX] Found password input: {selector}")
-                        break
-                except:
-                    continue
-            
-            if not password_input:
+            filled = await self._smart_fill(page, password_selectors, password, "password")
+            if not filled:
                 await self._screenshot(page, "login_no_password")
                 return False, "Не найдено поле для ввода пароля. Возможно, требуется email/телефон."
             
-            await password_input.click()
-            await password_input.fill(password)
             await asyncio.sleep(1)
             
             # 6. Нажимаем Log in
             login_selectors = [
+                # Новая форма
+                'button[type="submit"]',
+                'button.jf-button',
+                # Старая форма
                 'button[data-testid="LoginForm_Login_Button"]',
                 'button:has-text("Log in")',
                 'button:has-text("Войти")',
@@ -311,35 +366,31 @@ class XXAgent:
                 'div[role="button"]:has-text("Войти")',
             ]
             
-            login_clicked = False
-            for selector in login_selectors:
+            clicked = await self._smart_click(page, login_selectors, "Login")
+            if not clicked:
+                # Fallback: Enter
                 try:
-                    login_btn = await page.query_selector(selector)
-                    if login_btn:
-                        await login_btn.click()
-                        login_clicked = True
-                        print(f"[XX] Clicked Login: {selector}")
-                        break
-                except:
-                    continue
-            
-            if not login_clicked:
-                await password_input.press("Enter")
-                print("[XX] Pressed Enter instead of Login")
+                    await page.keyboard.press("Enter")
+                    print("[XX] Pressed Enter for login")
+                except Exception as e:
+                    print(f"[XX] Enter for login failed: {e}")
             
             # 7. Ждём загрузки
-            await asyncio.sleep(4)
+            await asyncio.sleep(5)
             await self._screenshot(page, "login_after_submit")
             
+            # Проверяем результат
             try:
                 await page.wait_for_selector('[data-testid="primaryColumn"]', timeout=15000)
             except:
+                # Проверяем ошибки
                 error_selectors = [
                     'span:has-text("Wrong password")',
                     'span:has-text("Неверный пароль")',
                     'span:has-text("Incorrect")',
                     '[data-testid="toast"]',
                     'div[role="alert"]',
+                    '.jf-error',  # Новая форма ошибки
                 ]
                 
                 for selector in error_selectors:
@@ -354,6 +405,7 @@ class XXAgent:
                 await self._screenshot(page, "login_failed")
                 return False, "Авторизация не удалась. Проверь логин/пароль или установи X_EMAIL."
             
+            # Финальная проверка
             signin = await page.query_selector('a[href="/i/flow/login"]')
             if signin:
                 await self._screenshot(page, "login_still_signin")
@@ -549,14 +601,10 @@ def run_async_task(coro):
 def register_x_play(bot):
     print("[XX] === REGISTER START ===")
 
-    # === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
     def is_in_login_dialog(chat_id, step):
-        """Проверить, находится ли пользователь на указанном шаге диалога"""
         return chat_id in login_sessions and login_sessions[chat_id].get("step") == step
 
     def do_login_with_creds(chat_id, username, password, email=None):
-        """Выполнить авторизацию с полученными credentials"""
-        # Удаляем старые cookies
         if os.path.exists(COOKIES_FILE):
             os.remove(COOKIES_FILE)
             print("[XX] Старые cookies удалены")
@@ -577,11 +625,8 @@ def register_x_play(bot):
         
         return run_async_task(do_login_chat())
 
-    # === ОБРАБОТЧИКИ КОМАНД ===
-    
     @bot.message_handler(commands=["x_install"])
     def x_install_command(message):
-        """Установить/проверить Playwright и Chromium"""
         global PLAYWRIGHT_INSTALLED, CHROMIUM_READY
         status_before = (
             f"📦 <b>Статус до установки:</b>\n"
@@ -617,10 +662,7 @@ def register_x_play(bot):
 
     @bot.message_handler(commands=["x_login"])
     def x_login_command(message):
-        """Запустить диалог авторизации в X"""
         chat_id = message.chat.id
-        
-        # Сбрасываем предыдущую сессию если есть
         if chat_id in login_sessions:
             del login_sessions[chat_id]
         
@@ -639,7 +681,6 @@ def register_x_play(bot):
 
     @bot.message_handler(commands=["x_login_env"])
     def x_login_env_command(message):
-        """Быстрая авторизация через Environment Variables"""
         if not X_USERNAME_ENV or not X_PASSWORD_ENV:
             bot.reply_to(message, "❌ X_USERNAME и X_PASSWORD не настроены в Environment Variables")
             return
@@ -676,7 +717,6 @@ def register_x_play(bot):
 
     @bot.message_handler(commands=["x_cancel"])
     def x_cancel_command(message):
-        """Отменить диалог авторизации"""
         chat_id = message.chat.id
         if chat_id in login_sessions:
             del login_sessions[chat_id]
@@ -686,7 +726,6 @@ def register_x_play(bot):
 
     @bot.message_handler(commands=["x_status"])
     def x_status_command(message):
-        """Проверить статус Playwright и Chromium"""
         chat_id = message.chat.id
         has_session = chat_id in login_sessions
         
@@ -710,7 +749,6 @@ def register_x_play(bot):
 
     @bot.message_handler(commands=["x_timeline"])
     def x_timeline_command(message):
-        """Лента пользователя"""
         if not CHROMIUM_READY:
             bot.reply_to(message, "⏳ Chromium не найден, запускаю установку...")
             if not install_playwright():
@@ -745,7 +783,6 @@ def register_x_play(bot):
 
     @bot.message_handler(commands=["x_search"])
     def x_search_command(message):
-        """Поиск по X"""
         if not CHROMIUM_READY:
             bot.reply_to(message, "⏳ Chromium не найден, запускаю установку...")
             if not install_playwright():
@@ -805,20 +842,16 @@ def register_x_play(bot):
         )
         bot.reply_to(message, msg, parse_mode="HTML")
 
-    # === ОБРАБОТЧИКИ ДИАЛОГА (func) — РЕГИСТРИРУЮТСЯ ПОСЛЕ КОМАНД ===
-    # ВАЖНО: telebot проверяет handler'ы в порядке регистрации!
-    # func handler'ы должны быть ПОСЛЕ commands, но ПЕРЕД fallback'ом
+    # === ОБРАБОТЧИКИ ДИАЛОГА ===
 
     @bot.message_handler(func=lambda m: is_in_login_dialog(m.chat.id, "username"))
     def x_login_username_step(message):
-        """Шаг 1: Получили username"""
         chat_id = message.chat.id
         username = message.text.strip()
         
         if username.startswith("@"):
             username = username[1:]
         
-        # Игнорируем команды
         if username.startswith("/"):
             bot.reply_to(message, "❌ Это похоже на команду. Введи username или /x_cancel для отмены.")
             return
@@ -837,11 +870,9 @@ def register_x_play(bot):
 
     @bot.message_handler(func=lambda m: is_in_login_dialog(m.chat.id, "password"))
     def x_login_password_step(message):
-        """Шаг 2: Получили password"""
         chat_id = message.chat.id
         password = message.text
         
-        # Игнорируем команды
         if password.startswith("/"):
             bot.reply_to(message, "❌ Это похоже на команду. Введи пароль или /x_cancel для отмены.")
             return
@@ -860,11 +891,9 @@ def register_x_play(bot):
 
     @bot.message_handler(func=lambda m: is_in_login_dialog(m.chat.id, "email"))
     def x_login_email_step(message):
-        """Шаг 3: Получили email (или skip)"""
         chat_id = message.chat.id
         email_input_text = message.text.strip()
         
-        # Игнорируем команды (кроме skip)
         if email_input_text.startswith("/") and email_input_text.lower() != "/skip":
             bot.reply_to(message, "❌ Это похоже на команду. Введи email, <code>skip</code> или /x_cancel для отмены.")
             return
@@ -881,7 +910,6 @@ def register_x_play(bot):
         
         print(f"[XX] Chat {chat_id}: email received, starting login with username={username}")
         
-        # === ВАЖНО: Сначала отправляем сообщение, потом удаляем ===
         # Отправляем уведомление о начале авторизации
         status_msg = bot.send_message(
             chat_id, 
@@ -894,8 +922,8 @@ def register_x_play(bot):
         
         # Пытаемся удалить сообщения с паролем (не критично)
         try:
-            bot.delete_message(chat_id, message.message_id - 1)  # Сообщение с паролем
-            bot.delete_message(chat_id, message.message_id)       # Сообщение с email/skip
+            bot.delete_message(chat_id, message.message_id - 1)
+            bot.delete_message(chat_id, message.message_id)
         except Exception as e:
             print(f"[XX] Could not delete password message: {e}")
         
