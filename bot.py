@@ -87,155 +87,156 @@ def render_headers():
         "Content-Type": "application/json"
     }
 
+def render_api_call(method, endpoint, payload=None):
+    """Универсальная функция для вызова Render API с отладкой"""
+    url = f"{RENDER_API_URL}{endpoint}"
+    headers = render_headers()
+    
+    try:
+        if method == "GET":
+            resp = requests.get(url, headers=headers, timeout=15)
+        elif method == "POST":
+            resp = requests.post(url, headers=headers, json=payload, timeout=15)
+        else:
+            return None, f"Unsupported method: {method}"
+        
+        # Отладка: логируем сырой ответ
+        print(f"[Render API] {method} {url}")
+        print(f"[Render API] Status: {resp.status_code}")
+        print(f"[Render API] Body preview: {resp.text[:500]}")
+        
+        # Проверяем, что ответ JSON
+        content_type = resp.headers.get('Content-Type', '')
+        if 'application/json' not in content_type:
+            return None, f"Non-JSON response (Content-Type: {content_type}): {resp.text[:200]}"
+        
+        if resp.status_code >= 400:
+            return None, f"HTTP {resp.status_code}: {resp.text[:300]}"
+        
+        return resp.json(), None
+        
+    except requests.exceptions.JSONDecodeError as e:
+        return None, f"JSON decode error: {e}\nResponse: {resp.text[:300]}"
+    except Exception as e:
+        return None, f"Request error: {e}"
+
 @bot.message_handler(commands=['render_status'])
 def render_status_command(message):
-    """Показать статус сервиса на Render"""
     if not RENDER_API_KEY or not RENDER_SERVICE_ID:
         bot.reply_to(message, "❌ RENDER_API_KEY или RENDER_SERVICE_ID не настроены")
         return
     
-    try:
-        url = f"{RENDER_API_URL}/services/{RENDER_SERVICE_ID}"
-        resp = requests.get(url, headers=render_headers(), timeout=15)
-        data = resp.json()
-        
-        status = data.get("status", "unknown")
-        name = data.get("name", "unknown")
-        type_ = data.get("type", "unknown")
-        suspended = data.get("suspended", "unknown")
-        
-        msg = (
-            f"📊 <b>Render Status</b>\n\n"
-            f"Имя: <code>{name}</code>\n"
-            f"Тип: <code>{type_}</code>\n"
-            f"Статус: <code>{status}</code>\n"
-            f"Приостановлен: <code>{suspended}</code>"
-        )
-        bot.reply_to(message, msg, parse_mode='HTML')
-        log_action("render_status", f"user={message.from_user.id}, status={status}", "success")
-        
-    except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: {e}")
-        log_action("render_status", f"error: {e}", "error")
+    data, error = render_api_call("GET", f"/services/{RENDER_SERVICE_ID}")
+    if error:
+        bot.reply_to(message, f"❌ Ошибка: {error}")
+        log_action("render_status", f"error: {error}", "error")
+        return
+    
+    status = data.get("status", "unknown")
+    name = data.get("name", "unknown")
+    type_ = data.get("type", "unknown")
+    suspended = data.get("suspended", "unknown")
+    
+    msg = (
+        f"📊 <b>Render Status</b>\n\n"
+        f"Имя: <code>{name}</code>\n"
+        f"Тип: <code>{type_}</code>\n"
+        f"Статус: <code>{status}</code>\n"
+        f"Приостановлен: <code>{suspended}</code>"
+    )
+    bot.reply_to(message, msg, parse_mode='HTML')
+    log_action("render_status", f"user={message.from_user.id}, status={status}", "success")
 
 @bot.message_handler(commands=['render_suspend'])
 def render_suspend_command(message):
-    """Приостановить сервис на Render"""
     if not RENDER_API_KEY or not RENDER_SERVICE_ID:
         bot.reply_to(message, "❌ RENDER_API_KEY или RENDER_SERVICE_ID не настроены")
         return
     
-    try:
-        url = f"{RENDER_API_URL}/services/{RENDER_SERVICE_ID}/suspend"
-        resp = requests.post(url, headers=render_headers(), timeout=15)
-        
-        if resp.status_code in (200, 202, 204):
-            bot.reply_to(message, "⏸️ Сервис приостановлен")
-            log_action("render_suspend", f"user={message.from_user.id}", "success")
-        else:
-            bot.reply_to(message, f"⚠️ Код ответа: {resp.status_code}\n{resp.text}")
-            
-    except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: {e}")
-        log_action("render_suspend", f"error: {e}", "error")
+    data, error = render_api_call("POST", f"/services/{RENDER_SERVICE_ID}/suspend")
+    if error:
+        bot.reply_to(message, f"❌ Ошибка: {error}")
+        log_action("render_suspend", f"error: {error}", "error")
+        return
+    
+    bot.reply_to(message, "⏸️ Сервис приостановлен")
+    log_action("render_suspend", f"user={message.from_user.id}", "success")
 
 @bot.message_handler(commands=['render_resume'])
 def render_resume_command(message):
-    """Возобновить сервис на Render"""
     if not RENDER_API_KEY or not RENDER_SERVICE_ID:
         bot.reply_to(message, "❌ RENDER_API_KEY или RENDER_SERVICE_ID не настроены")
         return
     
-    try:
-        url = f"{RENDER_API_URL}/services/{RENDER_SERVICE_ID}/resume"
-        resp = requests.post(url, headers=render_headers(), timeout=15)
-        
-        if resp.status_code in (200, 202, 204):
-            bot.reply_to(message, "▶️ Сервис возобновлён")
-            log_action("render_resume", f"user={message.from_user.id}", "success")
-        else:
-            bot.reply_to(message, f"⚠️ Код ответа: {resp.status_code}\n{resp.text}")
-            
-    except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: {e}")
-        log_action("render_resume", f"error: {e}", "error")
+    data, error = render_api_call("POST", f"/services/{RENDER_SERVICE_ID}/resume")
+    if error:
+        bot.reply_to(message, f"❌ Ошибка: {error}")
+        log_action("render_resume", f"error: {error}", "error")
+        return
+    
+    bot.reply_to(message, "▶️ Сервис возобновлён")
+    log_action("render_resume", f"user={message.from_user.id}", "success")
 
 @bot.message_handler(commands=['render_restart'])
 def render_restart_command(message):
-    """Перезапустить сервис (deploy)"""
     if not RENDER_API_KEY or not RENDER_SERVICE_ID:
         bot.reply_to(message, "❌ RENDER_API_KEY или RENDER_SERVICE_ID не настроены")
         return
     
-    try:
-        url = f"{RENDER_API_URL}/services/{RENDER_SERVICE_ID}/deploys"
-        payload = {"clearCache": "do_not_clear"}
-        resp = requests.post(url, headers=render_headers(), json=payload, timeout=15)
-        
-        if resp.status_code in (200, 201, 202):
-            data = resp.json()
-            deploy_id = data.get("id", "unknown")
-            bot.reply_to(message, f"🔄 Перезапуск запущен\nDeploy ID: <code>{deploy_id}</code>", parse_mode='HTML')
-            log_action("render_restart", f"user={message.from_user.id}, deploy={deploy_id}", "success")
-        else:
-            bot.reply_to(message, f"⚠️ Код ответа: {resp.status_code}\n{resp.text}")
-            
-    except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: {e}")
-        log_action("render_restart", f"error: {e}", "error")
+    payload = {"clearCache": "do_not_clear"}
+    data, error = render_api_call("POST", f"/services/{RENDER_SERVICE_ID}/deploys", payload)
+    if error:
+        bot.reply_to(message, f"❌ Ошибка: {error}")
+        log_action("render_restart", f"error: {error}", "error")
+        return
+    
+    deploy_id = data.get("id", "unknown") if isinstance(data, dict) else "unknown"
+    bot.reply_to(message, f"🔄 Перезапуск запущен\nDeploy ID: <code>{deploy_id}</code>", parse_mode='HTML')
+    log_action("render_restart", f"user={message.from_user.id}, deploy={deploy_id}", "success")
 
 @bot.message_handler(commands=['render_env'])
 def render_env_command(message):
-    """Показать переменные окружения сервиса"""
     if not RENDER_API_KEY or not RENDER_SERVICE_ID:
         bot.reply_to(message, "❌ RENDER_API_KEY или RENDER_SERVICE_ID не настроены")
         return
     
-    try:
-        url = f"{RENDER_API_URL}/services/{RENDER_SERVICE_ID}/env-vars"
-        resp = requests.get(url, headers=render_headers(), timeout=15)
-        data = resp.json()
-        
-        env_list = []
-        for item in data:
-            name = item.get("envVar", {}).get("key", "unknown")
-            value = item.get("envVar", {}).get("value", "")
-            # Маскируем значения
-            masked = value[:2] + "***" if len(value) > 3 else "***"
-            env_list.append(f"  <code>{name}</code> = {masked}")
-        
-        msg = "🔧 <b>Переменные окружения:</b>\n\n" + "\n".join(env_list[:20])
-        bot.reply_to(message, msg, parse_mode='HTML')
-        log_action("render_env", f"user={message.from_user.id}, count={len(env_list)}", "success")
-        
-    except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: {e}")
-        log_action("render_env", f"error: {e}", "error")
+    data, error = render_api_call("GET", f"/services/{RENDER_SERVICE_ID}/env-vars")
+    if error:
+        bot.reply_to(message, f"❌ Ошибка: {error}")
+        log_action("render_env", f"error: {error}", "error")
+        return
+    
+    env_list = []
+    for item in data:
+        name = item.get("envVar", {}).get("key", "unknown")
+        value = item.get("envVar", {}).get("value", "")
+        masked = value[:2] + "***" if len(value) > 3 else "***"
+        env_list.append(f"  <code>{name}</code> = {masked}")
+    
+    msg = "🔧 <b>Переменные окружения:</b>\n\n" + "\n".join(env_list[:20])
+    bot.reply_to(message, msg, parse_mode='HTML')
+    log_action("render_env", f"user={message.from_user.id}, count={len(env_list)}", "success")
 
 @bot.message_handler(commands=['render_logs'])
 def render_logs_command(message):
-    """Показать последние логи сервиса"""
     if not RENDER_API_KEY or not RENDER_SERVICE_ID:
         bot.reply_to(message, "❌ RENDER_API_KEY или RENDER_SERVICE_ID не настроены")
         return
     
-    try:
-        url = f"{RENDER_API_URL}/services/{RENDER_SERVICE_ID}/logs"
-        resp = requests.get(url, headers=render_headers(), timeout=15)
-        data = resp.json()
-        
-        logs = data.get("logs", [])[:10]
-        if not logs:
-            bot.reply_to(message, "📭 Логи пусты")
-            return
-        
-        log_text = "\n".join([f"<code>{l.get('message', '')[:100]}</code>" for l in logs])
-        bot.reply_to(message, f"📋 <b>Последние логи:</b>\n\n{log_text}", parse_mode='HTML')
-        log_action("render_logs", f"user={message.from_user.id}", "success")
-        
-    except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: {e}")
-        log_action("render_logs", f"error: {e}", "error")
+    data, error = render_api_call("GET", f"/services/{RENDER_SERVICE_ID}/logs")
+    if error:
+        bot.reply_to(message, f"❌ Ошибка: {error}")
+        log_action("render_logs", f"error: {error}", "error")
+        return
+    
+    logs = data.get("logs", [])[:10] if isinstance(data, dict) else []
+    if not logs:
+        bot.reply_to(message, "📭 Логи пусты")
+        return
+    
+    log_text = "\n".join([f"<code>{l.get('message', '')[:100]}</code>" for l in logs])
+    bot.reply_to(message, f"📋 <b>Последние логи:</b>\n\n{log_text}", parse_mode='HTML')
+    log_action("render_logs", f"user={message.from_user.id}", "success")
 
 # ===== ОБЩЕЕ МЕНЮ =====
 MENU_TEXT = (
