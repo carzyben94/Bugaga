@@ -154,6 +154,15 @@ class XXAgent:
             print(f"[XX] Screenshot failed: {e}")
             return None
 
+    async def _get_page_info(self, page):
+        """Получить информацию о текущей странице для отладки"""
+        try:
+            url = page.url
+            title = await page.title()
+            return f"URL: {url}, Title: {title}"
+        except:
+            return "Could not get page info"
+
     async def _check_auth(self, page):
         try:
             await page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=15000)
@@ -166,17 +175,12 @@ class XXAgent:
             return False
 
     async def _smart_fill(self, page, selectors, value, field_name="поле"):
-        """
-        Умное заполнение поля: пробуем разные селекторы, 
-        используем fill() без клика, с fallback на type().
-        """
+        """Умное заполнение поля без клика"""
         for selector in selectors:
             try:
-                # Пробуем найти через locator (более надёжно)
                 locator = page.locator(selector).first
                 if await locator.count() > 0:
                     print(f"[XX] Found {field_name} via locator: {selector}")
-                    # Очищаем и заполняем без клика
                     await locator.clear()
                     await locator.fill(value)
                     await asyncio.sleep(0.5)
@@ -184,32 +188,31 @@ class XXAgent:
             except Exception as e:
                 print(f"[XX] Locator failed for {selector}: {e}")
                 try:
-                    # Fallback на старый метод
                     elem = await page.wait_for_selector(selector, timeout=5000)
                     if elem:
                         print(f"[XX] Found {field_name} via query_selector: {selector}")
-                        # Используем evaluate для прямой установки value
-                        await page.evaluate(f'document.querySelector("{selector.replace('"', '\\"')}")?.setAttribute("value", "{value.replace('"', '\\"')}")')
-                        # Также пробуем fill
-                        try:
-                            await elem.fill(value)
-                        except:
-                            await page.evaluate(f'document.querySelector("{selector.replace('"', '\\"')}")?.value = "{value.replace('"', '\\"')}"')
+                        await page.evaluate(f'''
+                            (function() {{
+                                var el = document.querySelector("{selector.replace('"', '\\"')}");
+                                if (el) {{
+                                    el.value = "{value.replace('"', '\\"')}";
+                                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                    return true;
+                                }}
+                                return false;
+                            }})()
+                        ''')
                         await asyncio.sleep(0.5)
                         return True
                 except:
                     continue
-        
         return False
 
     async def _smart_click(self, page, selectors, button_name="кнопка"):
-        """
-        Умный клик: пробуем разные селекторы, 
-        используем force=True и разные способы клика.
-        """
+        """Умный клик с force и fallback"""
         for selector in selectors:
             try:
-                # Пробуем locator с force
                 locator = page.locator(selector).first
                 if await locator.count() > 0:
                     print(f"[XX] Clicking {button_name} via locator: {selector}")
@@ -218,11 +221,9 @@ class XXAgent:
             except Exception as e:
                 print(f"[XX] Locator click failed for {selector}: {e}")
                 try:
-                    # Fallback
                     elem = await page.wait_for_selector(selector, timeout=3000)
                     if elem:
                         print(f"[XX] Clicking {button_name} via query_selector: {selector}")
-                        # Пробуем разные способы клика
                         try:
                             await elem.click(force=True)
                         except:
@@ -230,38 +231,101 @@ class XXAgent:
                         return True
                 except:
                     continue
-        
         return False
 
+    async def _handle_verification_step(self, page, email=None):
+        """Обработать дополнительный шаг верификации (email, телефон, капча)"""
+        await asyncio.sleep(3)
+        await self._screenshot(page, "verification_step")
+        
+        # Проверяем, есть ли поле для email/телефона
+        verify_selectors = [
+            'input[name="email"]',
+            'input[name="phone"]',
+            'input[data-testid="ocfEnterTextTextInput"]',
+            'input[type="text"]',
+            'input[placeholder*="phone" i]',
+            'input[placeholder*="email" i]',
+            'input[placeholder*="код" i]',
+            'input[placeholder*="code" i]',
+        ]
+        
+        for selector in verify_selectors:
+            try:
+                verify_input = await page.wait_for_selector(selector, timeout=5000)
+                if verify_input:
+                    placeholder = await verify_input.get_attribute("placeholder") or ""
+                    name_attr = await verify_input.get_attribute("name") or ""
+                    label = await page.evaluate('el => el.labels?.[0]?.textContent || el.getAttribute("aria-label") || ""', verify_input)
+                    
+                    print(f"[XX] Found verification field: {selector}, placeholder: {placeholder}, name: {name_attr}")
+                    
+                    # Если это поле для кода подтверждения
+                    if any(kw in (placeholder + label).lower() for kw in ["code", "код", "verification"]):
+                        return False, "Требуется код подтверждения (2FA). Авторизация через чат не поддерживает 2FA. Настрой X_EMAIL в Environment Variables."
+                    
+                    # Если это поле для email/телефона и у нас есть email
+                    if any(kw in (placeholder + name_attr + label).lower() for kw in ["phone", "email", "телефон", "почта"]):
+                        if email:
+                            filled = await self._smart_fill(page, [selector], email, "verification")
+                            if filled:
+                                await asyncio.sleep(1)
+                                # Нажимаем Next
+                                next_selectors = [
+                                    'button[type="submit"]',
+                                    'button:has-text("Next")',
+                                    'button:has-text("Далее")',
+                                    'button[role="button"]',
+                                ]
+                                await self._smart_click(page, next_selectors, "Next after verification")
+                                await asyncio.sleep(3)
+                                await self._screenshot(page, "verification_after_email")
+                                return True, None
+                        else:
+                            return False, "Требуется дополнительная верификация (email/телефон). Укажи email при авторизации или настрой X_EMAIL в Environment Variables."
+            except:
+                continue
+        
+        # Проверяем, есть ли капча
+        try:
+            captcha_selectors = [
+                'iframe[src*="captcha"]',
+                'iframe[src*="recaptcha"]',
+                '[data-testid="challenge"]',
+                '.challenge',
+            ]
+            for selector in captcha_selectors:
+                captcha = await page.query_selector(selector)
+                if captcha:
+                    return False, "Обнаружена капча. Автоматическая авторизация невозможна. Попробуй войти через браузер и сохранить cookies вручную."
+        except:
+            pass
+        
+        return True, None  # Нет дополнительных шагов
+
     async def _login(self, page, username, password, email=None):
-        """
-        Авторизация на X с поддержкой новой формы (jf-element, Janrain).
-        """
+        """Авторизация на X с поддержкой новой формы и дополнительных шагов"""
         try:
             print(f"[XX] Авторизация как {username}...")
             
             # 1. Открываем страницу логина
             await page.goto("https://x.com/i/flow/login", wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(4)  # Даём больше времени на загрузку JS
+            await asyncio.sleep(4)
             await self._screenshot(page, "login_start")
+            print(f"[XX] Page loaded: {await self._get_page_info(page)}")
             
-            # 2. Ввод username — пробуем ВСЕ возможные селекторы (новые + старые)
+            # 2. Ввод username
             username_selectors = [
-                # Новая форма (Janrain/ForgeRock)
                 'input[name="username_or_email"]',
                 'input#jf-input-username_or_email',
                 'input.jf-element.jf-float-input',
                 'input[autocomplete="username webauthn"]',
                 'input[inputmode="text"]',
-                # Старая форма
                 'input[autocomplete="username"]',
                 'input[name="text"]',
                 'input[type="text"]',
                 'input[autocapitalize="none"]',
                 'input[data-testid="ocfEnterTextTextInput"]',
-                'input[placeholder*="phone" i]',
-                'input[placeholder*="email" i]',
-                'input[placeholder*="username" i]',
             ]
             
             filled = await self._smart_fill(page, username_selectors, username, "username")
@@ -273,80 +337,46 @@ class XXAgent:
             
             # 3. Нажимаем Next
             next_selectors = [
-                # Новая форма
                 'button[type="submit"]',
                 'button.jf-button',
                 'button:has-text("Next")',
                 'button:has-text("Далее")',
-                # Старая форма
                 'button[role="button"]:nth-child(2)',
-                'button[type="button"]:nth-child(2)',
                 'div[role="button"]:has-text("Next")',
-                'div[role="button"]:has-text("Далее")',
             ]
             
             clicked = await self._smart_click(page, next_selectors, "Next")
             if not clicked:
-                # Fallback: жмём Enter на поле username
                 try:
                     await page.keyboard.press("Enter")
                     print("[XX] Pressed Enter on keyboard")
-                    clicked = True
                 except Exception as e:
                     print(f"[XX] Enter failed: {e}")
             
-            if not clicked:
-                return False, "Не удалось нажать кнопку Next. Попробуй позже."
-            
             await asyncio.sleep(4)
             await self._screenshot(page, "login_after_username")
+            print(f"[XX] After username step: {await self._get_page_info(page)}")
             
-            # 4. Проверка на дополнительный email/телефон
-            try:
-                # Проверяем, не появилось ли поле для дополнительной верификации
-                verify_selectors = [
-                    'input[name="email"]',
-                    'input[name="phone"]',
-                    'input[data-testid="ocfEnterTextTextInput"]',
-                    'input[type="text"]',
-                ]
-                
-                for selector in verify_selectors:
-                    try:
-                        verify_input = await page.wait_for_selector(selector, timeout=5000)
-                        if verify_input and email:
-                            # Проверяем, что это действительно поле верификации
-                            placeholder = await verify_input.get_attribute("placeholder") or ""
-                            name_attr = await verify_input.get_attribute("name") or ""
-                            
-                            if any(kw in (placeholder + name_attr).lower() for kw in ["phone", "email", "телефон", "почта", "verification"]):
-                                print(f"[XX] Found verification field: {selector}")
-                                filled = await self._smart_fill(page, [selector], email, "verification")
-                                if filled:
-                                    await asyncio.sleep(1)
-                                    # Нажимаем Next снова
-                                    await self._smart_click(page, next_selectors, "Next after verification")
-                                    await asyncio.sleep(3)
-                                    await self._screenshot(page, "login_after_verification")
-                                break
-                    except:
-                        continue
-                        
-            except Exception as e:
-                print(f"[XX] Verification step skipped or failed: {e}")
+            # 4. Обрабатываем возможную верификацию (email/телефон)
+            success, error = await self._handle_verification_step(page, email)
+            if not success:
+                return False, error
             
             # 5. Ввод пароля
             password_selectors = [
-                # Новая форма
                 'input[name="password"]',
                 'input[type="password"]',
                 'input[autocomplete="current-password"]',
-                # Старая форма
                 'input[data-testid="LoginForm_Password_Input"]',
             ]
             
             filled = await self._smart_fill(page, password_selectors, password, "password")
             if not filled:
+                # Проверяем, не запросили ли ещё раз username (значит, первый шаг не прошёл)
+                username_check = await page.query_selector('input[name="username_or_email"]')
+                if username_check:
+                    return False, "Не удалось перейти к вводу пароля. Возможно, username неверный или требуется email/телефон."
+                
                 await self._screenshot(page, "login_no_password")
                 return False, "Не найдено поле для ввода пароля. Возможно, требуется email/телефон."
             
@@ -354,34 +384,47 @@ class XXAgent:
             
             # 6. Нажимаем Log in
             login_selectors = [
-                # Новая форма
                 'button[type="submit"]',
                 'button.jf-button',
-                # Старая форма
                 'button[data-testid="LoginForm_Login_Button"]',
                 'button:has-text("Log in")',
                 'button:has-text("Войти")',
                 'button:has-text("Sign in")',
                 'div[role="button"]:has-text("Log in")',
-                'div[role="button"]:has-text("Войти")',
             ]
             
             clicked = await self._smart_click(page, login_selectors, "Login")
             if not clicked:
-                # Fallback: Enter
                 try:
                     await page.keyboard.press("Enter")
                     print("[XX] Pressed Enter for login")
                 except Exception as e:
                     print(f"[XX] Enter for login failed: {e}")
             
-            # 7. Ждём загрузки
+            # 7. Ждём загрузки и обрабатываем дополнительные шаги
             await asyncio.sleep(5)
             await self._screenshot(page, "login_after_submit")
+            print(f"[XX] After login submit: {await self._get_page_info(page)}")
             
-            # Проверяем результат
+            # Проверяем, не появилась ли ещё одна верификация (2FA, капча)
+            success, error = await self._handle_verification_step(page, email)
+            if not success:
+                return False, error
+            
+            # 8. Проверяем, вошли ли мы
+            # Ждём ещё немного и проверяем URL
+            await asyncio.sleep(3)
+            current_url = page.url
+            print(f"[XX] Current URL after login: {current_url}")
+            
+            if "home" in current_url or "x.com/home" in current_url:
+                print("[XX] Auth success detected by URL!")
+                return True, None
+            
+            # Пробуем найти primaryColumn
             try:
-                await page.wait_for_selector('[data-testid="primaryColumn"]', timeout=15000)
+                await page.wait_for_selector('[data-testid="primaryColumn"]', timeout=10000)
+                print("[XX] primaryColumn found!")
             except:
                 # Проверяем ошибки
                 error_selectors = [
@@ -390,7 +433,8 @@ class XXAgent:
                     'span:has-text("Incorrect")',
                     '[data-testid="toast"]',
                     'div[role="alert"]',
-                    '.jf-error',  # Новая форма ошибки
+                    '.jf-error',
+                    '[role="alert"]',
                 ]
                 
                 for selector in error_selectors:
@@ -402,8 +446,13 @@ class XXAgent:
                     except:
                         continue
                 
-                await self._screenshot(page, "login_failed")
-                return False, "Авторизация не удалась. Проверь логин/пароль или установи X_EMAIL."
+                # Проверяем, не на странице логина ли мы всё ещё
+                if "/login" in current_url or "/flow/login" in current_url:
+                    await self._screenshot(page, "login_still_on_login_page")
+                    return False, "Всё ещё на странице логина. Возможно, неверный пароль или требуется дополнительная верификация."
+                
+                await self._screenshot(page, "login_unknown_state")
+                return False, f"Авторизация не удалась. Текущий URL: {current_url}. Проверь логин/пароль или установи X_EMAIL."
             
             # Финальная проверка
             signin = await page.query_selector('a[href="/i/flow/login"]')
