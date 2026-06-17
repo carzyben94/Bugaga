@@ -3,19 +3,8 @@ import requests
 import threading
 import random
 
-# AGNES AI - БЕСПЛАТНЫЕ МОДЕЛИ
-AGNES_MODELS = [
-    "agnes-2.0-flash",           # Текст, 1M контекст
-    "agnes-image-2.0-flash",     # Генерация изображений 4K
-    "agnes-video-2.0",           # Генерация видео со звуком
-]
-
 def register_ai(bot, agnes_api_key):
     """Регистрирует обработчик команды /ai через Agnes AI API"""
-
-    def get_model():
-        """Возвращает случайную модель для запроса"""
-        return random.choice(AGNES_MODELS)
 
     @bot.message_handler(commands=['ai'])
     def ai_command(message):
@@ -36,38 +25,62 @@ def register_ai(bot, agnes_api_key):
 
         def do_ai():
             try:
-                model = get_model()
-
                 headers = {
                     "Authorization": f"Bearer {agnes_api_key}",
                     "Content-Type": "application/json",
                 }
 
                 payload = {
-                    "model": model,
+                    "model": "agnes-2.0-flash",  # Пробуем одно название
                     "messages": [{"role": "user", "content": user_text}],
                     "max_tokens": 500,
                     "temperature": 0.7
                 }
 
-                r = requests.post(
+                # Пробуем разные эндпоинты
+                endpoints = [
                     "https://apihub.agnes-ai.com/v1/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=60
-                )
+                    "https://api.agnes-ai.com/v1/chat/completions",
+                ]
 
-                if r.status_code == 200:
-                    answer = r.json()["choices"][0]["message"]["content"]
-                    used_model = r.json().get("model", model)
+                response = None
+                for endpoint in endpoints:
+                    try:
+                        r = requests.post(
+                            endpoint,
+                            headers=headers,
+                            json=payload,
+                            timeout=60
+                        )
+                        if r.status_code == 200:
+                            response = r
+                            break
+                        elif r.status_code == 404:
+                            continue  # Пробуем следующий эндпоинт
+                        else:
+                            response = r
+                            break
+                    except:
+                        continue
+
+                if response is None:
                     bot.edit_message_text(
-                        f"{answer}\n\n🤖 *Модель:* `{used_model}`",
+                        "❌ Не удалось подключиться к Agnes AI.\n"
+                        "Проверьте API-ключ или попробуйте позже.",
                         chat_id=message.chat.id,
-                        message_id=status_msg.message_id,
-                        parse_mode='Markdown'
+                        message_id=status_msg.message_id
+                    )
+                    return
+
+                if response.status_code == 200:
+                    answer = response.json()["choices"][0]["message"]["content"]
+                    bot.edit_message_text(
+                        answer,
+                        chat_id=message.chat.id,
+                        message_id=status_msg.message_id
                     )
 
-                elif r.status_code == 429:
+                elif response.status_code == 429:
                     bot.edit_message_text(
                         "⚠️ *Превышен лимит запросов*\n"
                         "Agnes AI Free: 20 запросов/мин.\n"
@@ -79,7 +92,7 @@ def register_ai(bot, agnes_api_key):
 
                 else:
                     bot.edit_message_text(
-                        f"❌ Ошибка API: {r.status_code}\n{str(r.text)[:200]}",
+                        f"❌ Ошибка API: {response.status_code}\n{str(response.text)[:200]}",
                         chat_id=message.chat.id,
                         message_id=status_msg.message_id
                     )
