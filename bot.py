@@ -115,7 +115,9 @@ MENU_TEXT = (
     "  ├ /gh_branches — Ветки\n"
     "  └ /gh_repo — Инфо о репо\n\n"
     
-    "🐦 <b>X Agent</b>\n"
+    "🐦 <b>X Agent (Playwright)</b>\n"
+    "  ├ /x_status — Проверить статус системы\n"
+    "  ├ /x_install — Установить Playwright + Chromium\n"
     "  ├ /x_login — Авторизация в X\n"
     "  ├ /x_timeline [user] [N] — Лента X\n"
     "  ├ /x_search [запрос] [N] — Поиск X\n"
