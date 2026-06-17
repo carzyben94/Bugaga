@@ -10,6 +10,7 @@ from xposts import register_xposts
 from crypto import register_crypto
 from ai import register_ai
 from browser_ai import register_browser_ai
+from crawler_ai import register_crawler_ai
 
 logging.basicConfig(level=logging.INFO)
 
@@ -48,6 +49,11 @@ try:
 except Exception as e:
     print(f"browser_ai error: {e}")
 
+try:
+    register_crawler_ai(bot, AGNES_API_KEY)
+except Exception as e:
+    print(f"crawler_ai error: {e}")
+
 # ===== ЛОГИ =====
 def send_log_to_admin(action, details=None, status="info"):
     if not ADMIN_CHAT_ID:
@@ -70,17 +76,18 @@ def log_action(action, details=None, status="info", send=True):
     if send:
         send_log_to_admin(action, details, status)
 
-# ===== КОМАНДЫ (БЕЗ MARKDOWN) =====
+# ===== КОМАНДЫ =====
 @bot.message_handler(commands=['start'])
 def start_command(message):
     try:
         log_action("start", f"user={message.from_user.id}", "info")
-        bot.reply_to(message, 
+        bot.reply_to(message,
             "👋 Добро пожаловать в BUGAGA BOT!\n\n"
             "📋 МЕНЮ БОТА\n\n"
             "🤖 ИСКУССТВЕННЫЙ ИНТЕЛЛЕКТ\n"
             "/ai [вопрос] - спросить ИИ\n"
-            "/browser_ai [URL] [вопрос] - ИИ прочитает сайт\n\n"
+            "/browser_ai [URL] [вопрос] - ИИ прочитает сайт\n"
+            "/crawler_ai [URL] [вопрос] - ИИ исследует весь сайт\n\n"
             "📰 НОВОСТИ\n"
             "/xposts - посты из X (AteoBreaking)\n\n"
             "💰 ФИНАНСЫ\n"
@@ -98,7 +105,8 @@ def help_command(message):
             "ДОСТУПНЫЕ КОМАНДЫ:\n\n"
             "🤖 ИСКУССТВЕННЫЙ ИНТЕЛЛЕКТ\n"
             "/ai [вопрос] - задай вопрос ИИ\n"
-            "/browser_ai [URL] [вопрос] - ИИ прочитает сайт\n\n"
+            "/browser_ai [URL] [вопрос] - ИИ прочитает одну страницу\n"
+            "/crawler_ai [URL] [вопрос] - ИИ исследует весь сайт\n\n"
             "📰 НОВОСТИ\n"
             "/xposts - последние посты из X\n\n"
             "💰 ФИНАНСЫ\n"
@@ -154,5 +162,5 @@ if __name__ == '__main__':
     except Exception as e:
         print(f"get webhook info error: {e}")
     
-    log_action("bot_start", "Бот запущен", "success")
+    log_action("bot_start", "Бот запущен с Agnes AI, браузер-ИИ и краулером", "success")
     app.run(host='0.0.0.0', port=port)
