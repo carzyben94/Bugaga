@@ -4,12 +4,12 @@ import logging
 import json
 import requests
 import threading
-import urllib.parse
-import xml.etree.ElementTree as ET
 from flask import Flask, request
 import telebot
-from bs4 import BeautifulSoup
 from datetime import datetime
+
+# Импорт модулей
+from xposts import register_xposts
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -31,13 +31,16 @@ if not TELEGRAM_TOKEN:
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
-# ===== СТАТУС МОДУЛЬ =====
+# ===== РЕГИСТРАЦИЯ МОДУЛЕЙ =====
 try:
     from status import register_status_full
     register_status_full(bot)
     print("Status module loaded")
 except Exception as e:
     print(f"Status not loaded: {e}")
+
+# Регистрируем /xposts
+register_xposts(bot)
 
 # ===== ЛОГИ В ЧАТ =====
 def send_log_to_admin(action, details=None, status="info"):
@@ -60,249 +63,6 @@ def log_action(action, details=None, status="info", send=True):
         pass
     if send:
         send_log_to_admin(action, details, status)
-
-# ===== БРАУЗЕР МОДУЛЬ =====
-def open_browser_sync(url="https://example.com"):
-    """Открывает сайт через requests"""
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7'
-        }
-        r = requests.get(url, headers=headers, timeout=15)
-        if r.status_code == 200:
-            soup = BeautifulSoup(r.text, 'lxml')
-            title = soup.find('title')
-            title_text = title.get_text(strip=True) if title else "Без заголовка"
-            return f"✅ Заголовок: {title_text}"
-        else:
-            return f"❌ Ошибка HTTP: {r.status_code}"
-    except Exception as e:
-        log_action("browser_error", str(e), "error")
-        return f"❌ Ошибка: {str(e)[:100]}"
-
-@bot.message_handler(commands=['browser'])
-def handle_browser(message):
-    url = message.text.replace('/browser', '').strip()
-    if not url:
-        bot.reply_to(message, "🌐 Укажите URL\nПример: /browser https://example.com")
-        return
-    
-    if not url.startswith(("http://", "https://")):
-        url = "https://" + url
-    
-    log_action("browser", f"user={message.from_user.id} открывает {url}", "info")
-    status_msg = bot.reply_to(message, f"🌐 Открываю {url}...")
-    
-    def do_browser():
-        try:
-            result = open_browser_sync(url)
-            bot.edit_message_text(result, chat_id=message.chat.id, message_id=status_msg.message_id)
-            log_action("browser_success", "страница открыта", "success")
-        except Exception as e:
-            bot.edit_message_text(f"❌ Ошибка: {e}", chat_id=message.chat.id, message_id=status_msg.message_id)
-            log_action("browser_error", str(e), "error")
-    
-    thread = threading.Thread(target=do_browser, daemon=True)
-    thread.start()
-
-# ===== ПОСТЫ ИЗ X (TWITTER) ЧЕРЕЗ NITTER =====
-@bot.message_handler(commands=['xposts'])
-def xposts_command(message):
-    status_msg = bot.reply_to(message, "🐦 Ищу последние посты из X...")
-    
-    def do_xposts():
-        try:
-            accounts = [
-                {"username": "the_lentach", "name": "Лентач"}
-            ]
-            
-            all_posts = []
-            
-            for account in accounts:
-                try:
-                    url = f"https://nitter.net/{account['username']}/rss"
-                    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-                    response = requests.get(url, headers=headers, timeout=10)
-                    
-                    if response.status_code == 200:
-                        root = ET.fromstring(response.content)
-                        items = root.findall('.//item')
-                        
-                        for item in items[:3]:
-                            title_elem = item.find('title')
-                            if title_elem is not None and title_elem.text:
-                                text = title_elem.text.strip()
-                                
-                                pub_date = item.find('pubDate')
-                                date = pub_date.text if pub_date is not None else ""
-                                
-                                link = item.find('link')
-                                post_url = link.text if link is not None else ""
-                                
-                                if len(text) > 500:
-                                    text = text[:500] + "..."
-                                
-                                all_posts.append({
-                                    'username': account['username'],
-                                    'name': account['name'],
-                                    'text': text,
-                                    'date': date[:16] if date else "",
-                                    'url': post_url
-                                })
-                                
-                    else:
-                        alt_url = f"https://nitter.poast.org/{account['username']}/rss"
-                        response = requests.get(alt_url, headers=headers, timeout=10)
-                        if response.status_code == 200:
-                            root = ET.fromstring(response.content)
-                            items = root.findall('.//item')
-                            
-                            for item in items[:3]:
-                                title_elem = item.find('title')
-                                if title_elem is not None and title_elem.text:
-                                    text = title_elem.text.strip()
-                                    
-                                    pub_date = item.find('pubDate')
-                                    date = pub_date.text if pub_date is not None else ""
-                                    
-                                    link = item.find('link')
-                                    post_url = link.text if link is not None else ""
-                                    
-                                    if len(text) > 500:
-                                        text = text[:500] + "..."
-                                    
-                                    all_posts.append({
-                                        'username': account['username'],
-                                        'name': account['name'],
-                                        'text': text,
-                                        'date': date[:16] if date else "",
-                                        'url': post_url
-                                    })
-                    
-                except Exception as e:
-                    log_action("xposts_account_error", f"{account['username']}: {str(e)[:50]}", "warning")
-                    continue
-            
-            if not all_posts:
-                bot.edit_message_text(
-                    "❌ Не удалось загрузить посты. Попробуйте позже.",
-                    chat_id=message.chat.id,
-                    message_id=status_msg.message_id
-                )
-                return
-            
-            current_time = datetime.now().strftime("%d.%m.%Y %H:%M")
-            result = "🐦 *ПОСЛЕДНИЕ ПОСТЫ ИЗ X*\n"
-            result += f"📅 {current_time}\n\n"
-            
-            for i, post in enumerate(all_posts[:3], 1):
-                result += f"📌 *@{post['username']}*\n"
-                result += f"{post['text']}\n"
-                result += f"🕐 {post['date']}\n"
-                if post['url']:
-                    result += f"🔗 [Ссылка]({post['url']})\n"
-                
-                if i < len(all_posts[:3]):
-                    result += "—" * 30 + "\n\n"
-            
-            result += "\n💡 /xposts — обновить посты"
-            
-            bot.edit_message_text(
-                result,
-                chat_id=message.chat.id,
-                message_id=status_msg.message_id,
-                parse_mode='Markdown',
-                disable_web_page_preview=True
-            )
-            
-            log_action("xposts", f"показано {len(all_posts[:3])} постов", "success")
-            
-        except Exception as e:
-            log_action("xposts_error", str(e), "error")
-            bot.edit_message_text(
-                f"❌ Ошибка при загрузке постов: {str(e)[:100]}",
-                chat_id=message.chat.id,
-                message_id=status_msg.message_id
-            )
-    
-    thread = threading.Thread(target=do_xposts, daemon=True)
-    thread.start()
-
-# ===== НОВЫЕ ИИ-МОДЕЛИ =====
-@bot.message_handler(commands=['newmodels'])
-def new_models_command(message):
-    status_msg = bot.reply_to(message, "🚀 Ищу новые ИИ-модели...")
-    
-    def do_new_models():
-        try:
-            url = "https://www.demandsphere.com/research/demandsphere-radar/ai-frontier-model-tracker/api.json"
-            response = requests.get(url, timeout=15)
-            response.raise_for_status()
-            
-            data = response.json()
-            models = data.get('models', [])
-            
-            sorted_models = sorted(models, key=lambda x: x.get('rel', ''), reverse=True)
-            
-            if not sorted_models:
-                bot.edit_message_text(
-                    "❌ Список моделей пуст. Попробуйте позже.",
-                    chat_id=message.chat.id,
-                    message_id=status_msg.message_id
-                )
-                return
-            
-            current_time = datetime.now().strftime("%d.%m.%Y %H:%M")
-            result = "🚀 *НОВЫЕ ИИ-МОДЕЛИ*\n"
-            result += f"📅 *Обновлено:* {current_time}\n\n"
-            
-            for i, model in enumerate(sorted_models[:10], 1):
-                name = model.get('name', 'Неизвестно')
-                provider = model.get('prov', 'Неизвестно')
-                model_type = model.get('type', 'N/A')
-                release_date = model.get('rel', 'N/A')
-                context = model.get('ctx', 'N/A')
-                is_multimodal = "✅ Да" if model.get('mm', False) else "❌ Нет"
-                
-                if i == 1:
-                    num_emoji = "🥇"
-                elif i == 2:
-                    num_emoji = "🥈"
-                elif i == 3:
-                    num_emoji = "🥉"
-                else:
-                    num_emoji = f"{i}."
-                
-                result += f"{num_emoji} *{name}*\n"
-                result += f"   🏢 {provider}\n"
-                result += f"   📋 Тип: {model_type}\n"
-                result += f"   📅 Релиз: {release_date}\n"
-                result += f"   📚 Контекст: {context}K\n"
-                result += f"   🖼️ Мультимодальная: {is_multimodal}\n\n"
-            
-            result += "💡 /newmodels — обновить список"
-            
-            bot.edit_message_text(
-                result,
-                chat_id=message.chat.id,
-                message_id=status_msg.message_id,
-                parse_mode='Markdown'
-            )
-            
-            log_action("newmodels", f"показано {len(sorted_models[:10])} моделей", "success")
-            
-        except Exception as e:
-            log_action("newmodels_error", str(e), "error")
-            bot.edit_message_text(
-                f"❌ Ошибка при загрузке данных: {str(e)[:100]}",
-                chat_id=message.chat.id,
-                message_id=status_msg.message_id
-            )
-    
-    thread = threading.Thread(target=do_new_models, daemon=True)
-    thread.start()
 
 # ===== КРИПТОВАЛЮТЫ =====
 @bot.message_handler(commands=['crypto'])
@@ -379,10 +139,7 @@ def menu_command(message):
         "📋 МЕНЮ БОТА\n\n"
         "🤖 ИСКУССТВЕННЫЙ ИНТЕЛЛЕКТ\n"
         "/ai [вопрос] - спросить ИИ\n"
-        "/xposts - посты из X\n"
-        "/newmodels - новые ИИ-модели\n\n"
-        "🌐 ИНТЕРНЕТ И ДАННЫЕ\n"
-        "/browser [url] - открыть сайт\n\n"
+        "/xposts - посты из X\n\n"
         "💰 ФИНАНСЫ\n"
         "/crypto - курсы криптовалют"
     )
