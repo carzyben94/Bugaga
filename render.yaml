@@ -1,7 +1,11 @@
 services:
   - type: web
     name: bugaga-bot
-    env: python
-    buildCommand: pip install -r requirements.txt && playwright install chromium
+    runtime: python
+    buildCommand: pip install -r requirements.txt && pip install playwright && python -m playwright install chromium --only-shell
     startCommand: python bot.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+
 
