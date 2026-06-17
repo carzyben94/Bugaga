@@ -28,7 +28,6 @@ PLAYWRIGHT_INSTALLED = False
 CHROMIUM_READY = False
 
 # === Хранилище для диалогов авторизации ===
-# {chat_id: {"step": "username|password|email|done", "username": "...", "password": "...", "email": "..."}}
 login_sessions = {}
 
 def check_chromium():
@@ -882,14 +881,23 @@ def register_x_play(bot):
         
         print(f"[XX] Chat {chat_id}: email received, starting login with username={username}")
         
-        # Удаляем сообщения с паролем для безопасности
+        # === ВАЖНО: Сначала отправляем сообщение, потом удаляем ===
+        # Отправляем уведомление о начале авторизации
+        status_msg = bot.send_message(
+            chat_id, 
+            f"🔐 <b>Авторизация началась!</b>\n"
+            f"Username: <code>{username}</code>\n"
+            f"⏳ Открываю браузер и захожу на X...\n"
+            f"<i>Это может занять 15-30 секунд</i>",
+            parse_mode="HTML"
+        )
+        
+        # Пытаемся удалить сообщения с паролем (не критично)
         try:
             bot.delete_message(chat_id, message.message_id - 1)  # Сообщение с паролем
             bot.delete_message(chat_id, message.message_id)       # Сообщение с email/skip
         except Exception as e:
             print(f"[XX] Could not delete password message: {e}")
-        
-        bot.reply_to(message, f"🔐 Авторизация как <code>{username}</code>...\n⏳ Это может занять 10-20 секунд", parse_mode="HTML")
         
         # Выполняем авторизацию
         success, error = do_login_with_creds(chat_id, username, password, email)
