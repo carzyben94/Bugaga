@@ -1,13 +1,17 @@
-# render.py — обновлённый с авто-определением сервиса
+# render.py — модуль управления Render через API
 import os
+import json
 import requests
 import telebot
 
 RENDER_API_KEY = os.environ.get("RENDER_API_KEY")
 RENDER_SERVICE_ID = os.environ.get("RENDER_SERVICE_ID")
-RENDER_SERVICE_NAME = os.environ.get("RENDER_SERVICE_NAME", "Bugaga")  # Имя для авто-поиска
+RENDER_SERVICE_NAME = os.environ.get("RENDER_SERVICE_NAME", "Bugaga")
 RENDER_API_URL = "https://api.render.com/v1"
 RENDER_GRAPHQL_URL = "https://api.render.com/graphql"
+
+# Кэш для service ID (чтобы не искать каждый раз)
+_CACHED_SERVICE_ID = None
 
 
 def render_headers():
@@ -53,57 +57,86 @@ def api_call(method, endpoint, payload=None):
         return None, f"Ошибка запроса: {e}"
 
 
-def find_service_id_by_name(name):
-    """Найти ID сервиса по имени"""
+def find_service_id():
+    """Найти ID сервиса по имени или вернуть первый web_service"""
+    global _CACHED_SERVICE_ID
+    
+    if _CACHED_SERVICE_ID:
+        return _CACHED_SERVICE_ID, None
+    
+    if not RENDER_API_KEY:
+        return None, "RENDER_API_KEY не настроен"
+    
     data, error = api_call("GET", "/services?limit=50")
     if error:
         return None, error
     
     services = data if isinstance(data, list) else data.get("services", [])
+    if not services:
+        return None, "Сервисы не найдены"
     
+    # Ищем по точному имени
     for svc in services:
         s = svc.get("service", svc)
-        if s.get("name", "").lower() == name.lower():
-            return s.get("id"), None
+        if s.get("name", "").lower() == RENDER_SERVICE_NAME.lower():
+            _CACHED_SERVICE_ID = s.get("id")
+            print(f"[Render] Found by exact name: {_CACHED_SERVICE_ID}")
+            return _CACHED_SERVICE_ID, None
     
-    # Если точное совпадение не найдено — ищем частичное
+    # Ищем по частичному совпадению
     for svc in services:
         s = svc.get("service", svc)
-        if name.lower() in s.get("name", "").lower():
-            return s.get("id"), None
+        if RENDER_SERVICE_NAME.lower() in s.get("name", "").lower():
+            _CACHED_SERVICE_ID = s.get("id")
+            print(f"[Render] Found by partial name: {_CACHED_SERVICE_ID}")
+            return _CACHED_SERVICE_ID, None
     
-    return None, f"Сервис с именем '{name}' не найден"
+    # Берём первый web_service
+    for svc in services:
+        s = svc.get("service", svc)
+        if s.get("type") == "web_service":
+            _CACHED_SERVICE_ID = s.get("id")
+            print(f"[Render] Found first web_service: {_CACHED_SERVICE_ID}")
+            return _CACHED_SERVICE_ID, None
+    
+    # Последний fallback — первый любой сервис
+    s = services[0].get("service", services[0])
+    _CACHED_SERVICE_ID = s.get("id")
+    print(f"[Render] Found first service: {_CACHED_SERVICE_ID}")
+    return _CACHED_SERVICE_ID, None
 
 
 def get_service_id():
-    """Получить актуальный service ID"""
+    """Получить актуальный service ID с приоритетами:
+    1. Проверить заданный RENDER_SERVICE_ID
+    2. Найти по имени
+    3. Вернуть первый web_service
+    """
     global RENDER_SERVICE_ID
     
-    # Если задан и работает — используем
+    # Приоритет 1: Проверяем заданный ID
     if RENDER_SERVICE_ID:
         data, error = api_call("GET", f"/services/{RENDER_SERVICE_ID}")
         if not error:
+            print(f"[Render] Using configured ID: {RENDER_SERVICE_ID}")
             return RENDER_SERVICE_ID, None
+        print(f"[Render] Configured ID invalid: {error}")
     
-    # Пробуем найти по имени
-    if RENDER_SERVICE_NAME:
-        sid, error = find_service_id_by_name(RENDER_SERVICE_NAME)
-        if sid:
-            # Обновляем глобальную переменную для кэширования
-            RENDER_SERVICE_ID = sid
-            return sid, None
-    
-    # Пробуем найти по имени "Bugaga"
-    sid, error = find_service_id_by_name("Bugaga")
+    # Приоритет 2-4: Ищем автоматически
+    sid, error = find_service_id()
     if sid:
+        # Сохраняем найденный ID
         RENDER_SERVICE_ID = sid
         return sid, None
     
-    return None, "Не удалось определить RENDER_SERVICE_ID. Задай его вручную или проверь /render_list"
+    return None, f"Не удалось найти сервис: {error}"
 
 
 def graphql_call(query, variables=None):
     """Вызов Render GraphQL API"""
+    if not RENDER_API_KEY:
+        return None, "RENDER_API_KEY не настроен"
+    
     headers = {
         "Authorization": f"Bearer {RENDER_API_KEY}",
         "Content-Type": "application/json",
@@ -123,6 +156,9 @@ def graphql_call(query, variables=None):
             timeout=15
         )
         
+        print(f"[Render GraphQL] Status: {resp.status_code}")
+        print(f"[Render GraphQL] Body: {resp.text[:500]}")
+        
         if resp.status_code != 200:
             return None, f"GraphQL HTTP {resp.status_code}: {resp.text[:200]}"
         
@@ -139,9 +175,9 @@ def graphql_call(query, variables=None):
 def get_logs_via_graphql(service_id, limit=50):
     """Получить логи через Render GraphQL API"""
     query = """
-    query GetLogs($serviceId: String!, $start: String, $end: String, $limit: Int) {
+    query GetLogs($serviceId: String!, $limit: Int) {
         service(id: $serviceId) {
-            logs(start: $start, end: $end, limit: $limit) {
+            logs(limit: $limit) {
                 timestamp
                 message
                 level
@@ -160,7 +196,10 @@ def get_logs_via_graphql(service_id, limit=50):
     if error:
         return None, error
     
-    logs = data.get("service", {}).get("logs", []) if data else []
+    if not data or not data.get("service"):
+        return None, "GraphQL: service not found or no data"
+    
+    logs = data["service"].get("logs", [])
     return logs, None
 
 
@@ -220,7 +259,7 @@ def register_render(bot):
             bot.reply_to(message, "❌ RENDER_API_KEY не настроен")
             return
 
-        data, error = api_call("GET", "/services?limit=20")
+        data, error = api_call("GET", "/services?limit=50")
         if error:
             bot.reply_to(message, f"❌ {error}")
             return
@@ -230,6 +269,9 @@ def register_render(bot):
             bot.reply_to(message, "📭 Сервисы не найдены")
             return
 
+        # Получаем текущий активный ID
+        active_id, _ = get_service_id()
+
         lines = ["📋 <b>Ваши сервисы:</b>\n"]
         for svc in services:
             s = svc.get("service", svc)
@@ -237,12 +279,12 @@ def register_render(bot):
             name = s.get("name", "—")
             stype = s.get("type", "—")
             status = s.get("status", "—")
-            # Отмечаем текущий активный сервис
-            active = " ✅" if sid == RENDER_SERVICE_ID else ""
+            active = " ✅" if sid == active_id else ""
             lines.append(f"\n<code>{sid}</code>{active}\n  📛 {name} | {stype} | {status}")
 
-        # Добавляем подсказку
-        lines.append(f"\n\n<i>Активный сервис отмечен ✅</i>\n<i>Если неправильный — обнови RENDER_SERVICE_ID</i>")
+        lines.append(f"\n\n<i>✅ — активный сервис (используется ботом)</i>")
+        if not active_id:
+            lines.append(f"\n<i>⚠️ Активный сервис не определён!</i>")
         
         bot.reply_to(message, "\n".join(lines), parse_mode="HTML")
 
@@ -387,12 +429,19 @@ def register_render(bot):
             bot.reply_to(message, f"❌ {error}")
             return
         
+        # Пробуем получить список сервисов (проверка API)
+        data, error = api_call("GET", f"/services/{sid}")
+        if error:
+            bot.reply_to(message, f"❌ API error: {error}")
+            return
+        
+        # Пробуем GraphQL
         query = """
         query {
             service(id: "%s") {
                 id
                 name
-                logs(limit: 5) {
+                logs(limit: 3) {
                     timestamp
                     message
                     level
@@ -401,14 +450,19 @@ def register_render(bot):
         }
         """ % sid
         
-        data, error = graphql_call(query)
-        if error:
-            bot.reply_to(message, f"❌ GraphQL error: {error}")
-            return
+        gql_data, gql_error = graphql_call(query)
         
-        import json
-        raw = json.dumps(data, indent=2, ensure_ascii=False)[:3500]
-        bot.reply_to(message, f"<pre>{raw}</pre>", parse_mode="HTML")
+        msg = (
+            f"<b>Отладка Render API</b>\n\n"
+            f"Service ID: <code>{sid}</code>\n"
+            f"API Status: <code>OK</code>\n\n"
+            f"<b>REST API:</b>\n<pre>{json.dumps(data, indent=2, ensure_ascii=False)[:1500]}</pre>\n\n"
+            f"<b>GraphQL:</b>\n"
+            f"Error: <code>{gql_error or 'None'}</code>\n"
+            f"Data: <pre>{json.dumps(gql_data, indent=2, ensure_ascii=False)[:1500] if gql_data else 'No data'}</pre>"
+        )
+        
+        bot.reply_to(message, msg, parse_mode="HTML")
 
     @bot.message_handler(commands=["render_suspend", "render_resume"])
     def render_not_available_command(message):
