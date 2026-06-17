@@ -70,45 +70,45 @@ def log_action(action, details=None, status="info", send=True):
     if send:
         send_log_to_admin(action, details, status)
 
-# ===== КОМАНДЫ =====
+# ===== КОМАНДЫ (БЕЗ MARKDOWN) =====
 @bot.message_handler(commands=['start'])
 def start_command(message):
     try:
         log_action("start", f"user={message.from_user.id}", "info")
-        bot.reply_to(message, (
-            "👋 *Добро пожаловать в BUGAGA BOT!*\n\n"
-            "📋 *МЕНЮ БОТА*\n\n"
-            "🤖 *ИСКУССТВЕННЫЙ ИНТЕЛЛЕКТ*\n"
-            "▪️ /ai [вопрос] — спросить ИИ\n"
-            "▪️ /browser_ai [URL] [вопрос] — ИИ прочитает сайт\n\n"
-            "📰 *НОВОСТИ*\n"
-            "▪️ /xposts — посты из X (AteoBreaking)\n\n"
-            "💰 *ФИНАНСЫ*\n"
-            "▪️ /crypto — курсы BTC и ETH"
-        ), parse_mode='Markdown')
+        bot.reply_to(message, 
+            "👋 Добро пожаловать в BUGAGA BOT!\n\n"
+            "📋 МЕНЮ БОТА\n\n"
+            "🤖 ИСКУССТВЕННЫЙ ИНТЕЛЛЕКТ\n"
+            "/ai [вопрос] - спросить ИИ\n"
+            "/browser_ai [URL] [вопрос] - ИИ прочитает сайт\n\n"
+            "📰 НОВОСТИ\n"
+            "/xposts - посты из X (AteoBreaking)\n\n"
+            "💰 ФИНАНСЫ\n"
+            "/crypto - курсы BTC и ETH"
+        )
     except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: {e}")
+        bot.reply_to(message, f"Ошибка: {e}")
 
 @bot.message_handler(commands=['help'])
 def help_command(message):
     try:
         log_action("help", f"user={message.from_user.id}", "info")
-        bot.reply_to(message, (
-            "🆘 *ПОМОЩЬ BUGAGA BOT*\n\n"
-            "📋 *ДОСТУПНЫЕ КОМАНДЫ:*\n\n"
-            "🤖 *ИСКУССТВЕННЫЙ ИНТЕЛЛЕКТ*\n"
-            "▪️ /ai [вопрос] — задай вопрос ИИ\n"
-            "▪️ /browser_ai [URL] [вопрос] — ИИ прочитает сайт\n\n"
-            "📰 *НОВОСТИ*\n"
-            "▪️ /xposts — последние посты из X\n\n"
-            "💰 *ФИНАНСЫ*\n"
-            "▪️ /crypto — курсы BTC и ETH\n\n"
-            "📌 *ОСТАЛЬНОЕ*\n"
-            "▪️ /start — главное меню\n"
-            "▪️ /help — эта справка"
-        ), parse_mode='Markdown')
+        bot.reply_to(message,
+            "🆘 ПОМОЩЬ BUGAGA BOT\n\n"
+            "ДОСТУПНЫЕ КОМАНДЫ:\n\n"
+            "🤖 ИСКУССТВЕННЫЙ ИНТЕЛЛЕКТ\n"
+            "/ai [вопрос] - задай вопрос ИИ\n"
+            "/browser_ai [URL] [вопрос] - ИИ прочитает сайт\n\n"
+            "📰 НОВОСТИ\n"
+            "/xposts - последние посты из X\n\n"
+            "💰 ФИНАНСЫ\n"
+            "/crypto - курсы BTC и ETH\n\n"
+            "📌 ОСТАЛЬНОЕ\n"
+            "/start - главное меню\n"
+            "/help - эта справка"
+        )
     except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: {e}")
+        bot.reply_to(message, f"Ошибка: {e}")
 
 # ===== ТЕСТОВАЯ КОМАНДА =====
 @bot.message_handler(commands=['test'])
