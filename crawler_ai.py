@@ -6,7 +6,7 @@ from urllib.parse import urljoin, urlparse
 import trafilatura
 
 def register_crawler_ai(bot, agnes_api_key):
-    """Регистрирует обработчик команды /crawler_ai - ИИ исследует весь сайт"""
+    """Регистрирует обработчик команды /crawler_ai - ИИ собирает заголовки новостей"""
 
     def get_all_links(url, max_pages=10):
         """Собирает все ссылки с сайта (до max_pages страниц)"""
@@ -46,30 +46,31 @@ def register_crawler_ai(bot, agnes_api_key):
                 
         return all_links
 
-    def extract_text_from_url(url):
-        """Извлекает текст с одной страницы"""
+    def extract_headers_from_url(url):
+        """Извлекает заголовки (h1, h2, h3) с одной страницы"""
         try:
-            downloaded = trafilatura.fetch_url(url)
-            if downloaded:
-                text = trafilatura.extract(downloaded, include_comments=False, include_tables=True)
-                if text and len(text) > 100:
-                    return text[:3000]
-        except:
-            pass
-            
-        try:
+            headers_list = []
             headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
             response = requests.get(url, headers=headers, timeout=10)
+            
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, 'html.parser')
-                for script in soup(["script", "style"]):
-                    script.decompose()
-                text = soup.get_text(separator='\n', strip=True)
-                lines = [line.strip() for line in text.split('\n') if line.strip()]
-                return '\n'.join(lines)[:3000]
+                
+                # Собираем все заголовки h1, h2, h3
+                for tag in soup.find_all(['h1', 'h2', 'h3']):
+                    text = tag.get_text(strip=True)
+                    if text and len(text) > 10 and len(text) < 200:  # Фильтруем мусор
+                        headers_list.append(text)
+                
+                # Если заголовков нет — пробуем найти title
+                if not headers_list:
+                    title = soup.find('title')
+                    if title:
+                        headers_list.append(title.get_text(strip=True))
+                        
         except:
             pass
-        return ""
+        return headers_list
 
     @bot.message_handler(commands=['crawler_ai'])
     def crawler_ai_command(message):
@@ -77,7 +78,7 @@ def register_crawler_ai(bot, agnes_api_key):
         if not args:
             bot.reply_to(message, "🌐 Использование: /crawler_ai [URL]\n\n"
                                  "Пример: /crawler_ai https://lenta.ru\n"
-                                 "Бот сам соберет новости и сделает дайджест")
+                                 "Бот соберет заголовки новостей")
             return
 
         url = args
@@ -85,7 +86,7 @@ def register_crawler_ai(bot, agnes_api_key):
         if not url.startswith(('http://', 'https://')):
             url = 'https://' + url
 
-        status_msg = bot.reply_to(message, f"🕷️ Исследую сайт {url} и собираю новости...")
+        status_msg = bot.reply_to(message, f"🕷️ Собираю заголовки с {url}...")
 
         if not agnes_api_key:
             bot.edit_message_text("❌ Agnes API ключ не настроен", chat_id=message.chat.id, message_id=status_msg.message_id)
@@ -93,71 +94,51 @@ def register_crawler_ai(bot, agnes_api_key):
 
         def do_crawler_ai():
             try:
-                bot.edit_message_text("🔍 Собираю все страницы сайта...", chat_id=message.chat.id, message_id=status_msg.message_id)
+                bot.edit_message_text("🔍 Ищу страницы на сайте...", chat_id=message.chat.id, message_id=status_msg.message_id)
                 pages = get_all_links(url, max_pages=15)
                 
                 if not pages:
                     bot.edit_message_text("❌ Не удалось найти страницы на сайте.", chat_id=message.chat.id, message_id=status_msg.message_id)
                     return
 
-                bot.edit_message_text(f"📄 Найдено {len(pages)} страниц. Читаю содержимое...", chat_id=message.chat.id, message_id=status_msg.message_id)
+                bot.edit_message_text(f"📄 Найдено {len(pages)} страниц. Собираю заголовки...", chat_id=message.chat.id, message_id=status_msg.message_id)
 
-                all_text = ""
+                # Собираем заголовки со всех страниц
+                all_headers = []
                 for i, page in enumerate(pages[:15]):
-                    text = extract_text_from_url(page)
-                    if text:
-                        all_text += f"\n--- Страница: {page} ---\n{text}\n"
+                    headers = extract_headers_from_url(page)
+                    all_headers.extend(headers)
                     if i % 3 == 0:
-                        bot.edit_message_text(f"📖 Прочитано {i+1}/{len(pages)} страниц...", chat_id=message.chat.id, message_id=status_msg.message_id)
+                        bot.edit_message_text(f"📖 Обработано {i+1}/{len(pages)} страниц...", chat_id=message.chat.id, message_id=status_msg.message_id)
 
-                if len(all_text) < 200:
-                    bot.edit_message_text("❌ Не удалось извлечь содержимое сайта.", chat_id=message.chat.id, message_id=status_msg.message_id)
+                # Убираем дубликаты и пустые строки
+                unique_headers = []
+                seen = set()
+                for h in all_headers:
+                    h_clean = h.strip()
+                    if h_clean and h_clean not in seen and len(h_clean) > 10:
+                        seen.add(h_clean)
+                        unique_headers.append(h_clean)
+
+                if not unique_headers:
+                    bot.edit_message_text("❌ Не удалось найти заголовки на сайте.", chat_id=message.chat.id, message_id=status_msg.message_id)
                     return
 
-                if len(all_text) > 15000:
-                    all_text = all_text[:15000] + "\n...(текст обрезан)"
+                # Ограничиваем до 20 заголовков
+                unique_headers = unique_headers[:20]
 
-                bot.edit_message_text(f"📖 Всего {len(all_text)} символов. Составляю дайджест новостей...", chat_id=message.chat.id, message_id=status_msg.message_id)
+                # Формируем ответ
+                result = f"📰 ЗАГОЛОВКИ НОВОСТЕЙ С {url}\n\n"
+                for i, header in enumerate(unique_headers, 1):
+                    result += f"{i}. {header}\n"
+                result += f"\n📄 Найдено заголовков: {len(unique_headers)}"
+                result += f"\n🔗 Источник: {url}"
 
-                prompt = (
-                    "Ты — ИИ-ассистент. Я дам тебе содержимое нескольких страниц новостного сайта. "
-                    "Составь краткий дайджест главных новостей.\n\n"
-                    f"Содержимое сайта {url}:\n\n{all_text}\n\n"
-                    "Составь список главных новостей (5-7 пунктов). "
-                    "Каждый пункт: кратко о чем новость (1-2 предложения). "
-                    "В конце добавь общий вывод. Ответ на русском языке."
+                bot.edit_message_text(
+                    result,
+                    chat_id=message.chat.id,
+                    message_id=status_msg.message_id
                 )
-
-                headers_ai = {
-                    "Authorization": f"Bearer {agnes_api_key}",
-                    "Content-Type": "application/json",
-                }
-
-                payload = {
-                    "model": "agnes-2.0-flash",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 1500,
-                    "temperature": 0.3
-                }
-
-                r = requests.post(
-                    "https://apihub.agnes-ai.com/v1/chat/completions",
-                    headers=headers_ai,
-                    json=payload,
-                    timeout=90
-                )
-
-                if r.status_code == 200:
-                    answer = r.json()["choices"][0]["message"]["content"]
-                    bot.edit_message_text(
-                        f"📰 НОВОСТИ С {url}\n\n{answer}\n\n"
-                        f"📄 Изучено страниц: {len(pages)}\n"
-                        f"🔗 Источник: {url}",
-                        chat_id=message.chat.id,
-                        message_id=status_msg.message_id
-                    )
-                else:
-                    bot.edit_message_text(f"❌ Ошибка ИИ: {r.status_code}\n{str(r.text)[:200]}", chat_id=message.chat.id, message_id=status_msg.message_id)
 
             except Exception as e:
                 bot.edit_message_text(f"❌ Ошибка: {str(e)[:200]}", chat_id=message.chat.id, message_id=status_msg.message_id)
