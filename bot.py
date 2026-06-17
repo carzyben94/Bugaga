@@ -13,6 +13,7 @@ from browser_ai import register_browser_ai
 from crawler_ai import register_crawler_ai
 from render import register_render
 from github import register_github
+from x_play import register_x_play
 
 logging.basicConfig(level=logging.INFO)
 
@@ -39,6 +40,7 @@ modules = [
     ("crawler_ai", register_crawler_ai, [AGNES_API_KEY]),
     ("render", register_render, []),
     ("github", register_github, []),
+    ("x_play", register_x_play, []),
 ]
 
 for name, register_func, args in modules:
@@ -85,17 +87,18 @@ MENU_TEXT = (
     "  └ /crawler_ai — Собрать новости\n\n"
     
     "📰 <b>Новости</b>\n"
-    "  └ /xposts — Посты из X\n\n"
+    "  ├ /xposts — Посты из X (RSS)\n"
+    "  └ /x_timeline [user] — Лента X (Playwright)\n\n"
     
     "💰 <b>Финансы</b>\n"
     "  └ /crypto — Курсы BTC и ETH\n\n"
     
     "🔧 <b>Render</b>\n"
-    "  ├ /render_list — Список сервисов (найди ID)\n"
+    "  ├ /render_list — Список сервисов\n"
     "  ├ /render_status — Статус сервиса\n"
     "  ├ /render_restart — Перезапустить\n"
     "  ├ /render_env — Переменные окружения\n"
-    "  └ /render_logs — Логи (Dashboard)\n\n"
+    "  └ /render_logs — Логи сервиса\n\n"
     
     "💾 <b>GitHub</b>\n"
     "  ├ /gh_list [путь] — Список файлов\n"
@@ -104,7 +107,14 @@ MENU_TEXT = (
     "  ├ /gh_del [путь] — Удалить файл\n"
     "  ├ /gh_commits [N] — Коммиты\n"
     "  ├ /gh_branches — Ветки\n"
-    "  └ /gh_repo — Инфо о репо"
+    "  └ /gh_repo — Инфо о репо\n\n"
+    
+    "🐦 <b>X Agent</b>\n"
+    "  ├ /x_timeline [user] [N] — Лента X\n"
+    "  ├ /x_search [запрос] [N] — Поиск X\n"
+    "  ├ /x_trends — Тренды X\n"
+    "  ├ /x_screenshot [url] — Скриншот твита\n"
+    "  └ /x_help — Помощь X"
 )
 
 @bot.message_handler(commands=["start", "help"])
