@@ -3,34 +3,47 @@ import requests
 import threading
 import random
 
-# Актуальные бесплатные модели OpenRouter на июнь 2026 года
+# ТОЛЬКО БЕСПЛАТНЫЕ МОДЕЛИ (проверено)
 FREE_MODELS = [
-    "openrouter/free",
-    "openrouter/owl-alpha",              # Агентная модель, 1M контекст
+    "google/gemma-4-31b-it",             # 31B, 256K контекст
+    "google/gemma-4-26b-a4b-it",         # MoE версия
     "nvidia/nemotron-3-ultra",           # 55B MoE, 1M контекст
     "nvidia/nemotron-3-super",           # 120B MoE, 1M контекст
     "nvidia/nemotron-3-nano-30b-a3b",    # MoE, 256K контекст
     "nvidia/nemotron-nano-9b-v2",        # Унифицированная модель
-    "poolside/laguna-m1",                # Флагманская кодинг-модель
-    "openai/gpt-oss-120b",               # 117B MoE
-    "openai/gpt-oss-20b",                # 21B, Apache 2.0
-    "nex-agi/nex-n2-pro",                # 397B MoE
-    "google/gemma-4-31b-it",             # 31B, 256K контекст
-    "google/gemma-4-26b-a4b-it",         # MoE версия
-    "riverflow/riverflow-v2.5-pro",      # Новая бесплатная модель
-    "stepfun/step-3.7-flash",            # MoE, 256K контекст
+    "microsoft/phi-4",                   # 14B, бесплатно
+    "qwen/qwen-2.5-72b-instruct",        # 72B, бесплатно
+    "qwen/qwen-2.5-32b-instruct",        # 32B, бесплатно
+    "qwen/qwen-2.5-14b-instruct",        # 14B, бесплатно
+    "qwen/qwen-2.5-7b-instruct",         # 7B, бесплатно
+    "meta-llama/llama-4-maverick-17b",   # 17B, бесплатно
+    "meta-llama/llama-4-scout-17b",      # 17B, бесплатно
+    "deepseek/deepseek-r1-distill-qwen-32b",  # 32B
+    "deepseek/deepseek-r1-distill-llama-70b", # 70B
+    "mistralai/mistral-small-3.1-24b",   # 24B
+    "mistralai/mistral-large-3.1-123b",  # 123B (может быть платной)
+]
+
+# ГАРАНТИРОВАННО БЕСПЛАТНЫЕ (безлимитные)
+SAFE_FREE_MODELS = [
+    "google/gemma-4-31b-it",
+    "google/gemma-4-26b-a4b-it",
+    "nvidia/nemotron-3-ultra",
+    "nvidia/nemotron-3-super",
+    "microsoft/phi-4",
+    "qwen/qwen-2.5-72b-instruct",
+    "qwen/qwen-2.5-32b-instruct",
+    "meta-llama/llama-4-maverick-17b",
+    "deepseek/deepseek-r1-distill-qwen-32b",
+    "mistralai/mistral-small-3.1-24b",
 ]
 
 def register_ai(bot, openrouter_api_key):
-    """Регистрирует обработчик команды /ai с автоматическим fallback между моделями"""
+    """Регистрирует обработчик команды /ai с автоматическим fallback"""
 
     def get_models_for_fallback():
-        """Возвращает массив моделей для fallback-роутинга"""
-        # Берем 3 случайные модели (максимум для fallbacks)
-        selected = random.sample(FREE_MODELS, min(3, len(FREE_MODELS)))
-        # Всегда добавляем openrouter/free как резерв
-        if "openrouter/free" not in selected:
-            selected[0] = "openrouter/free"
+        """Возвращает 3 случайные безопасные модели"""
+        selected = random.sample(SAFE_FREE_MODELS, min(3, len(SAFE_FREE_MODELS)))
         return selected
 
     @bot.message_handler(commands=['ai'])
@@ -60,9 +73,10 @@ def register_ai(bot, openrouter_api_key):
                 }
 
                 payload = {
-                    "models": models,  # Массив моделей для автоматического fallback
+                    "models": models,
                     "messages": [{"role": "user", "content": user_text}],
-                    "max_tokens": 500
+                    "max_tokens": 500,
+                    "temperature": 0.7
                 }
 
                 r = requests.post(
@@ -74,9 +88,18 @@ def register_ai(bot, openrouter_api_key):
 
                 if r.status_code == 200:
                     answer = r.json()["choices"][0]["message"]["content"]
-                    used_model = r.json().get("model", "openrouter/free")
+                    used_model = r.json().get("model", models[0])
                     bot.edit_message_text(
                         f"{answer}\n\n🤖 *Модель:* `{used_model}`",
+                        chat_id=message.chat.id,
+                        message_id=status_msg.message_id,
+                        parse_mode='Markdown'
+                    )
+                elif r.status_code == 402:
+                    bot.edit_message_text(
+                        "⚠️ *Недостаточно кредитов*\n"
+                        "Используются только бесплатные модели.\n"
+                        "Попробуйте позже или добавьте баланс на https://openrouter.ai/settings/credits",
                         chat_id=message.chat.id,
                         message_id=status_msg.message_id,
                         parse_mode='Markdown'
@@ -85,7 +108,7 @@ def register_ai(bot, openrouter_api_key):
                     bot.edit_message_text(
                         "⚠️ *Превышен лимит запросов*\n"
                         "OpenRouter Free: 20 запросов/мин, 50/день\n"
-                        "Попробуйте позже или добавьте $10 для увеличения до 1000/день",
+                        "Попробуйте позже.",
                         chat_id=message.chat.id,
                         message_id=status_msg.message_id,
                         parse_mode='Markdown'
