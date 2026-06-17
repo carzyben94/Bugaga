@@ -82,15 +82,24 @@ def start_command(message):
     try:
         log_action("start", f"user={message.from_user.id}", "info")
         bot.reply_to(message,
-            "👋 Добро пожаловать в BUGAGA BOT!\n\n"
-            "🤖 ИСКУССТВЕННЫЙ ИНТЕЛЛЕКТ\n\n"
-            "/ai [вопрос] = ответ\n"
-            "/browser_ai ссылка и вопрос = ответ\n"
-            "/crawler_ai ссылка = новости\n\n"
-            "📰 НОВОСТИ\n"
-            "/xposts - посты из X (AteoBreaking)\n\n"
-            "💰 ФИНАНСЫ\n"
-            "/crypto - курсы BTC и ETH"
+            "🤖 <b>BUGAGA BOT</b>\n"
+            "Твой агент для ИИ, новостей и крипты\n\n"
+            
+            "🧠 <b>Искусственный интеллект</b>\n"
+            "  ├ /ai — Задать вопрос ИИ\n"
+            "  ├ /browser_ai — ИИ читает сайт\n"
+            "  └ /crawler_ai — Собрать новости\n\n"
+            
+            "📰 <b>Новости</b>\n"
+            "  └ /xposts — Посты из X\n\n"
+            
+            "💰 <b>Финансы</b>\n"
+            "  └ /crypto — Курсы BTC и ETH\n\n"
+            
+            "🔧 <b>Система</b>\n"
+            "  ├ /help — Помощь\n"
+            "  └ /test — Проверка бота",
+            parse_mode='HTML'
         )
     except Exception as e:
         bot.reply_to(message, f"Ошибка: {e}")
@@ -100,18 +109,23 @@ def help_command(message):
     try:
         log_action("help", f"user={message.from_user.id}", "info")
         bot.reply_to(message,
-            "🆘 ПОМОЩЬ BUGAGA BOT\n\n"
-            "🤖 ИСКУССТВЕННЫЙ ИНТЕЛЛЕКТ\n"
-            "/ai [вопрос] - задай вопрос ИИ\n"
-            "/browser_ai [URL] [вопрос] - ИИ прочитает сайт\n"
-            "/crawler_ai [URL] - собрать заголовки новостей\n\n"
-            "📰 НОВОСТИ\n"
-            "/xposts - посты из X\n\n"
-            "💰 ФИНАНСЫ\n"
-            "/crypto - курсы BTC и ETH\n\n"
-            "📌 ОСТАЛЬНОЕ\n"
-            "/start - главное меню\n"
-            "/help - эта справка"
+            "🆘 <b>ПОМОЩЬ BUGAGA BOT</b>\n\n"
+            
+            "🧠 <b>Искусственный интеллект</b>\n"
+            "  ├ /ai [вопрос] — Ответ ИИ\n"
+            "  ├ /browser_ai [URL] [вопрос] — Анализ сайта\n"
+            "  └ /crawler_ai [URL] — Сбор заголовков\n\n"
+            
+            "📰 <b>Новости</b>\n"
+            "  └ /xposts — Лента из X (AteoBreaking)\n\n"
+            
+            "💰 <b>Финансы</b>\n"
+            "  └ /crypto — Курсы BTC и ETH\n\n"
+            
+            "🔧 <b>Система</b>\n"
+            "  ├ /start — Главное меню\n"
+            "  └ /test — Проверка работы",
+            parse_mode='HTML'
         )
     except Exception as e:
         bot.reply_to(message, f"Ошибка: {e}")
