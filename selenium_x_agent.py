@@ -1,4 +1,4 @@
-# selenium_x_agent.py — Selenium X/Twitter агент с прямым входом
+# selenium_x_agent.py — Selenium X/Twitter агент с отправкой скриншотов в чат
 import os
 import sys
 import subprocess
@@ -365,6 +365,9 @@ class SeleniumXAgent:
         self._cookies_valid = False
         self._progress_callback = None
         self._user_input_callbacks = {}
+        self._screenshots_to_send = []
+        self._chat_id = None
+        self._bot = None
         logger.info("SeleniumXAgent initialized")
     
     def set_progress_callback(self, callback):
@@ -373,6 +376,12 @@ class SeleniumXAgent:
     def set_user_input_callback(self, input_type, callback):
         self._user_input_callbacks[input_type] = callback
         logger.info(f"User input callback set for: {input_type}")
+    
+    def set_chat_id(self, chat_id):
+        self._chat_id = chat_id
+    
+    def set_bot(self, bot):
+        self._bot = bot
     
     def _report(self, step, message):
         print(f"[SE] [{step}] {message}")
@@ -397,6 +406,91 @@ class SeleniumXAgent:
         else:
             logger.error(f"No callback for {input_type}")
             return None
+    
+    def _send_screenshot_to_chat(self, path, caption):
+        """Отправить скриншот в чат"""
+        try:
+            if self._bot and self._chat_id and path and os.path.exists(path):
+                with open(path, "rb") as f:
+                    self._bot.send_photo(self._chat_id, f, caption=caption)
+                logger.info(f"✅ Screenshot sent to chat: {caption}")
+                return True
+            else:
+                # Сохраняем для отправки позже
+                self._screenshots_to_send.append((path, caption))
+                return False
+        except Exception as e:
+            logger.error(f"Failed to send screenshot: {e}")
+            return False
+    
+    def _send_pending_screenshots(self):
+        """Отправить все накопленные скриншоты"""
+        for path, caption in self._screenshots_to_send:
+            self._send_screenshot_to_chat(path, caption)
+        self._screenshots_to_send = []
+    
+    def _screenshot(self, name, send_to_chat=True, caption=None):
+        """Сделать скриншот и отправить в чат"""
+        try:
+            path = os.path.join(SCREENSHOT_DIR, f"{name}_{int(time.time())}.png")
+            self.driver.save_screenshot(path)
+            logger.info(f"Screenshot saved: {path}")
+            
+            if send_to_chat:
+                if not caption:
+                    caption = f"📸 {name.replace('_', ' ').title()}"
+                self._send_screenshot_to_chat(path, caption)
+            
+            return path
+        except Exception as e:
+            logger.error(f"Screenshot error: {e}")
+            return None
+    
+    def _save_html(self, name):
+        try:
+            path = os.path.join(HTML_DIR, f"{name}_{int(time.time())}.html")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(self.driver.page_source)
+            logger.info(f"HTML saved: {path}")
+            return path
+        except Exception as e:
+            logger.error(f"HTML save error: {e}")
+            return None
+    
+    def _load_cookies(self):
+        if not os.path.exists(COOKIES_FILE):
+            logger.warning(f"Cookies file not found: {COOKIES_FILE}")
+            return False
+        try:
+            with open(COOKIES_FILE, "r") as f:
+                cookies = json.load(f)
+            logger.info(f"Loading {len(cookies)} cookies")
+            for cookie in cookies:
+                cookie.pop("sameSite", None)
+                try:
+                    self.driver.add_cookie(cookie)
+                except Exception as e:
+                    logger.warning(f"Failed to add cookie: {e}")
+            logger.info("Cookies loaded")
+            return True
+        except Exception as e:
+            logger.error(f"Cookie load error: {e}")
+            return False
+    
+    def _save_cookies(self):
+        try:
+            if not self.driver:
+                logger.error("No driver for saving cookies")
+                return False
+            cookies = self.driver.get_cookies()
+            with open(COOKIES_FILE, "w") as f:
+                json.dump(cookies, f)
+            self._cookies_valid = True
+            logger.info(f"Cookies saved: {len(cookies)} cookies to {COOKIES_FILE}")
+            return True
+        except Exception as e:
+            logger.error(f"Cookie save error: {e}")
+            return False
     
     def _get_chrome_options(self):
         from selenium.webdriver.chrome.options import Options
@@ -455,64 +549,8 @@ class SeleniumXAgent:
         logger.debug("CDP command executed")
         return self.driver
     
-    def _screenshot(self, name):
-        try:
-            path = os.path.join(SCREENSHOT_DIR, f"{name}_{int(time.time())}.png")
-            self.driver.save_screenshot(path)
-            logger.info(f"Screenshot saved: {path}")
-            return path
-        except Exception as e:
-            logger.error(f"Screenshot error: {e}")
-            return None
-    
-    def _save_html(self, name):
-        try:
-            path = os.path.join(HTML_DIR, f"{name}_{int(time.time())}.html")
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(self.driver.page_source)
-            logger.info(f"HTML saved: {path}")
-            return path
-        except Exception as e:
-            logger.error(f"HTML save error: {e}")
-            return None
-    
-    def _load_cookies(self):
-        if not os.path.exists(COOKIES_FILE):
-            logger.warning(f"Cookies file not found: {COOKIES_FILE}")
-            return False
-        try:
-            with open(COOKIES_FILE, "r") as f:
-                cookies = json.load(f)
-            logger.info(f"Loading {len(cookies)} cookies")
-            for cookie in cookies:
-                cookie.pop("sameSite", None)
-                try:
-                    self.driver.add_cookie(cookie)
-                except Exception as e:
-                    logger.warning(f"Failed to add cookie: {e}")
-            logger.info("Cookies loaded")
-            return True
-        except Exception as e:
-            logger.error(f"Cookie load error: {e}")
-            return False
-    
-    def _save_cookies(self):
-        try:
-            if not self.driver:
-                logger.error("No driver for saving cookies")
-                return False
-            cookies = self.driver.get_cookies()
-            with open(COOKIES_FILE, "w") as f:
-                json.dump(cookies, f)
-            self._cookies_valid = True
-            logger.info(f"Cookies saved: {len(cookies)} cookies to {COOKIES_FILE}")
-            return True
-        except Exception as e:
-            logger.error(f"Cookie save error: {e}")
-            return False
-    
     def login(self, username, password, email=None):
-        """Универсальная авторизация с прямым входом через x.com/login"""
+        """Универсальная авторизация с отправкой скриншотов в чат"""
         
         logger.info("="*60)
         logger.info(f"START LOGIN for {username}")
@@ -532,7 +570,7 @@ class SeleniumXAgent:
             self._report("start", f"🚀 Авторизация @{target_username}")
             self._create_driver()
             
-            # === ИСПОЛЬЗУЕМ ПРЯМОЙ URL ===
+            # === ОТКРЫВАЕМ СТРАНИЦУ ВХОДА ===
             login_urls = [
                 "https://x.com/login",
                 "https://x.com/i/flow/login?force_login=true",
@@ -546,13 +584,16 @@ class SeleniumXAgent:
                     self.driver.get(login_url)
                     time.sleep(4)
                     
+                    # Скриншот страницы входа
+                    self._screenshot("login_page", send_to_chat=True, caption="📸 Страница входа X/Twitter")
+                    
                     if "home" in self.driver.current_url:
                         logger.info("✅ Уже на home!")
                         self._save_cookies()
                         save_auth_info(target_username, email, {"method": "already_logged"})
+                        self._report("done", "✅ Уже авторизован!")
                         return True, None
                     
-                    # Проверяем, есть ли поля
                     inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input')
                     if inputs:
                         logger.info(f"Найдено {len(inputs)} полей ввода на {login_url}")
@@ -563,9 +604,9 @@ class SeleniumXAgent:
                     continue
             
             if not page_loaded:
+                self._screenshot("error_page", send_to_chat=True, caption="❌ Ошибка загрузки страницы")
                 return False, "❌ Не удалось загрузить страницу входа"
             
-            self._screenshot("login_page")
             self._save_html("login_page")
             
             # === ИЩЕМ ПОЛЕ ДЛЯ USERNAME ===
@@ -594,7 +635,6 @@ class SeleniumXAgent:
                     logger.debug(f"Selector {selector} error: {e}")
             
             if not username_input:
-                # Ищем все видимые текстовые поля
                 inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input:not([type="hidden"]):not([type="password"])')
                 for inp in inputs:
                     if inp.is_displayed() and inp.is_enabled():
@@ -603,7 +643,7 @@ class SeleniumXAgent:
                         break
             
             if not username_input:
-                self._screenshot("no_username_field")
+                self._screenshot("no_username_field", send_to_chat=True, caption="❌ Поле username не найдено")
                 return False, "❌ Не найдено поле для username"
             
             # Вводим username
@@ -612,12 +652,12 @@ class SeleniumXAgent:
             logger.info(f"✅ Username введён: @{target_username}")
             time.sleep(1)
             
+            self._screenshot("username_entered", send_to_chat=True, caption=f"✅ Username введён: @{target_username}")
             self._report("username", f"✅ Username введён: @{target_username}")
             
             # === НАЖИМАЕМ NEXT ===
             next_clicked = False
             
-            # Ищем кнопку Next
             buttons = self.driver.find_elements(By.TAG_NAME, "button")
             for btn in buttons:
                 try:
@@ -633,7 +673,6 @@ class SeleniumXAgent:
                     pass
             
             if not next_clicked:
-                # Пробуем button[type="submit"]
                 try:
                     btn = self.driver.find_element(By.CSS_SELECTOR, 'button[type="submit"]')
                     if btn.is_displayed() and btn.is_enabled():
@@ -645,7 +684,6 @@ class SeleniumXAgent:
                     pass
             
             if not next_clicked:
-                # Пробуем data-testid
                 try:
                     btn = self.driver.find_element(By.CSS_SELECTOR, '[data-testid="ocfEnterTextNextButton"]')
                     if btn.is_displayed() and btn.is_enabled():
@@ -657,7 +695,6 @@ class SeleniumXAgent:
                     pass
             
             if not next_clicked:
-                # Пробуем Enter
                 try:
                     username_input.send_keys(Keys.RETURN)
                     next_clicked = True
@@ -667,11 +704,13 @@ class SeleniumXAgent:
                     pass
             
             if not next_clicked:
+                self._screenshot("next_failed", send_to_chat=True, caption="❌ Не удалось нажать Next")
                 return False, "❌ Не удалось нажать Next"
             
+            self._screenshot("after_next", send_to_chat=True, caption="📸 После нажатия Next")
             self._report("next", "✅ Next нажат")
             
-            # === ЖДЕМ ПОЯВЛЕНИЯ ПОЛЯ ПАРОЛЯ ===
+            # === ЖДЕМ ПОЯВЛЕНИЯ ПОЛЯ ===
             found_field = False
             email_used = email
             phone_used = None
@@ -687,13 +726,14 @@ class SeleniumXAgent:
                     logger.info("✅ Уже на home!")
                     self._save_cookies()
                     save_auth_info(target_username, email_used, {"method": "home_after_login"})
+                    self._screenshot("home_success", send_to_chat=True, caption="✅ Успешно на домашней странице!")
                     return True, None
                 
                 # === ПРОВЕРКА КАПЧИ ===
                 try:
                     if "captcha" in self.driver.page_source.lower():
+                        self._screenshot("captcha_detected", send_to_chat=True, caption="🔒 Обнаружена капча!")
                         self._report("captcha", "🔒 Обнаружена капча!")
-                        self._screenshot("captcha_detected")
                         captcha_result = self._request_user_input(
                             "captcha",
                             "🔒 Обнаружена капча!\nРеши капчу вручную и отправь 'done':",
@@ -714,11 +754,12 @@ class SeleniumXAgent:
                 for inp in password_inputs:
                     if inp.is_displayed() and inp.is_enabled():
                         logger.info("✅ Найдено поле пароля!")
+                        self._screenshot("password_field", send_to_chat=True, caption="🔑 Найдено поле пароля")
+                        
                         inp.clear()
                         inp.send_keys(password)
                         time.sleep(1)
                         
-                        # Ищем кнопку Login
                         login_btns = self.driver.find_elements(By.CSS_SELECTOR, 'button[type="submit"], button[data-testid="LoginForm_Login_Button"]')
                         if not login_btns:
                             login_btns = self.driver.find_elements(By.XPATH, "//span[contains(text(), 'Log in')]/..")
@@ -743,6 +784,7 @@ class SeleniumXAgent:
                 for inp in email_inputs:
                     if inp.is_displayed() and inp.is_enabled():
                         logger.info("📧 Найдено поле EMAIL!")
+                        self._screenshot("email_field", send_to_chat=True, caption="📧 Найдено поле email")
                         
                         if email_used:
                             logger.info(f"Заполняю email: {email_used}")
@@ -763,7 +805,6 @@ class SeleniumXAgent:
                             else:
                                 return False, "❌ Email не указан"
                         
-                        # Нажимаем Next
                         next_btns = self.driver.find_elements(By.CSS_SELECTOR, 'button[type="submit"]')
                         for btn in next_btns:
                             if btn.is_displayed() and btn.is_enabled():
@@ -778,26 +819,74 @@ class SeleniumXAgent:
                     break
                 
                 # === ПОЛЕ ТЕЛЕФОНА ===
-                phone_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="tel"], input[name="phone"]')
+                phone_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="tel"], input[name="phone"], input[placeholder*="phone" i]')
                 for inp in phone_inputs:
                     if inp.is_displayed() and inp.is_enabled():
                         logger.info("📱 Найдено поле ТЕЛЕФОНА!")
+                        
+                        # Скриншот страницы с телефоном
+                        self._screenshot("phone_page", send_to_chat=True, caption="📱 X требует номер телефона!")
+                        
                         self._report("phone_needed", "📱 Требуется номер телефона!")
                         phone_used = self._request_user_input(
                             "phone",
-                            "📱 Введи номер телефона (с кодом страны):",
+                            "📱 Введи номер телефона (с кодом страны):\nИли отправь 'skip' чтобы попробовать email:",
                             timeout=60
                         )
-                        if phone_used:
+                        
+                        if phone_used and phone_used.lower() == "skip":
+                            # Пытаемся найти ссылку "Use email instead"
+                            try:
+                                link = self.driver.find_element(By.PARTIAL_LINK_TEXT, "email")
+                                if link.is_displayed():
+                                    logger.info("📧 Найдена ссылка 'Use email instead'")
+                                    link.click()
+                                    time.sleep(2)
+                                    continue
+                            except:
+                                pass
+                            continue
+                        elif phone_used:
                             inp.clear()
                             inp.send_keys(phone_used)
-                            time.sleep(1)
+                            time.sleep(2)
+                            
+                            self._screenshot("phone_entered", send_to_chat=True, caption=f"📱 Номер телефона введен")
+                            
+                            # Ищем кнопку Next/Continue
                             next_btns = self.driver.find_elements(By.CSS_SELECTOR, 'button[type="submit"]')
+                            if not next_btns:
+                                next_btns = self.driver.find_elements(By.XPATH, "//span[contains(text(), 'Next')]/..")
+                            if not next_btns:
+                                next_btns = self.driver.find_elements(By.XPATH, "//span[contains(text(), 'Continue')]/..")
+                            
                             for btn in next_btns:
                                 if btn.is_displayed() and btn.is_enabled():
+                                    logger.info("Нажимаю Next после телефона")
                                     btn.click()
                                     time.sleep(3)
                                     break
+                            
+                            # Проверяем, что появилось поле для кода
+                            for wait in range(10):
+                                time.sleep(1)
+                                code_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[inputmode="numeric"], input[type="text"][maxlength="6"]')
+                                if code_inputs:
+                                    logger.info("🔑 Найдено поле для кода!")
+                                    self._screenshot("code_field", send_to_chat=True, caption="🔑 Поле для кода подтверждения")
+                                    found_field = True
+                                    break
+                                
+                                # Проверяем ошибку
+                                error_elements = self.driver.find_elements(By.CSS_SELECTOR, '[role="alert"], [data-testid="toast"]')
+                                for err in error_elements:
+                                    if err.is_displayed():
+                                        err_text = err.text
+                                        if err_text:
+                                            logger.error(f"Error: {err_text}")
+                                            self._screenshot("phone_error", send_to_chat=True, caption=f"❌ Ошибка: {err_text}")
+                                            self._report("phone_error", f"❌ Ошибка: {err_text}")
+                                            return False, f"❌ {err_text}"
                         else:
                             return False, "❌ Телефон не указан"
                         
@@ -808,20 +897,24 @@ class SeleniumXAgent:
                     break
                 
                 # === КОД ПОДТВЕРЖДЕНИЯ ===
-                code_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[inputmode="numeric"], input[type="text"][maxlength="6"]')
+                code_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[inputmode="numeric"], input[type="text"][maxlength="6"], input[placeholder*="code" i]')
                 for inp in code_inputs:
                     if inp.is_displayed() and inp.is_enabled():
                         logger.info("🔑 Найдено поле для кода подтверждения!")
+                        self._screenshot("code_page", send_to_chat=True, caption="🔑 Требуется код подтверждения")
+                        
                         self._report("code_needed", "🔑 Требуется код подтверждения!")
                         code = self._request_user_input(
                             "code",
-                            "🔑 Введите код подтверждения:",
+                            "🔑 Введите код подтверждения из SMS:",
                             timeout=120
                         )
                         if code:
                             inp.clear()
                             inp.send_keys(code)
                             time.sleep(1)
+                            self._screenshot("code_entered", send_to_chat=True, caption="🔑 Код введен")
+                            
                             confirm_btns = self.driver.find_elements(By.CSS_SELECTOR, 'button[type="submit"]')
                             for btn in confirm_btns:
                                 if btn.is_displayed() and btn.is_enabled():
@@ -846,9 +939,21 @@ class SeleniumXAgent:
                         continue
                 except:
                     pass
+                
+                # === "Use email instead" ===
+                try:
+                    link = self.driver.find_element(By.PARTIAL_LINK_TEXT, "email")
+                    if link.is_displayed():
+                        logger.info("📧 Найдена ссылка 'Use email instead'")
+                        self._screenshot("email_alternative", send_to_chat=True, caption="📧 Найдена ссылка 'Use email instead'")
+                        link.click()
+                        time.sleep(2)
+                        continue
+                except:
+                    pass
             
             if not found_field:
-                self._screenshot("no_fields_found")
+                self._screenshot("no_fields_found", send_to_chat=True, caption="❌ Не найдено ни одного поля")
                 self._save_html("debug_page")
                 return False, "❌ Не найдено ни одного поля для ввода"
             
@@ -860,6 +965,7 @@ class SeleniumXAgent:
                 
                 if "home" in final_url:
                     logger.info("✅ Авторизация успешна!")
+                    self._screenshot("login_success", send_to_chat=True, caption="🎉 Авторизация успешна!")
                     self._save_cookies()
                     
                     profile_data = {
@@ -895,15 +1001,17 @@ class SeleniumXAgent:
                         err_text = err.text
                         if err_text and len(err_text) > 3:
                             logger.error(f"Error found: {err_text}")
+                            self._screenshot("login_error", send_to_chat=True, caption=f"❌ Ошибка: {err_text}")
                             if "wrong" in err_text.lower() or "incorrect" in err_text.lower():
                                 return False, f"❌ {err_text}"
             
+            self._screenshot("login_final", send_to_chat=True, caption="❌ Авторизация не удалась")
             return False, f"Авторизация не удалась. URL: {self.driver.current_url}"
             
         except Exception as e:
             logger.error(f"Login error: {e}")
             logger.error(traceback.format_exc())
-            self._screenshot("login_exception")
+            self._screenshot("login_exception", send_to_chat=True, caption=f"💥 Ошибка: {str(e)[:100]}")
             return False, f"Ошибка: {e}"
         finally:
             if self.driver:
@@ -917,6 +1025,24 @@ class SeleniumXAgent:
             logger.info("="*60)
             logger.info("END LOGIN")
             logger.info("="*60)
+    
+    def capture_screenshot(self, url, wait=5):
+        """Сделать скриншот любой страницы"""
+        try:
+            self._create_driver()
+            self.driver.get(url)
+            time.sleep(wait)
+            
+            path = self._screenshot("capture", send_to_chat=False)
+            html_path = self._save_html("capture")
+            
+            self.driver.quit()
+            self.driver = None
+            
+            return path, html_path
+        except Exception as e:
+            logger.error(f"Capture error: {e}")
+            return None, None
     
     def fetch_timeline(self, username=None, limit=10):
         if not AGENT_READY:
@@ -1193,7 +1319,7 @@ class SeleniumXAgent:
             current_url = self.driver.current_url
             logger.info(f"check_current_auth: Current URL: {current_url}")
             if "home" not in current_url:
-                self._screenshot("auth_check_not_home")
+                self._screenshot("auth_check_not_home", send_to_chat=False)
                 return False, f"Не на домашней странице: {current_url}"
             
             try:
@@ -1343,6 +1469,49 @@ def register_selenium_bot(bot):
             logger.error(f"se_logs error: {e}")
             bot.reply_to(message, f"❌ Ошибка чтения логов: {e}")
     
+    @bot.message_handler(commands=["se_screenshot_page"])
+    def se_screenshot_page_command(message):
+        """Сделать скриншот любой страницы (без авторизации)"""
+        args = message.text.split()
+        url = args[1] if len(args) > 1 else "https://x.com/login"
+        
+        bot.reply_to(message, f"📸 Делаю скриншот {url}...\n<i>Это может занять 10-15 секунд</i>", parse_mode="HTML")
+        
+        path, html_path = run_sync_task(se_agent.capture_screenshot, url, 5)
+        
+        if path:
+            try:
+                with open(path, "rb") as f:
+                    bot.send_photo(
+                        message.chat.id, 
+                        f, 
+                        caption=f"📸 {url}\n\nHTML сохранен: {html_path}"
+                    )
+            except Exception as e:
+                bot.reply_to(message, f"❌ Не удалось отправить скриншот: {e}")
+        else:
+            bot.reply_to(message, "❌ Не удалось сделать скриншот")
+    
+    @bot.message_handler(commands=["se_show_login"])
+    def se_show_login_command(message):
+        """Показать страницу входа X"""
+        bot.reply_to(message, "📸 Открываю страницу входа X...\n<i>Это может занять 10-15 секунд</i>", parse_mode="HTML")
+        
+        path, html_path = run_sync_task(se_agent.capture_screenshot, "https://x.com/login", 5)
+        
+        if path:
+            try:
+                with open(path, "rb") as f:
+                    bot.send_photo(
+                        message.chat.id, 
+                        f, 
+                        caption=f"📸 Страница входа X/Twitter\n\nHTML: {html_path}"
+                    )
+            except Exception as e:
+                bot.reply_to(message, f"❌ Ошибка: {e}")
+        else:
+            bot.reply_to(message, "❌ Не удалось сделать скриншот")
+    
     @bot.message_handler(commands=["se_check_auth"])
     def se_check_auth_command(message):
         if not AGENT_READY:
@@ -1427,9 +1596,14 @@ def register_selenium_bot(bot):
         if chat_id in login_sessions:
             del login_sessions[chat_id]
         
+        # Передаем chat_id и bot в агент для отправки скриншотов
+        se_agent.set_chat_id(chat_id)
+        se_agent.set_bot(bot)
+        
         bot.reply_to(message,
             "🔐 <b>Авторизация в X (Selenium)</b>\n\n"
-            "Введи <b>username</b> (без @):",
+            "Введи <b>username</b> (без @):\n"
+            "<i>Бот будет присылать скриншоты каждого шага</i>",
             parse_mode="HTML"
         )
         login_sessions[chat_id] = {"step": "username", "method": "selenium"}
@@ -1579,7 +1753,7 @@ def register_selenium_bot(bot):
             se_agent._load_cookies()
             se_agent.driver.get(url)
             time.sleep(3)
-            path = se_agent._screenshot("manual")
+            path = se_agent._screenshot("manual", send_to_chat=False)
             se_agent.driver.quit()
             se_agent.driver = None
             return path
@@ -1615,18 +1789,19 @@ def register_selenium_bot(bot):
             "  /se_check_auth — Проверить сессию\n"
             "  /se_logout — Выйти и очистить сессию\n\n"
             "📋 <b>Диагностика</b>\n"
-            "  /se_logs — Показать логи авторизации\n\n"
+            "  /se_logs — Показать логи авторизации\n"
+            "  /se_screenshot_page [url] — Скриншот любой страницы\n"
+            "  /se_show_login — Скриншот страницы входа X\n\n"
             "🔐 <b>Авторизация</b>\n"
-            "  /se_login — Войти в X\n"
+            "  /se_login — Войти в X (со скриншотами)\n"
             "  /se_cancel — Отменить ввод\n\n"
             "📰 <b>Контент</b>\n"
             "  /se_timeline [user] [N] — Лента\n"
             "  /se_trends [N] — Тренды X\n"
             "  /se_search [запрос] [N] — Поиск твитов\n"
-            "  /se_screenshot [url] — Скриншот страницы\n\n"
+            "  /se_screenshot [url] — Скриншот страницы (с авторизацией)\n\n"
             "⚠️ <b>Особенности:</b>\n"
-            "• Использует прямой URL x.com/login\n"
-            "• Поддержка капчи, email, телефона, кода\n"
+            "• 📸 Автоматические скриншоты в чат на каждом шаге\n"
             "• Chrome скачивается автоматически (~150MB)\n"
             "• Работает без apt-get на Render\n"
             "• Cookies сохраняются между сессиями"
@@ -1688,7 +1863,7 @@ def register_selenium_bot(bot):
         bot.reply_to(message,
             "✅ Пароль получен\n\n"
             "⏳ Начинаю авторизацию...\n"
-            "<i>Бот будет отслеживать страницу и запрашивать необходимые данные</i>",
+            "<i>Бот будет присылать скриншоты каждого шага</i>",
             parse_mode="HTML"
         )
         
