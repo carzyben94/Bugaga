@@ -19,13 +19,25 @@ from github import register_github
 from xx import register_x_play
 
 # === SELENIUM X AGENT ===
+SELENIUM_AVAILABLE = False
+register_selenium_bot = None
+get_full_status = None
+get_auth_info = None
+AGENT_READY = None
+
+print("[DEBUG] Пытаюсь импортировать selenium_x_agent...", flush=True)
 try:
-    from selenium_x_agent import register_selenium_bot, get_full_status, get_auth_info, AGENT_READY
+    from selenium_x_agent import register_selenium_bot as _rsb, get_full_status as _gfs, get_auth_info as _gai, AGENT_READY as _ar
+    register_selenium_bot = _rsb
+    get_full_status = _gfs
+    get_auth_info = _gai
+    AGENT_READY = _ar
     SELENIUM_AVAILABLE = True
-    print("[DEBUG] Selenium module imported")
+    print("[DEBUG] Selenium module imported УСПЕШНО", flush=True)
 except Exception as e:
-    SELENIUM_AVAILABLE = False
-    print(f"[DEBUG] Selenium module not available: {e}")
+    print(f"[DEBUG] Selenium module not available: {e}", flush=True)
+    import traceback
+    traceback.print_exc()
 
 logging.basicConfig(level=logging.INFO)
 
@@ -69,12 +81,15 @@ for name, register_func, args in modules:
         print(f"[DEBUG] {name} error: {e}")
 
 # === РЕГИСТРАЦИЯ SELENIUM ===
-if SELENIUM_AVAILABLE:
+if SELENIUM_AVAILABLE and register_selenium_bot:
     try:
+        print("[DEBUG] Регистрирую selenium бота...", flush=True)
         register_selenium_bot(bot)
-        print("[DEBUG] Module selenium_x_agent OK")
+        print("[DEBUG] Module selenium_x_agent OK", flush=True)
     except Exception as e:
-        print(f"[DEBUG] selenium_x_agent error: {e}")
+        print(f"[DEBUG] selenium_x_agent error: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
         SELENIUM_AVAILABLE = False
 
 # ===== ЛОГИ =====
@@ -101,7 +116,7 @@ def log_action(action, details=None, status="info", send=True):
 
 
 def get_selenium_status_line():
-    """Получить строку статуса Selenium для меню"""
+    """Получить строку статуса Selenium для меню — ДИНАМИЧЕСКИ"""
     if not SELENIUM_AVAILABLE:
         return "  ⚠️ <i>модуль не загружен</i>\n"
     try:
@@ -117,68 +132,72 @@ def get_selenium_status_line():
         icon = "🟢" if ready else "🔴"
         ver = status.get("selenium_pip", {}).get("version", "?")
         return f"  {icon} pip v{ver} |\n{auth_line}"
-    except:
+    except Exception as e:
+        print(f"[DEBUG] get_selenium_status_line error: {e}", flush=True)
         return "  ⚠️ <i>ошибка статуса</i>\n"
 
 
-MENU_TEXT = (
-    "🤖 <b>BUGAGA BOT</b>\n"
-    "Твой агент для ИИ, новостей и крипты\n\n"
-    
-    "🧠 <b>Искусственный интеллект</b>\n"
-    "  ├ /ai — Задать вопрос ИИ\n"
-    "  ├ /browser_ai — ИИ читает сайт\n"
-    "  └ /crawler_ai — Собрать новости\n\n"
-    
-    "📰 <b>Новости</b>\n"
-    "  ├ /xposts — Посты из X (RSS)\n"
-    "  └ /x_timeline [user] — Лента X (Playwright)\n\n"
-    
-    "💰 <b>Финансы</b>\n"
-    "  └ /crypto — Курсы BTC и ETH\n\n"
-    
-    "🔧 <b>Render</b>\n"
-    "  ├ /render_list — Список сервисов\n"
-    "  ├ /render_status — Статус сервиса\n"
-    "  ├ /render_restart — Перезапустить\n"
-    "  ├ /render_env — Переменные окружения\n"
-    "  └ /render_logs — Логи сервиса\n\n"
-    
-    "💾 <b>GitHub</b>\n"
-    "  ├ /gh_list [путь] — Список файлов\n"
-    "  ├ /gh_read [путь] — Прочитать файл\n"
-    "  ├ /gh_write [путь] [текст] — Записать файл\n"
-    "  ├ /gh_del [путь] — Удалить файл\n"
-    "  ├ /gh_commits [N] — Коммиты\n"
-    "  ├ /gh_branches — Ветки\n"
-    "  └ /gh_repo — Инфо о репо\n\n"
-    
-    "🐦 <b>X Agent (Playwright)</b>\n"
-    "  ├ /x_status — Проверить статус\n"
-    "  ├ /x_install — Установить Chromium\n"
-    "  ├ /x_login — Войти (ввод в чате)\n"
-    "  ├ /x_login_env — Быстрый вход (env)\n"
-    "  ├ /x_timeline [user] [N] — Лента X\n"
-    "  ├ /x_search [запрос] [N] — Поиск X\n"
-    "  └ /x_help — Помощь\n\n"
-    
-    "🚗 <b>X Agent (Selenium)</b>\n" +
-    get_selenium_status_line() +
-    "  ├ /se_status — Статус + аккаунт\n"
-    "  ├ /se_install — Установить Selenium\n"
-    "  ├ /se_login — Войти в X\n"
-    "  ├ /se_timeline [user] [N] — Лента\n"
-    "  ├ /se_trends [N] — 🔥 Тренды\n"
-    "  ├ /se_search [запрос] [N] — Поиск\n"
-    "  ├ /se_screenshot [url] — Скриншот\n"
-    "  └ /se_help — Помощь"
-)
+def build_menu_text():
+    """СТРОИТ МЕНЮ ДИНАМИЧЕСКИ — при каждом вызове /start"""
+    return (
+        "🤖 <b>BUGAGA BOT</b>\n"
+        "Твой агент для ИИ, новостей и крипты\n\n"
+        
+        "🧠 <b>Искусственный интеллект</b>\n"
+        "  ├ /ai — Задать вопрос ИИ\n"
+        "  ├ /browser_ai — ИИ читает сайт\n"
+        "  └ /crawler_ai — Собрать новости\n\n"
+        
+        "📰 <b>Новости</b>\n"
+        "  ├ /xposts — Посты из X (RSS)\n"
+        "  └ /x_timeline [user] — Лента X (Playwright)\n\n"
+        
+        "💰 <b>Финансы</b>\n"
+        "  └ /crypto — Курсы BTC и ETH\n\n"
+        
+        "🔧 <b>Render</b>\n"
+        "  ├ /render_list — Список сервисов\n"
+        "  ├ /render_status — Статус сервиса\n"
+        "  ├ /render_restart — Перезапустить\n"
+        "  ├ /render_env — Переменные окружения\n"
+        "  └ /render_logs — Логи сервиса\n\n"
+        
+        "💾 <b>GitHub</b>\n"
+        "  ├ /gh_list [путь] — Список файлов\n"
+        "  ├ /gh_read [путь] — Прочитать файл\n"
+        "  ├ /gh_write [путь] [текст] — Записать файл\n"
+        "  ├ /gh_del [путь] — Удалить файл\n"
+        "  ├ /gh_commits [N] — Коммиты\n"
+        "  ├ /gh_branches — Ветки\n"
+        "  └ /gh_repo — Инфо о репо\n\n"
+        
+        "🐦 <b>X Agent (Playwright)</b>\n"
+        "  ├ /x_status — Проверить статус\n"
+        "  ├ /x_install — Установить Chromium\n"
+        "  ├ /x_login — Войти (ввод в чате)\n"
+        "  ├ /x_login_env — Быстрый вход (env)\n"
+        "  ├ /x_timeline [user] [N] — Лента X\n"
+        "  ├ /x_search [запрос] [N] — Поиск X\n"
+        "  └ /x_help — Помощь\n\n"
+        
+        "🚗 <b>X Agent (Selenium)</b>\n" +
+        get_selenium_status_line() +
+        "  ├ /se_status — Статус + аккаунт\n"
+        "  ├ /se_install — Установить Selenium\n"
+        "  ├ /se_google — Войти через Google\n"
+        "  ├ /se_logout — Выйти\n"
+        "  ├ /se_timeline [user] [N] — Лента\n"
+        "  ├ /se_trends [N] — 🔥 Тренды\n"
+        "  ├ /se_search [запрос] [N] — Поиск\n"
+        "  ├ /se_screenshot [url] — Скриншот\n"
+        "  └ /se_help — Помощь"
+    )
 
 @bot.message_handler(commands=["start", "help"])
 def menu_command(message):
     try:
         log_action(message.text.lstrip("/"), f"user={message.from_user.id}", "info")
-        bot.reply_to(message, MENU_TEXT, parse_mode="HTML")
+        bot.reply_to(message, build_menu_text(), parse_mode="HTML")
     except Exception as e:
         bot.reply_to(message, f"Ошибка: {e}")
 
