@@ -1,4 +1,4 @@
-# selenium_x_agent.py — Selenium X/Twitter агент с динамической установкой
+# selenium_x_agent.py — Selenium X/Twitter агент с автоматической загрузкой Chrome
 import os
 import sys
 import subprocess
@@ -8,31 +8,43 @@ import asyncio
 import threading
 import time
 import tempfile
+import urllib.request
+import zipfile
+import stat
 
 # === НАСТРОЙКА ПУТЕЙ ===
 SELENIUM_DIR = os.environ.get("SELENIUM_DIR", os.path.join(tempfile.gettempdir(), "selenium_agent"))
 os.makedirs(SELENIUM_DIR, exist_ok=True)
 
+CHROME_DIR = os.path.join(SELENIUM_DIR, "chrome")
+DRIVER_DIR = os.path.join(SELENIUM_DIR, "driver")
 COOKIES_FILE = os.path.join(SELENIUM_DIR, "x_cookies.json")
 SCREENSHOT_DIR = os.path.join(SELENIUM_DIR, "screenshots")
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+os.makedirs(CHROME_DIR, exist_ok=True)
+os.makedirs(DRIVER_DIR, exist_ok=True)
 
 # === ГЛОБАЛЬНЫЕ ФЛАГИ ===
-SELENIUM_INSTALLED = False      # pip-пакет установлен
-CHROME_BROWSER_READY = False   # Chrome/Chromium найден в системе
-DRIVER_READY = False           # ChromeDriver готов
-AGENT_READY = False            # Всё готов к работе
+SELENIUM_INSTALLED = False
+CHROME_BROWSER_READY = False
+DRIVER_READY = False
+AGENT_READY = False
+
+# === Версии Chrome for Testing ===
+CHROME_VERSION = "126.0.6478.126"
+CHROME_DOWNLOAD_URL = f"https://storage.googleapis.com/chrome-for-testing-public/{CHROME_VERSION}/linux64/chrome-linux64.zip"
+DRIVER_DOWNLOAD_URL = f"https://storage.googleapis.com/chrome-for-testing-public/{CHROME_VERSION}/linux64/chromedriver-linux64.zip"
 
 # === Хранилище сессий авторизации ===
 login_sessions = {}
 
 
-def _run_subprocess(cmd, timeout=120):
+def _run_subprocess(cmd, timeout=120, cwd=None):
     """Запустить команду с таймаутом"""
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            cwd=cwd
         )
         return result.returncode == 0, result.stdout, result.stderr
     except subprocess.TimeoutExpired:
@@ -41,36 +53,36 @@ def _run_subprocess(cmd, timeout=120):
         return False, "", str(e)
 
 
-def check_chrome_browser():
-    """Проверить, есть ли Chrome/Chromium в системе"""
-    global CHROME_BROWSER_READY
-    
-    # Проверяем common пути
-    chrome_paths = [
-        "/usr/bin/google-chrome",
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-        "/usr/bin/chrome",
-        "/snap/bin/chromium",
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-        "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-    ]
-    
-    for path in chrome_paths:
-        if os.path.exists(path):
-            CHROME_BROWSER_READY = True
-            return True, path
-    
-    # Проверяем через which
-    for name in ["google-chrome", "chromium", "chromium-browser", "chrome"]:
-        ok, out, _ = _run_subprocess(["which", name], timeout=5)
-        if ok and out.strip():
-            CHROME_BROWSER_READY = True
-            return True, out.strip()
-    
-    CHROME_BROWSER_READY = False
-    return False, None
+def _download_file(url, dest):
+    """Скачать файл с прогрессом"""
+    try:
+        print(f"[SE] Скачиваю: {url}")
+        urllib.request.urlretrieve(url, dest)
+        return True
+    except Exception as e:
+        print(f"[SE] Ошибка скачивания: {e}")
+        return False
+
+
+def _extract_zip(zip_path, dest_dir):
+    """Распаковать zip"""
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as z:
+            z.extractall(dest_dir)
+        return True
+    except Exception as e:
+        print(f"[SE] Ошибка распаковки: {e}")
+        return False
+
+
+def _make_executable(path):
+    """Сделать файл исполняемым"""
+    try:
+        st = os.stat(path)
+        os.chmod(path, st.st_mode | stat.S_IEXEC)
+        return True
+    except:
+        return False
 
 
 def check_selenium_pip():
@@ -85,40 +97,118 @@ def check_selenium_pip():
         return False, None
 
 
-def check_driver():
-    """Проверить, работает ли ChromeDriver"""
-    global DRIVER_READY
-    try:
-        from selenium import webdriver
-        from selenium.webdriver.chrome.service import Service
-        
-        # Пробуем через webdriver-manager
-        try:
-            from webdriver_manager.chrome import ChromeDriverManager
-            driver_path = ChromeDriverManager().install()
-            if driver_path and os.path.exists(driver_path):
-                DRIVER_READY = True
-                return True, driver_path
-        except:
-            pass
-        
-        # Пробуем найти chromedriver в PATH
-        ok, out, _ = _run_subprocess(["which", "chromedriver"], timeout=5)
+def install_selenium_pip():
+    """Установить selenium pip-пакеты"""
+    global SELENIUM_INSTALLED
+    print("[SE] Установка selenium pip...")
+    
+    ok, _, err = _run_subprocess(
+        [sys.executable, "-m", "pip", "install", "selenium"],
+        timeout=120
+    )
+    if not ok:
+        print(f"[SE] Ошибка pip install selenium: {err}")
+        return False
+    
+    # Перезагружаем кэш импорта
+    import importlib
+    if "selenium" in sys.modules:
+        importlib.reload(sys.modules["selenium"])
+    
+    SELENIUM_INSTALLED = True
+    print("[SE] Selenium pip установлен")
+    return True
+
+
+def check_chrome_binary():
+    """Проверить, скачан ли Chrome portable"""
+    global CHROME_BROWSER_READY
+    
+    chrome_path = os.path.join(CHROME_DIR, "chrome-linux64", "chrome")
+    if os.path.exists(chrome_path):
+        CHROME_BROWSER_READY = True
+        return True, chrome_path
+    
+    # Проверяем системный Chrome
+    for name in ["google-chrome", "chromium", "chromium-browser", "chrome"]:
+        ok, out, _ = _run_subprocess(["which", name], timeout=5)
         if ok and out.strip():
-            DRIVER_READY = True
+            CHROME_BROWSER_READY = True
             return True, out.strip()
-        
-        DRIVER_READY = False
-        return False, None
-    except Exception as e:
-        DRIVER_READY = False
-        return False, str(e)
+    
+    CHROME_BROWSER_READY = False
+    return False, None
+
+
+def download_chrome_portable():
+    """Скачать Chrome for Testing portable"""
+    global CHROME_BROWSER_READY
+    print("[SE] Скачиваю Chrome portable...")
+    
+    zip_path = os.path.join(SELENIUM_DIR, "chrome.zip")
+    
+    if not _download_file(CHROME_DOWNLOAD_URL, zip_path):
+        return False
+    
+    if not _extract_zip(zip_path, CHROME_DIR):
+        return False
+    
+    chrome_path = os.path.join(CHROME_DIR, "chrome-linux64", "chrome")
+    if os.path.exists(chrome_path):
+        _make_executable(chrome_path)
+        CHROME_BROWSER_READY = True
+        print(f"[SE] Chrome готов: {chrome_path}")
+        return True
+    
+    return False
+
+
+def check_driver():
+    """Проверить ChromeDriver"""
+    global DRIVER_READY
+    
+    driver_path = os.path.join(DRIVER_DIR, "chromedriver-linux64", "chromedriver")
+    if os.path.exists(driver_path):
+        DRIVER_READY = True
+        return True, driver_path
+    
+    # Проверяем в PATH
+    ok, out, _ = _run_subprocess(["which", "chromedriver"], timeout=5)
+    if ok and out.strip():
+        DRIVER_READY = True
+        return True, out.strip()
+    
+    DRIVER_READY = False
+    return False, None
+
+
+def download_driver():
+    """Скачать ChromeDriver"""
+    global DRIVER_READY
+    print("[SE] Скачиваю ChromeDriver...")
+    
+    zip_path = os.path.join(SELENIUM_DIR, "driver.zip")
+    
+    if not _download_file(DRIVER_DOWNLOAD_URL, zip_path):
+        return False
+    
+    if not _extract_zip(zip_path, DRIVER_DIR):
+        return False
+    
+    driver_path = os.path.join(DRIVER_DIR, "chromedriver-linux64", "chromedriver")
+    if os.path.exists(driver_path):
+        _make_executable(driver_path)
+        DRIVER_READY = True
+        print(f"[SE] ChromeDriver готов: {driver_path}")
+        return True
+    
+    return False
 
 
 def get_full_status():
     """Полный статус системы"""
     pip_ok, pip_ver = check_selenium_pip()
-    browser_ok, browser_path = check_chrome_browser()
+    browser_ok, browser_path = check_chrome_binary()
     driver_ok, driver_path = check_driver()
     
     global AGENT_READY
@@ -134,63 +224,6 @@ def get_full_status():
     }
 
 
-def install_selenium_pip():
-    """Установить selenium и webdriver-manager"""
-    global SELENIUM_INSTALLED
-    print("[SE] Установка selenium pip-пакетов...")
-    
-    packages = ["selenium", "webdriver-manager"]
-    for pkg in packages:
-        ok, out, err = _run_subprocess(
-            [sys.executable, "-m", "pip", "install", pkg],
-            timeout=120
-        )
-        if not ok:
-            print(f"[SE] Ошибка установки {pkg}: {err}")
-            return False
-    
-    # Перезагружаем кэш импорта
-    import importlib
-    if "selenium" in sys.modules:
-        importlib.reload(sys.modules["selenium"])
-    
-    SELENIUM_INSTALLED = True
-    print("[SE] Selenium pip-пакеты установлены")
-    return True
-
-
-def install_chrome_on_render():
-    """Установить Chrome на Render (Debian/Ubuntu)"""
-    print("[SE] Попытка установить Chrome...")
-    
-    commands = [
-        # Обновляем пакеты
-        ["apt-get", "update"],
-        # Устанавливаем зависимости
-        ["apt-get", "install", "-y", "wget", "gnupg", "ca-certificates", "fonts-liberation"],
-        # Скачиваем и устанавливаем Chrome
-        ["wget", "-q", "-O", "-", "https://dl.google.com/linux/linux_signing_key.pub"],
-    ]
-    
-    # Добавляем репозиторий Google Chrome
-    repo_cmd = 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list'
-    _run_subprocess(["bash", "-c", repo_cmd], timeout=30)
-    
-    # Обновляем и ставим
-    _run_subprocess(["apt-get", "update"], timeout=60)
-    ok, _, err = _run_subprocess(
-        ["apt-get", "install", "-y", "google-chrome-stable"],
-        timeout=180
-    )
-    
-    if ok:
-        print("[SE] Chrome установлен")
-        return True
-    else:
-        print(f"[SE] Не удалось установить Chrome: {err}")
-        return False
-
-
 def full_install():
     """Полная установка: pip → chrome → driver"""
     global SELENIUM_INSTALLED, CHROME_BROWSER_READY, DRIVER_READY, AGENT_READY
@@ -202,21 +235,18 @@ def full_install():
     
     # Шаг 2: Chrome браузер
     if not CHROME_BROWSER_READY:
-        browser_ok, _ = check_chrome_browser()
+        browser_ok, _ = check_chrome_binary()
         if not browser_ok:
-            # Пробуем установить (для Render)
-            install_chrome_on_render()
-            check_chrome_browser()
+            if not download_chrome_portable():
+                # Пробуем системный ещё раз
+                check_chrome_binary()
     
     # Шаг 3: ChromeDriver
     if not DRIVER_READY:
-        try:
-            from webdriver_manager.chrome import ChromeDriverManager
-            ChromeDriverManager().install()
-            check_driver()
-        except Exception as e:
-            print(f"[SE] Ошибка установки драйвера: {e}")
-            return False
+        driver_ok, _ = check_driver()
+        if not driver_ok:
+            if not download_driver():
+                check_driver()
     
     AGENT_READY = SELENIUM_INSTALLED and CHROME_BROWSER_READY and DRIVER_READY
     return AGENT_READY
@@ -259,23 +289,31 @@ class SeleniumXAgent:
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option("useAutomationExtension", False)
         
-        # Путь к Chrome (если нестандартный)
-        browser_ok, browser_path = check_chrome_browser()
-        if browser_ok and browser_path:
+        # Путь к Chrome portable
+        browser_ok, browser_path = check_chrome_binary()
+        if browser_ok and browser_path and "chrome-linux64" in browser_path:
             options.binary_location = browser_path
         
         return options
     
     def _create_driver(self):
-        """Создать драйвер с автоматической установкой"""
+        """Создать драйвер"""
         from selenium import webdriver
         from selenium.webdriver.chrome.service import Service
-        from webdriver_manager.chrome import ChromeDriverManager
         
         options = self._get_chrome_options()
-        service = Service(ChromeDriverManager().install())
+        
+        # Путь к драйверу
+        driver_ok, driver_path = check_driver()
+        if driver_ok and driver_path:
+            service = Service(driver_path)
+        else:
+            # Fallback — пусть Selenium сам ищет
+            service = Service()
         
         self.driver = webdriver.Chrome(service=service, options=options)
+        
+        # Скрываем webdriver
         self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
             "source": """
                 Object.defineProperty(navigator, 'webdriver', {
@@ -304,7 +342,6 @@ class SeleniumXAgent:
             with open(COOKIES_FILE, "r") as f:
                 cookies = json.load(f)
             for cookie in cookies:
-                # Убираем невалидные поля
                 cookie.pop("sameSite", None)
                 try:
                     self.driver.add_cookie(cookie)
@@ -328,15 +365,14 @@ class SeleniumXAgent:
             return False
     
     def _check_auth(self):
-        """Проверить, авторизованы ли"""
+        """Проверить авторизацию"""
         try:
             self.driver.get("https://x.com/home")
             time.sleep(3)
-            # Проверяем наличие ленты
-            self.driver.find_element("css selector", '[data-testid="primaryColumn"]')
-            # Проверяем, нет ли кнопки входа
+            from selenium.webdriver.common.by import By
+            self.driver.find_element(By.CSS_SELECTOR, '[data-testid="primaryColumn"]')
             try:
-                self.driver.find_element("css selector", 'a[href="/i/flow/login"]')
+                self.driver.find_element(By.CSS_SELECTOR, 'a[href="/i/flow/login"]')
                 return False
             except:
                 return True
@@ -422,7 +458,8 @@ class SeleniumXAgent:
             time.sleep(3)
             self._screenshot("login_after_username")
             
-            # 4. Проверка доп. верификации (email/телефон)
+            # 4. Проверка доп. верификации
+            from selenium.webdriver.common.by import By
             verify_selectors = [
                 'input[name="email"]',
                 'input[name="phone"]',
@@ -430,7 +467,7 @@ class SeleniumXAgent:
             ]
             for selector in verify_selectors:
                 try:
-                    elem = self.driver.find_element("css selector", selector)
+                    elem = self.driver.find_element(By.CSS_SELECTOR, selector)
                     if elem.is_displayed():
                         if email:
                             elem.clear()
@@ -451,9 +488,8 @@ class SeleniumXAgent:
             ]
             
             if not self._smart_fill(password_selectors, password, "password"):
-                # Проверяем, не запросили ли снова username
                 try:
-                    self.driver.find_element("css selector", 'input[autocomplete="username"]')
+                    self.driver.find_element(By.CSS_SELECTOR, 'input[autocomplete="username"]')
                     return False, "Не удалось перейти к паролю. Возможно, неверный username."
                 except:
                     pass
@@ -489,16 +525,14 @@ class SeleniumXAgent:
             ]
             for selector in error_selectors:
                 try:
-                    err = self.driver.find_element("css selector", selector)
+                    err = self.driver.find_element(By.CSS_SELECTOR, selector)
                     return False, f"Ошибка: {err.text}"
                 except:
                     pass
             
-            # Проверяем, не на странице логина ли
             if "/login" in current_url:
                 return False, "Всё ещё на странице логина. Неверный пароль или верификация."
             
-            # Сохраняем cookies на всякий случай
             self._save_cookies()
             return True, None
             
@@ -518,22 +552,26 @@ class SeleniumXAgent:
         try:
             self._create_driver()
             self._load_cookies()
-            self.driver.get("https://x.com/home" if not username else f"https://x.com/{username}")
+            
+            url = f"https://x.com/{username}" if username else "https://x.com/home"
+            self.driver.get(url)
             time.sleep(4)
+            
+            from selenium.webdriver.common.by import By
             
             tweets = []
             last_count = 0
             attempts = 0
             
             while len(tweets) < limit and attempts < 10:
-                articles = self.driver.find_elements("css selector", "article")
+                articles = self.driver.find_elements(By.CSS_SELECTOR, "article")
                 for article in articles:
                     try:
-                        text = article.find_element("css selector", '[data-testid="tweetText"]').text
-                        user = article.find_element("css selector", '[data-testid="User-Name"]').text
-                        time_elem = article.find_element("css selector", "time")
+                        text = article.find_element(By.CSS_SELECTOR, '[data-testid="tweetText"]').text
+                        user = article.find_element(By.CSS_SELECTOR, '[data-testid="User-Name"]').text
+                        time_elem = article.find_element(By.CSS_SELECTOR, "time")
                         dt = time_elem.get_attribute("datetime")
-                        link = article.find_element("css selector", 'a[href*="/status/"]')
+                        link = article.find_element(By.CSS_SELECTOR, 'a[href*="/status/"]')
                         url = f"https://x.com{link.get_attribute('href')}"
                         
                         tweet = {
@@ -620,25 +658,16 @@ def register_selenium_bot(bot):
         )
         
         if not status['agent_ready']:
-            msg += (
-                "⚠️ <b>Что нужно сделать:</b>\n"
-            )
-            if not status['selenium_pip']['installed']:
-                msg += "• Установить pip-пакеты: /se_install\n"
-            if not status['chrome_browser']['found']:
-                msg += "• Установить Chrome (на Render добавь в build command):\n"
-                msg += "  <code>apt-get update && apt-get install -y google-chrome-stable</code>\n"
-            if not status['chromedriver']['ready']:
-                msg += "• Установить ChromeDriver: /se_install\n"
+            msg += "⚠️ Нажми /se_install для установки\n"
         else:
-            msg += "✅ Всё готово! Используй /se_login для авторизации"
+            msg += "✅ Готов к работе! /se_login для авторизации"
         
         bot.reply_to(message, msg, parse_mode="HTML")
     
     @bot.message_handler(commands=["se_install"])
     def se_install_command(message):
         """Установить всё необходимое"""
-        bot.reply_to(message, "⏳ Начинаю установку Selenium...", parse_mode="HTML")
+        bot.reply_to(message, "⏳ Начинаю установку Selenium...\n<i>Это может занять 1-2 минуты</i>", parse_mode="HTML")
         
         success = full_install()
         status = get_full_status()
@@ -649,7 +678,7 @@ def register_selenium_bot(bot):
                 f"📦 pip: v{status['selenium_pip']['version']}\n"
                 f"🌐 Chrome: <code>{status['chrome_browser']['path']}</code>\n"
                 f"🚗 Driver: <code>{status['chromedriver']['path']}</code>\n\n"
-                "Теперь можно использовать /se_login",
+                "Теперь /se_login",
                 parse_mode="HTML"
             )
         else:
@@ -658,17 +687,9 @@ def register_selenium_bot(bot):
                 f"pip: {'✅' if status['selenium_pip']['installed'] else '❌'}\n"
                 f"Chrome: {'✅' if status['chrome_browser']['found'] else '❌'}\n"
                 f"Driver: {'✅' if status['chromedriver']['ready'] else '❌'}\n\n"
+                "💡 Попробуй ещё раз: /se_install\n"
+                "Или проверь логи сервера."
             )
-            if not status['chrome_browser']['found']:
-                msg += (
-                    "💡 <b>Chrome не найден в системе!</b>\n\n"
-                    "Для <b>Render</b> добавь в Build Command:\n"
-                    "<pre>apt-get update && apt-get install -y wget gnupg && "
-                    "wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add - && "
-                    "echo 'deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main' > /etc/apt/sources.list.d/google-chrome.list && "
-                    "apt-get update && apt-get install -y google-chrome-stable</pre>\n\n"
-                    "Или используй Docker с предустановленным Chrome."
-                )
             bot.reply_to(message, msg, parse_mode="HTML")
     
     @bot.message_handler(commands=["se_login"])
@@ -676,8 +697,7 @@ def register_selenium_bot(bot):
         """Авторизация через Selenium"""
         if not AGENT_READY:
             bot.reply_to(message, 
-                "❌ Selenium не готов. Сначала используй /se_install\n"
-                "Или проверь статус: /se_status",
+                "❌ Selenium не готов. Сначала /se_install",
                 parse_mode="HTML"
             )
             return
@@ -739,15 +759,15 @@ def register_selenium_bot(bot):
             "🚗 <b>Selenium X Agent — команды</b>\n\n"
             "🔧 <b>Настройка</b>\n"
             "  /se_status — Полный статус системы\n"
-            "  /se_install — Установить Selenium + ChromeDriver\n\n"
+            "  /se_install — Установить Selenium + Chrome + Driver\n\n"
             "🔐 <b>Авторизация</b>\n"
             "  /se_login — Войти в X (ввод в чате)\n\n"
             "📰 <b>Контент</b>\n"
             "  /se_timeline [user] [N] — Лента\n\n"
-            "⚠️ <b>Отличие от Playwright:</b>\n"
-            "• Selenium использует системный Chrome\n"
-            "• На Render требуется установка Chrome в Build Command\n"
-            "• Может быть стабильнее на некоторых платформах"
+            "⚠️ <b>Особенности:</b>\n"
+            "• Chrome скачивается автоматически (~150MB)\n"
+            "• Работает без apt-get на Render\n"
+            "• Cookies сохраняются между сессиями"
         )
         bot.reply_to(message, msg, parse_mode="HTML")
     
@@ -818,7 +838,6 @@ def register_selenium_bot(bot):
             parse_mode="HTML"
         )
         
-        # Запускаем авторизацию
         success, error = run_sync_task(se_agent.login, username, password, email)
         
         del login_sessions[chat_id]
@@ -844,5 +863,5 @@ def register_selenium_bot(bot):
 
 # === Инициализация при импорте ===
 check_selenium_pip()
-check_chrome_browser()
+check_chrome_binary()
 check_driver()
