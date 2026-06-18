@@ -1,4 +1,4 @@
-# selenium_x_agent.py — Selenium X/Twitter агент с расширенным логированием
+#  selenium_x_agent.py — Selenium X/Twitter агент с расширенным логированием
 import os
 import sys
 import subprocess
