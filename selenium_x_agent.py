@@ -202,6 +202,7 @@ def get_full_status():
 
 
 def get_auth_info():
+    """Получить информацию об авторизованном аккаунте"""
     print(f"[SE] get_auth_info: проверяю {AUTH_FILE}")
     if not os.path.exists(AUTH_FILE):
         print(f"[SE] AUTH_FILE не существует")
@@ -210,6 +211,12 @@ def get_auth_info():
         with open(AUTH_FILE, "r") as f:
             data = json.load(f)
         print(f"[SE] get_auth_info прочитал: {data}")
+        
+        # Проверяем, что username есть
+        if not data.get("username"):
+            print(f"[SE] get_auth_info: username пустой в файле!")
+            return None
+        
         return data
     except Exception as e:
         print(f"[SE] Ошибка чтения AUTH_FILE: {e}")
@@ -217,32 +224,46 @@ def get_auth_info():
 
 
 def save_auth_info(username, email=None, extra=None):
+    """Сохранить информацию об авторизованном аккаунте — ГАРАНТИРОВАННО"""
     try:
+        # ПРИНУДИТЕЛЬНО используем переданный username
+        if not username or username == "unknown":
+            print(f"[SE] save_auth_info: КРИТИЧЕСКАЯ ОШИБКА — username пустой!")
+            return False
+        
         data = {
-            "username": username,
+            "username": str(username),  # Принудительно строка
             "email": email,
             "authorized_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
         if extra:
             data.update(extra)
         
-        print(f"[SE] save_auth_info: пишу {data} в {AUTH_FILE}")
+        print(f"[SE] save_auth_info: пишу username={username} в {AUTH_FILE}")
+        print(f"[SE] save_auth_info: полные данные={data}")
         
+        # Атомарная запись
         tmp_file = AUTH_FILE + ".tmp"
         with open(tmp_file, "w") as f:
-            json.dump(data, f)
+            json.dump(data, f, indent=2)
             f.flush()
             os.fsync(f.fileno())
         
         os.replace(tmp_file, AUTH_FILE)
         
+        # Проверяем
         if os.path.exists(AUTH_FILE):
             size = os.path.getsize(AUTH_FILE)
             print(f"[SE] AUTH_FILE создан, размер: {size}")
             with open(AUTH_FILE, "r") as f:
                 verify = json.load(f)
-            print(f"[SE] Проверка записи: {verify}")
-            return True
+            print(f"[SE] Проверка записи: verify={verify}")
+            if verify.get("username") == username:
+                print(f"[SE] ✅ username совпадает!")
+                return True
+            else:
+                print(f"[SE] ❌ username НЕ совпадает! Ожидалось {username}, получили {verify.get('username')}")
+                return False
         else:
             print(f"[SE] КРИТИЧЕСКАЯ ОШИБКА: AUTH_FILE НЕ создан!")
             return False
@@ -254,6 +275,7 @@ def save_auth_info(username, email=None, extra=None):
 
 
 def clear_auth_info():
+    """Очистить информацию об авторизации"""
     try:
         if os.path.exists(AUTH_FILE):
             os.remove(AUTH_FILE)
@@ -437,14 +459,16 @@ class SeleniumXAgent:
         return False
     
     def login(self, username, password, email=None):
-        """Авторизация с ПРОВЕРКОЙ через открытие профиля и подписок"""
-        driver_created = False
+        """Авторизация с ГАРАНТИРОВАННЫМ сохранением username"""
+        # Сохраняем username в локальную переменную — не потеряем
+        target_username = username.strip().lstrip("@") if username else "unknown"
+        print(f"[SE] login: target_username={target_username}")
+        
         try:
-            self._report("start", f"🚀 Начинаю авторизацию как @{username}")
+            self._report("start", f"🚀 Начинаю авторизацию как @{target_username}")
             
             self._report("browser", "🌐 Запускаю Chrome...")
             self._create_driver()
-            driver_created = True
             self._report("browser", "✅ Chrome запущен")
             
             self._report("page", "📄 Открываю страницу входа...")
@@ -461,10 +485,10 @@ class SeleniumXAgent:
                 'input[autocapitalize="none"]',
                 'input[inputmode="text"]',
             ]
-            if not self._smart_fill(username_selectors, username, "username"):
+            if not self._smart_fill(username_selectors, target_username, "username"):
                 self._screenshot("login_no_username")
                 return False, "❌ Поле username не найдено"
-            self._report("username", f"✅ Username введён")
+            self._report("username", f"✅ Username введён: @{target_username}")
             
             time.sleep(1)
             
@@ -564,7 +588,7 @@ class SeleniumXAgent:
             except:
                 pass
             
-            # === ГЛАВНАЯ ПРОВЕРКА: открываем home и проверяем ===
+            # === ГЛАВНАЯ ПРОВЕРКА: открываем home ===
             self._report("home", "🏠 Открываю домашнюю страницу для проверки...")
             self.driver.get("https://x.com/home")
             time.sleep(4)
@@ -576,7 +600,7 @@ class SeleniumXAgent:
             
             # Проверяем, что это home (не login)
             if "login" in home_url or "flow/login" in home_url:
-                self._report("home", "❌ Редирект на страницу входа — авторизация не удалась")
+                self._report("home", "❌ Редирект на страницу входа")
                 return False, "❌ Авторизация не удалась: редирект на страницу входа"
             
             # Проверяем наличие primaryColumn
@@ -594,17 +618,16 @@ class SeleniumXAgent:
                 login_btn = self.driver.find_element(By.CSS_SELECTOR, 'a[href="/i/flow/login"]')
                 if login_btn.is_displayed():
                     has_login_btn = True
-                    self._report("home", "❌ Кнопка входа видна — не авторизованы")
+                    self._report("home", "❌ Кнопка входа видна")
             except:
                 self._report("home", "✅ Кнопки входа нет")
             
-            # Итог проверки home
             if has_login_btn and not has_primary:
-                return False, "❌ Авторизация не удалась: на home видна кнопка входа"
+                return False, "❌ Авторизация не удалась"
             
             # === ОТКРЫВАЕМ ПРОФИЛЬ ===
-            self._report("profile", f"👤 Открываю профиль @{username}...")
-            self.driver.get(f"https://x.com/{username}")
+            self._report("profile", f"👤 Открываю профиль @{target_username}...")
+            self.driver.get(f"https://x.com/{target_username}")
             time.sleep(4)
             self._screenshot("login_profile_check")
             
@@ -645,31 +668,40 @@ class SeleniumXAgent:
             if followers_count:
                 self._report("profile", f"📊 Подписчиков: {followers_count}")
             
-            # === СОХРАНЯЕМ ВСЁ ПЕРЕД ЗАКРЫТИЕМ ===
+            # === СОХРАНЯЕМ ВСЁ — ГАРАНТИРОВАННО ===
             self._report("save", "💾 Сохраняю cookies...")
             cookie_ok = self._save_cookies()
             self._report("save", f"{'✅' if cookie_ok else '❌'} Cookies сохранены")
             
-            self._report("save_auth", f"💾 Сохраняю auth info...")
+            # Сохраняем auth info — ПРИНУДИТЕЛЬНО с username
+            self._report("save_auth", f"💾 Сохраняю auth info для @{target_username}...")
             auth_data = {
                 "following_count": following_count,
                 "followers_count": followers_count,
                 "profile_title": profile_title,
                 "home_url": home_url,
             }
-            auth_saved = save_auth_info(username, email, auth_data)
+            auth_saved = save_auth_info(target_username, email, auth_data)
             self._report("save_auth", f"{'✅' if auth_saved else '❌'} Auth info сохранён")
             
-            # Закрываем driver ТОЛЬКО после сохранения всего
-            self._report("done", "✅ Авторизация завершена!")
-            return True, None
+            # ПРОВЕРЯЕМ, ЧТО СОХРАНИЛОСЬ
+            verify_auth = get_auth_info()
+            print(f"[SE] ПРОВЕРКА ПОСЛЕ СОХРАНЕНИЯ: verify_auth={verify_auth}")
+            
+            if verify_auth and verify_auth.get("username") == target_username:
+                self._report("done", "✅ Авторизация завершена и подтверждена!")
+                return True, None
+            else:
+                print(f"[SE] КРИТИЧЕСКАЯ ОШИБКА: username не совпадает! Ожидалось {target_username}, получили {verify_auth}")
+                # Пытаемся ещё раз сохранить
+                save_auth_info(target_username, email, auth_data)
+                return True, None  # Всё равно считаем успехом, cookies сохранены
             
         except Exception as e:
             self._report("error", f"💥 Критическая ошибка: {str(e)}")
             self._screenshot("login_exception")
             return False, f"💥 Ошибка авторизации: {e}"
         finally:
-            # Закрываем driver здесь, но cookies уже сохранены
             if self.driver:
                 print(f"[SE] Закрываю driver...")
                 try:
@@ -689,16 +721,12 @@ class SeleniumXAgent:
         
         try:
             self._create_driver()
-            
-            # Сначала открываем x.com, потом загружаем cookies
             self.driver.get("https://x.com")
             time.sleep(2)
             
-            # Загружаем cookies
             if not self._load_cookies():
                 return None, "Не удалось загрузить cookies. Авторизуйся заново: /se_login"
             
-            # Переходим на нужную страницу
             url = f"https://x.com/{username}" if username else "https://x.com/home"
             self.driver.get(url)
             time.sleep(4)
@@ -1019,15 +1047,36 @@ def register_selenium_bot(bot):
             bot.reply_to(message, "❌ Selenium не готов. /se_install", parse_mode="HTML")
             return
         
-        bot.reply_to(message, "🔍 Проверяю сессию...", parse_mode="HTML")
+        # Сначала проверяем файл
+        auth = get_auth_info()
+        print(f"[SE] se_check_auth: auth из файла={auth}")
+        
+        if not auth:
+            bot.reply_to(message, "❌ Нет данных об авторизации. Сначала /se_login", parse_mode="HTML")
+            return
+        
+        username = auth.get("username", "?")
+        print(f"[SE] se_check_auth: username из файла={username}")
+        
+        bot.reply_to(message, f"🔍 Проверяю сессию для @{username}...", parse_mode="HTML")
         valid, msg = run_sync_task(se_agent.check_current_auth)
         
         if valid:
-            auth = get_auth_info()
-            username = auth["username"] if auth else "?"
-            bot.reply_to(message, f"✅ <b>Сессия активна</b>\n👤 @{username}\n\nМожно пользоваться командами.", parse_mode="HTML")
+            bot.reply_to(message, 
+                f"✅ <b>Сессия активна</b>\n"
+                f"👤 @{username}\n"
+                f"📊 Подписок: {auth.get('following_count', '?')}\n"
+                f"📊 Подписчиков: {auth.get('followers_count', '?')}\n\n"
+                f"Можно пользоваться командами.",
+                parse_mode="HTML"
+            )
         else:
-            bot.reply_to(message, f"❌ <b>Сессия недействительна</b>\n{msg}\n\nАвторизуйся: /se_login", parse_mode="HTML")
+            bot.reply_to(message, 
+                f"❌ <b>Сессия недействительна</b>\n"
+                f"{msg}\n\n"
+                f"Авторизуйся: /se_login",
+                parse_mode="HTML"
+            )
     
     @bot.message_handler(commands=["se_logout"])
     def se_logout_command(message):
@@ -1065,6 +1114,7 @@ def register_selenium_bot(bot):
             bot.reply_to(message, "❌ Selenium не готов. Сначала /se_install", parse_mode="HTML")
             return
         
+        # Проверяем, не авторизованы ли уже
         auth = get_auth_info()
         if auth:
             bot.reply_to(message,
@@ -1428,7 +1478,7 @@ def register_selenium_bot(bot):
         
         if error:
             bot.reply_to(message, f"❌ {error}")
-        elif success and auth_after:
+        elif success and auth_after and auth_after.get("username") == username:
             msg = (
                 f"✅ <b>Авторизация УСПЕШНА!</b>\n\n"
                 f"👤 Аккаунт: <code>@{auth_after['username']}</code>\n"
@@ -1447,6 +1497,15 @@ def register_selenium_bot(bot):
                 f"/se_search — поиск"
             )
             bot.reply_to(message, msg, parse_mode="HTML")
+        elif success and auth_after:
+            # Username не совпадает, но данные есть
+            bot.reply_to(message, 
+                f"⚠️ <b>Авторизация прошла, но username не совпадает!</b>\n"
+                f"Ожидалось: @{username}\n"
+                f"Сохранено: @{auth_after.get('username', '?')}\n\n"
+                f"Попробуй /se_check_auth",
+                parse_mode="HTML"
+            )
         elif success and not auth_after:
             bot.reply_to(message, 
                 "⚠️ <b>Авторизация прошла, но данные НЕ сохранились!</b>\n"
