@@ -7,7 +7,6 @@ import json
 from flask import Flask, request
 import telebot
 
-# Добавляем текущую папку в PATH
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from xposts import register_xposts
@@ -21,7 +20,7 @@ from xx import register_x_play
 
 # === SELENIUM X AGENT ===
 try:
-    from selenium_x_agent import register_selenium_bot, get_full_status, AGENT_READY
+    from selenium_x_agent import register_selenium_bot, get_full_status, get_auth_info, AGENT_READY
     SELENIUM_AVAILABLE = True
     print("[DEBUG] Selenium module imported")
 except Exception as e:
@@ -100,7 +99,6 @@ def log_action(action, details=None, status="info", send=True):
     if send:
         send_log_to_admin(action, details, status)
 
-# ===== ОБЩЕЕ МЕНЮ =====
 
 def get_selenium_status_line():
     """Получить строку статуса Selenium для меню"""
@@ -109,11 +107,19 @@ def get_selenium_status_line():
     try:
         status = get_full_status()
         ready = status.get("agent_ready", False)
+        auth = status.get("auth_info")
+        
+        if auth:
+            auth_line = f"  👤 <code>@{auth['username']}</code>\n"
+        else:
+            auth_line = "  👤 <i>не подключён</i>\n"
+        
         icon = "🟢" if ready else "🔴"
         ver = status.get("selenium_pip", {}).get("version", "?")
-        return f"  {icon} <i>pip v{ver}</i>\n"
+        return f"  {icon} pip v{ver} |{auth_line}"
     except:
         return "  ⚠️ <i>ошибка статуса</i>\n"
+
 
 MENU_TEXT = (
     "🤖 <b>BUGAGA BOT</b>\n"
@@ -158,10 +164,13 @@ MENU_TEXT = (
     
     "🚗 <b>X Agent (Selenium)</b>\n" +
     get_selenium_status_line() +
-    "  ├ /se_status — Полный статус\n"
+    "  ├ /se_status — Статус + аккаунт\n"
     "  ├ /se_install — Установить Selenium\n"
-    "  ├ /se_login — Войти (ввод в чате)\n"
-    "  ├ /se_timeline [user] [N] — Лента X\n"
+    "  ├ /se_login — Войти в X\n"
+    "  ├ /se_timeline [user] [N] — Лента\n"
+    "  ├ /se_trends [N] — 🔥 Тренды\n"
+    "  ├ /se_search [запрос] [N] — Поиск\n"
+    "  ├ /se_screenshot [url] — Скриншот\n"
     "  └ /se_help — Помощь"
 )
 
@@ -173,12 +182,10 @@ def menu_command(message):
     except Exception as e:
         bot.reply_to(message, f"Ошибка: {e}")
 
-# ===== ТЕСТОВАЯ КОМАНДА =====
 @bot.message_handler(commands=["test"])
 def test_command(message):
     bot.reply_to(message, "✅ Бот работает!")
 
-# ===== ВЕБХУК =====
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
     try:
