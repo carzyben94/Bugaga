@@ -116,7 +116,7 @@ def get_selenium_status_line():
         
         icon = "🟢" if ready else "🔴"
         ver = status.get("selenium_pip", {}).get("version", "?")
-        return f"  {icon} pip v{ver} |{auth_line}"
+        return f"  {icon} pip v{ver} |\n{auth_line}"
     except:
         return "  ⚠️ <i>ошибка статуса</i>\n"
 
