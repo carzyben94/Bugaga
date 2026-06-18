@@ -392,233 +392,180 @@ def google_login(email, password, bot=None, chat_id=None):
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
         
-        # === ШАГ 0: Просто заходим на x.com и смотрим что будет ===
+        # === ШАГ 0: Заходим на x.com ===
         report("📥 Открываю x.com...")
         session.driver.get("https://x.com")
         time.sleep(6)
-        session._screenshot("step0_x_com", "📸 Шаг 0: Просто x.com")
+        session._screenshot("step0_x_com", "📸 Шаг 0: x.com")
+        session._save_html("step0_x_com")
         
-        # Сохраняем HTML
-        html_path = session._save_html("step0_x_com")
-        if html_path:
-            report(f"📝 HTML сохранён: {html_path}")
-        
-        # Смотрим URL и заголовок
         current_url = session.driver.current_url
         title = session.driver.title
         report(f"📍 URL: {current_url}")
         report(f"📰 Title: {title}")
         
-        # Смотрим текст страницы
-        try:
-            body_text = session.driver.find_element(By.TAG_NAME, "body").text
-            report(f"📄 Текст страницы:\n{body_text[:800]}")
-        except Exception as e:
-            report(f"⚠️ Не удалось получить текст: {e}")
-        
-        # Если редиректнуло на login — ок, запоминаем
-        if "login" in current_url or "flow" in current_url:
-            report("🔀 Редирект на страницу входа")
-        else:
-            report("✅ Остались на x.com, ищем кнопку Sign in...")
-            # Пробуем найти и кликнуть "Sign in"
+        # === ШАГ 0.5: Если попали на onboarding — работаем с ним ===
+        if "onboarding" in current_url or "mode=login" in current_url:
+            report("🔀 Обнаружен onboarding flow!")
+            
+            # Смотрим текст страницы
             try:
-                sign_in_selectors = [
-                    "//span[contains(text(), 'Sign in')]",
-                    "//span[contains(text(), 'Log in')]",
-                    "//a[contains(@href, '/login')]",
-                    "//a[contains(@href, '/i/flow/login')]",
-                    "//div[@role='button' and .//*[contains(text(), 'Sign in')]]",
-                    "//div[@role='button' and .//*[contains(text(), 'Log in')]]",
-                    "//button[.//*[contains(text(), 'Sign in')]]",
-                    "//button[.//*[contains(text(), 'Log in')]]",
-                ]
-                sign_in_btn = None
-                for sel in sign_in_selectors:
-                    elements = session.driver.find_elements(By.XPATH, sel)
-                    if elements:
-                        sign_in_btn = elements[0]
-                        report(f"✅ Найден 'Sign in' по: {sel[:50]}")
-                        break
-                
-                if sign_in_btn:
-                    report("🖱️ Кликаю 'Sign in'...")
-                    session.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", sign_in_btn)
-                    time.sleep(1)
-                    try:
-                        sign_in_btn.click()
-                    except:
-                        session.driver.execute_script("arguments[0].click();", sign_in_btn)
-                    time.sleep(4)
-                    session._screenshot("step0_after_signin", "📸 После клика Sign in")
-                    session._save_html("step0_after_signin")
-                else:
-                    report("⚠️ Кнопка Sign in не найдена, пробую /login напрямую...")
-                    session.driver.get("https://x.com/i/flow/login")
-                    time.sleep(4)
-                    session._screenshot("step0_direct_login", "📸 Прямой /login")
-                    session._save_html("step0_direct_login")
-            except Exception as e:
-                report(f"⚠️ Не удалось кликнуть Sign in: {e}")
-        
-        # === ШАГ 1: Теперь ищем кнопку Google на текущей странице ===
-        report("🔍 Ищу кнопку Google...")
-        time.sleep(3)
-        
-        google_btn = None
-        
-        # Стратегия 1: XPath по тексту
-        xpaths = [
-            "//span[contains(text(), 'Continue with Google')]",
-            "//span[contains(text(), 'Sign in with Google')]",
-            "//span[contains(text(), 'Google')]",
-            "//div[contains(text(), 'Continue with Google')]",
-            "//div[contains(text(), 'Sign in with Google')]",
-            "//div[contains(text(), 'Google')]",
-            "//button[.//*[contains(text(), 'Google')]]",
-            "//a[.//*[contains(text(), 'Google')]]",
-            "//div[@role='button' and .//*[contains(text(), 'Google')]]",
-            "//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'google')]",
-        ]
-        
-        for xp in xpaths:
-            try:
-                elements = session.driver.find_elements(By.XPATH, xp)
-                if elements:
-                    google_btn = elements[0]
-                    report(f"✅ Найдено по XPath: {xp[:50]}...")
-                    break
+                body_text = session.driver.find_element(By.TAG_NAME, "body").text
+                report(f"📄 Текст onboarding:\n{body_text[:1000]}")
             except:
-                continue
-        
-        # Стратегия 2: iframe
-        if not google_btn:
-            try:
-                iframes = session.driver.find_elements(By.TAG_NAME, "iframe")
-                report(f"🔍 iframe найдено: {len(iframes)}")
-                for idx, iframe in enumerate(iframes):
-                    src = iframe.get_attribute("src") or ""
-                    id_attr = iframe.get_attribute("id") or ""
-                    report(f"  iframe {idx}: id={id_attr[:30]} src={src[:80]}")
-                    if "google" in src.lower() or "accounts" in src.lower():
-                        report("✅ Найден Google iframe!")
-                        session.driver.switch_to.frame(iframe)
-                        btns = session.driver.find_elements(By.XPATH, "//div[@role='button'] | //button")
-                        if btns:
-                            google_btn = btns[0]
-                            break
-                        session.driver.switch_to.default_content()
-            except Exception as e:
-                report(f"⚠️ iframe: {e}")
-        
-        # Стратегия 3: ссылки с google
-        if not google_btn:
-            try:
-                links = session.driver.find_elements(By.XPATH, "//a[contains(@href, 'google') or contains(@href, 'accounts.google')]")
-                for link in links:
-                    href = link.get_attribute("href") or ""
-                    report(f"🔗 Ссылка: {href[:100]}")
-                    if "google" in href:
-                        google_btn = link
-                        report("✅ Найдена ссылка на Google")
-                        break
-            except Exception as e:
-                report(f"⚠️ Ссылки: {e}")
-        
-        # Стратегия 4: поиск по data-testid или aria-label
-        if not google_btn:
-            try:
-                selectors = [
-                    '[data-testid*="google"]',
-                    '[data-testid*="Google"]',
-                    '[aria-label*="Google"]',
-                    '[aria-label*="google"]',
-                ]
-                for sel in selectors:
-                    elements = session.driver.find_elements(By.CSS_SELECTOR, sel)
+                pass
+            
+            # Ищем кнопку Google на onboarding-странице
+            onboarding_xpaths = [
+                "//span[contains(text(), 'Continue with Google')]",
+                "//span[contains(text(), 'Sign in with Google')]",
+                "//span[contains(text(), 'Google')]",
+                "//div[contains(text(), 'Continue with Google')]",
+                "//div[contains(text(), 'Sign in with Google')]",
+                "//div[contains(text(), 'Google')]",
+                "//button[.//*[contains(text(), 'Google')]]",
+                "//div[@role='button' and .//*[contains(text(), 'Google')]]",
+                "//a[contains(@href, 'google')]",
+                "//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'google')]",
+                "//div[@data-testid and contains(., 'Google')]",
+                "//div[contains(@class, 'google')]",
+            ]
+            
+            google_btn = None
+            for xp in onboarding_xpaths:
+                try:
+                    elements = session.driver.find_elements(By.XPATH, xp)
                     if elements:
                         google_btn = elements[0]
-                        report(f"✅ Найдено по CSS: {sel}")
+                        report(f"✅ Найдено на onboarding: {xp[:50]}")
                         break
-            except Exception as e:
-                report(f"⚠️ CSS селекторы: {e}")
-        
-        # Стратегия 5: поиск по изображению Google (SVG/img)
-        if not google_btn:
-            try:
-                img_selectors = [
-                    "//svg[contains(@viewBox, 'google') or contains(@class, 'google')]",
-                    "//img[contains(@src, 'google') or contains(@alt, 'Google')]",
-                    "//div[contains(@style, 'google')]",
-                ]
-                for sel in img_selectors:
-                    elements = session.driver.find_elements(By.XPATH, sel)
-                    if elements:
-                        # Ищем родительский кликабельный элемент
-                        parent = session.driver.execute_script("""
-                            var el = arguments[0];
-                            while(el && el.tagName !== 'BODY') {
-                                if(el.tagName === 'BUTTON' || el.tagName === 'A' || el.getAttribute('role') === 'button') return el;
-                                el = el.parentElement;
-                            }
-                            return null;
-                        """, elements[0])
-                        if parent:
-                            google_btn = parent
-                            report(f"✅ Найден Google-логотип, родитель кликабелен")
-                            break
-            except Exception as e:
-                report(f"⚠️ Изображения: {e}")
-        
-        if not google_btn:
-            report("❌ Кнопка Google не найдена!")
-            session._screenshot("no_google_btn", "📸 Кнопка не найдена")
-            session._save_html("final_page")
-            
-            # Пробуем ещё раз с другими URL
-            report("🔄 Пробую альтернативные URL...")
-            alt_urls = [
-                "https://x.com/i/flow/login?force_login=true",
-                "https://x.com/i/flow/login",
-            ]
-            for url in alt_urls:
-                report(f"📥 Открываю {url}...")
-                session.driver.get(url)
-                time.sleep(4)
-                session._screenshot(f"alt_{url.replace('https://', '').replace('/', '_').replace('?', '_')}", f"📸 {url}")
-                session._save_html(f"alt_{url.replace('https://', '').replace('/', '_').replace('?', '_')}")
-                
-                for xp in xpaths:
-                    try:
-                        elements = session.driver.find_elements(By.XPATH, xp)
-                        if elements:
-                            google_btn = elements[0]
-                            report(f"✅ Найдено на {url} по: {xp[:50]}")
-                            break
-                    except:
-                        continue
-                if google_btn:
-                    break
+                except:
+                    continue
             
             if not google_btn:
-                return False, "Кнопка Google не найдена ни на одном URL"
-        
-        # Клик по Google
-        report("🖱️ Кликаю по Google...")
-        try:
-            session.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", google_btn)
-            time.sleep(1)
-            google_btn.click()
-        except:
-            href = google_btn.get_attribute("href")
-            if href:
-                report(f"🔗 Переход по href: {href[:100]}")
-                session.driver.get(href)
+                # Перебираем ВСЕ кнопки и ссылки
+                report("🔍 Перебираю все кнопки...")
+                all_buttons = session.driver.find_elements(By.XPATH, "//button | //div[@role='button'] | //a")
+                report(f"   Всего: {len(all_buttons)}")
+                for idx, btn in enumerate(all_buttons[:25]):
+                    try:
+                        text = btn.text or btn.get_attribute("aria-label") or btn.get_attribute("title") or ""
+                        href = btn.get_attribute("href") or ""
+                        if text or href:
+                            report(f"   [{idx}] {text[:50]} | href={href[:50]}")
+                            if "google" in (text + href).lower():
+                                google_btn = btn
+                                report(f"   ✅ Это Google!")
+                                break
+                    except:
+                        pass
+            
+            if google_btn:
+                report("🖱️ Кликаю по Google...")
+                try:
+                    session.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", google_btn)
+                    time.sleep(1)
+                    google_btn.click()
+                except:
+                    href = google_btn.get_attribute("href")
+                    if href:
+                        report(f"🔗 Переход по href: {href[:100]}")
+                        session.driver.get(href)
+                    else:
+                        session.driver.execute_script("arguments[0].click();", google_btn)
+                
+                time.sleep(5)
+                session._screenshot("after_google_click", "📸 После клика Google")
             else:
-                session.driver.execute_script("arguments[0].click();", google_btn)
+                report("❌ Google не найден на onboarding!")
+                session._screenshot("no_google_onboarding", "📸 Нет Google")
+                return False, "Google не найден на onboarding-странице"
         
-        time.sleep(5)
-        session._screenshot("after_google_click", "📸 После клика Google")
+        else:
+            # === СТАРЫЙ ФЛОУ ===
+            report("✅ Остались на x.com, ищу Sign in...")
+            sign_in_selectors = [
+                "//span[contains(text(), 'Sign in')]",
+                "//span[contains(text(), 'Log in')]",
+                "//a[contains(@href, '/login')]",
+                "//a[contains(@href, '/i/flow/login')]",
+                "//div[@role='button' and .//*[contains(text(), 'Sign in')]]",
+                "//div[@role='button' and .//*[contains(text(), 'Log in')]]",
+                "//button[.//*[contains(text(), 'Sign in')]]",
+                "//button[.//*[contains(text(), 'Log in')]]",
+            ]
+            sign_in_btn = None
+            for sel in sign_in_selectors:
+                elements = session.driver.find_elements(By.XPATH, sel)
+                if elements:
+                    sign_in_btn = elements[0]
+                    report(f"✅ Найден 'Sign in' по: {sel[:50]}")
+                    break
+            
+            if sign_in_btn:
+                report("🖱️ Кликаю 'Sign in'...")
+                session.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", sign_in_btn)
+                time.sleep(1)
+                try:
+                    sign_in_btn.click()
+                except:
+                    session.driver.execute_script("arguments[0].click();", sign_in_btn)
+                time.sleep(4)
+                session._screenshot("after_signin", "📸 После Sign in")
+                session._save_html("after_signin")
+            else:
+                report("⚠️ Sign in не найден, пробую /login напрямую...")
+                session.driver.get("https://x.com/i/flow/login")
+                time.sleep(4)
+                session._screenshot("direct_login", "📸 Прямой login")
+                session._save_html("direct_login")
+            
+            # Ищем Google
+            report("🔍 Ищу Google...")
+            time.sleep(3)
+            
+            google_btn = None
+            xpaths = [
+                "//span[contains(text(), 'Continue with Google')]",
+                "//span[contains(text(), 'Sign in with Google')]",
+                "//span[contains(text(), 'Google')]",
+                "//div[contains(text(), 'Continue with Google')]",
+                "//div[contains(text(), 'Sign in with Google')]",
+                "//div[contains(text(), 'Google')]",
+                "//button[.//*[contains(text(), 'Google')]]",
+                "//a[.//*[contains(text(), 'Google')]]",
+                "//div[@role='button' and .//*[contains(text(), 'Google')]]",
+                "//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'google')]",
+            ]
+            
+            for xp in xpaths:
+                try:
+                    elements = session.driver.find_elements(By.XPATH, xp)
+                    if elements:
+                        google_btn = elements[0]
+                        report(f"✅ Найдено: {xp[:50]}")
+                        break
+                except:
+                    continue
+            
+            if not google_btn:
+                report("❌ Google не найден!")
+                return False, "Кнопка Google не найдена"
+            
+            report("🖱️ Кликаю Google...")
+            try:
+                session.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", google_btn)
+                time.sleep(1)
+                google_btn.click()
+            except:
+                href = google_btn.get_attribute("href")
+                if href:
+                    session.driver.get(href)
+                else:
+                    session.driver.execute_script("arguments[0].click();", google_btn)
+            
+            time.sleep(5)
+            session._screenshot("after_google", "📸 После Google")
         
         # === Google Auth Flow ===
         current_url = session.driver.current_url
@@ -627,7 +574,6 @@ def google_login(email, password, bot=None, chat_id=None):
         if "accounts.google.com" in current_url or "google.com" in current_url:
             report("✅ На странице Google!")
             
-            # Email
             try:
                 email_field = WebDriverWait(session.driver, 10).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, 'input[type="email"]'))
@@ -641,7 +587,6 @@ def google_login(email, password, bot=None, chat_id=None):
             except Exception as e:
                 report(f"⚠️ Email: {e}")
             
-            # Password
             try:
                 pass_field = WebDriverWait(session.driver, 10).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, 'input[type="password"]'))
@@ -655,25 +600,29 @@ def google_login(email, password, bot=None, chat_id=None):
             except Exception as e:
                 report(f"⚠️ Password: {e}")
             
-            session._screenshot("google_logged_in", "📸 После входа в Google")
+            session._screenshot("google_done", "📸 После Google login")
         
-        # Ожидание редиректа
+        # === Ждём редиректа ===
         report("⏳ Жду редирект на X...")
         for i in range(15):
             time.sleep(2)
             url = session.driver.current_url
-            if "x.com" in url and "login" not in url and "flow" not in url:
-                report("✅ Редирект на X!")
+            report(f"  [{i+1}/15] {url[:70]}")
+            
+            if "x.com/home" in url:
+                report("✅ Домашняя страница!")
                 break
-            report(f"  жду... {url[:60]}")
+            if "x.com" in url and "login" not in url and "flow" not in url and "onboarding" not in url:
+                report("✅ Вошли в X!")
+                break
         
         session.driver.get("https://x.com/home")
         time.sleep(5)
-        session._screenshot("x_home", "📸 X Home")
+        session._screenshot("final_home", "📸 Финальная проверка")
         
         html = session.driver.page_source.lower()
         if any(k in html for k in ["home", "following", "for you", "для вас", "главная"]):
-            report("✅ Успешно!")
+            report("✅ Авторизация подтверждена!")
             session.save_cookies()
             save_auth_info("google_user", email)
             return True, None
