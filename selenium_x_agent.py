@@ -1,4 +1,4 @@
-# selenium_x_agent.py — Полный код с исследователем страниц и запросом клика
+# selenium_x_agent.py — Полный код с исследователем и отчетом в .txt
 import os
 import sys
 import subprocess
@@ -32,11 +32,13 @@ AUTH_FILE = os.path.join(SELENIUM_DIR, "x_auth.json")
 SCREENSHOT_DIR = os.path.join(SELENIUM_DIR, "screenshots")
 LOG_FILE = os.path.join(SELENIUM_DIR, "debug.log")
 HTML_DIR = os.path.join(SELENIUM_DIR, "html_pages")
+REPORT_DIR = os.path.join(SELENIUM_DIR, "reports")
 
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 os.makedirs(CHROME_DIR, exist_ok=True)
 os.makedirs(DRIVER_DIR, exist_ok=True)
 os.makedirs(HTML_DIR, exist_ok=True)
+os.makedirs(REPORT_DIR, exist_ok=True)
 
 # === НАСТРОЙКА ЛОГГЕРА ===
 logger = logging.getLogger("SeleniumXAgent")
@@ -500,6 +502,18 @@ class SeleniumXAgent:
             logger.error(f"HTML save error: {e}")
             return None
     
+    def _save_report(self, filename, content):
+        """Сохранить отчет в файл"""
+        try:
+            path = os.path.join(REPORT_DIR, filename)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+            logger.info(f"Report saved: {path}")
+            return path
+        except Exception as e:
+            logger.error(f"Report save error: {e}")
+            return None
+    
     def _get_random_user_agent(self):
         return random.choice(MOBILE_USER_AGENTS)
     
@@ -650,21 +664,33 @@ class SeleniumXAgent:
     # ========== ИССЛЕДОВАТЕЛЬ СТРАНИЦ ==========
     
     def explore_page_with_log(self, url):
-        """Исследовать страницу с отправкой логов в чат и запросом клика"""
+        """Исследовать страницу с отправкой логов в чат и отчетом в .txt"""
         
         logger.info("="*60)
         logger.info(f"START EXPLORE: {url}")
         logger.info("="*60)
+        
+        report_lines = []
+        report_lines.append("="*60)
+        report_lines.append(f"🕵️ ОТЧЕТ ИССЛЕДОВАНИЯ СТРАНИЦЫ")
+        report_lines.append(f"📄 URL: {url}")
+        report_lines.append(f"🕐 Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        report_lines.append("="*60)
+        report_lines.append("")
         
         try:
             from selenium.webdriver.common.by import By
             
             self._send_log("⏳ Запуск браузера...")
             self._create_driver()
+            report_lines.append("✅ Браузер запущен")
             
             self._send_log("📥 Загрузка страницы...")
             self.driver.get(url)
             time.sleep(5)
+            report_lines.append(f"✅ Страница загружена: {self.driver.current_url}")
+            report_lines.append(f"📌 Заголовок: {self.driver.title}")
+            report_lines.append("")
             
             self._screenshot("explore_1", send_to_chat=True, caption="📸 Страница загружена")
             
@@ -672,21 +698,28 @@ class SeleniumXAgent:
             self._send_log("🔍 Поиск всех кнопок...")
             buttons = self.driver.find_elements(By.TAG_NAME, "button")
             self._send_log(f"🔍 Найдено {len(buttons)} кнопок")
+            report_lines.append(f"📊 КНОПКИ: {len(buttons)}")
             
             btn_texts = []
             google_btn = None
             for i, btn in enumerate(buttons):
                 try:
                     text = btn.text[:50] if btn.text else "[пусто]"
-                    btn_texts.append(f"  {i+1}. {text}")
+                    is_displayed = btn.is_displayed()
+                    is_enabled = btn.is_enabled()
+                    btn_texts.append(f"  {i+1}. {text} (displayed={is_displayed}, enabled={is_enabled})")
                     if "google" in text.lower():
                         google_btn = btn
                         self._send_log(f"✅ Найдена кнопка с текстом 'Google': {text}")
+                        report_lines.append(f"🔍 Кнопка Google найдена: {text}")
                 except:
                     pass
             
             if btn_texts:
                 self._send_log("📋 Список кнопок:\n" + "\n".join(btn_texts[:20]))
+                report_lines.append("📋 Список кнопок:")
+                report_lines.extend(btn_texts[:20])
+                report_lines.append("")
             
             # === ПОИСК GOOGLE В HTML ===
             self._send_log("🔍 Поиск Google в HTML...")
@@ -695,8 +728,10 @@ class SeleniumXAgent:
             
             if "google" in html_lower or "Google" in html:
                 self._send_log("✅ Google найден в HTML")
+                report_lines.append("✅ Google найден в HTML")
             else:
                 self._send_log("❌ Google не найден в HTML")
+                report_lines.append("❌ Google не найден в HTML")
             
             # === ПОИСК КНОПКИ GOOGLE РАЗНЫМИ СПОСОБАМИ ===
             self._send_log("🔍 Поиск кнопки Google...")
@@ -706,6 +741,7 @@ class SeleniumXAgent:
                 try:
                     google_btn = self.driver.find_element(By.XPATH, "//*[contains(text(), 'Continue with Google')]")
                     self._send_log("✅ Найдена кнопка 'Continue with Google' по тексту")
+                    report_lines.append("✅ Найдена кнопка 'Continue with Google' по тексту")
                 except:
                     pass
             
@@ -714,6 +750,7 @@ class SeleniumXAgent:
                 try:
                     google_btn = self.driver.find_element(By.CSS_SELECTOR, '[data-testid="google-login-button"]')
                     self._send_log("✅ Найдена кнопка Google по data-testid")
+                    report_lines.append("✅ Найдена кнопка Google по data-testid")
                 except:
                     pass
             
@@ -722,6 +759,7 @@ class SeleniumXAgent:
                 try:
                     google_btn = self.driver.find_element(By.XPATH, "//*[contains(text(), 'Google')]")
                     self._send_log("✅ Найден элемент с текстом 'Google'")
+                    report_lines.append("✅ Найден элемент с текстом 'Google'")
                 except:
                     pass
             
@@ -730,16 +768,26 @@ class SeleniumXAgent:
                 try:
                     google_btn = self.driver.find_element(By.CSS_SELECTOR, '[aria-label*="Google" i]')
                     self._send_log("✅ Найдена кнопка Google по aria-label")
+                    report_lines.append("✅ Найдена кнопка Google по aria-label")
                 except:
                     pass
             
             # === ЕСЛИ КНОПКА НАЙДЕНА ===
+            clicked = False
             if google_btn:
                 self._send_log(f"🔍 <b>✅ КНОПКА GOOGLE НАЙДЕНА!</b>\n\n"
                               f"📌 Текст: {google_btn.text[:50] if google_btn.text else '[без текста]'}\n"
                               f"📌 Тег: {google_btn.tag_name}\n"
                               f"📌 Отображается: {google_btn.is_displayed()}\n"
                               f"📌 Включена: {google_btn.is_enabled()}")
+                
+                report_lines.append("")
+                report_lines.append("🔍 КНОПКА GOOGLE НАЙДЕНА!")
+                report_lines.append(f"📌 Текст: {google_btn.text[:50] if google_btn.text else '[без текста]'}")
+                report_lines.append(f"📌 Тег: {google_btn.tag_name}")
+                report_lines.append(f"📌 Отображается: {google_btn.is_displayed()}")
+                report_lines.append(f"📌 Включена: {google_btn.is_enabled()}")
+                report_lines.append("")
                 
                 self._screenshot("google_found", send_to_chat=True, caption="🔍 Кнопка Google найдена!")
                 
@@ -754,14 +802,20 @@ class SeleniumXAgent:
                 
                 if confirm and confirm.lower() in ["yes", "да", "y", "1", "+"]:
                     self._send_log("🖱️ Кликаю по кнопке Google...")
+                    report_lines.append("🖱️ Клик по кнопке Google выполняется...")
                     google_btn.click()
                     time.sleep(3)
                     self._screenshot("google_clicked", send_to_chat=True, caption="🖱️ Кнопка Google нажата!")
                     self._send_log("🖱️ ✅ Клик выполнен!")
+                    report_lines.append("✅ Клик по кнопке Google выполнен успешно!")
+                    report_lines.append(f"📌 Текущий URL после клика: {self.driver.current_url}")
+                    clicked = True
                 else:
                     self._send_log("⏭️ Клик пропущен")
+                    report_lines.append("⏭️ Клик пропущен пользователем")
             else:
                 self._send_log("❌ <b>Кнопка Google НЕ найдена</b>")
+                report_lines.append("❌ Кнопка Google НЕ найдена")
             
             # === СКРОЛЛ ===
             self._send_log("📜 Прокрутка страницы...")
@@ -769,6 +823,7 @@ class SeleniumXAgent:
             time.sleep(2)
             self._screenshot("explore_scroll", send_to_chat=True, caption="📜 После прокрутки")
             self._send_log("📜 ✅ Скролл выполнен")
+            report_lines.append("✅ Скролл выполнен")
             
             # === ПОСЛЕ СКРОЛЛА СНОВА ИЩЕМ ===
             self._send_log("🔍 Повторный поиск Google после скролла...")
@@ -776,23 +831,60 @@ class SeleniumXAgent:
                 google_btn2 = self.driver.find_element(By.XPATH, "//*[contains(text(), 'Continue with Google')]")
                 if google_btn2:
                     self._send_log("✅ Найдена кнопка Google после скролла!")
+                    report_lines.append("✅ Кнопка Google найдена после скролла")
                     self._screenshot("google_after_scroll", send_to_chat=True, caption="🔍 Кнопка Google после скролла")
             except:
-                pass
+                report_lines.append("❌ Кнопка Google не найдена после скролла")
+            
+            # === ПОИСК ПОЛЕЙ ===
+            self._send_log("📝 Поиск полей ввода...")
+            inputs = self.driver.find_elements(By.TAG_NAME, "input")
+            report_lines.append(f"📝 Полей ввода: {len(inputs)}")
+            for inp in inputs[:10]:
+                try:
+                    inp_type = inp.get_attribute("type") or "text"
+                    placeholder = inp.get_attribute("placeholder") or ""
+                    report_lines.append(f"  • type={inp_type} placeholder={placeholder[:30]}")
+                except:
+                    pass
+            report_lines.append("")
             
             # === ИТОГ ===
+            report_lines.append("="*60)
+            report_lines.append("📊 ИТОГИ ИССЛЕДОВАНИЯ")
+            report_lines.append("="*60)
+            report_lines.append(f"📊 Кнопок найдено: {len(buttons)}")
+            report_lines.append(f"📝 Полей ввода: {len(inputs)}")
+            report_lines.append(f"🔍 Google в HTML: {'✅' if 'google' in html_lower else '❌'}")
+            report_lines.append(f"🖱️ Кнопка Google: {'✅' if google_btn else '❌'}")
+            report_lines.append(f"🖱️ Клик выполнен: {'✅' if clicked else '❌'}")
+            report_lines.append(f"📸 Скриншотов: 4")
+            report_lines.append("="*60)
+            
+            final_report = "\n".join(report_lines)
+            
             self._send_log("📊 <b>ИССЛЕДОВАНИЕ ЗАВЕРШЕНО!</b>\n\n"
                           f"📊 Кнопок найдено: {len(buttons)}\n"
                           f"🔍 Google в HTML: {'✅' if 'google' in html_lower else '❌'}\n"
                           f"🖱️ Кнопка Google: {'✅' if google_btn else '❌'}\n"
-                          f"🖱️ Клик выполнен: {'✅' if google_btn and confirm and confirm.lower() in ['yes','да','y','1','+'] else '❌'}\n"
+                          f"🖱️ Клик выполнен: {'✅' if clicked else '❌'}\n"
                           f"📸 Скриншотов: 4\n\n"
-                          f"<i>Скриншоты и HTML сохранены в папках screenshots/ и html_pages/</i>")
+                          f"<i>Скриншоты и HTML сохранены</i>")
             
             self._screenshot("explore_done", send_to_chat=True, caption="✅ Исследование завершено!")
             self._save_html("explore_page")
             
-            return "✅ Исследование завершено! Смотрите скриншоты, логи и HTML."
+            # === СОХРАНЯЕМ ОТЧЕТ В .txt ===
+            report_filename = f"explore_report_{int(time.time())}.txt"
+            report_path = self._save_report(report_filename, final_report)
+            
+            if report_path:
+                # Отправляем отчет в чат
+                with open(report_path, "rb") as f:
+                    self._bot.send_document(self._chat_id, f, caption=f"📊 Отчет исследования\n📄 {url}")
+                self._send_log(f"📊 Отчет сохранен: {report_filename}")
+            
+            return final_report
             
         except Exception as e:
             logger.error(f"Explore error: {e}")
@@ -910,7 +1002,7 @@ def register_selenium_bot(bot):
     
     @bot.message_handler(commands=["se_explore"])
     def se_explore_command(message):
-        """Исследовать страницу с живыми уведомлениями и запросом клика"""
+        """Исследовать страницу с живыми уведомлениями и отчетом в .txt"""
         args = message.text.split()
         url = args[1] if len(args) > 1 else "https://x.com/login"
         
@@ -918,6 +1010,29 @@ def register_selenium_bot(bot):
         
         se_agent.set_chat_id(chat_id)
         se_agent.set_bot(bot)
+        
+        # === ДОБАВЛЯЕМ CALLBACK ДЛЯ CONFIRM ===
+        def request_confirm(prompt, timeout=30):
+            login_sessions[chat_id] = {}
+            login_sessions[chat_id]["awaiting_input"] = True
+            login_sessions[chat_id]["input_prompt"] = prompt
+            login_sessions[chat_id]["input_received"] = None
+            
+            bot.send_message(chat_id, prompt, parse_mode="HTML")
+            
+            start_time = time.time()
+            while time.time() - start_time < timeout:
+                if login_sessions[chat_id].get("input_received") is not None:
+                    result = login_sessions[chat_id]["input_received"]
+                    login_sessions[chat_id]["input_received"] = None
+                    login_sessions[chat_id]["awaiting_input"] = False
+                    return result
+                time.sleep(0.5)
+            
+            login_sessions[chat_id]["awaiting_input"] = False
+            return None
+        
+        se_agent.set_user_input_callback("confirm", request_confirm)
         
         log_msg = bot.send_message(chat_id,
             f"🕵️ <b>ИССЛЕДОВАТЕЛЬ СТРАНИЦ</b>\n\n"
@@ -948,6 +1063,7 @@ def register_selenium_bot(bot):
         
         result, error = run_sync_task(do_explore)
         se_agent.set_log_callback(None)
+        se_agent.set_user_input_callback("confirm", None)
         
         if error:
             bot.reply_to(message, f"❌ {error}")
@@ -1468,7 +1584,7 @@ def register_selenium_bot(bot):
             "  /se_set_proxy [on|off] — Вкл/выкл прокси\n"
             "  /se_logout — Выйти\n\n"
             "🕵️ <b>Исследование</b>\n"
-            "  /se_explore [url] — Исследовать страницу с запросом клика\n"
+            "  /se_explore [url] — Исследовать страницу (отчет в .txt)\n"
             "  /se_find_google — Найти кнопку Google\n"
             "  /se_view_html [url] — HTML страницы\n"
             "  /se_show_login — Скриншот входа X\n\n"
@@ -1489,7 +1605,7 @@ def register_selenium_bot(bot):
             "• 📱 Мобильный User-Agent\n"
             "• 🌐 Автоматические прокси\n"
             "• 🔑 Вход через Google\n"
-            "• 🕵️ Исследователь страниц\n"
+            "• 🕵️ Исследователь страниц с отчетом\n"
             "• Chrome скачивается автоматически"
         )
         bot.reply_to(message, msg, parse_mode="HTML")
