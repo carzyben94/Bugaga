@@ -1,4 +1,4 @@
-# selenium_x_agent.py — Selenium X/Twitter агент с полной поддержкой всех шагов авторизации
+# selenium_x_agent.py — Selenium X/Twitter агент с улучшенной обработкой onboarding
 import os
 import sys
 import subprocess
@@ -29,10 +29,12 @@ COOKIES_FILE = os.path.join(SELENIUM_DIR, "x_cookies.json")
 AUTH_FILE = os.path.join(SELENIUM_DIR, "x_auth.json")
 SCREENSHOT_DIR = os.path.join(SELENIUM_DIR, "screenshots")
 LOG_FILE = os.path.join(SELENIUM_DIR, "debug.log")
+HTML_DIR = os.path.join(SELENIUM_DIR, "html_pages")
 
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 os.makedirs(CHROME_DIR, exist_ok=True)
 os.makedirs(DRIVER_DIR, exist_ok=True)
+os.makedirs(HTML_DIR, exist_ok=True)
 
 # === НАСТРОЙКА ЛОГГЕРА ===
 logger = logging.getLogger("SeleniumXAgent")
@@ -463,6 +465,17 @@ class SeleniumXAgent:
             logger.error(f"Screenshot error: {e}")
             return None
     
+    def _save_html(self, name):
+        try:
+            path = os.path.join(HTML_DIR, f"{name}_{int(time.time())}.html")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(self.driver.page_source)
+            logger.info(f"HTML saved: {path}")
+            return path
+        except Exception as e:
+            logger.error(f"HTML save error: {e}")
+            return None
+    
     def _load_cookies(self):
         if not os.path.exists(COOKIES_FILE):
             logger.warning(f"Cookies file not found: {COOKIES_FILE}")
@@ -498,8 +511,22 @@ class SeleniumXAgent:
             logger.error(f"Cookie save error: {e}")
             return False
     
+    def _click_element(self, element, name="элемент"):
+        """Безопасный клик с обработкой ошибок"""
+        try:
+            if element.is_displayed() and element.is_enabled():
+                element.click()
+                logger.info(f"Clicked: {name}")
+                return True
+            else:
+                logger.warning(f"Element not clickable: {name}")
+                return False
+        except Exception as e:
+            logger.warning(f"Click error on {name}: {e}")
+            return False
+    
     def login(self, username, password, email=None):
-        """Универсальная авторизация с поддержкой капчи, подтверждения и кода верификации"""
+        """Универсальная авторизация с улучшенной обработкой onboarding"""
         
         logger.info("="*60)
         logger.info(f"START LOGIN for {username}")
@@ -514,30 +541,60 @@ class SeleniumXAgent:
             from selenium.webdriver.support.ui import WebDriverWait
             from selenium.webdriver.support import expected_conditions as EC
             from selenium.webdriver.common.keys import Keys
+            from selenium.common.exceptions import TimeoutException, NoSuchElementException
             
             self._report("start", f"🚀 Авторизация @{target_username}")
             self._create_driver()
             
-            self._report("page", "📄 Открываю страницу...")
-            self.driver.get("https://x.com/i/flow/login")
-            time.sleep(3)
+            # === ПРОБУЕМ РАЗНЫЕ URL ===
+            login_urls = [
+                "https://x.com/i/flow/login",
+                "https://x.com/login",
+                "https://x.com/i/flow/login?force_login=true",
+            ]
             
-            WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.TAG_NAME, "body"))
-            )
+            page_loaded = False
+            for login_url in login_urls:
+                try:
+                    logger.info(f"Пробую URL: {login_url}")
+                    self.driver.get(login_url)
+                    time.sleep(3)
+                    
+                    if "home" in self.driver.current_url:
+                        logger.info("✅ Уже на home!")
+                        self._save_cookies()
+                        save_auth_info(target_username, email, {"method": "direct_home"})
+                        return True, None
+                    
+                    # Проверяем, есть ли поля
+                    inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input')
+                    if inputs:
+                        logger.info(f"Найдено {len(inputs)} полей ввода")
+                        page_loaded = True
+                        break
+                except Exception as e:
+                    logger.warning(f"URL {login_url} не работает: {e}")
+                    continue
             
-            current_url = self.driver.current_url
-            logger.info(f"Page URL: {current_url}")
+            if not page_loaded:
+                return False, "❌ Не удалось загрузить страницу входа"
+            
             self._screenshot("login_page")
             
             # === ВВОД USERNAME ===
             username_filled = False
+            
+            # Пробуем разные селекторы для поля username
             username_selectors = [
                 'input[autocomplete="username"]',
                 'input[name="text"]',
                 'input[type="text"]',
                 'input[autocapitalize="none"]',
                 'input[inputmode="text"]',
+                'input[placeholder*="username" i]',
+                'input[placeholder*="email" i]',
+                'input[placeholder*="phone" i]',
+                'input[data-testid="ocfEnterTextTextInput"]',
             ]
             
             for selector in username_selectors:
@@ -557,6 +614,7 @@ class SeleniumXAgent:
                     logger.debug(f"Selector {selector} error: {e}")
             
             if not username_filled:
+                # Если не нашли по селекторам, ищем все видимые текстовые поля
                 inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input:not([type="hidden"]):not([type="password"])')
                 for inp in inputs:
                     if inp.is_displayed() and inp.is_enabled():
@@ -573,39 +631,76 @@ class SeleniumXAgent:
             self._report("username", f"✅ Username введён: @{target_username}")
             time.sleep(1)
             
-            # === НАЖИМАЕМ NEXT ===
+            # === НАЖИМАЕМ NEXT - РАЗНЫМИ СПОСОБАМИ ===
             next_clicked = False
-            next_btns = self.driver.find_elements(By.CSS_SELECTOR, 'button[type="submit"]')
-            for btn in next_btns:
-                if btn.is_displayed() and btn.is_enabled():
-                    logger.info("Нажимаю Next")
-                    btn.click()
+            
+            # Способ 1: кнопка Next по тексту
+            try:
+                next_btn = self.driver.find_element(By.XPATH, "//span[contains(text(), 'Next')]/..")
+                if self._click_element(next_btn, "Next (текст)"):
                     next_clicked = True
                     time.sleep(3)
-                    break
+            except:
+                pass
             
+            # Способ 2: кнопка Next по data-testid
+            if not next_clicked:
+                try:
+                    next_btn = self.driver.find_element(By.CSS_SELECTOR, '[data-testid="ocfEnterTextNextButton"]')
+                    if self._click_element(next_btn, "Next (data-testid)"):
+                        next_clicked = True
+                        time.sleep(3)
+                except:
+                    pass
+            
+            # Способ 3: button[type="submit"]
+            if not next_clicked:
+                next_btns = self.driver.find_elements(By.CSS_SELECTOR, 'button[type="submit"]')
+                for btn in next_btns:
+                    if self._click_element(btn, "Next (submit)"):
+                        next_clicked = True
+                        time.sleep(3)
+                        break
+            
+            # Способ 4: любая кнопка с текстом Next/Continue
             if not next_clicked:
                 buttons = self.driver.find_elements(By.TAG_NAME, "button")
                 for btn in buttons:
                     try:
                         text = btn.text.lower()
                         if 'next' in text or 'continue' in text or 'далее' in text:
-                            if btn.is_displayed() and btn.is_enabled():
-                                logger.info(f"Нажимаю: {btn.text}")
-                                btn.click()
+                            if self._click_element(btn, f"Next ({btn.text})"):
                                 next_clicked = True
                                 time.sleep(3)
                                 break
                     except:
                         pass
             
+            # Способ 5: Enter на поле ввода
+            if not next_clicked:
+                try:
+                    active = self.driver.switch_to.active_element
+                    if active and active.tag_name == "input":
+                        logger.info("Нажимаю Enter")
+                        active.send_keys(Keys.RETURN)
+                        next_clicked = True
+                        time.sleep(3)
+                except:
+                    pass
+            
             self._report("next", f"{'✅' if next_clicked else '⚠️'} Next нажат")
             
-            # === ОЖИДАЕМ ПОЯВЛЕНИЯ ПОЛЯ ===
+            # === ЖДЕМ ИЗМЕНЕНИЯ СТРАНИЦЫ ===
             found_field = False
             email_used = email
             phone_used = None
-            code_entered = False
+            last_page_source = ""
+            
+            # Сохраняем начальное состояние
+            try:
+                last_page_source = self.driver.page_source[:1000]
+            except:
+                pass
             
             for attempt in range(35):
                 time.sleep(1)
@@ -620,34 +715,39 @@ class SeleniumXAgent:
                     save_auth_info(target_username, email_used, {"method": "direct_home"})
                     return True, None
                 
-                # === ПРОВЕРКА КАПЧИ ===
-                captcha_elements = self.driver.find_elements(By.CSS_SELECTOR, 'iframe[src*="captcha"], iframe[src*="recaptcha"], [data-testid="captcha"]')
-                if captcha_elements:
-                    self._report("captcha", "🔒 Обнаружена капча!")
-                    self._screenshot("captcha_detected")
-                    
-                    captcha_result = self._request_user_input(
-                        "captcha",
-                        "🔒 Обнаружена капча!\n\nСкриншот сохранен. Пожалуйста, открой страницу в браузере и реши капчу вручную.\nПосле решения отправь 'done' или 'готово':",
-                        timeout=180
-                    )
-                    if captcha_result and captcha_result.lower() in ["done", "готово", "ok", "решено", "да"]:
-                        self._report("captcha", "✅ Капча решена")
-                        self.driver.refresh()
-                        time.sleep(3)
-                        continue
-                    else:
-                        return False, "❌ Капча не решена"
+                # Проверяем, изменилась ли страница
+                try:
+                    current_source = self.driver.page_source[:1000]
+                    if current_source != last_page_source and attempt > 2:
+                        logger.info("⚠️ Страница изменилась!")
+                        self._screenshot(f"page_changed_{attempt}")
+                        last_page_source = current_source
+                except:
+                    pass
                 
-                # === ПРОВЕРКА ОШИБОК ===
-                error_elements = self.driver.find_elements(By.CSS_SELECTOR, '[role="alert"], [data-testid="toast"], .error')
-                for err in error_elements:
-                    if err.is_displayed():
-                        err_text = err.text
-                        if err_text and len(err_text) > 3:
-                            logger.error(f"Error found: {err_text}")
-                            if "wrong" in err_text.lower() or "incorrect" in err_text.lower():
-                                return False, f"❌ {err_text}"
+                # === ПРОВЕРКА КАПЧИ ===
+                try:
+                    page_text = self.driver.page_source.lower()
+                    if "captcha" in page_text or "recaptcha" in page_text:
+                        captcha_elements = self.driver.find_elements(By.CSS_SELECTOR, 'iframe[src*="captcha"], iframe[src*="recaptcha"]')
+                        if captcha_elements:
+                            self._report("captcha", "🔒 Обнаружена капча!")
+                            self._screenshot("captcha_detected")
+                            
+                            captcha_result = self._request_user_input(
+                                "captcha",
+                                "🔒 Обнаружена капча!\n\nСкриншот сохранен. Пожалуйста, открой страницу в браузере и реши капчу вручную.\nПосле решения отправь 'done' или 'готово':",
+                                timeout=180
+                            )
+                            if captcha_result and captcha_result.lower() in ["done", "готово", "ok", "решено", "да"]:
+                                self._report("captcha", "✅ Капча решена")
+                                self.driver.refresh()
+                                time.sleep(3)
+                                continue
+                            else:
+                                return False, "❌ Капча не решена"
+                except:
+                    pass
                 
                 # === ПОЛЕ ПАРОЛЯ ===
                 password_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="password"]')
@@ -658,10 +758,15 @@ class SeleniumXAgent:
                         inp.send_keys(password)
                         time.sleep(1)
                         
+                        # Ищем кнопку Login
                         login_btns = self.driver.find_elements(By.CSS_SELECTOR, 'button[type="submit"], button[data-testid="LoginForm_Login_Button"]')
+                        if not login_btns:
+                            login_btns = self.driver.find_elements(By.XPATH, "//span[contains(text(), 'Log in')]/..")
+                        if not login_btns:
+                            login_btns = self.driver.find_elements(By.XPATH, "//span[contains(text(), 'Sign in')]/..")
+                        
                         for btn in login_btns:
-                            if btn.is_displayed() and btn.is_enabled():
-                                btn.click()
+                            if self._click_element(btn, "Login"):
                                 time.sleep(3)
                                 break
                         
@@ -672,7 +777,7 @@ class SeleniumXAgent:
                     break
                 
                 # === ПОЛЕ EMAIL ===
-                email_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="email"], input[name="email"], input[placeholder*="email" i]')
+                email_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="email"], input[name="email"], input[placeholder*="email" i], input[data-testid="ocfEnterTextTextInput"]')
                 for inp in email_inputs:
                     if inp.is_displayed() and inp.is_enabled():
                         logger.info("📧 Найдено поле EMAIL!")
@@ -696,10 +801,12 @@ class SeleniumXAgent:
                             else:
                                 return False, "❌ Email не указан"
                         
+                        # Нажимаем кнопку подтверждения
                         next_btns = self.driver.find_elements(By.CSS_SELECTOR, 'button[type="submit"]')
+                        if not next_btns:
+                            next_btns = self.driver.find_elements(By.XPATH, "//span[contains(text(), 'Next')]/..")
                         for btn in next_btns:
-                            if btn.is_displayed() and btn.is_enabled():
-                                btn.click()
+                            if self._click_element(btn, "Next после email"):
                                 time.sleep(3)
                                 break
                         
@@ -727,8 +834,7 @@ class SeleniumXAgent:
                             time.sleep(1)
                             next_btns = self.driver.find_elements(By.CSS_SELECTOR, 'button[type="submit"]')
                             for btn in next_btns:
-                                if btn.is_displayed() and btn.is_enabled():
-                                    btn.click()
+                                if self._click_element(btn, "Next после телефона"):
                                     time.sleep(3)
                                     break
                         else:
@@ -758,11 +864,9 @@ class SeleniumXAgent:
                             time.sleep(1)
                             confirm_btns = self.driver.find_elements(By.CSS_SELECTOR, 'button[type="submit"]')
                             for btn in confirm_btns:
-                                if btn.is_displayed() and btn.is_enabled():
-                                    btn.click()
+                                if self._click_element(btn, "Подтвердить код"):
                                     time.sleep(3)
                                     break
-                            code_entered = True
                             found_field = True
                             break
                         else:
@@ -771,37 +875,23 @@ class SeleniumXAgent:
                 if found_field:
                     break
                 
-                # === КНОПКА ПОДТВЕРЖДЕНИЯ ===
-                confirm_btns = self.driver.find_elements(By.XPATH, '//button[contains(text(), "Confirm") or contains(text(), "Подтвердить")]')
-                for btn in confirm_btns:
-                    if btn.is_displayed() and btn.is_enabled():
-                        logger.info("⚠️ Нажата кнопка подтверждения")
-                        btn.click()
-                        time.sleep(2)
-                        found_field = True
-                        break
-                
-                if found_field:
-                    break
-                
-                # === ССЫЛКА "Use password instead" ===
+                # === КНОПКА "Use password instead" ===
                 try:
                     link = self.driver.find_element(By.PARTIAL_LINK_TEXT, "password")
                     if link.is_displayed():
                         logger.info("🔑 Найдена ссылка 'Use password instead'")
-                        link.click()
+                        self._click_element(link, "Use password instead")
                         time.sleep(2)
-                        found_field = True
-                        break
+                        continue
                 except:
                     pass
                 
-                # === ССЫЛКА "Send code again" ===
+                # === КНОПКА "Send code again" ===
                 try:
                     link = self.driver.find_element(By.PARTIAL_LINK_TEXT, "again")
                     if link.is_displayed():
                         logger.info("📨 Найдена ссылка 'Send code again'")
-                        link.click()
+                        self._click_element(link, "Send code again")
                         time.sleep(2)
                         continue
                 except:
@@ -809,12 +899,15 @@ class SeleniumXAgent:
             
             if not found_field:
                 self._screenshot("no_fields_found")
+                html_path = self._save_html("debug_page")
+                
                 final_url = self.driver.current_url
                 if "home" in final_url:
                     self._save_cookies()
                     save_auth_info(target_username, email_used, {"method": "home_after_timeout"})
                     return True, None
-                return False, "❌ Не найдено ни одного поля для ввода (пароль, email, телефон, код)"
+                
+                return False, f"❌ Не найдено ни одного поля. HTML сохранен в {html_path}"
             
             # === ПРОВЕРКА РЕЗУЛЬТАТА ===
             for attempt in range(15):
@@ -822,21 +915,17 @@ class SeleniumXAgent:
                 final_url = self.driver.current_url
                 logger.info(f"Проверка {attempt+1}: {final_url}")
                 
-                error_elements = self.driver.find_elements(By.CSS_SELECTOR, '[role="alert"], [data-testid="toast"]')
-                for err in error_elements:
-                    if err.is_displayed():
-                        err_text = err.text
-                        if err_text and len(err_text) > 3:
-                            logger.error(f"Error found: {err_text}")
-                            return False, f"❌ Ошибка: {err_text}"
-                
                 if "home" in final_url or final_url == "https://x.com/" or final_url == "https://x.com":
                     logger.info("✅ Авторизация успешна!")
                     self._report("done", "✅ Авторизация завершена!")
                     self._save_cookies()
                     
-                    self.driver.get(f"https://x.com/{target_username}")
-                    time.sleep(3)
+                    # Получаем информацию о профиле
+                    try:
+                        self.driver.get(f"https://x.com/{target_username}")
+                        time.sleep(3)
+                    except:
+                        pass
                     
                     profile_data = {
                         "login_method": "universal",
@@ -864,14 +953,20 @@ class SeleniumXAgent:
                     
                     save_auth_info(target_username, email_used, profile_data)
                     return True, None
+                
+                # Проверяем ошибки
+                error_elements = self.driver.find_elements(By.CSS_SELECTOR, '[role="alert"], [data-testid="toast"]')
+                for err in error_elements:
+                    if err.is_displayed():
+                        err_text = err.text
+                        if err_text and len(err_text) > 3:
+                            logger.error(f"Error found: {err_text}")
+                            if "wrong" in err_text.lower() or "incorrect" in err_text.lower():
+                                return False, f"❌ {err_text}"
             
             final_url = self.driver.current_url
             self._screenshot("login_final")
-            
-            if "login" in final_url or "onboarding" in final_url:
-                return False, f"Авторизация не удалась. Текущий URL: {final_url}"
-            
-            return False, f"Неизвестный результат. URL: {final_url}"
+            return False, f"Авторизация не удалась. URL: {final_url}"
             
         except Exception as e:
             logger.error(f"Login error: {e}")
@@ -1598,6 +1693,7 @@ def register_selenium_bot(bot):
             "  /se_screenshot [url] — Скриншот страницы\n\n"
             "⚠️ <b>Особенности:</b>\n"
             "• Поддерживает капчу, email, телефон, код подтверждения\n"
+            "• Улучшенная обработка onboarding страницы\n"
             "• Chrome скачивается автоматически (~150MB)\n"
             "• Работает без apt-get на Render\n"
             "• Cookies сохраняются между сессиями\n"
