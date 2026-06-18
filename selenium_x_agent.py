@@ -1,4 +1,4 @@
-# selenium_x_agent.py — Selenium X/Twitter агент с Google, мобильным User-Agent и прокси
+# selenium_x_agent.py — Selenium X/Twitter агент с поддержкой Google, мобильным User-Agent и прокси
 import os
 import sys
 import subprocess
@@ -98,7 +98,7 @@ PROXY_SOURCES = [
 ]
 
 # === НАСТРОЙКА ПРОКСИ (можно менять) ===
-USE_PROXY = True  # True - использовать прокси, False - не использовать
+USE_PROXY = True
 
 
 def _run_subprocess(cmd, timeout=120, cwd=None):
@@ -379,6 +379,23 @@ def full_install():
     return AGENT_READY
 
 
+def run_sync_task(func, *args, **kwargs):
+    result = [None, None]
+    def target():
+        try:
+            result[0] = func(*args, **kwargs)
+        except Exception as e:
+            result[1] = str(e)
+    t = threading.Thread(target=target)
+    t.start()
+    t.join(timeout=300)
+    if t.is_alive():
+        return None, "Таймаут (300 сек)"
+    if result[1]:
+        return None, result[1]
+    return result[0], None
+
+
 # === Selenium Agent ===
 
 class SeleniumXAgent:
@@ -472,11 +489,9 @@ class SeleniumXAgent:
             return None
     
     def _get_random_user_agent(self):
-        """Выбрать случайный мобильный User-Agent"""
         return random.choice(MOBILE_USER_AGENTS)
     
     def _get_working_proxy(self):
-        """Найти рабочий прокси из списка"""
         if not USE_PROXY:
             logger.info("ℹ️ Прокси отключены (USE_PROXY=False)")
             return None
@@ -488,18 +503,15 @@ class SeleniumXAgent:
                     response = requests.get(source, timeout=10)
                     proxies = response.text.strip().split('\n')
                     
-                    # Фильтруем
                     http_proxies = []
                     for p in proxies:
                         p = p.strip()
                         if p and len(p) > 5:
-                            # Добавляем http:// если нет
                             if not p.startswith('http://') and not p.startswith('https://'):
                                 p = f'http://{p}'
                             http_proxies.append(p)
                     
                     if http_proxies:
-                        # Берем случайный прокси
                         proxy = random.choice(http_proxies)
                         logger.info(f"Выбран прокси: {proxy}")
                         self._current_proxy = proxy
@@ -523,7 +535,7 @@ class SeleniumXAgent:
         options.add_argument(f"--user-agent={user_agent}")
         logger.info(f"📱 Использую User-Agent: {user_agent[:50]}...")
         
-        # === ПРОКСИ (автоматический выбор) ===
+        # === ПРОКСИ ===
         if USE_PROXY:
             proxy = self._get_working_proxy()
             if proxy:
@@ -541,7 +553,7 @@ class SeleniumXAgent:
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--window-size=390,844")  # iPhone размер
+        options.add_argument("--window-size=390,844")
         options.add_argument("--start-maximized")
         options.add_argument("--disable-extensions")
         options.add_argument("--disable-infobars")
@@ -626,17 +638,43 @@ class SeleniumXAgent:
             logger.error(f"Cookie save error: {e}")
             return False
     
-    def _try_google_login(self, target_username):
-        """Попытка входа через Google"""
+    def google_login(self, google_email, google_password):
+        """Прямой вход через Google (команда /se_google)"""
+        
+        logger.info("="*60)
+        logger.info(f"START GOOGLE LOGIN for {google_email}")
+        logger.info("="*60)
+        
         try:
             from selenium.webdriver.common.by import By
+            from selenium.webdriver.common.keys import Keys
             
-            # Ищем кнопку "Continue with Google"
+            self._report("start", "🚀 Вход через Google")
+            self._create_driver()
+            
+            # === ОТКРЫВАЕМ СТРАНИЦУ ВХОДА X ===
+            login_url = "https://x.com/login"
+            logger.info(f"Открываю: {login_url}")
+            self.driver.get(login_url)
+            time.sleep(5)
+            
+            if "home" in self.driver.current_url:
+                logger.info("✅ Уже на home!")
+                self._save_cookies()
+                save_auth_info("google_user", google_email, {"method": "google_direct"})
+                self._screenshot("already_logged", send_to_chat=True, caption="✅ Уже авторизован!")
+                return True, None
+            
+            self._screenshot("google_start", send_to_chat=True, caption="📸 Страница входа X")
+            
+            # === ИЩЕМ КНОПКУ "Continue with Google" ===
             google_btn = None
             google_selectors = [
                 "//span[contains(text(), 'Continue with Google')]/..",
                 "//span[contains(text(), 'Sign in with Google')]/..",
                 "//div[contains(text(), 'Continue with Google')]",
+                "//div[contains(text(), 'Sign in with Google')]",
+                "//button//*[contains(text(), 'Google')]/..",
                 "[data-testid='google-login-button']",
             ]
             
@@ -654,44 +692,30 @@ class SeleniumXAgent:
                     continue
             
             if not google_btn:
-                logger.info("ℹ️ Кнопка 'Continue with Google' не найдена")
-                return False, None
+                self._screenshot("no_google_button", send_to_chat=True, caption="❌ Кнопка Google не найдена")
+                return False, "❌ Кнопка 'Continue with Google' не найдена на странице X"
             
             self._screenshot("google_button", send_to_chat=True, caption="🔍 Найдена кнопка 'Continue with Google'")
             
-            # Запрашиваем у пользователя
-            self._report("google_auth", "🔐 Найдена кнопка 'Continue with Google'!")
-            use_google = self._request_user_input(
-                "confirm",
-                "🔐 Найдена кнопка 'Continue with Google'!\n\nХотите попробовать войти через Google?\nОтправь 'yes' или 'no':",
-                timeout=30
-            )
-            
-            if not use_google or use_google.lower() not in ["yes", "да", "y", "1", "+"]:
-                logger.info("ℹ️ Пользователь отказался от Google")
-                return False, None
-            
-            logger.info("🔄 Вход через Google выбран")
+            # === НАЖИМАЕМ КНОПКУ GOOGLE ===
+            logger.info("Нажимаю Continue with Google")
             google_btn.click()
-            time.sleep(3)
-            self._screenshot("google_login", send_to_chat=True, caption="📸 Страница входа Google")
+            time.sleep(4)
             
-            # Запрашиваем email для Google
-            google_email = self._request_user_input(
-                "email",
-                "📧 Введи email для Google аккаунта:",
-                timeout=60
-            )
-            if not google_email:
-                return False, "❌ Email Google не указан"
+            self._screenshot("google_login_page", send_to_chat=True, caption="📸 Страница входа Google")
             
-            # Вводим email на странице Google
+            # === ВВОДИМ EMAIL ===
+            self._report("google_email", f"📧 Ввожу email: {google_email}")
+            
+            email_found = False
             email_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="email"]')
             for inp in email_inputs:
                 if inp.is_displayed() and inp.is_enabled():
                     inp.clear()
                     inp.send_keys(google_email)
                     time.sleep(1)
+                    email_found = True
+                    # Нажимаем Next
                     next_btns = self.driver.find_elements(By.CSS_SELECTOR, 'button[type="submit"]')
                     for btn in next_btns:
                         if btn.is_displayed() and btn.is_enabled():
@@ -700,24 +724,23 @@ class SeleniumXAgent:
                             break
                     break
             
-            self._screenshot("google_email", send_to_chat=True, caption="📧 Email Google введен")
+            if not email_found:
+                return False, "❌ Не найдено поле для email на странице Google"
             
-            # Запрашиваем пароль Google
-            google_password = self._request_user_input(
-                "password",
-                "🔑 Введи пароль от Google аккаунта:",
-                timeout=60
-            )
-            if not google_password:
-                return False, "❌ Пароль Google не указан"
+            self._screenshot("google_email_entered", send_to_chat=True, caption="📧 Email Google введен")
             
-            # Вводим пароль на странице Google
+            # === ВВОДИМ ПАРОЛЬ ===
+            self._report("google_password", "🔑 Ввожу пароль")
+            
+            password_found = False
             password_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="password"]')
             for inp in password_inputs:
                 if inp.is_displayed() and inp.is_enabled():
                     inp.clear()
                     inp.send_keys(google_password)
                     time.sleep(1)
+                    password_found = True
+                    # Нажимаем Next
                     next_btns = self.driver.find_elements(By.CSS_SELECTOR, 'button[type="submit"]')
                     for btn in next_btns:
                         if btn.is_displayed() and btn.is_enabled():
@@ -726,20 +749,25 @@ class SeleniumXAgent:
                             break
                     break
             
-            self._screenshot("google_password", send_to_chat=True, caption="🔑 Пароль Google введен")
+            if not password_found:
+                return False, "❌ Не найдено поле для пароля на странице Google"
             
-            # Проверяем 2FA или другие запросы Google
-            for attempt in range(15):
+            self._screenshot("google_password_entered", send_to_chat=True, caption="🔑 Пароль Google введен")
+            
+            # === ОБРАБОТЫВАЕМ 2FA ИЛИ ДРУГИЕ ЗАПРОСЫ ===
+            for attempt in range(30):
                 time.sleep(1)
                 current_url = self.driver.current_url
                 logger.info(f"Google auth check {attempt+1}: {current_url}")
                 
-                # Проверяем, не просит ли Google код 2FA
-                if "2fa" in current_url.lower() or "authenticator" in current_url.lower():
+                # Проверяем 2FA
+                if "2fa" in current_url.lower() or "authenticator" in current_url.lower() or "code" in current_url.lower():
                     self._screenshot("google_2fa", send_to_chat=True, caption="🔐 Требуется код 2FA Google")
+                    self._report("google_2fa", "🔐 Требуется код 2FA!")
+                    
                     google_code = self._request_user_input(
                         "code",
-                        "🔐 Google требует код двухфакторной аутентификации!\nВведи код из Google Authenticator:",
+                        "🔐 Введи код из Google Authenticator:",
                         timeout=120
                     )
                     if google_code:
@@ -760,11 +788,10 @@ class SeleniumXAgent:
                         return False, "❌ Код 2FA не указан"
                     continue
                 
-                # Проверяем, не просит ли Google подтверждение на телефоне
+                # Проверяем подтверждение на телефоне
                 if "phone" in current_url.lower() or "verify" in current_url.lower():
-                    self._screenshot("google_phone", send_to_chat=True, caption="📱 Требуется подтверждение по телефону")
-                    # Ждем ручного подтверждения
-                    self._report("google_wait", "⏳ Жду подтверждения на телефоне...")
+                    self._screenshot("google_phone", send_to_chat=True, caption="📱 Требуется подтверждение")
+                    self._report("google_wait", "⏳ Подтверди вход на телефоне")
                     confirm = self._request_user_input(
                         "confirm",
                         "📱 Google отправил запрос на телефон.\nПодтверди вход на телефоне и отправь 'done':",
@@ -777,93 +804,72 @@ class SeleniumXAgent:
                     else:
                         return False, "❌ Подтверждение не получено"
                 
-                # Проверяем успешный вход
-                if "home" in current_url:
-                    logger.info("✅ Авторизация через Google успешна!")
+                # Успех - перенаправление на X
+                if "home" in current_url or "x.com" in current_url:
+                    logger.info("✅ Вход через Google успешен!")
                     self._save_cookies()
-                    save_auth_info(target_username, google_email, {"method": "google"})
+                    save_auth_info("google_user", google_email, {"method": "google_direct"})
                     self._screenshot("google_success", send_to_chat=True, caption="✅ Вход через Google успешен!")
                     return True, None
                 
-                # Проверяем, вернулись ли на X
-                if "x.com" in current_url and "login" not in current_url:
-                    logger.info("✅ Перенаправление на X после Google!")
-                    self._save_cookies()
-                    save_auth_info(target_username, google_email, {"method": "google"})
-                    self._screenshot("google_success", send_to_chat=True, caption="✅ Вход через Google успешен!")
-                    return True, None
+                # Проверяем ошибку
+                if "error" in current_url.lower():
+                    self._screenshot("google_error", send_to_chat=True, caption="❌ Ошибка входа")
+                    return False, "❌ Ошибка входа в Google"
             
-            return False, "❌ Вход через Google не удался"
+            self._screenshot("google_timeout", send_to_chat=True, caption="⏰ Таймаут входа")
+            return False, "⏰ Таймаут входа через Google"
             
         except Exception as e:
             logger.error(f"Google login error: {e}")
-            return False, f"Ошибка Google: {e}"
+            logger.error(traceback.format_exc())
+            self._screenshot("google_exception", send_to_chat=True, caption=f"💥 Ошибка: {str(e)[:100]}")
+            return False, f"Ошибка: {e}"
+        finally:
+            if self.driver:
+                self.driver.quit()
+                self.driver = None
+            logger.info("="*60)
+            logger.info("END GOOGLE LOGIN")
+            logger.info("="*60)
     
     def login(self, username, password, email=None):
-        """Универсальная авторизация с поддержкой Google"""
+        """Обычный вход в X с username/пароль"""
         
         logger.info("="*60)
         logger.info(f"START LOGIN for {username}")
-        logger.info(f"Email provided: {bool(email)}")
         logger.info("="*60)
         
         target_username = username.strip().lstrip("@") if username else "unknown"
-        logger.info(f"Target username normalized: {target_username}")
         
         try:
             from selenium.webdriver.common.by import By
             from selenium.webdriver.common.keys import Keys
-            from selenium.webdriver.support.ui import WebDriverWait
-            from selenium.webdriver.support import expected_conditions as EC
             
             self._report("start", f"🚀 Авторизация @{target_username}")
             self._create_driver()
             
             # === ОТКРЫВАЕМ СТРАНИЦУ ВХОДА ===
-            login_urls = [
-                "https://x.com/login",
-                "https://x.com/i/flow/login?force_login=true",
-                "https://x.com/i/flow/login",
-            ]
+            login_urls = ["https://x.com/login", "https://x.com/i/flow/login?force_login=true"]
             
-            page_loaded = False
             for login_url in login_urls:
                 try:
                     logger.info(f"Пробую URL: {login_url}")
                     self.driver.get(login_url)
-                    time.sleep(4)
+                    time.sleep(5)
                     
                     if "home" in self.driver.current_url:
                         logger.info("✅ Уже на home!")
                         self._save_cookies()
                         save_auth_info(target_username, email, {"method": "already_logged"})
-                        self._report("done", "✅ Уже авторизован!")
                         return True, None
                     
-                    inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input')
-                    if inputs:
-                        logger.info(f"Найдено {len(inputs)} полей ввода на {login_url}")
-                        page_loaded = True
-                        break
+                    break
                 except Exception as e:
                     logger.warning(f"URL {login_url} не работает: {e}")
                     continue
             
-            if not page_loaded:
-                self._screenshot("error_page", send_to_chat=True, caption="❌ Ошибка загрузки страницы")
-                return False, "❌ Не удалось загрузить страницу входа"
-            
             self._screenshot("login_page", send_to_chat=True, caption="📸 Страница входа X/Twitter")
-            self._save_html("login_page")
-            
-            # === ПРОВЕРЯЕМ КНОПКУ "Continue with Google" ===
-            google_result, google_error = self._try_google_login(target_username)
-            if google_result:
-                return True, None
-            if google_error and "❌" in google_error:
-                # Если ошибка - возвращаем
-                return False, google_error
-            # Если Google не использовался - продолжаем
             
             # === ИЩЕМ ПОЛЕ ДЛЯ USERNAME ===
             username_input = None
@@ -902,7 +908,6 @@ class SeleniumXAgent:
                 self._screenshot("no_username_field", send_to_chat=True, caption="❌ Поле username не найдено")
                 return False, "❌ Не найдено поле для username"
             
-            # Вводим username
             username_input.clear()
             username_input.send_keys(target_username)
             logger.info(f"✅ Username введён: @{target_username}")
@@ -985,26 +990,6 @@ class SeleniumXAgent:
                     self._screenshot("home_success", send_to_chat=True, caption="✅ Успешно на домашней странице!")
                     return True, None
                 
-                # === ПРОВЕРКА КАПЧИ ===
-                try:
-                    if "captcha" in self.driver.page_source.lower():
-                        self._screenshot("captcha_detected", send_to_chat=True, caption="🔒 Обнаружена капча!")
-                        self._report("captcha", "🔒 Обнаружена капча!")
-                        captcha_result = self._request_user_input(
-                            "captcha",
-                            "🔒 Обнаружена капча!\nРеши капчу вручную и отправь 'done':",
-                            timeout=180
-                        )
-                        if captcha_result and captcha_result.lower() in ["done", "готово", "ok", "решено"]:
-                            self._report("captcha", "✅ Капча решена")
-                            self.driver.refresh()
-                            time.sleep(3)
-                            continue
-                        else:
-                            return False, "❌ Капча не решена"
-                except:
-                    pass
-                
                 # === ПОЛЕ ПАРОЛЯ ===
                 password_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="password"]')
                 for inp in password_inputs:
@@ -1084,36 +1069,18 @@ class SeleniumXAgent:
                         self._report("phone_needed", "📱 Требуется номер телефона!")
                         phone_used = self._request_user_input(
                             "phone",
-                            "📱 Введи номер телефона (с кодом страны):\nИли отправь 'skip' чтобы попробовать email:",
+                            "📱 Введи номер телефона (с кодом страны):",
                             timeout=60
                         )
                         
-                        if phone_used and phone_used.lower() == "skip":
-                            # Пытаемся найти ссылку "Use email instead"
-                            try:
-                                link = self.driver.find_element(By.PARTIAL_LINK_TEXT, "email")
-                                if link.is_displayed():
-                                    logger.info("📧 Найдена ссылка 'Use email instead'")
-                                    link.click()
-                                    time.sleep(2)
-                                    continue
-                            except:
-                                pass
-                            continue
-                        elif phone_used:
+                        if phone_used:
                             inp.clear()
                             inp.send_keys(phone_used)
                             time.sleep(2)
                             
                             self._screenshot("phone_entered", send_to_chat=True, caption=f"📱 Номер телефона введен")
                             
-                            # Ищем кнопку Next/Continue
                             next_btns = self.driver.find_elements(By.CSS_SELECTOR, 'button[type="submit"]')
-                            if not next_btns:
-                                next_btns = self.driver.find_elements(By.XPATH, "//span[contains(text(), 'Next')]/..")
-                            if not next_btns:
-                                next_btns = self.driver.find_elements(By.XPATH, "//span[contains(text(), 'Continue')]/..")
-                            
                             for btn in next_btns:
                                 if btn.is_displayed() and btn.is_enabled():
                                     logger.info("Нажимаю Next после телефона")
@@ -1121,7 +1088,6 @@ class SeleniumXAgent:
                                     time.sleep(3)
                                     break
                             
-                            # Проверяем, что появилось поле для кода
                             for wait in range(10):
                                 time.sleep(1)
                                 code_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[inputmode="numeric"], input[type="text"][maxlength="6"]')
@@ -1130,17 +1096,6 @@ class SeleniumXAgent:
                                     self._screenshot("code_field", send_to_chat=True, caption="🔑 Поле для кода подтверждения")
                                     found_field = True
                                     break
-                                
-                                # Проверяем ошибку
-                                error_elements = self.driver.find_elements(By.CSS_SELECTOR, '[role="alert"], [data-testid="toast"]')
-                                for err in error_elements:
-                                    if err.is_displayed():
-                                        err_text = err.text
-                                        if err_text:
-                                            logger.error(f"Error: {err_text}")
-                                            self._screenshot("phone_error", send_to_chat=True, caption=f"❌ Ошибка: {err_text}")
-                                            self._report("phone_error", f"❌ Ошибка: {err_text}")
-                                            return False, f"❌ {err_text}"
                         else:
                             return False, "❌ Телефон не указан"
                         
@@ -1182,29 +1137,6 @@ class SeleniumXAgent:
                 
                 if found_field:
                     break
-                
-                # === "Use password instead" ===
-                try:
-                    link = self.driver.find_element(By.PARTIAL_LINK_TEXT, "password")
-                    if link.is_displayed():
-                        logger.info("🔑 Найдена ссылка 'Use password instead'")
-                        link.click()
-                        time.sleep(2)
-                        continue
-                except:
-                    pass
-                
-                # === "Use email instead" ===
-                try:
-                    link = self.driver.find_element(By.PARTIAL_LINK_TEXT, "email")
-                    if link.is_displayed():
-                        logger.info("📧 Найдена ссылка 'Use email instead'")
-                        self._screenshot("email_alternative", send_to_chat=True, caption="📧 Найдена ссылка 'Use email instead'")
-                        link.click()
-                        time.sleep(2)
-                        continue
-                except:
-                    pass
             
             if not found_field:
                 self._screenshot("no_fields_found", send_to_chat=True, caption="❌ Не найдено ни одного поля")
@@ -1256,8 +1188,7 @@ class SeleniumXAgent:
                         if err_text and len(err_text) > 3:
                             logger.error(f"Error found: {err_text}")
                             self._screenshot("login_error", send_to_chat=True, caption=f"❌ Ошибка: {err_text}")
-                            if "wrong" in err_text.lower() or "incorrect" in err_text.lower():
-                                return False, f"❌ {err_text}"
+                            return False, f"❌ {err_text}"
             
             self._screenshot("login_final", send_to_chat=True, caption="❌ Авторизация не удалась")
             return False, f"Авторизация не удалась. URL: {self.driver.current_url}"
@@ -1269,360 +1200,28 @@ class SeleniumXAgent:
             return False, f"Ошибка: {e}"
         finally:
             if self.driver:
-                logger.info("Closing driver...")
-                try:
-                    self.driver.quit()
-                except:
-                    pass
+                self.driver.quit()
                 self.driver = None
-                logger.info("Driver closed")
             logger.info("="*60)
             logger.info("END LOGIN")
             logger.info("="*60)
     
     def capture_screenshot(self, url, wait=5):
-        """Сделать скриншот любой страницы"""
         try:
             self._create_driver()
             self.driver.get(url)
             time.sleep(wait)
-            
             path = self._screenshot("capture", send_to_chat=False)
             html_path = self._save_html("capture")
-            
             self.driver.quit()
             self.driver = None
-            
             return path, html_path
         except Exception as e:
             logger.error(f"Capture error: {e}")
             return None, None
-    
-    def fetch_timeline(self, username=None, limit=10):
-        if not AGENT_READY:
-            logger.warning("fetch_timeline: Agent not ready")
-            return None, "Selenium не готов. Используй /se_install"
-        
-        auth = get_auth_info()
-        if not auth:
-            logger.warning("fetch_timeline: Not authorized")
-            return None, "Не авторизован. Сначала /se_login"
-        
-        logger.info(f"fetch_timeline: username={username}, limit={limit}")
-        
-        try:
-            from selenium.webdriver.common.by import By
-            
-            self._create_driver()
-            self.driver.get("https://x.com")
-            time.sleep(2)
-            
-            if not self._load_cookies():
-                logger.warning("fetch_timeline: Could not load cookies")
-                return None, "Не удалось загрузить cookies. Авторизуйся заново: /se_login"
-            
-            url = f"https://x.com/{username}" if username else "https://x.com/home"
-            logger.info(f"fetch_timeline: Navigating to {url}")
-            self.driver.get(url)
-            time.sleep(4)
-            
-            current_url = self.driver.current_url
-            logger.info(f"fetch_timeline: Current URL: {current_url}")
-            if "login" in current_url:
-                logger.warning("fetch_timeline: Redirected to login")
-                return None, "Сессия истекла. Авторизуйся заново: /se_login"
-            
-            tweets = []
-            last_count = 0
-            attempts = 0
-            
-            while len(tweets) < limit and attempts < 10:
-                articles = self.driver.find_elements(By.CSS_SELECTOR, "article")
-                logger.debug(f"fetch_timeline: Found {len(articles)} articles")
-                for article in articles:
-                    try:
-                        text_elem = article.find_element(By.CSS_SELECTOR, '[data-testid="tweetText"]')
-                        text = text_elem.text if text_elem else ""
-                        user_elem = article.find_element(By.CSS_SELECTOR, '[data-testid="User-Name"]')
-                        user = user_elem.text if user_elem else ""
-                        time_elem = article.find_element(By.CSS_SELECTOR, "time")
-                        dt = time_elem.get_attribute("datetime") if time_elem else None
-                        link_elem = article.find_element(By.CSS_SELECTOR, 'a[href*="/status/"]')
-                        link = link_elem.get_attribute("href") if link_elem else ""
-                        
-                        if text:
-                            tweet = {
-                                "text": text,
-                                "author": user.split("\n")[0] if "\n" in user else user,
-                                "handle": user.split("\n")[1] if "\n" in user else "",
-                                "time": dt,
-                                "url": f"https://x.com{link}" if link and not link.startswith("http") else link,
-                            }
-                            if tweet not in tweets:
-                                tweets.append(tweet)
-                    except Exception as e:
-                        logger.debug(f"fetch_timeline: Error parsing tweet: {e}")
-                
-                if len(tweets) == last_count:
-                    attempts += 1
-                else:
-                    attempts = 0
-                    last_count = len(tweets)
-                
-                self.driver.execute_script("window.scrollBy(0, 800)")
-                time.sleep(1)
-            
-            self._save_cookies()
-            logger.info(f"fetch_timeline: Retrieved {len(tweets)} tweets")
-            return tweets[:limit], None
-            
-        except Exception as e:
-            logger.error(f"fetch_timeline error: {e}")
-            logger.error(traceback.format_exc())
-            return None, f"Ошибка: {e}"
-        finally:
-            if self.driver:
-                self.driver.quit()
-                self.driver = None
-    
-    def fetch_trends(self, limit=10):
-        if not AGENT_READY:
-            logger.warning("fetch_trends: Agent not ready")
-            return None, "Selenium не готов. Используй /se_install"
-        
-        auth = get_auth_info()
-        if not auth:
-            logger.warning("fetch_trends: Not authorized")
-            return None, "Не авторизован. Сначала /se_login"
-        
-        logger.info(f"fetch_trends: limit={limit}")
-        
-        try:
-            from selenium.webdriver.common.by import By
-            
-            self._create_driver()
-            self.driver.get("https://x.com")
-            time.sleep(2)
-            
-            if not self._load_cookies():
-                logger.warning("fetch_trends: Could not load cookies")
-                return None, "Не удалось загрузить cookies"
-            
-            self.driver.get("https://x.com/explore/tabs/trending")
-            time.sleep(4)
-            
-            current_url = self.driver.current_url
-            logger.info(f"fetch_trends: Current URL: {current_url}")
-            if "login" in current_url:
-                logger.warning("fetch_trends: Redirected to login")
-                return None, "Сессия истекла. Авторизуйся заново: /se_login"
-            
-            trends = []
-            attempts = 0
-            
-            while len(trends) < limit and attempts < 5:
-                trend_selectors = [
-                    '[data-testid="trend"]',
-                    '[href*="/search?q="]',
-                    'div[dir="ltr"] a[href^="/search"]',
-                ]
-                for selector in trend_selectors:
-                    elems = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                    for elem in elems:
-                        try:
-                            text = elem.text or elem.get_attribute("aria-label") or ""
-                            href = elem.get_attribute("href") or ""
-                            if text and "search" in href and text not in [t["text"] for t in trends]:
-                                trends.append({
-                                    "text": text,
-                                    "url": href if href.startswith("http") else f"https://x.com{href}",
-                                })
-                                if len(trends) >= limit:
-                                    break
-                        except Exception as e:
-                            logger.debug(f"fetch_trends: Error parsing trend: {e}")
-                    if len(trends) >= limit:
-                        break
-                
-                if len(trends) == 0:
-                    attempts += 1
-                else:
-                    attempts = 0
-                
-                self.driver.execute_script("window.scrollBy(0, 600)")
-                time.sleep(1)
-            
-            self._save_cookies()
-            logger.info(f"fetch_trends: Retrieved {len(trends)} trends")
-            return trends[:limit], None
-            
-        except Exception as e:
-            logger.error(f"fetch_trends error: {e}")
-            logger.error(traceback.format_exc())
-            return None, f"Ошибка: {e}"
-        finally:
-            if self.driver:
-                self.driver.quit()
-                self.driver = None
-    
-    def search(self, query, limit=10):
-        if not AGENT_READY:
-            logger.warning("search: Agent not ready")
-            return None, "Selenium не готов. Используй /se_install"
-        
-        auth = get_auth_info()
-        if not auth:
-            logger.warning("search: Not authorized")
-            return None, "Не авторизован. Сначала /se_login"
-        
-        logger.info(f"search: query={query}, limit={limit}")
-        
-        try:
-            from selenium.webdriver.common.by import By
-            
-            self._create_driver()
-            self.driver.get("https://x.com")
-            time.sleep(2)
-            
-            if not self._load_cookies():
-                logger.warning("search: Could not load cookies")
-                return None, "Не удалось загрузить cookies"
-            
-            encoded = query.replace(" ", "%20")
-            url = f"https://x.com/search?q={encoded}&src=typed_query&f=live"
-            logger.info(f"search: Navigating to {url}")
-            self.driver.get(url)
-            time.sleep(4)
-            
-            current_url = self.driver.current_url
-            logger.info(f"search: Current URL: {current_url}")
-            if "login" in current_url:
-                logger.warning("search: Redirected to login")
-                return None, "Сессия истекла. Авторизуйся заново: /se_login"
-            
-            tweets = []
-            attempts = 0
-            
-            while len(tweets) < limit and attempts < 8:
-                articles = self.driver.find_elements(By.CSS_SELECTOR, "article")
-                logger.debug(f"search: Found {len(articles)} articles")
-                for article in articles:
-                    try:
-                        text_elem = article.find_element(By.CSS_SELECTOR, '[data-testid="tweetText"]')
-                        text = text_elem.text if text_elem else ""
-                        user_elem = article.find_element(By.CSS_SELECTOR, '[data-testid="User-Name"]')
-                        user = user_elem.text if user_elem else ""
-                        time_elem = article.find_element(By.CSS_SELECTOR, "time")
-                        dt = time_elem.get_attribute("datetime") if time_elem else None
-                        link_elem = article.find_element(By.CSS_SELECTOR, 'a[href*="/status/"]')
-                        link = link_elem.get_attribute("href") if link_elem else ""
-                        
-                        if text:
-                            tweet = {
-                                "text": text,
-                                "author": user.split("\n")[0] if "\n" in user else user,
-                                "handle": user.split("\n")[1] if "\n" in user else "",
-                                "time": dt,
-                                "url": f"https://x.com{link}" if link and not link.startswith("http") else link,
-                            }
-                            if tweet not in tweets:
-                                tweets.append(tweet)
-                    except Exception as e:
-                        logger.debug(f"search: Error parsing tweet: {e}")
-                
-                if len(tweets) == 0:
-                    attempts += 1
-                
-                self.driver.execute_script("window.scrollBy(0, 1000)")
-                time.sleep(1.5)
-            
-            self._save_cookies()
-            logger.info(f"search: Retrieved {len(tweets)} tweets")
-            return tweets[:limit], None
-            
-        except Exception as e:
-            logger.error(f"search error: {e}")
-            logger.error(traceback.format_exc())
-            return None, f"Ошибка: {e}"
-        finally:
-            if self.driver:
-                self.driver.quit()
-                self.driver = None
-    
-    def check_current_auth(self):
-        logger.info("check_current_auth: Starting")
-        
-        if not os.path.exists(COOKIES_FILE):
-            logger.warning("check_current_auth: No cookies file")
-            return False, "Нет cookies файла"
-        
-        try:
-            from selenium.webdriver.common.by import By
-            
-            self._create_driver()
-            self.driver.get("https://x.com")
-            time.sleep(2)
-            
-            if not self._load_cookies():
-                logger.warning("check_current_auth: Could not load cookies")
-                return False, "Не удалось загрузить cookies"
-            
-            self.driver.get("https://x.com/home")
-            time.sleep(3)
-            
-            current_url = self.driver.current_url
-            logger.info(f"check_current_auth: Current URL: {current_url}")
-            if "home" not in current_url:
-                self._screenshot("auth_check_not_home", send_to_chat=False)
-                return False, f"Не на домашней странице: {current_url}"
-            
-            try:
-                self.driver.find_element(By.CSS_SELECTOR, '[data-testid="primaryColumn"]')
-                logger.info("check_current_auth: primaryColumn found")
-            except:
-                logger.warning("check_current_auth: primaryColumn not found")
-                return False, "Лента не найдена"
-            
-            try:
-                login_btn = self.driver.find_element(By.CSS_SELECTOR, 'a[href="/i/flow/login"]')
-                if login_btn.is_displayed():
-                    logger.warning("check_current_auth: Login button is visible")
-                    return False, "Кнопка входа видна — сессия истекла"
-            except:
-                pass
-            
-            self._save_cookies()
-            logger.info("check_current_auth: Session is valid")
-            return True, "Сессия активна"
-            
-        except Exception as e:
-            logger.error(f"check_current_auth error: {e}")
-            logger.error(traceback.format_exc())
-            return False, f"Ошибка проверки: {e}"
-        finally:
-            if self.driver:
-                self.driver.quit()
-                self.driver = None
 
 
 se_agent = SeleniumXAgent()
-
-
-def run_sync_task(func, *args, **kwargs):
-    result = [None, None]
-    def target():
-        try:
-            result[0] = func(*args, **kwargs)
-        except Exception as e:
-            result[1] = str(e)
-    t = threading.Thread(target=target)
-    t.start()
-    t.join(timeout=300)
-    if t.is_alive():
-        return None, "Таймаут (300 сек)"
-    if result[1]:
-        return None, result[1]
-    return result[0], None
 
 
 # === РЕГИСТРАЦИЯ КОМАНД БОТА ===
@@ -1693,7 +1292,7 @@ def register_selenium_bot(bot):
         if not status['agent_ready']:
             msg += "⚠️ Нажми /se_install для установки\n"
         elif not auth:
-            msg += "⚠️ Авторизуйся: /se_login\n"
+            msg += "⚠️ Авторизуйся: /se_login или /se_google\n"
         else:
             msg += "✅ Готов! Используй команды ниже ⬇️"
         
@@ -1702,7 +1301,6 @@ def register_selenium_bot(bot):
     @bot.message_handler(commands=["se_logs"])
     def se_logs_command(message):
         log_file = LOG_FILE
-        
         if not os.path.exists(log_file):
             bot.reply_to(message, "❌ Лог-файл не найден")
             return
@@ -1711,7 +1309,6 @@ def register_selenium_bot(bot):
             with open(log_file, "r", encoding='utf-8') as f:
                 lines = f.readlines()
                 last_lines = lines[-100:] if len(lines) > 100 else lines
-            
             log_text = "".join(last_lines)
             
             if len(log_text) > 4000:
@@ -1720,12 +1317,10 @@ def register_selenium_bot(bot):
             else:
                 bot.reply_to(message, f"📋 <b>Последние логи</b>\n\n<code>{log_text}</code>", parse_mode="HTML")
         except Exception as e:
-            logger.error(f"se_logs error: {e}")
             bot.reply_to(message, f"❌ Ошибка чтения логов: {e}")
     
     @bot.message_handler(commands=["se_set_proxy"])
     def se_set_proxy_command(message):
-        """Включить/выключить прокси"""
         global USE_PROXY
         args = message.text.split()
         if len(args) > 1:
@@ -1736,454 +1331,219 @@ def register_selenium_bot(bot):
                 USE_PROXY = False
                 bot.reply_to(message, "❌ Прокси ВЫКЛЮЧЕНЫ")
             else:
-                bot.reply_to(message, f"📊 Текущий статус прокси: {'ВКЛЮЧЕНЫ' if USE_PROXY else 'ВЫКЛЮЧЕНЫ'}\nИспользуй: /se_set_proxy on|off")
+                bot.reply_to(message, f"📊 Текущий статус прокси: {'ВКЛЮЧЕНЫ' if USE_PROXY else 'ВЫКЛЮЧЕНЫ'}\n/se_set_proxy on|off")
         else:
-            bot.reply_to(message, f"📊 Текущий статус прокси: {'ВКЛЮЧЕНЫ' if USE_PROXY else 'ВЫКЛЮЧЕНЫ'}\nИспользуй: /se_set_proxy on|off")
+            bot.reply_to(message, f"📊 Текущий статус прокси: {'ВКЛЮЧЕНЫ' if USE_PROXY else 'ВЫКЛЮЧЕНЫ'}\n/se_set_proxy on|off")
     
     @bot.message_handler(commands=["se_screenshot_page"])
     def se_screenshot_page_command(message):
-        """Сделать скриншот любой страницы (без авторизации)"""
         args = message.text.split()
         url = args[1] if len(args) > 1 else "https://x.com/login"
-        
-        bot.reply_to(message, f"📸 Делаю скриншот {url}...\n<i>Это может занять 10-15 секунд</i>", parse_mode="HTML")
-        
+        bot.reply_to(message, f"📸 Делаю скриншот {url}...\n<i>10-15 сек</i>", parse_mode="HTML")
         path, html_path = run_sync_task(se_agent.capture_screenshot, url, 5)
-        
         if path:
             try:
                 with open(path, "rb") as f:
-                    bot.send_photo(
-                        message.chat.id, 
-                        f, 
-                        caption=f"📸 {url}\n\nHTML сохранен: {html_path}"
-                    )
+                    bot.send_photo(message.chat.id, f, caption=f"📸 {url}\n\nHTML: {html_path}")
             except Exception as e:
-                bot.reply_to(message, f"❌ Не удалось отправить скриншот: {e}")
+                bot.reply_to(message, f"❌ {e}")
         else:
-            bot.reply_to(message, "❌ Не удалось сделать скриншот")
+            bot.reply_to(message, "❌ Не удалось")
     
     @bot.message_handler(commands=["se_show_login"])
     def se_show_login_command(message):
-        """Показать страницу входа X"""
-        bot.reply_to(message, "📸 Открываю страницу входа X...\n<i>Это может занять 10-15 секунд</i>", parse_mode="HTML")
-        
+        bot.reply_to(message, "📸 Открываю страницу входа X...\n<i>10-15 сек</i>", parse_mode="HTML")
         path, html_path = run_sync_task(se_agent.capture_screenshot, "https://x.com/login", 5)
-        
         if path:
             try:
                 with open(path, "rb") as f:
-                    bot.send_photo(
-                        message.chat.id, 
-                        f, 
-                        caption=f"📸 Страница входа X/Twitter\n\nHTML: {html_path}"
-                    )
+                    bot.send_photo(message.chat.id, f, caption=f"📸 Страница входа X/Twitter\n\nHTML: {html_path}")
             except Exception as e:
-                bot.reply_to(message, f"❌ Ошибка: {e}")
+                bot.reply_to(message, f"❌ {e}")
         else:
-            bot.reply_to(message, "❌ Не удалось сделать скриншот")
+            bot.reply_to(message, "❌ Не удалось")
     
     @bot.message_handler(commands=["se_check_auth"])
     def se_check_auth_command(message):
         if not AGENT_READY:
             bot.reply_to(message, "❌ Selenium не готов. /se_install", parse_mode="HTML")
             return
-        
         auth = get_auth_info()
         if not auth:
-            bot.reply_to(message, "❌ Нет данных об авторизации. Сначала /se_login", parse_mode="HTML")
+            bot.reply_to(message, "❌ Нет данных об авторизации. /se_login или /se_google", parse_mode="HTML")
             return
-        
         username = auth.get("username", "?")
         bot.reply_to(message, f"🔍 Проверяю сессию для @{username}...", parse_mode="HTML")
         valid, msg = run_sync_task(se_agent.check_current_auth)
-        
         if valid:
-            bot.reply_to(message, 
-                f"✅ <b>Сессия активна</b>\n"
-                f"👤 @{username}\n"
-                f"📊 Подписок: {auth.get('following_count', '?')}\n"
-                f"📊 Подписчиков: {auth.get('followers_count', '?')}\n\n"
-                f"Можно пользоваться командами.",
-                parse_mode="HTML"
-            )
+            bot.reply_to(message, f"✅ <b>Сессия активна</b>\n👤 @{username}", parse_mode="HTML")
         else:
-            bot.reply_to(message, 
-                f"❌ <b>Сессия недействительна</b>\n"
-                f"{msg}\n\n"
-                f"Авторизуйся: /se_login",
-                parse_mode="HTML"
-            )
+            bot.reply_to(message, f"❌ <b>Сессия недействительна</b>\n{msg}\n\n/se_login или /se_google", parse_mode="HTML")
     
     @bot.message_handler(commands=["se_logout"])
     def se_logout_command(message):
         clear_auth_info()
-        bot.reply_to(message, "🚪 <b>Сессия очищена</b>\nCookies и данные авторизации удалены.\nТеперь можно авторизоваться заново: /se_login", parse_mode="HTML")
+        bot.reply_to(message, "🚪 <b>Сессия очищена</b>", parse_mode="HTML")
     
     @bot.message_handler(commands=["se_install"])
     def se_install_command(message):
-        bot.reply_to(message, "⏳ Начинаю установку Selenium...\n<i>Это может занять 1-2 минуты</i>", parse_mode="HTML")
+        bot.reply_to(message, "⏳ Установка Selenium...\n<i>1-2 минуты</i>", parse_mode="HTML")
         success = full_install()
         status = get_full_status()
-        
         if success:
-            bot.reply_to(message,
-                "✅ <b>Selenium установлен!</b>\n\n"
-                f"📦 pip: v{status['selenium_pip']['version']}\n"
-                f"🌐 Chrome: <code>{status['chrome_browser']['path']}</code>\n"
-                f"🚗 Driver: <code>{status['chromedriver']['path']}</code>\n\n"
-                "Теперь /se_login",
-                parse_mode="HTML"
-            )
+            bot.reply_to(message, f"✅ <b>Selenium установлен!</b>\n📦 pip: v{status['selenium_pip']['version']}\n🌐 Chrome: <code>{status['chrome_browser']['path']}</code>\n\nТеперь /se_login или /se_google", parse_mode="HTML")
         else:
+            bot.reply_to(message, "❌ <b>Установка не завершена</b>\n/se_install", parse_mode="HTML")
+    
+    @bot.message_handler(commands=["se_google"])
+    def se_google_command(message):
+        if not AGENT_READY:
+            bot.reply_to(message, "❌ Selenium не готов. /se_install", parse_mode="HTML")
+            return
+        
+        chat_id = message.chat.id
+        bot.reply_to(message,
+            "🔐 <b>Вход через Google</b>\n\n"
+            "Введи <b>email</b> от Google аккаунта:",
+            parse_mode="HTML"
+        )
+        login_sessions[chat_id] = {"step": "google_email", "method": "google"}
+    
+    @bot.message_handler(func=lambda m: m.chat.id in login_sessions and login_sessions[m.chat.id].get("step") == "google_email")
+    def se_google_email(message):
+        chat_id = message.chat.id
+        email = message.text.strip()
+        if email.startswith("/"):
+            if email.lower() == "/se_cancel":
+                del login_sessions[chat_id]
+                bot.reply_to(message, "❌ Отменено")
+                return
+            return
+        login_sessions[chat_id]["google_email"] = email
+        login_sessions[chat_id]["step"] = "google_password"
+        bot.reply_to(message, f"✅ Email: <code>{email}</code>\n\nТеперь введи <b>пароль</b> от Google:", parse_mode="HTML")
+    
+    @bot.message_handler(func=lambda m: m.chat.id in login_sessions and login_sessions[m.chat.id].get("step") == "google_password")
+    def se_google_password(message):
+        chat_id = message.chat.id
+        password = message.text
+        if password.startswith("/"):
+            if password.lower() == "/se_cancel":
+                del login_sessions[chat_id]
+                bot.reply_to(message, "❌ Отменено")
+                return
+            return
+        
+        creds = login_sessions[chat_id]
+        google_email = creds.get("google_email")
+        google_password = password
+        
+        se_agent.set_chat_id(chat_id)
+        se_agent.set_bot(bot)
+        
+        bot.reply_to(message, "✅ Данные получены\n\n⏳ Выполняю вход через Google...\n<i>Будет отправлен скриншот каждого шага</i>", parse_mode="HTML")
+        
+        progress_msg = bot.send_message(chat_id, "🔄 Процесс входа через Google запущен...")
+        
+        def update_progress(step, msg_text):
+            try:
+                bot.edit_message_text(f"🔄 <b>Шаг: {step}</b>\n\n{msg_text}", chat_id=chat_id, message_id=progress_msg.message_id, parse_mode="HTML")
+            except Exception as e:
+                logger.debug(f"Progress update error: {e}")
+        
+        se_agent.set_progress_callback(update_progress)
+        
+        def do_google_login():
+            return se_agent.google_login(google_email, google_password)
+        
+        success, error = run_sync_task(do_google_login)
+        se_agent.set_progress_callback(None)
+        
+        try:
+            bot.delete_message(chat_id, progress_msg.message_id)
+        except:
+            pass
+        
+        if chat_id in login_sessions:
+            del login_sessions[chat_id]
+        
+        if error:
+            bot.reply_to(message, f"❌ {error}")
+        elif success:
+            auth_after = get_auth_info()
             msg = (
-                "❌ <b>Установка не завершена</b>\n\n"
-                f"pip: {'✅' if status['selenium_pip']['installed'] else '❌'}\n"
-                f"Chrome: {'✅' if status['chrome_browser']['found'] else '❌'}\n"
-                f"Driver: {'✅' if status['chromedriver']['ready'] else '❌'}\n\n"
-                "💡 Попробуй ещё раз: /se_install"
+                f"✅ <b>Вход через Google УСПЕШЕН!</b>\n\n"
+                f"👤 Аккаунт: <code>@{auth_after['username'] if auth_after else '?'}</code>\n"
+                f"📧 Email: {google_email}\n"
+                f"🕐 Время: {auth_after['authorized_at'] if auth_after else '?'}\n\n"
+                f"Теперь можно использовать:\n"
+                f"/se_timeline — лента\n"
+                f"/se_trends — тренды\n"
+                f"/se_search — поиск"
             )
             bot.reply_to(message, msg, parse_mode="HTML")
+        else:
+            bot.reply_to(message, "❌ Вход через Google не удался")
     
     @bot.message_handler(commands=["se_login"])
     def se_login_command(message):
         if not AGENT_READY:
-            bot.reply_to(message, "❌ Selenium не готов. Сначала /se_install", parse_mode="HTML")
+            bot.reply_to(message, "❌ Selenium не готов. /se_install", parse_mode="HTML")
             return
-        
         auth = get_auth_info()
         if auth:
-            bot.reply_to(message,
-                f"⚠️ Уже авторизован как <code>@{auth['username']}</code>\n\n"
-                f"📊 Подписок: {auth.get('following_count', '?')}\n"
-                f"🕐 Авторизован: {auth['authorized_at']}\n\n"
-                f"Используй /se_logout чтобы сменить аккаунт\n"
-                f"Или /se_check_auth чтобы проверить сессию",
-                parse_mode="HTML"
-            )
+            bot.reply_to(message, f"⚠️ Уже авторизован как <code>@{auth['username']}</code>\n/se_logout", parse_mode="HTML")
             return
-        
         chat_id = message.chat.id
-        if chat_id in login_sessions:
-            del login_sessions[chat_id]
-        
-        # Передаем chat_id и bot в агент для отправки скриншотов
         se_agent.set_chat_id(chat_id)
         se_agent.set_bot(bot)
-        
         bot.reply_to(message,
             "🔐 <b>Авторизация в X (Selenium)</b>\n\n"
             "Введи <b>username</b> (без @):\n"
-            "<i>Бот будет присылать скриншоты каждого шага</i>\n"
+            "<i>Бот будет присылать скриншоты</i>\n"
             f"🌐 Прокси: {'ВКЛЮЧЕНЫ' if USE_PROXY else 'ВЫКЛЮЧЕНЫ'}",
             parse_mode="HTML"
         )
         login_sessions[chat_id] = {"step": "username", "method": "selenium"}
-        logger.info(f"Login dialog started for chat {chat_id}")
     
-    @bot.message_handler(commands=["se_timeline"])
-    def se_timeline_command(message):
-        if not AGENT_READY:
-            bot.reply_to(message, "❌ Selenium не готов. /se_install")
-            return
-        
-        auth = get_auth_info()
-        if not auth:
-            bot.reply_to(message, "❌ Не авторизован. Сначала /se_login", parse_mode="HTML")
-            return
-        
-        args = message.text.split()
-        username = args[1] if len(args) > 1 else None
-        limit = int(args[2]) if len(args) > 2 and args[2].isdigit() else 5
-        
-        target = f"@{username}" if username else f"@{auth['username']} (Home)"
-        bot.reply_to(message, f"🐦 Загружаю ленту {target}...")
-        
-        tweets, error = run_sync_task(se_agent.fetch_timeline, username, limit)
-        
-        if error:
-            bot.reply_to(message, f"❌ {error}")
-            return
-        if not tweets:
-            bot.reply_to(message, "📭 Твиты не найдены")
-            return
-        
-        lines = [f"🐦 <b>{target}</b>\n"]
-        for i, t in enumerate(tweets, 1):
-            text = t.get("text", "")[:180]
-            if len(t.get("text", "")) > 180:
-                text += "..."
-            lines.append(
-                f"{i}. <b>{t.get('author', '')}</b> <code>{t.get('handle', '')}</code>\n"
-                f"   <i>{text}</i>\n"
-                f"   <a href='{t.get('url', '')}'>ссылка</a>\n"
-            )
-        
-        msg = "\n".join(lines)
-        if len(msg) > 4000:
-            msg = msg[:4000] + "\n\n<i>...обрезано</i>"
-        bot.reply_to(message, msg, parse_mode="HTML", disable_web_page_preview=True)
-    
-    @bot.message_handler(commands=["se_trends"])
-    def se_trends_command(message):
-        if not AGENT_READY:
-            bot.reply_to(message, "❌ Selenium не готов. /se_install")
-            return
-        
-        auth = get_auth_info()
-        if not auth:
-            bot.reply_to(message, "❌ Не авторизован. Сначала /se_login", parse_mode="HTML")
-            return
-        
-        limit = 10
-        args = message.text.split()
-        if len(args) > 1 and args[1].isdigit():
-            limit = int(args[1])
-        
-        bot.reply_to(message, "📈 Загружаю тренды...")
-        
-        trends, error = run_sync_task(se_agent.fetch_trends, limit)
-        
-        if error:
-            bot.reply_to(message, f"❌ {error}")
-            return
-        if not trends:
-            bot.reply_to(message, "📭 Тренды не найдены")
-            return
-        
-        lines = ["📈 <b>Тренды X</b>\n"]
-        for i, t in enumerate(trends, 1):
-            text = t.get("text", "")[:100]
-            lines.append(f"{i}. <a href='{t.get('url', '')}'>{text}</a>")
-        
-        msg = "\n".join(lines)
-        if len(msg) > 4000:
-            msg = msg[:4000] + "\n\n<i>...обрезано</i>"
-        bot.reply_to(message, msg, parse_mode="HTML", disable_web_page_preview=True)
-    
-    @bot.message_handler(commands=["se_search"])
-    def se_search_command(message):
-        if not AGENT_READY:
-            bot.reply_to(message, "❌ Selenium не готов. /se_install")
-            return
-        
-        auth = get_auth_info()
-        if not auth:
-            bot.reply_to(message, "❌ Не авторизован. Сначала /se_login", parse_mode="HTML")
-            return
-        
-        args = message.text.split(maxsplit=2)
-        if len(args) < 2:
-            bot.reply_to(message, "❌ Укажи запрос: <code>/se_search python</code>", parse_mode="HTML")
-            return
-        
-        query = args[1]
-        limit = int(args[2]) if len(args) > 2 and args[2].isdigit() else 5
-        
-        bot.reply_to(message, f"🔍 Ищу: <i>{query}</i>...", parse_mode="HTML")
-        
-        tweets, error = run_sync_task(se_agent.search, query, limit)
-        
-        if error:
-            bot.reply_to(message, f"❌ {error}")
-            return
-        if not tweets:
-            bot.reply_to(message, "📭 Ничего не найдено")
-            return
-        
-        lines = [f"🔍 <b>{query}</b>\n"]
-        for i, t in enumerate(tweets, 1):
-            text = t.get("text", "")[:160]
-            if len(t.get("text", "")) > 160:
-                text += "..."
-            lines.append(
-                f"{i}. <b>{t.get('author', '')}</b> <code>{t.get('handle', '')}</code>\n"
-                f"   <i>{text}</i>\n"
-                f"   <a href='{t.get('url', '')}'>ссылка</a>\n"
-            )
-        
-        bot.reply_to(message, "\n".join(lines), parse_mode="HTML", disable_web_page_preview=True)
-    
-    @bot.message_handler(commands=["se_screenshot"])
-    def se_screenshot_command(message):
-        if not AGENT_READY:
-            bot.reply_to(message, "❌ Selenium не готов. /se_install")
-            return
-        
-        auth = get_auth_info()
-        if not auth:
-            bot.reply_to(message, "❌ Не авторизован. Сначала /se_login", parse_mode="HTML")
-            return
-        
-        args = message.text.split()
-        url = args[1] if len(args) > 1 else "https://x.com/home"
-        
-        bot.reply_to(message, f"📸 Делаю скриншот {url}...")
-        
-        def take_screenshot():
-            se_agent._create_driver()
-            se_agent._load_cookies()
-            se_agent.driver.get(url)
-            time.sleep(3)
-            path = se_agent._screenshot("manual", send_to_chat=False)
-            se_agent.driver.quit()
-            se_agent.driver = None
-            return path
-        
-        path, error = run_sync_task(take_screenshot)
-        
-        if error:
-            bot.reply_to(message, f"❌ {error}")
-            return
-        
-        try:
-            with open(path, "rb") as f:
-                bot.send_photo(message.chat.id, f, caption=f"📸 {url}")
-        except Exception as e:
-            bot.reply_to(message, f"❌ Не удалось отправить скриншот: {e}")
-    
-    @bot.message_handler(commands=["se_help"])
-    def se_help_command(message):
-        auth = get_auth_info()
-        if auth:
-            auth_line = f"👤 Аккаунт: <code>@{auth['username']}</code>\n"
-            auth_line += f"   📊 Подписок: {auth.get('following_count', '?')}\n"
-            auth_line += f"   🕐 Авторизован: {auth['authorized_at']}\n"
-        else:
-            auth_line = "👤 Аккаунт: <i>не подключён</i>\n"
-        
-        msg = (
-            "🚗 <b>Selenium X Agent</b>\n\n"
-            f"{auth_line}\n"
-            "🔧 <b>Настройка</b>\n"
-            "  /se_status — Полный статус системы\n"
-            "  /se_install — Установить Selenium + Chrome + Driver\n"
-            "  /se_check_auth — Проверить сессию\n"
-            "  /se_logout — Выйти и очистить сессию\n"
-            "  /se_set_proxy [on|off] — Включить/выключить прокси\n\n"
-            "📋 <b>Диагностика</b>\n"
-            "  /se_logs — Показать логи авторизации\n"
-            "  /se_screenshot_page [url] — Скриншот любой страницы\n"
-            "  /se_show_login — Скриншот страницы входа X\n\n"
-            "🔐 <b>Авторизация</b>\n"
-            "  /se_login — Войти в X (со скриншотами)\n"
-            "  /se_cancel — Отменить ввод\n\n"
-            "📰 <b>Контент</b>\n"
-            "  /se_timeline [user] [N] — Лента\n"
-            "  /se_trends [N] — Тренды X\n"
-            "  /se_search [запрос] [N] — Поиск твитов\n"
-            "  /se_screenshot [url] — Скриншот страницы (с авторизацией)\n\n"
-            "⚠️ <b>Особенности:</b>\n"
-            "• 📸 Автоматические скриншоты в чат на каждом шаге\n"
-            "• 📱 Мобильный User-Agent\n"
-            "• 🌐 Автоматические прокси (можно отключить)\n"
-            "• 🔑 Вход через Google\n"
-            "• Chrome скачивается автоматически (~150MB)\n"
-            "• Работает без apt-get на Render\n"
-            "• Cookies сохраняются между сессиями"
-        )
-        bot.reply_to(message, msg, parse_mode="HTML")
-    
-    # === ДИАЛОГ АВТОРИЗАЦИИ ===
-    
-    def is_se_login_dialog(chat_id, step):
-        if chat_id not in login_sessions:
-            return False
-        session = login_sessions[chat_id]
-        if session.get("method") != "selenium":
-            return False
-        if session.get("step") != step:
-            return False
-        return True
-    
-    @bot.message_handler(func=lambda m: is_se_login_dialog(m.chat.id, "username"))
+    @bot.message_handler(func=lambda m: m.chat.id in login_sessions and login_sessions[m.chat.id].get("step") == "username")
     def se_login_username(message):
         chat_id = message.chat.id
         text = message.text.strip()
-        
-        if text.startswith("/"):
-            if text.lower() == "/se_cancel":
-                del login_sessions[chat_id]
-                bot.reply_to(message, "❌ Ввод отменён")
-                return
+        if text.startswith("/") and text.lower() == "/se_cancel":
+            del login_sessions[chat_id]
+            bot.reply_to(message, "❌ Отменено")
             return
-        
         username = text.lstrip("@")
         if not username:
-            bot.reply_to(message, "❌ Username не может быть пустым. Введи username или /se_cancel")
+            bot.reply_to(message, "❌ Введи username или /se_cancel")
             return
-        
         login_sessions[chat_id]["username"] = username
         login_sessions[chat_id]["step"] = "password"
-        bot.reply_to(message,
-            f"✅ Username: <code>{username}</code>\n\n"
-            f"Теперь введи <b>пароль</b>:",
-            parse_mode="HTML"
-        )
+        bot.reply_to(message, f"✅ Username: <code>{username}</code>\n\nТеперь введи <b>пароль</b>:", parse_mode="HTML")
     
-    @bot.message_handler(func=lambda m: is_se_login_dialog(m.chat.id, "password"))
+    @bot.message_handler(func=lambda m: m.chat.id in login_sessions and login_sessions[m.chat.id].get("step") == "password")
     def se_login_password(message):
         chat_id = message.chat.id
         text = message.text
-        
-        if text.startswith("/"):
-            if text.lower() == "/se_cancel":
-                del login_sessions[chat_id]
-                bot.reply_to(message, "❌ Ввод отменён")
-                return
+        if text.startswith("/") and text.lower() == "/se_cancel":
+            del login_sessions[chat_id]
+            bot.reply_to(message, "❌ Отменено")
             return
-        
         login_sessions[chat_id]["password"] = text
         login_sessions[chat_id]["step"] = "processing"
-        
-        bot.reply_to(message,
-            "✅ Пароль получен\n\n"
-            "⏳ Начинаю авторизацию...\n"
-            "<i>Бот будет присылать скриншоты каждого шага</i>\n"
-            f"🌐 Прокси: {'ВКЛЮЧЕНЫ' if USE_PROXY else 'ВЫКЛЮЧЕНЫ'}",
-            parse_mode="HTML"
-        )
         
         creds = login_sessions[chat_id]
         username = creds["username"]
         password = creds["password"]
         
-        def request_email(prompt, timeout=60):
-            login_sessions[chat_id]["step"] = "request_email"
-            return get_user_input(chat_id, prompt, timeout)
-        
-        def request_phone(prompt, timeout=60):
-            login_sessions[chat_id]["step"] = "request_phone"
-            return get_user_input(chat_id, prompt, timeout)
-        
-        def request_captcha(prompt, timeout=180):
-            login_sessions[chat_id]["step"] = "request_captcha"
-            return get_user_input(chat_id, prompt, timeout)
-        
-        def request_code(prompt, timeout=120):
-            login_sessions[chat_id]["step"] = "request_code"
-            return get_user_input(chat_id, prompt, timeout)
-        
-        def request_confirm(prompt, timeout=30):
-            login_sessions[chat_id]["step"] = "request_confirm"
-            return get_user_input(chat_id, prompt, timeout)
-        
-        se_agent.set_user_input_callback("email", request_email)
-        se_agent.set_user_input_callback("phone", request_phone)
-        se_agent.set_user_input_callback("captcha", request_captcha)
-        se_agent.set_user_input_callback("code", request_code)
-        se_agent.set_user_input_callback("confirm", request_confirm)
+        bot.reply_to(message, "✅ Пароль получен\n\n⏳ Начинаю авторизацию...", parse_mode="HTML")
         
         progress_msg = bot.send_message(chat_id, "🔄 Процесс авторизации запущен...")
         
         def update_progress(step, msg_text):
             try:
-                bot.edit_message_text(
-                    f"🔄 <b>Шаг: {step}</b>\n\n{msg_text}",
-                    chat_id=chat_id,
-                    message_id=progress_msg.message_id,
-                    parse_mode="HTML"
-                )
+                bot.edit_message_text(f"🔄 <b>Шаг: {step}</b>\n\n{msg_text}", chat_id=chat_id, message_id=progress_msg.message_id, parse_mode="HTML")
             except Exception as e:
                 logger.debug(f"Progress update error: {e}")
         
@@ -2193,13 +1553,7 @@ def register_selenium_bot(bot):
             return se_agent.login(username, password)
         
         success, error = run_sync_task(do_login)
-        
         se_agent.set_progress_callback(None)
-        se_agent.set_user_input_callback("email", None)
-        se_agent.set_user_input_callback("phone", None)
-        se_agent.set_user_input_callback("captcha", None)
-        se_agent.set_user_input_callback("code", None)
-        se_agent.set_user_input_callback("confirm", None)
         
         try:
             bot.delete_message(chat_id, progress_msg.message_id)
@@ -2210,11 +1564,9 @@ def register_selenium_bot(bot):
             del login_sessions[chat_id]
         
         auth_after = get_auth_info()
-        logger.info(f"After login auth_info: {auth_after}")
-        
         if error:
             bot.reply_to(message, f"❌ {error}")
-        elif success and auth_after and auth_after.get("username") == username:
+        elif success and auth_after:
             msg = (
                 f"✅ <b>Авторизация УСПЕШНА!</b>\n\n"
                 f"👤 Аккаунт: <code>@{auth_after['username']}</code>\n"
@@ -2224,31 +1576,8 @@ def register_selenium_bot(bot):
                 msg += f"📊 Подписок: {auth_after['following_count']}\n"
             if auth_after.get('followers_count'):
                 msg += f"📊 Подписчиков: {auth_after['followers_count']}\n"
-            
-            msg += (
-                f"\n"
-                f"Теперь можно использовать:\n"
-                f"/se_timeline — лента\n"
-                f"/se_trends — тренды\n"
-                f"/se_search — поиск"
-            )
+            msg += "\n/se_timeline — лента\n/se_trends — тренды\n/se_search — поиск"
             bot.reply_to(message, msg, parse_mode="HTML")
-        elif success and auth_after:
-            bot.reply_to(message, 
-                f"⚠️ <b>Авторизация прошла, но username не совпадает!</b>\n"
-                f"Ожидалось: @{username}\n"
-                f"Сохранено: @{auth_after.get('username', '?')}\n\n"
-                f"Попробуй /se_check_auth",
-                parse_mode="HTML"
-            )
-        elif success and not auth_after:
-            bot.reply_to(message, 
-                "⚠️ <b>Авторизация прошла, но данные НЕ сохранились!</b>\n"
-                "Попробуй /se_check_auth\n"
-                "Или /se_login ещё раз.\n\n"
-                "💡 Возможно, проблема с правами на диск. Проверь /se_status",
-                parse_mode="HTML"
-            )
         else:
             bot.reply_to(message, "❌ Авторизация не удалась")
     
@@ -2256,16 +1585,12 @@ def register_selenium_bot(bot):
     def se_user_input(message):
         chat_id = message.chat.id
         text = message.text.strip()
-        
-        if text.startswith("/"):
-            if text.lower() == "/se_cancel":
-                login_sessions[chat_id]["input_received"] = None
-                bot.reply_to(message, "❌ Ввод отменён")
-                return
+        if text.startswith("/") and text.lower() == "/se_cancel":
+            login_sessions[chat_id]["input_received"] = None
+            bot.reply_to(message, "❌ Отменено")
             return
-        
         login_sessions[chat_id]["input_received"] = text
-        bot.reply_to(message, f"✅ Получено: {text}\nПродолжаю авторизацию...")
+        bot.reply_to(message, f"✅ Получено: {text}\nПродолжаю...")
     
     @bot.message_handler(commands=["se_cancel"])
     def se_cancel_command(message):
@@ -2274,9 +1599,173 @@ def register_selenium_bot(bot):
             login_sessions[chat_id]["input_received"] = None
             login_sessions[chat_id]["awaiting_input"] = False
             del login_sessions[chat_id]
-            bot.reply_to(message, "❌ Ввод отменён")
+            bot.reply_to(message, "❌ Отменено")
         else:
             bot.reply_to(message, "Нет активного ввода")
+    
+    @bot.message_handler(commands=["se_timeline"])
+    def se_timeline_command(message):
+        if not AGENT_READY:
+            bot.reply_to(message, "❌ Selenium не готов. /se_install")
+            return
+        auth = get_auth_info()
+        if not auth:
+            bot.reply_to(message, "❌ Не авторизован. /se_login или /se_google", parse_mode="HTML")
+            return
+        args = message.text.split()
+        username = args[1] if len(args) > 1 else None
+        limit = int(args[2]) if len(args) > 2 and args[2].isdigit() else 5
+        target = f"@{username}" if username else f"@{auth['username']} (Home)"
+        bot.reply_to(message, f"🐦 Загружаю ленту {target}...")
+        tweets, error = run_sync_task(se_agent.fetch_timeline, username, limit)
+        if error:
+            bot.reply_to(message, f"❌ {error}")
+            return
+        if not tweets:
+            bot.reply_to(message, "📭 Твиты не найдены")
+            return
+        lines = [f"🐦 <b>{target}</b>\n"]
+        for i, t in enumerate(tweets, 1):
+            text = t.get("text", "")[:180]
+            if len(t.get("text", "")) > 180:
+                text += "..."
+            lines.append(f"{i}. <b>{t.get('author', '')}</b> <code>{t.get('handle', '')}</code>\n   <i>{text}</i>\n   <a href='{t.get('url', '')}'>ссылка</a>\n")
+        msg = "\n".join(lines)
+        if len(msg) > 4000:
+            msg = msg[:4000] + "\n\n<i>...обрезано</i>"
+        bot.reply_to(message, msg, parse_mode="HTML", disable_web_page_preview=True)
+    
+    @bot.message_handler(commands=["se_trends"])
+    def se_trends_command(message):
+        if not AGENT_READY:
+            bot.reply_to(message, "❌ Selenium не готов. /se_install")
+            return
+        auth = get_auth_info()
+        if not auth:
+            bot.reply_to(message, "❌ Не авторизован. /se_login или /se_google", parse_mode="HTML")
+            return
+        limit = 10
+        args = message.text.split()
+        if len(args) > 1 and args[1].isdigit():
+            limit = int(args[1])
+        bot.reply_to(message, "📈 Загружаю тренды...")
+        trends, error = run_sync_task(se_agent.fetch_trends, limit)
+        if error:
+            bot.reply_to(message, f"❌ {error}")
+            return
+        if not trends:
+            bot.reply_to(message, "📭 Тренды не найдены")
+            return
+        lines = ["📈 <b>Тренды X</b>\n"]
+        for i, t in enumerate(trends, 1):
+            text = t.get("text", "")[:100]
+            lines.append(f"{i}. <a href='{t.get('url', '')}'>{text}</a>")
+        msg = "\n".join(lines)
+        if len(msg) > 4000:
+            msg = msg[:4000] + "\n\n<i>...обрезано</i>"
+        bot.reply_to(message, msg, parse_mode="HTML", disable_web_page_preview=True)
+    
+    @bot.message_handler(commands=["se_search"])
+    def se_search_command(message):
+        if not AGENT_READY:
+            bot.reply_to(message, "❌ Selenium не готов. /se_install")
+            return
+        auth = get_auth_info()
+        if not auth:
+            bot.reply_to(message, "❌ Не авторизован. /se_login или /se_google", parse_mode="HTML")
+            return
+        args = message.text.split(maxsplit=2)
+        if len(args) < 2:
+            bot.reply_to(message, "❌ Укажи запрос: /se_search python", parse_mode="HTML")
+            return
+        query = args[1]
+        limit = int(args[2]) if len(args) > 2 and args[2].isdigit() else 5
+        bot.reply_to(message, f"🔍 Ищу: <i>{query}</i>...", parse_mode="HTML")
+        tweets, error = run_sync_task(se_agent.search, query, limit)
+        if error:
+            bot.reply_to(message, f"❌ {error}")
+            return
+        if not tweets:
+            bot.reply_to(message, "📭 Ничего не найдено")
+            return
+        lines = [f"🔍 <b>{query}</b>\n"]
+        for i, t in enumerate(tweets, 1):
+            text = t.get("text", "")[:160]
+            if len(t.get("text", "")) > 160:
+                text += "..."
+            lines.append(f"{i}. <b>{t.get('author', '')}</b> <code>{t.get('handle', '')}</code>\n   <i>{text}</i>\n   <a href='{t.get('url', '')}'>ссылка</a>\n")
+        bot.reply_to(message, "\n".join(lines), parse_mode="HTML", disable_web_page_preview=True)
+    
+    @bot.message_handler(commands=["se_screenshot"])
+    def se_screenshot_command(message):
+        if not AGENT_READY:
+            bot.reply_to(message, "❌ Selenium не готов. /se_install")
+            return
+        auth = get_auth_info()
+        if not auth:
+            bot.reply_to(message, "❌ Не авторизован. /se_login или /se_google", parse_mode="HTML")
+            return
+        args = message.text.split()
+        url = args[1] if len(args) > 1 else "https://x.com/home"
+        bot.reply_to(message, f"📸 Делаю скриншот {url}...")
+        def take_screenshot():
+            se_agent._create_driver()
+            se_agent._load_cookies()
+            se_agent.driver.get(url)
+            time.sleep(3)
+            path = se_agent._screenshot("manual", send_to_chat=False)
+            se_agent.driver.quit()
+            se_agent.driver = None
+            return path
+        path, error = run_sync_task(take_screenshot)
+        if error:
+            bot.reply_to(message, f"❌ {error}")
+            return
+        try:
+            with open(path, "rb") as f:
+                bot.send_photo(message.chat.id, f, caption=f"📸 {url}")
+        except Exception as e:
+            bot.reply_to(message, f"❌ {e}")
+    
+    @bot.message_handler(commands=["se_help"])
+    def se_help_command(message):
+        auth = get_auth_info()
+        if auth:
+            auth_line = f"👤 Аккаунт: <code>@{auth['username']}</code>\n"
+            auth_line += f"   🕐 Авторизован: {auth['authorized_at']}\n"
+        else:
+            auth_line = "👤 Аккаунт: <i>не подключён</i>\n"
+        
+        msg = (
+            "🚗 <b>Selenium X Agent</b>\n\n"
+            f"{auth_line}\n"
+            "🔧 <b>Настройка</b>\n"
+            "  /se_status — Статус системы\n"
+            "  /se_install — Установить Selenium\n"
+            "  /se_set_proxy [on|off] — Вкл/выкл прокси\n"
+            "  /se_logout — Выйти\n\n"
+            "🔐 <b>Авторизация</b>\n"
+            "  /se_google — Войти через Google\n"
+            "  /se_login — Обычный вход\n"
+            "  /se_check_auth — Проверить сессию\n"
+            "  /se_cancel — Отменить ввод\n\n"
+            "📋 <b>Диагностика</b>\n"
+            "  /se_logs — Показать логи\n"
+            "  /se_screenshot_page [url] — Скриншот любой страницы\n"
+            "  /se_show_login — Скриншот страницы входа X\n\n"
+            "📰 <b>Контент</b>\n"
+            "  /se_timeline [user] [N] — Лента\n"
+            "  /se_trends [N] — Тренды\n"
+            "  /se_search [запрос] [N] — Поиск\n"
+            "  /se_screenshot [url] — Скриншот (с авторизацией)\n\n"
+            "⚠️ <b>Особенности:</b>\n"
+            "• 📸 Скриншоты в чат на каждом шагу\n"
+            "• 📱 Мобильный User-Agent\n"
+            "• 🌐 Автоматические прокси (можно отключить)\n"
+            "• 🔑 Вход через Google\n"
+            "• Chrome скачивается автоматически"
+        )
+        bot.reply_to(message, msg, parse_mode="HTML")
     
     logger.info("Selenium bot commands registered")
     print("[SE] === REGISTER END ===")
