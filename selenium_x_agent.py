@@ -1,4 +1,4 @@
-# selenium_x_agent.py — Selenium X/Twitter агент
+# selenium_x_agent.py — Selenium X/Twitter агент с расширенным логированием
 import os
 import sys
 import subprocess
@@ -11,6 +11,9 @@ import urllib.request
 import zipfile
 import stat
 import queue
+import logging
+import traceback
+from datetime import datetime
 
 # === НАСТРОЙКА ПУТЕЙ ===
 if os.path.exists("/app") and os.access("/app", os.W_OK):
@@ -25,14 +28,40 @@ DRIVER_DIR = os.path.join(SELENIUM_DIR, "driver")
 COOKIES_FILE = os.path.join(SELENIUM_DIR, "x_cookies.json")
 AUTH_FILE = os.path.join(SELENIUM_DIR, "x_auth.json")
 SCREENSHOT_DIR = os.path.join(SELENIUM_DIR, "screenshots")
+LOG_FILE = os.path.join(SELENIUM_DIR, "debug.log")
+
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 os.makedirs(CHROME_DIR, exist_ok=True)
 os.makedirs(DRIVER_DIR, exist_ok=True)
+
+# === НАСТРОЙКА ЛОГГЕРА ===
+logger = logging.getLogger("SeleniumXAgent")
+logger.setLevel(logging.DEBUG)
+
+# Файловый обработчик
+file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
+file_handler.setLevel(logging.DEBUG)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
+
+# Консольный обработчик
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
 
 print(f"[SE] === INIT ===")
 print(f"[SE] SELENIUM_DIR: {SELENIUM_DIR}")
 print(f"[SE] AUTH_FILE: {AUTH_FILE}")
 print(f"[SE] COOKIES_FILE: {COOKIES_FILE}")
+print(f"[SE] LOG_FILE: {LOG_FILE}")
+
+logger.info("="*60)
+logger.info("SELENIUM X AGENT INITIALIZED")
+logger.info(f"Time: {datetime.now().isoformat()}")
+logger.info(f"SELENIUM_DIR: {SELENIUM_DIR}")
+logger.info("="*60)
 
 # === ГЛОБАЛЬНЫЕ ФЛАГИ ===
 SELENIUM_INSTALLED = False
@@ -54,31 +83,39 @@ progress_queue = queue.Queue()
 
 def _run_subprocess(cmd, timeout=120, cwd=None):
     try:
+        logger.debug(f"Running subprocess: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd)
-        return result.returncode == 0, result.stdout, result.stderr
+        success = result.returncode == 0
+        logger.debug(f"Subprocess result: success={success}, stdout_len={len(result.stdout)}, stderr_len={len(result.stderr)}")
+        return success, result.stdout, result.stderr
     except subprocess.TimeoutExpired:
+        logger.error(f"Subprocess timeout: {' '.join(cmd)}")
         return False, "", "Timeout"
     except Exception as e:
+        logger.error(f"Subprocess error: {e}")
         return False, "", str(e)
 
 
 def _download_file(url, dest):
     try:
-        print(f"[SE] Скачиваю: {url}")
+        logger.info(f"Downloading: {url} -> {dest}")
         urllib.request.urlretrieve(url, dest)
+        logger.info(f"Download complete: {dest} ({os.path.getsize(dest)} bytes)")
         return True
     except Exception as e:
-        print(f"[SE] Ошибка скачивания: {e}")
+        logger.error(f"Download error: {e}")
         return False
 
 
 def _extract_zip(zip_path, dest_dir):
     try:
+        logger.info(f"Extracting: {zip_path} -> {dest_dir}")
         with zipfile.ZipFile(zip_path, 'r') as z:
             z.extractall(dest_dir)
+        logger.info(f"Extraction complete")
         return True
     except Exception as e:
-        print(f"[SE] Ошибка распаковки: {e}")
+        logger.error(f"Extraction error: {e}")
         return False
 
 
@@ -86,8 +123,10 @@ def _make_executable(path):
     try:
         st = os.stat(path)
         os.chmod(path, st.st_mode | stat.S_IEXEC)
+        logger.info(f"Made executable: {path}")
         return True
-    except:
+    except Exception as e:
+        logger.error(f"Chmod error: {e}")
         return False
 
 
@@ -96,24 +135,28 @@ def check_selenium_pip():
     try:
         import selenium
         SELENIUM_INSTALLED = True
+        logger.info(f"Selenium installed: v{selenium.__version__}")
         return True, selenium.__version__
     except ImportError:
         SELENIUM_INSTALLED = False
+        logger.warning("Selenium not installed")
         return False, None
 
 
 def install_selenium_pip():
     global SELENIUM_INSTALLED
-    print("[SE] Установка selenium pip...")
+    logger.info("Installing selenium via pip...")
     ok, _, err = _run_subprocess([sys.executable, "-m", "pip", "install", "selenium"], timeout=120)
     if not ok:
-        print(f"[SE] Ошибка pip install: {err}")
+        logger.error(f"Pip install failed: {err}")
         return False
+    
     import importlib
     if "selenium" in sys.modules:
         importlib.reload(sys.modules["selenium"])
+    
     SELENIUM_INSTALLED = True
-    print("[SE] Selenium pip установлен")
+    logger.info("Selenium installed successfully")
     return True
 
 
@@ -122,19 +165,24 @@ def check_chrome_binary():
     chrome_path = os.path.join(CHROME_DIR, "chrome-linux64", "chrome")
     if os.path.exists(chrome_path):
         CHROME_BROWSER_READY = True
+        logger.info(f"Chrome found at: {chrome_path}")
         return True, chrome_path
+    
     for name in ["google-chrome", "chromium", "chromium-browser", "chrome"]:
         ok, out, _ = _run_subprocess(["which", name], timeout=5)
         if ok and out.strip():
             CHROME_BROWSER_READY = True
+            logger.info(f"Chrome found at: {out.strip()}")
             return True, out.strip()
+    
     CHROME_BROWSER_READY = False
+    logger.warning("Chrome not found")
     return False, None
 
 
 def download_chrome_portable():
     global CHROME_BROWSER_READY
-    print("[SE] Скачиваю Chrome portable...")
+    logger.info("Downloading Chrome portable...")
     zip_path = os.path.join(SELENIUM_DIR, "chrome.zip")
     if not _download_file(CHROME_DOWNLOAD_URL, zip_path):
         return False
@@ -144,7 +192,7 @@ def download_chrome_portable():
     if os.path.exists(chrome_path):
         _make_executable(chrome_path)
         CHROME_BROWSER_READY = True
-        print(f"[SE] Chrome готов: {chrome_path}")
+        logger.info(f"Chrome ready: {chrome_path}")
         return True
     return False
 
@@ -154,18 +202,23 @@ def check_driver():
     driver_path = os.path.join(DRIVER_DIR, "chromedriver-linux64", "chromedriver")
     if os.path.exists(driver_path):
         DRIVER_READY = True
+        logger.info(f"ChromeDriver found at: {driver_path}")
         return True, driver_path
+    
     ok, out, _ = _run_subprocess(["which", "chromedriver"], timeout=5)
     if ok and out.strip():
         DRIVER_READY = True
+        logger.info(f"ChromeDriver found at: {out.strip()}")
         return True, out.strip()
+    
     DRIVER_READY = False
+    logger.warning("ChromeDriver not found")
     return False, None
 
 
 def download_driver():
     global DRIVER_READY
-    print("[SE] Скачиваю ChromeDriver...")
+    logger.info("Downloading ChromeDriver...")
     zip_path = os.path.join(SELENIUM_DIR, "driver.zip")
     if not _download_file(DRIVER_DOWNLOAD_URL, zip_path):
         return False
@@ -175,7 +228,7 @@ def download_driver():
     if os.path.exists(driver_path):
         _make_executable(driver_path)
         DRIVER_READY = True
-        print(f"[SE] ChromeDriver готов: {driver_path}")
+        logger.info(f"ChromeDriver ready: {driver_path}")
         return True
     return False
 
@@ -188,7 +241,7 @@ def get_full_status():
     AGENT_READY = pip_ok and browser_ok and driver_ok
     
     auth_info = get_auth_info()
-    print(f"[SE] get_full_status: auth_info={auth_info}")
+    logger.debug(f"get_full_status: auth_info={auth_info}")
     
     return {
         "selenium_pip": {"installed": pip_ok, "version": pip_ver},
@@ -203,46 +256,43 @@ def get_full_status():
 
 def get_auth_info():
     """Получить информацию об авторизованном аккаунте"""
-    print(f"[SE] get_auth_info: проверяю {AUTH_FILE}")
+    logger.debug(f"get_auth_info: checking {AUTH_FILE}")
     if not os.path.exists(AUTH_FILE):
-        print(f"[SE] AUTH_FILE не существует")
+        logger.debug("AUTH_FILE does not exist")
         return None
     try:
         with open(AUTH_FILE, "r") as f:
             data = json.load(f)
-        print(f"[SE] get_auth_info прочитал: {data}")
+        logger.debug(f"get_auth_info read: {data}")
         
-        # Проверяем, что username есть
         if not data.get("username"):
-            print(f"[SE] get_auth_info: username пустой в файле!")
+            logger.warning("get_auth_info: username is empty in file!")
             return None
         
         return data
     except Exception as e:
-        print(f"[SE] Ошибка чтения AUTH_FILE: {e}")
+        logger.error(f"Error reading AUTH_FILE: {e}")
         return None
 
 
 def save_auth_info(username, email=None, extra=None):
     """Сохранить информацию об авторизованном аккаунте — ГАРАНТИРОВАННО"""
     try:
-        # ПРИНУДИТЕЛЬНО используем переданный username
         if not username or username == "unknown":
-            print(f"[SE] save_auth_info: КРИТИЧЕСКАЯ ОШИБКА — username пустой!")
+            logger.error("save_auth_info: CRITICAL ERROR — username is empty!")
             return False
         
         data = {
-            "username": str(username),  # Принудительно строка
+            "username": str(username),
             "email": email,
             "authorized_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
         if extra:
             data.update(extra)
         
-        print(f"[SE] save_auth_info: пишу username={username} в {AUTH_FILE}")
-        print(f"[SE] save_auth_info: полные данные={data}")
+        logger.info(f"save_auth_info: writing username={username} to {AUTH_FILE}")
+        logger.debug(f"save_auth_info: full data={data}")
         
-        # Атомарная запись
         tmp_file = AUTH_FILE + ".tmp"
         with open(tmp_file, "w") as f:
             json.dump(data, f, indent=2)
@@ -251,25 +301,23 @@ def save_auth_info(username, email=None, extra=None):
         
         os.replace(tmp_file, AUTH_FILE)
         
-        # Проверяем
         if os.path.exists(AUTH_FILE):
             size = os.path.getsize(AUTH_FILE)
-            print(f"[SE] AUTH_FILE создан, размер: {size}")
+            logger.info(f"AUTH_FILE created, size: {size}")
             with open(AUTH_FILE, "r") as f:
                 verify = json.load(f)
-            print(f"[SE] Проверка записи: verify={verify}")
+            logger.debug(f"Verification: verify={verify}")
             if verify.get("username") == username:
-                print(f"[SE] ✅ username совпадает!")
+                logger.info("✅ Username matches!")
                 return True
             else:
-                print(f"[SE] ❌ username НЕ совпадает! Ожидалось {username}, получили {verify.get('username')}")
+                logger.error(f"❌ Username mismatch! Expected {username}, got {verify.get('username')}")
                 return False
         else:
-            print(f"[SE] КРИТИЧЕСКАЯ ОШИБКА: AUTH_FILE НЕ создан!")
+            logger.error("CRITICAL ERROR: AUTH_FILE not created!")
             return False
     except Exception as e:
-        print(f"[SE] Auth save КРИТИЧЕСКАЯ ОШИБКА: {e}")
-        import traceback
+        logger.error(f"Auth save CRITICAL ERROR: {e}")
         traceback.print_exc()
         return False
 
@@ -279,32 +327,38 @@ def clear_auth_info():
     try:
         if os.path.exists(AUTH_FILE):
             os.remove(AUTH_FILE)
-            print(f"[SE] AUTH_FILE удалён")
+            logger.info("AUTH_FILE deleted")
         if os.path.exists(COOKIES_FILE):
             os.remove(COOKIES_FILE)
-            print(f"[SE] COOKIES_FILE удалён")
+            logger.info("COOKIES_FILE deleted")
         return True
     except Exception as e:
-        print(f"[SE] Clear auth error: {e}")
+        logger.error(f"Clear auth error: {e}")
         return False
 
 
 def full_install():
     global SELENIUM_INSTALLED, CHROME_BROWSER_READY, DRIVER_READY, AGENT_READY
+    logger.info("Starting full installation...")
+    
     if not SELENIUM_INSTALLED:
         if not install_selenium_pip():
             return False
+    
     if not CHROME_BROWSER_READY:
         browser_ok, _ = check_chrome_binary()
         if not browser_ok:
             if not download_chrome_portable():
                 check_chrome_binary()
+    
     if not DRIVER_READY:
         driver_ok, _ = check_driver()
         if not driver_ok:
             if not download_driver():
                 check_driver()
+    
     AGENT_READY = SELENIUM_INSTALLED and CHROME_BROWSER_READY and DRIVER_READY
+    logger.info(f"Full install completed: AGENT_READY={AGENT_READY}")
     return AGENT_READY
 
 
@@ -315,17 +369,19 @@ class SeleniumXAgent:
         self.driver = None
         self._cookies_valid = False
         self._progress_callback = None
+        logger.info("SeleniumXAgent initialized")
     
     def set_progress_callback(self, callback):
         self._progress_callback = callback
     
     def _report(self, step, message):
         print(f"[SE] [{step}] {message}")
+        logger.info(f"[{step}] {message}")
         if self._progress_callback:
             try:
                 self._progress_callback(step, message)
             except Exception as e:
-                print(f"[SE] Callback error: {e}")
+                logger.error(f"Callback error: {e}")
     
     def _get_chrome_options(self):
         from selenium.webdriver.chrome.options import Options
@@ -355,6 +411,7 @@ class SeleniumXAgent:
         browser_ok, browser_path = check_chrome_binary()
         if browser_ok and browser_path and "chrome-linux64" in browser_path:
             options.binary_location = browser_path
+            logger.debug(f"Using Chrome binary: {browser_path}")
         return options
     
     def _create_driver(self):
@@ -364,9 +421,15 @@ class SeleniumXAgent:
         driver_ok, driver_path = check_driver()
         if driver_ok and driver_path:
             service = Service(driver_path)
+            logger.debug(f"Using ChromeDriver: {driver_path}")
         else:
             service = Service()
+            logger.warning("Using default ChromeDriver service")
+        
+        logger.info("Creating Chrome driver...")
         self.driver = webdriver.Chrome(service=service, options=options)
+        logger.info(f"Chrome driver created. Session ID: {self.driver.session_id}")
+        
         self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
             "source": """
                 Object.defineProperty(navigator, 'webdriver', {
@@ -374,109 +437,175 @@ class SeleniumXAgent:
                 })
             """
         })
+        logger.debug("CDP command executed")
         return self.driver
     
     def _screenshot(self, name):
         try:
             path = os.path.join(SCREENSHOT_DIR, f"{name}_{int(time.time())}.png")
             self.driver.save_screenshot(path)
-            print(f"[SE] Screenshot: {path}")
+            logger.info(f"Screenshot saved: {path}")
             return path
         except Exception as e:
-            print(f"[SE] Screenshot error: {e}")
+            logger.error(f"Screenshot error: {e}")
             return None
     
     def _load_cookies(self):
         if not os.path.exists(COOKIES_FILE):
-            print(f"[SE] Cookies файл не найден: {COOKIES_FILE}")
+            logger.warning(f"Cookies file not found: {COOKIES_FILE}")
             return False
         try:
             with open(COOKIES_FILE, "r") as f:
                 cookies = json.load(f)
-            print(f"[SE] Загружаю {len(cookies)} cookies")
+            logger.info(f"Loading {len(cookies)} cookies")
             for cookie in cookies:
                 cookie.pop("sameSite", None)
                 try:
                     self.driver.add_cookie(cookie)
                 except Exception as e:
-                    print(f"[SE] Не удалось добавить cookie: {e}")
-            print(f"[SE] Cookies загружены")
+                    logger.warning(f"Failed to add cookie: {e}")
+            logger.info("Cookies loaded")
             return True
         except Exception as e:
-            print(f"[SE] Cookie load error: {e}")
+            logger.error(f"Cookie load error: {e}")
             return False
     
     def _save_cookies(self):
         try:
             if not self.driver:
-                print("[SE] Нет driver для сохранения cookies")
+                logger.error("No driver for saving cookies")
                 return False
             cookies = self.driver.get_cookies()
             with open(COOKIES_FILE, "w") as f:
                 json.dump(cookies, f)
             self._cookies_valid = True
-            print(f"[SE] Cookies сохранены: {len(cookies)} шт. в {COOKIES_FILE}")
+            logger.info(f"Cookies saved: {len(cookies)} cookies to {COOKIES_FILE}")
             return True
         except Exception as e:
-            print(f"[SE] Cookie save error: {e}")
+            logger.error(f"Cookie save error: {e}")
             return False
     
     def _smart_fill(self, selectors, value, field_name="поле"):
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
-        for selector in selectors:
+        for i, selector in enumerate(selectors):
             try:
+                logger.debug(f"Trying to fill {field_name} with selector {i}: {selector}")
                 elem = WebDriverWait(self.driver, 5).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, selector))
                 )
-                elem.clear()
-                elem.send_keys(value)
-                print(f"[SE] Заполнено {field_name}: {selector}")
-                time.sleep(0.5)
-                return True
+                if elem.is_displayed() and elem.is_enabled():
+                    elem.clear()
+                    elem.send_keys(value)
+                    logger.info(f"Filled {field_name}: {selector}")
+                    time.sleep(0.5)
+                    return True
+                else:
+                    logger.debug(f"Element not displayed/enabled: {selector}")
             except Exception as e:
-                print(f"[SE] Не удалось {selector}: {e}")
+                logger.debug(f"Failed to fill {selector}: {e}")
                 continue
+        logger.warning(f"Could not fill {field_name} with any selector")
         return False
     
     def _smart_click(self, selectors, button_name="кнопка"):
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
-        for selector in selectors:
+        for i, selector in enumerate(selectors):
             try:
+                logger.debug(f"Trying to click {button_name} with selector {i}: {selector}")
                 elem = WebDriverWait(self.driver, 5).until(
                     EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
                 )
                 elem.click()
-                print(f"[SE] Клик {button_name}: {selector}")
+                logger.info(f"Clicked {button_name}: {selector}")
                 time.sleep(0.5)
                 return True
             except Exception as e:
-                print(f"[SE] Клик не удался {selector}: {e}")
+                logger.debug(f"Failed to click {selector}: {e}")
                 continue
+        logger.warning(f"Could not click {button_name} with any selector")
         return False
     
     def login(self, username, password, email=None):
-        """Авторизация с ГАРАНТИРОВАННЫМ сохранением username"""
-        # Сохраняем username в локальную переменную — не потеряем
+        """Авторизация с ГАРАНТИРОВАННЫМ сохранением username и ДЕТАЛЬНЫМ логированием"""
+        
+        logger.info("="*60)
+        logger.info("START LOGIN")
+        logger.info(f"Username: {username}")
+        logger.info(f"Email provided: {bool(email)}")
+        logger.info(f"Timestamp: {datetime.now().isoformat()}")
+        logger.info("="*60)
+        
         target_username = username.strip().lstrip("@") if username else "unknown"
-        print(f"[SE] login: target_username={target_username}")
+        logger.info(f"Target username normalized: {target_username}")
+        
+        # Детальная диагностика окружения
+        logger.info(f"SELENIUM_DIR: {SELENIUM_DIR}")
+        logger.info(f"CHROME_DIR: {CHROME_DIR}")
+        logger.info(f"DRIVER_DIR: {DRIVER_DIR}")
+        logger.info(f"COOKIES_FILE: {COOKIES_FILE}")
+        logger.info(f"AUTH_FILE: {AUTH_FILE}")
+        
+        # Проверка прав на запись
+        for path in [SELENIUM_DIR, CHROME_DIR, DRIVER_DIR, SCREENSHOT_DIR]:
+            if os.path.exists(path):
+                logger.info(f"Directory exists: {path}, writable: {os.access(path, os.W_OK)}")
+            else:
+                logger.warning(f"Directory does NOT exist: {path}")
         
         try:
             self._report("start", f"🚀 Начинаю авторизацию как @{target_username}")
+            logger.info("Step 1: Starting browser...")
             
             self._report("browser", "🌐 Запускаю Chrome...")
             self._create_driver()
+            logger.info(f"Browser started. Driver: {self.driver}")
             self._report("browser", "✅ Chrome запущен")
             
             self._report("page", "📄 Открываю страницу входа...")
             self.driver.get("https://x.com/i/flow/login")
+            logger.info(f"Page loaded. Current URL: {self.driver.current_url}")
+            logger.info(f"Page title: {self.driver.title}")
+            logger.info(f"Page source length: {len(self.driver.page_source)}")
+            
+            # ДОПОЛНИТЕЛЬНАЯ ДИАГНОСТИКА СТРАНИЦЫ
+            from selenium.webdriver.common.by import By
+            
+            # Проверяем наличие основных элементов на странице
+            page_elements = {
+                "login_form": self.driver.find_elements(By.CSS_SELECTOR, 'form[action*="login"]'),
+                "username_field": self.driver.find_elements(By.CSS_SELECTOR, 'input[autocomplete="username"]'),
+                "password_field": self.driver.find_elements(By.CSS_SELECTOR, 'input[type="password"]'),
+                "login_button": self.driver.find_elements(By.CSS_SELECTOR, 'button[type="submit"]'),
+            }
+            
+            for name, elements in page_elements.items():
+                logger.info(f"Page elements - {name}: found {len(elements)}")
+                if elements:
+                    try:
+                        logger.info(f"  First element: display={elements[0].is_displayed()}, enabled={elements[0].is_enabled()}")
+                    except:
+                        logger.info(f"  First element: could not check status")
+            
+            # Сохраняем HTML для анализа
+            debug_html_path = os.path.join(SELENIUM_DIR, f"debug_login_page_{int(time.time())}.html")
+            try:
+                with open(debug_html_path, "w", encoding="utf-8") as f:
+                    f.write(self.driver.page_source)
+                logger.info(f"Saved page HTML to: {debug_html_path}")
+            except Exception as e:
+                logger.error(f"Failed to save HTML: {e}")
+            
             time.sleep(4)
             self._screenshot("login_start")
+            logger.info(f"Screenshot saved: login_start")
+            
             self._report("page", f"📄 Страница загружена: {self.driver.title}")
             
+            # === ВВОД USERNAME ===
             self._report("username", "⌨️ Ввожу username...")
             username_selectors = [
                 'input[autocomplete="username"]',
@@ -485,13 +614,47 @@ class SeleniumXAgent:
                 'input[autocapitalize="none"]',
                 'input[inputmode="text"]',
             ]
+            
+            logger.info(f"Looking for username field with selectors: {username_selectors}")
+            username_found = False
+            
+            for i, selector in enumerate(username_selectors):
+                try:
+                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    if elements:
+                        elem = elements[0]
+                        if elem.is_displayed() and elem.is_enabled():
+                            logger.info(f"Found username field with selector {i}: {selector}")
+                            logger.info(f"  Tag: {elem.tag_name}, Type: {elem.get_attribute('type')}")
+                            logger.info(f"  Display: {elem.is_displayed()}, Enabled: {elem.is_enabled()}")
+                            username_found = True
+                            break
+                except Exception as e:
+                    logger.warning(f"Error checking selector {selector}: {e}")
+            
+            if not username_found:
+                logger.error("Username field NOT found on page!")
+                # Ищем любые input поля
+                all_inputs = self.driver.find_elements(By.CSS_SELECTOR, "input")
+                logger.info(f"All inputs on page: {len(all_inputs)}")
+                for i, inp in enumerate(all_inputs[:5]):
+                    try:
+                        logger.info(f"  Input {i}: type={inp.get_attribute('type')}, name={inp.get_attribute('name')}")
+                    except:
+                        pass
+            
             if not self._smart_fill(username_selectors, target_username, "username"):
                 self._screenshot("login_no_username")
-                return False, "❌ Поле username не найдено"
+                error_msg = "❌ Поле username не найдено"
+                logger.error(error_msg)
+                return False, error_msg
+            
+            logger.info(f"Username entered: {target_username}")
             self._report("username", f"✅ Username введён: @{target_username}")
             
             time.sleep(1)
             
+            # === НАЖАТИЕ NEXT ===
             self._report("next", "➡️ Нажимаю Next...")
             next_selectors = [
                 'button[type="submit"]',
@@ -499,25 +662,35 @@ class SeleniumXAgent:
                 'button:has-text("Далее")',
                 'div[role="button"]:has-text("Next")',
             ]
-            self._smart_click(next_selectors, "Next")
+            
+            logger.info("Attempting to click Next button...")
+            next_clicked = self._smart_click(next_selectors, "Next")
+            logger.info(f"Next clicked: {next_clicked}")
+            
             time.sleep(3)
             self._screenshot("login_after_username")
+            logger.info(f"After Next - URL: {self.driver.current_url}")
+            logger.info(f"After Next - Title: {self.driver.title}")
+            
             self._report("next", "✅ Перешли к следующему шагу")
             
+            # === ПРОВЕРКА ВЕРИФИКАЦИИ ===
             self._report("verify", "🔍 Проверяю дополнительную верификацию...")
-            from selenium.webdriver.common.by import By
             verify_selectors = [
                 'input[name="email"]',
                 'input[name="phone"]',
                 'input[data-testid="ocfEnterTextTextInput"]',
             ]
+            
+            verification_required = False
             for selector in verify_selectors:
                 try:
                     elem = self.driver.find_element(By.CSS_SELECTOR, selector)
                     if elem.is_displayed():
-                        self._report("verify", f"⚠️ Найдено поле верификации")
+                        verification_required = True
+                        logger.info(f"Verification field found: {selector}")
                         if email:
-                            self._report("verify", f"⌨️ Ввожу email...")
+                            logger.info(f"Filling verification with email: {email}")
                             elem.clear()
                             elem.send_keys(email)
                             time.sleep(1)
@@ -525,28 +698,58 @@ class SeleniumXAgent:
                             time.sleep(3)
                             self._report("verify", "✅ Email принят")
                         else:
+                            logger.warning("Verification required but NO email provided!")
                             return False, "❌ Требуется email/телефон для верификации"
-                except:
-                    pass
-            self._report("verify", "✅ Дополнительной верификации нет")
+                except Exception as e:
+                    logger.debug(f"No verification field for {selector}: {e}")
             
+            if not verification_required:
+                logger.info("No verification required")
+                self._report("verify", "✅ Дополнительной верификации нет")
+            
+            # === ВВОД ПАРОЛЯ ===
             self._report("password", "⌨️ Ввожу пароль...")
             password_selectors = [
                 'input[name="password"]',
                 'input[type="password"]',
                 'input[autocomplete="current-password"]',
             ]
-            if not self._smart_fill(password_selectors, password, "password"):
+            
+            logger.info("Looking for password field...")
+            password_found = False
+            for i, selector in enumerate(password_selectors):
                 try:
-                    self.driver.find_element(By.CSS_SELECTOR, 'input[autocomplete="username"]')
-                    return False, "❌ Не удалось перейти к паролю"
+                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    if elements:
+                        elem = elements[0]
+                        if elem.is_displayed() and elem.is_enabled():
+                            logger.info(f"Found password field with selector {i}: {selector}")
+                            password_found = True
+                            break
+                except Exception as e:
+                    logger.warning(f"Error checking password selector {selector}: {e}")
+            
+            if not password_found:
+                logger.error("Password field NOT found!")
+                # Проверяем, не вернулись ли мы на username
+                try:
+                    username_field = self.driver.find_element(By.CSS_SELECTOR, 'input[autocomplete="username"]')
+                    if username_field.is_displayed():
+                        logger.error("Still on username step! Need to click Next again or different flow")
                 except:
                     pass
-                return False, "❌ Поле пароля не найдено"
+            
+            if not self._smart_fill(password_selectors, password, "password"):
+                error_msg = "❌ Поле пароля не найдено"
+                logger.error(error_msg)
+                return False, error_msg
+            
+            logger.info("Password entered")
             self._report("password", "✅ Пароль введён")
             
             time.sleep(1)
             
+            # === НАЖАТИЕ LOGIN ===
             self._report("submit", "🔓 Нажимаю Log in...")
             login_selectors = [
                 'button[data-testid="LoginForm_Login_Button"]',
@@ -554,170 +757,184 @@ class SeleniumXAgent:
                 'button:has-text("Войти")',
                 'button[type="submit"]',
             ]
-            self._smart_click(login_selectors, "Log in")
+            
+            logger.info("Attempting to click Login button...")
+            login_clicked = self._smart_click(login_selectors, "Log in")
+            logger.info(f"Login clicked: {login_clicked}")
+            
             self._report("submit", "⏳ Жду ответа сервера...")
             
-            time.sleep(5)
-            self._screenshot("login_after_submit")
-            
-            current_url = self.driver.current_url
-            self._report("check", f"🔍 URL после входа: {current_url}")
-            
-            # Проверка ошибок
-            error_selectors = [
-                'span:has-text("Wrong password")',
-                'span:has-text("Incorrect")',
-                'span:has-text("неверный")',
-                '[role="alert"]',
-                '[data-testid="toast"]',
-            ]
-            for selector in error_selectors:
+            # ОЖИДАНИЕ С ДИАГНОСТИКОЙ
+            for i in range(10):
+                time.sleep(1)
+                current_url = self.driver.current_url
+                logger.info(f"Wait {i+1}s: URL={current_url}")
+                
+                # Проверяем появление ошибок
+                error_selectors = [
+                    'span:has-text("Wrong password")',
+                    'span:has-text("Incorrect")',
+                    'span:has-text("неверный")',
+                    '[role="alert"]',
+                    '[data-testid="toast"]',
+                ]
+                
+                for selector in error_selectors:
+                    try:
+                        err = self.driver.find_element(By.CSS_SELECTOR, selector)
+                        if err.is_displayed():
+                            err_text = err.text
+                            logger.error(f"Error found: {err_text}")
+                            return False, f"❌ Ошибка входа: {err_text}"
+                    except:
+                        pass
+                
+                # Проверяем капчу
                 try:
-                    err = self.driver.find_element(By.CSS_SELECTOR, selector)
-                    err_text = err.text
-                    self._report("error", f"❌ Найдена ошибка: {err_text}")
-                    return False, f"❌ Ошибка входа: {err_text}"
+                    captcha = self.driver.find_elements(By.CSS_SELECTOR, 'iframe[src*="captcha"], iframe[src*="recaptcha"]')
+                    if captcha and len(captcha) > 0:
+                        logger.warning("Captcha detected!")
+                        return False, "❌ Обнаружена капча"
                 except:
                     pass
             
-            # Проверяем капчу
-            try:
-                captcha = self.driver.find_element(By.CSS_SELECTOR, 'iframe[src*="captcha"], iframe[src*="recaptcha"]')
-                if captcha:
-                    return False, "❌ Обнаружена капча"
-            except:
-                pass
+            self._screenshot("login_after_submit")
+            logger.info(f"After login attempt - URL: {self.driver.current_url}")
+            logger.info(f"After login attempt - Title: {self.driver.title}")
             
-            # === ГЛАВНАЯ ПРОВЕРКА: открываем home ===
-            self._report("home", "🏠 Открываю домашнюю страницу для проверки...")
-            self.driver.get("https://x.com/home")
-            time.sleep(4)
-            self._screenshot("login_home_check")
+            # === ПРОВЕРКА УСПЕШНОСТИ ===
+            current_url = self.driver.current_url
+            logger.info(f"Final URL: {current_url}")
             
-            home_url = self.driver.current_url
-            home_title = self.driver.title
-            self._report("home", f"📄 URL: {home_url}, Title: {home_title}")
+            # Проверка на редирект на домашнюю страницу
+            if "home" in current_url or current_url == "https://x.com/" or current_url == "https://x.com":
+                logger.info("✅ SUCCESS: Redirected to home page!")
+            else:
+                logger.warning(f"⚠️ Not on home page. Current: {current_url}")
             
-            # Проверяем, что это home (не login)
-            if "login" in home_url or "flow/login" in home_url:
-                self._report("home", "❌ Редирект на страницу входа")
-                return False, "❌ Авторизация не удалась: редирект на страницу входа"
+            # === ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: ЕСТЬ ЛИ ДОСТУП ===
+            self._report("check", "🔍 Проверяю доступ к контенту...")
             
-            # Проверяем наличие primaryColumn
-            has_primary = False
-            try:
-                self.driver.find_element(By.CSS_SELECTOR, '[data-testid="primaryColumn"]')
-                has_primary = True
-                self._report("home", "✅ Найден primaryColumn")
-            except:
-                self._report("home", "⚠️ primaryColumn не найден")
-            
-            # Проверяем, нет ли кнопки входа
-            has_login_btn = False
-            try:
-                login_btn = self.driver.find_element(By.CSS_SELECTOR, 'a[href="/i/flow/login"]')
-                if login_btn.is_displayed():
-                    has_login_btn = True
-                    self._report("home", "❌ Кнопка входа видна")
-            except:
-                self._report("home", "✅ Кнопки входа нет")
-            
-            if has_login_btn and not has_primary:
-                return False, "❌ Авторизация не удалась"
-            
-            # === ОТКРЫВАЕМ ПРОФИЛЬ ===
-            self._report("profile", f"👤 Открываю профиль @{target_username}...")
+            # Пытаемся получить свою страницу
             self.driver.get(f"https://x.com/{target_username}")
-            time.sleep(4)
-            self._screenshot("login_profile_check")
+            time.sleep(3)
+            logger.info(f"Profile page URL: {self.driver.current_url}")
+            logger.info(f"Profile page Title: {self.driver.title}")
             
-            profile_title = self.driver.title
-            self._report("profile", f"📄 Заголовок: {profile_title}")
+            # Проверяем наличие контента
+            try:
+                tweets = self.driver.find_elements(By.CSS_SELECTOR, 'article')
+                logger.info(f"Tweets found on profile: {len(tweets)}")
+                
+                if len(tweets) == 0:
+                    logger.warning("⚠️ No tweets found on profile!")
+                    
+                    # Проверяем, не требует ли вход
+                    login_btn = self.driver.find_elements(By.CSS_SELECTOR, 'a[href="/i/flow/login"]')
+                    if login_btn:
+                        logger.error("❌ Login button is visible - session NOT working!")
+                        return False, "❌ Сессия не работает: профиль требует входа"
+                    
+                    # Проверяем наличие ошибок
+                    error_msg = self.driver.find_elements(By.CSS_SELECTOR, '[data-testid="emptyState"]')
+                    if error_msg:
+                        try:
+                            logger.error(f"Empty state found: {error_msg[0].text}")
+                        except:
+                            pass
+            except Exception as e:
+                logger.error(f"Error checking profile: {e}")
             
-            if "login" in profile_title.lower() or "log in" in profile_title.lower():
-                self._report("profile", "❌ Профиль требует входа")
-                return False, "❌ Авторизация не удалась: профиль требует входа"
+            # === СОХРАНЕНИЕ ===
+            self._report("save", "💾 Сохраняю cookies...")
+            cookie_ok = self._save_cookies()
+            logger.info(f"Cookies saved: {cookie_ok}")
             
-            # Ищем подписки/подписчиков
-            following_count = None
-            followers_count = None
+            if cookie_ok:
+                cookies = self.driver.get_cookies()
+                logger.info(f"Number of cookies: {len(cookies)}")
+                for i, cookie in enumerate(cookies[:5]):
+                    logger.info(f"  Cookie {i}: {cookie.get('name')} - domain: {cookie.get('domain')}")
             
+            # === СОХРАНЕНИЕ AUTH ===
+            self._report("save_auth", f"💾 Сохраняю auth info для @{target_username}...")
+            auth_data = {
+                "following_count": None,
+                "followers_count": None,
+                "profile_title": self.driver.title,
+                "home_url": current_url,
+                "debug_url": self.driver.current_url,
+            }
+            
+            # Пытаемся получить статистику
             try:
                 stats = self.driver.find_elements(By.CSS_SELECTOR, 'a[href$="/following"] span span')
                 for stat in stats:
-                    text = stat.text
-                    if text and any(c.isdigit() for c in text):
-                        following_count = text
+                    if any(c.isdigit() for c in stat.text):
+                        auth_data["following_count"] = stat.text
                         break
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"Could not get following count: {e}")
             
             try:
                 stats = self.driver.find_elements(By.CSS_SELECTOR, 'a[href$="/followers"] span span')
                 for stat in stats:
-                    text = stat.text
-                    if text and any(c.isdigit() for c in text):
-                        followers_count = text
+                    if any(c.isdigit() for c in stat.text):
+                        auth_data["followers_count"] = stat.text
                         break
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"Could not get followers count: {e}")
             
-            self._report("profile", f"✅ Профиль открыт")
-            if following_count:
-                self._report("profile", f"📊 Подписок: {following_count}")
-            if followers_count:
-                self._report("profile", f"📊 Подписчиков: {followers_count}")
-            
-            # === СОХРАНЯЕМ ВСЁ — ГАРАНТИРОВАННО ===
-            self._report("save", "💾 Сохраняю cookies...")
-            cookie_ok = self._save_cookies()
-            self._report("save", f"{'✅' if cookie_ok else '❌'} Cookies сохранены")
-            
-            # Сохраняем auth info — ПРИНУДИТЕЛЬНО с username
-            self._report("save_auth", f"💾 Сохраняю auth info для @{target_username}...")
-            auth_data = {
-                "following_count": following_count,
-                "followers_count": followers_count,
-                "profile_title": profile_title,
-                "home_url": home_url,
-            }
             auth_saved = save_auth_info(target_username, email, auth_data)
-            self._report("save_auth", f"{'✅' if auth_saved else '❌'} Auth info сохранён")
+            logger.info(f"Auth info saved: {auth_saved}")
             
-            # ПРОВЕРЯЕМ, ЧТО СОХРАНИЛОСЬ
+            # === ФИНАЛЬНАЯ ПРОВЕРКА ===
             verify_auth = get_auth_info()
-            print(f"[SE] ПРОВЕРКА ПОСЛЕ СОХРАНЕНИЯ: verify_auth={verify_auth}")
+            logger.info(f"VERIFICATION - auth_info: {verify_auth}")
             
             if verify_auth and verify_auth.get("username") == target_username:
+                logger.info("✅ SUCCESS - auth info verified!")
                 self._report("done", "✅ Авторизация завершена и подтверждена!")
                 return True, None
             else:
-                print(f"[SE] КРИТИЧЕСКАЯ ОШИБКА: username не совпадает! Ожидалось {target_username}, получили {verify_auth}")
-                # Пытаемся ещё раз сохранить
+                logger.error(f"❌ FAILED - username mismatch. Expected: {target_username}, Got: {verify_auth}")
+                # Сохраняем еще раз
                 save_auth_info(target_username, email, auth_data)
-                return True, None  # Всё равно считаем успехом, cookies сохранены
+                # Считаем успешным, если cookies сохранены
+                if cookie_ok:
+                    logger.warning("Cookies saved but auth file issue. Returning success.")
+                    return True, None
+                return False, "❌ Ошибка сохранения данных"
             
         except Exception as e:
-            self._report("error", f"💥 Критическая ошибка: {str(e)}")
+            logger.error(f"CRITICAL ERROR: {e}")
+            logger.error(traceback.format_exc())
             self._screenshot("login_exception")
             return False, f"💥 Ошибка авторизации: {e}"
         finally:
             if self.driver:
-                print(f"[SE] Закрываю driver...")
+                logger.info("Closing driver...")
                 try:
                     self.driver.quit()
                 except:
                     pass
                 self.driver = None
-                print(f"[SE] Driver закрыт")
+                logger.info("Driver closed")
+            logger.info("="*60)
+            logger.info("END LOGIN")
+            logger.info("="*60)
     
     def fetch_timeline(self, username=None, limit=10):
         if not AGENT_READY:
+            logger.warning("fetch_timeline: Agent not ready")
             return None, "Selenium не готов. Используй /se_install"
         
         auth = get_auth_info()
         if not auth:
+            logger.warning("fetch_timeline: Not authorized")
             return None, "Не авторизован. Сначала /se_login"
+        
+        logger.info(f"fetch_timeline: username={username}, limit={limit}")
         
         try:
             self._create_driver()
@@ -725,17 +942,20 @@ class SeleniumXAgent:
             time.sleep(2)
             
             if not self._load_cookies():
+                logger.warning("fetch_timeline: Could not load cookies")
                 return None, "Не удалось загрузить cookies. Авторизуйся заново: /se_login"
             
             url = f"https://x.com/{username}" if username else "https://x.com/home"
+            logger.info(f"fetch_timeline: Navigating to {url}")
             self.driver.get(url)
             time.sleep(4)
             
             from selenium.webdriver.common.by import By
             
-            # Проверяем, не выкинуло ли на страницу входа
             current_url = self.driver.current_url
+            logger.info(f"fetch_timeline: Current URL: {current_url}")
             if "login" in current_url:
+                logger.warning("fetch_timeline: Redirected to login")
                 return None, "Сессия истекла. Авторизуйся заново: /se_login"
             
             tweets = []
@@ -744,6 +964,7 @@ class SeleniumXAgent:
             
             while len(tweets) < limit and attempts < 10:
                 articles = self.driver.find_elements(By.CSS_SELECTOR, "article")
+                logger.debug(f"fetch_timeline: Found {len(articles)} articles")
                 for article in articles:
                     try:
                         text = article.find_element(By.CSS_SELECTOR, '[data-testid="tweetText"]').text
@@ -761,8 +982,8 @@ class SeleniumXAgent:
                         }
                         if tweet not in tweets:
                             tweets.append(tweet)
-                    except:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"fetch_timeline: Error parsing tweet: {e}")
                 
                 if len(tweets) == last_count:
                     attempts += 1
@@ -774,9 +995,12 @@ class SeleniumXAgent:
                 time.sleep(1)
             
             self._save_cookies()
+            logger.info(f"fetch_timeline: Retrieved {len(tweets)} tweets")
             return tweets[:limit], None
             
         except Exception as e:
+            logger.error(f"fetch_timeline error: {e}")
+            logger.error(traceback.format_exc())
             return None, f"Ошибка: {e}"
         finally:
             if self.driver:
@@ -785,11 +1009,15 @@ class SeleniumXAgent:
     
     def fetch_trends(self, limit=10):
         if not AGENT_READY:
+            logger.warning("fetch_trends: Agent not ready")
             return None, "Selenium не готов. Используй /se_install"
         
         auth = get_auth_info()
         if not auth:
+            logger.warning("fetch_trends: Not authorized")
             return None, "Не авторизован. Сначала /se_login"
+        
+        logger.info(f"fetch_trends: limit={limit}")
         
         try:
             self._create_driver()
@@ -797,6 +1025,7 @@ class SeleniumXAgent:
             time.sleep(2)
             
             if not self._load_cookies():
+                logger.warning("fetch_trends: Could not load cookies")
                 return None, "Не удалось загрузить cookies"
             
             self.driver.get("https://x.com/explore/tabs/trending")
@@ -804,9 +1033,10 @@ class SeleniumXAgent:
             
             from selenium.webdriver.common.by import By
             
-            # Проверка сессии
             current_url = self.driver.current_url
+            logger.info(f"fetch_trends: Current URL: {current_url}")
             if "login" in current_url:
+                logger.warning("fetch_trends: Redirected to login")
                 return None, "Сессия истекла. Авторизуйся заново: /se_login"
             
             trends = []
@@ -831,8 +1061,8 @@ class SeleniumXAgent:
                                 })
                                 if len(trends) >= limit:
                                     break
-                        except:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"fetch_trends: Error parsing trend: {e}")
                     if len(trends) >= limit:
                         break
                 
@@ -845,9 +1075,12 @@ class SeleniumXAgent:
                 time.sleep(1)
             
             self._save_cookies()
+            logger.info(f"fetch_trends: Retrieved {len(trends)} trends")
             return trends[:limit], None
             
         except Exception as e:
+            logger.error(f"fetch_trends error: {e}")
+            logger.error(traceback.format_exc())
             return None, f"Ошибка: {e}"
         finally:
             if self.driver:
@@ -856,11 +1089,15 @@ class SeleniumXAgent:
     
     def search(self, query, limit=10):
         if not AGENT_READY:
+            logger.warning("search: Agent not ready")
             return None, "Selenium не готов. Используй /se_install"
         
         auth = get_auth_info()
         if not auth:
+            logger.warning("search: Not authorized")
             return None, "Не авторизован. Сначала /se_login"
+        
+        logger.info(f"search: query={query}, limit={limit}")
         
         try:
             self._create_driver()
@@ -868,18 +1105,21 @@ class SeleniumXAgent:
             time.sleep(2)
             
             if not self._load_cookies():
+                logger.warning("search: Could not load cookies")
                 return None, "Не удалось загрузить cookies"
             
             encoded = query.replace(" ", "%20")
             url = f"https://x.com/search?q={encoded}&src=typed_query&f=live"
+            logger.info(f"search: Navigating to {url}")
             self.driver.get(url)
             time.sleep(4)
             
             from selenium.webdriver.common.by import By
             
-            # Проверка сессии
             current_url = self.driver.current_url
+            logger.info(f"search: Current URL: {current_url}")
             if "login" in current_url:
+                logger.warning("search: Redirected to login")
                 return None, "Сессия истекла. Авторизуйся заново: /se_login"
             
             tweets = []
@@ -887,6 +1127,7 @@ class SeleniumXAgent:
             
             while len(tweets) < limit and attempts < 8:
                 articles = self.driver.find_elements(By.CSS_SELECTOR, "article")
+                logger.debug(f"search: Found {len(articles)} articles")
                 for article in articles:
                     try:
                         text = article.find_element(By.CSS_SELECTOR, '[data-testid="tweetText"]').text
@@ -904,8 +1145,8 @@ class SeleniumXAgent:
                         }
                         if tweet not in tweets:
                             tweets.append(tweet)
-                    except:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"search: Error parsing tweet: {e}")
                 
                 if len(tweets) == 0:
                     attempts += 1
@@ -914,9 +1155,12 @@ class SeleniumXAgent:
                 time.sleep(1.5)
             
             self._save_cookies()
+            logger.info(f"search: Retrieved {len(tweets)} tweets")
             return tweets[:limit], None
             
         except Exception as e:
+            logger.error(f"search error: {e}")
+            logger.error(traceback.format_exc())
             return None, f"Ошибка: {e}"
         finally:
             if self.driver:
@@ -925,7 +1169,10 @@ class SeleniumXAgent:
     
     def check_current_auth(self):
         """Проверить сессию через открытие home"""
+        logger.info("check_current_auth: Starting")
+        
         if not os.path.exists(COOKIES_FILE):
+            logger.warning("check_current_auth: No cookies file")
             return False, "Нет cookies файла"
         
         try:
@@ -934,6 +1181,7 @@ class SeleniumXAgent:
             time.sleep(2)
             
             if not self._load_cookies():
+                logger.warning("check_current_auth: Could not load cookies")
                 return False, "Не удалось загрузить cookies"
             
             self.driver.get("https://x.com/home")
@@ -942,26 +1190,33 @@ class SeleniumXAgent:
             from selenium.webdriver.common.by import By
             
             current_url = self.driver.current_url
+            logger.info(f"check_current_auth: Current URL: {current_url}")
             if "home" not in current_url:
                 self._screenshot("auth_check_not_home")
                 return False, f"Не на домашней странице: {current_url}"
             
             try:
                 self.driver.find_element(By.CSS_SELECTOR, '[data-testid="primaryColumn"]')
+                logger.info("check_current_auth: primaryColumn found")
             except:
+                logger.warning("check_current_auth: primaryColumn not found")
                 return False, "Лента не найдена"
             
             try:
                 login_btn = self.driver.find_element(By.CSS_SELECTOR, 'a[href="/i/flow/login"]')
                 if login_btn.is_displayed():
+                    logger.warning("check_current_auth: Login button is visible")
                     return False, "Кнопка входа видна — сессия истекла"
             except:
                 pass
             
             self._save_cookies()
+            logger.info("check_current_auth: Session is valid")
             return True, "Сессия активна"
             
         except Exception as e:
+            logger.error(f"check_current_auth error: {e}")
+            logger.error(traceback.format_exc())
             return False, f"Ошибка проверки: {e}"
         finally:
             if self.driver:
@@ -993,6 +1248,7 @@ def run_sync_task(func, *args, **kwargs):
 
 def register_selenium_bot(bot):
     print("[SE] === REGISTER SELENIUM BOT ===")
+    logger.info("Registering Selenium bot commands")
     
     @bot.message_handler(commands=["se_status"])
     def se_status_command(message):
@@ -1041,22 +1297,48 @@ def register_selenium_bot(bot):
         
         bot.reply_to(message, msg, parse_mode="HTML")
     
+    @bot.message_handler(commands=["se_logs"])
+    def se_logs_command(message):
+        """Показать последние логи авторизации"""
+        log_file = LOG_FILE
+        
+        if not os.path.exists(log_file):
+            bot.reply_to(message, "❌ Лог-файл не найден")
+            return
+        
+        try:
+            # Читаем последние 100 строк
+            with open(log_file, "r", encoding='utf-8') as f:
+                lines = f.readlines()
+                last_lines = lines[-100:] if len(lines) > 100 else lines
+            
+            log_text = "".join(last_lines)
+            
+            # Если слишком длинно, отправляем файлом
+            if len(log_text) > 4000:
+                with open(log_file, "rb") as f:
+                    bot.send_document(message.chat.id, f, caption="📋 Логи авторизации")
+            else:
+                bot.reply_to(message, f"📋 <b>Последние логи</b>\n\n<code>{log_text}</code>", parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"se_logs error: {e}")
+            bot.reply_to(message, f"❌ Ошибка чтения логов: {e}")
+    
     @bot.message_handler(commands=["se_check_auth"])
     def se_check_auth_command(message):
         if not AGENT_READY:
             bot.reply_to(message, "❌ Selenium не готов. /se_install", parse_mode="HTML")
             return
         
-        # Сначала проверяем файл
         auth = get_auth_info()
-        print(f"[SE] se_check_auth: auth из файла={auth}")
+        logger.debug(f"se_check_auth: auth from file={auth}")
         
         if not auth:
             bot.reply_to(message, "❌ Нет данных об авторизации. Сначала /se_login", parse_mode="HTML")
             return
         
         username = auth.get("username", "?")
-        print(f"[SE] se_check_auth: username из файла={username}")
+        logger.info(f"se_check_auth: Checking auth for @{username}")
         
         bot.reply_to(message, f"🔍 Проверяю сессию для @{username}...", parse_mode="HTML")
         valid, msg = run_sync_task(se_agent.check_current_auth)
@@ -1114,7 +1396,6 @@ def register_selenium_bot(bot):
             bot.reply_to(message, "❌ Selenium не готов. Сначала /se_install", parse_mode="HTML")
             return
         
-        # Проверяем, не авторизованы ли уже
         auth = get_auth_info()
         if auth:
             bot.reply_to(message,
@@ -1137,7 +1418,7 @@ def register_selenium_bot(bot):
             parse_mode="HTML"
         )
         login_sessions[chat_id] = {"step": "username", "method": "selenium"}
-        print(f"[SE] Login dialog started for chat {chat_id}")
+        logger.info(f"Login dialog started for chat {chat_id}")
     
     @bot.message_handler(commands=["se_timeline"])
     def se_timeline_command(message):
@@ -1318,6 +1599,8 @@ def register_selenium_bot(bot):
             "  /se_install — Установить Selenium + Chrome + Driver\n"
             "  /se_check_auth — Проверить сессию\n"
             "  /se_logout — Выйти и очистить сессию\n\n"
+            "📋 <b>Диагностика</b>\n"
+            "  /se_logs — Показать логи авторизации\n\n"
             "🔐 <b>Авторизация</b>\n"
             "  /se_login — Войти в X\n\n"
             "📰 <b>Контент</b>\n"
@@ -1328,11 +1611,12 @@ def register_selenium_bot(bot):
             "⚠️ <b>Особенности:</b>\n"
             "• Chrome скачивается автоматически (~150MB)\n"
             "• Работает без apt-get на Render\n"
-            "• Cookies сохраняются между сессиями"
+            "• Cookies сохраняются между сессиями\n"
+            "• Полное логирование в debug.log"
         )
         bot.reply_to(message, msg, parse_mode="HTML")
     
-    # === Диалог авторизации ===
+    # === ДИАЛОГ АВТОРИЗАЦИИ ===
     
     def is_se_login_dialog(chat_id, step):
         if chat_id not in login_sessions:
@@ -1446,11 +1730,11 @@ def register_selenium_bot(bot):
                             )
                             last_text = new_text
                         except Exception as e:
-                            print(f"[SE] Edit error: {e}")
+                            logger.error(f"Progress edit error: {e}")
                 except queue.Empty:
                     continue
                 except Exception as e:
-                    print(f"[SE] Progress worker error: {e}")
+                    logger.error(f"Progress worker error: {e}")
         
         progress_thread = threading.Thread(target=progress_worker)
         progress_thread.start()
@@ -1472,9 +1756,8 @@ def register_selenium_bot(bot):
         except:
             pass
         
-        # === ПРОВЕРКА РЕЗУЛЬТАТА ===
         auth_after = get_auth_info()
-        print(f"[SE] После логина auth_info: {auth_after}")
+        logger.info(f"After login auth_info: {auth_after}")
         
         if error:
             bot.reply_to(message, f"❌ {error}")
@@ -1498,7 +1781,6 @@ def register_selenium_bot(bot):
             )
             bot.reply_to(message, msg, parse_mode="HTML")
         elif success and auth_after:
-            # Username не совпадает, но данные есть
             bot.reply_to(message, 
                 f"⚠️ <b>Авторизация прошла, но username не совпадает!</b>\n"
                 f"Ожидалось: @{username}\n"
@@ -1526,10 +1808,13 @@ def register_selenium_bot(bot):
         else:
             bot.reply_to(message, "Нет активного ввода")
     
+    logger.info("Selenium bot commands registered")
     print("[SE] === REGISTER END ===")
 
 
-# === Инициализация ===
+# === ИНИЦИАЛИЗАЦИЯ ===
 check_selenium_pip()
 check_chrome_binary()
 check_driver()
+
+logger.info("Selenium X Agent initialization complete")
