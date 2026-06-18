@@ -1,4 +1,4 @@
-# selenium_x_agent.py — Полный код с исследователем страниц и живыми уведомлениями
+# selenium_x_agent.py — Полный код с исследователем страниц и запросом клика
 import os
 import sys
 import subprocess
@@ -650,7 +650,7 @@ class SeleniumXAgent:
     # ========== ИССЛЕДОВАТЕЛЬ СТРАНИЦ ==========
     
     def explore_page_with_log(self, url):
-        """Исследовать страницу с отправкой логов в чат"""
+        """Исследовать страницу с отправкой логов в чат и запросом клика"""
         
         logger.info("="*60)
         logger.info(f"START EXPLORE: {url}")
@@ -664,115 +664,135 @@ class SeleniumXAgent:
             
             self._send_log("📥 Загрузка страницы...")
             self.driver.get(url)
-            time.sleep(4)
+            time.sleep(5)
             
             self._screenshot("explore_1", send_to_chat=True, caption="📸 Страница загружена")
             
-            # === ШАГ 1: ПОИСК КНОПОК ===
+            # === ПОИСК КНОПОК ===
             self._send_log("🔍 Поиск всех кнопок...")
             buttons = self.driver.find_elements(By.TAG_NAME, "button")
             self._send_log(f"🔍 Найдено {len(buttons)} кнопок")
             
-            # Показываем кнопки
             btn_texts = []
             google_btn = None
-            for btn in buttons:
+            for i, btn in enumerate(buttons):
                 try:
-                    text = btn.text[:40] if btn.text else "[пусто]"
-                    btn_texts.append(f"  • {text}")
-                    if "google" in text.lower() or "Google" in text:
+                    text = btn.text[:50] if btn.text else "[пусто]"
+                    btn_texts.append(f"  {i+1}. {text}")
+                    if "google" in text.lower():
                         google_btn = btn
+                        self._send_log(f"✅ Найдена кнопка с текстом 'Google': {text}")
                 except:
                     pass
             
             if btn_texts:
-                self._send_log(f"🔍 <b>Найдено {len(buttons)} кнопок</b>\n\n" + "\n".join(btn_texts[:10]))
+                self._send_log("📋 Список кнопок:\n" + "\n".join(btn_texts[:20]))
             
-            # === ШАГ 2: ПОИСК GOOGLE ===
-            self._send_log("🔍 Поиск Google...")
-            page_text = self.driver.page_source.lower()
+            # === ПОИСК GOOGLE В HTML ===
+            self._send_log("🔍 Поиск Google в HTML...")
+            html = self.driver.page_source
+            html_lower = html.lower()
             
-            if "google" in page_text or "Google" in self.driver.page_source:
-                self._send_log("🔍 ✅ GOOGLE НАЙДЕН!")
-                
-                # Ищем кнопку Google
-                if not google_btn:
-                    try:
-                        google_btn = self.driver.find_element(By.XPATH, "//*[contains(text(), 'Continue with Google')]")
-                    except:
-                        pass
-                
-                if not google_btn:
-                    try:
-                        google_btn = self.driver.find_element(By.CSS_SELECTOR, '[data-testid="google-login-button"]')
-                    except:
-                        pass
-                
-                if google_btn:
-                    self._send_log(f"🔍 <b>✅ КНОПКА GOOGLE НАЙДЕНА!</b>\n\n"
-                                  f"📌 Тег: {google_btn.tag_name}\n"
-                                  f"📌 Отображается: {google_btn.is_displayed()}\n"
-                                  f"📌 Включена: {google_btn.is_enabled()}")
-                    
-                    self._screenshot("google_found", send_to_chat=True, caption="🔍 Кнопка Google найдена!")
-                    
-                    # Спрашиваем, кликать ли
-                    self._send_log("🖱️ <b>Хотите кликнуть по кнопке Google?</b>\n\nОтправь 'yes' или 'no'")
-                    
-                    confirm = self._request_user_input(
-                        "confirm",
-                        "🖱️ Найдена кнопка Google! Кликнуть? (yes/no)",
-                        timeout=30
-                    )
-                    
-                    if confirm and confirm.lower() in ["yes", "да", "y", "1", "+"]:
-                        self._send_log("🖱️ Кликаю по кнопке Google...")
-                        google_btn.click()
-                        time.sleep(3)
-                        self._screenshot("google_clicked", send_to_chat=True, caption="🖱️ Кнопка Google нажата!")
-                        self._send_log("🖱️ ✅ Клик выполнен!")
-                    else:
-                        self._send_log("⏭️ Клик пропущен")
-                else:
-                    self._send_log("🔍 ❌ Кнопка Google не найдена")
+            if "google" in html_lower or "Google" in html:
+                self._send_log("✅ Google найден в HTML")
             else:
-                self._send_log("🔍 ❌ Google не найден на странице")
+                self._send_log("❌ Google не найден в HTML")
             
-            # === ШАГ 3: СКРОЛЛ ===
-            self._send_log("📜 Прокрутка страницы...")
-            self.driver.execute_script("window.scrollTo(0, 500);")
-            time.sleep(1)
-            self._screenshot("explore_scroll", send_to_chat=True, caption="📜 После прокрутки")
-            self._send_log("📜 ✅ Скролл выполнен")
+            # === ПОИСК КНОПКИ GOOGLE РАЗНЫМИ СПОСОБАМИ ===
+            self._send_log("🔍 Поиск кнопки Google...")
             
-            # === ШАГ 4: ПОИСК ПОЛЕЙ ===
-            self._send_log("📝 Поиск полей ввода...")
-            inputs = self.driver.find_elements(By.TAG_NAME, "input")
-            input_types = []
-            for inp in inputs[:10]:
+            # Способ 1: По тексту
+            if not google_btn:
                 try:
-                    inp_type = inp.get_attribute("type") or "text"
-                    placeholder = inp.get_attribute("placeholder") or ""
-                    input_types.append(f"  • type={inp_type} placeholder={placeholder[:20]}")
+                    google_btn = self.driver.find_element(By.XPATH, "//*[contains(text(), 'Continue with Google')]")
+                    self._send_log("✅ Найдена кнопка 'Continue with Google' по тексту")
                 except:
                     pass
             
-            if input_types:
-                self._send_log(f"📝 Найдено {len(inputs)} полей\n\n" + "\n".join(input_types[:5]))
+            # Способ 2: По data-testid
+            if not google_btn:
+                try:
+                    google_btn = self.driver.find_element(By.CSS_SELECTOR, '[data-testid="google-login-button"]')
+                    self._send_log("✅ Найдена кнопка Google по data-testid")
+                except:
+                    pass
             
-            # === ШАГ 5: ИТОГ ===
+            # Способ 3: По части текста
+            if not google_btn:
+                try:
+                    google_btn = self.driver.find_element(By.XPATH, "//*[contains(text(), 'Google')]")
+                    self._send_log("✅ Найден элемент с текстом 'Google'")
+                except:
+                    pass
+            
+            # Способ 4: По aria-label
+            if not google_btn:
+                try:
+                    google_btn = self.driver.find_element(By.CSS_SELECTOR, '[aria-label*="Google" i]')
+                    self._send_log("✅ Найдена кнопка Google по aria-label")
+                except:
+                    pass
+            
+            # === ЕСЛИ КНОПКА НАЙДЕНА ===
+            if google_btn:
+                self._send_log(f"🔍 <b>✅ КНОПКА GOOGLE НАЙДЕНА!</b>\n\n"
+                              f"📌 Текст: {google_btn.text[:50] if google_btn.text else '[без текста]'}\n"
+                              f"📌 Тег: {google_btn.tag_name}\n"
+                              f"📌 Отображается: {google_btn.is_displayed()}\n"
+                              f"📌 Включена: {google_btn.is_enabled()}")
+                
+                self._screenshot("google_found", send_to_chat=True, caption="🔍 Кнопка Google найдена!")
+                
+                # === ЗАПРОС КЛИКА ===
+                self._send_log("🖱️ <b>Хотите кликнуть по кнопке Google?</b>\n\nОтправь 'yes' или 'no'")
+                
+                confirm = self._request_user_input(
+                    "confirm",
+                    "🖱️ Найдена кнопка Google! Кликнуть? (yes/no)",
+                    timeout=30
+                )
+                
+                if confirm and confirm.lower() in ["yes", "да", "y", "1", "+"]:
+                    self._send_log("🖱️ Кликаю по кнопке Google...")
+                    google_btn.click()
+                    time.sleep(3)
+                    self._screenshot("google_clicked", send_to_chat=True, caption="🖱️ Кнопка Google нажата!")
+                    self._send_log("🖱️ ✅ Клик выполнен!")
+                else:
+                    self._send_log("⏭️ Клик пропущен")
+            else:
+                self._send_log("❌ <b>Кнопка Google НЕ найдена</b>")
+            
+            # === СКРОЛЛ ===
+            self._send_log("📜 Прокрутка страницы...")
+            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
+            time.sleep(2)
+            self._screenshot("explore_scroll", send_to_chat=True, caption="📜 После прокрутки")
+            self._send_log("📜 ✅ Скролл выполнен")
+            
+            # === ПОСЛЕ СКРОЛЛА СНОВА ИЩЕМ ===
+            self._send_log("🔍 Повторный поиск Google после скролла...")
+            try:
+                google_btn2 = self.driver.find_element(By.XPATH, "//*[contains(text(), 'Continue with Google')]")
+                if google_btn2:
+                    self._send_log("✅ Найдена кнопка Google после скролла!")
+                    self._screenshot("google_after_scroll", send_to_chat=True, caption="🔍 Кнопка Google после скролла")
+            except:
+                pass
+            
+            # === ИТОГ ===
             self._send_log("📊 <b>ИССЛЕДОВАНИЕ ЗАВЕРШЕНО!</b>\n\n"
                           f"📊 Кнопок найдено: {len(buttons)}\n"
-                          f"📝 Полей ввода: {len(inputs)}\n"
-                          f"🔍 Google: {'✅' if 'google' in page_text else '❌'}\n"
-                          f"🖱️ Клик: {'✅' if google_btn and confirm and confirm.lower() in ['yes','да','y','1','+'] else '❌'}\n"
+                          f"🔍 Google в HTML: {'✅' if 'google' in html_lower else '❌'}\n"
+                          f"🖱️ Кнопка Google: {'✅' if google_btn else '❌'}\n"
+                          f"🖱️ Клик выполнен: {'✅' if google_btn and confirm and confirm.lower() in ['yes','да','y','1','+'] else '❌'}\n"
                           f"📸 Скриншотов: 4\n\n"
-                          f"<i>Скриншоты сохранены в папке screenshots/</i>")
+                          f"<i>Скриншоты и HTML сохранены в папках screenshots/ и html_pages/</i>")
             
             self._screenshot("explore_done", send_to_chat=True, caption="✅ Исследование завершено!")
             self._save_html("explore_page")
             
-            return "✅ Исследование завершено! Смотрите скриншоты и логи в чате."
+            return "✅ Исследование завершено! Смотрите скриншоты, логи и HTML."
             
         except Exception as e:
             logger.error(f"Explore error: {e}")
@@ -886,21 +906,19 @@ def register_selenium_bot(bot):
         except Exception as e:
             bot.reply_to(message, f"❌ Ошибка чтения логов: {e}")
     
-    # ========== ИССЛЕДОВАТЕЛЬ СТРАНИЦ ==========
+    # ========== ИССЛЕДОВАТЕЛЬ ==========
     
     @bot.message_handler(commands=["se_explore"])
     def se_explore_command(message):
-        """Исследовать страницу с живыми уведомлениями"""
+        """Исследовать страницу с живыми уведомлениями и запросом клика"""
         args = message.text.split()
         url = args[1] if len(args) > 1 else "https://x.com/login"
         
         chat_id = message.chat.id
         
-        # Передаем chat_id и bot в агент
         se_agent.set_chat_id(chat_id)
         se_agent.set_bot(bot)
         
-        # Создаем сообщение для лога
         log_msg = bot.send_message(chat_id,
             f"🕵️ <b>ИССЛЕДОВАТЕЛЬ СТРАНИЦ</b>\n\n"
             f"📄 {url}\n"
@@ -910,7 +928,6 @@ def register_selenium_bot(bot):
         )
         
         def update_log(text):
-            """Обновляет лог в чате"""
             try:
                 bot.edit_message_text(
                     f"🕵️ <b>ИССЛЕДОВАТЕЛЬ СТРАНИЦ</b>\n\n"
@@ -924,14 +941,12 @@ def register_selenium_bot(bot):
             except Exception as e:
                 logger.debug(f"Log update error: {e}")
         
-        # Устанавливаем callback для логов
         se_agent.set_log_callback(update_log)
         
         def do_explore():
             return se_agent.explore_page_with_log(url)
         
         result, error = run_sync_task(do_explore)
-        
         se_agent.set_log_callback(None)
         
         if error:
@@ -942,10 +957,11 @@ def register_selenium_bot(bot):
     @bot.message_handler(commands=["se_find_google"])
     def se_find_google_command(message):
         """Найти кнопку Google в HTML страницы"""
-        bot.reply_to(message, "🔍 Ищу кнопку Google на странице...\n<i>Это может занять 10-15 секунд</i>", parse_mode="HTML")
+        bot.reply_to(message, "🔍 Ищу кнопку Google на странице...\n<i>10-15 сек</i>", parse_mode="HTML")
         
         def find_google():
             try:
+                from selenium.webdriver.common.by import By
                 se_agent._create_driver()
                 se_agent.driver.get("https://x.com/login")
                 time.sleep(5)
@@ -953,22 +969,11 @@ def register_selenium_bot(bot):
                 html = se_agent.driver.page_source
                 results = []
                 
-                # Ищем Google в HTML
-                google_patterns = [
-                    "Continue with Google",
-                    "Sign in with Google",
-                    "google",
-                    "Google",
-                    "oauth",
-                    "OAuth",
-                ]
-                
-                for pattern in google_patterns:
+                patterns = ["Continue with Google", "Sign in with Google", "Google", "google", "oauth", "OAuth"]
+                for pattern in patterns:
                     if pattern in html:
                         results.append(f"✅ Найдено в HTML: {pattern}")
                 
-                # Ищем элементы с Google
-                from selenium.webdriver.common.by import By
                 elements = se_agent.driver.find_elements(By.XPATH, "//*[contains(text(), 'Google')]")
                 for elem in elements:
                     try:
@@ -976,7 +981,6 @@ def register_selenium_bot(bot):
                     except:
                         pass
                 
-                # Ищем все кнопки
                 buttons = se_agent.driver.find_elements(By.TAG_NAME, "button")
                 results.append(f"\n📊 Найдено кнопок: {len(buttons)}")
                 for i, btn in enumerate(buttons[:10]):
@@ -988,25 +992,21 @@ def register_selenium_bot(bot):
                 
                 se_agent.driver.quit()
                 se_agent.driver = None
-                
                 return "\n".join(results) if results else "❌ Ничего не найдено"
             except Exception as e:
                 return f"❌ Ошибка: {e}"
         
-        result = run_sync_task(find_google)
-        
-        if result[1]:
-            bot.reply_to(message, f"❌ {result[1]}")
+        result, error = run_sync_task(find_google)
+        if error:
+            bot.reply_to(message, f"❌ {error}")
         else:
-            bot.reply_to(message, f"📊 <b>Результаты поиска Google:</b>\n\n<code>{result[0]}</code>", parse_mode="HTML")
+            bot.reply_to(message, f"📊 <b>Результаты поиска Google:</b>\n\n<code>{result}</code>", parse_mode="HTML")
     
     @bot.message_handler(commands=["se_view_html"])
     def se_view_html_command(message):
-        """Показать HTML страницы"""
         args = message.text.split()
         url = args[1] if len(args) > 1 else "https://x.com/login"
-        
-        bot.reply_to(message, f"📄 Загружаю HTML страницы {url}...\n<i>10-15 секунд</i>", parse_mode="HTML")
+        bot.reply_to(message, f"📄 Загружаю HTML...\n<i>10-15 сек</i>", parse_mode="HTML")
         
         def get_html():
             se_agent._create_driver()
@@ -1018,25 +1018,20 @@ def register_selenium_bot(bot):
             return html
         
         html, error = run_sync_task(get_html)
-        
         if error:
-            bot.reply_to(message, f"❌ Ошибка: {error}")
+            bot.reply_to(message, f"❌ {error}")
             return
-        
         if html:
             try:
                 with open("/tmp/page.html", "w", encoding="utf-8") as f:
                     f.write(html)
                 with open("/tmp/page.html", "rb") as f:
-                    bot.send_document(message.chat.id, f, caption=f"📄 HTML страницы {url}\n\nПервые 10000 символов")
+                    bot.send_document(message.chat.id, f, caption=f"📄 HTML страницы {url}")
             except Exception as e:
-                bot.reply_to(message, f"❌ Ошибка отправки: {e}")
-        else:
-            bot.reply_to(message, "❌ Не удалось получить HTML")
+                bot.reply_to(message, f"❌ {e}")
     
     @bot.message_handler(commands=["se_show_login"])
     def se_show_login_command(message):
-        """Скриншот страницы входа X"""
         bot.reply_to(message, "📸 Открываю страницу входа X...\n<i>10-15 сек</i>", parse_mode="HTML")
         
         def take_screenshot():
@@ -1050,19 +1045,15 @@ def register_selenium_bot(bot):
             return path, html_path
         
         path, error = run_sync_task(take_screenshot)
-        
         if error:
             bot.reply_to(message, f"❌ {error}")
             return
-        
         if path:
             try:
                 with open(path[0], "rb") as f:
                     bot.send_photo(message.chat.id, f, caption=f"📸 Страница входа X/Twitter\n\nHTML: {path[1]}")
             except Exception as e:
                 bot.reply_to(message, f"❌ {e}")
-        else:
-            bot.reply_to(message, "❌ Не удалось сделать скриншот")
     
     @bot.message_handler(commands=["se_screenshot_page"])
     def se_screenshot_page_command(message):
@@ -1081,19 +1072,15 @@ def register_selenium_bot(bot):
             return path, html_path
         
         path, error = run_sync_task(take_screenshot)
-        
         if error:
             bot.reply_to(message, f"❌ {error}")
             return
-        
         if path:
             try:
                 with open(path[0], "rb") as f:
                     bot.send_photo(message.chat.id, f, caption=f"📸 {url}\n\nHTML: {path[1]}")
             except Exception as e:
                 bot.reply_to(message, f"❌ {e}")
-        else:
-            bot.reply_to(message, "❌ Не удалось сделать скриншот")
     
     @bot.message_handler(commands=["se_set_proxy"])
     def se_set_proxy_command(message):
@@ -1107,9 +1094,9 @@ def register_selenium_bot(bot):
                 USE_PROXY = False
                 bot.reply_to(message, "❌ Прокси ВЫКЛЮЧЕНЫ")
             else:
-                bot.reply_to(message, f"📊 Текущий статус прокси: {'ВКЛЮЧЕНЫ' if USE_PROXY else 'ВЫКЛЮЧЕНЫ'}\n/se_set_proxy on|off")
+                bot.reply_to(message, f"📊 Статус прокси: {'ВКЛ' if USE_PROXY else 'ВЫКЛ'}\n/se_set_proxy on|off")
         else:
-            bot.reply_to(message, f"📊 Текущий статус прокси: {'ВКЛЮЧЕНЫ' if USE_PROXY else 'ВЫКЛЮЧЕНЫ'}\n/se_set_proxy on|off")
+            bot.reply_to(message, f"📊 Статус прокси: {'ВКЛ' if USE_PROXY else 'ВЫКЛ'}\n/se_set_proxy on|off")
     
     @bot.message_handler(commands=["se_check_auth"])
     def se_check_auth_command(message):
@@ -1118,7 +1105,7 @@ def register_selenium_bot(bot):
             return
         auth = get_auth_info()
         if not auth:
-            bot.reply_to(message, "❌ Нет данных об авторизации. /se_login или /se_google", parse_mode="HTML")
+            bot.reply_to(message, "❌ Нет данных. /se_login или /se_google", parse_mode="HTML")
             return
         username = auth.get("username", "?")
         bot.reply_to(message, f"🔍 Проверяю сессию для @{username}...", parse_mode="HTML")
@@ -1126,7 +1113,7 @@ def register_selenium_bot(bot):
         if valid:
             bot.reply_to(message, f"✅ <b>Сессия активна</b>\n👤 @{username}", parse_mode="HTML")
         else:
-            bot.reply_to(message, f"❌ <b>Сессия недействительна</b>\n{msg}\n\n/se_login или /se_google", parse_mode="HTML")
+            bot.reply_to(message, f"❌ <b>Сессия недействительна</b>\n{msg}", parse_mode="HTML")
     
     @bot.message_handler(commands=["se_logout"])
     def se_logout_command(message):
@@ -1139,7 +1126,7 @@ def register_selenium_bot(bot):
         success = full_install()
         status = get_full_status()
         if success:
-            bot.reply_to(message, f"✅ <b>Selenium установлен!</b>\n📦 pip: v{status['selenium_pip']['version']}\n🌐 Chrome: <code>{status['chrome_browser']['path']}</code>\n\nТеперь /se_login или /se_google", parse_mode="HTML")
+            bot.reply_to(message, f"✅ <b>Selenium установлен!</b>\n📦 pip: v{status['selenium_pip']['version']}\n🌐 Chrome: <code>{status['chrome_browser']['path']}</code>", parse_mode="HTML")
         else:
             bot.reply_to(message, "❌ <b>Установка не завершена</b>\n/se_install", parse_mode="HTML")
     
@@ -1155,7 +1142,7 @@ def register_selenium_bot(bot):
         
         bot.reply_to(message,
             "🔐 <b>Вход через Google</b>\n\n"
-            "Введи <b>email</b> от Google аккаунта:",
+            "Введи <b>email</b> от Google:",
             parse_mode="HTML"
         )
         login_sessions[chat_id] = {"step": "google_email", "method": "google"}
@@ -1164,48 +1151,34 @@ def register_selenium_bot(bot):
     def se_google_email(message):
         chat_id = message.chat.id
         email = message.text.strip()
-        if email.startswith("/"):
-            if email.lower() == "/se_cancel":
-                del login_sessions[chat_id]
-                bot.reply_to(message, "❌ Отменено")
-                return
+        if email.startswith("/") and email.lower() == "/se_cancel":
+            del login_sessions[chat_id]
+            bot.reply_to(message, "❌ Отменено")
             return
         login_sessions[chat_id]["google_email"] = email
         login_sessions[chat_id]["step"] = "google_password"
-        bot.reply_to(message, f"✅ Email: <code>{email}</code>\n\nТеперь введи <b>пароль</b> от Google:", parse_mode="HTML")
+        bot.reply_to(message, f"✅ Email: <code>{email}</code>\n\nТеперь введи <b>пароль</b>:", parse_mode="HTML")
     
     @bot.message_handler(func=lambda m: m.chat.id in login_sessions and login_sessions[m.chat.id].get("step") == "google_password")
     def se_google_password(message):
         chat_id = message.chat.id
         password = message.text
-        if password.startswith("/"):
-            if password.lower() == "/se_cancel":
-                del login_sessions[chat_id]
-                bot.reply_to(message, "❌ Отменено")
-                return
+        if password.startswith("/") and password.lower() == "/se_cancel":
+            del login_sessions[chat_id]
+            bot.reply_to(message, "❌ Отменено")
             return
         
         creds = login_sessions[chat_id]
         google_email = creds.get("google_email")
         google_password = password
         
-        bot.reply_to(message,
-            "✅ Данные получены\n\n"
-            "⏳ Выполняю вход через Google...\n"
-            "<i>Будут отправлены скриншоты каждого шага</i>",
-            parse_mode="HTML"
-        )
+        bot.reply_to(message, "✅ Данные получены\n\n⏳ Вход через Google...", parse_mode="HTML")
         
         progress_msg = bot.send_message(chat_id, "🔄 Процесс входа через Google запущен...")
         
         def update_progress(step, msg_text):
             try:
-                bot.edit_message_text(
-                    f"🔄 <b>Шаг: {step}</b>\n\n{msg_text}",
-                    chat_id=chat_id,
-                    message_id=progress_msg.message_id,
-                    parse_mode="HTML"
-                )
+                bot.edit_message_text(f"🔄 <b>Шаг: {step}</b>\n\n{msg_text}", chat_id=chat_id, message_id=progress_msg.message_id, parse_mode="HTML")
             except Exception as e:
                 logger.debug(f"Progress update error: {e}")
         
@@ -1233,11 +1206,7 @@ def register_selenium_bot(bot):
                 f"✅ <b>Вход через Google УСПЕШЕН!</b>\n\n"
                 f"👤 Аккаунт: <code>@{auth_after['username'] if auth_after else '?'}</code>\n"
                 f"📧 Email: {google_email}\n"
-                f"🕐 Время: {auth_after['authorized_at'] if auth_after else '?'}\n\n"
-                f"Теперь можно использовать:\n"
-                f"/se_timeline — лента\n"
-                f"/se_trends — тренды\n"
-                f"/se_search — поиск"
+                f"🕐 Время: {auth_after['authorized_at'] if auth_after else '?'}"
             )
             bot.reply_to(message, msg, parse_mode="HTML")
         else:
@@ -1256,10 +1225,9 @@ def register_selenium_bot(bot):
         se_agent.set_chat_id(chat_id)
         se_agent.set_bot(bot)
         bot.reply_to(message,
-            "🔐 <b>Авторизация в X (Selenium)</b>\n\n"
+            "🔐 <b>Авторизация в X</b>\n\n"
             "Введи <b>username</b> (без @):\n"
-            "<i>Будет отправлен скриншот каждого шага</i>\n"
-            f"🌐 Прокси: {'ВКЛЮЧЕНЫ' if USE_PROXY else 'ВЫКЛЮЧЕНЫ'}",
+            f"🌐 Прокси: {'ВКЛ' if USE_PROXY else 'ВЫКЛ'}",
             parse_mode="HTML"
         )
         login_sessions[chat_id] = {"step": "username", "method": "selenium"}
@@ -1289,7 +1257,6 @@ def register_selenium_bot(bot):
             bot.reply_to(message, "❌ Отменено")
             return
         login_sessions[chat_id]["password"] = text
-        login_sessions[chat_id]["step"] = "processing"
         
         creds = login_sessions[chat_id]
         username = creds["username"]
@@ -1301,12 +1268,7 @@ def register_selenium_bot(bot):
         
         def update_progress(step, msg_text):
             try:
-                bot.edit_message_text(
-                    f"🔄 <b>Шаг: {step}</b>\n\n{msg_text}",
-                    chat_id=chat_id,
-                    message_id=progress_msg.message_id,
-                    parse_mode="HTML"
-                )
+                bot.edit_message_text(f"🔄 <b>Шаг: {step}</b>\n\n{msg_text}", chat_id=chat_id, message_id=progress_msg.message_id, parse_mode="HTML")
             except Exception as e:
                 logger.debug(f"Progress update error: {e}")
         
@@ -1339,7 +1301,6 @@ def register_selenium_bot(bot):
                 msg += f"📊 Подписок: {auth_after['following_count']}\n"
             if auth_after.get('followers_count'):
                 msg += f"📊 Подписчиков: {auth_after['followers_count']}\n"
-            msg += "\n/se_timeline — лента\n/se_trends — тренды\n/se_search — поиск"
             bot.reply_to(message, msg, parse_mode="HTML")
         else:
             bot.reply_to(message, "❌ Авторизация не удалась")
@@ -1392,11 +1353,7 @@ def register_selenium_bot(bot):
             text = t.get("text", "")[:180]
             if len(t.get("text", "")) > 180:
                 text += "..."
-            lines.append(
-                f"{i}. <b>{t.get('author', '')}</b> <code>{t.get('handle', '')}</code>\n"
-                f"   <i>{text}</i>\n"
-                f"   <a href='{t.get('url', '')}'>ссылка</a>\n"
-            )
+            lines.append(f"{i}. <b>{t.get('author', '')}</b> <code>{t.get('handle', '')}</code>\n   <i>{text}</i>\n   <a href='{t.get('url', '')}'>ссылка</a>\n")
         msg = "\n".join(lines)
         if len(msg) > 4000:
             msg = msg[:4000] + "\n\n<i>...обрезано</i>"
@@ -1460,11 +1417,7 @@ def register_selenium_bot(bot):
             text = t.get("text", "")[:160]
             if len(t.get("text", "")) > 160:
                 text += "..."
-            lines.append(
-                f"{i}. <b>{t.get('author', '')}</b> <code>{t.get('handle', '')}</code>\n"
-                f"   <i>{text}</i>\n"
-                f"   <a href='{t.get('url', '')}'>ссылка</a>\n"
-            )
+            lines.append(f"{i}. <b>{t.get('author', '')}</b> <code>{t.get('handle', '')}</code>\n   <i>{text}</i>\n   <a href='{t.get('url', '')}'>ссылка</a>\n")
         bot.reply_to(message, "\n".join(lines), parse_mode="HTML", disable_web_page_preview=True)
     
     @bot.message_handler(commands=["se_screenshot"])
@@ -1503,7 +1456,6 @@ def register_selenium_bot(bot):
         auth = get_auth_info()
         if auth:
             auth_line = f"👤 Аккаунт: <code>@{auth['username']}</code>\n"
-            auth_line += f"   🕐 Авторизован: {auth['authorized_at']}\n"
         else:
             auth_line = "👤 Аккаунт: <i>не подключён</i>\n"
         
@@ -1516,11 +1468,10 @@ def register_selenium_bot(bot):
             "  /se_set_proxy [on|off] — Вкл/выкл прокси\n"
             "  /se_logout — Выйти\n\n"
             "🕵️ <b>Исследование</b>\n"
-            "  /se_explore [url] — Исследовать страницу (с живыми уведомлениями)\n"
-            "  /se_find_google — Найти кнопку Google в HTML\n"
-            "  /se_view_html [url] — Показать HTML страницы\n"
-            "  /se_show_login — Скриншот страницы входа X\n"
-            "  /se_screenshot_page [url] — Скриншот любой страницы\n\n"
+            "  /se_explore [url] — Исследовать страницу с запросом клика\n"
+            "  /se_find_google — Найти кнопку Google\n"
+            "  /se_view_html [url] — HTML страницы\n"
+            "  /se_show_login — Скриншот входа X\n\n"
             "🔐 <b>Авторизация</b>\n"
             "  /se_google — Войти через Google\n"
             "  /se_login — Обычный вход\n"
@@ -1532,14 +1483,13 @@ def register_selenium_bot(bot):
             "  /se_timeline [user] [N] — Лента\n"
             "  /se_trends [N] — Тренды\n"
             "  /se_search [запрос] [N] — Поиск\n"
-            "  /se_screenshot [url] — Скриншот (с авторизацией)\n\n"
+            "  /se_screenshot [url] — Скриншот\n\n"
             "⚠️ <b>Особенности:</b>\n"
-            "• 📸 Скриншоты в чат на каждом шагу\n"
+            "• 📸 Скриншоты в чат\n"
             "• 📱 Мобильный User-Agent\n"
-            "• 🌐 Автоматические прокси (можно отключить)\n"
+            "• 🌐 Автоматические прокси\n"
             "• 🔑 Вход через Google\n"
-            "• 🐛 Команды для отладки\n"
-            "• 🕵️ Исследователь страниц с живыми уведомлениями\n"
+            "• 🕵️ Исследователь страниц\n"
             "• Chrome скачивается автоматически"
         )
         bot.reply_to(message, msg, parse_mode="HTML")
