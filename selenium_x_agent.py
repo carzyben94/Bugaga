@@ -1,4 +1,4 @@
-# selenium_x_agent.py — Selenium X/Twitter агент с множеством методов поиска Google
+# selenium_x_agent.py — Selenium X/Twitter агент с командами отладки
 import os
 import sys
 import subprocess
@@ -635,202 +635,76 @@ class SeleniumXAgent:
             logger.error(f"Cookie save error: {e}")
             return False
     
-    # ========== МНОЖЕСТВО МЕТОДОВ ПОИСКА КНОПКИ GOOGLE ==========
+    # ========== МЕТОДЫ ДЛЯ ОТЛАДКИ ==========
     
-    def _find_google_button_method1(self):
-        """Метод 1: Поиск по тексту через XPath"""
+    def get_page_html(self, url="https://x.com/login", max_chars=10000):
+        """Получить HTML страницы для отладки"""
+        try:
+            self._create_driver()
+            self.driver.get(url)
+            time.sleep(5)
+            html = self.driver.page_source[:max_chars]
+            self.driver.quit()
+            self.driver = None
+            return html
+        except Exception as e:
+            logger.error(f"Get HTML error: {e}")
+            return None
+    
+    def find_google_in_page(self):
+        """Найти кнопку Google в HTML страницы"""
         try:
             from selenium.webdriver.common.by import By
-            btn = self.driver.find_element(By.XPATH, "//*[contains(text(), 'Continue with Google')]")
-            if btn.is_displayed() and btn.is_enabled():
-                logger.info("✅ МЕТОД 1: Найдена кнопка Google по тексту")
-                return btn
-        except:
-            pass
-        return None
-    
-    def _find_google_button_method2(self):
-        """Метод 2: Поиск по data-testid"""
-        try:
-            from selenium.webdriver.common.by import By
-            btn = self.driver.find_element(By.CSS_SELECTOR, '[data-testid="google-login-button"]')
-            if btn.is_displayed() and btn.is_enabled():
-                logger.info("✅ МЕТОД 2: Найдена кнопка Google по data-testid")
-                return btn
-        except:
-            pass
-        return None
-    
-    def _find_google_button_method3(self):
-        """Метод 3: Поиск всех кнопок по тексту"""
-        try:
-            from selenium.webdriver.common.by import By
-            buttons = self.driver.find_elements(By.TAG_NAME, "button")
-            for btn in buttons:
-                text = btn.text.lower()
-                if "continue with google" in text or "sign in with google" in text:
-                    if btn.is_displayed() and btn.is_enabled():
-                        logger.info(f"✅ МЕТОД 3: Найдена кнопка Google: {btn.text}")
-                        return btn
-        except:
-            pass
-        return None
-    
-    def _find_google_button_method4(self):
-        """Метод 4: Поиск по aria-label"""
-        try:
-            from selenium.webdriver.common.by import By
-            btn = self.driver.find_element(By.CSS_SELECTOR, '[aria-label*="Google" i]')
-            if btn.is_displayed() and btn.is_enabled():
-                logger.info("✅ МЕТОД 4: Найдена кнопка Google по aria-label")
-                return btn
-        except:
-            pass
-        return None
-    
-    def _find_google_button_method5(self):
-        """Метод 5: Поиск div с ролью button"""
-        try:
-            from selenium.webdriver.common.by import By
-            elements = self.driver.find_elements(By.XPATH, "//div[@role='button']")
-            for elem in elements:
-                text = elem.text.lower()
-                if "continue with google" in text or "sign in with google" in text:
-                    if elem.is_displayed() and elem.is_enabled():
-                        logger.info(f"✅ МЕТОД 5: Найдена кнопка Google (div role=button)")
-                        return elem
-        except:
-            pass
-        return None
-    
-    def _find_google_button_method6(self):
-        """Метод 6: JavaScript поиск"""
-        try:
-            script = """
-                var elements = document.querySelectorAll('*');
-                for (var i = 0; i < elements.length; i++) {
-                    var text = elements[i].textContent || '';
-                    if (text.includes('Continue with Google')) {
-                        return elements[i];
-                    }
-                }
-                return null;
-            """
-            elem = self.driver.execute_script(script)
-            if elem and elem.is_displayed() and elem.is_enabled():
-                logger.info("✅ МЕТОД 6: Найдена кнопка Google через JavaScript")
-                return elem
-        except:
-            pass
-        return None
-    
-    def _find_google_button_method7(self):
-        """Метод 7: Поиск в iframe"""
-        try:
-            from selenium.webdriver.common.by import By
-            iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
-            for i, iframe in enumerate(iframes):
-                try:
-                    self.driver.switch_to.frame(iframe)
-                    btn = self.driver.find_element(By.XPATH, "//*[contains(text(), 'Continue with Google')]")
-                    if btn.is_displayed() and btn.is_enabled():
-                        logger.info(f"✅ МЕТОД 7: Найдена кнопка Google в iframe #{i}")
-                        self.driver.switch_to.default_content()
-                        return btn
-                    self.driver.switch_to.default_content()
-                except:
-                    self.driver.switch_to.default_content()
-                    continue
-        except:
-            pass
-        return None
-    
-    def _find_google_button_method8(self):
-        """Метод 8: Поиск по src изображения Google"""
-        try:
-            from selenium.webdriver.common.by import By
-            imgs = self.driver.find_elements(By.TAG_NAME, "img")
-            for img in imgs:
-                src = img.get_attribute("src") or ""
-                if "google" in src.lower():
-                    parent = img.find_element(By.XPATH, "..")
-                    for _ in range(3):
-                        if parent.tag_name in ["button", "a", "div"] and parent.is_displayed() and parent.is_enabled():
-                            logger.info("✅ МЕТОД 8: Найдена кнопка Google через изображение")
-                            return parent
-                        try:
-                            parent = parent.find_element(By.XPATH, "..")
-                        except:
-                            break
-        except:
-            pass
-        return None
-    
-    def _find_google_button_method9(self):
-        """Метод 9: Поиск через Shadow DOM"""
-        try:
-            from selenium.webdriver.common.by import By
-            hosts = self.driver.find_elements(By.CSS_SELECTOR, '*')
-            for host in hosts:
-                try:
-                    shadow = self.driver.execute_script("return arguments[0].shadowRoot", host)
-                    if shadow:
-                        btn = shadow.find_element(By.XPATH, "//*[contains(text(), 'Continue with Google')]")
-                        if btn.is_displayed() and btn.is_enabled():
-                            logger.info("✅ МЕТОД 9: Найдена кнопка Google в Shadow DOM")
-                            return btn
-                except:
-                    continue
-        except:
-            pass
-        return None
-    
-    def _find_google_button_method10(self):
-        """Метод 10: Поиск через Selenium Grid или по классу"""
-        try:
-            from selenium.webdriver.common.by import By
-            # Ищем по различным классам, которые могут быть у кнопки Google
-            classes = ["google", "oauth", "social", "third-party"]
-            for cls in classes:
-                try:
-                    btn = self.driver.find_element(By.CSS_SELECTOR, f'[class*="{cls}" i]')
-                    if btn.is_displayed() and btn.is_enabled():
-                        text = btn.text.lower()
-                        if "google" in text or "continue" in text:
-                            logger.info(f"✅ МЕТОД 10: Найдена кнопка Google по классу: {cls}")
-                            return btn
-                except:
-                    continue
-        except:
-            pass
-        return None
-    
-    def _find_google_button_all_methods(self):
-        """Попробовать все методы поиска"""
-        methods = [
-            self._find_google_button_method1,
-            self._find_google_button_method2,
-            self._find_google_button_method3,
-            self._find_google_button_method4,
-            self._find_google_button_method5,
-            self._find_google_button_method6,
-            self._find_google_button_method7,
-            self._find_google_button_method8,
-            self._find_google_button_method9,
-            self._find_google_button_method10,
-        ]
-        
-        for i, method in enumerate(methods):
+            
+            self._create_driver()
+            self.driver.get("https://x.com/login")
+            time.sleep(5)
+            
+            html = self.driver.page_source
+            results = []
+            
+            # Ищем Google в HTML
+            google_patterns = [
+                "Continue with Google",
+                "Sign in with Google",
+                "google",
+                "Google",
+                "oauth",
+                "OAuth",
+            ]
+            
+            for pattern in google_patterns:
+                if pattern in html:
+                    results.append(f"✅ Найдено в HTML: {pattern}")
+            
+            # Ищем элементы с Google
             try:
-                logger.info(f"Пробую метод {i+1}/10...")
-                result = method()
-                if result:
-                    return result
-            except Exception as e:
-                logger.debug(f"Метод {i+1} ошибка: {e}")
-                continue
-        
-        return None
+                elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Google')]")
+                for elem in elements:
+                    try:
+                        results.append(f"🔍 Элемент: <{elem.tag_name}> | {elem.text[:100]}")
+                    except:
+                        pass
+            except:
+                pass
+            
+            # Ищем все кнопки
+            buttons = self.driver.find_elements(By.TAG_NAME, "button")
+            results.append(f"\n📊 Найдено кнопок: {len(buttons)}")
+            for i, btn in enumerate(buttons[:10]):
+                try:
+                    text = btn.text[:50] if btn.text else "пусто"
+                    results.append(f"  {i+1}. {text}")
+                except:
+                    pass
+            
+            self.driver.quit()
+            self.driver = None
+            
+            return "\n".join(results) if results else "❌ Ничего не найдено"
+        except Exception as e:
+            logger.error(f"Find Google error: {e}")
+            return f"❌ Ошибка: {e}"
     
     # ========== ОСНОВНЫЕ МЕТОДЫ ==========
     
@@ -846,214 +720,155 @@ class SeleniumXAgent:
             from selenium.webdriver.support.ui import WebDriverWait
             from selenium.webdriver.support import expected_conditions as EC
             
-            self._report("start", "🚀 Вход через Google (все методы)")
+            self._report("start", "🚀 Вход через Google")
             self._create_driver()
             
             # === ОТКРЫВАЕМ СТРАНИЦУ ВХОДА X ===
-            login_urls = [
-                "https://x.com/login",
-                "https://x.com/i/flow/login?force_login=true",
-            ]
+            self.driver.get("https://x.com/login")
+            time.sleep(5)
             
-            for login_url in login_urls:
-                try:
-                    logger.info(f"Открываю: {login_url}")
-                    self.driver.get(login_url)
-                    
-                    WebDriverWait(self.driver, 15).until(
-                        EC.presence_of_element_located((By.TAG_NAME, "body"))
-                    )
-                    time.sleep(3)
-                    
-                    if "home" in self.driver.current_url:
-                        logger.info("✅ Уже на home!")
-                        self._save_cookies()
-                        save_auth_info("google_user", google_email, {"method": "google_direct"})
-                        self._screenshot("already_logged", send_to_chat=True, caption="✅ Уже авторизован!")
-                        return True, None
-                    
-                    break
-                except Exception as e:
-                    logger.warning(f"URL {login_url} не работает: {e}")
-                    continue
+            if "home" in self.driver.current_url:
+                logger.info("✅ Уже на home!")
+                self._save_cookies()
+                save_auth_info("google_user", google_email, {"method": "google_direct"})
+                return True, None
             
             self._screenshot("google_start", send_to_chat=True, caption="📸 Страница входа X")
             
-            # === ИЩЕМ КНОПКУ GOOGLE ВСЕМИ МЕТОДАМИ ===
+            # === ИЩЕМ КНОПКУ GOOGLE ===
             google_btn = None
-            for attempt in range(3):
-                logger.info(f"Попытка поиска кнопки Google #{attempt+1}")
-                google_btn = self._find_google_button_all_methods()
-                if google_btn:
-                    break
-                time.sleep(2)
+            
+            # Способ 1: Поиск по тексту
+            try:
+                google_btn = self.driver.find_element(By.XPATH, "//*[contains(text(), 'Continue with Google')]")
+                if google_btn.is_displayed():
+                    logger.info("✅ Найдена кнопка Google по тексту")
+            except:
+                pass
+            
+            # Способ 2: Поиск по data-testid
+            if not google_btn:
+                try:
+                    google_btn = self.driver.find_element(By.CSS_SELECTOR, '[data-testid="google-login-button"]')
+                    if google_btn.is_displayed():
+                        logger.info("✅ Найдена кнопка Google по data-testid")
+                except:
+                    pass
+            
+            # Способ 3: Поиск всех кнопок
+            if not google_btn:
+                buttons = self.driver.find_elements(By.TAG_NAME, "button")
+                for btn in buttons:
+                    try:
+                        text = btn.text.lower()
+                        if "continue with google" in text or "sign in with google" in text:
+                            if btn.is_displayed() and btn.is_enabled():
+                                google_btn = btn
+                                logger.info(f"✅ Найдена кнопка Google: {btn.text}")
+                                break
+                    except:
+                        pass
+            
+            # Способ 4: JavaScript клик
+            if not google_btn:
+                try:
+                    script = """
+                        var elements = document.querySelectorAll('*');
+                        for (var i = 0; i < elements.length; i++) {
+                            if (elements[i].textContent && 
+                                elements[i].textContent.includes('Continue with Google')) {
+                                elements[i].click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    """
+                    result = self.driver.execute_script(script)
+                    if result:
+                        logger.info("✅ Клик по кнопке Google через JavaScript")
+                        time.sleep(3)
+                        # Проверяем, что перешли на Google
+                        if "google" in self.driver.current_url:
+                            return self._complete_google_login(google_email, google_password)
+                except:
+                    pass
             
             if google_btn:
-                logger.info("🎯 Найдена кнопка Google! Нажимаю...")
                 self._screenshot("google_button_found", send_to_chat=True, caption="🔍 Найдена кнопка Google!")
                 google_btn.click()
-                time.sleep(4)
-                self._screenshot("google_clicked", send_to_chat=True, caption="📸 Кнопка Google нажата")
-            else:
-                # === ЕСЛИ КНОПКА НЕ НАЙДЕНА - ИСПОЛЬЗУЕМ ОБХОДНОЙ ПУТЬ ===
-                logger.info("⚠️ Кнопка Google не найдена, использую обходной путь")
-                self._report("google_redirect", "🔄 Использую обходной путь...")
-                self._screenshot("no_google_button", send_to_chat=True, caption="🔍 Кнопка не найдена, пробую обход")
-                
-                # Пробуем прямой URL Google
-                google_auth_url = "https://accounts.google.com/o/oauth2/v2/auth?client_id=895031845209-k9r3l0l85r3qkp1m0fnt7np1pft13n1h.apps.googleusercontent.com&redirect_uri=https://x.com/login&response_type=code&scope=email%20profile"
-                logger.info("Открываю Google напрямую...")
-                self.driver.get(google_auth_url)
                 time.sleep(3)
-                self._screenshot("google_direct", send_to_chat=True, caption="📸 Прямая страница Google")
+                self._screenshot("google_clicked", send_to_chat=True, caption="📸 Кнопка Google нажата")
+                
+                # Проверяем, что перешли на Google
+                if "google" in self.driver.current_url:
+                    return self._complete_google_login(google_email, google_password)
+                else:
+                    return False, "❌ Не удалось перейти на страницу Google"
+            else:
+                self._screenshot("no_google_button", send_to_chat=True, caption="❌ Кнопка Google не найдена")
+                return False, "❌ Кнопка 'Continue with Google' не найдена на странице X"
+            
+        except Exception as e:
+            logger.error(f"Google login error: {e}")
+            logger.error(traceback.format_exc())
+            self._screenshot("exception", send_to_chat=True, caption=f"💥 {str(e)[:100]}")
+            return False, f"Ошибка: {e}"
+        finally:
+            if self.driver:
+                self.driver.quit()
+                self.driver = None
+            logger.info("="*60)
+            logger.info("END GOOGLE LOGIN")
+            logger.info("="*60)
+    
+    def _complete_google_login(self, google_email, google_password):
+        """Завершить вход через Google"""
+        try:
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.support.ui import WebDriverWait
+            from selenium.webdriver.support import expected_conditions as EC
+            
+            self._screenshot("google_login_page", send_to_chat=True, caption="📸 Страница входа Google")
             
             # === ВВОДИМ EMAIL ===
             self._report("google_email", f"📧 Ввожу email: {google_email}")
             
-            # Ищем поле email
-            email_input = None
-            email_selectors = [
-                'input[type="email"]',
-                'input[type="text"][name="email"]',
-                'input[placeholder*="email" i]',
-                'input[autocomplete="email"]',
-            ]
-            
-            for selector in email_selectors:
-                try:
-                    inputs = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                    for inp in inputs:
-                        if inp.is_displayed() and inp.is_enabled():
-                            email_input = inp
-                            logger.info(f"Найдено поле email: {selector}")
-                            break
-                    if email_input:
-                        break
-                except:
-                    continue
-            
-            if not email_input:
-                # Пробуем найти любое текстовое поле
-                inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="text"]')
-                for inp in inputs:
-                    if inp.is_displayed() and inp.is_enabled():
-                        email_input = inp
-                        logger.info("Найдено текстовое поле для email")
-                        break
-            
-            if not email_input:
-                self._screenshot("no_email_field", send_to_chat=True, caption="❌ Поле для email не найдено")
-                return False, "❌ Не найдено поле для email"
-            
-            email_input.clear()
-            email_input.send_keys(google_email)
-            time.sleep(1)
-            self._screenshot("email_entered", send_to_chat=True, caption="📧 Email введен")
-            
-            # === НАЖИМАЕМ NEXT/CONTINUE ===
-            next_btn = None
-            next_selectors = [
-                'button[type="submit"]',
-                'button:has-text("Next")',
-                'button:has-text("Continue")',
-            ]
-            
-            for selector in next_selectors:
-                try:
-                    if ':has-text(' in selector:
-                        text = selector.split('"')[1] if '"' in selector else selector.split("'")[1]
-                        btn = self.driver.find_element(By.XPATH, f'//button[contains(text(), "{text}")]')
-                    else:
-                        btn = self.driver.find_element(By.CSS_SELECTOR, selector)
-                    if btn.is_displayed() and btn.is_enabled():
-                        next_btn = btn
-                        logger.info(f"Найдена кнопка: {btn.text}")
-                        break
-                except:
-                    continue
-            
-            if not next_btn:
-                buttons = self.driver.find_elements(By.TAG_NAME, "button")
-                for btn in buttons:
-                    text = btn.text.lower()
-                    if 'next' in text or 'continue' in text or 'далее' in text:
-                        if btn.is_displayed() and btn.is_enabled():
-                            next_btn = btn
-                            logger.info(f"Найдена кнопка: {btn.text}")
-                            break
-            
-            if next_btn:
+            email_input = WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'input[type="email"]'))
+            )
+            if email_input.is_displayed() and email_input.is_enabled():
+                email_input.clear()
+                email_input.send_keys(google_email)
+                time.sleep(1)
+                next_btn = WebDriverWait(self.driver, 5).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[type="submit"]'))
+                )
                 next_btn.click()
                 time.sleep(3)
-                self._screenshot("after_next", send_to_chat=True, caption="📸 После нажатия Next")
             else:
-                # Пробуем Enter
-                email_input.send_keys("\n")
-                time.sleep(3)
+                return False, "❌ Не найдено поле для email"
+            
+            self._screenshot("google_email_entered", send_to_chat=True, caption="📧 Email Google введен")
             
             # === ВВОДИМ ПАРОЛЬ ===
             self._report("google_password", "🔑 Ввожу пароль")
             
-            password_input = None
-            password_selectors = [
-                'input[type="password"]',
-                'input[name="password"]',
-                'input[autocomplete="current-password"]',
-            ]
-            
-            for selector in password_selectors:
-                try:
-                    inputs = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                    for inp in inputs:
-                        if inp.is_displayed() and inp.is_enabled():
-                            password_input = inp
-                            logger.info(f"Найдено поле пароля: {selector}")
-                            break
-                    if password_input:
-                        break
-                except:
-                    continue
-            
-            if not password_input:
-                self._screenshot("no_password_field", send_to_chat=True, caption="❌ Поле пароля не найдено")
+            password_input = WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'input[type="password"]'))
+            )
+            if password_input.is_displayed() and password_input.is_enabled():
+                password_input.clear()
+                password_input.send_keys(google_password)
+                time.sleep(1)
+                next_btn = WebDriverWait(self.driver, 5).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[type="submit"]'))
+                )
+                next_btn.click()
+                time.sleep(3)
+            else:
                 return False, "❌ Не найдено поле для пароля"
             
-            password_input.clear()
-            password_input.send_keys(google_password)
-            time.sleep(1)
-            self._screenshot("password_entered", send_to_chat=True, caption="🔑 Пароль введен")
-            
-            # === НАЖИМАЕМ LOGIN ===
-            login_btn = None
-            login_selectors = [
-                'button[type="submit"]',
-                'button:has-text("Log in")',
-                'button:has-text("Sign in")',
-                'button:has-text("Войти")',
-            ]
-            
-            for selector in login_selectors:
-                try:
-                    if ':has-text(' in selector:
-                        text = selector.split('"')[1] if '"' in selector else selector.split("'")[1]
-                        btn = self.driver.find_element(By.XPATH, f'//button[contains(text(), "{text}")]')
-                    else:
-                        btn = self.driver.find_element(By.CSS_SELECTOR, selector)
-                    if btn.is_displayed() and btn.is_enabled():
-                        login_btn = btn
-                        logger.info(f"Найдена кнопка: {btn.text}")
-                        break
-                except:
-                    continue
-            
-            if login_btn:
-                login_btn.click()
-                time.sleep(3)
-                self._screenshot("login_clicked", send_to_chat=True, caption="📸 Кнопка Login нажата")
-            else:
-                # Пробуем Enter
-                password_input.send_keys("\n")
-                time.sleep(3)
+            self._screenshot("google_password_entered", send_to_chat=True, caption="🔑 Пароль Google введен")
             
             # === ОБРАБОТКА 2FA ===
             for attempt in range(30):
@@ -1061,7 +876,6 @@ class SeleniumXAgent:
                 current_url = self.driver.current_url
                 logger.info(f"Проверка {attempt+1}: {current_url}")
                 
-                # 2FA
                 if "2fa" in current_url.lower() or "authenticator" in current_url.lower() or "code" in current_url.lower():
                     self._screenshot("2fa_needed", send_to_chat=True, caption="🔐 Требуется код 2FA")
                     self._report("2fa_needed", "🔐 Требуется код 2FA!")
@@ -1078,7 +892,6 @@ class SeleniumXAgent:
                                 inp.clear()
                                 inp.send_keys(code)
                                 time.sleep(1)
-                                # Нажимаем подтвердить
                                 confirm_btns = self.driver.find_elements(By.CSS_SELECTOR, 'button[type="submit"]')
                                 for btn in confirm_btns:
                                     if btn.is_displayed() and btn.is_enabled():
@@ -1090,7 +903,6 @@ class SeleniumXAgent:
                         return False, "❌ Код 2FA не указан"
                     continue
                 
-                # Подтверждение на телефоне
                 if "phone" in current_url.lower() or "verify" in current_url.lower():
                     self._screenshot("phone_confirm", send_to_chat=True, caption="📱 Требуется подтверждение")
                     self._report("phone_confirm", "⏳ Подтверди вход на телефоне")
@@ -1106,7 +918,6 @@ class SeleniumXAgent:
                     else:
                         return False, "❌ Подтверждение не получено"
                 
-                # Успех
                 if "home" in current_url or "x.com" in current_url:
                     logger.info("✅ Вход через Google успешен!")
                     self._save_cookies()
@@ -1118,26 +929,15 @@ class SeleniumXAgent:
                     self._screenshot("error", send_to_chat=True, caption="❌ Ошибка входа")
                     return False, "❌ Ошибка входа"
             
-            self._screenshot("timeout", send_to_chat=True, caption="⏰ Таймаут")
             return False, "⏰ Таймаут входа"
             
         except Exception as e:
-            logger.error(f"Google login error: {e}")
-            logger.error(traceback.format_exc())
-            self._screenshot("exception", send_to_chat=True, caption=f"💥 {str(e)[:100]}")
+            logger.error(f"Complete Google login error: {e}")
             return False, f"Ошибка: {e}"
-        finally:
-            if self.driver:
-                self.driver.quit()
-                self.driver = None
-            logger.info("="*60)
-            logger.info("END GOOGLE LOGIN")
-            logger.info("="*60)
-    
-    # ========== ОСТАЛЬНЫЕ МЕТОДЫ ==========
     
     def login(self, username, password, email=None):
         """Обычный вход в X с username/пароль"""
+        
         logger.info("="*60)
         logger.info(f"START LOGIN for {username}")
         logger.info("="*60)
@@ -1620,6 +1420,38 @@ def register_selenium_bot(bot):
         except Exception as e:
             bot.reply_to(message, f"❌ Ошибка чтения логов: {e}")
     
+    # ========== НОВЫЕ КОМАНДЫ ДЛЯ ОТЛАДКИ ==========
+    
+    @bot.message_handler(commands=["se_find_google"])
+    def se_find_google_command(message):
+        """Найти кнопку Google в HTML страницы"""
+        bot.reply_to(message, "🔍 Ищу кнопку Google на странице...\n<i>Это может занять 10-15 секунд</i>", parse_mode="HTML")
+        
+        result = se_agent.find_google_in_page()
+        bot.reply_to(message, f"📊 <b>Результаты поиска Google:</b>\n\n<code>{result}</code>", parse_mode="HTML")
+    
+    @bot.message_handler(commands=["se_view_html"])
+    def se_view_html_command(message):
+        """Показать HTML страницы"""
+        args = message.text.split()
+        url = args[1] if len(args) > 1 else "https://x.com/login"
+        
+        bot.reply_to(message, f"📄 Загружаю HTML страницы {url}...\n<i>10-15 секунд</i>", parse_mode="HTML")
+        
+        html = se_agent.get_page_html(url)
+        
+        if html:
+            # Отправляем HTML как файл
+            try:
+                with open("/tmp/page.html", "w", encoding="utf-8") as f:
+                    f.write(html)
+                with open("/tmp/page.html", "rb") as f:
+                    bot.send_document(message.chat.id, f, caption=f"📄 HTML страницы {url}\n\nПервые 10000 символов")
+            except Exception as e:
+                bot.reply_to(message, f"❌ Ошибка отправки: {e}")
+        else:
+            bot.reply_to(message, "❌ Не удалось получить HTML")
+    
     @bot.message_handler(commands=["se_set_proxy"])
     def se_set_proxy_command(message):
         global USE_PROXY
@@ -1707,7 +1539,7 @@ def register_selenium_bot(bot):
         se_agent.set_bot(bot)
         
         bot.reply_to(message,
-            "🔐 <b>Вход через Google (10 методов)</b>\n\n"
+            "🔐 <b>Вход через Google</b>\n\n"
             "Введи <b>email</b> от Google аккаунта:",
             parse_mode="HTML"
         )
@@ -1745,7 +1577,6 @@ def register_selenium_bot(bot):
         bot.reply_to(message,
             "✅ Данные получены\n\n"
             "⏳ Выполняю вход через Google...\n"
-            "<i>Будет использовано 10 методов поиска кнопки</i>\n"
             "<i>Будут отправлены скриншоты каждого шага</i>",
             parse_mode="HTML"
         )
@@ -2070,12 +1901,14 @@ def register_selenium_bot(bot):
             "  /se_set_proxy [on|off] — Вкл/выкл прокси\n"
             "  /se_logout — Выйти\n\n"
             "🔐 <b>Авторизация</b>\n"
-            "  /se_google — Войти через Google (10 методов)\n"
+            "  /se_google — Войти через Google\n"
             "  /se_login — Обычный вход\n"
             "  /se_check_auth — Проверить сессию\n"
             "  /se_cancel — Отменить ввод\n\n"
             "📋 <b>Диагностика</b>\n"
             "  /se_logs — Показать логи\n"
+            "  /se_find_google — Найти кнопку Google в HTML\n"
+            "  /se_view_html [url] — Показать HTML страницы\n"
             "  /se_screenshot_page [url] — Скриншот любой страницы\n"
             "  /se_show_login — Скриншот страницы входа X\n\n"
             "📰 <b>Контент</b>\n"
@@ -2087,7 +1920,8 @@ def register_selenium_bot(bot):
             "• 📸 Скриншоты в чат на каждом шагу\n"
             "• 📱 Мобильный User-Agent\n"
             "• 🌐 Автоматические прокси (можно отключить)\n"
-            "• 🔑 Вход через Google (10 методов поиска)\n"
+            "• 🔑 Вход через Google\n"
+            "• 🐛 Команды для отладки\n"
             "• Chrome скачивается автоматически"
         )
         bot.reply_to(message, msg, parse_mode="HTML")
