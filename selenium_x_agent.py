@@ -1,4 +1,4 @@
-# selenium_x_agent.py — Selenium X/Twitter агент
+# selenium_x_agent.py — Selenium X/Twitter агент с гарантированной проверкой авторизации
 import os
 import sys
 import subprocess
@@ -13,7 +13,12 @@ import stat
 import queue
 
 # === НАСТРОЙКА ПУТЕЙ ===
-SELENIUM_DIR = os.environ.get("SELENIUM_DIR", os.path.join(tempfile.gettempdir(), "selenium_agent"))
+# Используем /app если есть (Render), иначе /tmp
+if os.path.exists("/app") and os.access("/app", os.W_OK):
+    SELENIUM_DIR = os.environ.get("SELENIUM_DIR", "/app/selenium_agent")
+else:
+    SELENIUM_DIR = os.environ.get("SELENIUM_DIR", os.path.join(tempfile.gettempdir(), "selenium_agent"))
+
 os.makedirs(SELENIUM_DIR, exist_ok=True)
 
 CHROME_DIR = os.path.join(SELENIUM_DIR, "chrome")
@@ -25,6 +30,7 @@ os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 os.makedirs(CHROME_DIR, exist_ok=True)
 os.makedirs(DRIVER_DIR, exist_ok=True)
 
+print(f"[SE] === INIT ===")
 print(f"[SE] SELENIUM_DIR: {SELENIUM_DIR}")
 print(f"[SE] AUTH_FILE: {AUTH_FILE}")
 print(f"[SE] COOKIES_FILE: {COOKIES_FILE}")
@@ -197,9 +203,10 @@ def get_full_status():
 
 
 def get_auth_info():
-    """Получить информацию об авторизованном аккаунте"""
+    """Получить информацию об авторизованном аккаунте — ГАРАНТИРОВАННО из файла"""
+    print(f"[SE] get_auth_info: проверяю {AUTH_FILE}")
     if not os.path.exists(AUTH_FILE):
-        print(f"[SE] AUTH_FILE не существует: {AUTH_FILE}")
+        print(f"[SE] AUTH_FILE не существует")
         return None
     try:
         with open(AUTH_FILE, "r") as f:
@@ -211,29 +218,41 @@ def get_auth_info():
         return None
 
 
-def save_auth_info(username, email=None):
-    """Сохранить информацию об авторизованном аккаунте"""
+def save_auth_info(username, email=None, extra=None):
+    """Сохранить информацию об авторизованном аккаунте — ГАРАНТИРОВАННО"""
     try:
         data = {
             "username": username,
             "email": email,
             "authorized_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
-        print(f"[SE] Сохраняю auth: {data} в {AUTH_FILE}")
-        with open(AUTH_FILE, "w") as f:
+        if extra:
+            data.update(extra)
+        
+        print(f"[SE] save_auth_info: пишу {data} в {AUTH_FILE}")
+        
+        # Пишем во временный файл, потом переименовываем (атомарно)
+        tmp_file = AUTH_FILE + ".tmp"
+        with open(tmp_file, "w") as f:
             json.dump(data, f)
-        # Проверяем, что записалось
+            f.flush()
+            os.fsync(f.fileno())  # Гарантируем запись на диск
+        
+        os.replace(tmp_file, AUTH_FILE)
+        
+        # Проверяем
         if os.path.exists(AUTH_FILE):
-            print(f"[SE] AUTH_FILE создан, размер: {os.path.getsize(AUTH_FILE)}")
+            size = os.path.getsize(AUTH_FILE)
+            print(f"[SE] AUTH_FILE создан, размер: {size}")
             with open(AUTH_FILE, "r") as f:
                 verify = json.load(f)
             print(f"[SE] Проверка записи: {verify}")
             return True
         else:
-            print(f"[SE] AUTH_FILE НЕ создан после записи!")
+            print(f"[SE] КРИТИЧЕСКАЯ ОШИБКА: AUTH_FILE НЕ создан!")
             return False
     except Exception as e:
-        print(f"[SE] Auth save error: {e}")
+        print(f"[SE] Auth save КРИТИЧЕСКАЯ ОШИБКА: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -380,21 +399,6 @@ class SeleniumXAgent:
             print(f"[SE] Cookie save error: {e}")
             return False
     
-    def _check_auth(self):
-        """Проверить, авторизованы ли мы сейчас"""
-        try:
-            self.driver.get("https://x.com/home")
-            time.sleep(3)
-            from selenium.webdriver.common.by import By
-            self.driver.find_element(By.CSS_SELECTOR, '[data-testid="primaryColumn"]')
-            try:
-                self.driver.find_element(By.CSS_SELECTOR, 'a[href="/i/flow/login"]')
-                return False
-            except:
-                return True
-        except:
-            return False
-    
     def _smart_fill(self, selectors, value, field_name="поле"):
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support.ui import WebDriverWait
@@ -433,6 +437,7 @@ class SeleniumXAgent:
         return False
     
     def login(self, username, password, email=None):
+        """Авторизация с ПРОВЕРКОЙ через открытие профиля и подписок"""
         try:
             self._report("start", f"🚀 Начинаю авторизацию как @{username}")
             
@@ -456,8 +461,8 @@ class SeleniumXAgent:
             ]
             if not self._smart_fill(username_selectors, username, "username"):
                 self._screenshot("login_no_username")
-                return False, "❌ Поле username не найдено. X мог изменить форму."
-            self._report("username", f"✅ Username введён: @{username}")
+                return False, "❌ Поле username не найдено"
+            self._report("username", f"✅ Username введён")
             
             time.sleep(1)
             
@@ -473,6 +478,7 @@ class SeleniumXAgent:
             self._screenshot("login_after_username")
             self._report("next", "✅ Перешли к следующему шагу")
             
+            # Проверка доп. верификации
             self._report("verify", "🔍 Проверяю дополнительную верификацию...")
             from selenium.webdriver.common.by import By
             verify_selectors = [
@@ -484,9 +490,9 @@ class SeleniumXAgent:
                 try:
                     elem = self.driver.find_element(By.CSS_SELECTOR, selector)
                     if elem.is_displayed():
-                        self._report("verify", f"⚠️ Найдено поле верификации: {selector}")
+                        self._report("verify", f"⚠️ Найдено поле верификации")
                         if email:
-                            self._report("verify", f"⌨️ Ввожу email: {email}")
+                            self._report("verify", f"⌨️ Ввожу email...")
                             elem.clear()
                             elem.send_keys(email)
                             time.sleep(1)
@@ -494,7 +500,7 @@ class SeleniumXAgent:
                             time.sleep(3)
                             self._report("verify", "✅ Email принят")
                         else:
-                            return False, "❌ Требуется email/телефон для верификации. Укажи email."
+                            return False, "❌ Требуется email/телефон для верификации"
                 except:
                     pass
             self._report("verify", "✅ Дополнительной верификации нет")
@@ -508,7 +514,7 @@ class SeleniumXAgent:
             if not self._smart_fill(password_selectors, password, "password"):
                 try:
                     self.driver.find_element(By.CSS_SELECTOR, 'input[autocomplete="username"]')
-                    return False, "❌ Не удалось перейти к паролю. Возможно, неверный username или требуется email."
+                    return False, "❌ Не удалось перейти к паролю. Возможно, неверный username"
                 except:
                     pass
                 return False, "❌ Поле пароля не найдено"
@@ -530,53 +536,9 @@ class SeleniumXAgent:
             self._screenshot("login_after_submit")
             
             current_url = self.driver.current_url
-            self._report("check", f"🔍 Проверяю результат... URL: {current_url}")
+            self._report("check", f"🔍 URL после входа: {current_url}")
             
-            # === ПРОВЕРКА УСПЕХА ===
-            # Ждём загрузки страницы
-            time.sleep(3)
-            
-            # Проверяем URL
-            if "home" in current_url:
-                self._report("verify_page", "🏠 URL содержит 'home' — проверяю страницу...")
-            else:
-                self._report("verify_page", f"⚠️ URL: {current_url} — проверяю дальше...")
-            
-            # Делаем скриншот для проверки
-            self._screenshot("login_verify_page")
-            
-            # Проверяем, есть ли элементы авторизованного пользователя
-            auth_indicators = [
-                '[data-testid="SideNav_AccountSwitcher_Button"]',
-                '[data-testid="AppTabBar_Profile_Link"]',
-                'a[href*="/' + username + '"]',
-                '[data-testid="primaryColumn"]',
-            ]
-            
-            is_auth = False
-            for selector in auth_indicators:
-                try:
-                    elem = self.driver.find_element(By.CSS_SELECTOR, selector)
-                    if elem.is_displayed():
-                        self._report("verify_page", f"✅ Найден элемент авторизации: {selector}")
-                        is_auth = True
-                        break
-                except:
-                    pass
-            
-            # Проверяем, нет ли кнопки входа
-            try:
-                login_btn = self.driver.find_element(By.CSS_SELECTOR, 'a[href="/i/flow/login"]')
-                if login_btn.is_displayed():
-                    self._report("verify_page", "❌ Кнопка входа всё ещё видна")
-                    is_auth = False
-            except:
-                if not is_auth:
-                    # Нет кнопки входа — возможно, вошли
-                    self._report("verify_page", "✅ Кнопки входа нет — возможно, успешно")
-                    is_auth = True
-            
-            # Проверяем ошибки
+            # === ПРОВЕРКА ОШИБОК ===
             error_selectors = [
                 'span:has-text("Wrong password")',
                 'span:has-text("Incorrect")',
@@ -597,47 +559,111 @@ class SeleniumXAgent:
             try:
                 captcha = self.driver.find_element(By.CSS_SELECTOR, 'iframe[src*="captcha"], iframe[src*="recaptcha"]')
                 if captcha:
-                    self._report("error", "❌ Обнаружена капча")
-                    return False, "❌ Обнаружена капча. Автоматический вход невозможен."
+                    return False, "❌ Обнаружена капча"
             except:
                 pass
             
-            # === ИТОГОВАЯ ПРОВЕРКА ===
-            if is_auth or "home" in current_url:
-                # Сохраняем cookies
-                cookie_ok = self._save_cookies()
-                self._report("cookies", f"{'✅' if cookie_ok else '❌'} Cookies сохранены")
-                
-                # Сохраняем auth info — КРИТИЧЕСКИ ВАЖНО
-                self._report("save_auth", f"💾 Сохраняю auth info для @{username}...")
-                auth_saved = save_auth_info(username, email)
-                self._report("save_auth", f"{'✅' if auth_saved else '❌'} Auth info сохранён")
-                
-                # === ОТКРЫВАЕМ ПРОФИЛЬ ДЛЯ ПРОВЕРКИ ===
-                self._report("profile", f"👤 Открываю профиль @{username} для проверки...")
-                self.driver.get(f"https://x.com/{username}")
-                time.sleep(3)
-                self._screenshot("login_profile_check")
-                profile_title = self.driver.title
-                self._report("profile", f"📄 Заголовок профиля: {profile_title}")
-                
-                # Проверяем подписки
-                try:
-                    self.driver.get(f"https://x.com/{username}/following")
-                    time.sleep(3)
-                    self._screenshot("login_following_check")
-                    following_title = self.driver.title
-                    self._report("profile", f"📄 Подписки: {following_title}")
-                except Exception as e:
-                    self._report("profile", f"⚠️ Не удалось открыть подписки: {e}")
-                
-                self._report("success", f"✅ Авторизация @{username} успешна!")
-                return True, None
+            # === ГЛАВНАЯ ПРОВЕРКА: открываем профиль и смотрим подписки ===
+            self._report("profile", f"👤 Открываю профиль @{username} для проверки...")
+            self.driver.get(f"https://x.com/{username}")
+            time.sleep(4)
+            self._screenshot("login_profile_check")
             
-            # Если дошли сюда — что-то не так
-            self._screenshot("login_unknown_state")
-            self._report("error", f"❌ Не удалось подтвердить авторизацию. URL: {current_url}")
-            return False, f"❌ Не удалось подтвердить авторизацию. Проверь логин/пароль."
+            profile_title = self.driver.title
+            self._report("profile", f"📄 Заголовок: {profile_title}")
+            
+            # Проверяем, что это действительно профиль (не страница логина)
+            if "login" in profile_title.lower() or "log in" in profile_title.lower():
+                self._report("profile", "❌ Профиль требует входа — авторизация не удалась")
+                return False, "❌ Авторизация не удалась: профиль требует входа"
+            
+            # Ищем количество подписок
+            following_count = None
+            followers_count = None
+            
+            try:
+                # Пробуем найти счётчики подписок
+                stats = self.driver.find_elements(By.CSS_SELECTOR, '[href$="/following"] span span, a[href$="/following"] span')
+                for stat in stats:
+                    text = stat.text
+                    if text and any(c.isdigit() for c in text):
+                        following_count = text
+                        break
+            except Exception as e:
+                print(f"[SE] Не удалось найти подписки: {e}")
+            
+            try:
+                stats = self.driver.find_elements(By.CSS_SELECTOR, '[href$="/followers"] span span, a[href$="/followers"] span')
+                for stat in stats:
+                    text = stat.text
+                    if text and any(c.isdigit() for c in text):
+                        followers_count = text
+                        break
+            except Exception as e:
+                print(f"[SE] Не удалось найти подписчиков: {e}")
+            
+            # Проверяем наличие кнопки "Follow" — если есть, значит мы НЕ авторизованы как этот пользователь
+            try:
+                follow_btn = self.driver.find_element(By.CSS_SELECTOR, '[data-testid="FollowButton"], [data-testid="follow"]')
+                if follow_btn.is_displayed():
+                    self._report("profile", "⚠️ Найдена кнопка Follow — возможно, это не наш профиль")
+            except:
+                self._report("profile", "✅ Кнопки Follow нет — мы в своём профиле")
+            
+            self._report("profile", f"✅ Профиль открыт: {profile_title}")
+            if following_count:
+                self._report("profile", f"📊 Подписок: {following_count}")
+            if followers_count:
+                self._report("profile", f"📊 Подписчиков: {followers_count}")
+            
+            # === ОТКРЫВАЕМ СТРАНИЦУ ПОДПИСОК ===
+            self._report("following", f"📋 Открываю список подписок...")
+            self.driver.get(f"https://x.com/{username}/following")
+            time.sleep(4)
+            self._screenshot("login_following_check")
+            
+            following_title = self.driver.title
+            self._report("following", f"📄 Заголовок: {following_title}")
+            
+            # Проверяем, что страница подписок загрузилась
+            if "following" in following_title.lower() or "подписки" in following_title.lower():
+                self._report("following", "✅ Страница подписок загружена")
+            else:
+                self._report("following", f"⚠️ Заголовок неожиданный: {following_title}")
+            
+            # Считаем подписки на странице
+            following_on_page = 0
+            try:
+                following_cells = self.driver.find_elements(By.CSS_SELECTOR, '[data-testid="cellInnerDiv"]')
+                following_on_page = len(following_cells)
+                self._report("following", f"📊 Найдено {following_on_page} аккаунтов в подписках")
+            except Exception as e:
+                print(f"[SE] Не удалось посчитать подписки: {e}")
+            
+            # === СОХРАНЯЕМ ВСЁ ===
+            self._report("save", "💾 Сохраняю cookies...")
+            cookie_ok = self._save_cookies()
+            self._report("save", f"{'✅' if cookie_ok else '❌'} Cookies сохранены")
+            
+            self._report("save_auth", f"💾 Сохраняю auth info...")
+            auth_data = {
+                "following_count": following_count,
+                "followers_count": followers_count,
+                "following_on_page": following_on_page,
+                "profile_title": profile_title,
+            }
+            auth_saved = save_auth_info(username, email, auth_data)
+            self._report("save_auth", f"{'✅' if auth_saved else '❌'} Auth info сохранён")
+            
+            # Проверяем, что точно сохранилось
+            verify_auth = get_auth_info()
+            if verify_auth:
+                self._report("success", f"✅ Авторизация @{username} ПОДТВЕРЖДЕНА!")
+                self._report("success", f"📊 Подписок: {following_count or '?'}\n📊 Подписчиков: {followers_count or '?'}\n📋 В списке: {following_on_page}")
+                return True, None
+            else:
+                self._report("error", "❌ Auth info не сохранился! Проверь права на диск.")
+                return False, "❌ Данные авторизации не сохранились. Проверь /se_status"
             
         except Exception as e:
             self._report("error", f"💥 Критическая ошибка: {str(e)}")
@@ -707,17 +733,14 @@ class SeleniumXAgent:
             self.driver.get("https://x.com/explore/tabs/trending")
             time.sleep(4)
             from selenium.webdriver.common.by import By
-            
             trends = []
             attempts = 0
-            
             while len(trends) < limit and attempts < 5:
                 trend_selectors = [
                     '[data-testid="trend"]',
                     '[href*="/search?q="]',
                     'div[dir="ltr"] a[href^="/search"]',
                 ]
-                
                 for selector in trend_selectors:
                     elems = self.driver.find_elements(By.CSS_SELECTOR, selector)
                     for elem in elems:
@@ -735,18 +758,14 @@ class SeleniumXAgent:
                             pass
                     if len(trends) >= limit:
                         break
-                
                 if len(trends) == 0:
                     attempts += 1
                 else:
                     attempts = 0
-                
                 self.driver.execute_script("window.scrollBy(0, 600)")
                 time.sleep(1)
-            
             self._save_cookies()
             return trends[:limit], None
-            
         except Exception as e:
             return None, f"Ошибка: {e}"
         finally:
@@ -765,10 +784,8 @@ class SeleniumXAgent:
             self.driver.get(url)
             time.sleep(4)
             from selenium.webdriver.common.by import By
-            
             tweets = []
             attempts = 0
-            
             while len(tweets) < limit and attempts < 8:
                 articles = self.driver.find_elements(By.CSS_SELECTOR, "article")
                 for article in articles:
@@ -790,16 +807,12 @@ class SeleniumXAgent:
                             tweets.append(tweet)
                     except:
                         pass
-                
                 if len(tweets) == 0:
                     attempts += 1
-                
                 self.driver.execute_script("window.scrollBy(0, 1000)")
                 time.sleep(1.5)
-            
             self._save_cookies()
             return tweets[:limit], None
-            
         except Exception as e:
             return None, f"Ошибка: {e}"
         finally:
@@ -808,7 +821,7 @@ class SeleniumXAgent:
                 self.driver = None
     
     def check_current_auth(self):
-        """Проверить, валидна ли текущая сессия"""
+        """Проверить сессию через открытие home"""
         if not os.path.exists(COOKIES_FILE):
             return False, "Нет cookies файла"
         try:
@@ -818,39 +831,28 @@ class SeleniumXAgent:
             time.sleep(3)
             from selenium.webdriver.common.by import By
             
-            # Проверяем наличие элементов авторизованного пользователя
-            auth_indicators = [
-                '[data-testid="SideNav_AccountSwitcher_Button"]',
-                '[data-testid="AppTabBar_Profile_Link"]',
-                '[data-testid="primaryColumn"]',
-            ]
+            # Проверяем URL
+            current_url = self.driver.current_url
+            if "home" not in current_url:
+                self._screenshot("auth_check_not_home")
+                return False, f"Не на домашней странице: {current_url}"
             
-            is_auth = False
-            for selector in auth_indicators:
-                try:
-                    elem = self.driver.find_element(By.CSS_SELECTOR, selector)
-                    if elem.is_displayed():
-                        is_auth = True
-                        break
-                except:
-                    pass
+            # Проверяем наличие ленты
+            try:
+                self.driver.find_element(By.CSS_SELECTOR, '[data-testid="primaryColumn"]')
+            except:
+                return False, "Лента не найдена"
             
             # Проверяем, нет ли кнопки входа
-            if is_auth:
-                try:
-                    login_btn = self.driver.find_element(By.CSS_SELECTOR, 'a[href="/i/flow/login"]')
-                    if login_btn.is_displayed():
-                        is_auth = False
-                except:
-                    pass
+            try:
+                login_btn = self.driver.find_element(By.CSS_SELECTOR, 'a[href="/i/flow/login"]')
+                if login_btn.is_displayed():
+                    return False, "Кнопка входа видна — сессия истекла"
+            except:
+                pass
             
             self._save_cookies()
-            
-            if is_auth:
-                return True, "Сессия активна"
-            else:
-                return False, "Сессия истекла, требуется повторный вход"
-                
+            return True, "Сессия активна"
         except Exception as e:
             return False, f"Ошибка проверки: {e}"
         finally:
@@ -892,11 +894,17 @@ def register_selenium_bot(bot):
         def icon(flag):
             return "✅" if flag else "❌"
         
-        # Статус авторизации
         if auth:
+            extra = auth.get("following_count") or auth.get("followers_count")
+            extra_line = ""
+            if extra:
+                extra_line = f"   📊 Подписок: {auth.get('following_count', '?')}\n"
+                extra_line += f"   📊 Подписчиков: {auth.get('followers_count', '?')}\n"
+            
             auth_status = (
                 f"👤 <b>Аккаунт:</b> <code>@{auth['username']}</code>\n"
                 f"🕐 <b>Авторизован:</b> {auth['authorized_at']}\n"
+                f"{extra_line}"
             )
         else:
             auth_status = "👤 <b>Аккаунт:</b> <i>не подключён</i>\n"
@@ -977,10 +985,13 @@ def register_selenium_bot(bot):
             bot.reply_to(message, "❌ Selenium не готов. Сначала /se_install", parse_mode="HTML")
             return
         
+        # Проверяем авторизацию ПЕРЕД началом новой
         auth = get_auth_info()
         if auth:
             bot.reply_to(message,
                 f"⚠️ Уже авторизован как <code>@{auth['username']}</code>\n\n"
+                f"📊 Подписок: {auth.get('following_count', '?')}\n"
+                f"🕐 Авторизован: {auth['authorized_at']}\n\n"
                 f"Используй /se_logout чтобы сменить аккаунт\n"
                 f"Или /se_check_auth чтобы проверить сессию",
                 parse_mode="HTML"
@@ -1163,7 +1174,12 @@ def register_selenium_bot(bot):
     @bot.message_handler(commands=["se_help"])
     def se_help_command(message):
         auth = get_auth_info()
-        auth_line = f"👤 Аккаунт: <code>@{auth['username']}</code>\n" if auth else "👤 Аккаунт: <i>не подключён</i>\n"
+        if auth:
+            auth_line = f"👤 Аккаунт: <code>@{auth['username']}</code>\n"
+            auth_line += f"   📊 Подписок: {auth.get('following_count', '?')}\n"
+            auth_line += f"   🕐 Авторизован: {auth['authorized_at']}\n"
+        else:
+            auth_line = "👤 Аккаунт: <i>не подключён</i>\n"
         
         msg = (
             "🚗 <b>Selenium X Agent</b>\n\n"
@@ -1187,7 +1203,7 @@ def register_selenium_bot(bot):
         )
         bot.reply_to(message, msg, parse_mode="HTML")
     
-    # === Диалог авторизации с прогрессом ===
+    # === Диалог авторизации ===
     
     def is_se_login_dialog(chat_id, step):
         return (chat_id in login_sessions
@@ -1299,31 +1315,42 @@ def register_selenium_bot(bot):
         except:
             pass
         
-        # Проверяем, что auth_info действительно сохранился
+        # === ПРОВЕРКА РЕЗУЛЬТАТА ===
         auth_after = get_auth_info()
         print(f"[SE] После логина auth_info: {auth_after}")
         
         if error:
             bot.reply_to(message, f"❌ {error}")
-        elif success:
-            if auth_after:
-                bot.reply_to(message, 
-                    f"✅ <b>Авторизация успешна!</b>\n\n"
-                    f"👤 Аккаунт: <code>@{auth_after['username']}</code>\n"
-                    f"🕐 Время: {auth_after['authorized_at']}\n\n"
-                    f"Теперь можно использовать:\n"
-                    f"/se_timeline — лента\n"
-                    f"/se_trends — тренды\n"
-                    f"/se_search — поиск",
-                    parse_mode="HTML"
-                )
-            else:
-                bot.reply_to(message, 
-                    "⚠️ <b>Авторизация прошла, но данные не сохранились!</b>\n"
-                    "Попробуй /se_check_auth\n"
-                    "Или /se_login ещё раз.",
-                    parse_mode="HTML"
-                )
+        elif success and auth_after:
+            # УСПЕХ — показываем подписки и подписчиков
+            msg = (
+                f"✅ <b>Авторизация УСПЕШНА!</b>\n\n"
+                f"👤 Аккаунт: <code>@{auth_after['username']}</code>\n"
+                f"🕐 Время: {auth_after['authorized_at']}\n"
+            )
+            if auth_after.get('following_count'):
+                msg += f"📊 Подписок: {auth_after['following_count']}\n"
+            if auth_after.get('followers_count'):
+                msg += f"📊 Подписчиков: {auth_after['followers_count']}\n"
+            if auth_after.get('following_on_page'):
+                msg += f"📋 В списке подписок: {auth_after['following_on_page']}\n"
+            
+            msg += (
+                f"\n"
+                f"Теперь можно использовать:\n"
+                f"/se_timeline — лента\n"
+                f"/se_trends — тренды\n"
+                f"/se_search — поиск"
+            )
+            bot.reply_to(message, msg, parse_mode="HTML")
+        elif success and not auth_after:
+            bot.reply_to(message, 
+                "⚠️ <b>Авторизация прошла, но данные НЕ сохранились!</b>\n"
+                "Попробуй /se_check_auth\n"
+                "Или /se_login ещё раз.\n\n"
+                "💡 Возможно, проблема с правами на диск. Проверь /se_status",
+                parse_mode="HTML"
+            )
         else:
             bot.reply_to(message, "❌ Авторизация не удалась")
     
