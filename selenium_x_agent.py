@@ -92,7 +92,6 @@ class ChromeInstaller:
     
     def install(self):
         logger.info("Начинаю установку...")
-        # Устанавливаем selenium сразу
         self._install_selenium_pip()
         success = True
         if not self.chrome_path:
@@ -116,7 +115,6 @@ class ChromeInstaller:
                 )
                 if result.returncode == 0:
                     print("[SE] Selenium установлен", flush=True)
-                    # Перезагружаем модули
                     import importlib
                     if "selenium" in sys.modules:
                         importlib.reload(sys.modules["selenium"])
@@ -188,7 +186,6 @@ _installer = ChromeInstaller()
 
 def get_full_status():
     auth = get_auth_info()
-    # Проверяем selenium
     selenium_ok = False
     try:
         import selenium
@@ -265,7 +262,7 @@ def run_sync_task(func, *args, **kwargs):
     return result[0], None
 
 
-# === BROWSER SESSION — selenium импортируется здесь ===
+# === BROWSER SESSION ===
 class BrowserSession:
     def __init__(self):
         self.driver = None
@@ -296,7 +293,6 @@ class BrowserSession:
             return None
     
     def _get_options(self):
-        # Импорт selenium ЗДЕСЬ, внутри метода
         from selenium.webdriver.chrome.options import Options
         options = Options()
         ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15"
@@ -325,7 +321,6 @@ class BrowserSession:
         return options
     
     def create(self):
-        # Импорт selenium ЗДЕСЬ
         from selenium import webdriver
         from selenium.webdriver.chrome.service import Service
         options = self._get_options()
@@ -356,14 +351,14 @@ class BrowserSession:
 
 # === GOOGLE LOGIN ===
 def google_login(email, password, bot=None, chat_id=None):
-    # Убедимся что selenium установлен
     try:
         import selenium
+        from selenium.webdriver.common.keys import Keys
     except ImportError:
-        # Пробуем установить
         _installer._install_selenium_pip()
         try:
             import selenium
+            from selenium.webdriver.common.keys import Keys
         except ImportError:
             return False, "Selenium не удалось установить"
     
@@ -379,81 +374,135 @@ def google_login(email, password, bot=None, chat_id=None):
             except:
                 pass
     
+    LOGIN_URLS = [
+        "https://x.com/i/flow/login?force_login=true",
+        "https://x.com/i/flow/login",
+        "https://x.com/login",
+    ]
+    
     try:
         report("⏳ Запускаю браузер...")
         session.create()
         
-        report("📥 Открываю x.com/login...")
-        session.driver.get("https://x.com/login")
-        time.sleep(5)
-        
-        session._screenshot("login_page", "📸 Страница входа X")
-        
-        # Импорт selenium ЗДЕСЬ
         from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
         
-        report("🔍 Ищу кнопку Google...")
         google_btn = None
         
-        try:
-            google_btn = session.driver.find_element(By.XPATH, "//*[contains(text(), 'Continue with Google')]")
-            report("✅ Найдена: 'Continue with Google'")
-        except:
-            pass
-        
-        if not google_btn:
+        # Перебираем URL, пока не найдём кнопку Google
+        for url in LOGIN_URLS:
+            report(f"📥 Открываю {url}...")
+            session.driver.get(url)
+            time.sleep(4)
+            safe_name = url.replace("https://", "").replace("/", "_").replace("?", "_")
+            session._screenshot(f"login_page_{safe_name}", f"📸 Страница входа")
+            
             try:
-                google_btn = session.driver.find_element(By.XPATH, "//*[contains(text(), 'Google')]")
-                report("✅ Найден элемент с 'Google'")
-            except:
-                pass
+                wait = WebDriverWait(session.driver, 10)
+                
+                xpaths = [
+                    "//span[contains(text(), 'Continue with Google')]",
+                    "//span[contains(text(), 'Sign in with Google')]",
+                    "//div[contains(text(), 'Continue with Google')]",
+                    "//div[contains(text(), 'Sign in with Google')]",
+                    "//button[.//*[contains(text(), 'Google')]]",
+                    "//a[.//*[contains(text(), 'Google')]]",
+                    "//div[@role='button' and .//*[contains(text(), 'Google')]]",
+                    "//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'google')]",
+                ]
+                
+                for xp in xpaths:
+                    try:
+                        google_btn = wait.until(EC.element_to_be_clickable((By.XPATH, xp)))
+                        report(f"✅ Найдена кнопка Google")
+                        break
+                    except:
+                        continue
+                
+                if google_btn:
+                    break
+                    
+            except Exception as e:
+                report(f"⚠️ На {url} кнопка не найдена: {str(e)[:100]}")
+                continue
         
         if not google_btn:
-            report("❌ Кнопка Google НЕ найдена!")
-            return False, "Кнопка Google не найдена"
+            report("❌ Кнопка Google НЕ найдена ни на одном URL!")
+            session._screenshot("no_google_btn", "📸 Кнопка Google не найдена")
+            return False, "Кнопка Google не найдена на всех URL"
         
         report("🖱️ Кликаю по Google...")
-        google_btn.click()
-        time.sleep(5)
+        session.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", google_btn)
+        time.sleep(1)
+        try:
+            google_btn.click()
+        except:
+            session.driver.execute_script("arguments[0].click();", google_btn)
         
+        time.sleep(5)
         session._screenshot("google_redirect", "📸 После клика")
         
         current_url = session.driver.current_url
-        report(f"📍 URL: {current_url[:80]}")
+        report(f"📍 URL после клика: {current_url[:80]}")
         
         if "accounts.google.com" in current_url or "google.com" in current_url:
             report("✅ Перешли на Google!")
             
+            # Email
             try:
-                email_field = session.driver.find_element(By.CSS_SELECTOR, 'input[type="email"]')
+                email_field = WebDriverWait(session.driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, 'input[type="email"]'))
+                )
+                email_field.clear()
                 email_field.send_keys(email)
                 report("✅ Email введён")
                 
-                next_btn = session.driver.find_element(By.XPATH, "//*[contains(text(), 'Next') or contains(@value, 'Next')]")
-                next_btn.click()
+                time.sleep(1)
+                email_field.send_keys(Keys.RETURN)
                 time.sleep(3)
             except Exception as e:
-                report(f"⚠️ Email: {e}")
+                report(f"⚠️ Email input: {e}")
+                try:
+                    next_btns = session.driver.find_elements(By.XPATH, 
+                        "//button[.//*[contains(text(), 'Next') or contains(text(), 'Далее')]]")
+                    if next_btns:
+                        next_btns[0].click()
+                        time.sleep(3)
+                except:
+                    pass
             
+            # Password
             try:
-                time.sleep(3)
-                pass_field = session.driver.find_element(By.CSS_SELECTOR, 'input[type="password"]')
+                pass_field = WebDriverWait(session.driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, 'input[type="password"]'))
+                )
+                pass_field.clear()
                 pass_field.send_keys(password)
                 report("✅ Пароль введён")
                 
-                next_btn = session.driver.find_element(By.XPATH, "//*[contains(text(), 'Next') or contains(@value, 'Next')]")
-                next_btn.click()
+                time.sleep(1)
+                pass_field.send_keys(Keys.RETURN)
                 time.sleep(5)
             except Exception as e:
-                report(f"⚠️ Password: {e}")
+                report(f"⚠️ Password input: {e}")
+                try:
+                    next_btns = session.driver.find_elements(By.XPATH,
+                        "//button[.//*[contains(text(), 'Next') or contains(text(), 'Далее')]]")
+                    if next_btns:
+                        next_btns[0].click()
+                        time.sleep(5)
+                except:
+                    pass
             
             session._screenshot("google_after_login", "📸 После входа в Google")
         
         report("⏳ Жду редирект на X...")
-        for i in range(10):
+        for i in range(15):
             time.sleep(2)
             url = session.driver.current_url
-            if "x.com" in url and "login" not in url:
+            report(f"  шаг {i+1}/15: {url[:60]}")
+            if "x.com" in url and "login" not in url and "flow" not in url:
                 report("✅ Вошли в X!")
                 break
         
@@ -462,17 +511,17 @@ def google_login(email, password, bot=None, chat_id=None):
         session._screenshot("x_home", "📸 X Home")
         
         html = session.driver.page_source.lower()
-        if "home" in html or "following" in html:
+        if any(k in html for k in ["home", "following", "for you", "для вас", "главная"]):
             report("✅ Авторизация подтверждена!")
             session.save_cookies()
             save_auth_info("google_user", email)
             return True, None
         else:
-            report("❌ Не удалось войти в X")
+            report("❌ Не удалось войти в X (не найдены маркеры home/following)")
             return False, "Не удалось войти в X"
             
     except Exception as e:
-        report(f"❌ Ошибка: {str(e)[:200]}")
+        report(f"❌ Ошибка: {str(e)[:300]}")
         logger.error(traceback.format_exc())
         return False, str(e)
     finally:
@@ -513,7 +562,6 @@ def register_selenium_bot(bot):
     @bot.message_handler(commands=["se_install"])
     def se_install(message):
         if _installer.ready:
-            # Проверим selenium
             try:
                 import selenium
                 bot.reply_to(message, "🟢 Уже установлено!", parse_mode="HTML")
