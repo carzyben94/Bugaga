@@ -92,12 +92,41 @@ class ChromeInstaller:
     
     def install(self):
         logger.info("Начинаю установку...")
+        # Устанавливаем selenium сразу
+        self._install_selenium_pip()
         success = True
         if not self.chrome_path:
             success = self._download_chrome() and success
         if not self.driver_path:
             success = self._download_driver() and success
         return success
+    
+    def _install_selenium_pip(self):
+        """Установить selenium как в старом коде"""
+        try:
+            import selenium
+            print(f"[SE] Selenium уже установлен: v{selenium.__version__}", flush=True)
+            return True
+        except ImportError:
+            print("[SE] Устанавливаю selenium...", flush=True)
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "selenium"],
+                    capture_output=True, text=True, timeout=120
+                )
+                if result.returncode == 0:
+                    print("[SE] Selenium установлен", flush=True)
+                    # Перезагружаем модули
+                    import importlib
+                    if "selenium" in sys.modules:
+                        importlib.reload(sys.modules["selenium"])
+                    return True
+                else:
+                    print(f"[SE] Ошибка: {result.stderr[:200]}", flush=True)
+                    return False
+            except Exception as e:
+                print(f"[SE] Ошибка установки: {e}", flush=True)
+                return False
     
     def _download(self, url, dest):
         try:
@@ -159,8 +188,16 @@ _installer = ChromeInstaller()
 
 def get_full_status():
     auth = get_auth_info()
+    # Проверяем selenium
+    selenium_ok = False
+    try:
+        import selenium
+        selenium_ok = True
+    except:
+        pass
+    
     return {
-        "selenium_pip": {"installed": False, "version": None},
+        "selenium_pip": {"installed": selenium_ok, "version": None},
         "chrome_browser": {"found": _installer.status()["chrome"]["found"], "path": _installer.chrome_path},
         "chromedriver": {"ready": _installer.status()["driver"]["found"], "path": _installer.driver_path},
         "agent_ready": _installer.ready,
@@ -228,7 +265,7 @@ def run_sync_task(func, *args, **kwargs):
     return result[0], None
 
 
-# === BROWSER SESSION (ленивый импорт selenium) ===
+# === BROWSER SESSION — selenium импортируется здесь ===
 class BrowserSession:
     def __init__(self):
         self.driver = None
@@ -259,6 +296,7 @@ class BrowserSession:
             return None
     
     def _get_options(self):
+        # Импорт selenium ЗДЕСЬ, внутри метода
         from selenium.webdriver.chrome.options import Options
         options = Options()
         ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15"
@@ -287,6 +325,7 @@ class BrowserSession:
         return options
     
     def create(self):
+        # Импорт selenium ЗДЕСЬ
         from selenium import webdriver
         from selenium.webdriver.chrome.service import Service
         options = self._get_options()
@@ -317,6 +356,17 @@ class BrowserSession:
 
 # === GOOGLE LOGIN ===
 def google_login(email, password, bot=None, chat_id=None):
+    # Убедимся что selenium установлен
+    try:
+        import selenium
+    except ImportError:
+        # Пробуем установить
+        _installer._install_selenium_pip()
+        try:
+            import selenium
+        except ImportError:
+            return False, "Selenium не удалось установить"
+    
     session = BrowserSession()
     if bot and chat_id:
         session.set_chat(bot, chat_id)
@@ -339,6 +389,7 @@ def google_login(email, password, bot=None, chat_id=None):
         
         session._screenshot("login_page", "📸 Страница входа X")
         
+        # Импорт selenium ЗДЕСЬ
         from selenium.webdriver.common.by import By
         
         report("🔍 Ищу кнопку Google...")
@@ -359,7 +410,7 @@ def google_login(email, password, bot=None, chat_id=None):
         
         if not google_btn:
             report("❌ Кнопка Google НЕ найдена!")
-            return False
+            return False, "Кнопка Google не найдена"
         
         report("🖱️ Кликаю по Google...")
         google_btn.click()
@@ -415,20 +466,20 @@ def google_login(email, password, bot=None, chat_id=None):
             report("✅ Авторизация подтверждена!")
             session.save_cookies()
             save_auth_info("google_user", email)
-            return True
+            return True, None
         else:
             report("❌ Не удалось войти в X")
-            return False
+            return False, "Не удалось войти в X"
             
     except Exception as e:
         report(f"❌ Ошибка: {str(e)[:200]}")
         logger.error(traceback.format_exc())
-        return False
+        return False, str(e)
     finally:
         session.quit()
 
 
-# === AGENT_READY для совместимости ===
+# === AGENT_READY ===
 def AGENT_READY():
     return _installer.ready
 
@@ -448,6 +499,7 @@ def register_selenium_bot(bot):
             f"{auth_line}"
             f"{icon(st['chrome_browser']['found'])} Chrome: <code>{st['chrome_browser']['path'] or 'не найден'}</code>\n"
             f"{icon(st['chromedriver']['ready'])} Driver: <code>{st['chromedriver']['path'] or 'не найден'}</code>\n"
+            f"{icon(st['selenium_pip']['installed'])} Selenium pip: {'установлен' if st['selenium_pip']['installed'] else 'не установлен'}\n"
             f"{'🟢' if st['agent_ready'] else '🔴'} Готов: {'Да' if st['agent_ready'] else 'Нет'}\n"
             f"🍪 Cookies: {'есть' if st['cookies_exist'] else 'нет'}\n"
             f"📁 {st['selenium_dir']}"
@@ -461,10 +513,15 @@ def register_selenium_bot(bot):
     @bot.message_handler(commands=["se_install"])
     def se_install(message):
         if _installer.ready:
-            bot.reply_to(message, "🟢 Уже установлено!", parse_mode="HTML")
-            return
+            # Проверим selenium
+            try:
+                import selenium
+                bot.reply_to(message, "🟢 Уже установлено!", parse_mode="HTML")
+                return
+            except ImportError:
+                pass
         
-        msg = bot.reply_to(message, "⏳ Скачиваю Chrome + Driver...", parse_mode="HTML")
+        msg = bot.reply_to(message, "⏳ Скачиваю Chrome + Driver + Selenium...", parse_mode="HTML")
         success = _installer.install()
         
         if success:
