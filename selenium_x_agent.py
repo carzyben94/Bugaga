@@ -408,14 +408,12 @@ def google_login(email, password, bot=None, chat_id=None):
         if "onboarding" in current_url or "mode=login" in current_url:
             report("🔀 Обнаружен onboarding flow!")
             
-            # Смотрим текст страницы
             try:
                 body_text = session.driver.find_element(By.TAG_NAME, "body").text
                 report(f"📄 Текст onboarding:\n{body_text[:1000]}")
             except:
                 pass
             
-            # Ищем кнопку Google на onboarding-странице
             onboarding_xpaths = [
                 "//span[contains(text(), 'Continue with Google')]",
                 "//span[contains(text(), 'Sign in with Google')]",
@@ -443,7 +441,6 @@ def google_login(email, password, bot=None, chat_id=None):
                     continue
             
             if not google_btn:
-                # Перебираем ВСЕ кнопки и ссылки
                 report("🔍 Перебираю все кнопки...")
                 all_buttons = session.driver.find_elements(By.XPATH, "//button | //div[@role='button'] | //a")
                 report(f"   Всего: {len(all_buttons)}")
@@ -520,7 +517,6 @@ def google_login(email, password, bot=None, chat_id=None):
                 session._screenshot("direct_login", "📸 Прямой login")
                 session._save_html("direct_login")
             
-            # Ищем Google
             report("🔍 Ищу Google...")
             time.sleep(3)
             
@@ -616,15 +612,170 @@ def google_login(email, password, bot=None, chat_id=None):
                 report("✅ Вошли в X!")
                 break
         
-        session.driver.get("https://x.com/home")
-        time.sleep(5)
+        # === ЗАБИРАЕМ ИНФОРМАЦИЮ О ПОЛЬЗОВАТЕЛЕ ===
+        username = None
+        followers = None
+        following = None
+        
+        try:
+            session.driver.get("https://x.com/home")
+            time.sleep(5)
+            session._screenshot("home_for_info", "📸 Home для получения информации")
+            
+            # Способ 1: из URL профиля в сайдбаре
+            profile_links = session.driver.find_elements(By.XPATH, "//a[contains(@href, '/')]//span[contains(text(), '@')]")
+            if profile_links:
+                username = profile_links[0].text.replace("@", "").strip()
+                report(f"✅ Имя из сайдбара: @{username}")
+            
+            # Способ 2: data-testid
+            if not username:
+                try:
+                    user_element = session.driver.find_element(By.XPATH, "//div[@data-testid='UserName']//span[starts-with(text(), '@')]")
+                    username = user_element.text.replace("@", "").strip()
+                    report(f"✅ Имя из UserName: @{username}")
+                except:
+                    pass
+            
+            # Способ 3: из заголовка страницы
+            if not username:
+                title = session.driver.title
+                if "@" in title:
+                    username = title.split("@")[1].split()[0].strip()
+                    report(f"✅ Имя из title: @{username}")
+            
+            # Способ 4: из cookies или localStorage
+            if not username:
+                try:
+                    username = session.driver.execute_script("return window.__INITIAL_STATE__?.session?.user_id")
+                    report(f"✅ user_id из INITIAL_STATE: {username}")
+                except:
+                    pass
+            
+            # Способ 5: любой span с @ на странице
+            if not username:
+                spans = session.driver.find_elements(By.XPATH, "//span[starts-with(text(), '@')]")
+                for sp in spans:
+                    text = sp.text.strip()
+                    if text.startswith("@") and len(text) > 1 and " " not in text:
+                        username = text.replace("@", "")
+                        report(f"✅ Имя из span: @{username}")
+                        break
+            
+            # === ПОДПИСЧИКИ И ПОДПИСКИ ===
+            if username:
+                report(f"🔍 Ищу подписчиков и подписки...")
+                
+                # Переходим на профиль
+                session.driver.get(f"https://x.com/{username}")
+                time.sleep(4)
+                session._screenshot("profile_page", f"📸 Профиль @{username}")
+                session._save_html("profile_page")
+                
+                # Способ 1: через aria-label или текст ссылки
+                try:
+                    stats = session.driver.find_elements(By.XPATH, 
+                        "//a[contains(@href, '/following')] | //a[contains(@href, '/followers')] | " +
+                        "//span[contains(text(), 'following')] | //span[contains(text(), 'followers')] | " +
+                        "//span[contains(text(), 'Following')] | //span[contains(text(), 'Followers')]"
+                    )
+                    
+                    for stat in stats:
+                        text = stat.text.strip()
+                        report(f"📊 Найдено: {text}")
+                        
+                        if "following" in text.lower() and not following:
+                            num = text.split()[0].replace(",", "").replace("K", "000").replace("M", "000000").replace(".", "")
+                            try:
+                                following = int(num)
+                                report(f"✅ Подписки: {following}")
+                            except:
+                                following = text
+                                report(f"✅ Подписки (текст): {following}")
+                        
+                        if "follower" in text.lower() and not followers:
+                            num = text.split()[0].replace(",", "").replace("K", "000").replace("M", "000000").replace(".", "")
+                            try:
+                                followers = int(num)
+                                report(f"✅ Подписчики: {followers}")
+                            except:
+                                followers = text
+                                report(f"✅ Подписчики (текст): {followers}")
+                
+                except Exception as e:
+                    report(f"⚠️ Ошибка получения статистики: {e}")
+                
+                # Способ 2: через data-testid
+                if not followers or not following:
+                    try:
+                        all_spans = session.driver.find_elements(By.XPATH, "//span")
+                        for i, span in enumerate(all_spans):
+                            text = span.text.strip().lower()
+                            if text == "following" and i > 0:
+                                prev_text = all_spans[i-1].text.strip()
+                                report(f"📊 Following число: {prev_text}")
+                                try:
+                                    following = int(prev_text.replace(",", ""))
+                                except:
+                                    following = prev_text
+                            if text == "followers" and i > 0:
+                                prev_text = all_spans[i-1].text.strip()
+                                report(f"📊 Followers число: {prev_text}")
+                                try:
+                                    followers = int(prev_text.replace(",", ""))
+                                except:
+                                    followers = prev_text
+                    except Exception as e:
+                        report(f"⚠️ Способ 2: {e}")
+                
+                # Способ 3: через JavaScript
+                if not followers or not following:
+                    try:
+                        stats_js = session.driver.execute_script("""
+                            const state = window.__INITIAL_STATE__ || {};
+                            const user = state.entities?.users || {};
+                            const keys = Object.keys(user);
+                            if (keys.length > 0) {
+                                const u = user[keys[0]].legacy || {};
+                                return {
+                                    followers: u.followers_count,
+                                    following: u.friends_count
+                                };
+                            }
+                            return null;
+                        """)
+                        if stats_js:
+                            followers = stats_js.get("followers")
+                            following = stats_js.get("following")
+                            report(f"✅ Из JS: followers={followers}, following={following}")
+                    except Exception as e:
+                        report(f"⚠️ JS способ: {e}")
+        
+        except Exception as e:
+            report(f"⚠️ Не удалось получить информацию: {e}")
+        
+        # Финальная проверка
         session._screenshot("final_home", "📸 Финальная проверка")
         
         html = session.driver.page_source.lower()
         if any(k in html for k in ["home", "following", "for you", "для вас", "главная"]):
             report("✅ Авторизация подтверждена!")
             session.save_cookies()
-            save_auth_info("google_user", email)
+            
+            # Сохраняем с подписчиками и подписками
+            extra = {}
+            if followers is not None:
+                extra["followers"] = followers
+            if following is not None:
+                extra["following"] = following
+            
+            save_auth_info(username or "unknown", email, extra if extra else None)
+            report(f"👤 @{username or 'unknown'} | 📧 {email}")
+            if followers:
+                report(f"👥 Подписчики: {followers}")
+            if following:
+                report(f"📌 Подписки: {following}")
+            
             return True, None
         else:
             report("❌ Не подтверждено")
@@ -653,9 +804,20 @@ def register_selenium_bot(bot):
         auth = st.get("auth_info")
         auth_line = f"👤 <code>@{auth['username']}</code>\n" if auth else "👤 <i>не подключён</i>\n"
         
+        # Добавляем подписчиков и подписки в статус
+        followers_line = ""
+        following_line = ""
+        if auth:
+            if auth.get("followers"):
+                followers_line = f"👥 Подписчики: <code>{auth['followers']}</code>\n"
+            if auth.get("following"):
+                following_line = f"📌 Подписки: <code>{auth['following']}</code>\n"
+        
         text = (
             "🚗 <b>Selenium X Agent</b>\n\n"
             f"{auth_line}"
+            f"{followers_line}"
+            f"{following_line}"
             f"{icon(st['chrome_browser']['found'])} Chrome: <code>{st['chrome_browser']['path'] or 'не найден'}</code>\n"
             f"{icon(st['chromedriver']['ready'])} Driver: <code>{st['chromedriver']['path'] or 'не найден'}</code>\n"
             f"{icon(st['selenium_pip']['installed'])} Selenium pip: {'установлен' if st['selenium_pip']['installed'] else 'не установлен'}\n"
@@ -741,7 +903,17 @@ def register_selenium_bot(bot):
             bot.reply_to(message, f"❌ {error}", parse_mode="HTML")
         elif success:
             auth = get_auth_info()
-            bot.reply_to(message, f"✅ <b>Вход успешен!</b>\n👤 @{auth['username'] if auth else '?'}\n📧 {email}", parse_mode="HTML")
+            username = auth.get("username", "?") if auth else "?"
+            followers = auth.get("followers", "")
+            following = auth.get("following", "")
+            
+            extra_lines = ""
+            if followers:
+                extra_lines += f"\n👥 Подписчики: <code>{followers}</code>"
+            if following:
+                extra_lines += f"\n📌 Подписки: <code>{following}</code>"
+            
+            bot.reply_to(message, f"✅ <b>Вход успешен!</b>\n👤 @{username}\n📧 {email}{extra_lines}", parse_mode="HTML")
         else:
             bot.reply_to(message, "❌ Вход не удался", parse_mode="HTML")
     
