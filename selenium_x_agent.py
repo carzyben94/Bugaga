@@ -1,4 +1,4 @@
-# selenium_x_agent.py — Selenium X/Twitter агент с обходом onboarding
+# selenium_x_agent.py — Selenium X/Twitter агент с прямым входом
 import os
 import sys
 import subprocess
@@ -512,7 +512,7 @@ class SeleniumXAgent:
             return False
     
     def login(self, username, password, email=None):
-        """Универсальная авторизация с обходом onboarding"""
+        """Универсальная авторизация с прямым входом через x.com/login"""
         
         logger.info("="*60)
         logger.info(f"START LOGIN for {username}")
@@ -532,10 +532,10 @@ class SeleniumXAgent:
             self._report("start", f"🚀 Авторизация @{target_username}")
             self._create_driver()
             
-            # === ПРОБУЕМ ОБХОДНОЙ URL ===
+            # === ИСПОЛЬЗУЕМ ПРЯМОЙ URL ===
             login_urls = [
-                "https://x.com/i/flow/login?force_login=true&redirect_after_login=%2Fhome",
                 "https://x.com/login",
+                "https://x.com/i/flow/login?force_login=true",
                 "https://x.com/i/flow/login",
             ]
             
@@ -566,102 +566,103 @@ class SeleniumXAgent:
                 return False, "❌ Не удалось загрузить страницу входа"
             
             self._screenshot("login_page")
+            self._save_html("login_page")
             
-            # === ВВОД USERNAME ===
-            username_filled = False
-            
-            username_selectors = [
+            # === ИЩЕМ ПОЛЕ ДЛЯ USERNAME ===
+            username_input = None
+            selectors = [
                 'input[autocomplete="username"]',
                 'input[name="text"]',
                 'input[type="text"]',
-                'input[autocapitalize="none"]',
                 'input[data-testid="ocfEnterTextTextInput"]',
                 'input[placeholder*="username" i]',
                 'input[placeholder*="email" i]',
                 'input[placeholder*="phone" i]',
             ]
             
-            for selector in username_selectors:
+            for selector in selectors:
                 try:
                     elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
                     for elem in elements:
                         if elem.is_displayed() and elem.is_enabled():
-                            logger.info(f"Заполняю username в: {selector}")
-                            elem.clear()
-                            elem.send_keys(target_username)
-                            username_filled = True
-                            time.sleep(0.5)
+                            username_input = elem
+                            logger.info(f"Найдено поле username: {selector}")
                             break
-                    if username_filled:
+                    if username_input:
                         break
                 except Exception as e:
                     logger.debug(f"Selector {selector} error: {e}")
             
-            if not username_filled:
+            if not username_input:
                 # Ищем все видимые текстовые поля
                 inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input:not([type="hidden"]):not([type="password"])')
                 for inp in inputs:
                     if inp.is_displayed() and inp.is_enabled():
-                        logger.info("Заполняю первое видимое текстовое поле")
-                        inp.clear()
-                        inp.send_keys(target_username)
-                        username_filled = True
+                        username_input = inp
+                        logger.info("Найдено поле username (поиск по всем полям)")
                         break
             
-            if not username_filled:
+            if not username_input:
                 self._screenshot("no_username_field")
                 return False, "❌ Не найдено поле для username"
             
-            self._report("username", f"✅ Username введён: @{target_username}")
+            # Вводим username
+            username_input.clear()
+            username_input.send_keys(target_username)
+            logger.info(f"✅ Username введён: @{target_username}")
             time.sleep(1)
+            
+            self._report("username", f"✅ Username введён: @{target_username}")
             
             # === НАЖИМАЕМ NEXT ===
             next_clicked = False
             
-            # Способ 1: кнопка Next по тексту
-            try:
-                next_btn = self.driver.find_element(By.XPATH, "//span[contains(text(), 'Next')]/..")
-                if next_btn.is_displayed() and next_btn.is_enabled():
-                    logger.info("Нажимаю Next (текст)")
-                    next_btn.click()
+            # Ищем кнопку Next
+            buttons = self.driver.find_elements(By.TAG_NAME, "button")
+            for btn in buttons:
+                try:
+                    text = btn.text.lower()
+                    if 'next' in text or 'continue' in text or 'далее' in text:
+                        if btn.is_displayed() and btn.is_enabled():
+                            logger.info(f"Нажимаю: {btn.text}")
+                            btn.click()
+                            next_clicked = True
+                            time.sleep(3)
+                            break
+                except:
+                    pass
+            
+            if not next_clicked:
+                # Пробуем button[type="submit"]
+                try:
+                    btn = self.driver.find_element(By.CSS_SELECTOR, 'button[type="submit"]')
+                    if btn.is_displayed() and btn.is_enabled():
+                        btn.click()
+                        next_clicked = True
+                        logger.info("Нажал Next (submit)")
+                        time.sleep(3)
+                except:
+                    pass
+            
+            if not next_clicked:
+                # Пробуем data-testid
+                try:
+                    btn = self.driver.find_element(By.CSS_SELECTOR, '[data-testid="ocfEnterTextNextButton"]')
+                    if btn.is_displayed() and btn.is_enabled():
+                        btn.click()
+                        next_clicked = True
+                        logger.info("Нажал Next (data-testid)")
+                        time.sleep(3)
+                except:
+                    pass
+            
+            if not next_clicked:
+                # Пробуем Enter
+                try:
+                    username_input.send_keys(Keys.RETURN)
                     next_clicked = True
+                    logger.info("Нажал Enter")
                     time.sleep(3)
-            except:
-                pass
-            
-            # Способ 2: button[type="submit"]
-            if not next_clicked:
-                try:
-                    next_btn = self.driver.find_element(By.CSS_SELECTOR, 'button[type="submit"]')
-                    if next_btn.is_displayed() and next_btn.is_enabled():
-                        logger.info("Нажимаю Next (submit)")
-                        next_btn.click()
-                        next_clicked = True
-                        time.sleep(3)
-                except:
-                    pass
-            
-            # Способ 3: data-testid
-            if not next_clicked:
-                try:
-                    next_btn = self.driver.find_element(By.CSS_SELECTOR, '[data-testid="ocfEnterTextNextButton"]')
-                    if next_btn.is_displayed() and next_btn.is_enabled():
-                        logger.info("Нажимаю Next (data-testid)")
-                        next_btn.click()
-                        next_clicked = True
-                        time.sleep(3)
-                except:
-                    pass
-            
-            # Способ 4: Enter
-            if not next_clicked:
-                try:
-                    active = self.driver.switch_to.active_element
-                    if active and active.tag_name == "input":
-                        logger.info("Нажимаю Enter")
-                        active.send_keys(Keys.RETURN)
-                        next_clicked = True
-                        time.sleep(3)
                 except:
                     pass
             
@@ -670,14 +671,14 @@ class SeleniumXAgent:
             
             self._report("next", "✅ Next нажат")
             
-            # === ЖДЕМ ПОЯВЛЕНИЯ ПОЛЕЙ ===
+            # === ЖДЕМ ПОЯВЛЕНИЯ ПОЛЯ ПАРОЛЯ ===
             found_field = False
             email_used = email
             phone_used = None
             
-            for attempt in range(30):
+            for attempt in range(25):
                 time.sleep(1)
-                logger.info(f"Поиск полей: {attempt+1}/30")
+                logger.info(f"Поиск полей: {attempt+1}/25")
                 
                 current_url = self.driver.current_url
                 logger.info(f"URL: {current_url}")
@@ -1624,7 +1625,7 @@ def register_selenium_bot(bot):
             "  /se_search [запрос] [N] — Поиск твитов\n"
             "  /se_screenshot [url] — Скриншот страницы\n\n"
             "⚠️ <b>Особенности:</b>\n"
-            "• Обход onboarding страницы\n"
+            "• Использует прямой URL x.com/login\n"
             "• Поддержка капчи, email, телефона, кода\n"
             "• Chrome скачивается автоматически (~150MB)\n"
             "• Работает без apt-get на Render\n"
