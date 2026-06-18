@@ -1,31 +1,16 @@
-# x_browser_bot.py — Чистая установка Chrome через Telegram
+# selenium_x_agent.py — Чистая установка Chrome + команды для бота
 import os
 import sys
-import json
 import time
-import tempfile
+import json
 import logging
 import zipfile
 import urllib.request
 import subprocess
+import tempfile
 import traceback
 from pathlib import Path
 from datetime import datetime
-
-# === ДИАГНОСТИКА: пишем СРАЗУ в stdout и файл ===
-DIAG_LOG = "/tmp/x_browser_diagnostic.log"
-
-def diag(msg):
-    line = f"[DIAG] {msg}"
-    print(line, flush=True)
-    with open(DIAG_LOG, "a", encoding="utf-8") as f:
-        f.write(line + "\n")
-
-diag("=" * 50)
-diag(f"СКРИПТ ЗАПУЩЕН: {datetime.now().isoformat()}")
-diag(f"Python: {sys.executable}")
-diag(f"Рабочая директория: {os.getcwd()}")
-diag(f"Аргументы: {sys.argv}")
 
 # === КОНФИГ ===
 APP_DIR = Path("/app") if os.path.exists("/app") and os.access("/app", os.W_OK) else Path(tempfile.gettempdir())
@@ -34,52 +19,17 @@ BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 CHROME_DIR = BASE_DIR / "chrome"
 DRIVER_DIR = BASE_DIR / "driver"
-LOG_FILE = BASE_DIR / "bot.log"
+LOG_FILE = BASE_DIR / "agent.log"
 
-# Логгер
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
     handlers=[
         logging.FileHandler(LOG_FILE, encoding="utf-8"),
         logging.StreamHandler(sys.stdout)
     ]
 )
-logger = logging.getLogger("XBrowser")
-
-diag(f"BASE_DIR: {BASE_DIR}")
-diag(f"LOG_FILE: {LOG_FILE}")
-
-# === ПРОВЕРКА TELEBOT ===
-try:
-    import telebot
-    diag(f"telebot импортирован: v{telebot.__version__}")
-except ImportError as e:
-    diag(f"ОШИБКА: telebot не установлен! {e}")
-    diag("Выполни: pip install pyTelegramBotAPI")
-    sys.exit(1)
-
-# === ПРОВЕРКА ТОКЕНА ===
-TOKEN = os.environ.get("BOT_TOKEN")
-if not TOKEN:
-    TOKEN = "ВСТАВЬ_ТОКЕН_СЮДА"
-    diag("ВНИМАНИЕ: BOT_TOKEN не найден в env, используется заглушка!")
-    diag("Задай токен: export BOT_TOKEN='твой_токен'")
-else:
-    diag(f"Токен получен: {TOKEN[:10]}...")
-
-if TOKEN == "ВСТАВЬ_ТОКЕН_СЮДА":
-    diag("КРИТИЧЕСКАЯ ОШИБКА: Токен не задан! Бот не запустится.")
-    # Не выходим — пусть упадёт позже, чтобы видно было в логах
-
-diag("Создаю бота...")
-try:
-    bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
-    diag("Бот создан успешно")
-except Exception as e:
-    diag(f"ОШИБКА создания бота: {e}")
-    traceback.print_exc()
-    sys.exit(1)
+logger = logging.getLogger("SeleniumXAgent")
 
 # === ВЕРСИИ ===
 CHROME_VERSION = "126.0.6478.126"
@@ -89,6 +39,8 @@ DRIVER_ZIP = f"{BASE_URL}/chromedriver-linux64.zip"
 
 
 class ChromeInstaller:
+    """Установщик Chrome + ChromeDriver"""
+    
     def __init__(self):
         self.chrome_path = None
         self.driver_path = None
@@ -209,103 +161,104 @@ class ChromeInstaller:
         return False
 
 
-# === ГЛОБАЛЬНЫЙ УСТАНОВЩИК ===
-diag("Инициализация ChromeInstaller...")
-installer = ChromeInstaller()
-diag(f"Installer ready: {installer.ready}")
-diag(f"Chrome: {installer.chrome_path or 'НЕТ'}")
-diag(f"Driver: {installer.driver_path or 'НЕТ'}")
+# === ГЛОБАЛЬНЫЙ ЭКЗЕМПЛЯР ===
+_installer = ChromeInstaller()
+
+
+def get_full_status():
+    """Для совместимости со старым кодом"""
+    return {
+        "selenium_pip": {"installed": False, "version": None},  # Пока не проверяем pip
+        "chrome_browser": {"found": _installer.status()["chrome"]["found"], "path": _installer.chrome_path},
+        "chromedriver": {"ready": _installer.status()["driver"]["found"], "path": _installer.driver_path},
+        "agent_ready": _installer.ready,
+        "cookies_exist": False,
+        "auth_info": None,
+        "selenium_dir": str(BASE_DIR),
+    }
+
+
+def get_auth_info():
+    return None
+
+
+def AGENT_READY():
+    return _installer.ready
 
 
 def icon(flag: bool) -> str:
     return "✅" if flag else "❌"
 
 
-# === ОБРАБОТЧИКИ ===
-@bot.message_handler(commands=["start", "help"])
-def cmd_help(message):
-    diag(f"КОМАНДА /start от user={message.from_user.id}")
-    bot.reply_to(message, (
-        "🤖 <b>X Browser Bot</b>\n\n"
-        "<b>Установка:</b>\n"
-        "  /status — Проверить Chrome\n"
-        "  /install — Установить Chrome + Driver\n\n"
-        "<b>Браузер:</b>\n"
-        "  /explore [url] — Открыть страницу\n"
-    ))
-
-
-@bot.message_handler(commands=["status"])
-def cmd_status(message):
-    diag(f"КОМАНДА /status от user={message.from_user.id}")
-    st = installer.status()
-    text = (
-        "📊 <b>Статус системы</b>\n\n"
-        f"{icon(st['chrome']['found'])} <b>Chrome:</b> <code>{st['chrome']['path'] or 'не найден'}</code>\n"
-        f"{icon(st['driver']['found'])} <b>Driver:</b> <code>{st['driver']['path'] or 'не найден'}</code>\n\n"
-        f"{'🟢' if st['ready'] else '🔴'} <b>Готов:</b> {'Да' if st['ready'] else 'Нет'}\n"
-        f"📁 <b>Директория:</b> <code>{st['base_dir']}</code>"
-    )
-    if not st['ready']:
-        text += "\n\n⚠️ Нажми /install"
-    bot.reply_to(message, text)
-
-
-@bot.message_handler(commands=["install"])
-def cmd_install(message):
-    diag(f"КОМАНДА /install от user={message.from_user.id}")
-    if installer.ready:
-        bot.reply_to(message, "🟢 Уже установлено!\n/status")
-        return
+def register_selenium_bot(bot):
+    """Регистрация команд в основном боте"""
+    logger.info("Регистрация Selenium команд...")
     
-    msg = bot.reply_to(message, "⏳ Скачиваю Chrome + Driver...\n<i>1-2 минуты</i>")
-    success = installer.install()
+    @bot.message_handler(commands=["se_status"])
+    def se_status(message):
+        st = _installer.status()
+        text = (
+            "🚗 <b>Selenium X Agent — Статус</b>\n\n"
+            f"{icon(st['chrome']['found'])} <b>Chrome:</b> <code>{st['chrome']['path'] or 'не найден'}</code>\n"
+            f"{icon(st['driver']['found'])} <b>Driver:</b> <code>{st['driver']['path'] or 'не найден'}</code>\n\n"
+            f"{'🟢' if st['ready'] else '🔴'} <b>Agent готов:</b> {'Да' if st['ready'] else 'Нет'}\n"
+            f"📁 <b>Директория:</b> <code>{st['base_dir']}</code>"
+        )
+        if not st['ready']:
+            text += "\n\n⚠️ Нажми /se_install"
+        bot.reply_to(message, text, parse_mode="HTML")
     
-    if success:
-        bot.edit_message_text(
-            f"✅ <b>Установка завершена!</b>\n\n"
-            f"🌐 Chrome: <code>{installer.chrome_path}</code>\n"
-            f"🔧 Driver: <code>{installer.driver_path}</code>\n\n"
-            f"/explore https://x.com/login",
-            chat_id=msg.chat.id,
-            message_id=msg.message_id,
-        )
-    else:
-        bot.edit_message_text(
-            "❌ <b>Ошибка установки</b>\n\n"
-            "Проверь логи:\n"
-            f"<code>{LOG_FILE}</code>",
-            chat_id=msg.chat.id,
-            message_id=msg.message_id,
-        )
+    @bot.message_handler(commands=["se_install"])
+    def se_install(message):
+        if _installer.ready:
+            bot.reply_to(message, "🟢 Уже установлено!\n/se_status", parse_mode="HTML")
+            return
+        
+        msg = bot.reply_to(message, "⏳ Скачиваю Chrome + Driver...\n<i>1-2 минуты</i>", parse_mode="HTML")
+        
+        try:
+            success = _installer.install()
+        except Exception as e:
+            logger.error(f"Install error: {e}")
+            bot.edit_message_text(
+                f"❌ <b>Ошибка:</b> <code>{str(e)[:200]}</code>",
+                chat_id=msg.chat.id,
+                message_id=msg.message_id,
+                parse_mode="HTML"
+            )
+            return
+        
+        if success:
+            bot.edit_message_text(
+                f"✅ <b>Установка завершена!</b>\n\n"
+                f"🌐 Chrome: <code>{_installer.chrome_path}</code>\n"
+                f"🔧 Driver: <code>{_installer.driver_path}</code>\n\n"
+                f"/se_status — проверить",
+                chat_id=msg.chat.id,
+                message_id=msg.message_id,
+                parse_mode="HTML"
+            )
+        else:
+            bot.edit_message_text(
+                "❌ <b>Установка не завершена</b>\n\n"
+                f"Проверь логи: <code>{LOG_FILE}</code>\n"
+                "/se_install — повторить",
+                chat_id=msg.chat.id,
+                message_id=msg.message_id,
+                parse_mode="HTML"
+            )
+    
+    @bot.message_handler(commands=["se_help"])
+    def se_help(message):
+        bot.reply_to(message, (
+            "🚗 <b>Selenium X Agent</b>\n\n"
+            "/se_status — Статус системы\n"
+            "/se_install — Установить Chrome + Driver\n"
+            "/se_help — Эта помощь\n\n"
+            "<i>Браузер ставится автоматически в чате</i>"
+        ), parse_mode="HTML")
+    
+    logger.info("Selenium команды зарегистрированы")
 
 
-@bot.message_handler(commands=["explore"])
-def cmd_explore(message):
-    diag(f"КОМАНДА /explore от user={message.from_user.id}")
-    if not installer.ready:
-        bot.reply_to(message, "❌ Сначала /install")
-        return
-    args = message.text.split()
-    url = args[1] if len(args) > 1 else "https://x.com/login"
-    bot.reply_to(message, f"🔍 Открываю: {url}\n<i>10 сек...</i>")
-    bot.reply_to(message, f"✅ Браузер готов!\nChrome: {installer.chrome_path}")
-
-
-@bot.message_handler(func=lambda m: True)
-def cmd_any(message):
-    diag(f"ЛЮБОЕ СООБЩЕНИЕ от user={message.from_user.id}: {message.text[:50]}")
-    # Не отвечаем, чтобы не спамить
-
-
-# === ЗАПУСК ===
-if __name__ == "__main__":
-    diag("=" * 50)
-    diag("Запускаю bot.polling()...")
-    diag("=" * 50)
-    try:
-        bot.polling(none_stop=True, interval=0, timeout=20)
-    except Exception as e:
-        diag(f"ОШИБКА polling: {e}")
-        traceback.print_exc()
-        sys.exit(1)
+logger.info(f"Selenium module loaded. Chrome ready: {_installer.ready}")
