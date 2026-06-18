@@ -1,4 +1,4 @@
-# selenium_x_agent.py — Selenium X/Twitter агент с командами отладки
+# selenium_x_agent.py — Полный код с исследователем страниц и живыми уведомлениями
 import os
 import sys
 import subprocess
@@ -408,6 +408,7 @@ class SeleniumXAgent:
         self._chat_id = None
         self._bot = None
         self._current_proxy = None
+        self._log_callback = None
         logger.info("SeleniumXAgent initialized")
     
     def set_progress_callback(self, callback):
@@ -423,6 +424,9 @@ class SeleniumXAgent:
     def set_bot(self, bot):
         self._bot = bot
     
+    def set_log_callback(self, callback):
+        self._log_callback = callback
+    
     def _report(self, step, message):
         print(f"[SE] [{step}] {message}")
         logger.info(f"[{step}] {message}")
@@ -431,6 +435,14 @@ class SeleniumXAgent:
                 self._progress_callback(step, message)
             except Exception as e:
                 logger.error(f"Callback error: {e}")
+    
+    def _send_log(self, message):
+        """Отправить лог в чат"""
+        if self._log_callback:
+            try:
+                self._log_callback(message)
+            except Exception as e:
+                logger.error(f"Log callback error: {e}")
     
     def _request_user_input(self, input_type, prompt, timeout=60):
         logger.info(f"Requesting {input_type} from user")
@@ -635,691 +647,145 @@ class SeleniumXAgent:
             logger.error(f"Cookie save error: {e}")
             return False
     
-    # ========== МЕТОДЫ ДЛЯ ОТЛАДКИ ==========
+    # ========== ИССЛЕДОВАТЕЛЬ СТРАНИЦ ==========
     
-    def get_page_html(self, url="https://x.com/login", max_chars=10000):
-        """Получить HTML страницы для отладки"""
+    def explore_page_with_log(self, url):
+        """Исследовать страницу с отправкой логов в чат"""
+        
+        logger.info("="*60)
+        logger.info(f"START EXPLORE: {url}")
+        logger.info("="*60)
+        
         try:
+            from selenium.webdriver.common.by import By
+            
+            self._send_log("⏳ Запуск браузера...")
             self._create_driver()
+            
+            self._send_log("📥 Загрузка страницы...")
             self.driver.get(url)
-            time.sleep(5)
-            html = self.driver.page_source[:max_chars]
-            self.driver.quit()
-            self.driver = None
-            return html
-        except Exception as e:
-            logger.error(f"Get HTML error: {e}")
-            return None
-    
-    def find_google_in_page(self):
-        """Найти кнопку Google в HTML страницы"""
-        try:
-            from selenium.webdriver.common.by import By
+            time.sleep(4)
             
-            self._create_driver()
-            self.driver.get("https://x.com/login")
-            time.sleep(5)
+            self._screenshot("explore_1", send_to_chat=True, caption="📸 Страница загружена")
             
-            html = self.driver.page_source
-            results = []
-            
-            # Ищем Google в HTML
-            google_patterns = [
-                "Continue with Google",
-                "Sign in with Google",
-                "google",
-                "Google",
-                "oauth",
-                "OAuth",
-            ]
-            
-            for pattern in google_patterns:
-                if pattern in html:
-                    results.append(f"✅ Найдено в HTML: {pattern}")
-            
-            # Ищем элементы с Google
-            try:
-                elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Google')]")
-                for elem in elements:
-                    try:
-                        results.append(f"🔍 Элемент: <{elem.tag_name}> | {elem.text[:100]}")
-                    except:
-                        pass
-            except:
-                pass
-            
-            # Ищем все кнопки
+            # === ШАГ 1: ПОИСК КНОПОК ===
+            self._send_log("🔍 Поиск всех кнопок...")
             buttons = self.driver.find_elements(By.TAG_NAME, "button")
-            results.append(f"\n📊 Найдено кнопок: {len(buttons)}")
-            for i, btn in enumerate(buttons[:10]):
-                try:
-                    text = btn.text[:50] if btn.text else "пусто"
-                    results.append(f"  {i+1}. {text}")
-                except:
-                    pass
+            self._send_log(f"🔍 Найдено {len(buttons)} кнопок")
             
-            self.driver.quit()
-            self.driver = None
-            
-            return "\n".join(results) if results else "❌ Ничего не найдено"
-        except Exception as e:
-            logger.error(f"Find Google error: {e}")
-            return f"❌ Ошибка: {e}"
-    
-    # ========== ОСНОВНЫЕ МЕТОДЫ ==========
-    
-    def google_login(self, google_email, google_password):
-        """Вход через Google с использованием всех методов поиска"""
-        
-        logger.info("="*60)
-        logger.info(f"START GOOGLE LOGIN for {google_email}")
-        logger.info("="*60)
-        
-        try:
-            from selenium.webdriver.common.by import By
-            from selenium.webdriver.support.ui import WebDriverWait
-            from selenium.webdriver.support import expected_conditions as EC
-            
-            self._report("start", "🚀 Вход через Google")
-            self._create_driver()
-            
-            # === ОТКРЫВАЕМ СТРАНИЦУ ВХОДА X ===
-            self.driver.get("https://x.com/login")
-            time.sleep(5)
-            
-            if "home" in self.driver.current_url:
-                logger.info("✅ Уже на home!")
-                self._save_cookies()
-                save_auth_info("google_user", google_email, {"method": "google_direct"})
-                return True, None
-            
-            self._screenshot("google_start", send_to_chat=True, caption="📸 Страница входа X")
-            
-            # === ИЩЕМ КНОПКУ GOOGLE ===
+            # Показываем кнопки
+            btn_texts = []
             google_btn = None
-            
-            # Способ 1: Поиск по тексту
-            try:
-                google_btn = self.driver.find_element(By.XPATH, "//*[contains(text(), 'Continue with Google')]")
-                if google_btn.is_displayed():
-                    logger.info("✅ Найдена кнопка Google по тексту")
-            except:
-                pass
-            
-            # Способ 2: Поиск по data-testid
-            if not google_btn:
-                try:
-                    google_btn = self.driver.find_element(By.CSS_SELECTOR, '[data-testid="google-login-button"]')
-                    if google_btn.is_displayed():
-                        logger.info("✅ Найдена кнопка Google по data-testid")
-                except:
-                    pass
-            
-            # Способ 3: Поиск всех кнопок
-            if not google_btn:
-                buttons = self.driver.find_elements(By.TAG_NAME, "button")
-                for btn in buttons:
-                    try:
-                        text = btn.text.lower()
-                        if "continue with google" in text or "sign in with google" in text:
-                            if btn.is_displayed() and btn.is_enabled():
-                                google_btn = btn
-                                logger.info(f"✅ Найдена кнопка Google: {btn.text}")
-                                break
-                    except:
-                        pass
-            
-            # Способ 4: JavaScript клик
-            if not google_btn:
-                try:
-                    script = """
-                        var elements = document.querySelectorAll('*');
-                        for (var i = 0; i < elements.length; i++) {
-                            if (elements[i].textContent && 
-                                elements[i].textContent.includes('Continue with Google')) {
-                                elements[i].click();
-                                return true;
-                            }
-                        }
-                        return false;
-                    """
-                    result = self.driver.execute_script(script)
-                    if result:
-                        logger.info("✅ Клик по кнопке Google через JavaScript")
-                        time.sleep(3)
-                        # Проверяем, что перешли на Google
-                        if "google" in self.driver.current_url:
-                            return self._complete_google_login(google_email, google_password)
-                except:
-                    pass
-            
-            if google_btn:
-                self._screenshot("google_button_found", send_to_chat=True, caption="🔍 Найдена кнопка Google!")
-                google_btn.click()
-                time.sleep(3)
-                self._screenshot("google_clicked", send_to_chat=True, caption="📸 Кнопка Google нажата")
-                
-                # Проверяем, что перешли на Google
-                if "google" in self.driver.current_url:
-                    return self._complete_google_login(google_email, google_password)
-                else:
-                    return False, "❌ Не удалось перейти на страницу Google"
-            else:
-                self._screenshot("no_google_button", send_to_chat=True, caption="❌ Кнопка Google не найдена")
-                return False, "❌ Кнопка 'Continue with Google' не найдена на странице X"
-            
-        except Exception as e:
-            logger.error(f"Google login error: {e}")
-            logger.error(traceback.format_exc())
-            self._screenshot("exception", send_to_chat=True, caption=f"💥 {str(e)[:100]}")
-            return False, f"Ошибка: {e}"
-        finally:
-            if self.driver:
-                self.driver.quit()
-                self.driver = None
-            logger.info("="*60)
-            logger.info("END GOOGLE LOGIN")
-            logger.info("="*60)
-    
-    def _complete_google_login(self, google_email, google_password):
-        """Завершить вход через Google"""
-        try:
-            from selenium.webdriver.common.by import By
-            from selenium.webdriver.support.ui import WebDriverWait
-            from selenium.webdriver.support import expected_conditions as EC
-            
-            self._screenshot("google_login_page", send_to_chat=True, caption="📸 Страница входа Google")
-            
-            # === ВВОДИМ EMAIL ===
-            self._report("google_email", f"📧 Ввожу email: {google_email}")
-            
-            email_input = WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, 'input[type="email"]'))
-            )
-            if email_input.is_displayed() and email_input.is_enabled():
-                email_input.clear()
-                email_input.send_keys(google_email)
-                time.sleep(1)
-                next_btn = WebDriverWait(self.driver, 5).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[type="submit"]'))
-                )
-                next_btn.click()
-                time.sleep(3)
-            else:
-                return False, "❌ Не найдено поле для email"
-            
-            self._screenshot("google_email_entered", send_to_chat=True, caption="📧 Email Google введен")
-            
-            # === ВВОДИМ ПАРОЛЬ ===
-            self._report("google_password", "🔑 Ввожу пароль")
-            
-            password_input = WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, 'input[type="password"]'))
-            )
-            if password_input.is_displayed() and password_input.is_enabled():
-                password_input.clear()
-                password_input.send_keys(google_password)
-                time.sleep(1)
-                next_btn = WebDriverWait(self.driver, 5).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[type="submit"]'))
-                )
-                next_btn.click()
-                time.sleep(3)
-            else:
-                return False, "❌ Не найдено поле для пароля"
-            
-            self._screenshot("google_password_entered", send_to_chat=True, caption="🔑 Пароль Google введен")
-            
-            # === ОБРАБОТКА 2FA ===
-            for attempt in range(30):
-                time.sleep(1)
-                current_url = self.driver.current_url
-                logger.info(f"Проверка {attempt+1}: {current_url}")
-                
-                if "2fa" in current_url.lower() or "authenticator" in current_url.lower() or "code" in current_url.lower():
-                    self._screenshot("2fa_needed", send_to_chat=True, caption="🔐 Требуется код 2FA")
-                    self._report("2fa_needed", "🔐 Требуется код 2FA!")
-                    
-                    code = self._request_user_input(
-                        "code",
-                        "🔐 Введи код из Google Authenticator:",
-                        timeout=120
-                    )
-                    if code:
-                        code_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="text"]')
-                        for inp in code_inputs:
-                            if inp.is_displayed() and inp.is_enabled():
-                                inp.clear()
-                                inp.send_keys(code)
-                                time.sleep(1)
-                                confirm_btns = self.driver.find_elements(By.CSS_SELECTOR, 'button[type="submit"]')
-                                for btn in confirm_btns:
-                                    if btn.is_displayed() and btn.is_enabled():
-                                        btn.click()
-                                        time.sleep(3)
-                                        break
-                                break
-                    else:
-                        return False, "❌ Код 2FA не указан"
-                    continue
-                
-                if "phone" in current_url.lower() or "verify" in current_url.lower():
-                    self._screenshot("phone_confirm", send_to_chat=True, caption="📱 Требуется подтверждение")
-                    self._report("phone_confirm", "⏳ Подтверди вход на телефоне")
-                    confirm = self._request_user_input(
-                        "confirm",
-                        "📱 Подтверди вход на телефоне и отправь 'done':",
-                        timeout=180
-                    )
-                    if confirm and confirm.lower() in ["done", "готово", "ok"]:
-                        self.driver.refresh()
-                        time.sleep(3)
-                        continue
-                    else:
-                        return False, "❌ Подтверждение не получено"
-                
-                if "home" in current_url or "x.com" in current_url:
-                    logger.info("✅ Вход через Google успешен!")
-                    self._save_cookies()
-                    save_auth_info("google_user", google_email, {"method": "google_success"})
-                    self._screenshot("success", send_to_chat=True, caption="✅ Вход успешен!")
-                    return True, None
-                
-                if "error" in current_url.lower():
-                    self._screenshot("error", send_to_chat=True, caption="❌ Ошибка входа")
-                    return False, "❌ Ошибка входа"
-            
-            return False, "⏰ Таймаут входа"
-            
-        except Exception as e:
-            logger.error(f"Complete Google login error: {e}")
-            return False, f"Ошибка: {e}"
-    
-    def login(self, username, password, email=None):
-        """Обычный вход в X с username/пароль"""
-        
-        logger.info("="*60)
-        logger.info(f"START LOGIN for {username}")
-        logger.info("="*60)
-        
-        target_username = username.strip().lstrip("@") if username else "unknown"
-        
-        try:
-            from selenium.webdriver.common.by import By
-            from selenium.webdriver.common.keys import Keys
-            
-            self._report("start", f"🚀 Авторизация @{target_username}")
-            self._create_driver()
-            
-            login_urls = ["https://x.com/login", "https://x.com/i/flow/login?force_login=true"]
-            
-            for login_url in login_urls:
-                try:
-                    logger.info(f"Пробую URL: {login_url}")
-                    self.driver.get(login_url)
-                    time.sleep(5)
-                    
-                    if "home" in self.driver.current_url:
-                        logger.info("✅ Уже на home!")
-                        self._save_cookies()
-                        save_auth_info(target_username, email, {"method": "already_logged"})
-                        return True, None
-                    
-                    break
-                except Exception as e:
-                    logger.warning(f"URL {login_url} не работает: {e}")
-                    continue
-            
-            self._screenshot("login_page", send_to_chat=True, caption="📸 Страница входа X/Twitter")
-            
-            # === ИЩЕМ ПОЛЕ ДЛЯ USERNAME ===
-            username_input = None
-            selectors = [
-                'input[autocomplete="username"]',
-                'input[name="text"]',
-                'input[type="text"]',
-                'input[data-testid="ocfEnterTextTextInput"]',
-                'input[placeholder*="username" i]',
-                'input[placeholder*="email" i]',
-                'input[placeholder*="phone" i]',
-            ]
-            
-            for selector in selectors:
-                try:
-                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                    for elem in elements:
-                        if elem.is_displayed() and elem.is_enabled():
-                            username_input = elem
-                            logger.info(f"Найдено поле username: {selector}")
-                            break
-                    if username_input:
-                        break
-                except Exception as e:
-                    logger.debug(f"Selector {selector} error: {e}")
-            
-            if not username_input:
-                inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input:not([type="hidden"]):not([type="password"])')
-                for inp in inputs:
-                    if inp.is_displayed() and inp.is_enabled():
-                        username_input = inp
-                        logger.info("Найдено поле username (поиск по всем полям)")
-                        break
-            
-            if not username_input:
-                self._screenshot("no_username_field", send_to_chat=True, caption="❌ Поле username не найдено")
-                return False, "❌ Не найдено поле для username"
-            
-            username_input.clear()
-            username_input.send_keys(target_username)
-            logger.info(f"✅ Username введён: @{target_username}")
-            time.sleep(1)
-            
-            self._screenshot("username_entered", send_to_chat=True, caption=f"✅ Username введён: @{target_username}")
-            self._report("username", f"✅ Username введён: @{target_username}")
-            
-            # === НАЖИМАЕМ NEXT ===
-            next_clicked = False
-            
-            buttons = self.driver.find_elements(By.TAG_NAME, "button")
             for btn in buttons:
                 try:
-                    text = btn.text.lower()
-                    if 'next' in text or 'continue' in text or 'далее' in text:
-                        if btn.is_displayed() and btn.is_enabled():
-                            logger.info(f"Нажимаю: {btn.text}")
-                            btn.click()
-                            next_clicked = True
-                            time.sleep(3)
-                            break
+                    text = btn.text[:40] if btn.text else "[пусто]"
+                    btn_texts.append(f"  • {text}")
+                    if "google" in text.lower() or "Google" in text:
+                        google_btn = btn
                 except:
                     pass
             
-            if not next_clicked:
-                try:
-                    btn = self.driver.find_element(By.CSS_SELECTOR, 'button[type="submit"]')
-                    if btn.is_displayed() and btn.is_enabled():
-                        btn.click()
-                        next_clicked = True
-                        logger.info("Нажал Next (submit)")
-                        time.sleep(3)
-                except:
-                    pass
+            if btn_texts:
+                self._send_log(f"🔍 <b>Найдено {len(buttons)} кнопок</b>\n\n" + "\n".join(btn_texts[:10]))
             
-            if not next_clicked:
-                try:
-                    btn = self.driver.find_element(By.CSS_SELECTOR, '[data-testid="ocfEnterTextNextButton"]')
-                    if btn.is_displayed() and btn.is_enabled():
-                        btn.click()
-                        next_clicked = True
-                        logger.info("Нажал Next (data-testid)")
-                        time.sleep(3)
-                except:
-                    pass
+            # === ШАГ 2: ПОИСК GOOGLE ===
+            self._send_log("🔍 Поиск Google...")
+            page_text = self.driver.page_source.lower()
             
-            if not next_clicked:
-                try:
-                    username_input.send_keys(Keys.RETURN)
-                    next_clicked = True
-                    logger.info("Нажал Enter")
-                    time.sleep(3)
-                except:
-                    pass
-            
-            if not next_clicked:
-                self._screenshot("next_failed", send_to_chat=True, caption="❌ Не удалось нажать Next")
-                return False, "❌ Не удалось нажать Next"
-            
-            self._screenshot("after_next", send_to_chat=True, caption="📸 После нажатия Next")
-            self._report("next", "✅ Next нажат")
-            
-            # === ЖДЕМ ПОЯВЛЕНИЯ ПОЛЯ ===
-            found_field = False
-            email_used = email
-            phone_used = None
-            
-            for attempt in range(25):
-                time.sleep(1)
-                logger.info(f"Поиск полей: {attempt+1}/25")
+            if "google" in page_text or "Google" in self.driver.page_source:
+                self._send_log("🔍 ✅ GOOGLE НАЙДЕН!")
                 
-                current_url = self.driver.current_url
-                logger.info(f"URL: {current_url}")
-                
-                if "home" in current_url:
-                    logger.info("✅ Уже на home!")
-                    self._save_cookies()
-                    save_auth_info(target_username, email_used, {"method": "home_after_login"})
-                    self._screenshot("home_success", send_to_chat=True, caption="✅ Успешно на домашней странице!")
-                    return True, None
-                
-                # === ПОЛЕ ПАРОЛЯ ===
-                password_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="password"]')
-                for inp in password_inputs:
-                    if inp.is_displayed() and inp.is_enabled():
-                        logger.info("✅ Найдено поле пароля!")
-                        self._screenshot("password_field", send_to_chat=True, caption="🔑 Найдено поле пароля")
-                        
-                        inp.clear()
-                        inp.send_keys(password)
-                        time.sleep(1)
-                        
-                        login_btns = self.driver.find_elements(By.CSS_SELECTOR, 'button[type="submit"], button[data-testid="LoginForm_Login_Button"]')
-                        if not login_btns:
-                            login_btns = self.driver.find_elements(By.XPATH, "//span[contains(text(), 'Log in')]/..")
-                        if not login_btns:
-                            login_btns = self.driver.find_elements(By.XPATH, "//span[contains(text(), 'Sign in')]/..")
-                        
-                        for btn in login_btns:
-                            if btn.is_displayed() and btn.is_enabled():
-                                logger.info("Нажимаю Login")
-                                btn.click()
-                                time.sleep(3)
-                                break
-                        
-                        found_field = True
-                        break
-                
-                if found_field:
-                    break
-                
-                # === ПОЛЕ EMAIL ===
-                email_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="email"], input[name="email"], input[placeholder*="email" i]')
-                for inp in email_inputs:
-                    if inp.is_displayed() and inp.is_enabled():
-                        logger.info("📧 Найдено поле EMAIL!")
-                        self._screenshot("email_field", send_to_chat=True, caption="📧 Найдено поле email")
-                        
-                        if email_used:
-                            logger.info(f"Заполняю email: {email_used}")
-                            inp.clear()
-                            inp.send_keys(email_used)
-                            time.sleep(1)
-                        else:
-                            self._report("email_needed", "📧 Требуется email для верификации!")
-                            email_used = self._request_user_input(
-                                "email",
-                                "📧 Введи email, привязанный к аккаунту:",
-                                timeout=60
-                            )
-                            if email_used:
-                                inp.clear()
-                                inp.send_keys(email_used)
-                                time.sleep(1)
-                            else:
-                                return False, "❌ Email не указан"
-                        
-                        next_btns = self.driver.find_elements(By.CSS_SELECTOR, 'button[type="submit"]')
-                        for btn in next_btns:
-                            if btn.is_displayed() and btn.is_enabled():
-                                btn.click()
-                                time.sleep(3)
-                                break
-                        
-                        found_field = True
-                        break
-                
-                if found_field:
-                    break
-                
-                # === ПОЛЕ ТЕЛЕФОНА ===
-                phone_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="tel"], input[name="phone"], input[placeholder*="phone" i]')
-                for inp in phone_inputs:
-                    if inp.is_displayed() and inp.is_enabled():
-                        logger.info("📱 Найдено поле ТЕЛЕФОНА!")
-                        self._screenshot("phone_page", send_to_chat=True, caption="📱 X требует номер телефона!")
-                        
-                        self._report("phone_needed", "📱 Требуется номер телефона!")
-                        phone_used = self._request_user_input(
-                            "phone",
-                            "📱 Введи номер телефона (с кодом страны):",
-                            timeout=60
-                        )
-                        
-                        if phone_used:
-                            inp.clear()
-                            inp.send_keys(phone_used)
-                            time.sleep(2)
-                            
-                            self._screenshot("phone_entered", send_to_chat=True, caption=f"📱 Номер телефона введен")
-                            
-                            next_btns = self.driver.find_elements(By.CSS_SELECTOR, 'button[type="submit"]')
-                            for btn in next_btns:
-                                if btn.is_displayed() and btn.is_enabled():
-                                    logger.info("Нажимаю Next после телефона")
-                                    btn.click()
-                                    time.sleep(3)
-                                    break
-                            
-                            for wait in range(10):
-                                time.sleep(1)
-                                code_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[inputmode="numeric"], input[type="text"][maxlength="6"]')
-                                if code_inputs:
-                                    logger.info("🔑 Найдено поле для кода!")
-                                    self._screenshot("code_field", send_to_chat=True, caption="🔑 Поле для кода подтверждения")
-                                    found_field = True
-                                    break
-                        else:
-                            return False, "❌ Телефон не указан"
-                        
-                        found_field = True
-                        break
-                
-                if found_field:
-                    break
-                
-                # === КОД ПОДТВЕРЖДЕНИЯ ===
-                code_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[inputmode="numeric"], input[type="text"][maxlength="6"], input[placeholder*="code" i]')
-                for inp in code_inputs:
-                    if inp.is_displayed() and inp.is_enabled():
-                        logger.info("🔑 Найдено поле для кода подтверждения!")
-                        self._screenshot("code_page", send_to_chat=True, caption="🔑 Требуется код подтверждения")
-                        
-                        self._report("code_needed", "🔑 Требуется код подтверждения!")
-                        code = self._request_user_input(
-                            "code",
-                            "🔑 Введите код подтверждения из SMS:",
-                            timeout=120
-                        )
-                        if code:
-                            inp.clear()
-                            inp.send_keys(code)
-                            time.sleep(1)
-                            self._screenshot("code_entered", send_to_chat=True, caption="🔑 Код введен")
-                            
-                            confirm_btns = self.driver.find_elements(By.CSS_SELECTOR, 'button[type="submit"]')
-                            for btn in confirm_btns:
-                                if btn.is_displayed() and btn.is_enabled():
-                                    btn.click()
-                                    time.sleep(3)
-                                    break
-                            found_field = True
-                            break
-                        else:
-                            return False, "❌ Код не введен"
-                
-                if found_field:
-                    break
-            
-            if not found_field:
-                self._screenshot("no_fields_found", send_to_chat=True, caption="❌ Не найдено ни одного поля")
-                self._save_html("debug_page")
-                return False, "❌ Не найдено ни одного поля для ввода"
-            
-            # === ПРОВЕРКА РЕЗУЛЬТАТА ===
-            for attempt in range(15):
-                time.sleep(1)
-                final_url = self.driver.current_url
-                logger.info(f"Проверка {attempt+1}: {final_url}")
-                
-                if "home" in final_url:
-                    logger.info("✅ Авторизация успешна!")
-                    self._screenshot("login_success", send_to_chat=True, caption="🎉 Авторизация успешна!")
-                    self._save_cookies()
-                    
-                    profile_data = {
-                        "login_method": "direct",
-                        "login_url": final_url,
-                        "email_used": bool(email_used)
-                    }
-                    
+                # Ищем кнопку Google
+                if not google_btn:
                     try:
-                        self.driver.get(f"https://x.com/{target_username}")
-                        time.sleep(2)
-                        stats = self.driver.find_elements(By.CSS_SELECTOR, 'a[href$="/following"] span span')
-                        for stat in stats:
-                            if any(c.isdigit() for c in stat.text):
-                                profile_data["following_count"] = stat.text
-                                break
-                        stats = self.driver.find_elements(By.CSS_SELECTOR, 'a[href$="/followers"] span span')
-                        for stat in stats:
-                            if any(c.isdigit() for c in stat.text):
-                                profile_data["followers_count"] = stat.text
-                                break
+                        google_btn = self.driver.find_element(By.XPATH, "//*[contains(text(), 'Continue with Google')]")
                     except:
                         pass
-                    
-                    save_auth_info(target_username, email_used, profile_data)
-                    self._report("done", "✅ Авторизация завершена!")
-                    return True, None
                 
-                # Проверяем ошибки
-                error_elements = self.driver.find_elements(By.CSS_SELECTOR, '[role="alert"], [data-testid="toast"]')
-                for err in error_elements:
-                    if err.is_displayed():
-                        err_text = err.text
-                        if err_text and len(err_text) > 3:
-                            logger.error(f"Error found: {err_text}")
-                            self._screenshot("login_error", send_to_chat=True, caption=f"❌ Ошибка: {err_text}")
-                            return False, f"❌ {err_text}"
+                if not google_btn:
+                    try:
+                        google_btn = self.driver.find_element(By.CSS_SELECTOR, '[data-testid="google-login-button"]')
+                    except:
+                        pass
+                
+                if google_btn:
+                    self._send_log(f"🔍 <b>✅ КНОПКА GOOGLE НАЙДЕНА!</b>\n\n"
+                                  f"📌 Тег: {google_btn.tag_name}\n"
+                                  f"📌 Отображается: {google_btn.is_displayed()}\n"
+                                  f"📌 Включена: {google_btn.is_enabled()}")
+                    
+                    self._screenshot("google_found", send_to_chat=True, caption="🔍 Кнопка Google найдена!")
+                    
+                    # Спрашиваем, кликать ли
+                    self._send_log("🖱️ <b>Хотите кликнуть по кнопке Google?</b>\n\nОтправь 'yes' или 'no'")
+                    
+                    confirm = self._request_user_input(
+                        "confirm",
+                        "🖱️ Найдена кнопка Google! Кликнуть? (yes/no)",
+                        timeout=30
+                    )
+                    
+                    if confirm and confirm.lower() in ["yes", "да", "y", "1", "+"]:
+                        self._send_log("🖱️ Кликаю по кнопке Google...")
+                        google_btn.click()
+                        time.sleep(3)
+                        self._screenshot("google_clicked", send_to_chat=True, caption="🖱️ Кнопка Google нажата!")
+                        self._send_log("🖱️ ✅ Клик выполнен!")
+                    else:
+                        self._send_log("⏭️ Клик пропущен")
+                else:
+                    self._send_log("🔍 ❌ Кнопка Google не найдена")
+            else:
+                self._send_log("🔍 ❌ Google не найден на странице")
             
-            self._screenshot("login_final", send_to_chat=True, caption="❌ Авторизация не удалась")
-            return False, f"Авторизация не удалась. URL: {self.driver.current_url}"
+            # === ШАГ 3: СКРОЛЛ ===
+            self._send_log("📜 Прокрутка страницы...")
+            self.driver.execute_script("window.scrollTo(0, 500);")
+            time.sleep(1)
+            self._screenshot("explore_scroll", send_to_chat=True, caption="📜 После прокрутки")
+            self._send_log("📜 ✅ Скролл выполнен")
+            
+            # === ШАГ 4: ПОИСК ПОЛЕЙ ===
+            self._send_log("📝 Поиск полей ввода...")
+            inputs = self.driver.find_elements(By.TAG_NAME, "input")
+            input_types = []
+            for inp in inputs[:10]:
+                try:
+                    inp_type = inp.get_attribute("type") or "text"
+                    placeholder = inp.get_attribute("placeholder") or ""
+                    input_types.append(f"  • type={inp_type} placeholder={placeholder[:20]}")
+                except:
+                    pass
+            
+            if input_types:
+                self._send_log(f"📝 Найдено {len(inputs)} полей\n\n" + "\n".join(input_types[:5]))
+            
+            # === ШАГ 5: ИТОГ ===
+            self._send_log("📊 <b>ИССЛЕДОВАНИЕ ЗАВЕРШЕНО!</b>\n\n"
+                          f"📊 Кнопок найдено: {len(buttons)}\n"
+                          f"📝 Полей ввода: {len(inputs)}\n"
+                          f"🔍 Google: {'✅' if 'google' in page_text else '❌'}\n"
+                          f"🖱️ Клик: {'✅' if google_btn and confirm and confirm.lower() in ['yes','да','y','1','+'] else '❌'}\n"
+                          f"📸 Скриншотов: 4\n\n"
+                          f"<i>Скриншоты сохранены в папке screenshots/</i>")
+            
+            self._screenshot("explore_done", send_to_chat=True, caption="✅ Исследование завершено!")
+            self._save_html("explore_page")
+            
+            return "✅ Исследование завершено! Смотрите скриншоты и логи в чате."
             
         except Exception as e:
-            logger.error(f"Login error: {e}")
+            logger.error(f"Explore error: {e}")
             logger.error(traceback.format_exc())
-            self._screenshot("login_exception", send_to_chat=True, caption=f"💥 Ошибка: {str(e)[:100]}")
-            return False, f"Ошибка: {e}"
+            self._send_log(f"❌ <b>Ошибка:</b> {str(e)}")
+            return f"❌ Ошибка: {e}"
         finally:
             if self.driver:
                 self.driver.quit()
                 self.driver = None
             logger.info("="*60)
-            logger.info("END LOGIN")
+            logger.info("END EXPLORE")
             logger.info("="*60)
-    
-    def capture_screenshot(self, url, wait=5):
-        try:
-            self._create_driver()
-            self.driver.get(url)
-            time.sleep(wait)
-            path = self._screenshot("capture", send_to_chat=False)
-            html_path = self._save_html("capture")
-            self.driver.quit()
-            self.driver = None
-            return path, html_path
-        except Exception as e:
-            logger.error(f"Capture error: {e}")
-            return None, None
 
 
 se_agent = SeleniumXAgent()
@@ -1420,15 +886,119 @@ def register_selenium_bot(bot):
         except Exception as e:
             bot.reply_to(message, f"❌ Ошибка чтения логов: {e}")
     
-    # ========== НОВЫЕ КОМАНДЫ ДЛЯ ОТЛАДКИ ==========
+    # ========== ИССЛЕДОВАТЕЛЬ СТРАНИЦ ==========
+    
+    @bot.message_handler(commands=["se_explore"])
+    def se_explore_command(message):
+        """Исследовать страницу с живыми уведомлениями"""
+        args = message.text.split()
+        url = args[1] if len(args) > 1 else "https://x.com/login"
+        
+        chat_id = message.chat.id
+        
+        # Передаем chat_id и bot в агент
+        se_agent.set_chat_id(chat_id)
+        se_agent.set_bot(bot)
+        
+        # Создаем сообщение для лога
+        log_msg = bot.send_message(chat_id,
+            f"🕵️ <b>ИССЛЕДОВАТЕЛЬ СТРАНИЦ</b>\n\n"
+            f"📄 {url}\n"
+            f"⏳ Статус: <i>Запуск...</i>\n"
+            f"{'='*30}",
+            parse_mode="HTML"
+        )
+        
+        def update_log(text):
+            """Обновляет лог в чате"""
+            try:
+                bot.edit_message_text(
+                    f"🕵️ <b>ИССЛЕДОВАТЕЛЬ СТРАНИЦ</b>\n\n"
+                    f"📄 {url}\n"
+                    f"{text}\n"
+                    f"{'='*30}",
+                    chat_id=chat_id,
+                    message_id=log_msg.message_id,
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                logger.debug(f"Log update error: {e}")
+        
+        # Устанавливаем callback для логов
+        se_agent.set_log_callback(update_log)
+        
+        def do_explore():
+            return se_agent.explore_page_with_log(url)
+        
+        result, error = run_sync_task(do_explore)
+        
+        se_agent.set_log_callback(None)
+        
+        if error:
+            bot.reply_to(message, f"❌ {error}")
+        else:
+            bot.reply_to(message, f"✅ {result}")
     
     @bot.message_handler(commands=["se_find_google"])
     def se_find_google_command(message):
         """Найти кнопку Google в HTML страницы"""
         bot.reply_to(message, "🔍 Ищу кнопку Google на странице...\n<i>Это может занять 10-15 секунд</i>", parse_mode="HTML")
         
-        result = se_agent.find_google_in_page()
-        bot.reply_to(message, f"📊 <b>Результаты поиска Google:</b>\n\n<code>{result}</code>", parse_mode="HTML")
+        def find_google():
+            try:
+                se_agent._create_driver()
+                se_agent.driver.get("https://x.com/login")
+                time.sleep(5)
+                
+                html = se_agent.driver.page_source
+                results = []
+                
+                # Ищем Google в HTML
+                google_patterns = [
+                    "Continue with Google",
+                    "Sign in with Google",
+                    "google",
+                    "Google",
+                    "oauth",
+                    "OAuth",
+                ]
+                
+                for pattern in google_patterns:
+                    if pattern in html:
+                        results.append(f"✅ Найдено в HTML: {pattern}")
+                
+                # Ищем элементы с Google
+                from selenium.webdriver.common.by import By
+                elements = se_agent.driver.find_elements(By.XPATH, "//*[contains(text(), 'Google')]")
+                for elem in elements:
+                    try:
+                        results.append(f"🔍 Элемент: <{elem.tag_name}> | {elem.text[:100]}")
+                    except:
+                        pass
+                
+                # Ищем все кнопки
+                buttons = se_agent.driver.find_elements(By.TAG_NAME, "button")
+                results.append(f"\n📊 Найдено кнопок: {len(buttons)}")
+                for i, btn in enumerate(buttons[:10]):
+                    try:
+                        text = btn.text[:50] if btn.text else "пусто"
+                        results.append(f"  {i+1}. {text}")
+                    except:
+                        pass
+                
+                se_agent.driver.quit()
+                se_agent.driver = None
+                
+                return "\n".join(results) if results else "❌ Ничего не найдено"
+            except Exception as e:
+                return f"❌ Ошибка: {e}"
+        
+        result = run_sync_task(find_google)
+        
+        if result[1]:
+            bot.reply_to(message, f"❌ {result[1]}")
+        else:
+            bot.reply_to(message, f"📊 <b>Результаты поиска Google:</b>\n\n<code>{result[0]}</code>", parse_mode="HTML")
     
     @bot.message_handler(commands=["se_view_html"])
     def se_view_html_command(message):
@@ -1438,10 +1008,22 @@ def register_selenium_bot(bot):
         
         bot.reply_to(message, f"📄 Загружаю HTML страницы {url}...\n<i>10-15 секунд</i>", parse_mode="HTML")
         
-        html = se_agent.get_page_html(url)
+        def get_html():
+            se_agent._create_driver()
+            se_agent.driver.get(url)
+            time.sleep(5)
+            html = se_agent.driver.page_source[:10000]
+            se_agent.driver.quit()
+            se_agent.driver = None
+            return html
+        
+        html, error = run_sync_task(get_html)
+        
+        if error:
+            bot.reply_to(message, f"❌ Ошибка: {error}")
+            return
         
         if html:
-            # Отправляем HTML как файл
             try:
                 with open("/tmp/page.html", "w", encoding="utf-8") as f:
                     f.write(html)
@@ -1451,6 +1033,67 @@ def register_selenium_bot(bot):
                 bot.reply_to(message, f"❌ Ошибка отправки: {e}")
         else:
             bot.reply_to(message, "❌ Не удалось получить HTML")
+    
+    @bot.message_handler(commands=["se_show_login"])
+    def se_show_login_command(message):
+        """Скриншот страницы входа X"""
+        bot.reply_to(message, "📸 Открываю страницу входа X...\n<i>10-15 сек</i>", parse_mode="HTML")
+        
+        def take_screenshot():
+            se_agent._create_driver()
+            se_agent.driver.get("https://x.com/login")
+            time.sleep(5)
+            path = se_agent._screenshot("login_page_manual", send_to_chat=False)
+            html_path = se_agent._save_html("login_page_manual")
+            se_agent.driver.quit()
+            se_agent.driver = None
+            return path, html_path
+        
+        path, error = run_sync_task(take_screenshot)
+        
+        if error:
+            bot.reply_to(message, f"❌ {error}")
+            return
+        
+        if path:
+            try:
+                with open(path[0], "rb") as f:
+                    bot.send_photo(message.chat.id, f, caption=f"📸 Страница входа X/Twitter\n\nHTML: {path[1]}")
+            except Exception as e:
+                bot.reply_to(message, f"❌ {e}")
+        else:
+            bot.reply_to(message, "❌ Не удалось сделать скриншот")
+    
+    @bot.message_handler(commands=["se_screenshot_page"])
+    def se_screenshot_page_command(message):
+        args = message.text.split()
+        url = args[1] if len(args) > 1 else "https://x.com/login"
+        bot.reply_to(message, f"📸 Делаю скриншот {url}...\n<i>10-15 сек</i>", parse_mode="HTML")
+        
+        def take_screenshot():
+            se_agent._create_driver()
+            se_agent.driver.get(url)
+            time.sleep(5)
+            path = se_agent._screenshot("manual_page", send_to_chat=False)
+            html_path = se_agent._save_html("manual_page")
+            se_agent.driver.quit()
+            se_agent.driver = None
+            return path, html_path
+        
+        path, error = run_sync_task(take_screenshot)
+        
+        if error:
+            bot.reply_to(message, f"❌ {error}")
+            return
+        
+        if path:
+            try:
+                with open(path[0], "rb") as f:
+                    bot.send_photo(message.chat.id, f, caption=f"📸 {url}\n\nHTML: {path[1]}")
+            except Exception as e:
+                bot.reply_to(message, f"❌ {e}")
+        else:
+            bot.reply_to(message, "❌ Не удалось сделать скриншот")
     
     @bot.message_handler(commands=["se_set_proxy"])
     def se_set_proxy_command(message):
@@ -1467,34 +1110,6 @@ def register_selenium_bot(bot):
                 bot.reply_to(message, f"📊 Текущий статус прокси: {'ВКЛЮЧЕНЫ' if USE_PROXY else 'ВЫКЛЮЧЕНЫ'}\n/se_set_proxy on|off")
         else:
             bot.reply_to(message, f"📊 Текущий статус прокси: {'ВКЛЮЧЕНЫ' if USE_PROXY else 'ВЫКЛЮЧЕНЫ'}\n/se_set_proxy on|off")
-    
-    @bot.message_handler(commands=["se_screenshot_page"])
-    def se_screenshot_page_command(message):
-        args = message.text.split()
-        url = args[1] if len(args) > 1 else "https://x.com/login"
-        bot.reply_to(message, f"📸 Делаю скриншот {url}...\n<i>10-15 сек</i>", parse_mode="HTML")
-        path, html_path = run_sync_task(se_agent.capture_screenshot, url, 5)
-        if path:
-            try:
-                with open(path, "rb") as f:
-                    bot.send_photo(message.chat.id, f, caption=f"📸 {url}\n\nHTML: {html_path}")
-            except Exception as e:
-                bot.reply_to(message, f"❌ {e}")
-        else:
-            bot.reply_to(message, "❌ Не удалось")
-    
-    @bot.message_handler(commands=["se_show_login"])
-    def se_show_login_command(message):
-        bot.reply_to(message, "📸 Открываю страницу входа X...\n<i>10-15 сек</i>", parse_mode="HTML")
-        path, html_path = run_sync_task(se_agent.capture_screenshot, "https://x.com/login", 5)
-        if path:
-            try:
-                with open(path, "rb") as f:
-                    bot.send_photo(message.chat.id, f, caption=f"📸 Страница входа X/Twitter\n\nHTML: {html_path}")
-            except Exception as e:
-                bot.reply_to(message, f"❌ {e}")
-        else:
-            bot.reply_to(message, "❌ Не удалось")
     
     @bot.message_handler(commands=["se_check_auth"])
     def se_check_auth_command(message):
@@ -1900,17 +1515,19 @@ def register_selenium_bot(bot):
             "  /se_install — Установить Selenium\n"
             "  /se_set_proxy [on|off] — Вкл/выкл прокси\n"
             "  /se_logout — Выйти\n\n"
+            "🕵️ <b>Исследование</b>\n"
+            "  /se_explore [url] — Исследовать страницу (с живыми уведомлениями)\n"
+            "  /se_find_google — Найти кнопку Google в HTML\n"
+            "  /se_view_html [url] — Показать HTML страницы\n"
+            "  /se_show_login — Скриншот страницы входа X\n"
+            "  /se_screenshot_page [url] — Скриншот любой страницы\n\n"
             "🔐 <b>Авторизация</b>\n"
             "  /se_google — Войти через Google\n"
             "  /se_login — Обычный вход\n"
             "  /se_check_auth — Проверить сессию\n"
             "  /se_cancel — Отменить ввод\n\n"
             "📋 <b>Диагностика</b>\n"
-            "  /se_logs — Показать логи\n"
-            "  /se_find_google — Найти кнопку Google в HTML\n"
-            "  /se_view_html [url] — Показать HTML страницы\n"
-            "  /se_screenshot_page [url] — Скриншот любой страницы\n"
-            "  /se_show_login — Скриншот страницы входа X\n\n"
+            "  /se_logs — Показать логи\n\n"
             "📰 <b>Контент</b>\n"
             "  /se_timeline [user] [N] — Лента\n"
             "  /se_trends [N] — Тренды\n"
@@ -1922,6 +1539,7 @@ def register_selenium_bot(bot):
             "• 🌐 Автоматические прокси (можно отключить)\n"
             "• 🔑 Вход через Google\n"
             "• 🐛 Команды для отладки\n"
+            "• 🕵️ Исследователь страниц с живыми уведомлениями\n"
             "• Chrome скачивается автоматически"
         )
         bot.reply_to(message, msg, parse_mode="HTML")
