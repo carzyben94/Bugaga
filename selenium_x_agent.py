@@ -428,6 +428,11 @@ def google_login(email, password, bot=None, chat_id=None):
         session.quit()
 
 
+# === AGENT_READY для совместимости ===
+def AGENT_READY():
+    return _installer.ready
+
+
 # === РЕГИСТРАЦИЯ КОМАНД ===
 def register_selenium_bot(bot):
     print("[SE] Регистрация команд...", flush=True)
