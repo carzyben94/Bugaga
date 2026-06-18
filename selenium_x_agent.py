@@ -1,4 +1,4 @@
-# selenium_x_agent.py — Selenium X/Twitter агент с отправкой скриншотов в чат
+# selenium_x_agent.py — Selenium X/Twitter агент с Google, мобильным User-Agent и прокси
 import os
 import sys
 import subprocess
@@ -14,6 +14,8 @@ import queue
 import logging
 import traceback
 from datetime import datetime
+import random
+import requests
 
 # === НАСТРОЙКА ПУТЕЙ ===
 if os.path.exists("/app") and os.access("/app", os.W_OK):
@@ -53,8 +55,6 @@ logger.addHandler(console_handler)
 
 print(f"[SE] === INIT ===")
 print(f"[SE] SELENIUM_DIR: {SELENIUM_DIR}")
-print(f"[SE] AUTH_FILE: {AUTH_FILE}")
-print(f"[SE] COOKIES_FILE: {COOKIES_FILE}")
 print(f"[SE] LOG_FILE: {LOG_FILE}")
 
 logger.info("="*60)
@@ -78,13 +78,35 @@ DRIVER_DOWNLOAD_URL = f"https://storage.googleapis.com/chrome-for-testing-public
 login_sessions = {}
 progress_queue = queue.Queue()
 
+# === СПИСОК МОБИЛЬНЫХ USER-AGENTS ===
+MOBILE_USER_AGENTS = [
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Linux; Android 13; SM-S908B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 12; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 11; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36",
+    "Mozilla/5.0 (iPad; CPU OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1",
+]
+
+# === ИСТОЧНИКИ ПРОКСИ ===
+PROXY_SOURCES = [
+    "https://raw.githubusercontent.com/Thordata/awesome-free-proxy-list/main/proxies/http.txt",
+    "https://raw.githubusercontent.com/proxygenerator1/ProxyGenerator/main/Stable/http.txt",
+    "https://raw.githubusercontent.com/sakha1370/OpenRay/main/output/all_valid_proxies.txt",
+    "https://raw.githubusercontent.com/iplocate/free-proxy-list/main/proxies/http.txt",
+]
+
+# === НАСТРОЙКА ПРОКСИ (можно менять) ===
+USE_PROXY = True  # True - использовать прокси, False - не использовать
+
 
 def _run_subprocess(cmd, timeout=120, cwd=None):
     try:
         logger.debug(f"Running subprocess: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd)
         success = result.returncode == 0
-        logger.debug(f"Subprocess result: success={success}, stdout_len={len(result.stdout)}, stderr_len={len(result.stderr)}")
+        logger.debug(f"Subprocess result: success={success}")
         return success, result.stdout, result.stderr
     except subprocess.TimeoutExpired:
         logger.error(f"Subprocess timeout: {' '.join(cmd)}")
@@ -368,6 +390,7 @@ class SeleniumXAgent:
         self._screenshots_to_send = []
         self._chat_id = None
         self._bot = None
+        self._current_proxy = None
         logger.info("SeleniumXAgent initialized")
     
     def set_progress_callback(self, callback):
@@ -408,7 +431,6 @@ class SeleniumXAgent:
             return None
     
     def _send_screenshot_to_chat(self, path, caption):
-        """Отправить скриншот в чат"""
         try:
             if self._bot and self._chat_id and path and os.path.exists(path):
                 with open(path, "rb") as f:
@@ -416,21 +438,13 @@ class SeleniumXAgent:
                 logger.info(f"✅ Screenshot sent to chat: {caption}")
                 return True
             else:
-                # Сохраняем для отправки позже
                 self._screenshots_to_send.append((path, caption))
                 return False
         except Exception as e:
             logger.error(f"Failed to send screenshot: {e}")
             return False
     
-    def _send_pending_screenshots(self):
-        """Отправить все накопленные скриншоты"""
-        for path, caption in self._screenshots_to_send:
-            self._send_screenshot_to_chat(path, caption)
-        self._screenshots_to_send = []
-    
     def _screenshot(self, name, send_to_chat=True, caption=None):
-        """Сделать скриншот и отправить в чат"""
         try:
             path = os.path.join(SCREENSHOT_DIR, f"{name}_{int(time.time())}.png")
             self.driver.save_screenshot(path)
@@ -456,6 +470,126 @@ class SeleniumXAgent:
         except Exception as e:
             logger.error(f"HTML save error: {e}")
             return None
+    
+    def _get_random_user_agent(self):
+        """Выбрать случайный мобильный User-Agent"""
+        return random.choice(MOBILE_USER_AGENTS)
+    
+    def _get_working_proxy(self):
+        """Найти рабочий прокси из списка"""
+        if not USE_PROXY:
+            logger.info("ℹ️ Прокси отключены (USE_PROXY=False)")
+            return None
+        
+        try:
+            for source in PROXY_SOURCES:
+                try:
+                    logger.info(f"Загружаю прокси из: {source}")
+                    response = requests.get(source, timeout=10)
+                    proxies = response.text.strip().split('\n')
+                    
+                    # Фильтруем
+                    http_proxies = []
+                    for p in proxies:
+                        p = p.strip()
+                        if p and len(p) > 5:
+                            # Добавляем http:// если нет
+                            if not p.startswith('http://') and not p.startswith('https://'):
+                                p = f'http://{p}'
+                            http_proxies.append(p)
+                    
+                    if http_proxies:
+                        # Берем случайный прокси
+                        proxy = random.choice(http_proxies)
+                        logger.info(f"Выбран прокси: {proxy}")
+                        self._current_proxy = proxy
+                        return proxy
+                except Exception as e:
+                    logger.warning(f"Не удалось загрузить из {source}: {e}")
+                    continue
+            
+            logger.warning("Не удалось получить прокси")
+            return None
+        except Exception as e:
+            logger.error(f"Ошибка получения прокси: {e}")
+            return None
+    
+    def _get_chrome_options(self):
+        from selenium.webdriver.chrome.options import Options
+        options = Options()
+        
+        # === МОБИЛЬНЫЙ USER-AGENT ===
+        user_agent = self._get_random_user_agent()
+        options.add_argument(f"--user-agent={user_agent}")
+        logger.info(f"📱 Использую User-Agent: {user_agent[:50]}...")
+        
+        # === ПРОКСИ (автоматический выбор) ===
+        if USE_PROXY:
+            proxy = self._get_working_proxy()
+            if proxy:
+                options.add_argument(f'--proxy-server={proxy}')
+                logger.info(f"🌐 Использую прокси: {proxy}")
+            else:
+                logger.warning("⚠️ Прокси не найдены, работаем без прокси")
+        else:
+            logger.info("ℹ️ Прокси отключены")
+        
+        # === ОСТАЛЬНЫЕ ОПЦИИ ===
+        options.add_argument("--headless")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-setuid-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--window-size=390,844")  # iPhone размер
+        options.add_argument("--start-maximized")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-infobars")
+        options.add_argument("--disable-notifications")
+        options.add_argument("--disable-popup-blocking")
+        options.add_argument("--lang=en-US")
+        
+        prefs = {
+            "profile.default_content_setting_values.notifications": 2,
+            "credentials_enable_service": False,
+            "profile.password_manager_enabled": False,
+        }
+        options.add_experimental_option("prefs", prefs)
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option("useAutomationExtension", False)
+        
+        browser_ok, browser_path = check_chrome_binary()
+        if browser_ok and browser_path and "chrome-linux64" in browser_path:
+            options.binary_location = browser_path
+            logger.debug(f"Using Chrome binary: {browser_path}")
+        
+        return options
+    
+    def _create_driver(self):
+        from selenium import webdriver
+        from selenium.webdriver.chrome.service import Service
+        options = self._get_chrome_options()
+        driver_ok, driver_path = check_driver()
+        if driver_ok and driver_path:
+            service = Service(driver_path)
+            logger.debug(f"Using ChromeDriver: {driver_path}")
+        else:
+            service = Service()
+            logger.warning("Using default ChromeDriver service")
+        
+        logger.info("Creating Chrome driver...")
+        self.driver = webdriver.Chrome(service=service, options=options)
+        logger.info(f"Chrome driver created. Session ID: {self.driver.session_id}")
+        
+        self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": """
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                })
+            """
+        })
+        logger.debug("CDP command executed")
+        return self.driver
     
     def _load_cookies(self):
         if not os.path.exists(COOKIES_FILE):
@@ -492,65 +626,181 @@ class SeleniumXAgent:
             logger.error(f"Cookie save error: {e}")
             return False
     
-    def _get_chrome_options(self):
-        from selenium.webdriver.chrome.options import Options
-        options = Options()
-        options.add_argument("--headless")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-setuid-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--window-size=1920,1080")
-        options.add_argument("--start-maximized")
-        options.add_argument("--disable-extensions")
-        options.add_argument("--disable-infobars")
-        options.add_argument("--disable-notifications")
-        options.add_argument("--disable-popup-blocking")
-        options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
-        options.add_argument("--lang=en-US")
-        prefs = {
-            "profile.default_content_setting_values.notifications": 2,
-            "credentials_enable_service": False,
-            "profile.password_manager_enabled": False,
-        }
-        options.add_experimental_option("prefs", prefs)
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option("useAutomationExtension", False)
-        browser_ok, browser_path = check_chrome_binary()
-        if browser_ok and browser_path and "chrome-linux64" in browser_path:
-            options.binary_location = browser_path
-            logger.debug(f"Using Chrome binary: {browser_path}")
-        return options
-    
-    def _create_driver(self):
-        from selenium import webdriver
-        from selenium.webdriver.chrome.service import Service
-        options = self._get_chrome_options()
-        driver_ok, driver_path = check_driver()
-        if driver_ok and driver_path:
-            service = Service(driver_path)
-            logger.debug(f"Using ChromeDriver: {driver_path}")
-        else:
-            service = Service()
-            logger.warning("Using default ChromeDriver service")
-        
-        logger.info("Creating Chrome driver...")
-        self.driver = webdriver.Chrome(service=service, options=options)
-        logger.info(f"Chrome driver created. Session ID: {self.driver.session_id}")
-        
-        self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-            "source": """
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => undefined
-                })
-            """
-        })
-        logger.debug("CDP command executed")
-        return self.driver
+    def _try_google_login(self, target_username):
+        """Попытка входа через Google"""
+        try:
+            from selenium.webdriver.common.by import By
+            
+            # Ищем кнопку "Continue with Google"
+            google_btn = None
+            google_selectors = [
+                "//span[contains(text(), 'Continue with Google')]/..",
+                "//span[contains(text(), 'Sign in with Google')]/..",
+                "//div[contains(text(), 'Continue with Google')]",
+                "[data-testid='google-login-button']",
+            ]
+            
+            for selector in google_selectors:
+                try:
+                    if selector.startswith("//"):
+                        btn = self.driver.find_element(By.XPATH, selector)
+                    else:
+                        btn = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    if btn.is_displayed() and btn.is_enabled():
+                        google_btn = btn
+                        logger.info(f"✅ Найдена кнопка Google: {selector}")
+                        break
+                except:
+                    continue
+            
+            if not google_btn:
+                logger.info("ℹ️ Кнопка 'Continue with Google' не найдена")
+                return False, None
+            
+            self._screenshot("google_button", send_to_chat=True, caption="🔍 Найдена кнопка 'Continue with Google'")
+            
+            # Запрашиваем у пользователя
+            self._report("google_auth", "🔐 Найдена кнопка 'Continue with Google'!")
+            use_google = self._request_user_input(
+                "confirm",
+                "🔐 Найдена кнопка 'Continue with Google'!\n\nХотите попробовать войти через Google?\nОтправь 'yes' или 'no':",
+                timeout=30
+            )
+            
+            if not use_google or use_google.lower() not in ["yes", "да", "y", "1", "+"]:
+                logger.info("ℹ️ Пользователь отказался от Google")
+                return False, None
+            
+            logger.info("🔄 Вход через Google выбран")
+            google_btn.click()
+            time.sleep(3)
+            self._screenshot("google_login", send_to_chat=True, caption="📸 Страница входа Google")
+            
+            # Запрашиваем email для Google
+            google_email = self._request_user_input(
+                "email",
+                "📧 Введи email для Google аккаунта:",
+                timeout=60
+            )
+            if not google_email:
+                return False, "❌ Email Google не указан"
+            
+            # Вводим email на странице Google
+            email_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="email"]')
+            for inp in email_inputs:
+                if inp.is_displayed() and inp.is_enabled():
+                    inp.clear()
+                    inp.send_keys(google_email)
+                    time.sleep(1)
+                    next_btns = self.driver.find_elements(By.CSS_SELECTOR, 'button[type="submit"]')
+                    for btn in next_btns:
+                        if btn.is_displayed() and btn.is_enabled():
+                            btn.click()
+                            time.sleep(3)
+                            break
+                    break
+            
+            self._screenshot("google_email", send_to_chat=True, caption="📧 Email Google введен")
+            
+            # Запрашиваем пароль Google
+            google_password = self._request_user_input(
+                "password",
+                "🔑 Введи пароль от Google аккаунта:",
+                timeout=60
+            )
+            if not google_password:
+                return False, "❌ Пароль Google не указан"
+            
+            # Вводим пароль на странице Google
+            password_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="password"]')
+            for inp in password_inputs:
+                if inp.is_displayed() and inp.is_enabled():
+                    inp.clear()
+                    inp.send_keys(google_password)
+                    time.sleep(1)
+                    next_btns = self.driver.find_elements(By.CSS_SELECTOR, 'button[type="submit"]')
+                    for btn in next_btns:
+                        if btn.is_displayed() and btn.is_enabled():
+                            btn.click()
+                            time.sleep(3)
+                            break
+                    break
+            
+            self._screenshot("google_password", send_to_chat=True, caption="🔑 Пароль Google введен")
+            
+            # Проверяем 2FA или другие запросы Google
+            for attempt in range(15):
+                time.sleep(1)
+                current_url = self.driver.current_url
+                logger.info(f"Google auth check {attempt+1}: {current_url}")
+                
+                # Проверяем, не просит ли Google код 2FA
+                if "2fa" in current_url.lower() or "authenticator" in current_url.lower():
+                    self._screenshot("google_2fa", send_to_chat=True, caption="🔐 Требуется код 2FA Google")
+                    google_code = self._request_user_input(
+                        "code",
+                        "🔐 Google требует код двухфакторной аутентификации!\nВведи код из Google Authenticator:",
+                        timeout=120
+                    )
+                    if google_code:
+                        code_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="text"]')
+                        for inp in code_inputs:
+                            if inp.is_displayed() and inp.is_enabled():
+                                inp.clear()
+                                inp.send_keys(google_code)
+                                time.sleep(1)
+                                next_btns = self.driver.find_elements(By.CSS_SELECTOR, 'button[type="submit"]')
+                                for btn in next_btns:
+                                    if btn.is_displayed() and btn.is_enabled():
+                                        btn.click()
+                                        time.sleep(3)
+                                        break
+                                break
+                    else:
+                        return False, "❌ Код 2FA не указан"
+                    continue
+                
+                # Проверяем, не просит ли Google подтверждение на телефоне
+                if "phone" in current_url.lower() or "verify" in current_url.lower():
+                    self._screenshot("google_phone", send_to_chat=True, caption="📱 Требуется подтверждение по телефону")
+                    # Ждем ручного подтверждения
+                    self._report("google_wait", "⏳ Жду подтверждения на телефоне...")
+                    confirm = self._request_user_input(
+                        "confirm",
+                        "📱 Google отправил запрос на телефон.\nПодтверди вход на телефоне и отправь 'done':",
+                        timeout=180
+                    )
+                    if confirm and confirm.lower() in ["done", "готово", "ok"]:
+                        self.driver.refresh()
+                        time.sleep(3)
+                        continue
+                    else:
+                        return False, "❌ Подтверждение не получено"
+                
+                # Проверяем успешный вход
+                if "home" in current_url:
+                    logger.info("✅ Авторизация через Google успешна!")
+                    self._save_cookies()
+                    save_auth_info(target_username, google_email, {"method": "google"})
+                    self._screenshot("google_success", send_to_chat=True, caption="✅ Вход через Google успешен!")
+                    return True, None
+                
+                # Проверяем, вернулись ли на X
+                if "x.com" in current_url and "login" not in current_url:
+                    logger.info("✅ Перенаправление на X после Google!")
+                    self._save_cookies()
+                    save_auth_info(target_username, google_email, {"method": "google"})
+                    self._screenshot("google_success", send_to_chat=True, caption="✅ Вход через Google успешен!")
+                    return True, None
+            
+            return False, "❌ Вход через Google не удался"
+            
+        except Exception as e:
+            logger.error(f"Google login error: {e}")
+            return False, f"Ошибка Google: {e}"
     
     def login(self, username, password, email=None):
-        """Универсальная авторизация с отправкой скриншотов в чат"""
+        """Универсальная авторизация с поддержкой Google"""
         
         logger.info("="*60)
         logger.info(f"START LOGIN for {username}")
@@ -565,7 +815,6 @@ class SeleniumXAgent:
             from selenium.webdriver.common.keys import Keys
             from selenium.webdriver.support.ui import WebDriverWait
             from selenium.webdriver.support import expected_conditions as EC
-            from selenium.common.exceptions import TimeoutException, NoSuchElementException
             
             self._report("start", f"🚀 Авторизация @{target_username}")
             self._create_driver()
@@ -583,9 +832,6 @@ class SeleniumXAgent:
                     logger.info(f"Пробую URL: {login_url}")
                     self.driver.get(login_url)
                     time.sleep(4)
-                    
-                    # Скриншот страницы входа
-                    self._screenshot("login_page", send_to_chat=True, caption="📸 Страница входа X/Twitter")
                     
                     if "home" in self.driver.current_url:
                         logger.info("✅ Уже на home!")
@@ -607,7 +853,17 @@ class SeleniumXAgent:
                 self._screenshot("error_page", send_to_chat=True, caption="❌ Ошибка загрузки страницы")
                 return False, "❌ Не удалось загрузить страницу входа"
             
+            self._screenshot("login_page", send_to_chat=True, caption="📸 Страница входа X/Twitter")
             self._save_html("login_page")
+            
+            # === ПРОВЕРЯЕМ КНОПКУ "Continue with Google" ===
+            google_result, google_error = self._try_google_login(target_username)
+            if google_result:
+                return True, None
+            if google_error and "❌" in google_error:
+                # Если ошибка - возвращаем
+                return False, google_error
+            # Если Google не использовался - продолжаем
             
             # === ИЩЕМ ПОЛЕ ДЛЯ USERNAME ===
             username_input = None
@@ -823,8 +1079,6 @@ class SeleniumXAgent:
                 for inp in phone_inputs:
                     if inp.is_displayed() and inp.is_enabled():
                         logger.info("📱 Найдено поле ТЕЛЕФОНА!")
-                        
-                        # Скриншот страницы с телефоном
                         self._screenshot("phone_page", send_to_chat=True, caption="📱 X требует номер телефона!")
                         
                         self._report("phone_needed", "📱 Требуется номер телефона!")
@@ -1363,9 +1617,9 @@ def run_sync_task(func, *args, **kwargs):
             result[1] = str(e)
     t = threading.Thread(target=target)
     t.start()
-    t.join(timeout=240)
+    t.join(timeout=300)
     if t.is_alive():
-        return None, "Таймаут (240 сек)"
+        return None, "Таймаут (300 сек)"
     if result[1]:
         return None, result[1]
     return result[0], None
@@ -1468,6 +1722,23 @@ def register_selenium_bot(bot):
         except Exception as e:
             logger.error(f"se_logs error: {e}")
             bot.reply_to(message, f"❌ Ошибка чтения логов: {e}")
+    
+    @bot.message_handler(commands=["se_set_proxy"])
+    def se_set_proxy_command(message):
+        """Включить/выключить прокси"""
+        global USE_PROXY
+        args = message.text.split()
+        if len(args) > 1:
+            if args[1].lower() in ["on", "true", "1", "yes"]:
+                USE_PROXY = True
+                bot.reply_to(message, "✅ Прокси ВКЛЮЧЕНЫ")
+            elif args[1].lower() in ["off", "false", "0", "no"]:
+                USE_PROXY = False
+                bot.reply_to(message, "❌ Прокси ВЫКЛЮЧЕНЫ")
+            else:
+                bot.reply_to(message, f"📊 Текущий статус прокси: {'ВКЛЮЧЕНЫ' if USE_PROXY else 'ВЫКЛЮЧЕНЫ'}\nИспользуй: /se_set_proxy on|off")
+        else:
+            bot.reply_to(message, f"📊 Текущий статус прокси: {'ВКЛЮЧЕНЫ' if USE_PROXY else 'ВЫКЛЮЧЕНЫ'}\nИспользуй: /se_set_proxy on|off")
     
     @bot.message_handler(commands=["se_screenshot_page"])
     def se_screenshot_page_command(message):
@@ -1603,7 +1874,8 @@ def register_selenium_bot(bot):
         bot.reply_to(message,
             "🔐 <b>Авторизация в X (Selenium)</b>\n\n"
             "Введи <b>username</b> (без @):\n"
-            "<i>Бот будет присылать скриншоты каждого шага</i>",
+            "<i>Бот будет присылать скриншоты каждого шага</i>\n"
+            f"🌐 Прокси: {'ВКЛЮЧЕНЫ' if USE_PROXY else 'ВЫКЛЮЧЕНЫ'}",
             parse_mode="HTML"
         )
         login_sessions[chat_id] = {"step": "username", "method": "selenium"}
@@ -1787,7 +2059,8 @@ def register_selenium_bot(bot):
             "  /se_status — Полный статус системы\n"
             "  /se_install — Установить Selenium + Chrome + Driver\n"
             "  /se_check_auth — Проверить сессию\n"
-            "  /se_logout — Выйти и очистить сессию\n\n"
+            "  /se_logout — Выйти и очистить сессию\n"
+            "  /se_set_proxy [on|off] — Включить/выключить прокси\n\n"
             "📋 <b>Диагностика</b>\n"
             "  /se_logs — Показать логи авторизации\n"
             "  /se_screenshot_page [url] — Скриншот любой страницы\n"
@@ -1802,6 +2075,9 @@ def register_selenium_bot(bot):
             "  /se_screenshot [url] — Скриншот страницы (с авторизацией)\n\n"
             "⚠️ <b>Особенности:</b>\n"
             "• 📸 Автоматические скриншоты в чат на каждом шаге\n"
+            "• 📱 Мобильный User-Agent\n"
+            "• 🌐 Автоматические прокси (можно отключить)\n"
+            "• 🔑 Вход через Google\n"
             "• Chrome скачивается автоматически (~150MB)\n"
             "• Работает без apt-get на Render\n"
             "• Cookies сохраняются между сессиями"
@@ -1863,7 +2139,8 @@ def register_selenium_bot(bot):
         bot.reply_to(message,
             "✅ Пароль получен\n\n"
             "⏳ Начинаю авторизацию...\n"
-            "<i>Бот будет присылать скриншоты каждого шага</i>",
+            "<i>Бот будет присылать скриншоты каждого шага</i>\n"
+            f"🌐 Прокси: {'ВКЛЮЧЕНЫ' if USE_PROXY else 'ВЫКЛЮЧЕНЫ'}",
             parse_mode="HTML"
         )
         
@@ -1887,10 +2164,15 @@ def register_selenium_bot(bot):
             login_sessions[chat_id]["step"] = "request_code"
             return get_user_input(chat_id, prompt, timeout)
         
+        def request_confirm(prompt, timeout=30):
+            login_sessions[chat_id]["step"] = "request_confirm"
+            return get_user_input(chat_id, prompt, timeout)
+        
         se_agent.set_user_input_callback("email", request_email)
         se_agent.set_user_input_callback("phone", request_phone)
         se_agent.set_user_input_callback("captcha", request_captcha)
         se_agent.set_user_input_callback("code", request_code)
+        se_agent.set_user_input_callback("confirm", request_confirm)
         
         progress_msg = bot.send_message(chat_id, "🔄 Процесс авторизации запущен...")
         
@@ -1917,6 +2199,7 @@ def register_selenium_bot(bot):
         se_agent.set_user_input_callback("phone", None)
         se_agent.set_user_input_callback("captcha", None)
         se_agent.set_user_input_callback("code", None)
+        se_agent.set_user_input_callback("confirm", None)
         
         try:
             bot.delete_message(chat_id, progress_msg.message_id)
