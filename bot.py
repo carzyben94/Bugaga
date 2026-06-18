@@ -19,6 +19,15 @@ from render import register_render
 from github import register_github
 from xx import register_x_play
 
+# === SELENIUM X AGENT ===
+try:
+    from selenium_x_agent import register_selenium_bot, get_full_status, AGENT_READY
+    SELENIUM_AVAILABLE = True
+    print("[DEBUG] Selenium module imported")
+except Exception as e:
+    SELENIUM_AVAILABLE = False
+    print(f"[DEBUG] Selenium module not available: {e}")
+
 logging.basicConfig(level=logging.INFO)
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -60,6 +69,15 @@ for name, register_func, args in modules:
     except Exception as e:
         print(f"[DEBUG] {name} error: {e}")
 
+# === РЕГИСТРАЦИЯ SELENIUM ===
+if SELENIUM_AVAILABLE:
+    try:
+        register_selenium_bot(bot)
+        print("[DEBUG] Module selenium_x_agent OK")
+    except Exception as e:
+        print(f"[DEBUG] selenium_x_agent error: {e}")
+        SELENIUM_AVAILABLE = False
+
 # ===== ЛОГИ =====
 def send_log_to_admin(action, details=None, status="info"):
     if not ADMIN_CHAT_ID:
@@ -83,6 +101,20 @@ def log_action(action, details=None, status="info", send=True):
         send_log_to_admin(action, details, status)
 
 # ===== ОБЩЕЕ МЕНЮ =====
+
+def get_selenium_status_line():
+    """Получить строку статуса Selenium для меню"""
+    if not SELENIUM_AVAILABLE:
+        return "  ⚠️ <i>модуль не загружен</i>\n"
+    try:
+        status = get_full_status()
+        ready = status.get("agent_ready", False)
+        icon = "🟢" if ready else "🔴"
+        ver = status.get("selenium_pip", {}).get("version", "?")
+        return f"  {icon} <i>pip v{ver}</i>\n"
+    except:
+        return "  ⚠️ <i>ошибка статуса</i>\n"
+
 MENU_TEXT = (
     "🤖 <b>BUGAGA BOT</b>\n"
     "Твой агент для ИИ, новостей и крипты\n\n"
@@ -122,7 +154,15 @@ MENU_TEXT = (
     "  ├ /x_login_env — Быстрый вход (env)\n"
     "  ├ /x_timeline [user] [N] — Лента X\n"
     "  ├ /x_search [запрос] [N] — Поиск X\n"
-    "  └ /x_help — Помощь"
+    "  └ /x_help — Помощь\n\n"
+    
+    "🚗 <b>X Agent (Selenium)</b>\n" +
+    get_selenium_status_line() +
+    "  ├ /se_status — Полный статус\n"
+    "  ├ /se_install — Установить Selenium\n"
+    "  ├ /se_login — Войти (ввод в чате)\n"
+    "  ├ /se_timeline [user] [N] — Лента X\n"
+    "  └ /se_help — Помощь"
 )
 
 @bot.message_handler(commands=["start", "help"])
