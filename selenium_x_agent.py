@@ -1,7 +1,6 @@
-# playwright_x_agent.py - Полная версия на Playwright
+# playwright_x_agent.py - Исправленная версия
 """
 Playwright X Agent - Современная альтернатива Selenium
-Поддержка: установка браузера, статус, авторизация, скриншоты
 """
 
 import os
@@ -11,7 +10,6 @@ import logging
 import time
 import subprocess
 import tempfile
-import asyncio
 import traceback
 from pathlib import Path
 from datetime import datetime
@@ -42,7 +40,7 @@ logger = logging.getLogger("PlaywrightXAgent")
 # === ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ===
 _installed = False
 _browser_sessions = {}
-_playwright = None
+_playwright_version = None
 
 # === КЛАСС УСТАНОВЩИКА ===
 class PlaywrightInstaller:
@@ -54,32 +52,33 @@ class PlaywrightInstaller:
     
     def _check_installed(self):
         """Проверка наличия Playwright и браузеров"""
-        global _installed
+        global _installed, _playwright_version
         
         # Проверяем Playwright
         try:
             import playwright
             _installed = True
+            # Получаем версию через pip
+            try:
+                import pkg_resources
+                _playwright_version = pkg_resources.get_distribution("playwright").version
+            except:
+                _playwright_version = "установлен"
             logger.info("[Installer] ✅ Playwright установлен")
         except ImportError:
             _installed = False
             logger.info("[Installer] ❌ Playwright не найден")
             return
         
-        # Проверяем браузер (просто пробуем импортировать sync_api)
+        # Проверяем браузер
         try:
             from playwright.sync_api import sync_playwright
             with sync_playwright() as p:
-                # Проверяем, есть ли Chromium
-                try:
-                    browser = p.chromium.launch(headless=True)
-                    browser.close()
-                    logger.info("[Installer] ✅ Chromium установлен")
-                except Exception as e:
-                    logger.info(f"[Installer] ❌ Chromium не найден: {e}")
-                    _installed = False
+                browser = p.chromium.launch(headless=True)
+                browser.close()
+                logger.info("[Installer] ✅ Chromium установлен")
         except Exception as e:
-            logger.info(f"[Installer] ❌ Ошибка проверки: {e}")
+            logger.info(f"[Installer] ❌ Chromium не найден: {e}")
             _installed = False
     
     @property
@@ -88,19 +87,26 @@ class PlaywrightInstaller:
     
     def install(self) -> bool:
         """Установка Playwright + браузер"""
-        global _installed
+        global _installed, _playwright_version
         logger.info("[Installer] 📦 Начинаю установку Playwright...")
         
         try:
             # 1. Устанавливаем Playwright
             logger.info("[Installer] 📦 Устанавливаю playwright...")
-            subprocess.run(
+            result = subprocess.run(
                 [sys.executable, "-m", "pip", "install", "playwright"],
                 check=True,
                 capture_output=True,
                 timeout=120
             )
             logger.info("[Installer] ✅ Playwright установлен")
+            
+            # Получаем версию
+            try:
+                import pkg_resources
+                _playwright_version = pkg_resources.get_distribution("playwright").version
+            except:
+                _playwright_version = "установлен"
             
             # 2. Устанавливаем браузеры
             logger.info("[Installer] 🌐 Устанавливаю Chromium...")
@@ -114,20 +120,24 @@ class PlaywrightInstaller:
             
             # 3. Устанавливаем системные зависимости (для Linux)
             logger.info("[Installer] 🐧 Устанавливаю системные зависимости...")
-            subprocess.run(
-                ["playwright", "install-deps"],
-                check=True,
-                capture_output=True,
-                timeout=120
-            )
-            logger.info("[Installer] ✅ Зависимости установлены")
+            try:
+                subprocess.run(
+                    ["playwright", "install-deps"],
+                    check=True,
+                    capture_output=True,
+                    timeout=120
+                )
+                logger.info("[Installer] ✅ Зависимости установлены")
+            except:
+                logger.warning("[Installer] ⚠️ Не удалось установить зависимости (возможно уже есть)")
             
             _installed = True
             logger.info("[Installer] ✅ Установка завершена!")
             return True
             
         except subprocess.CalledProcessError as e:
-            logger.error(f"[Installer] ❌ Ошибка команды: {e.stderr.decode() if e.stderr else str(e)}")
+            error_msg = e.stderr.decode() if e.stderr else str(e)
+            logger.error(f"[Installer] ❌ Ошибка команды: {error_msg}")
             return False
         except Exception as e:
             logger.error(f"[Installer] ❌ Критическая ошибка: {e}")
@@ -136,13 +146,14 @@ class PlaywrightInstaller:
     def status(self) -> Dict:
         return {
             "installed": self.ready,
-            "base_dir": str(BASE_DIR)
+            "base_dir": str(BASE_DIR),
+            "version": _playwright_version
         }
 
 # === ГЛОБАЛЬНЫЙ ИНСТАНС ===
 _installer = PlaywrightInstaller()
 
-# === КЛАСС БРАУЗЕРА (SYNC) ===
+# === КЛАСС БРАУЗЕРА ===
 class BrowserSession:
     """Управление сессией браузера через Playwright"""
     
@@ -154,14 +165,13 @@ class BrowserSession:
         self.mobile = mobile
         self._is_active = False
         self._playwright = None
-        self._event_loop = None
     
     @property
     def is_active(self) -> bool:
         return self._is_active and self.page is not None
     
     def create(self):
-        """Создание браузера (синхронный режим)"""
+        """Создание браузера"""
         if not _installed:
             raise Exception("Playwright не установлен. Используй /se_install")
         
@@ -173,16 +183,13 @@ class BrowserSession:
         try:
             self._playwright = sync_playwright().start()
             
-            # Настройки для мобильной эмуляции
             viewport = {"width": 390, "height": 844} if self.mobile else {"width": 1280, "height": 720}
             
-            # User-Agent
             if self.mobile:
                 user_agent = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
             else:
                 user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             
-            # Запускаем браузер
             self.browser = self._playwright.chromium.launch(
                 headless=self.headless,
                 args=[
@@ -192,7 +199,6 @@ class BrowserSession:
                 ]
             )
             
-            # Создаем контекст с сохранением сессии
             user_data_dir = BASE_DIR / "playwright_user_data"
             user_data_dir.mkdir(parents=True, exist_ok=True)
             
@@ -204,13 +210,16 @@ class BrowserSession:
                 timezone_id="America/New_York"
             )
             
-            # Маскировка
+            # Маскировка автоматизации
             self.context.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', {
                     get: () => undefined
                 });
                 Object.defineProperty(navigator, 'plugins', {
                     get: () => [1, 2, 3, 4, 5]
+                });
+                Object.defineProperty(navigator, 'languages', {
+                    get: () => ['en-US', 'en']
                 });
             """)
             
@@ -291,15 +300,9 @@ def get_status() -> Dict:
     """Получение полного статуса"""
     st = _installer.status()
     
-    try:
-        import playwright
-        playwright_version = playwright.__version__
-    except ImportError:
-        playwright_version = None
-    
     st["playwright"] = {
         "installed": _installed,
-        "version": playwright_version
+        "version": _playwright_version
     }
     
     cookies_file = BASE_DIR / "cookies.json"
@@ -310,6 +313,10 @@ def get_status() -> Dict:
     st["agent_ready"] = _installed
     st["auth_info"] = get_auth_info()
     st["selenium_dir"] = str(BASE_DIR)
+    st["chrome_browser"] = {"found": _installed, "path": "Playwright Chromium"}
+    st["chromedriver"] = {"ready": _installed, "path": "Playwright"}
+    st["selenium_pip"] = {"installed": _installed, "version": _playwright_version}
+    st["cookies_exist"] = cookies_file.exists()
     
     return st
 
@@ -367,7 +374,7 @@ def clear_auth_info() -> bool:
         logger.error(f"[Auth] ❌ Ошибка очистки: {e}")
         return False
 
-# === ВХОД ЧЕРЕЗ GOOGLE (Playwright) ===
+# === ВХОД ЧЕРЕЗ GOOGLE ===
 def google_login(email: str, password: str, bot=None, chat_id=None) -> tuple:
     """Вход через Google OAuth с Playwright"""
     login_logger = logging.getLogger(f"Login_{email[:3]}")
@@ -393,10 +400,11 @@ def google_login(email: str, password: str, bot=None, chat_id=None) -> tuple:
         # Ищем кнопку входа
         report("🔍 Ищу кнопку входа...")
         try:
-            # Ждем появления кнопки Sign In
             sign_in = page.locator('a[href="/i/flow/login"]').first
             if sign_in.count() == 0:
-                sign_in = page.locator('span:has-text("Sign in")').locator('xpath=ancestor::a').first
+                sign_in = page.locator('span:has-text("Sign in")').first
+                if sign_in.count() > 0:
+                    sign_in = sign_in.locator('xpath=ancestor::a').first
             if sign_in.count() > 0:
                 sign_in.click()
             else:
@@ -412,7 +420,6 @@ def google_login(email: str, password: str, bot=None, chat_id=None) -> tuple:
         report("🔍 Ищу кнопку Google...")
         google_btn = None
         
-        # Поиск через разные селекторы
         selectors = [
             'button:has-text("Continue with Google")',
             'span:has-text("Continue with Google")',
@@ -431,29 +438,22 @@ def google_login(email: str, password: str, bot=None, chat_id=None) -> tuple:
                 pass
         
         if not google_btn:
-            # Поиск через JavaScript
-            google_btn = page.evaluate_handle("""
+            # JavaScript поиск
+            result = page.evaluate("""
                 () => {
                     const spans = document.querySelectorAll('span');
                     for (let s of spans) {
                         if (s.textContent.toLowerCase().includes('continue with google')) {
                             let el = s.closest('button');
-                            if (el) return el;
+                            if (el) return true;
                         }
                     }
-                    const btns = document.querySelectorAll('button');
-                    for (let b of btns) {
-                        if (b.getAttribute('aria-label')?.toLowerCase().includes('google')) {
-                            return b;
-                        }
-                    }
-                    return null;
+                    return false;
                 }
             """)
             
-            if google_btn:
-                google_btn = page.locator('button').first
-                # Найден через JS, но не можем использовать handle напрямую
+            if result:
+                google_btn = page.locator('button:has-text("Continue with Google")').first
         
         if not google_btn:
             report("❌ Кнопка Google не найдена")
@@ -477,9 +477,20 @@ def google_login(email: str, password: str, bot=None, chat_id=None) -> tuple:
         time.sleep(5)
         
         # Ожидаем перехода на Google
-        page.wait_for_url(lambda url: "accounts.google.com" in url, timeout=15000)
+        try:
+            page.wait_for_url(lambda url: "accounts.google.com" in url, timeout=15000)
+        except:
+            pass
+        
         current_url = page.url
         report(f"📍 URL: {current_url[:80]}")
+        
+        if "accounts.google.com" not in current_url:
+            report("⚠️ Не удалось перейти на Google")
+            session.quit()
+            return False, "Не удалось перейти на Google"
+        
+        report("✅ Перешли на Google!")
         
         # Ввод email
         try:
@@ -533,7 +544,6 @@ def google_login(email: str, password: str, bot=None, chat_id=None) -> tuple:
         
         if found:
             report(f"✅ Авторизация подтверждена! Индикаторы: {found}")
-            # Сохраняем куки
             cookies = page.context.cookies()
             cookies_file = BASE_DIR / "x_cookies.json"
             with open(cookies_file, "w") as f:
@@ -574,12 +584,13 @@ def register_selenium_bot(bot):
         st = get_status()
         
         ready_icon = "🟢" if st['agent_ready'] else "🔴"
+        version = st.get('playwright', {}).get('version', 'неизвестно')
         
         text = f"""
 🚗 <b>Playwright X Agent</b>
 {'─' * 30}
 
-✅ Playwright: {'v' + st['playwright']['version'] if st['playwright']['installed'] else 'не установлен'}
+✅ Playwright: {version}
 {ready_icon} Готов: {"Да" if st['agent_ready'] else "Нет"}
 
 👤 Авторизация: {'✅' if st['auth_info'] else '❌'}
@@ -632,8 +643,10 @@ def register_selenium_bot(bot):
             return
         
         chat_id = message.chat.id
-        login_sessions = getattr(bot, 'login_sessions', {})
-        login_sessions[chat_id] = {"step": "email"}
+        # Используем глобальный словарь из bot.py
+        if not hasattr(bot, 'login_sessions'):
+            bot.login_sessions = {}
+        bot.login_sessions[chat_id] = {"step": "email"}
         bot.reply_to(message, "🔐 Введи <b>email</b> от Google:", parse_mode="HTML")
     
     @bot.message_handler(commands=["se_browser"])
@@ -670,6 +683,84 @@ def register_selenium_bot(bot):
                 bot.edit_message_text(response, chat_id=chat_id, message_id=msg.message_id, parse_mode="HTML")
         except Exception as e:
             bot.edit_message_text(f"❌ Ошибка: {e}", chat_id=chat_id, message_id=msg.message_id)
+    
+    @bot.message_handler(commands=["se_screenshot"])
+    def cmd_screenshot(message):
+        chat_id = message.chat.id
+        
+        if chat_id not in _browser_sessions:
+            bot.reply_to(message, "❌ Браузер не запущен. Используй /se_browser", parse_mode="HTML")
+            return
+        
+        try:
+            session = _browser_sessions[chat_id]
+            screenshot_path = session.screenshot("manual")
+            
+            if screenshot_path:
+                with open(screenshot_path, "rb") as f:
+                    bot.send_photo(
+                        chat_id, f,
+                        caption=f"📸 Скриншот\n🌐 {session.get_title()}"
+                    )
+            else:
+                bot.reply_to(message, "❌ Не удалось сделать скриншот", parse_mode="HTML")
+        except Exception as e:
+            bot.reply_to(message, f"❌ Ошибка: {e}", parse_mode="HTML")
+    
+    @bot.message_handler(commands=["se_close"])
+    def cmd_close(message):
+        chat_id = message.chat.id
+        
+        if chat_id in _browser_sessions:
+            try:
+                _browser_sessions[chat_id].quit()
+                del _browser_sessions[chat_id]
+                bot.reply_to(message, "✅ Браузер закрыт", parse_mode="HTML")
+            except Exception as e:
+                bot.reply_to(message, f"❌ Ошибка: {e}", parse_mode="HTML")
+        else:
+            bot.reply_to(message, "ℹ️ Браузер не запущен", parse_mode="HTML")
+    
+    @bot.message_handler(commands=["se_logs"])
+    def cmd_logs(message):
+        try:
+            if LOG_FILE.exists():
+                with open(LOG_FILE, "rb") as f:
+                    bot.send_document(
+                        message.chat.id,
+                        f,
+                        caption="📄 Логи агента",
+                        visible_file_name="agent.log"
+                    )
+            else:
+                bot.reply_to(message, "❌ Лог-файл не найден", parse_mode="HTML")
+        except Exception as e:
+            bot.reply_to(message, f"❌ Ошибка: {e}", parse_mode="HTML")
+    
+    @bot.message_handler(commands=["se_help"])
+    def cmd_help(message):
+        text = """
+🚗 <b>Playwright X Agent - Команды</b>
+{'━' * 30}
+
+<b>⚙️ Управление</b>
+/se_status — Статус агента
+/se_install — Установка Playwright + Chromium
+/se_logs — Логи
+
+<b>🔐 Авторизация</b>
+/se_google — Вход через Google
+/se_logout — Выйти
+
+<b>🌐 Браузер</b>
+/se_browser — Запустить браузер
+/se_screenshot — Скриншот
+/se_close — Закрыть браузер
+
+<b>ℹ️ Инфо</b>
+/se_help — Эта справка
+"""
+        bot.reply_to(message, text, parse_mode="HTML")
 
 # === ЭКСПОРТ ===
 __all__ = [
@@ -700,6 +791,7 @@ print(f"""
 ╠══════════════════════════════════════════════════════════════╣
 ║  Статус: {'✅ Готов' if _installed else '❌ Не готов'}                         ║
 ║  Движок: Playwright (современнее Selenium)                  ║
+║  Версия: {_playwright_version or 'неизвестно'}                              ║
 ║                                                              ║
 ║  Команды:                                                    ║
 ║  /se_status — Статус                                        ║
