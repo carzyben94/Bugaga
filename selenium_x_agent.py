@@ -1,4 +1,4 @@
-# selenium_x_agent.py
+# selenium_x_agent.py - исправленная версия
 """
 Selenium X Agent - Полная версия
 Поддержка: установка Chrome, статус, браузер, скриншоты
@@ -60,7 +60,6 @@ class ChromeInstaller:
     
     def _find_existing(self):
         """Поиск уже установленного Chrome"""
-        # Локальные пути
         local_chrome = BASE_DIR / "chrome" / "chrome-linux64" / "chrome"
         local_driver = BASE_DIR / "driver" / "chromedriver-linux64" / "chromedriver"
         
@@ -72,7 +71,6 @@ class ChromeInstaller:
             self.driver_path = str(local_driver)
             logger.info(f"[Installer] ✅ Локальный Driver: {self.driver_path}")
         
-        # Системные пути
         if not self.chrome_path:
             for name in ["google-chrome", "chromium", "chromium-browser", "chrome"]:
                 try:
@@ -112,10 +110,8 @@ class ChromeInstaller:
         }
     
     def install(self) -> bool:
-        """Установка Chrome + Driver"""
         logger.info("[Installer] 📦 Начинаю установку...")
         
-        # Проверяем Selenium
         try:
             import selenium
             logger.info(f"[Installer] ✅ Selenium уже установлен")
@@ -133,12 +129,10 @@ class ChromeInstaller:
                 logger.error(f"[Installer] ❌ Ошибка установки Selenium: {e}")
                 return False
         
-        # Устанавливаем Chrome
         if not self.chrome_path:
             if not self._download_chrome():
                 return False
         
-        # Устанавливаем Driver
         if not self.driver_path:
             if not self._download_driver():
                 return False
@@ -147,7 +141,6 @@ class ChromeInstaller:
         return self.ready
     
     def _download_chrome(self) -> bool:
-        """Скачивание Chrome"""
         logger.info("[Installer] 📥 Скачиваю Chrome...")
         chrome_dir = BASE_DIR / "chrome"
         chrome_dir.mkdir(parents=True, exist_ok=True)
@@ -179,7 +172,6 @@ class ChromeInstaller:
             return False
     
     def _download_driver(self) -> bool:
-        """Скачивание Chromedriver"""
         logger.info("[Installer] 📥 Скачиваю Chromedriver...")
         driver_dir = BASE_DIR / "driver"
         driver_dir.mkdir(parents=True, exist_ok=True)
@@ -212,8 +204,6 @@ class ChromeInstaller:
 
 # === КЛАСС БРАУЗЕРА ===
 class BrowserSession:
-    """Управление сессией браузера"""
-    
     def __init__(self, headless: bool = True, mobile: bool = False):
         self.driver = None
         self.headless = headless
@@ -225,7 +215,6 @@ class BrowserSession:
         return self._is_active and self.driver is not None
     
     def create(self):
-        """Создание браузера"""
         if not _installer.ready:
             raise Exception("Chrome не установлен. Используй /se_install")
         
@@ -235,7 +224,6 @@ class BrowserSession:
         
         options = Options()
         
-        # User-Agent
         if self.mobile:
             ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
             window_size = "--window-size=390,844"
@@ -246,11 +234,9 @@ class BrowserSession:
         options.add_argument(f"--user-agent={ua}")
         options.add_argument(window_size)
         
-        # Headless
         if self.headless:
             options.add_argument("--headless")
         
-        # Анти-детект
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
@@ -258,20 +244,16 @@ class BrowserSession:
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option("useAutomationExtension", False)
         
-        # Путь к Chrome
         if _installer.chrome_path:
             options.binary_location = _installer.chrome_path
         
-        # User data dir
         user_data_dir = BASE_DIR / "chrome_user_data"
         user_data_dir.mkdir(parents=True, exist_ok=True)
         options.add_argument(f"--user-data-dir={user_data_dir}")
         
-        # Создаем драйвер
         service = Service(_installer.driver_path) if _installer.driver_path else Service()
         self.driver = webdriver.Chrome(service=service, options=options)
         
-        # Маскировка webdriver
         self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
             "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         })
@@ -281,7 +263,6 @@ class BrowserSession:
         return self.driver
     
     def quit(self):
-        """Закрытие браузера"""
         if self.driver:
             try:
                 self.driver.quit()
@@ -293,7 +274,6 @@ class BrowserSession:
                 self._is_active = False
     
     def screenshot(self, name: str = "screenshot") -> Optional[str]:
-        """Создание скриншота"""
         if not self.is_active:
             logger.warning("[Browser] Браузер не активен")
             return None
@@ -311,7 +291,6 @@ class BrowserSession:
             return None
     
     def open_url(self, url: str) -> bool:
-        """Открытие URL"""
         if not self.is_active:
             logger.warning("[Browser] Браузер не активен")
             return False
@@ -326,7 +305,6 @@ class BrowserSession:
             return False
     
     def get_page_source(self) -> str:
-        """Получение HTML страницы"""
         if not self.is_active:
             return ""
         try:
@@ -335,7 +313,6 @@ class BrowserSession:
             return ""
     
     def get_title(self) -> str:
-        """Получение заголовка страницы"""
         if not self.is_active:
             return ""
         try:
@@ -346,12 +323,11 @@ class BrowserSession:
 # === ГЛОБАЛЬНЫЙ ИНСТАНС ===
 _installer = ChromeInstaller()
 
-# === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
+# === ФУНКЦИИ СТАТУСА ===
 def get_status() -> Dict:
     """Получение полного статуса"""
     st = _installer.status()
     
-    # Проверка Selenium
     try:
         import selenium
         selenium_installed = True
@@ -365,17 +341,19 @@ def get_status() -> Dict:
         "version": selenium_version
     }
     
-    # Проверка cookies
     cookies_file = BASE_DIR / "cookies.json"
     st["cookies"] = cookies_file.exists()
     
-    # Активные сессии
     st["active_sessions"] = len([s for s in _browser_sessions.values() if s.is_active])
     
     return st
 
+# === АЛИАС ДЛЯ СОВМЕСТИМОСТИ ===
+def get_full_status() -> Dict:
+    """Алиас для get_status() - для совместимости"""
+    return get_status()
+
 def create_browser(headless: bool = True, mobile: bool = False, chat_id: int = None) -> BrowserSession:
-    """Создание новой сессии браузера"""
     session = BrowserSession(headless=headless, mobile=mobile)
     try:
         session.create()
@@ -393,7 +371,6 @@ def register_selenium_bot(bot):
     
     @bot.message_handler(commands=["se_status"])
     def cmd_status(message):
-        """Статус агента"""
         st = get_status()
         
         chrome_icon = "✅" if st['chrome']['found'] else "❌"
@@ -422,7 +399,6 @@ def register_selenium_bot(bot):
     
     @bot.message_handler(commands=["se_install"])
     def cmd_install(message):
-        """Установка Chrome + Driver"""
         if _installer.ready:
             bot.reply_to(message, "✅ Уже установлено!", parse_mode="HTML")
             return
@@ -459,14 +435,12 @@ def register_selenium_bot(bot):
     
     @bot.message_handler(commands=["se_browser"])
     def cmd_browser(message):
-        """Запуск браузера"""
         chat_id = message.chat.id
         
         if not _installer.ready:
             bot.reply_to(message, "❌ Сначала /se_install", parse_mode="HTML")
             return
         
-        # Закрываем старую сессию если есть
         if chat_id in _browser_sessions:
             try:
                 _browser_sessions[chat_id].quit()
@@ -480,7 +454,6 @@ def register_selenium_bot(bot):
             session = create_browser(headless=True, mobile=False, chat_id=chat_id)
             session.open_url("https://x.com")
             
-            # Скриншот
             screenshot_path = session.screenshot("browser_start")
             
             response = "✅ Браузер запущен!\n"
@@ -503,7 +476,6 @@ def register_selenium_bot(bot):
     
     @bot.message_handler(commands=["se_screenshot"])
     def cmd_screenshot(message):
-        """Сделать скриншот"""
         chat_id = message.chat.id
         
         if chat_id not in _browser_sessions or not _browser_sessions[chat_id].is_active:
@@ -528,7 +500,6 @@ def register_selenium_bot(bot):
     
     @bot.message_handler(commands=["se_close"])
     def cmd_close(message):
-        """Закрыть браузер"""
         chat_id = message.chat.id
         
         if chat_id in _browser_sessions:
@@ -543,7 +514,6 @@ def register_selenium_bot(bot):
     
     @bot.message_handler(commands=["se_logs"])
     def cmd_logs(message):
-        """Показать логи"""
         try:
             if LOG_FILE.exists():
                 with open(LOG_FILE, "rb") as f:
@@ -560,7 +530,6 @@ def register_selenium_bot(bot):
     
     @bot.message_handler(commands=["se_help"])
     def cmd_help(message):
-        """Помощь"""
         text = """🚗 <b>Selenium X Agent - Команды</b>
 
 <b>⚙️ Управление</b>
@@ -581,6 +550,17 @@ def register_selenium_bot(bot):
 🔴 Требуется установка"""
         
         bot.reply_to(message, text, parse_mode="HTML")
+
+# === ЭКСПОРТ ===
+__all__ = [
+    'register_selenium_bot',
+    'get_status',
+    'get_full_status',  # ← Добавлено для совместимости
+    'create_browser',
+    'BrowserSession',
+    '_installer',
+    'BASE_DIR'
+]
 
 # === ИНИЦИАЛИЗАЦИЯ ===
 logger.info("=" * 50)
@@ -606,13 +586,3 @@ print(f"""
 ║  /se_help — Помощь                                          ║
 ╚══════════════════════════════════════════════════════════════╝
 """)
-
-# Экспорт
-__all__ = [
-    'register_selenium_bot',
-    'get_status',
-    'create_browser',
-    'BrowserSession',
-    '_installer',
-    'BASE_DIR'
-]
