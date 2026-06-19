@@ -1,7 +1,6 @@
-# selenium_x_agent.py - исправленная версия
+# selenium_x_agent.py - ПОЛНАЯ ВЕРСИЯ
 """
 Selenium X Agent - Полная версия
-Поддержка: установка Chrome, статус, браузер, скриншоты
 """
 
 import os
@@ -31,7 +30,7 @@ SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
 # === ЛОГИРОВАНИЕ ===
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s | %(levelname)-7s | %(message)s",
     handlers=[
         logging.FileHandler(str(LOG_FILE), encoding="utf-8"),
@@ -50,8 +49,6 @@ _browser_sessions = {}
 
 # === КЛАСС УСТАНОВЩИКА ===
 class ChromeInstaller:
-    """Установка и управление Chrome + Chromedriver"""
-    
     def __init__(self):
         self.chrome_path = None
         self.driver_path = None
@@ -59,7 +56,6 @@ class ChromeInstaller:
         logger.info(f"[Installer] Статус: {'✅ Готов' if self.ready else '❌ Не готов'}")
     
     def _find_existing(self):
-        """Поиск уже установленного Chrome"""
         local_chrome = BASE_DIR / "chrome" / "chrome-linux64" / "chrome"
         local_driver = BASE_DIR / "driver" / "chromedriver-linux64" / "chromedriver"
         
@@ -119,9 +115,8 @@ class ChromeInstaller:
             logger.info("[Installer] 📦 Устанавливаю selenium...")
             try:
                 subprocess.run(
-                    [sys.executable, "-m", "pip", "install", "selenium"],
+                    [sys.executable, "-m", "pip", "install", "selenium", "--quiet"],
                     check=True,
-                    capture_output=True,
                     timeout=120
                 )
                 logger.info("[Installer] ✅ Selenium установлен")
@@ -202,6 +197,90 @@ class ChromeInstaller:
             logger.error(f"[Installer] ❌ Ошибка загрузки Driver: {e}")
             return False
 
+# === ГЛОБАЛЬНЫЙ ИНСТАНС ===
+_installer = ChromeInstaller()
+
+# === ФУНКЦИИ СТАТУСА ===
+def get_status() -> Dict:
+    st = _installer.status()
+    
+    try:
+        import selenium
+        selenium_installed = True
+        selenium_version = selenium.__version__
+    except ImportError:
+        selenium_installed = False
+        selenium_version = None
+    
+    st["selenium"] = {
+        "installed": selenium_installed,
+        "version": selenium_version
+    }
+    
+    cookies_file = BASE_DIR / "cookies.json"
+    st["cookies"] = cookies_file.exists()
+    st["active_sessions"] = len([s for s in _browser_sessions.values() if s.is_active])
+    
+    # Для совместимости с bot.py
+    st["agent_ready"] = _installer.ready
+    st["auth_info"] = get_auth_info()
+    
+    return st
+
+def get_full_status() -> Dict:
+    return get_status()
+
+def AGENT_READY() -> bool:
+    return _installer.ready if _installer else False
+
+# === ФУНКЦИИ ДЛЯ АВТОРИЗАЦИИ ===
+def get_auth_info() -> Optional[Dict]:
+    auth_file = BASE_DIR / "x_auth.json"
+    if not auth_file.exists():
+        return None
+    try:
+        with open(auth_file, "r") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning(f"[Auth] Ошибка чтения: {e}")
+        return None
+
+def save_auth_info(username: str, email: str = None, extra: Dict = None) -> bool:
+    try:
+        data = {
+            "username": str(username),
+            "email": email,
+            "authorized_at": datetime.now().isoformat(),
+        }
+        if extra:
+            data.update(extra)
+        
+        auth_file = BASE_DIR / "x_auth.json"
+        with open(auth_file, "w") as f:
+            json.dump(data, f, indent=2)
+        
+        logger.info(f"[Auth] ✅ Сохранена авторизация для {username}")
+        return True
+    except Exception as e:
+        logger.error(f"[Auth] ❌ Ошибка сохранения: {e}")
+        return False
+
+def clear_auth_info() -> bool:
+    try:
+        auth_file = BASE_DIR / "x_auth.json"
+        cookies_file = BASE_DIR / "x_cookies.json"
+        
+        if auth_file.exists():
+            auth_file.unlink()
+        if cookies_file.exists():
+            cookies_file.unlink()
+        
+        logger.info("[Auth] ✅ Авторизация очищена")
+        return True
+    except Exception as e:
+        logger.error(f"[Auth] ❌ Ошибка очистки: {e}")
+        return False
+
 # === КЛАСС БРАУЗЕРА ===
 class BrowserSession:
     def __init__(self, headless: bool = True, mobile: bool = False):
@@ -218,9 +297,12 @@ class BrowserSession:
         if not _installer.ready:
             raise Exception("Chrome не установлен. Используй /se_install")
         
-        from selenium import webdriver
-        from selenium.webdriver.chrome.options import Options
-        from selenium.webdriver.chrome.service import Service
+        try:
+            from selenium import webdriver
+            from selenium.webdriver.chrome.options import Options
+            from selenium.webdriver.chrome.service import Service
+        except ImportError:
+            raise Exception("Selenium не установлен. Используй /se_install")
         
         options = Options()
         
@@ -320,39 +402,6 @@ class BrowserSession:
         except:
             return ""
 
-# === ГЛОБАЛЬНЫЙ ИНСТАНС ===
-_installer = ChromeInstaller()
-
-# === ФУНКЦИИ СТАТУСА ===
-def get_status() -> Dict:
-    """Получение полного статуса"""
-    st = _installer.status()
-    
-    try:
-        import selenium
-        selenium_installed = True
-        selenium_version = selenium.__version__
-    except ImportError:
-        selenium_installed = False
-        selenium_version = None
-    
-    st["selenium"] = {
-        "installed": selenium_installed,
-        "version": selenium_version
-    }
-    
-    cookies_file = BASE_DIR / "cookies.json"
-    st["cookies"] = cookies_file.exists()
-    
-    st["active_sessions"] = len([s for s in _browser_sessions.values() if s.is_active])
-    
-    return st
-
-# === АЛИАС ДЛЯ СОВМЕСТИМОСТИ ===
-def get_full_status() -> Dict:
-    """Алиас для get_status() - для совместимости"""
-    return get_status()
-
 def create_browser(headless: bool = True, mobile: bool = False, chat_id: int = None) -> BrowserSession:
     session = BrowserSession(headless=headless, mobile=mobile)
     try:
@@ -364,9 +413,8 @@ def create_browser(headless: bool = True, mobile: bool = False, chat_id: int = N
         logger.error(f"[Browser] ❌ Ошибка создания: {e}")
         raise
 
-# === РЕГИСТРАЦИЯ КОМАНД ДЛЯ БОТА ===
+# === РЕГИСТРАЦИЯ КОМАНД ===
 def register_selenium_bot(bot):
-    """Регистрация команд для Telegram бота"""
     logger.info("[Bot] Регистрация команд Selenium...")
     
     @bot.message_handler(commands=["se_status"])
@@ -391,8 +439,6 @@ def register_selenium_bot(bot):
 📁 {st['base_dir']}
 
 /se_install — Установить Chrome + Driver
-/se_browser — Запустить браузер
-/se_screenshot — Сделать скриншот
 /se_help — Помощь"""
         
         bot.reply_to(message, text, parse_mode="HTML")
@@ -413,7 +459,7 @@ def register_selenium_bot(bot):
                     f"✅ <b>Установка завершена!</b>\n\n"
                     f"🌐 Chrome: <code>{_installer.chrome_path}</code>\n"
                     f"🔧 Driver: <code>{_installer.driver_path}</code>\n\n"
-                    f"Теперь можно использовать /se_browser",
+                    f"Теперь можно использовать /se_status",
                     chat_id=msg.chat.id,
                     message_id=msg.message_id,
                     parse_mode="HTML"
@@ -433,101 +479,6 @@ def register_selenium_bot(bot):
                 message_id=msg.message_id
             )
     
-    @bot.message_handler(commands=["se_browser"])
-    def cmd_browser(message):
-        chat_id = message.chat.id
-        
-        if not _installer.ready:
-            bot.reply_to(message, "❌ Сначала /se_install", parse_mode="HTML")
-            return
-        
-        if chat_id in _browser_sessions:
-            try:
-                _browser_sessions[chat_id].quit()
-            except:
-                pass
-            del _browser_sessions[chat_id]
-        
-        msg = bot.reply_to(message, "⏳ Запускаю браузер...", parse_mode="HTML")
-        
-        try:
-            session = create_browser(headless=True, mobile=False, chat_id=chat_id)
-            session.open_url("https://x.com")
-            
-            screenshot_path = session.screenshot("browser_start")
-            
-            response = "✅ Браузер запущен!\n"
-            response += f"📄 Title: {session.get_title()}\n"
-            response += f"🔗 URL: {session.driver.current_url[:60]}..."
-            
-            if screenshot_path:
-                with open(screenshot_path, "rb") as f:
-                    bot.send_photo(chat_id, f, caption=response)
-                bot.delete_message(chat_id, msg.message_id)
-            else:
-                bot.edit_message_text(response, chat_id=chat_id, message_id=msg.message_id, parse_mode="HTML")
-                
-        except Exception as e:
-            bot.edit_message_text(
-                f"❌ Ошибка запуска браузера: {e}",
-                chat_id=chat_id,
-                message_id=msg.message_id
-            )
-    
-    @bot.message_handler(commands=["se_screenshot"])
-    def cmd_screenshot(message):
-        chat_id = message.chat.id
-        
-        if chat_id not in _browser_sessions or not _browser_sessions[chat_id].is_active:
-            bot.reply_to(message, "❌ Браузер не запущен. Используй /se_browser", parse_mode="HTML")
-            return
-        
-        try:
-            session = _browser_sessions[chat_id]
-            screenshot_path = session.screenshot("manual")
-            
-            if screenshot_path:
-                with open(screenshot_path, "rb") as f:
-                    bot.send_photo(
-                        chat_id, f,
-                        caption=f"📸 Скриншот\n🌐 {session.get_title()}"
-                    )
-            else:
-                bot.reply_to(message, "❌ Не удалось сделать скриншот", parse_mode="HTML")
-                
-        except Exception as e:
-            bot.reply_to(message, f"❌ Ошибка: {e}", parse_mode="HTML")
-    
-    @bot.message_handler(commands=["se_close"])
-    def cmd_close(message):
-        chat_id = message.chat.id
-        
-        if chat_id in _browser_sessions:
-            try:
-                _browser_sessions[chat_id].quit()
-                del _browser_sessions[chat_id]
-                bot.reply_to(message, "✅ Браузер закрыт", parse_mode="HTML")
-            except Exception as e:
-                bot.reply_to(message, f"❌ Ошибка: {e}", parse_mode="HTML")
-        else:
-            bot.reply_to(message, "ℹ️ Браузер не запущен", parse_mode="HTML")
-    
-    @bot.message_handler(commands=["se_logs"])
-    def cmd_logs(message):
-        try:
-            if LOG_FILE.exists():
-                with open(LOG_FILE, "rb") as f:
-                    bot.send_document(
-                        message.chat.id,
-                        f,
-                        caption="📄 Логи агента",
-                        visible_file_name="agent.log"
-                    )
-            else:
-                bot.reply_to(message, "❌ Лог-файл не найден", parse_mode="HTML")
-        except Exception as e:
-            bot.reply_to(message, f"❌ Ошибка: {e}", parse_mode="HTML")
-    
     @bot.message_handler(commands=["se_help"])
     def cmd_help(message):
         text = """🚗 <b>Selenium X Agent - Команды</b>
@@ -535,12 +486,6 @@ def register_selenium_bot(bot):
 <b>⚙️ Управление</b>
 /se_status — Статус агента
 /se_install — Установка Chrome + Driver
-/se_logs — Показать логи
-
-<b>🌐 Браузер</b>
-/se_browser — Запустить браузер
-/se_screenshot — Сделать скриншот
-/se_close — Закрыть браузер
 
 <b>ℹ️ Инфо</b>
 /se_help — Эта справка
@@ -550,12 +495,18 @@ def register_selenium_bot(bot):
 🔴 Требуется установка"""
         
         bot.reply_to(message, text, parse_mode="HTML")
+    
+    logger.info("[Bot] ✅ Команды Selenium зарегистрированы")
 
 # === ЭКСПОРТ ===
 __all__ = [
     'register_selenium_bot',
     'get_status',
-    'get_full_status',  # ← Добавлено для совместимости
+    'get_full_status',
+    'get_auth_info',
+    'save_auth_info',
+    'clear_auth_info',
+    'AGENT_READY',
     'create_browser',
     'BrowserSession',
     '_installer',
@@ -579,10 +530,6 @@ print(f"""
 ║  Команды:                                                    ║
 ║  /se_status — Статус                                        ║
 ║  /se_install — Установка                                    ║
-║  /se_browser — Запустить браузер                            ║
-║  /se_screenshot — Скриншот                                  ║
-║  /se_close — Закрыть браузер                                ║
-║  /se_logs — Логи                                            ║
 ║  /se_help — Помощь                                          ║
 ╚══════════════════════════════════════════════════════════════╝
 """)
