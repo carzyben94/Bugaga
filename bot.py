@@ -1,4 +1,4 @@
-# bot.py - Полная версия со всеми командами (без кнопок)
+# bot.py - Полная версия для Playwright X Agent
 import os
 import sys
 import time
@@ -10,45 +10,42 @@ from datetime import datetime
 
 print("[DEBUG] Запуск бота...", flush=True)
 
-# === ИМПОРТ SELENIUM ===
-SELENIUM_AVAILABLE = False
-register_selenium_bot = None
+# === ИМПОРТ PLAYWRIGHT ===
+PLAYWRIGHT_AVAILABLE = False
+register_commands = None
 get_full_status = None
 get_auth_info = None
 AGENT_READY = None
 BASE_DIR = None
 create_browser = None
-BrowserSession = None
-installer = None
+Browser = None
 google_login = None
-clear_auth_info = None
+clear_auth = None
 
-print("[DEBUG] Импорт selenium_x_agent...", flush=True)
+print("[DEBUG] Импорт playwright_x_agent...", flush=True)
 try:
-    from selenium_x_agent import (
-        register_selenium_bot as _rsb,
+    from playwright_x_agent import (
+        register_commands as _rc,
         get_full_status as _gfs,
-        get_auth_info as _gai,
-        AGENT_READY as _ar,
+        get_auth as _ga,
+        is_ready as _ar,
         BASE_DIR as _bd,
         create_browser as _cb,
-        BrowserSession as _bs,
-        _installer,
+        Browser as _br,
         google_login as _gl,
-        clear_auth_info as _cai
+        clear_auth as _ca
     )
-    register_selenium_bot = _rsb
+    register_commands = _rc
     get_full_status = _gfs
-    get_auth_info = _gai
+    get_auth_info = _ga
     AGENT_READY = _ar
     BASE_DIR = _bd
     create_browser = _cb
-    BrowserSession = _bs
-    installer = _installer
+    Browser = _br
     google_login = _gl
-    clear_auth_info = _cai
-    SELENIUM_AVAILABLE = True
-    print("[DEBUG] ✅ Selenium импортирован успешно", flush=True)
+    clear_auth = _ca
+    PLAYWRIGHT_AVAILABLE = True
+    print("[DEBUG] ✅ Playwright импортирован успешно", flush=True)
 except Exception as e:
     print(f"[DEBUG] ❌ Ошибка импорта: {e}", flush=True)
     import traceback
@@ -72,16 +69,17 @@ browser_sessions = {}
 # === МЕНЮ ===
 def build_menu():
     """Главное меню"""
-    if not SELENIUM_AVAILABLE:
+    if not PLAYWRIGHT_AVAILABLE:
         return (
-            "🚫 <b>Selenium не загружен</b>\n\n"
+            "🚫 <b>Playwright не загружен</b>\n\n"
             "❌ Проверь логи: /se_logs"
         )
     
     try:
         status = get_full_status()
-        ready = status.get("agent_ready", False)
-        auth = status.get("auth_info")
+        ready = status.get("ready", False)
+        auth = status.get("auth")
+        version = status.get("version", "?")
         
         # Статус
         if ready and auth:
@@ -97,15 +95,8 @@ def build_menu():
         # Пользователь
         user_info = f"👤 <b>{auth['username']}</b>" if auth else "👤 <i>не авторизован</i>"
         
-        # Компоненты
-        chrome_found = status.get("chrome_browser", {}).get("found", False)
-        driver_ready = status.get("chromedriver", {}).get("ready", False)
-        
-        chrome_icon = "✅" if chrome_found else "❌"
-        driver_icon = "✅" if driver_ready else "❌"
-        
         return f"""
-🚗 <b>SELENIUM X AGENT</b>
+🚗 <b>PLAYWRIGHT X AGENT</b>
 {'━' * 30}
 
 {status_icon} <b>Статус:</b> {status_text}
@@ -113,10 +104,10 @@ def build_menu():
 {user_info}
 
 📦 <b>Компоненты:</b>
-{chrome_icon} Chrome: {'установлен' if chrome_found else 'не найден'}
-{driver_icon} Driver: {'готов' if driver_ready else 'не найден'}
+✅ Playwright: {version}
+{'✅' if ready else '❌'} Браузер: {'готов' if ready else 'не установлен'}
 
-📁 {status.get('selenium_dir', BASE_DIR)}
+📁 {status.get('base_dir', BASE_DIR)}
 🕐 {datetime.now().strftime('%H:%M:%S')}
 
 📋 /help — список команд
@@ -142,7 +133,7 @@ def help_command(message):
 
 <b>УПРАВЛЕНИЕ:</b>
 /se_status  - Статус агента
-/se_install - Установка Chrome
+/se_install - Установка Playwright
 /se_clear   - Очистить логи
 /se_logs    - Показать логи
 
@@ -164,27 +155,28 @@ def help_command(message):
 # === УПРАВЛЕНИЕ ===
 @bot.message_handler(commands=["se_status"])
 def status_command(message):
-    if not SELENIUM_AVAILABLE:
-        bot.reply_to(message, "❌ Selenium не загружен", parse_mode="HTML")
+    if not PLAYWRIGHT_AVAILABLE:
+        bot.reply_to(message, "❌ Playwright не загружен", parse_mode="HTML")
         return
     
     try:
         status = get_full_status()
-        auth = status.get("auth_info")
+        auth = status.get("auth")
+        ready = status.get("ready", False)
+        version = status.get("version", "?")
         
         text = f"""
-🚗 <b>Selenium X Agent</b>
+🚗 <b>Playwright X Agent</b>
 {'─' * 30}
 
-✅ Chrome: {status.get('chrome_browser', {}).get('path', 'не найден')}
-✅ Driver: {status.get('chromedriver', {}).get('path', 'не найден')}
-✅ Selenium: {'установлен' if status.get('selenium_pip', {}).get('installed') else 'не установлен'}
+✅ Playwright: {version}
+{'🟢' if ready else '🔴'} Готов: {'Да' if ready else 'Нет'}
 
-🟢 Готов: {'Да' if status.get('agent_ready') else 'Нет'}
 👤 Авторизация: {'✅' if auth else '❌'}
-🍪 Cookies: {'есть' if status.get('cookies_exist') else 'нет'}
+🍪 Cookies: {'есть' if status.get('cookies') else 'нет'}
+🌐 Сессий: {status.get('sessions', 0)}
 
-📁 {status.get('selenium_dir', BASE_DIR)}
+📁 {status.get('base_dir', BASE_DIR)}
 """
         bot.reply_to(message, text, parse_mode="HTML")
     except Exception as e:
@@ -192,24 +184,25 @@ def status_command(message):
 
 @bot.message_handler(commands=["se_install"])
 def install_command(message):
-    if not SELENIUM_AVAILABLE:
-        bot.reply_to(message, "❌ Selenium не загружен", parse_mode="HTML")
+    if not PLAYWRIGHT_AVAILABLE:
+        bot.reply_to(message, "❌ Playwright не загружен", parse_mode="HTML")
         return
     
     if AGENT_READY():
         bot.reply_to(message, "✅ Уже установлено! Используй /se_status", parse_mode="HTML")
         return
     
-    msg = bot.reply_to(message, "⏳ Установка Chrome + Driver...\nЭто займет 1-2 минуты", parse_mode="HTML")
+    msg = bot.reply_to(message, "⏳ Установка Playwright + Chromium...\nЭто займет 2-3 минуты", parse_mode="HTML")
     
     try:
-        success = installer.install() if installer else False
+        from playwright_x_agent import install_playwright
+        success = install_playwright()
         
         if success:
             bot.edit_message_text(
                 f"✅ <b>Установка завершена!</b>\n\n"
-                f"🌐 Chrome: <code>{installer.chrome_path}</code>\n"
-                f"🔧 Driver: <code>{installer.driver_path}</code>\n\n"
+                f"📦 Playwright установлен\n"
+                f"🌐 Chromium установлен\n\n"
                 f"Теперь используй /se_google для входа",
                 chat_id=msg.chat.id,
                 message_id=msg.message_id,
@@ -262,8 +255,8 @@ def clear_command(message):
 # === АВТОРИЗАЦИЯ ===
 @bot.message_handler(commands=["se_google"])
 def google_command(message):
-    if not SELENIUM_AVAILABLE:
-        bot.reply_to(message, "❌ Selenium не загружен", parse_mode="HTML")
+    if not PLAYWRIGHT_AVAILABLE:
+        bot.reply_to(message, "❌ Playwright не загружен", parse_mode="HTML")
         return
     
     if not AGENT_READY():
@@ -276,13 +269,13 @@ def google_command(message):
 
 @bot.message_handler(commands=["se_logout"])
 def logout_command(message):
-    if not SELENIUM_AVAILABLE:
-        bot.reply_to(message, "❌ Selenium не загружен", parse_mode="HTML")
+    if not PLAYWRIGHT_AVAILABLE:
+        bot.reply_to(message, "❌ Playwright не загружен", parse_mode="HTML")
         return
     
     try:
-        if clear_auth_info:
-            clear_auth_info()
+        if clear_auth:
+            clear_auth()
         bot.reply_to(message, "🚪 Сессия очищена", parse_mode="HTML")
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {e}", parse_mode="HTML")
@@ -290,8 +283,8 @@ def logout_command(message):
 # === БРАУЗЕР ===
 @bot.message_handler(commands=["se_browser"])
 def browser_command(message):
-    if not SELENIUM_AVAILABLE:
-        bot.reply_to(message, "❌ Selenium не загружен", parse_mode="HTML")
+    if not PLAYWRIGHT_AVAILABLE:
+        bot.reply_to(message, "❌ Playwright не загружен", parse_mode="HTML")
         return
     
     if not AGENT_READY():
@@ -302,22 +295,22 @@ def browser_command(message):
     
     if chat_id in browser_sessions:
         try:
-            browser_sessions[chat_id].quit()
+            browser_sessions[chat_id].stop()
         except:
             pass
         del browser_sessions[chat_id]
     
-    msg = bot.reply_to(message, "⏳ Запускаю браузер...", parse_mode="HTML")
+    msg = bot.reply_to(message, "⏳ Запускаю браузер (Playwright)...", parse_mode="HTML")
     
     try:
-        session = create_browser(headless=True, mobile=False, chat_id=chat_id)
-        session.open_url("https://x.com")
-        browser_sessions[chat_id] = session
+        browser = create_browser(headless=True, mobile=False, chat_id=chat_id)
+        browser.goto("https://x.com")
+        browser_sessions[chat_id] = browser
         
-        screenshot_path = session.screenshot("browser_start")
+        screenshot_path = browser.screenshot("browser_start")
         
         response = "✅ Браузер запущен!\n"
-        response += f"📄 Title: {session.get_title()}\n"
+        response += f"📄 Title: {browser.title()}\n"
         
         if screenshot_path:
             with open(screenshot_path, "rb") as f:
@@ -342,14 +335,14 @@ def screenshot_command(message):
         return
     
     try:
-        session = browser_sessions[chat_id]
-        screenshot_path = session.screenshot("manual")
+        browser = browser_sessions[chat_id]
+        screenshot_path = browser.screenshot("manual")
         
         if screenshot_path:
             with open(screenshot_path, "rb") as f:
                 bot.send_photo(
                     chat_id, f,
-                    caption=f"📸 Скриншот\n🌐 {session.get_title()}"
+                    caption=f"📸 Скриншот\n🌐 {browser.title()}"
                 )
         else:
             bot.reply_to(message, "❌ Не удалось сделать скриншот", parse_mode="HTML")
@@ -362,7 +355,7 @@ def close_command(message):
     
     if chat_id in browser_sessions:
         try:
-            browser_sessions[chat_id].quit()
+            browser_sessions[chat_id].stop()
             del browser_sessions[chat_id]
             bot.reply_to(message, "✅ Браузер закрыт", parse_mode="HTML")
         except Exception as e:
@@ -384,7 +377,7 @@ def test_command(message):
     bot.reply_to(
         message,
         f"✅ Бот работает!\n🕐 {datetime.now().strftime('%H:%M:%S')}\n"
-        f"📦 Selenium: {'✅' if SELENIUM_AVAILABLE else '❌'}",
+        f"📦 Playwright: {'✅' if PLAYWRIGHT_AVAILABLE else '❌'}",
         parse_mode="HTML"
     )
 
