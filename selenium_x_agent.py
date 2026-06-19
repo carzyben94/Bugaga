@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import traceback
 import threading
+import re
 from pathlib import Path
 
 print("[SE] Начало модуля", flush=True)
@@ -26,7 +27,7 @@ LOG_FILE = BASE_DIR / "agent.log"
 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,  # DEBUG для подробных логов
     format="%(asctime)s | %(levelname)s | %(message)s",
     handlers=[
         logging.FileHandler(str(LOG_FILE), encoding="utf-8"),
@@ -101,7 +102,6 @@ class ChromeInstaller:
         return success
     
     def _install_selenium_pip(self):
-        """Установить selenium как в старом коде"""
         try:
             import selenium
             print(f"[SE] Selenium уже установлен: v{selenium.__version__}", flush=True)
@@ -289,7 +289,8 @@ class BrowserSession:
                 with open(path, "rb") as f:
                     self._bot.send_photo(self._chat_id, f, caption=caption or f"📸 {name}")
             return str(path)
-        except:
+        except Exception as e:
+            logger.error(f"Screenshot error: {e}")
             return None
     
     def _save_html(self, name):
@@ -298,8 +299,10 @@ class BrowserSession:
             html_path = BASE_DIR / f"{name}.html"
             with open(html_path, "w", encoding="utf-8") as f:
                 f.write(html)
+            logger.info(f"HTML saved: {html_path}")
             return str(html_path)
-        except:
+        except Exception as e:
+            logger.error(f"HTML save error: {e}")
             return None
     
     def _get_options(self):
@@ -359,6 +362,17 @@ class BrowserSession:
             self.driver = None
 
 
+def _send_log_file(bot, chat_id, prefix=""):
+    """Отправить файл логов в чат"""
+    try:
+        if LOG_FILE.exists():
+            with open(LOG_FILE, "rb") as f:
+                caption = f"{prefix}\n📄 Логи: {LOG_FILE.name}" if prefix else f"📄 Логи: {LOG_FILE.name}"
+                bot.send_document(chat_id, f, caption=caption)
+    except Exception as e:
+        logger.error(f"Failed to send log: {e}")
+
+
 # === GOOGLE LOGIN ===
 def google_login(email, password, bot=None, chat_id=None):
     try:
@@ -381,12 +395,25 @@ def google_login(email, password, bot=None, chat_id=None):
         if bot and chat_id:
             try:
                 bot.send_message(chat_id, text, parse_mode="HTML")
-            except:
-                pass
+            except Exception as e:
+                logger.error(f"Report send error: {e}")
+    
+    def report_error(text, send_log=True):
+        """Отправить ошибку и логи"""
+        logger.error(text)
+        if bot and chat_id:
+            try:
+                bot.send_message(chat_id, f"❌ {text}", parse_mode="HTML")
+                if send_log:
+                    _send_log_file(bot, chat_id, prefix=f"❌ {text[:100]}")
+            except Exception as e:
+                logger.error(f"Error report failed: {e}")
     
     try:
         report("⏳ Запускаю браузер...")
+        logger.info(f"Starting login for email: {email[:3]}***")
         session.create()
+        logger.info(f"Browser created, title: {session.driver.title}")
         
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support.ui import WebDriverWait
@@ -394,25 +421,30 @@ def google_login(email, password, bot=None, chat_id=None):
         
         # === ШАГ 0: Заходим на x.com ===
         report("📥 Открываю x.com...")
+        logger.info("Navigating to https://x.com")
         session.driver.get("https://x.com")
         time.sleep(6)
-        session._screenshot("step0_x_com", "📸 Шаг 0: x.com")
-        session._save_html("step0_x_com")
         
         current_url = session.driver.current_url
         title = session.driver.title
+        logger.info(f"After x.com load - URL: {current_url}, Title: {title}")
         report(f"📍 URL: {current_url}")
         report(f"📰 Title: {title}")
         
-        # === ШАГ 0.5: Если попали на onboarding — работаем с ним ===
+        session._screenshot("step0_x_com", "📸 Шаг 0: x.com")
+        session._save_html("step0_x_com")
+        
+        # === ШАГ 0.5: Если попали на onboarding ===
         if "onboarding" in current_url or "mode=login" in current_url:
+            logger.info("Detected onboarding flow")
             report("🔀 Обнаружен onboarding flow!")
             
             try:
                 body_text = session.driver.find_element(By.TAG_NAME, "body").text
+                logger.info(f"Onboarding body text (first 500): {body_text[:500]}")
                 report(f"📄 Текст onboarding:\n{body_text[:1000]}")
-            except:
-                pass
+            except Exception as e:
+                logger.error(f"Failed to get onboarding text: {e}")
             
             onboarding_xpaths = [
                 "//span[contains(text(), 'Continue with Google')]",
@@ -433,54 +465,72 @@ def google_login(email, password, bot=None, chat_id=None):
             for xp in onboarding_xpaths:
                 try:
                     elements = session.driver.find_elements(By.XPATH, xp)
+                    logger.debug(f"XPath '{xp[:50]}' found: {len(elements)} elements")
                     if elements:
                         google_btn = elements[0]
+                        logger.info(f"Found Google button via XPath: {xp[:50]}")
                         report(f"✅ Найдено на onboarding: {xp[:50]}")
                         break
-                except:
-                    continue
+                except Exception as e:
+                    logger.debug(f"XPath '{xp[:50]}' failed: {e}")
             
             if not google_btn:
+                logger.info("XPath search failed, trying all buttons")
                 report("🔍 Перебираю все кнопки...")
                 all_buttons = session.driver.find_elements(By.XPATH, "//button | //div[@role='button'] | //a")
+                logger.info(f"Total buttons/links found: {len(all_buttons)}")
                 report(f"   Всего: {len(all_buttons)}")
+                
                 for idx, btn in enumerate(all_buttons[:25]):
                     try:
                         text = btn.text or btn.get_attribute("aria-label") or btn.get_attribute("title") or ""
                         href = btn.get_attribute("href") or ""
+                        btn_class = btn.get_attribute("class") or ""
+                        logger.debug(f"Button [{idx}]: text='{text[:50]}' href='{href[:50]}' class='{btn_class[:50]}'")
+                        
                         if text or href:
                             report(f"   [{idx}] {text[:50]} | href={href[:50]}")
                             if "google" in (text + href).lower():
                                 google_btn = btn
+                                logger.info(f"Found Google button at index {idx}")
                                 report(f"   ✅ Это Google!")
                                 break
-                    except:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Button [{idx}] error: {e}")
             
             if google_btn:
                 report("🖱️ Кликаю по Google...")
+                logger.info("Clicking Google button")
                 try:
                     session.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", google_btn)
                     time.sleep(1)
                     google_btn.click()
-                except:
+                    logger.info("Google button clicked successfully")
+                except Exception as e:
+                    logger.warning(f"Normal click failed: {e}, trying alternatives")
                     href = google_btn.get_attribute("href")
                     if href:
+                        logger.info(f"Navigating to href: {href[:100]}")
                         report(f"🔗 Переход по href: {href[:100]}")
                         session.driver.get(href)
                     else:
+                        logger.info("Trying JS click")
                         session.driver.execute_script("arguments[0].click();", google_btn)
                 
                 time.sleep(5)
                 session._screenshot("after_google_click", "📸 После клика Google")
+                logger.info(f"After Google click - URL: {session.driver.current_url}")
             else:
-                report("❌ Google не найден на onboarding!")
+                logger.error("Google button not found on onboarding")
+                report_error("Google не найден на onboarding!")
                 session._screenshot("no_google_onboarding", "📸 Нет Google")
                 return False, "Google не найден на onboarding-странице"
         
         else:
             # === СТАРЫЙ ФЛОУ ===
+            logger.info("Standard flow - looking for Sign in")
             report("✅ Остались на x.com, ищу Sign in...")
+            
             sign_in_selectors = [
                 "//span[contains(text(), 'Sign in')]",
                 "//span[contains(text(), 'Log in')]",
@@ -491,31 +541,43 @@ def google_login(email, password, bot=None, chat_id=None):
                 "//button[.//*[contains(text(), 'Sign in')]]",
                 "//button[.//*[contains(text(), 'Log in')]]",
             ]
+            
             sign_in_btn = None
             for sel in sign_in_selectors:
-                elements = session.driver.find_elements(By.XPATH, sel)
-                if elements:
-                    sign_in_btn = elements[0]
-                    report(f"✅ Найден 'Sign in' по: {sel[:50]}")
-                    break
+                try:
+                    elements = session.driver.find_elements(By.XPATH, sel)
+                    logger.debug(f"Sign in selector '{sel[:50]}' found: {len(elements)}")
+                    if elements:
+                        sign_in_btn = elements[0]
+                        logger.info(f"Found Sign in via: {sel[:50]}")
+                        report(f"✅ Найден 'Sign in' по: {sel[:50]}")
+                        break
+                except Exception as e:
+                    logger.debug(f"Sign in selector failed: {e}")
             
             if sign_in_btn:
                 report("🖱️ Кликаю 'Sign in'...")
+                logger.info("Clicking Sign in")
                 session.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", sign_in_btn)
                 time.sleep(1)
                 try:
                     sign_in_btn.click()
-                except:
+                except Exception as e:
+                    logger.warning(f"Sign in click failed: {e}, trying JS")
                     session.driver.execute_script("arguments[0].click();", sign_in_btn)
+                
                 time.sleep(4)
                 session._screenshot("after_signin", "📸 После Sign in")
                 session._save_html("after_signin")
+                logger.info(f"After Sign in - URL: {session.driver.current_url}")
             else:
+                logger.warning("Sign in not found, trying direct /login")
                 report("⚠️ Sign in не найден, пробую /login напрямую...")
                 session.driver.get("https://x.com/i/flow/login")
                 time.sleep(4)
                 session._screenshot("direct_login", "📸 Прямой login")
                 session._save_html("direct_login")
+                logger.info(f"Direct login URL: {session.driver.current_url}")
             
             report("🔍 Ищу Google...")
             time.sleep(3)
@@ -537,240 +599,264 @@ def google_login(email, password, bot=None, chat_id=None):
             for xp in xpaths:
                 try:
                     elements = session.driver.find_elements(By.XPATH, xp)
+                    logger.debug(f"Google XPath '{xp[:50]}' found: {len(elements)}")
                     if elements:
                         google_btn = elements[0]
+                        logger.info(f"Found Google via: {xp[:50]}")
                         report(f"✅ Найдено: {xp[:50]}")
                         break
-                except:
-                    continue
+                except Exception as e:
+                    logger.debug(f"Google XPath failed: {e}")
             
             if not google_btn:
-                report("❌ Google не найден!")
+                logger.error("Google button not found")
+                report_error("❌ Google не найден!")
                 return False, "Кнопка Google не найдена"
             
             report("🖱️ Кликаю Google...")
+            logger.info("Clicking Google button")
             try:
                 session.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", google_btn)
                 time.sleep(1)
                 google_btn.click()
-            except:
+                logger.info("Google clicked successfully")
+            except Exception as e:
+                logger.warning(f"Google click failed: {e}")
                 href = google_btn.get_attribute("href")
                 if href:
+                    logger.info(f"Navigating to: {href[:100]}")
                     session.driver.get(href)
                 else:
                     session.driver.execute_script("arguments[0].click();", google_btn)
             
             time.sleep(5)
             session._screenshot("after_google", "📸 После Google")
+            logger.info(f"After Google - URL: {session.driver.current_url}")
         
         # === Google Auth Flow ===
         current_url = session.driver.current_url
+        logger.info(f"Current URL before Google auth: {current_url}")
         report(f"📍 URL: {current_url[:80]}")
         
         if "accounts.google.com" in current_url or "google.com" in current_url:
+            logger.info("On Google auth page")
             report("✅ На странице Google!")
             
             try:
+                logger.info("Looking for email field")
                 email_field = WebDriverWait(session.driver, 10).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, 'input[type="email"]'))
                 )
                 email_field.clear()
                 email_field.send_keys(email)
+                logger.info("Email entered")
                 report("✅ Email введён")
                 time.sleep(1)
                 email_field.send_keys(Keys.RETURN)
                 time.sleep(4)
+                logger.info(f"After email - URL: {session.driver.current_url}")
             except Exception as e:
+                logger.error(f"Email input failed: {e}")
                 report(f"⚠️ Email: {e}")
             
             try:
+                logger.info("Looking for password field")
                 pass_field = WebDriverWait(session.driver, 10).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, 'input[type="password"]'))
                 )
                 pass_field.clear()
                 pass_field.send_keys(password)
+                logger.info("Password entered")
                 report("✅ Пароль введён")
                 time.sleep(1)
                 pass_field.send_keys(Keys.RETURN)
                 time.sleep(5)
+                logger.info(f"After password - URL: {session.driver.current_url}")
             except Exception as e:
+                logger.error(f"Password input failed: {e}")
                 report(f"⚠️ Password: {e}")
             
             session._screenshot("google_done", "📸 После Google login")
         
         # === Ждём редиректа ===
         report("⏳ Жду редирект на X...")
+        final_url = None
         for i in range(15):
             time.sleep(2)
             url = session.driver.current_url
+            final_url = url
+            logger.info(f"Redirect wait [{i+1}/15]: {url}")
             report(f"  [{i+1}/15] {url[:70]}")
             
             if "x.com/home" in url:
+                logger.info("Home page detected")
                 report("✅ Домашняя страница!")
                 break
             if "x.com" in url and "login" not in url and "flow" not in url and "onboarding" not in url:
+                logger.info("X detected without login")
                 report("✅ Вошли в X!")
                 break
         
         # === ЗАБИРАЕМ ИНФОРМАЦИЮ О ПОЛЬЗОВАТЕЛЕ ===
         username = None
+        display_name = None
         followers = None
         following = None
         
         try:
+            logger.info("Navigating to /home for user info")
             session.driver.get("https://x.com/home")
             time.sleep(5)
             session._screenshot("home_for_info", "📸 Home для получения информации")
+            session._save_html("home_for_info")
             
-            # Способ 1: из URL профиля в сайдбаре
-            profile_links = session.driver.find_elements(By.XPATH, "//a[contains(@href, '/')]//span[contains(text(), '@')]")
-            if profile_links:
-                username = profile_links[0].text.replace("@", "").strip()
-                report(f"✅ Имя из сайдбара: @{username}")
+            html = session.driver.page_source
+            logger.info(f"Home HTML length: {len(html)}")
             
-            # Способ 2: data-testid
+            # === СПОСОБ 1: Парсим HTML напрямую ===
+            logger.info("Trying regex parsing...")
+            
+            screen_name_match = re.search(r'"screen_name":"([^"]+)"', html)
+            if screen_name_match:
+                username = screen_name_match.group(1)
+                logger.info(f"Found screen_name: @{username}")
+                report(f"✅ Имя из HTML (screen_name): @{username}")
+            else:
+                logger.warning("screen_name not found in HTML")
+            
+            name_match = re.search(r'"name":"([^"]+)"', html)
+            if name_match:
+                display_name = name_match.group(1)
+                logger.info(f"Found display_name: {display_name}")
+                report(f"✅ Display name из HTML: {display_name}")
+            
+            followers_match = re.search(r'"followers_count":(\d+)', html)
+            if followers_match:
+                followers = int(followers_match.group(1))
+                logger.info(f"Found followers: {followers}")
+                report(f"✅ Подписчики из HTML: {followers}")
+            else:
+                logger.warning("followers_count not found in HTML")
+            
+            following_match = re.search(r'"friends_count":(\d+)', html)
+            if following_match:
+                following = int(following_match.group(1))
+                logger.info(f"Found following: {following}")
+                report(f"✅ Подписки из HTML: {following}")
+            else:
+                logger.warning("friends_count not found in HTML")
+            
+            # === СПОСОБ 2: Из всех скриптов ===
             if not username:
+                logger.info("Trying script tags...")
                 try:
-                    user_element = session.driver.find_element(By.XPATH, "//div[@data-testid='UserName']//span[starts-with(text(), '@')]")
-                    username = user_element.text.replace("@", "").strip()
-                    report(f"✅ Имя из UserName: @{username}")
-                except:
-                    pass
+                    scripts = session.driver.find_elements(By.XPATH, "//script[contains(text(), 'screen_name')]")
+                    logger.info(f"Found {len(scripts)} scripts with screen_name")
+                    for idx, script in enumerate(scripts):
+                        text = script.get_attribute("innerHTML")
+                        match = re.search(r'"screen_name":"([^"]+)"', text)
+                        if match:
+                            username = match.group(1)
+                            logger.info(f"Found screen_name in script {idx}: @{username}")
+                            report(f"✅ Имя из script: @{username}")
+                            break
+                except Exception as e:
+                    logger.error(f"Script parsing failed: {e}")
             
-            # Способ 3: из заголовка страницы
+            # === СПОСОБ 3: Из cookies ===
             if not username:
-                title = session.driver.title
-                if "@" in title:
-                    username = title.split("@")[1].split()[0].strip()
-                    report(f"✅ Имя из title: @{username}")
-            
-            # Способ 4: из cookies или localStorage
-            if not username:
+                logger.info("Trying cookies...")
                 try:
-                    username = session.driver.execute_script("return window.__INITIAL_STATE__?.session?.user_id")
-                    report(f"✅ user_id из INITIAL_STATE: {username}")
-                except:
-                    pass
+                    cookies = session.driver.get_cookies()
+                    for cookie in cookies:
+                        name = cookie.get("name", "")
+                        val = cookie.get("value", "")
+                        logger.debug(f"Cookie: {name}={val[:50]}")
+                        if "twid" in name.lower():
+                            logger.info(f"Found twid cookie: {val[:50]}")
+                            report(f"🍪 twid cookie: {val[:50]}")
+                except Exception as e:
+                    logger.error(f"Cookie parsing failed: {e}")
             
-            # Способ 5: любой span с @ на странице
-            if not username:
-                spans = session.driver.find_elements(By.XPATH, "//span[starts-with(text(), '@')]")
-                for sp in spans:
-                    text = sp.text.strip()
-                    if text.startswith("@") and len(text) > 1 and " " not in text:
-                        username = text.replace("@", "")
-                        report(f"✅ Имя из span: @{username}")
-                        break
-            
-            # === ПОДПИСЧИКИ И ПОДПИСКИ ===
+            # === СПОСОБ 4: Переходим на профиль ===
             if username:
-                report(f"🔍 Ищу подписчиков и подписки...")
-                
-                # Переходим на профиль
+                logger.info(f"Navigating to profile: @{username}")
+                report(f"🔍 Перехожу на профиль @{username}...")
                 session.driver.get(f"https://x.com/{username}")
                 time.sleep(4)
                 session._screenshot("profile_page", f"📸 Профиль @{username}")
                 session._save_html("profile_page")
                 
-                # Способ 1: через aria-label или текст ссылки
-                try:
-                    stats = session.driver.find_elements(By.XPATH, 
-                        "//a[contains(@href, '/following')] | //a[contains(@href, '/followers')] | " +
-                        "//span[contains(text(), 'following')] | //span[contains(text(), 'followers')] | " +
-                        "//span[contains(text(), 'Following')] | //span[contains(text(), 'Followers')]"
-                    )
+                profile_html = session.driver.page_source
+                logger.info(f"Profile HTML length: {len(profile_html)}")
+                
+                if not followers:
+                    f_match = re.search(r'"followers_count":(\d+)', profile_html)
+                    if f_match:
+                        followers = int(f_match.group(1))
+                        logger.info(f"Found followers from profile: {followers}")
+                        report(f"✅ Подписчики из профиля: {followers}")
+                
+                if not following:
+                    fr_match = re.search(r'"friends_count":(\d+)', profile_html)
+                    if fr_match:
+                        following = int(fr_match.group(1))
+                        logger.info(f"Found following from profile: {following}")
+                        report(f"✅ Подписки из профиля: {following}")
+                
+                # Текст профиля
+                if not followers or not following:
+                    logger.info("Trying profile text parsing...")
+                    try:
+                        text = session.driver.find_element(By.TAG_NAME, "body").text
+                        logger.info(f"Profile body text (first 500): {text[:500]}")
+                        
+                        f_text = re.search(r'(\d[\d,\.]*[KMB]?)\s+Following', text, re.IGNORECASE)
+                        if f_text and not following:
+                            following = f_text.group(1)
+                            logger.info(f"Following from text: {following}")
+                            report(f"✅ Подписки из текста: {following}")
+                        
+                        fr_text = re.search(r'(\d[\d,\.]*[KMB]?)\s+Followers?', text, re.IGNORECASE)
+                        if fr_text and not followers:
+                            followers = fr_text.group(1)
+                            logger.info(f"Followers from text: {followers}")
+                            report(f"✅ Подписчики из текста: {followers}")
                     
-                    for stat in stats:
-                        text = stat.text.strip()
-                        report(f"📊 Найдено: {text}")
-                        
-                        if "following" in text.lower() and not following:
-                            num = text.split()[0].replace(",", "").replace("K", "000").replace("M", "000000").replace(".", "")
-                            try:
-                                following = int(num)
-                                report(f"✅ Подписки: {following}")
-                            except:
-                                following = text
-                                report(f"✅ Подписки (текст): {following}")
-                        
-                        if "follower" in text.lower() and not followers:
-                            num = text.split()[0].replace(",", "").replace("K", "000").replace("M", "000000").replace(".", "")
-                            try:
-                                followers = int(num)
-                                report(f"✅ Подписчики: {followers}")
-                            except:
-                                followers = text
-                                report(f"✅ Подписчики (текст): {followers}")
-                
-                except Exception as e:
-                    report(f"⚠️ Ошибка получения статистики: {e}")
-                
-                # Способ 2: через data-testid
-                if not followers or not following:
-                    try:
-                        all_spans = session.driver.find_elements(By.XPATH, "//span")
-                        for i, span in enumerate(all_spans):
-                            text = span.text.strip().lower()
-                            if text == "following" and i > 0:
-                                prev_text = all_spans[i-1].text.strip()
-                                report(f"📊 Following число: {prev_text}")
-                                try:
-                                    following = int(prev_text.replace(",", ""))
-                                except:
-                                    following = prev_text
-                            if text == "followers" and i > 0:
-                                prev_text = all_spans[i-1].text.strip()
-                                report(f"📊 Followers число: {prev_text}")
-                                try:
-                                    followers = int(prev_text.replace(",", ""))
-                                except:
-                                    followers = prev_text
                     except Exception as e:
-                        report(f"⚠️ Способ 2: {e}")
-                
-                # Способ 3: через JavaScript
-                if not followers or not following:
-                    try:
-                        stats_js = session.driver.execute_script("""
-                            const state = window.__INITIAL_STATE__ || {};
-                            const user = state.entities?.users || {};
-                            const keys = Object.keys(user);
-                            if (keys.length > 0) {
-                                const u = user[keys[0]].legacy || {};
-                                return {
-                                    followers: u.followers_count,
-                                    following: u.friends_count
-                                };
-                            }
-                            return null;
-                        """)
-                        if stats_js:
-                            followers = stats_js.get("followers")
-                            following = stats_js.get("following")
-                            report(f"✅ Из JS: followers={followers}, following={following}")
-                    except Exception as e:
-                        report(f"⚠️ JS способ: {e}")
+                        logger.error(f"Profile text parsing failed: {e}")
+            else:
+                logger.warning("No username found, skipping profile navigation")
         
         except Exception as e:
+            logger.error(f"User info extraction failed: {e}", exc_info=True)
             report(f"⚠️ Не удалось получить информацию: {e}")
         
         # Финальная проверка
         session._screenshot("final_home", "📸 Финальная проверка")
         
         html = session.driver.page_source.lower()
-        if any(k in html for k in ["home", "following", "for you", "для вас", "главная"]):
+        auth_confirmed = any(k in html for k in ["home", "following", "for you", "для вас", "главная"])
+        logger.info(f"Auth confirmed: {auth_confirmed}")
+        
+        if auth_confirmed:
             report("✅ Авторизация подтверждена!")
             session.save_cookies()
             
-            # Сохраняем с подписчиками и подписками
             extra = {}
+            if display_name:
+                extra["display_name"] = display_name
             if followers is not None:
                 extra["followers"] = followers
             if following is not None:
                 extra["following"] = following
             
             save_auth_info(username or "unknown", email, extra if extra else None)
+            logger.info(f"Saved auth: username={username}, followers={followers}, following={following}")
+            
             report(f"👤 @{username or 'unknown'} | 📧 {email}")
+            if display_name:
+                report(f"📝 {display_name}")
             if followers:
                 report(f"👥 Подписчики: {followers}")
             if following:
@@ -778,14 +864,16 @@ def google_login(email, password, bot=None, chat_id=None):
             
             return True, None
         else:
-            report("❌ Не подтверждено")
+            logger.error("Auth not confirmed")
+            report_error("❌ Не подтверждено")
             return False, "Не удалось войти"
             
     except Exception as e:
-        report(f"❌ Ошибка: {str(e)[:300]}")
-        logger.error(traceback.format_exc())
+        logger.error(f"Critical error: {e}", exc_info=True)
+        report_error(f"❌ Ошибка: {str(e)[:300]}")
         return False, str(e)
     finally:
+        logger.info("Closing browser session")
         session.quit()
 
 
@@ -804,10 +892,12 @@ def register_selenium_bot(bot):
         auth = st.get("auth_info")
         auth_line = f"👤 <code>@{auth['username']}</code>\n" if auth else "👤 <i>не подключён</i>\n"
         
-        # Добавляем подписчиков и подписки в статус
+        display_line = ""
         followers_line = ""
         following_line = ""
         if auth:
+            if auth.get("display_name"):
+                display_line = f"📝 <code>{auth['display_name']}</code>\n"
             if auth.get("followers"):
                 followers_line = f"👥 Подписчики: <code>{auth['followers']}</code>\n"
             if auth.get("following"):
@@ -816,6 +906,7 @@ def register_selenium_bot(bot):
         text = (
             "🚗 <b>Selenium X Agent</b>\n\n"
             f"{auth_line}"
+            f"{display_line}"
             f"{followers_line}"
             f"{following_line}"
             f"{icon(st['chrome_browser']['found'])} Chrome: <code>{st['chrome_browser']['path'] or 'не найден'}</code>\n"
@@ -901,13 +992,21 @@ def register_selenium_bot(bot):
         
         if error:
             bot.reply_to(message, f"❌ {error}", parse_mode="HTML")
+            # Отправляем логи при ошибке
+            try:
+                _send_log_file(bot, chat_id, prefix="❌ Ошибка входа")
+            except:
+                pass
         elif success:
             auth = get_auth_info()
             username = auth.get("username", "?") if auth else "?"
+            display_name = auth.get("display_name", "")
             followers = auth.get("followers", "")
             following = auth.get("following", "")
             
             extra_lines = ""
+            if display_name:
+                extra_lines += f"\n📝 <code>{display_name}</code>"
             if followers:
                 extra_lines += f"\n👥 Подписчики: <code>{followers}</code>"
             if following:
@@ -916,6 +1015,20 @@ def register_selenium_bot(bot):
             bot.reply_to(message, f"✅ <b>Вход успешен!</b>\n👤 @{username}\n📧 {email}{extra_lines}", parse_mode="HTML")
         else:
             bot.reply_to(message, "❌ Вход не удался", parse_mode="HTML")
+            # Отправляем логи при неудаче
+            try:
+                _send_log_file(bot, chat_id, prefix="❌ Вход не удался")
+            except:
+                pass
+    
+    @bot.message_handler(commands=["se_log"])
+    def se_log(message):
+        """Отправить файл логов по запросу"""
+        try:
+            _send_log_file(bot, message.chat.id, prefix="📄 Запрошены логи")
+            bot.reply_to(message, "📄 Логи отправлены", parse_mode="HTML")
+        except Exception as e:
+            bot.reply_to(message, f"❌ Не удалось отправить логи: {e}", parse_mode="HTML")
     
     @bot.message_handler(commands=["se_logout"])
     def se_logout(message):
@@ -929,6 +1042,7 @@ def register_selenium_bot(bot):
             "/se_status — Статус\n"
             "/se_install — Установить Chrome\n"
             "/se_google — Войти через Google\n"
+            "/se_log — Получить логи\n"
             "/se_logout — Выйти\n"
             "/se_help — Помощь"
         ), parse_mode="HTML")
