@@ -12,6 +12,7 @@ import traceback
 import threading
 import re
 import uuid
+import shutil
 from pathlib import Path
 
 print("[SE] Начало модуля", flush=True)
@@ -43,7 +44,7 @@ CHROME_ZIP = f"{BASE_URL}/chrome-linux64.zip"
 DRIVER_ZIP = f"{BASE_URL}/chromedriver-linux64.zip"
 
 login_sessions = {}
-# === ЗАЩИТА ОТ ДУБЛЕЙ: трекаем обрабатываемые сообщения ===
+# === ЗАЩИТА ОТ ДУБЛЕЙ ===
 _processing_messages = set()
 
 
@@ -271,6 +272,7 @@ class BrowserSession:
         self.driver = None
         self._chat_id = None
         self._bot = None
+        self._user_data_dir = None
 
     def set_chat(self, bot, chat_id):
         self._bot = bot
@@ -308,13 +310,26 @@ class BrowserSession:
             logger.error(f"HTML save error: {e}")
             return None
 
+    def _kill_old_chrome(self):
+        """Убиваем старые процессы Chrome/chromedriver перед запуском"""
+        try:
+            subprocess.run(["pkill", "-9", "-f", "chrome"], capture_output=True, timeout=5)
+            subprocess.run(["pkill", "-9", "-f", "chromedriver"], capture_output=True, timeout=5)
+            time.sleep(1)
+            logger.info("Killed old Chrome processes")
+        except Exception as e:
+            logger.warning(f"Kill old Chrome failed: {e}")
+
     def _get_options(self):
         from selenium.webdriver.chrome.options import Options
         options = Options()
 
-        # === ФИКС: INCOGNITO — Chrome сам создаёт временный профиль, нет конфликтов ===
-        options.add_argument("--incognito")
-        options.add_argument("--no-default-browser-check")
+        # === ФИКС: УНИКАЛЬНЫЙ ПРОФИЛЬ внутри BASE_DIR ===
+        profile_dir = BASE_DIR / f"profile_{uuid.uuid4().hex[:12]}"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        self._user_data_dir = str(profile_dir)
+        options.add_argument(f"--user-data-dir={self._user_data_dir}")
+        logger.info(f"User data dir: {self._user_data_dir}")
 
         # === УЛУЧШЕННЫЙ USER-AGENT ===
         ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.6943.53 Safari/537.36"
@@ -376,6 +391,9 @@ class BrowserSession:
         from selenium import webdriver
         from selenium.webdriver.chrome.service import Service
 
+        # === ФИКС: убиваем старые процессы перед запуском ===
+        self._kill_old_chrome()
+
         options = self._get_options()
         service = Service(_installer.driver_path) if _installer.driver_path else Service()
 
@@ -429,6 +447,13 @@ class BrowserSession:
             except:
                 pass
             self.driver = None
+        # === ФИКС: ОЧИСТКА ПРОФИЛЯ ===
+        if self._user_data_dir and os.path.exists(self._user_data_dir):
+            try:
+                shutil.rmtree(self._user_data_dir, ignore_errors=True)
+                logger.info(f"Cleaned profile: {self._user_data_dir}")
+            except Exception as e:
+                logger.warning(f"Failed to clean profile: {e}")
 
 
 def _send_log_file(bot, chat_id, prefix=""):
