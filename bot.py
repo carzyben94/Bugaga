@@ -71,8 +71,6 @@ def build_menu_text():
             "/se_status — Статус\n"
             "/se_install — Установить Chrome\n"
             "/se_google — Войти через Google\n"
-            "/se_logout — Выйти\n"
-            "/se_help — Помощь"
         )
     except Exception as e:
         return f"⚠️ Ошибка статуса: {e}"
