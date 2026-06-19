@@ -297,7 +297,6 @@ class BrowserSession:
             return None
 
     def _get_options(self):
-        # Импорт selenium ЗДЕСЬ, внутри метода
         from selenium.webdriver.chrome.options import Options
         options = Options()
         ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15"
@@ -326,7 +325,6 @@ class BrowserSession:
         return options
 
     def create(self):
-        # Импорт selenium ЗДЕСЬ
         from selenium import webdriver
         from selenium.webdriver.chrome.service import Service
         options = self._get_options()
@@ -368,11 +366,9 @@ def _send_log_file(bot, chat_id, prefix=""):
 
 # === GOOGLE LOGIN — старый рабочий вариант ===
 def google_login(email, password, bot=None, chat_id=None):
-    # Убедимся что selenium установлен
     try:
         import selenium
     except ImportError:
-        # Пробуем установить
         _installer._install_selenium_pip()
         try:
             import selenium
@@ -411,7 +407,6 @@ def google_login(email, password, bot=None, chat_id=None):
 
         session._screenshot("login_page", "📸 Страница входа X")
 
-        # Импорт selenium ЗДЕСЬ
         from selenium.webdriver.common.by import By
 
         report("🔍 Ищу кнопку Google...")
@@ -451,7 +446,7 @@ def google_login(email, password, bot=None, chat_id=None):
                 email_field.send_keys(email)
                 report("✅ Email введён")
 
-                next_btn = session(), 'Next') or contains(@value, 'Next')]")
+                next_btn = session.driver.find_element(By.XPATH, "//*[contains(text(), 'Next') or contains(@value, 'Next')]")
                 next_btn.click()
                 time.sleep(3)
             except Exception as e:
@@ -583,7 +578,6 @@ def register_selenium_bot(bot):
     def se_google_password(message):
         chat_id = message.chat.id
 
-        # === ЗАЩИТА ОТ ДУБЛЕЙ ===
         msg_id = message.message_id
         if msg_id in _processing_messages:
             logger.warning(f"Duplicate message {msg_id} ignored")
