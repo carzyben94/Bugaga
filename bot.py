@@ -1,4 +1,4 @@
-# bot.py — Только Selenium X Agent
+# bot.py - Полная версия со всеми командами (без кнопок)
 import os
 import sys
 import time
@@ -6,31 +6,57 @@ import logging
 import json
 from flask import Flask, request
 import telebot
+from datetime import datetime
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+print("[DEBUG] Запуск бота...", flush=True)
 
-# === SELENIUM X AGENT ===
+# === ИМПОРТ SELENIUM ===
 SELENIUM_AVAILABLE = False
 register_selenium_bot = None
 get_full_status = None
 get_auth_info = None
 AGENT_READY = None
+BASE_DIR = None
+create_browser = None
+BrowserSession = None
+installer = None
+google_login = None
+clear_auth_info = None
 
-print("[DEBUG] Пытаюсь импортировать selenium_x_agent...", flush=True)
+print("[DEBUG] Импорт selenium_x_agent...", flush=True)
 try:
-    from selenium_x_agent import register_selenium_bot as _rsb, get_full_status as _gfs, get_auth_info as _gai, AGENT_READY as _ar
+    from selenium_x_agent import (
+        register_selenium_bot as _rsb,
+        get_full_status as _gfs,
+        get_auth_info as _gai,
+        AGENT_READY as _ar,
+        BASE_DIR as _bd,
+        create_browser as _cb,
+        BrowserSession as _bs,
+        _installer,
+        google_login as _gl,
+        clear_auth_info as _cai
+    )
     register_selenium_bot = _rsb
     get_full_status = _gfs
     get_auth_info = _gai
     AGENT_READY = _ar
+    BASE_DIR = _bd
+    create_browser = _cb
+    BrowserSession = _bs
+    installer = _installer
+    google_login = _gl
+    clear_auth_info = _cai
     SELENIUM_AVAILABLE = True
-    print("[DEBUG] Selenium module imported УСПЕШНО", flush=True)
+    print("[DEBUG] ✅ Selenium импортирован успешно", flush=True)
 except Exception as e:
-    print(f"[DEBUG] Selenium module not available: {e}", flush=True)
+    print(f"[DEBUG] ❌ Ошибка импорта: {e}", flush=True)
     import traceback
     traceback.print_exc()
 
+# === НАСТРОЙКА ===
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("Bot")
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TELEGRAM_TOKEN:
@@ -39,50 +65,380 @@ if not TELEGRAM_TOKEN:
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
-# === РЕГИСТРАЦИЯ SELENIUM ===
-if SELENIUM_AVAILABLE and register_selenium_bot:
-    try:
-        print("[DEBUG] Регистрирую selenium бота...", flush=True)
-        register_selenium_bot(bot)
-        print("[DEBUG] Module selenium_x_agent OK", flush=True)
-    except Exception as e:
-        print(f"[DEBUG] selenium_x_agent error: {e}", flush=True)
-        import traceback
-        traceback.print_exc()
-        SELENIUM_AVAILABLE = False
+# === ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ===
+login_sessions = {}
+browser_sessions = {}
 
 # === МЕНЮ ===
-def build_menu_text():
+def build_menu():
+    """Главное меню"""
     if not SELENIUM_AVAILABLE:
-        return "❌ <b>Selenium модуль не загружен</b>\n\nПроверь логи."
+        return (
+            "🚫 <b>Selenium не загружен</b>\n\n"
+            "❌ Проверь логи: /se_logs"
+        )
     
     try:
         status = get_full_status()
         ready = status.get("agent_ready", False)
         auth = status.get("auth_info")
         
-        auth_line = f"👤 <code>@{auth['username']}</code>\n" if auth else "👤 <i>не подключён</i>\n"
-        icon = "🟢" if ready else "🔴"
+        # Статус
+        if ready and auth:
+            status_icon = "🟢"
+            status_text = "✅ Активен"
+        elif ready and not auth:
+            status_icon = "🟡"
+            status_text = "⏳ Ожидает входа"
+        else:
+            status_icon = "🔴"
+            status_text = "❌ Не готов"
         
-        return (
-            "🚗 <b>Selenium X Agent</b>\n\n"
-            f"{auth_line}"
-            f"{icon} Готов: {'Да' if ready else 'Нет'}\n\n"
-            "/se_status — Статус\n"
-            "/se_install — Установить Chrome\n"
-            "/se_google — Войти через Google\n"
-        )
+        # Пользователь
+        user_info = f"👤 <b>{auth['username']}</b>" if auth else "👤 <i>не авторизован</i>"
+        
+        # Компоненты
+        chrome_found = status.get("chrome_browser", {}).get("found", False)
+        driver_ready = status.get("chromedriver", {}).get("ready", False)
+        
+        chrome_icon = "✅" if chrome_found else "❌"
+        driver_icon = "✅" if driver_ready else "❌"
+        
+        return f"""
+🚗 <b>SELENIUM X AGENT</b>
+{'━' * 30}
+
+{status_icon} <b>Статус:</b> {status_text}
+
+{user_info}
+
+📦 <b>Компоненты:</b>
+{chrome_icon} Chrome: {'установлен' if chrome_found else 'не найден'}
+{driver_icon} Driver: {'готов' if driver_ready else 'не найден'}
+
+📁 {status.get('selenium_dir', BASE_DIR)}
+🕐 {datetime.now().strftime('%H:%M:%S')}
+
+📋 /help — список команд
+"""
     except Exception as e:
-        return f"⚠️ Ошибка статуса: {e}"
+        return f"⚠️ Ошибка: {e}"
 
-@bot.message_handler(commands=["start", "help"])
+# === ОСНОВНЫЕ КОМАНДЫ ===
+@bot.message_handler(commands=["start", "menu"])
 def menu_command(message):
-    bot.reply_to(message, build_menu_text(), parse_mode="HTML")
+    bot.reply_to(message, build_menu(), parse_mode="HTML")
 
-@bot.message_handler(commands=["test"])
+@bot.message_handler(commands=["help"])
+def help_command(message):
+    text = """
+📋 <b>ПОЛНЫЙ СПИСОК КОМАНД</b>
+{'━' * 30}
+
+<b>ОСНОВНЫЕ:</b>
+/start      - Главное меню
+/help       - Помощь
+/menu       - Показать меню
+
+<b>УПРАВЛЕНИЕ:</b>
+/se_status  - Статус агента
+/se_install - Установка Chrome
+/se_clear   - Очистить логи
+/se_logs    - Показать логи
+
+<b>АВТОРИЗАЦИЯ:</b>
+/se_google  - Вход через Google
+/se_logout  - Выйти
+
+<b>БРАУЗЕР:</b>
+/se_browser - Запустить браузер
+/se_screenshot - Скриншот
+/se_close   - Закрыть браузер
+
+<b>ДИАГНОСТИКА:</b>
+/se_ping    - Пинг бота
+/se_test    - Тест
+"""
+    bot.reply_to(message, text, parse_mode="HTML")
+
+# === УПРАВЛЕНИЕ ===
+@bot.message_handler(commands=["se_status"])
+def status_command(message):
+    if not SELENIUM_AVAILABLE:
+        bot.reply_to(message, "❌ Selenium не загружен", parse_mode="HTML")
+        return
+    
+    try:
+        status = get_full_status()
+        auth = status.get("auth_info")
+        
+        text = f"""
+🚗 <b>Selenium X Agent</b>
+{'─' * 30}
+
+✅ Chrome: {status.get('chrome_browser', {}).get('path', 'не найден')}
+✅ Driver: {status.get('chromedriver', {}).get('path', 'не найден')}
+✅ Selenium: {'установлен' if status.get('selenium_pip', {}).get('installed') else 'не установлен'}
+
+🟢 Готов: {'Да' if status.get('agent_ready') else 'Нет'}
+👤 Авторизация: {'✅' if auth else '❌'}
+🍪 Cookies: {'есть' if status.get('cookies_exist') else 'нет'}
+
+📁 {status.get('selenium_dir', BASE_DIR)}
+"""
+        bot.reply_to(message, text, parse_mode="HTML")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {e}", parse_mode="HTML")
+
+@bot.message_handler(commands=["se_install"])
+def install_command(message):
+    if not SELENIUM_AVAILABLE:
+        bot.reply_to(message, "❌ Selenium не загружен", parse_mode="HTML")
+        return
+    
+    if AGENT_READY():
+        bot.reply_to(message, "✅ Уже установлено! Используй /se_status", parse_mode="HTML")
+        return
+    
+    msg = bot.reply_to(message, "⏳ Установка Chrome + Driver...\nЭто займет 1-2 минуты", parse_mode="HTML")
+    
+    try:
+        success = installer.install() if installer else False
+        
+        if success:
+            bot.edit_message_text(
+                f"✅ <b>Установка завершена!</b>\n\n"
+                f"🌐 Chrome: <code>{installer.chrome_path}</code>\n"
+                f"🔧 Driver: <code>{installer.driver_path}</code>\n\n"
+                f"Теперь используй /se_google для входа",
+                chat_id=msg.chat.id,
+                message_id=msg.message_id,
+                parse_mode="HTML"
+            )
+        else:
+            bot.edit_message_text(
+                "❌ <b>Ошибка установки</b>\n"
+                f"Проверь логи: /se_logs",
+                chat_id=msg.chat.id,
+                message_id=msg.message_id,
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        bot.edit_message_text(
+            f"❌ Ошибка: {e}",
+            chat_id=msg.chat.id,
+            message_id=msg.message_id
+        )
+
+@bot.message_handler(commands=["se_logs"])
+def logs_command(message):
+    try:
+        log_file = BASE_DIR / "agent.log" if BASE_DIR else None
+        if log_file and log_file.exists():
+            with open(log_file, "rb") as f:
+                bot.send_document(
+                    message.chat.id,
+                    f,
+                    caption="📄 Логи агента",
+                    visible_file_name="agent.log"
+                )
+        else:
+            bot.reply_to(message, "❌ Лог-файл не найден", parse_mode="HTML")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {e}", parse_mode="HTML")
+
+@bot.message_handler(commands=["se_clear"])
+def clear_command(message):
+    try:
+        log_file = BASE_DIR / "agent.log" if BASE_DIR else None
+        if log_file and log_file.exists():
+            log_file.write_text("")
+            bot.reply_to(message, "🧹 Логи очищены", parse_mode="HTML")
+        else:
+            bot.reply_to(message, "❌ Лог-файл не найден", parse_mode="HTML")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {e}", parse_mode="HTML")
+
+# === АВТОРИЗАЦИЯ ===
+@bot.message_handler(commands=["se_google"])
+def google_command(message):
+    if not SELENIUM_AVAILABLE:
+        bot.reply_to(message, "❌ Selenium не загружен", parse_mode="HTML")
+        return
+    
+    if not AGENT_READY():
+        bot.reply_to(message, "❌ Сначала /se_install", parse_mode="HTML")
+        return
+    
+    chat_id = message.chat.id
+    login_sessions[chat_id] = {"step": "email"}
+    bot.reply_to(message, "🔐 Введи <b>email</b> от Google:", parse_mode="HTML")
+
+@bot.message_handler(commands=["se_logout"])
+def logout_command(message):
+    if not SELENIUM_AVAILABLE:
+        bot.reply_to(message, "❌ Selenium не загружен", parse_mode="HTML")
+        return
+    
+    try:
+        if clear_auth_info:
+            clear_auth_info()
+        bot.reply_to(message, "🚪 Сессия очищена", parse_mode="HTML")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {e}", parse_mode="HTML")
+
+# === БРАУЗЕР ===
+@bot.message_handler(commands=["se_browser"])
+def browser_command(message):
+    if not SELENIUM_AVAILABLE:
+        bot.reply_to(message, "❌ Selenium не загружен", parse_mode="HTML")
+        return
+    
+    if not AGENT_READY():
+        bot.reply_to(message, "❌ Сначала /se_install", parse_mode="HTML")
+        return
+    
+    chat_id = message.chat.id
+    
+    if chat_id in browser_sessions:
+        try:
+            browser_sessions[chat_id].quit()
+        except:
+            pass
+        del browser_sessions[chat_id]
+    
+    msg = bot.reply_to(message, "⏳ Запускаю браузер...", parse_mode="HTML")
+    
+    try:
+        session = create_browser(headless=True, mobile=False, chat_id=chat_id)
+        session.open_url("https://x.com")
+        browser_sessions[chat_id] = session
+        
+        screenshot_path = session.screenshot("browser_start")
+        
+        response = "✅ Браузер запущен!\n"
+        response += f"📄 Title: {session.get_title()}\n"
+        
+        if screenshot_path:
+            with open(screenshot_path, "rb") as f:
+                bot.send_photo(chat_id, f, caption=response)
+            bot.delete_message(chat_id, msg.message_id)
+        else:
+            bot.edit_message_text(response, chat_id=chat_id, message_id=msg.message_id, parse_mode="HTML")
+            
+    except Exception as e:
+        bot.edit_message_text(
+            f"❌ Ошибка: {e}",
+            chat_id=chat_id,
+            message_id=msg.message_id
+        )
+
+@bot.message_handler(commands=["se_screenshot"])
+def screenshot_command(message):
+    chat_id = message.chat.id
+    
+    if chat_id not in browser_sessions:
+        bot.reply_to(message, "❌ Браузер не запущен. Используй /se_browser", parse_mode="HTML")
+        return
+    
+    try:
+        session = browser_sessions[chat_id]
+        screenshot_path = session.screenshot("manual")
+        
+        if screenshot_path:
+            with open(screenshot_path, "rb") as f:
+                bot.send_photo(
+                    chat_id, f,
+                    caption=f"📸 Скриншот\n🌐 {session.get_title()}"
+                )
+        else:
+            bot.reply_to(message, "❌ Не удалось сделать скриншот", parse_mode="HTML")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {e}", parse_mode="HTML")
+
+@bot.message_handler(commands=["se_close"])
+def close_command(message):
+    chat_id = message.chat.id
+    
+    if chat_id in browser_sessions:
+        try:
+            browser_sessions[chat_id].quit()
+            del browser_sessions[chat_id]
+            bot.reply_to(message, "✅ Браузер закрыт", parse_mode="HTML")
+        except Exception as e:
+            bot.reply_to(message, f"❌ Ошибка: {e}", parse_mode="HTML")
+    else:
+        bot.reply_to(message, "ℹ️ Браузер не запущен", parse_mode="HTML")
+
+# === ДИАГНОСТИКА ===
+@bot.message_handler(commands=["se_ping"])
+def ping_command(message):
+    bot.reply_to(
+        message,
+        f"🏓 Pong! {datetime.now().strftime('%H:%M:%S')}",
+        parse_mode="HTML"
+    )
+
+@bot.message_handler(commands=["se_test"])
 def test_command(message):
-    bot.reply_to(message, "✅ Бот работает!")
+    bot.reply_to(
+        message,
+        f"✅ Бот работает!\n🕐 {datetime.now().strftime('%H:%M:%S')}\n"
+        f"📦 Selenium: {'✅' if SELENIUM_AVAILABLE else '❌'}",
+        parse_mode="HTML"
+    )
 
+# === ОБРАБОТЧИКИ ВХОДА ===
+@bot.message_handler(func=lambda m: m.chat.id in login_sessions and login_sessions[m.chat.id].get("step") == "email")
+def handle_email(message):
+    chat_id = message.chat.id
+    email = message.text.strip()
+    
+    if email.startswith("/"):
+        del login_sessions[chat_id]
+        bot.reply_to(message, "❌ Отменено", parse_mode="HTML")
+        return
+    
+    login_sessions[chat_id]["email"] = email
+    login_sessions[chat_id]["step"] = "password"
+    bot.reply_to(message, f"✅ Email: <code>{email}</code>\n\nТеперь введи <b>пароль</b>:", parse_mode="HTML")
+
+@bot.message_handler(func=lambda m: m.chat.id in login_sessions and login_sessions[m.chat.id].get("step") == "password")
+def handle_password(message):
+    chat_id = message.chat.id
+    password = message.text
+    
+    if password.startswith("/"):
+        del login_sessions[chat_id]
+        bot.reply_to(message, "❌ Отменено", parse_mode="HTML")
+        return
+    
+    email = login_sessions[chat_id]["email"]
+    del login_sessions[chat_id]
+    
+    bot.reply_to(message, "⏳ Вхожу через Google...\n<i>30-60 сек</i>", parse_mode="HTML")
+    
+    try:
+        if google_login:
+            success, error = google_login(email, password, bot, chat_id)
+            
+            if error:
+                bot.reply_to(message, f"❌ {error}", parse_mode="HTML")
+            elif success:
+                auth = get_auth_info()
+                bot.reply_to(
+                    message,
+                    f"✅ Вход успешен!\n👤 @{auth['username'] if auth else '?'}",
+                    parse_mode="HTML"
+                )
+            else:
+                bot.reply_to(message, "❌ Вход не удался", parse_mode="HTML")
+        else:
+            bot.reply_to(message, "❌ Функция google_login не доступна", parse_mode="HTML")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {e}", parse_mode="HTML")
+
+# === WEBHOOK ===
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
     try:
@@ -97,6 +453,7 @@ def webhook():
 def health():
     return "OK", 200
 
+# === ЗАПУСК ===
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     url = os.environ.get("RENDER_EXTERNAL_URL", f"http://localhost:{port}")
