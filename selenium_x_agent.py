@@ -38,7 +38,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("SeleniumXAgent")
 
-CHROME_VERSION = "133.0.6943.53"
+CHROME_VERSION = "126.0.6478.126"
 BASE_URL = f"https://storage.googleapis.com/chrome-for-testing-public/{CHROME_VERSION}/linux64"
 CHROME_ZIP = f"{BASE_URL}/chrome-linux64.zip"
 DRIVER_ZIP = f"{BASE_URL}/chromedriver-linux64.zip"
@@ -114,7 +114,7 @@ class ChromeInstaller:
             print("[SE] Устанавливаю selenium...", flush=True)
             try:
                 result = subprocess.run(
-                    [sys.executable, "-m", "pip", "install", "selenium==4.27.1"],
+                    [sys.executable, "-m", "pip", "install", "selenium"],
                     capture_output=True, text=True, timeout=120
                 )
                 if result.returncode == 0:
@@ -266,13 +266,12 @@ def run_sync_task(func, *args, **kwargs):
     return result[0], None
 
 
-# === BROWSER SESSION ===
+# === BROWSER SESSION — старый рабочий вариант (Chrome 126, мобильный UA) ===
 class BrowserSession:
     def __init__(self):
         self.driver = None
         self._chat_id = None
         self._bot = None
-        self._user_data_dir = None
 
     def set_chat(self, bot, chat_id):
         self._bot = bot
@@ -294,141 +293,48 @@ class BrowserSession:
                 with open(path, "rb") as f:
                     self._bot.send_photo(self._chat_id, f, caption=caption or f"📸 {name}")
             return str(path)
-        except Exception as e:
-            logger.error(f"Screenshot error: {e}")
+        except:
             return None
-
-    def _save_html(self, name):
-        try:
-            html = self.driver.page_source
-            html_path = BASE_DIR / f"{name}.html"
-            with open(html_path, "w", encoding="utf-8") as f:
-                f.write(html)
-            logger.info(f"HTML saved: {html_path}")
-            return str(html_path)
-        except Exception as e:
-            logger.error(f"HTML save error: {e}")
-            return None
-
-    def _kill_old_chrome(self):
-        """Убиваем старые процессы Chrome/chromedriver перед запуском"""
-        try:
-            subprocess.run(["pkill", "-9", "-f", "chrome"], capture_output=True, timeout=5)
-            subprocess.run(["pkill", "-9", "-f", "chromedriver"], capture_output=True, timeout=5)
-            time.sleep(1)
-            logger.info("Killed old Chrome processes")
-        except Exception as e:
-            logger.warning(f"Kill old Chrome failed: {e}")
 
     def _get_options(self):
+        # Импорт selenium ЗДЕСЬ, внутри метода
         from selenium.webdriver.chrome.options import Options
         options = Options()
-
-        # === ФИКС: УНИКАЛЬНЫЙ ПРОФИЛЬ внутри BASE_DIR ===
-        profile_dir = BASE_DIR / f"profile_{uuid.uuid4().hex[:12]}"
-        profile_dir.mkdir(parents=True, exist_ok=True)
-        self._user_data_dir = str(profile_dir)
-        options.add_argument(f"--user-data-dir={self._user_data_dir}")
-        logger.info(f"User data dir: {self._user_data_dir}")
-
-        # === УЛУЧШЕННЫЙ USER-AGENT ===
-        ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.6943.53 Safari/537.36"
+        ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15"
         options.add_argument(f"--user-agent={ua}")
-
-        # === HEADLESS ===
-        options.add_argument("--headless=new")
-
-        # === ОСНОВНЫЕ АРГУМЕНТЫ ===
+        options.add_argument("--headless")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-setuid-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--window-size=1920,1080")
+        options.add_argument("--window-size=390,844")
         options.add_argument("--disable-extensions")
         options.add_argument("--disable-infobars")
         options.add_argument("--disable-notifications")
-        options.add_argument("--lang=en-US,en")
-        options.add_argument("--disable-background-networking")
-        options.add_argument("--disable-background-timer-throttling")
-        options.add_argument("--disable-backgrounding-occluded-windows")
-        options.add_argument("--disable-breakpad")
-        options.add_argument("--disable-component-extensions-with-background-pages")
-        options.add_argument("--disable-features=TranslateUI,InterestFeedContentSuggestions,CalculateNativeWinOcclusion,OptimizationHints,AudioServiceOutOfProcess,IsolateOrigins,site-per-process")
-        options.add_argument("--disable-ipc-flooding-protection")
-        options.add_argument("--enable-features=NetworkService,NetworkServiceInProcess")
-        options.add_argument("--force-color-profile=srgb")
-        options.add_argument("--metrics-recording-only")
-        options.add_argument("--no-first-run")
-        options.add_argument("--password-store=basic")
-        options.add_argument("--use-mock-keychain")
-        options.add_argument("--hide-scrollbars")
-        options.add_argument("--mute-audio")
-
-        # === Анти-детект ===
-        options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
-        options.add_experimental_option("useAutomationExtension", False)
-
-        # === Предпочтения ===
+        options.add_argument("--lang=en-US")
         prefs = {
             "profile.default_content_setting_values.notifications": 2,
             "credentials_enable_service": False,
             "profile.password_manager_enabled": False,
-            "profile.default_content_settings.popups": 0,
-            "download.prompt_for_download": False,
-            "download.directory_upgrade": True,
-            "safebrowsing.enabled": True,
-            "intl.accept_languages": "en-US,en",
         }
         options.add_experimental_option("prefs", prefs)
-
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option("useAutomationExtension", False)
         if _installer.chrome_path and "chrome-linux64" in _installer.chrome_path:
             options.binary_location = _installer.chrome_path
-
         return options
 
     def create(self):
+        # Импорт selenium ЗДЕСЬ
         from selenium import webdriver
         from selenium.webdriver.chrome.service import Service
-
-        # === ФИКС: убиваем старые процессы перед запуском ===
-        self._kill_old_chrome()
-
         options = self._get_options()
         service = Service(_installer.driver_path) if _installer.driver_path else Service()
-
         self.driver = webdriver.Chrome(service=service, options=options)
-
-        # === CDP: скрываем webdriver ===
         self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-            "source": """
-                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-                Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-                window.chrome = { runtime: {} };
-            """
+            "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         })
-
-        # === CDP: эмуляция реального viewport ===
-        self.driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride", {
-            "width": 1920,
-            "height": 1080,
-            "deviceScaleFactor": 1,
-            "mobile": False
-        })
-
-        # === CDP: отключаем WebDriver в navigator ===
-        self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-            "source": """
-                const originalQuery = window.navigator.permissions.query;
-                window.navigator.permissions.query = (parameters) => (
-                    parameters.name === 'notifications' ?
-                    Promise.resolve({ state: Notification.permission }) :
-                    originalQuery(parameters)
-                );
-            """
-        })
-
         return self.driver
 
     def save_cookies(self):
@@ -447,13 +353,6 @@ class BrowserSession:
             except:
                 pass
             self.driver = None
-        # === ФИКС: ОЧИСТКА ПРОФИЛЯ ===
-        if self._user_data_dir and os.path.exists(self._user_data_dir):
-            try:
-                shutil.rmtree(self._user_data_dir, ignore_errors=True)
-                logger.info(f"Cleaned profile: {self._user_data_dir}")
-            except Exception as e:
-                logger.warning(f"Failed to clean profile: {e}")
 
 
 def _send_log_file(bot, chat_id, prefix=""):
@@ -467,22 +366,16 @@ def _send_log_file(bot, chat_id, prefix=""):
         logger.error(f"Failed to send log: {e}")
 
 
-# === GOOGLE LOGIN ===
+# === GOOGLE LOGIN — старый рабочий вариант ===
 def google_login(email, password, bot=None, chat_id=None):
+    # Убедимся что selenium установлен
     try:
         import selenium
-        from selenium.webdriver.common.keys import Keys
-        from selenium.webdriver.common.by import By
-        from selenium.webdriver.support.ui import WebDriverWait
-        from selenium.webdriver.support import expected_conditions as EC
     except ImportError:
+        # Пробуем установить
         _installer._install_selenium_pip()
         try:
             import selenium
-            from selenium.webdriver.common.keys import Keys
-            from selenium.webdriver.common.by import By
-            from selenium.webdriver.support.ui import WebDriverWait
-            from selenium.webdriver.support import expected_conditions as EC
         except ImportError:
             return False, "Selenium не удалось установить"
 
@@ -495,8 +388,8 @@ def google_login(email, password, bot=None, chat_id=None):
         if bot and chat_id:
             try:
                 bot.send_message(chat_id, text, parse_mode="HTML")
-            except Exception as e:
-                logger.error(f"Report send error: {e}")
+            except:
+                pass
 
     def report_error(text, send_log=True):
         logger.error(text)
@@ -510,253 +403,101 @@ def google_login(email, password, bot=None, chat_id=None):
 
     try:
         report("⏳ Запускаю браузер...")
-        logger.info(f"Starting login for email: {email[:3]}***")
         session.create()
-        logger.info(f"Browser created, title: {session.driver.title}")
 
-        # === ШАГ 0: Проверяем, что браузер работает ===
-        report("🌐 Тестирую соединение...")
-        session.driver.get("https://www.google.com")
-        time.sleep(3)
-        test_title = session.driver.title
-        test_url = session.driver.current_url
-        logger.info(f"Google test - URL: {test_url}, Title: {test_title}")
-        report(f"📍 Google test: {test_title[:50]}")
-        session._screenshot("step0_google_test", "📸 Тест Google")
-
-        if "Google" not in test_title:
-            report_error("Браузер не загружает страницы корректно!")
-            return False, "Браузер не работает"
-
-        # === ШАГ 1: Заходим на x.com/login напрямую ===
         report("📥 Открываю x.com/login...")
-        logger.info("Navigating to https://x.com/i/flow/login")
-        session.driver.get("https://x.com/i/flow/login")
-        time.sleep(8)
+        session.driver.get("https://x.com/login")
+        time.sleep(5)
 
-        current_url = session.driver.current_url
-        title = session.driver.title
-        logger.info(f"After x.com/login load - URL: {current_url}, Title: {title}")
-        report(f"📍 URL: {current_url[:80]}")
-        report(f"📰 Title: {title[:80]}")
+        session._screenshot("login_page", "📸 Страница входа X")
 
-        session._screenshot("step1_login_page", "📸 Шаг 1: Страница входа")
-        session._save_html("step1_login_page")
+        # Импорт selenium ЗДЕСЬ
+        from selenium.webdriver.common.by import By
 
-        # === Проверяем, загрузилась ли страница ===
-        if current_url == "data:," or not title or len(session.driver.page_source) < 500:
-            logger.error("Page did not load properly, trying alternative approach")
-            report("⚠️ Страница не загрузилась, пробую альтернативный подход...")
-
-            session.driver.get("https://x.com")
-            time.sleep(8)
-            current_url = session.driver.current_url
-            logger.info(f"After x.com (alt) - URL: {current_url}")
-            session._screenshot("step1_alt", "📸 Альтернативный вход")
-            session._save_html("step1_alt")
-
-        # === ШАГ 2: Ищем кнопку Google ===
         report("🔍 Ищу кнопку Google...")
-        time.sleep(3)
-
         google_btn = None
 
-        # === МЕТОД 1: XPath по тексту ===
-        xpaths = [
-            "//span[contains(text(), 'Continue with Google')]",
-            "//span[contains(text(), 'Sign in with Google')]",
-            "//span[contains(text(), 'Google')]",
-            "//div[contains(text(), 'Continue with Google')]",
-            "//div[contains(text(), 'Sign in with Google')]",
-            "//button[.//*[contains(text(), 'Google')]]",
-            "//div[@role='button' and .//*[contains(text(), 'Google')]]",
-            "//a[.//*[contains(text(), 'Google')]]",
-            "//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'google')]",
-            "//div[contains(@class, 'google')]",
-            "//div[contains(@class, 'Google')]",
-        ]
-
-        for xp in xpaths:
-            try:
-                elements = session.driver.find_elements(By.XPATH, xp)
-                logger.debug(f"Google XPath '{xp[:50]}' found: {len(elements)}")
-                if elements:
-                    google_btn = elements[0]
-                    logger.info(f"Found Google via: {xp[:50]}")
-                    report(f"✅ Найдено: {xp[:50]}")
-                    break
-            except Exception as e:
-                logger.debug(f"Google XPath failed: {e}")
-
-        # === МЕТОД 2: Поиск по SVG/иконке Google ===
-        if not google_btn:
-            logger.info("Trying to find Google by SVG icon...")
-            try:
-                svg_xpaths = [
-                    "//svg[contains(@viewBox, '24 24')]//path[contains(@fill, '#EA4335')]",
-                    "//svg[contains(@viewBox, '24 24')]//path[contains(@fill, '#4285F4')]",
-                    "//*[name()='svg']//*[contains(@fill, '#EA4335')]",
-                ]
-                for svg_xp in svg_xpaths:
-                    svg_elements = session.driver.find_elements(By.XPATH, svg_xp)
-                    if svg_elements:
-                        parent = svg_elements[0].find_element(By.XPATH, "./ancestor::button | ./ancestor::div[@role='button'] | ./ancestor::a")
-                        if parent:
-                            google_btn = parent
-                            logger.info("Found Google button via SVG icon")
-                            report("✅ Найдено через иконку Google")
-                            break
-            except Exception as e:
-                logger.debug(f"SVG search failed: {e}")
-
-        # === МЕТОД 3: Перебор всех кликабельных элементов ===
-        if not google_btn:
-            logger.info("XPath search failed, trying all clickable elements")
-            report("🔍 Перебираю все кнопки...")
-            all_buttons = session.driver.find_elements(By.XPATH, "//button | //div[@role='button'] | //a")
-            logger.info(f"Total clickable elements found: {len(all_buttons)}")
-            report(f"   Всего: {len(all_buttons)}")
-
-            for idx, btn in enumerate(all_buttons[:30]):
-                try:
-                    text = btn.text or btn.get_attribute("aria-label") or btn.get_attribute("title") or ""
-                    href = btn.get_attribute("href") or ""
-                    btn_class = btn.get_attribute("class") or ""
-                    logger.debug(f"Button [{idx}]: text='{text[:50]}' href='{href[:50]}' class='{btn_class[:50]}'")
-
-                    if text or href:
-                        report(f"   [{idx}] {text[:50]} | href={href[:50]}")
-                        if "google" in (text + href + btn_class).lower():
-                            google_btn = btn
-                            logger.info(f"Found Google button at index {idx}")
-                            report(f"   ✅ Это Google!")
-                            break
-                except Exception as e:
-                    logger.debug(f"Button [{idx}] error: {e}")
-
-        if not google_btn:
-            logger.error("Google button not found")
-            report_error("❌ Кнопка Google не найдена!")
-            session._screenshot("no_google_found", "📸 Нет кнопки Google")
-            return False, "Кнопка Google не найдена"
-
-        # === КЛИКАЕМ ПО GOOGLE ===
-        report("🖱️ Кликаю Google...")
-        logger.info("Clicking Google button")
         try:
-            session.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", google_btn)
-            time.sleep(1)
-            google_btn.click()
-            logger.info("Google button clicked successfully")
-        except Exception as e:
-            logger.warning(f"Normal click failed: {e}, trying JS click")
-            session.driver.execute_script("arguments[0].click();", google_btn)
+            google_btn = session.driver.find_element(By.XPATH, "//*[contains(text(), 'Continue with Google')]")
+            report("✅ Найдена: 'Continue with Google'")
+        except:
+            pass
 
-        time.sleep(6)
-        session._screenshot("after_google_click", "📸 После клика Google")
-        logger.info(f"After Google click - URL: {session.driver.current_url}")
-
-        # === Google Auth Flow ===
-        current_url = session.driver.current_url
-        logger.info(f"Current URL before Google auth: {current_url}")
-        report(f"📍 URL: {current_url[:80]}")
-
-        if "accounts.google.com" in current_url or "google.com" in current_url:
-            logger.info("On Google auth page")
-            report("✅ На странице Google!")
-
-            # === Email ===
+        if not google_btn:
             try:
-                logger.info("Looking for email field")
-                email_field = WebDriverWait(session.driver, 15).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, 'input[type="email"]'))
-                )
-                email_field.clear()
-                email_field.send_keys(email)
-                logger.info("Email entered")
-                report("✅ Email введён")
-                time.sleep(1)
-                email_field.send_keys(Keys.RETURN)
-                time.sleep(5)
-                logger.info(f"After email - URL: {session.driver.current_url}")
-            except Exception as e:
-                logger.error(f"Email input failed: {e}")
-                report(f"⚠️ Email: {e}")
-
-            # === Password ===
-            try:
-                logger.info("Looking for password field")
-                pass_field = WebDriverWait(session.driver, 15).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, 'input[type="password"]'))
-                )
-                pass_field.clear()
-                pass_field.send_keys(password)
-                logger.info("Password entered")
-                report("✅ Пароль введён")
-                time.sleep(1)
-                pass_field.send_keys(Keys.RETURN)
-                time.sleep(8)
-                logger.info(f"After password - URL: {session.driver.current_url}")
-            except Exception as e:
-                logger.error(f"Password input failed: {e}")
-                report(f"⚠️ Password: {e}")
-
-            session._screenshot("google_done", "📸 После Google login")
-
-        # === Ждём редиректа на X ===
-        report("⏳ Жду редирект на X...")
-        final_url = None
-        for i in range(20):
-            time.sleep(3)
-            url = session.driver.current_url
-            final_url = url
-            logger.info(f"Redirect wait [{i+1}/20]: {url}")
-            report(f"  [{i+1}/20] {url[:70]}")
-
-            if "x.com/home" in url:
-                logger.info("Home page detected")
-                report("✅ Домашняя страница!")
-                break
-            if "x.com" in url and "login" not in url and "flow" not in url and "onboarding" not in url:
-                logger.info("X detected without login")
-                report("✅ Вошли в X!")
-                break
-
-        # === Проверяем авторизацию ===
-        session._screenshot("final_check", "📸 Финальная проверка")
-        html = session.driver.page_source.lower()
-
-        auth_confirmed = any(k in html for k in ["home", "following", "for you", "для вас", "главная", "compose", "logout", "settings"])
-        logger.info(f"Auth confirmed: {auth_confirmed}")
-
-        if auth_confirmed:
-            report("✅ Авторизация подтверждена!")
-            session.save_cookies()
-
-            username = None
-            try:
-                url_match = re.search(r'x\.com/([^/]+)', final_url or "")
-                if url_match:
-                    username = url_match.group(1)
+                google_btn = session.driver.find_element(By.XPATH, "//*[contains(text(), 'Google')]")
+                report("✅ Найден элемент с 'Google'")
             except:
                 pass
 
-            save_auth_info(username or "unknown", email)
-            logger.info(f"Saved auth: username={username}")
+        if not google_btn:
+            report_error("Кнопка Google не найдена!")
+            return False, "Кнопка Google не найдена"
 
-            report(f"👤 @{username or 'unknown'} | 📧 {email}")
+        report("🖱️ Кликаю по Google...")
+        google_btn.click()
+        time.sleep(5)
+
+        session._screenshot("google_redirect", "📸 После клика")
+
+        current_url = session.driver.current_url
+        report(f"📍 URL: {current_url[:80]}")
+
+        if "accounts.google.com" in current_url or "google.com" in current_url:
+            report("✅ Перешли на Google!")
+
+            try:
+                email_field = session.driver.find_element(By.CSS_SELECTOR, 'input[type="email"]')
+                email_field.send_keys(email)
+                report("✅ Email введён")
+
+                next_btn = session(), 'Next') or contains(@value, 'Next')]")
+                next_btn.click()
+                time.sleep(3)
+            except Exception as e:
+                report(f"⚠️ Email: {e}")
+
+            try:
+                time.sleep(3)
+                pass_field = session.driver.find_element(By.CSS_SELECTOR, 'input[type="password"]')
+                pass_field.send_keys(password)
+                report("✅ Пароль введён")
+
+                next_btn = session.driver.find_element(By.XPATH, "//*[contains(text(), 'Next') or contains(@value, 'Next')]")
+                next_btn.click()
+                time.sleep(5)
+            except Exception as e:
+                report(f"⚠️ Password: {e}")
+
+            session._screenshot("google_after_login", "📸 После входа в Google")
+
+        report("⏳ Жду редирект на X...")
+        for i in range(10):
+            time.sleep(2)
+            url = session.driver.current_url
+            if "x.com" in url and "login" not in url:
+                report("✅ Вошли в X!")
+                break
+
+        session.driver.get("https://x.com/home")
+        time.sleep(5)
+        session._screenshot("x_home", "📸 X Home")
+
+        html = session.driver.page_source.lower()
+        if "home" in html or "following" in html:
+            report("✅ Авторизация подтверждена!")
+            session.save_cookies()
+            save_auth_info("google_user", email)
             return True, None
         else:
-            logger.error("Auth not confirmed")
-            report_error("❌ Авторизация не подтверждена")
-            return False, "Не удалось войти"
+            report_error("Не удалось войти в X")
+            return False, "Не удалось войти в X"
 
     except Exception as e:
-        logger.error(f"Critical error: {e}", exc_info=True)
-        report_error(f"❌ Ошибка: {str(e)[:300]}")
+        report_error(f"Ошибка: {str(e)[:200]}")
+        logger.error(traceback.format_exc())
         return False, str(e)
     finally:
-        logger.info("Closing browser session")
         session.quit()
 
 
@@ -801,7 +542,7 @@ def register_selenium_bot(bot):
             except ImportError:
                 pass
 
-        msg = bot.reply_to(message, "⏳ Скачиваю Chrome 133 + Driver + Selenium...", parse_mode="HTML")
+        msg = bot.reply_to(message, "⏳ Скачиваю Chrome 126 + Driver + Selenium...", parse_mode="HTML")
         success = _installer.install()
 
         if success:
@@ -859,7 +600,7 @@ def register_selenium_bot(bot):
         email = login_sessions[chat_id]["email"]
         del login_sessions[chat_id]
 
-        msg = bot.reply_to(message, "⏳ Вхожу через Google...\n<i>60-120 сек</i>", parse_mode="HTML")
+        msg = bot.reply_to(message, "⏳ Вхожу через Google...\n<i>30-60 сек</i>", parse_mode="HTML")
 
         success, error = run_sync_task(google_login, email, password, bot, chat_id)
 
@@ -905,7 +646,7 @@ def register_selenium_bot(bot):
         bot.reply_to(message, (
             "🚗 <b>Selenium X Agent v2</b>\n\n"
             "/se_status — Статус\n"
-            "/se_install — Установить Chrome 133\n"
+            "/se_install — Установить Chrome 126\n"
             "/se_google — Войти через Google\n"
             "/se_log — Получить логи\n"
             "/se_logout — Выйти\n"
