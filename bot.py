@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import logging
 import telebot
 import selenium_x_agent as agent
@@ -13,16 +14,16 @@ logger = logging.getLogger("Bot")
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not BOT_TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN не задан! Добавь переменную на Render")
+    raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# ============ УДАЛЯЕМ WEBHOOK ПРИ СТАРТЕ ============
 try:
     bot.remove_webhook()
-    print("✅ Webhook удалён, использую polling")
-except Exception as e:
-    print(f"⚠️ Ошибка удаления webhook: {e}")
+    print("✅ Webhook удалён")
+except:
+    pass
+
 
 # ============ КОМАНДЫ ============
 
@@ -33,8 +34,12 @@ def start_command(message):
         "🚀 Selenium X Agent\n\n"
         "📌 Команды:\n"
         "/status — статус системы\n"
-        "/install — установить Chrome + Selenium"
+        "/install — установить Chrome + Selenium\n"
+        "/research — исследовать X.com\n"
+        "/login — войти через Google\n"
+        "/logs — отправить файл логов"
     )
+
 
 @bot.message_handler(commands=["status"])
 def status_command(message):
@@ -59,6 +64,7 @@ def status_command(message):
 📁 {st['selenium_dir']}"""
     
     bot.reply_to(message, text)
+
 
 @bot.message_handler(commands=["install"])
 def install_command(message):
@@ -88,24 +94,169 @@ def install_command(message):
             message_id=msg.message_id
         )
 
+
+@bot.message_handler(commands=["research"])
+def research_command(message):
+    if not agent._installer.ready:
+        bot.reply_to(message, "❌ Сначала /install")
+        return
+    
+    msg = bot.reply_to(message, "🔍 Исследую X.com...\nВыгружаю все элементы...")
+    
+    try:
+        result = agent.research_x_page("https://x.com/login", bot, message.chat.id)
+        
+        if "error" in result:
+            bot.edit_message_text(f"❌ {result['error']}", chat_id=msg.chat.id, message_id=msg.message_id)
+            return
+        
+        report = f"📊 *Исследование X.com (страница входа)*\n\n"
+        report += f"🔗 URL: {result['url']}\n"
+        report += f"🟦 Кнопок: {len(result['buttons'])}\n"
+        report += f"🔗 Ссылок: {len(result['links'])}\n"
+        report += f"📝 Полей ввода: {len(result['inputs'])}\n"
+        report += f"📄 Текстовых элементов: {len(result['text_elements'])}\n\n"
+        
+        report += "🟦 *Найденные кнопки:*\n"
+        for btn in result['buttons'][:15]:
+            report += f"• {btn['text'][:60]}\n"
+        
+        # Проверяем наличие кнопки Google
+        google_found = False
+        for btn in result['buttons']:
+            if 'google' in btn['text'].lower() or 'Google' in btn['text']:
+                google_found = True
+                report += f"\n✅ *Найдена кнопка Google!*"
+                break
+        
+        if not google_found:
+            report += f"\n⚠️ *Кнопка Google не найдена*"
+            report += f"\n💡 Попробуй открыть /login вручную"
+        
+        bot.edit_message_text(report, chat_id=msg.chat.id, message_id=msg.message_id, parse_mode="Markdown")
+        
+        if "screenshot" in result and result["screenshot"]:
+            try:
+                with open(result["screenshot"], "rb") as f:
+                    bot.send_photo(message.chat.id, f, caption="📸 Скриншот страницы входа")
+            except:
+                pass
+        
+    except Exception as e:
+        bot.edit_message_text(f"❌ Ошибка: {str(e)[:200]}", chat_id=msg.chat.id, message_id=msg.message_id)
+
+
+@bot.message_handler(commands=["login"])
+def login_command(message):
+    if not agent._installer.ready:
+        bot.reply_to(message, "❌ Сначала /install")
+        return
+    
+    chat_id = message.chat.id
+    bot.reply_to(message, "🔐 *Вход через Google*\n\nВведи *email* от Google:", parse_mode="Markdown")
+    agent.login_sessions[chat_id] = {"step": "google_email"}
+
+
+@bot.message_handler(func=lambda m: m.chat.id in agent.login_sessions and agent.login_sessions[m.chat.id].get("step") == "google_email")
+def login_google_email(message):
+    chat_id = message.chat.id
+    email = message.text.strip()
+    
+    if email.startswith("/"):
+        del agent.login_sessions[chat_id]
+        bot.reply_to(message, "❌ Отменено")
+        return
+    
+    agent.login_sessions[chat_id]["email"] = email
+    agent.login_sessions[chat_id]["step"] = "google_password"
+    bot.reply_to(message, f"✅ Email: <code>{email}</code>\n\nВведи *пароль*:", parse_mode="HTML")
+
+
+@bot.message_handler(func=lambda m: m.chat.id in agent.login_sessions and agent.login_sessions[m.chat.id].get("step") == "google_password")
+def login_google_password(message):
+    chat_id = message.chat.id
+    password = message.text.strip()
+    
+    if password.startswith("/"):
+        del agent.login_sessions[chat_id]
+        bot.reply_to(message, "❌ Отменено")
+        return
+    
+    email = agent.login_sessions[chat_id]["email"]
+    del agent.login_sessions[chat_id]
+    
+    msg = bot.reply_to(message, "⏳ Вхожу через Google...\n30-60 секунд")
+    
+    success, error = agent.run_sync_task(
+        agent.google_login,
+        email,
+        password,
+        bot,
+        chat_id
+    )
+    
+    try:
+        bot.delete_message(chat_id, msg.message_id)
+    except:
+        pass
+    
+    if error:
+        bot.reply_to(message, f"❌ {error}")
+    elif success:
+        auth = agent.get_auth_info()
+        bot.reply_to(
+            message,
+            f"✅ *Вход успешен!*\n"
+            f"👤 @{auth['username'] if auth else '?'}\n"
+            f"📧 {email}\n\n"
+            f"📊 Проверь /status",
+            parse_mode="Markdown"
+        )
+    else:
+        bot.reply_to(message, "❌ Вход не удался")
+
+
+@bot.message_handler(commands=["logs"])
+def logs_command(message):
+    log_file = agent.LOG_FILE
+    
+    if not log_file.exists():
+        bot.reply_to(message, "❌ Файл логов не найден")
+        return
+    
+    try:
+        with open(log_file, "rb") as f:
+            bot.send_document(
+                message.chat.id,
+                f,
+                caption=f"📋 Логи агента\n📁 {log_file}\n📅 {time.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {str(e)[:200]}")
+
+
 @bot.message_handler(func=lambda m: True)
 def fallback(message):
-    bot.reply_to(message, "🤖 /start — меню\n/status — статус\n/install — установка")
+    bot.reply_to(
+        message,
+        "🤖 Команды:\n"
+        "/start — меню\n"
+        "/status — статус\n"
+        "/install — установка\n"
+        "/research — исследовать X.com\n"
+        "/login — войти через Google\n"
+        "/logs — отправить файл логов"
+    )
+
 
 if __name__ == "__main__":
     print("🚀 Запуск бота...")
     print(f"📁 Директория: {agent.BASE_DIR}")
     
-    # Ещё раз удаляем webhook перед запуском
     try:
         bot.remove_webhook()
         print("✅ Webhook удалён")
     except:
         pass
     
-    # Запускаем polling
-    try:
-        bot.infinity_polling()
-    except Exception as e:
-        print(f"❌ Ошибка: {e}")
-        sys.exit(1)
+    bot.infinity_polling()
