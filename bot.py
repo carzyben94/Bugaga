@@ -11,12 +11,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger("Bot")
 
-# Читаем токен из переменной окружения TELEGRAM_BOT_TOKEN
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан! Добавь переменную на Render")
 
 bot = telebot.TeleBot(BOT_TOKEN)
+
+# ============ УДАЛЯЕМ WEBHOOK ПРИ СТАРТЕ ============
+try:
+    bot.remove_webhook()
+    print("✅ Webhook удалён, использую polling")
+except Exception as e:
+    print(f"⚠️ Ошибка удаления webhook: {e}")
 
 # ============ КОМАНДЫ ============
 
@@ -89,4 +95,17 @@ def fallback(message):
 if __name__ == "__main__":
     print("🚀 Запуск бота...")
     print(f"📁 Директория: {agent.BASE_DIR}")
-    bot.infinity_polling()
+    
+    # Ещё раз удаляем webhook перед запуском
+    try:
+        bot.remove_webhook()
+        print("✅ Webhook удалён")
+    except:
+        pass
+    
+    # Запускаем polling
+    try:
+        bot.infinity_polling()
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        sys.exit(1)
