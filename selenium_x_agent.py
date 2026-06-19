@@ -781,16 +781,102 @@ def google_login(email, password, bot=None, chat_id=None):
         except Exception as e:
             logger.error(f"Failed to send log file: {e}")
     
+    def wait_for_page_stable(driver, timeout=10):
+        """Ждём, пока document.readyState === 'complete' и location стабилизируется."""
+        start = time.time()
+        last_url = None
+        while time.time() - start < timeout:
+            try:
+                state = driver.execute_script("return document.readyState")
+                curr_url = driver.current_url
+                if state == "complete" and curr_url == last_url:
+                    time.sleep(0.5)
+                    return True
+                last_url = curr_url
+            except:
+                pass
+            time.sleep(0.5)
+        return False
+    
+    def find_google_button_js(driver, timeout=20):
+        """
+        Ищет кнопку Google через JavaScript — устойчиво к stale elements.
+        Возвращает WebElement или None.
+        """
+        from selenium.webdriver.common.by import By
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                # Пробуем найти через JS — ищем по тексту, aria-label, data-testid
+                btn = driver.execute_script("""
+                    function findBtn() {
+                        // По тексту
+                        const spans = document.querySelectorAll('span');
+                        for (let s of spans) {
+                            const txt = s.textContent.trim().toLowerCase();
+                            if (txt.includes('continue with google') || txt.includes('sign in with google') || txt.includes('google')) {
+                                let el = s;
+                                while (el && el.tagName !== 'BUTTON' && el.tagName !== 'A' && el.tagName !== 'DIV') {
+                                    el = el.parentElement;
+                                }
+                                if (el) return el;
+                            }
+                        }
+                        // По aria-label
+                        const btns = document.querySelectorAll('button, a, div[role="button"]');
+                        for (let b of btns) {
+                            const lbl = (b.getAttribute('aria-label') || '').toLowerCase();
+                            if (lbl.includes('google') || lbl.includes('google sign')) return b;
+                        }
+                        // По data-testid
+                        const testids = document.querySelectorAll('[data-testid*="google"], [data-testid*="Google"]');
+                        if (testids.length) return testids[0];
+                        // По img с логотипом Google
+                        const imgs = document.querySelectorAll('img');
+                        for (let img of imgs) {
+                            const src = (img.src || '').toLowerCase();
+                            const alt = (img.alt || '').toLowerCase();
+                            if (src.includes('google') || alt.includes('google')) {
+                                let el = img;
+                                while (el && el.tagName !== 'BUTTON' && el.tagName !== 'A' && el.tagName !== 'DIV') {
+                                    el = el.parentElement;
+                                }
+                                if (el) return el;
+                            }
+                        }
+                        return null;
+                    }
+                    return findBtn();
+                """)
+                if btn:
+                    login_logger.info("Google button found via JS")
+                    return btn
+            except Exception as e:
+                login_logger.debug(f"JS find attempt failed: {e}")
+            time.sleep(0.5)
+        return None
+    
+    def click_element_js(driver, element):
+        """Клик через JavaScript — обходит stale element и overlay проблемы."""
+        try:
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
+            time.sleep(0.3)
+            driver.execute_script("arguments[0].click();", element)
+            return True
+        except Exception as e:
+            login_logger.warning(f"JS click failed: {e}")
+            return False
+    
     try:
         report("⏳ Запускаю браузер (desktop)...")
-        # === ИЗМЕНЕНИЕ: desktop режим ===
         session.create(headless=True, mobile=False)
         login_logger.info(f"Browser created (desktop). Session ID: {session.driver.session_id if session.driver else 'None'}")
         
         report("📥 Открываю x.com...")
         login_logger.info("Navigating to https://x.com")
         session.driver.get("https://x.com")
-        time.sleep(3)
+        wait_for_page_stable(session.driver, timeout=10)
+        time.sleep(2)
         
         report("🖱️ Ищу кнопку 'Sign in'...")
         from selenium.webdriver.common.by import By
@@ -807,9 +893,13 @@ def google_login(email, password, bot=None, chat_id=None):
             time.sleep(3)
         except Exception as e:
             login_logger.warning(f"Sign in button not found or click failed: {e}")
-            # Пробуем сразу открыть login
             session.driver.get("https://x.com/login")
+            wait_for_page_stable(session.driver, timeout=10)
             time.sleep(3)
+        
+        # Ждём полной загрузки login-страницы
+        wait_for_page_stable(session.driver, timeout=15)
+        time.sleep(3)  # Даём React отрисовать
         
         current_url = session.driver.current_url
         page_title = session.driver.title
@@ -820,35 +910,40 @@ def google_login(email, password, bot=None, chat_id=None):
         
         report("🔍 Ищу кнопку Google...")
         
-        # === ИЗМЕНЕНИЕ: WebDriverWait для кнопки Google ===
+        # === ИСПРАВЛЕНИЕ: поиск через JS + fallback на XPath ===
         google_btn = None
-        wait = WebDriverWait(session.driver, 15)
         
-        # Пробуем разные селекторы для desktop кнопки Google
-        selectors = [
-            # По тексту "Continue with Google"
-            (By.XPATH, "//span[contains(text(), 'Continue with Google')]"),
-            # По роли button с текстом Google
-            (By.XPATH, "//button//*[contains(text(), 'Continue with Google')]"),
-            # По data-testid (если есть)
-            (By.XPATH, "//div[@data-testid='google_sign_in_container']//button"),
-            # По aria-label
-            (By.XPATH, "//button[contains(@aria-label, 'Google')]"),
-            # Общий поиск по Google
-            (By.XPATH, "//*[contains(text(), 'Continue with Google') or contains(text(), 'Sign in with Google')]"),
-        ]
+        # Попытка 1: JavaScript-поиск (устойчив к stale elements)
+        google_btn = find_google_button_js(session.driver, timeout=15)
         
-        for by, selector in selectors:
-            try:
-                google_btn = wait.until(EC.element_to_be_clickable((by, selector)))
-                login_logger.info(f"Found Google button with: {by}={selector[:50]}...")
-                report(f"✅ Найдена кнопка Google")
-                break
-            except Exception as e:
-                login_logger.debug(f"Selector failed: {selector[:50]}... — {e}")
-        
+        # Попытка 2: XPath с повторными попытками
         if not google_btn:
-            # Последняя попытка — найти любую кнопку с логотипом Google
+            login_logger.info("JS search failed, trying XPath with retries...")
+            wait = WebDriverWait(session.driver, 15)
+            selectors = [
+                (By.XPATH, "//span[contains(text(), 'Continue with Google')]"),
+                (By.XPATH, "//button//*[contains(text(), 'Continue with Google')]"),
+                (By.XPATH, "//div[@data-testid='google_sign_in_container']//button"),
+                (By.XPATH, "//button[contains(@aria-label, 'Google')]"),
+                (By.XPATH, "//*[contains(text(), 'Continue with Google') or contains(text(), 'Sign in with Google')]"),
+            ]
+            for by, selector in selectors:
+                for attempt in range(3):
+                    try:
+                        google_btn = wait.until(EC.presence_of_element_located((by, selector)))
+                        # Проверяем, что элемент не stale
+                        _ = google_btn.text
+                        login_logger.info(f"Found Google button with: {by}={selector[:50]}... (attempt {attempt+1})")
+                        report("✅ Найдена кнопка Google")
+                        break
+                    except Exception as e:
+                        login_logger.debug(f"Selector attempt {attempt+1} failed: {selector[:50]}... — {e}")
+                        time.sleep(1)
+                if google_btn:
+                    break
+        
+        # Попытка 3: поиск через логотип Google
+        if not google_btn:
             try:
                 google_btn = session.driver.find_element(By.XPATH, "//img[contains(@src, 'google') or contains(@alt, 'Google')]/ancestor::button")
                 login_logger.info("Found Google button via logo image")
@@ -866,9 +961,21 @@ def google_login(email, password, bot=None, chat_id=None):
         
         report("🖱️ Кликаю по Google...")
         login_logger.info("Clicking Google button")
-        google_btn.click()
-        time.sleep(5)
         
+        # === ИСПРАВЛЕНИЕ: клик через JS, fallback на обычный ===
+        clicked = click_element_js(session.driver, google_btn)
+        if not clicked:
+            try:
+                google_btn.click()
+                clicked = True
+            except Exception as e:
+                login_logger.warning(f"Regular click also failed: {e}")
+        
+        if not clicked:
+            report("❌ Не удалось кликнуть по кнопке Google")
+            return False, "Не удалось кликнуть по кнопке Google"
+        
+        time.sleep(5)
         session._screenshot("google_redirect", "📸 После клика Google")
         
         current_url = session.driver.current_url
@@ -891,7 +998,6 @@ def google_login(email, password, bot=None, chat_id=None):
                 report("✅ Email введён")
                 login_logger.info("Email entered")
                 
-                # Кнопка Next после email
                 next_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'Next') or contains(@value, 'Next') or @id='identifierNext']")))
                 next_btn.click()
                 login_logger.info("Next clicked after email")
@@ -948,7 +1054,7 @@ def google_login(email, password, bot=None, chat_id=None):
         # Ждём редирект обратно на X
         report("⏳ Жду редирект на X...")
         x_reached = False
-        for i in range(15):  # Увеличил до 30 сек
+        for i in range(15):
             time.sleep(2)
             url = session.driver.current_url
             login_logger.info(f"Wait loop {i+1}/15: {url}")
