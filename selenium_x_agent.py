@@ -1,4 +1,4 @@
-# selenium_x_agent.py — Фикс: обход блокировок X + вход через Google
+# selenium_x_agent.py — Рабочий + вход через Google в X
 import os
 import sys
 import time
@@ -10,9 +10,6 @@ import subprocess
 import tempfile
 import traceback
 import threading
-import re
-import uuid
-import shutil
 from pathlib import Path
 
 print("[SE] Начало модуля", flush=True)
@@ -29,7 +26,7 @@ LOG_FILE = BASE_DIR / "agent.log"
 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
     handlers=[
         logging.FileHandler(str(LOG_FILE), encoding="utf-8"),
@@ -44,8 +41,6 @@ CHROME_ZIP = f"{BASE_URL}/chrome-linux64.zip"
 DRIVER_ZIP = f"{BASE_URL}/chromedriver-linux64.zip"
 
 login_sessions = {}
-# === ЗАЩИТА ОТ ДУБЛЕЙ ===
-_processing_messages = set()
 
 
 class ChromeInstaller:
@@ -54,19 +49,19 @@ class ChromeInstaller:
         self.driver_path = None
         self._find_existing()
         print(f"[SE] Installer ready={self.ready}", flush=True)
-
+    
     def _find_existing(self):
         CHROME_DIR = BASE_DIR / "chrome"
         DRIVER_DIR = BASE_DIR / "driver"
-
+        
         local_chrome = CHROME_DIR / "chrome-linux64" / "chrome"
         local_driver = DRIVER_DIR / "chromedriver-linux64" / "chromedriver"
-
+        
         if local_chrome.exists():
             self.chrome_path = str(local_chrome)
         if local_driver.exists():
             self.driver_path = str(local_driver)
-
+        
         if not self.chrome_path:
             for name in ["google-chrome", "chromium", "chromium-browser", "chrome"]:
                 try:
@@ -75,18 +70,18 @@ class ChromeInstaller:
                     break
                 except:
                     pass
-
+        
         if not self.driver_path:
             try:
                 result = subprocess.run(["which", "chromedriver"], capture_output=True, text=True, timeout=5, check=True)
                 self.driver_path = result.stdout.strip()
             except:
                 pass
-
+    
     @property
     def ready(self):
         return bool(self.chrome_path and self.driver_path)
-
+    
     def status(self):
         return {
             "chrome": {"found": bool(self.chrome_path), "path": self.chrome_path},
@@ -94,9 +89,10 @@ class ChromeInstaller:
             "ready": self.ready,
             "base_dir": str(BASE_DIR)
         }
-
+    
     def install(self):
         logger.info("Начинаю установку...")
+        # Устанавливаем selenium сразу
         self._install_selenium_pip()
         success = True
         if not self.chrome_path:
@@ -104,8 +100,9 @@ class ChromeInstaller:
         if not self.driver_path:
             success = self._download_driver() and success
         return success
-
+    
     def _install_selenium_pip(self):
+        """Установить selenium как в старом коде"""
         try:
             import selenium
             print(f"[SE] Selenium уже установлен: v{selenium.__version__}", flush=True)
@@ -119,6 +116,7 @@ class ChromeInstaller:
                 )
                 if result.returncode == 0:
                     print("[SE] Selenium установлен", flush=True)
+                    # Перезагружаем модули
                     import importlib
                     if "selenium" in sys.modules:
                         importlib.reload(sys.modules["selenium"])
@@ -129,7 +127,7 @@ class ChromeInstaller:
             except Exception as e:
                 print(f"[SE] Ошибка установки: {e}", flush=True)
                 return False
-
+    
     def _download(self, url, dest):
         try:
             urllib.request.urlretrieve(url, dest)
@@ -137,7 +135,7 @@ class ChromeInstaller:
         except Exception as e:
             logger.error(f"Download error: {e}")
             return False
-
+    
     def _extract(self, zip_path, dest_dir):
         try:
             with zipfile.ZipFile(zip_path, 'r') as z:
@@ -147,13 +145,13 @@ class ChromeInstaller:
         except Exception as e:
             logger.error(f"Extract error: {e}")
             return False
-
+    
     def _make_executable(self, path):
         try:
             os.chmod(path, os.stat(path).st_mode | 0o111)
         except:
             pass
-
+    
     def _download_chrome(self):
         CHROME_DIR = BASE_DIR / "chrome"
         CHROME_DIR.mkdir(parents=True, exist_ok=True)
@@ -168,7 +166,7 @@ class ChromeInstaller:
             self.chrome_path = str(chrome_bin)
             return True
         return False
-
+    
     def _download_driver(self):
         DRIVER_DIR = BASE_DIR / "driver"
         DRIVER_DIR.mkdir(parents=True, exist_ok=True)
@@ -190,13 +188,14 @@ _installer = ChromeInstaller()
 
 def get_full_status():
     auth = get_auth_info()
+    # Проверяем selenium
     selenium_ok = False
     try:
         import selenium
         selenium_ok = True
     except:
         pass
-
+    
     return {
         "selenium_pip": {"installed": selenium_ok, "version": None},
         "chrome_browser": {"found": _installer.status()["chrome"]["found"], "path": _installer.chrome_path},
@@ -266,17 +265,17 @@ def run_sync_task(func, *args, **kwargs):
     return result[0], None
 
 
-# === BROWSER SESSION — старый рабочий вариант (Chrome 126, мобильный UA) ===
+# === BROWSER SESSION — selenium импортируется здесь ===
 class BrowserSession:
     def __init__(self):
         self.driver = None
         self._chat_id = None
         self._bot = None
-
+    
     def set_chat(self, bot, chat_id):
         self._bot = bot
         self._chat_id = chat_id
-
+    
     def _report(self, text):
         logger.info(text)
         if self._bot and self._chat_id:
@@ -284,7 +283,7 @@ class BrowserSession:
                 self._bot.send_message(self._chat_id, text, parse_mode="HTML")
             except:
                 pass
-
+    
     def _screenshot(self, name, caption=None):
         try:
             path = SCREENSHOT_DIR / f"{name}_{int(time.time())}.png"
@@ -295,8 +294,9 @@ class BrowserSession:
             return str(path)
         except:
             return None
-
+    
     def _get_options(self):
+        # Импорт selenium ЗДЕСЬ, внутри метода
         from selenium.webdriver.chrome.options import Options
         options = Options()
         ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15"
@@ -323,8 +323,9 @@ class BrowserSession:
         if _installer.chrome_path and "chrome-linux64" in _installer.chrome_path:
             options.binary_location = _installer.chrome_path
         return options
-
+    
     def create(self):
+        # Импорт selenium ЗДЕСЬ
         from selenium import webdriver
         from selenium.webdriver.chrome.service import Service
         options = self._get_options()
@@ -334,7 +335,7 @@ class BrowserSession:
             "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         })
         return self.driver
-
+    
     def save_cookies(self):
         try:
             cookies = self.driver.get_cookies()
@@ -343,7 +344,7 @@ class BrowserSession:
             return True
         except:
             return False
-
+    
     def quit(self):
         if self.driver:
             try:
@@ -353,32 +354,23 @@ class BrowserSession:
             self.driver = None
 
 
-def _send_log_file(bot, chat_id, prefix=""):
-    """Отправить файл логов в чат"""
-    try:
-        if LOG_FILE.exists():
-            with open(LOG_FILE, "rb") as f:
-                caption = f"{prefix}\n📄 Логи: {LOG_FILE.name}" if prefix else f"📄 Логи: {LOG_FILE.name}"
-                bot.send_document(chat_id, f, caption=caption)
-    except Exception as e:
-        logger.error(f"Failed to send log: {e}")
-
-
-# === GOOGLE LOGIN — старый рабочий вариант ===
+# === GOOGLE LOGIN ===
 def google_login(email, password, bot=None, chat_id=None):
+    # Убедимся что selenium установлен
     try:
         import selenium
     except ImportError:
+        # Пробуем установить
         _installer._install_selenium_pip()
         try:
             import selenium
         except ImportError:
             return False, "Selenium не удалось установить"
-
+    
     session = BrowserSession()
     if bot and chat_id:
         session.set_chat(bot, chat_id)
-
+    
     def report(text):
         logger.info(text)
         if bot and chat_id:
@@ -386,86 +378,77 @@ def google_login(email, password, bot=None, chat_id=None):
                 bot.send_message(chat_id, text, parse_mode="HTML")
             except:
                 pass
-
-    def report_error(text, send_log=True):
-        logger.error(text)
-        if bot and chat_id:
-            try:
-                bot.send_message(chat_id, f"❌ {text}", parse_mode="HTML")
-                if send_log:
-                    _send_log_file(bot, chat_id, prefix=f"❌ {text[:100]}")
-            except Exception as e:
-                logger.error(f"Error report failed: {e}")
-
+    
     try:
         report("⏳ Запускаю браузер...")
         session.create()
-
+        
         report("📥 Открываю x.com/login...")
         session.driver.get("https://x.com/login")
         time.sleep(5)
-
+        
         session._screenshot("login_page", "📸 Страница входа X")
-
+        
+        # Импорт selenium ЗДЕСЬ
         from selenium.webdriver.common.by import By
-
+        
         report("🔍 Ищу кнопку Google...")
         google_btn = None
-
+        
         try:
             google_btn = session.driver.find_element(By.XPATH, "//*[contains(text(), 'Continue with Google')]")
             report("✅ Найдена: 'Continue with Google'")
         except:
             pass
-
+        
         if not google_btn:
             try:
                 google_btn = session.driver.find_element(By.XPATH, "//*[contains(text(), 'Google')]")
                 report("✅ Найден элемент с 'Google'")
             except:
                 pass
-
+        
         if not google_btn:
-            report_error("Кнопка Google не найдена!")
+            report("❌ Кнопка Google НЕ найдена!")
             return False, "Кнопка Google не найдена"
-
+        
         report("🖱️ Кликаю по Google...")
         google_btn.click()
         time.sleep(5)
-
+        
         session._screenshot("google_redirect", "📸 После клика")
-
+        
         current_url = session.driver.current_url
         report(f"📍 URL: {current_url[:80]}")
-
+        
         if "accounts.google.com" in current_url or "google.com" in current_url:
             report("✅ Перешли на Google!")
-
+            
             try:
                 email_field = session.driver.find_element(By.CSS_SELECTOR, 'input[type="email"]')
                 email_field.send_keys(email)
                 report("✅ Email введён")
-
+                
                 next_btn = session.driver.find_element(By.XPATH, "//*[contains(text(), 'Next') or contains(@value, 'Next')]")
                 next_btn.click()
                 time.sleep(3)
             except Exception as e:
                 report(f"⚠️ Email: {e}")
-
+            
             try:
                 time.sleep(3)
                 pass_field = session.driver.find_element(By.CSS_SELECTOR, 'input[type="password"]')
                 pass_field.send_keys(password)
                 report("✅ Пароль введён")
-
+                
                 next_btn = session.driver.find_element(By.XPATH, "//*[contains(text(), 'Next') or contains(@value, 'Next')]")
                 next_btn.click()
                 time.sleep(5)
             except Exception as e:
                 report(f"⚠️ Password: {e}")
-
+            
             session._screenshot("google_after_login", "📸 После входа в Google")
-
+        
         report("⏳ Жду редирект на X...")
         for i in range(10):
             time.sleep(2)
@@ -473,11 +456,11 @@ def google_login(email, password, bot=None, chat_id=None):
             if "x.com" in url and "login" not in url:
                 report("✅ Вошли в X!")
                 break
-
+        
         session.driver.get("https://x.com/home")
         time.sleep(5)
         session._screenshot("x_home", "📸 X Home")
-
+        
         html = session.driver.page_source.lower()
         if "home" in html or "following" in html:
             report("✅ Авторизация подтверждена!")
@@ -485,11 +468,11 @@ def google_login(email, password, bot=None, chat_id=None):
             save_auth_info("google_user", email)
             return True, None
         else:
-            report_error("Не удалось войти в X")
+            report("❌ Не удалось войти в X")
             return False, "Не удалось войти в X"
-
+            
     except Exception as e:
-        report_error(f"Ошибка: {str(e)[:200]}")
+        report(f"❌ Ошибка: {str(e)[:200]}")
         logger.error(traceback.format_exc())
         return False, str(e)
     finally:
@@ -504,15 +487,15 @@ def AGENT_READY():
 # === РЕГИСТРАЦИЯ КОМАНД ===
 def register_selenium_bot(bot):
     print("[SE] Регистрация команд...", flush=True)
-
+    
     @bot.message_handler(commands=["se_status"])
     def se_status(message):
         st = get_full_status()
         auth = st.get("auth_info")
         auth_line = f"👤 <code>@{auth['username']}</code>\n" if auth else "👤 <i>не подключён</i>\n"
-
+        
         text = (
-            "🚗 <b>Selenium X Agent</b> (v2)\n\n"
+            "🚗 <b>Selenium X Agent</b>\n\n"
             f"{auth_line}"
             f"{icon(st['chrome_browser']['found'])} Chrome: <code>{st['chrome_browser']['path'] or 'не найден'}</code>\n"
             f"{icon(st['chromedriver']['ready'])} Driver: <code>{st['chromedriver']['path'] or 'не найден'}</code>\n"
@@ -526,20 +509,21 @@ def register_selenium_bot(bot):
         elif not auth:
             text += "\n\n⚠️ /se_google — войти"
         bot.reply_to(message, text, parse_mode="HTML")
-
+    
     @bot.message_handler(commands=["se_install"])
     def se_install(message):
         if _installer.ready:
+            # Проверим selenium
             try:
                 import selenium
                 bot.reply_to(message, "🟢 Уже установлено!", parse_mode="HTML")
                 return
             except ImportError:
                 pass
-
-        msg = bot.reply_to(message, "⏳ Скачиваю Chrome 126 + Driver + Selenium...", parse_mode="HTML")
+        
+        msg = bot.reply_to(message, "⏳ Скачиваю Chrome + Driver + Selenium...", parse_mode="HTML")
         success = _installer.install()
-
+        
         if success:
             bot.edit_message_text(
                 f"✅ Установлено!\n🌐 <code>{_installer.chrome_path}</code>\n🔧 <code>{_installer.driver_path}</code>",
@@ -550,17 +534,17 @@ def register_selenium_bot(bot):
                 f"❌ Ошибка. Логи: <code>{LOG_FILE}</code>",
                 chat_id=msg.chat.id, message_id=msg.message_id, parse_mode="HTML"
             )
-
+    
     @bot.message_handler(commands=["se_google"])
     def se_google(message):
         if not _installer.ready:
             bot.reply_to(message, "❌ Сначала /se_install", parse_mode="HTML")
             return
-
+        
         chat_id = message.chat.id
         bot.reply_to(message, "🔐 <b>Вход через Google</b>\n\nВведи <b>email</b> от Google:", parse_mode="HTML")
         login_sessions[chat_id] = {"step": "google_email", "method": "google"}
-
+    
     @bot.message_handler(func=lambda m: m.chat.id in login_sessions and login_sessions[m.chat.id].get("step") == "google_email")
     def se_google_email(message):
         chat_id = message.chat.id
@@ -569,91 +553,63 @@ def register_selenium_bot(bot):
             del login_sessions[chat_id]
             bot.reply_to(message, "❌ Отменено")
             return
-
+        
         login_sessions[chat_id]["email"] = email
         login_sessions[chat_id]["step"] = "google_password"
         bot.reply_to(message, f"✅ Email: <code>{email}</code>\n\nТеперь введи <b>пароль</b>:", parse_mode="HTML")
-
+    
     @bot.message_handler(func=lambda m: m.chat.id in login_sessions and login_sessions[m.chat.id].get("step") == "google_password")
     def se_google_password(message):
         chat_id = message.chat.id
-
-        msg_id = message.message_id
-        if msg_id in _processing_messages:
-            logger.warning(f"Duplicate message {msg_id} ignored")
-            return
-        _processing_messages.add(msg_id)
-
         password = message.text
         if password.startswith("/"):
             del login_sessions[chat_id]
-            _processing_messages.discard(msg_id)
             bot.reply_to(message, "❌ Отменено")
             return
-
+        
         email = login_sessions[chat_id]["email"]
         del login_sessions[chat_id]
-
+        
         msg = bot.reply_to(message, "⏳ Вхожу через Google...\n<i>30-60 сек</i>", parse_mode="HTML")
-
+        
         success, error = run_sync_task(google_login, email, password, bot, chat_id)
-
+        
         try:
             bot.delete_message(chat_id, msg.message_id)
         except:
             pass
-
-        _processing_messages.discard(msg_id)
-
+        
         if error:
             bot.reply_to(message, f"❌ {error}", parse_mode="HTML")
-            try:
-                _send_log_file(bot, chat_id, prefix="❌ Ошибка входа")
-            except:
-                pass
         elif success:
             auth = get_auth_info()
-            username = auth.get("username", "?") if auth else "?"
-            bot.reply_to(message, f"✅ <b>Вход успешен!</b>\n👤 @{username}\n📧 {email}", parse_mode="HTML")
+            bot.reply_to(message, f"✅ <b>Вход успешен!</b>\n👤 @{auth['username'] if auth else '?'}\n📧 {email}", parse_mode="HTML")
         else:
             bot.reply_to(message, "❌ Вход не удался", parse_mode="HTML")
-            try:
-                _send_log_file(bot, chat_id, prefix="❌ Вход не удался")
-            except:
-                pass
-
-    @bot.message_handler(commands=["se_log"])
-    def se_log(message):
-        try:
-            _send_log_file(bot, message.chat.id, prefix="📄 Запрошены логи")
-            bot.reply_to(message, "📄 Логи отправлены", parse_mode="HTML")
-        except Exception as e:
-            bot.reply_to(message, f"❌ Не удалось отправить логи: {e}", parse_mode="HTML")
-
+    
     @bot.message_handler(commands=["se_logout"])
     def se_logout(message):
         clear_auth_info()
         bot.reply_to(message, "🚪 Сессия очищена", parse_mode="HTML")
-
+    
     @bot.message_handler(commands=["se_help"])
     def se_help(message):
         bot.reply_to(message, (
-            "🚗 <b>Selenium X Agent v2</b>\n\n"
+            "🚗 <b>Selenium X Agent</b>\n\n"
             "/se_status — Статус\n"
-            "/se_install — Установить Chrome 126\n"
+            "/se_install — Установить Chrome\n"
             "/se_google — Войти через Google\n"
-            "/se_log — Получить логи\n"
             "/se_logout — Выйти\n"
             "/se_help — Помощь"
         ), parse_mode="HTML")
-
+    
     @bot.message_handler(commands=["se_cancel"])
     def se_cancel(message):
         chat_id = message.chat.id
         if chat_id in login_sessions:
             del login_sessions[chat_id]
             bot.reply_to(message, "❌ Отменено")
-
+    
     print("[SE] Команды зарегистрированы", flush=True)
 
 
