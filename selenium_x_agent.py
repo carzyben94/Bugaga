@@ -271,7 +271,6 @@ class BrowserSession:
         self.driver = None
         self._chat_id = None
         self._bot = None
-        self._user_data_dir = None
 
     def set_chat(self, bot, chat_id):
         self._bot = bot
@@ -313,13 +312,9 @@ class BrowserSession:
         from selenium.webdriver.chrome.options import Options
         options = Options()
 
-        # === ФИКС 1: УНИКАЛЬНЫЙ ПРОФИЛЬ ===
-        self._user_data_dir = tempfile.mkdtemp(prefix=f"chrome_profile_{uuid.uuid4().hex[:8]}_")
-        options.add_argument(f"--user-data-dir={self._user_data_dir}")
-        logger.info(f"User data dir: {self._user_data_dir}")
-
-        # === ФИКС 2: SINGLE-PROCESS для headless на Render ===
-        options.add_argument("--single-process")
+        # === ФИКС: INCOGNITO — Chrome сам создаёт временный профиль, нет конфликтов ===
+        options.add_argument("--incognito")
+        options.add_argument("--no-default-browser-check")
 
         # === УЛУЧШЕННЫЙ USER-AGENT ===
         ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.6943.53 Safari/537.36"
@@ -434,14 +429,6 @@ class BrowserSession:
             except:
                 pass
             self.driver = None
-        # === ФИКС 3: ОЧИСТКА ПРОФИЛЯ ===
-        if self._user_data_dir and os.path.exists(self._user_data_dir):
-            try:
-                import shutil
-                shutil.rmtree(self._user_data_dir, ignore_errors=True)
-                logger.info(f"Cleaned profile: {self._user_data_dir}")
-            except Exception as e:
-                logger.warning(f"Failed to clean profile: {e}")
 
 
 def _send_log_file(bot, chat_id, prefix=""):
@@ -830,7 +817,7 @@ def register_selenium_bot(bot):
     def se_google_password(message):
         chat_id = message.chat.id
 
-        # === ФИКС 4: ЗАЩИТА ОТ ДУБЛЕЙ ===
+        # === ЗАЩИТА ОТ ДУБЛЕЙ ===
         msg_id = message.message_id
         if msg_id in _processing_messages:
             logger.warning(f"Duplicate message {msg_id} ignored")
