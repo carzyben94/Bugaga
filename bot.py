@@ -104,41 +104,51 @@ def research_command(message):
     msg = bot.reply_to(message, "🔍 Исследую X.com...\nВыгружаю все элементы...")
     
     try:
-        result = agent.research_x_page("https://x.com/login", bot, message.chat.id)
+        result = agent.research_x_page("https://x.com", bot, message.chat.id)
         
         if "error" in result:
             bot.edit_message_text(f"❌ {result['error']}", chat_id=msg.chat.id, message_id=msg.message_id)
             return
         
-        report = f"📊 *Исследование X.com (страница входа)*\n\n"
+        report = f"📊 *Исследование X.com*\n\n"
         report += f"🔗 URL: {result['url']}\n"
         report += f"🟦 Кнопок: {len(result['buttons'])}\n"
         report += f"🔗 Ссылок: {len(result['links'])}\n"
         report += f"📝 Полей ввода: {len(result['inputs'])}\n"
         report += f"📄 Текстовых элементов: {len(result['text_elements'])}\n\n"
         
-        report += "🟦 *Найденные кнопки:*\n"
-        for btn in result['buttons'][:15]:
-            report += f"• {btn['text'][:60]}\n"
-        
-        # Проверяем наличие кнопки Google
-        google_found = False
-        for btn in result['buttons']:
-            if 'google' in btn['text'].lower() or 'Google' in btn['text']:
-                google_found = True
+        if len(result['buttons']) > 0:
+            report += "🟦 *Найденные кнопки:*\n"
+            for btn in result['buttons'][:15]:
+                report += f"• {btn['text'][:60]}\n"
+            
+            google_found = False
+            login_found = False
+            for btn in result['buttons']:
+                text_lower = btn['text'].lower()
+                if 'google' in text_lower:
+                    google_found = True
+                if 'войти' in text_lower or 'log in' in text_lower or 'sign in' in text_lower:
+                    login_found = True
+            
+            if google_found:
                 report += f"\n✅ *Найдена кнопка Google!*"
-                break
-        
-        if not google_found:
-            report += f"\n⚠️ *Кнопка Google не найдена*"
-            report += f"\n💡 Попробуй открыть /login вручную"
+            if login_found:
+                report += f"\n✅ *Найдена кнопка Войти!*"
+            if not google_found and not login_found:
+                report += f"\n⚠️ *Кнопки входа не найдены*"
+                report += f"\n💡 Попробуй /login вручную"
+        else:
+            report += "⚠️ *Кнопки не найдены*\n"
+            report += "💡 Страница загружена, но элементы не обнаружены.\n"
+            report += "Попробуй /login вручную"
         
         bot.edit_message_text(report, chat_id=msg.chat.id, message_id=msg.message_id, parse_mode="Markdown")
         
         if "screenshot" in result and result["screenshot"]:
             try:
                 with open(result["screenshot"], "rb") as f:
-                    bot.send_photo(message.chat.id, f, caption="📸 Скриншот страницы входа")
+                    bot.send_photo(message.chat.id, f, caption="📸 Скриншот страницы X.com")
             except:
                 pass
         
