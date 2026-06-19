@@ -23,12 +23,13 @@ COOKIES_FILE = BASE_DIR / "x_cookies.json"
 AUTH_FILE = BASE_DIR / "x_auth.json"
 SCREENSHOT_DIR = BASE_DIR / "screenshots"
 LOG_FILE = BASE_DIR / "agent.log"
+RESEARCH_DIR = BASE_DIR / "research"
+RESEARCH_DIR.mkdir(parents=True, exist_ok=True)
 
 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
 # === УЛУЧШЕННОЕ ЛОГИРОВАНИЕ ===
 class ChatLogHandler(logging.Handler):
-    """Хранит последние N логов в памяти для быстрого доступа через /se_logs"""
     def __init__(self, max_lines=500):
         super().__init__()
         self.max_lines = max_lines
@@ -69,6 +70,7 @@ CHROME_ZIP = f"{BASE_URL}/chrome-linux64.zip"
 DRIVER_ZIP = f"{BASE_URL}/chromedriver-linux64.zip"
 
 login_sessions = {}
+_research_sessions = {}  # {chat_id: {"driver": ..., "step": ...}}
 
 
 class ChromeInstaller:
@@ -329,9 +331,10 @@ class BrowserSession:
             except Exception as e:
                 logger.debug(f"[Chat] send_message failed: {e}")
     
-    def _screenshot(self, name, caption=None):
+    def _screenshot(self, name, caption=None, research=False):
         try:
-            path = SCREENSHOT_DIR / f"{name}_{int(time.time())}.png"
+            subdir = RESEARCH_DIR if research else SCREENSHOT_DIR
+            path = subdir / f"{name}_{int(time.time())}.png"
             self.driver.save_screenshot(str(path))
             logger.info(f"[Screenshot] Saved: {path}")
             if self._bot and self._chat_id and path.exists():
@@ -342,18 +345,26 @@ class BrowserSession:
             logger.warning(f"[Screenshot] Failed: {e}")
             return None
     
-    def _get_options(self):
+    def _get_options(self, headless=True, mobile=True, extra_args=None):
         from selenium.webdriver.chrome.options import Options
         options = Options()
-        ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15"
+        
+        if mobile:
+            ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
+        else:
+            ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+        
         options.add_argument(f"--user-agent={ua}")
-        options.add_argument("--headless")
+        
+        if headless:
+            options.add_argument("--headless")
+        
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-setuid-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--window-size=390,844")
+        options.add_argument("--window-size=390,844" if mobile else "--window-size=1280,720")
         options.add_argument("--disable-extensions")
         options.add_argument("--disable-infobars")
         options.add_argument("--disable-notifications")
@@ -374,17 +385,21 @@ class BrowserSession:
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option("useAutomationExtension", False)
         
+        if extra_args:
+            for arg in extra_args:
+                options.add_argument(arg)
+        
         if _installer.chrome_path:
             options.binary_location = _installer.chrome_path
             logger.debug(f"[Browser] binary: {_installer.chrome_path}")
         return options
     
-    def create(self):
+    def create(self, headless=True, mobile=True, extra_args=None):
         from selenium import webdriver
         from selenium.webdriver.chrome.service import Service
-        options = self._get_options()
+        options = self._get_options(headless=headless, mobile=mobile, extra_args=extra_args)
         service = Service(_installer.driver_path) if _installer.driver_path else Service()
-        logger.info(f"[Browser] Creating driver...")
+        logger.info(f"[Browser] Creating driver... headless={headless}, mobile={mobile}")
         logger.info(f"[Browser] Chrome path: {_installer.chrome_path}")
         logger.info(f"[Browser] Driver path: {_installer.driver_path}")
         
@@ -420,6 +435,298 @@ class BrowserSession:
             except Exception as e:
                 logger.warning(f"[Browser] Quit error: {e}")
             self.driver = None
+
+
+# === ИССЛЕДОВАНИЕ X.COM ===
+def research_x_com(bot, chat_id, steps=None):
+    """
+    Исследует x.com пошагово, собирая данные о структуре страниц.
+    steps: список шагов для выполнения. Если None — выполняет все.
+    """
+    if steps is None:
+        steps = ["basic", "desktop", "no_headless", "cookies", "login_page_analysis"]
+    
+    session = BrowserSession()
+    session.set_chat(bot, chat_id)
+    
+    def report(text):
+        logger.info(f"[Research] {text}")
+        if bot and chat_id:
+            try:
+                bot.send_message(chat_id, text, parse_mode="HTML")
+            except:
+                pass
+    
+    def save_research_data(name, data):
+        """Сохраняет данные исследования в файл"""
+        filepath = RESEARCH_DIR / f"research_{name}_{int(time.time())}.json"
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False, default=str)
+            logger.info(f"[Research] Saved data: {filepath}")
+            return str(filepath)
+        except Exception as e:
+            logger.error(f"[Research] Failed to save data: {e}")
+            return None
+    
+    results = {}
+    
+    try:
+        # === ШАГ 1: Базовый headless mobile ===
+        if "basic" in steps:
+            report("🔬 <b>Шаг 1/5:</b> Базовый headless mobile")
+            try:
+                session.create(headless=True, mobile=True)
+                session.driver.get("https://x.com")
+                time.sleep(5)
+                
+                data = {
+                    "step": "basic_headless_mobile",
+                    "url": session.driver.current_url,
+                    "title": session.driver.title,
+                    "source_length": len(session.driver.page_source),
+                    "source_preview": session.driver.page_source[:2000],
+                }
+                filepath = save_research_data("basic", data)
+                session._screenshot("step1_basic", "📸 Шаг 1: Базовый headless mobile", research=True)
+                
+                report(f"📊 <b>Результат шага 1:</b>\n"
+                       f"URL: <code>{data['url']}</code>\n"
+                       f"Title: <code>{data['title'] or '[пусто]'}</code>\n"
+                       f"Source length: {data['source_length']}")
+                
+                if data['source_length'] < 100:
+                    report("⚠️ Страница пустая — X блокирует headless!")
+                results["basic"] = data
+                
+            except Exception as e:
+                report(f"❌ Шаг 1 ошибка: {e}")
+                results["basic"] = {"error": str(e)}
+            finally:
+                session.quit()
+        
+        # === ШАГ 2: Desktop headless ===
+        if "desktop" in steps:
+            report("🔬 <b>Шаг 2/5:</b> Desktop headless")
+            try:
+                session.create(headless=True, mobile=False)
+                session.driver.get("https://x.com")
+                time.sleep(5)
+                
+                data = {
+                    "step": "desktop_headless",
+                    "url": session.driver.current_url,
+                    "title": session.driver.title,
+                    "source_length": len(session.driver.page_source),
+                    "source_preview": session.driver.page_source[:2000],
+                }
+                save_research_data("desktop", data)
+                session._screenshot("step2_desktop", "📸 Шаг 2: Desktop headless", research=True)
+                
+                report(f"📊 URL: <code>{data['url']}</code>\n"
+                       f"Title: <code>{data['title'] or '[пусто]'}</code>\n"
+                       f"Source length: {data['source_length']}")
+                results["desktop"] = data
+                
+            except Exception as e:
+                report(f"❌ Шаг 2 ошибка: {e}")
+                results["desktop"] = {"error": str(e)}
+            finally:
+                session.quit()
+        
+        # === ШАГ 3: С доп. аргументами анти-детекта ===
+        if "no_headless" in steps:
+            report("🔬 <b>Шаг 3/5:</b> Headless с расширенными аргументами")
+            try:
+                extra = [
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-features=IsolateOrigins,site-per-process",
+                    "--disable-site-isolation-trials",
+                ]
+                session.create(headless=True, mobile=True, extra_args=extra)
+                session.driver.get("https://x.com")
+                time.sleep(5)
+                
+                data = {
+                    "step": "extra_args",
+                    "url": session.driver.current_url,
+                    "title": session.driver.title,
+                    "source_length": len(session.driver.page_source),
+                    "source_preview": session.driver.page_source[:2000],
+                }
+                save_research_data("extra_args", data)
+                session._screenshot("step3_extra", "📸 Шаг 3: Extra args", research=True)
+                
+                report(f"📊 URL: <code>{data['url']}</code>\n"
+                       f"Title: <code>{data['title'] or '[пусто]'}</code>\n"
+                       f"Source length: {data['source_length']}")
+                results["extra_args"] = data
+                
+            except Exception as e:
+                report(f"❌ Шаг 3 ошибка: {e}")
+                results["extra_args"] = {"error": str(e)}
+            finally:
+                session.quit()
+        
+        # === ШАГ 4: С cookies ===
+        if "cookies" in steps:
+            report("🔬 <b>Шаг 4/5:</b> С поддельными cookies")
+            try:
+                session.create(headless=True, mobile=True)
+                
+                # Устанавливаем базовые cookies
+                session.driver.get("https://x.com")
+                session.driver.add_cookie({
+                    "name": "guest_id",
+                    "value": "v1%3A" + str(int(time.time())),
+                    "domain": ".x.com"
+                })
+                session.driver.add_cookie({
+                    "name": "guest_id_marketing",
+                    "value": "v1%3A" + str(int(time.time())),
+                    "domain": ".x.com"
+                })
+                session.driver.add_cookie({
+                    "name": "guest_id_ads",
+                    "value": "v1%3A" + str(int(time.time())),
+                    "domain": ".x.com"
+                })
+                
+                time.sleep(3)
+                session.driver.get("https://x.com/login")
+                time.sleep(5)
+                
+                data = {
+                    "step": "with_cookies",
+                    "url": session.driver.current_url,
+                    "title": session.driver.title,
+                    "source_length": len(session.driver.page_source),
+                    "cookies": session.driver.get_cookies(),
+                    "source_preview": session.driver.page_source[:2000],
+                }
+                save_research_data("cookies", data)
+                session._screenshot("step4_cookies", "📸 Шаг 4: С cookies", research=True)
+                
+                report(f"📊 URL: <code>{data['url']}</code>\n"
+                       f"Title: <code>{data['title'] or '[пусто]'}</code>\n"
+                       f"Source length: {data['source_length']}\n"
+                       f"Cookies: {len(data['cookies'])}")
+                results["cookies"] = data
+                
+            except Exception as e:
+                report(f"❌ Шаг 4 ошибка: {e}")
+                results["cookies"] = {"error": str(e)}
+            finally:
+                session.quit()
+        
+        # === ШАГ 5: Детальный анализ login страницы ===
+        if "login_page_analysis" in steps:
+            report("🔬 <b>Шаг 5/5:</b> Детальный анализ login страницы")
+            try:
+                session.create(headless=True, mobile=True)
+                session.driver.get("https://x.com/i/flow/login")
+                time.sleep(8)
+                
+                from selenium.webdriver.common.by import By
+                
+                # Собираем ВСЕ элементы
+                all_buttons = []
+                try:
+                    buttons = session.driver.find_elements(By.TAG_NAME, "button")
+                    for btn in buttons:
+                        try:
+                            all_buttons.append({
+                                "text": btn.text.strip()[:100],
+                                "class": btn.get_attribute("class"),
+                                "id": btn.get_attribute("id"),
+                                "aria_label": btn.get_attribute("aria-label"),
+                                "outer_html": btn.get_attribute("outerHTML")[:300],
+                            })
+                        except:
+                            pass
+                except Exception as e:
+                    logger.warning(f"Buttons collection error: {e}")
+                
+                all_links = []
+                try:
+                    links = session.driver.find_elements(By.TAG_NAME, "a")
+                    for link in links[:20]:
+                        try:
+                            all_links.append({
+                                "text": link.text.strip()[:100],
+                                "href": link.get_attribute("href"),
+                                "outer_html": link.get_attribute("outerHTML")[:300],
+                            })
+                        except:
+                            pass
+                except Exception as e:
+                    logger.warning(f"Links collection error: {e}")
+                
+                all_inputs = []
+                try:
+                    inputs = session.driver.find_elements(By.TAG_NAME, "input")
+                    for inp in inputs:
+                        try:
+                            all_inputs.append({
+                                "type": inp.get_attribute("type"),
+                                "name": inp.get_attribute("name"),
+                                "placeholder": inp.get_attribute("placeholder"),
+                                "id": inp.get_attribute("id"),
+                            })
+                        except:
+                            pass
+                except Exception as e:
+                    logger.warning(f"Inputs collection error: {e}")
+                
+                data = {
+                    "step": "login_analysis",
+                    "url": session.driver.current_url,
+                    "title": session.driver.title,
+                    "source_length": len(session.driver.page_source),
+                    "buttons_count": len(all_buttons),
+                    "buttons": all_buttons,
+                    "links_count": len(all_links),
+                    "links": all_links,
+                    "inputs_count": len(all_inputs),
+                    "inputs": all_inputs,
+                    "source_preview": session.driver.page_source[:3000],
+                }
+                save_research_data("login_analysis", data)
+                session._screenshot("step5_login", "📸 Шаг 5: Анализ login", research=True)
+                
+                report(f"📊 <b>Анализ login страницы:</b>\n"
+                       f"URL: <code>{data['url']}</code>\n"
+                       f"Title: <code>{data['title'] or '[пусто]'}</code>\n"
+                       f"Source length: {data['source_length']}\n"
+                       f"Buttons: {data['buttons_count']}\n"
+                       f"Links: {data['links_count']}\n"
+                       f"Inputs: {data['inputs_count']}")
+                
+                # Показываем найденные кнопки
+                if all_buttons:
+                    btn_texts = [b['text'] for b in all_buttons if b['text']]
+                    report(f"🎯 <b>Кнопки:</b>\n" + "\n".join([f"  • <code>{t[:60]}</code>" for t in btn_texts[:10]]))
+                
+                results["login_analysis"] = data
+                
+            except Exception as e:
+                report(f"❌ Шаг 5 ошибка: {e}")
+                results["login_analysis"] = {"error": str(e)}
+            finally:
+                session.quit()
+        
+        # Итог
+        report("✅ <b>Исследование завершено!</b>\n"
+               f"Результаты сохранены в: <code>{RESEARCH_DIR}</code>\n"
+               f"Всего шагов: {len([r for r in results.values() if 'error' not in r])}/{len(steps)}")
+        
+        return results
+        
+    except Exception as e:
+        report(f"❌ Критическая ошибка исследования: {e}")
+        logger.error(traceback.format_exc())
+        session.quit()
+        return {"error": str(e)}
 
 
 # === GOOGLE LOGIN ===
@@ -791,6 +1098,8 @@ def register_selenium_bot(bot):
             "/se_status — Статус\n"
             "/se_install — Установить Chrome\n"
             "/se_google — Войти через Google\n"
+            "/se_research — Исследовать x.com\n"
+            "/se_research_stop — Остановить исследование\n"
             "/se_logout — Выйти\n"
             "/se_logs — Посмотреть логи\n"
             "/se_logs_clear — Очистить логи\n"
@@ -833,6 +1142,41 @@ def register_selenium_bot(bot):
         _chat_handler.clear()
         bot.reply_to(message, "🧹 Логи в памяти очищены", parse_mode="HTML")
         logger.info("[Bot] Logs cleared by user")
+    
+    # === НОВЫЕ КОМАНДЫ ИССЛЕДОВАНИЯ ===
+    @bot.message_handler(commands=["se_research"])
+    def se_research(message):
+        chat_id = message.chat.id
+        
+        if chat_id in _research_sessions:
+            bot.reply_to(message, "⚠️ Исследование уже запущено. Используй /se_research_stop чтобы остановить.", parse_mode="HTML")
+            return
+        
+        if not _installer.ready:
+            bot.reply_to(message, "❌ Сначала /se_install", parse_mode="HTML")
+            return
+        
+        bot.reply_to(message, "🔬 <b>Запускаю исследование x.com...</b>\n<i>Это займёт ~60 сек</i>", parse_mode="HTML")
+        
+        def do_research():
+            _research_sessions[chat_id] = {"active": True}
+            try:
+                research_x_com(bot, chat_id)
+            finally:
+                if chat_id in _research_sessions:
+                    del _research_sessions[chat_id]
+        
+        t = threading.Thread(target=do_research)
+        t.start()
+    
+    @bot.message_handler(commands=["se_research_stop"])
+    def se_research_stop(message):
+        chat_id = message.chat.id
+        if chat_id in _research_sessions:
+            del _research_sessions[chat_id]
+            bot.reply_to(message, "🛑 Исследование остановлено", parse_mode="HTML")
+        else:
+            bot.reply_to(message, "ℹ️ Исследование не запущено", parse_mode="HTML")
     
     logger.info("[Bot] Команды зарегистрированы")
 
