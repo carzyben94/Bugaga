@@ -1,4 +1,4 @@
-# selenium_x_agent.py — Рабочий + вход через Google в X
+# selenium_x_agent.py — Рабочий + вход через Google в X (Desktop версия)
 import os
 import sys
 import time
@@ -729,7 +729,7 @@ def research_x_com(bot, chat_id, steps=None):
         return {"error": str(e)}
 
 
-# === GOOGLE LOGIN ===
+# === GOOGLE LOGIN (DESKTOP VERSION) ===
 def google_login(email, password, bot=None, chat_id=None):
     login_log_file = BASE_DIR / f"login_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     login_logger = logging.getLogger(f"LoginAttempt_{id(email)}")
@@ -782,60 +782,84 @@ def google_login(email, password, bot=None, chat_id=None):
             logger.error(f"Failed to send log file: {e}")
     
     try:
-        report("⏳ Запускаю браузер...")
-        session.create()
-        login_logger.info(f"Browser created. Session ID: {session.driver.session_id if session.driver else 'None'}")
+        report("⏳ Запускаю браузер (desktop)...")
+        # === ИЗМЕНЕНИЕ: desktop режим ===
+        session.create(headless=True, mobile=False)
+        login_logger.info(f"Browser created (desktop). Session ID: {session.driver.session_id if session.driver else 'None'}")
         
-        report("📥 Открываю x.com/login...")
-        login_logger.info("Navigating to https://x.com/login")
-        session.driver.get("https://x.com/login")
-        time.sleep(5)
+        report("📥 Открываю x.com...")
+        login_logger.info("Navigating to https://x.com")
+        session.driver.get("https://x.com")
+        time.sleep(3)
+        
+        report("🖱️ Ищу кнопку 'Sign in'...")
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        
+        # Ждём и кликаем "Sign in" на главной
+        try:
+            sign_in_btn = WebDriverWait(session.driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, "//a[@href='/i/flow/login'] | //span[contains(text(), 'Sign in')]/ancestor::a"))
+            )
+            sign_in_btn.click()
+            login_logger.info("Clicked 'Sign in' on homepage")
+            time.sleep(3)
+        except Exception as e:
+            login_logger.warning(f"Sign in button not found or click failed: {e}")
+            # Пробуем сразу открыть login
+            session.driver.get("https://x.com/login")
+            time.sleep(3)
         
         current_url = session.driver.current_url
         page_title = session.driver.title
-        login_logger.info(f"x.com/login loaded. URL: {current_url}")
+        login_logger.info(f"Login page loaded. URL: {current_url}")
         login_logger.info(f"Page title: {page_title}")
         login_logger.debug(f"Page source length: {len(session.driver.page_source)}")
-        session._screenshot("login_page", "📸 Страница входа X")
-        
-        from selenium.webdriver.common.by import By
+        session._screenshot("login_page", "📸 Страница входа X (desktop)")
         
         report("🔍 Ищу кнопку Google...")
+        
+        # === ИЗМЕНЕНИЕ: WebDriverWait для кнопки Google ===
         google_btn = None
-        page_source = session.driver.page_source
+        wait = WebDriverWait(session.driver, 15)
         
-        try:
-            all_buttons = session.driver.find_elements(By.TAG_NAME, "button")
-            login_logger.info(f"Total buttons on page: {len(all_buttons)}")
-            for i, btn in enumerate(all_buttons[:10]):
-                btn_text = btn.text.strip()[:50] if btn.text else "[no text]"
-                login_logger.info(f"  Button {i}: text='{btn_text}'")
-        except Exception as e:
-            login_logger.warning(f"Could not list buttons: {e}")
-        
-        xpaths_to_try = [
-            "//*[contains(text(), 'Continue with Google')]",
-            "//*[contains(text(), 'Sign in with Google')]",
-            "//*[contains(text(), 'Google')]",
-            "//button[.//span[contains(text(), 'Google')]]",
-            "//a[contains(@href, 'google')]",
-            "//div[@role='button']//*[contains(text(), 'Google')]",
+        # Пробуем разные селекторы для desktop кнопки Google
+        selectors = [
+            # По тексту "Continue with Google"
+            (By.XPATH, "//span[contains(text(), 'Continue with Google')]"),
+            # По роли button с текстом Google
+            (By.XPATH, "//button//*[contains(text(), 'Continue with Google')]"),
+            # По data-testid (если есть)
+            (By.XPATH, "//div[@data-testid='google_sign_in_container']//button"),
+            # По aria-label
+            (By.XPATH, "//button[contains(@aria-label, 'Google')]"),
+            # Общий поиск по Google
+            (By.XPATH, "//*[contains(text(), 'Continue with Google') or contains(text(), 'Sign in with Google')]"),
         ]
         
-        for xpath in xpaths_to_try:
+        for by, selector in selectors:
             try:
-                google_btn = session.driver.find_element(By.XPATH, xpath)
-                login_logger.info(f"Found Google button with xpath: {xpath}")
-                report(f"✅ Найдена кнопка Google (xpath: {xpath[:40]}...)")
+                google_btn = wait.until(EC.element_to_be_clickable((by, selector)))
+                login_logger.info(f"Found Google button with: {by}={selector[:50]}...")
+                report(f"✅ Найдена кнопка Google")
                 break
             except Exception as e:
-                login_logger.debug(f"xpath failed: {xpath} — {e}")
+                login_logger.debug(f"Selector failed: {selector[:50]}... — {e}")
+        
+        if not google_btn:
+            # Последняя попытка — найти любую кнопку с логотипом Google
+            try:
+                google_btn = session.driver.find_element(By.XPATH, "//img[contains(@src, 'google') or contains(@alt, 'Google')]/ancestor::button")
+                login_logger.info("Found Google button via logo image")
+            except:
+                pass
         
         if not google_btn:
             login_logger.error("Google button NOT found on page!")
             login_logger.info(f"Current URL: {session.driver.current_url}")
             login_logger.info(f"Page title: {session.driver.title}")
-            login_logger.debug(f"Page source (first 3000 chars):\n{page_source[:3000]}")
+            login_logger.debug(f"Page source (first 3000 chars):\n{session.driver.page_source[:3000]}")
             report("❌ Кнопка Google НЕ найдена!")
             send_logs_on_error()
             return False, "Кнопка Google не найдена"
@@ -845,7 +869,7 @@ def google_login(email, password, bot=None, chat_id=None):
         google_btn.click()
         time.sleep(5)
         
-        session._screenshot("google_redirect", "📸 После клика")
+        session._screenshot("google_redirect", "📸 После клика Google")
         
         current_url = session.driver.current_url
         page_title = session.driver.title
@@ -853,21 +877,22 @@ def google_login(email, password, bot=None, chat_id=None):
         login_logger.info(f"After click URL: {current_url}")
         login_logger.info(f"After click title: {page_title}")
         
+        # === Работа с Google OAuth ===
         if "accounts.google.com" in current_url or "google.com" in current_url:
             report("✅ Перешли на Google!")
             login_logger.info("On Google auth page")
-            login_logger.info(f"Google page source length: {len(session.driver.page_source)}")
             
+            # Email
             try:
                 login_logger.info("Looking for email field...")
-                email_field = session.driver.find_element(By.CSS_SELECTOR, 'input[type="email"]')
-                login_logger.info(f"Email field found: {email_field.get_attribute('outerHTML')[:100]}")
+                email_field = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'input[type="email"]')))
+                login_logger.info(f"Email field found")
                 email_field.send_keys(email)
                 report("✅ Email введён")
                 login_logger.info("Email entered")
                 
-                next_btn = session.driver.find_element(By.XPATH, "//*[contains(text(), 'Next') or contains(@value, 'Next')]")
-                login_logger.info(f"Next button found: {next_btn.get_attribute('outerHTML')[:100]}")
+                # Кнопка Next после email
+                next_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'Next') or contains(@value, 'Next') or @id='identifierNext']")))
                 next_btn.click()
                 login_logger.info("Next clicked after email")
                 time.sleep(3)
@@ -876,17 +901,19 @@ def google_login(email, password, bot=None, chat_id=None):
                 login_logger.error(f"Email step failed: {e}")
                 login_logger.error(traceback.format_exc())
                 session._screenshot("email_error", "📸 Ошибка email")
+                send_logs_on_error()
+                return False, f"Ошибка ввода email: {e}"
             
+            # Password
             try:
-                time.sleep(3)
                 login_logger.info("Looking for password field...")
-                pass_field = session.driver.find_element(By.CSS_SELECTOR, 'input[type="password"]')
-                login_logger.info(f"Password field found: {pass_field.get_attribute('outerHTML')[:100]}")
+                pass_field = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'input[type="password"]')))
+                login_logger.info(f"Password field found")
                 pass_field.send_keys(password)
                 report("✅ Пароль введён")
                 login_logger.info("Password entered")
                 
-                next_btn = session.driver.find_element(By.XPATH, "//*[contains(text(), 'Next') or contains(@value, 'Next')]")
+                next_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'Next') or contains(@value, 'Next') or @id='passwordNext']")))
                 next_btn.click()
                 login_logger.info("Next clicked after password")
                 time.sleep(5)
@@ -895,12 +922,13 @@ def google_login(email, password, bot=None, chat_id=None):
                 login_logger.error(f"Password step failed: {e}")
                 login_logger.error(traceback.format_exc())
                 session._screenshot("password_error", "📸 Ошибка пароля")
+                send_logs_on_error()
+                return False, f"Ошибка ввода пароля: {e}"
             
+            # Проверка 2FA / капчи
             time.sleep(3)
             current_url = session.driver.current_url
             login_logger.info(f"After password URL: {current_url}")
-            login_logger.info(f"After password title: {session.driver.title}")
-            session._screenshot("google_after_login", "📸 После входа в Google")
             
             if "challenge" in current_url:
                 login_logger.warning(f"Google CHALLENGE detected! URL: {current_url}")
@@ -917,23 +945,25 @@ def google_login(email, password, bot=None, chat_id=None):
             login_logger.warning(f"Did NOT redirect to Google. URL: {current_url}")
             login_logger.debug(f"Page source: {session.driver.page_source[:2000]}")
         
+        # Ждём редирект обратно на X
         report("⏳ Жду редирект на X...")
         x_reached = False
-        for i in range(10):
+        for i in range(15):  # Увеличил до 30 сек
             time.sleep(2)
             url = session.driver.current_url
-            login_logger.info(f"Wait loop {i+1}/10: {url}")
-            if "x.com" in url and "login" not in url:
+            login_logger.info(f"Wait loop {i+1}/15: {url}")
+            if "x.com" in url and "login" not in url and "google" not in url:
                 report("✅ Вошли в X!")
                 login_logger.info("X reached!")
                 x_reached = True
                 break
         
         if not x_reached:
-            login_logger.warning("X not reached after 20 seconds")
+            login_logger.warning("X not reached after 30 seconds")
             login_logger.info(f"Final URL: {session.driver.current_url}")
             login_logger.info(f"Final title: {session.driver.title}")
         
+        # Проверка авторизации
         session.driver.get("https://x.com/home")
         time.sleep(5)
         current_url = session.driver.current_url
