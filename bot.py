@@ -18,12 +18,14 @@ if not BOT_TOKEN:
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
+# ============ ПРИНУДИТЕЛЬНО УДАЛЯЕМ WEBHOOK ============
 try:
+    # Удаляем webhook
     bot.remove_webhook()
     print("✅ Webhook удалён")
-except:
-    pass
-
+    time.sleep(1)
+except Exception as e:
+    print(f"⚠️ Ошибка удаления webhook: {e}")
 
 # ============ КОМАНДЫ ============
 
@@ -263,10 +265,27 @@ if __name__ == "__main__":
     print("🚀 Запуск бота...")
     print(f"📁 Директория: {agent.BASE_DIR}")
     
-    try:
-        bot.remove_webhook()
-        print("✅ Webhook удалён")
-    except:
-        pass
+    # Принудительно удаляем webhook несколько раз
+    for i in range(3):
+        try:
+            bot.remove_webhook()
+            print(f"✅ Webhook удалён (попытка {i+1})")
+            time.sleep(1)
+        except Exception as e:
+            print(f"⚠️ Попытка {i+1}: {e}")
     
-    bot.infinity_polling()
+    # Запускаем бота с обработкой ошибок
+    try:
+        print("🔄 Запуск polling...")
+        bot.infinity_polling()
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        time.sleep(5)
+        # Повторный запуск
+        try:
+            bot.remove_webhook()
+            time.sleep(2)
+            bot.infinity_polling()
+        except:
+            print("❌ Не удалось запустить бота")
+            sys.exit(1)
