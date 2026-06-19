@@ -350,7 +350,10 @@ class BrowserSession:
 
 # === RESEARCH X.COM ===
 
-def research_x_page(url="https://x.com/login", bot=None, chat_id=None):
+def research_x_page(url="https://x.com", bot=None, chat_id=None):
+    """
+    Исследует X.com (главная страница)
+    """
     try:
         import selenium
     except ImportError:
@@ -378,39 +381,83 @@ def research_x_page(url="https://x.com/login", bot=None, chat_id=None):
     
     try:
         session.create()
-        session.driver.get(url)
+        
+        # Открываем X.com
+        session.driver.get("https://x.com")
         time.sleep(5)
         
-        from selenium.webdriver.common.by import By
+        # Прокручиваем страницу для загрузки динамического контента
+        session.driver.execute_script("window.scrollTo(0, 300);")
+        time.sleep(3)
         
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        
+        # Ждём загрузки элементов
+        try:
+            WebDriverWait(session.driver, 10).until(
+                EC.presence_of_element_located((By.XPATH, "//button | //a | //input"))
+            )
+        except:
+            pass
+        
+        # === 1. КНОПКИ ===
         buttons = session.driver.find_elements(By.XPATH, "//button | //*[@role='button']")
         for i, btn in enumerate(buttons[:50]):
             try:
                 text = btn.text[:200] if btn.text else "без текста"
-                result["buttons"].append({
-                    "id": i+1,
-                    "text": text,
-                    "class": btn.get_attribute("class") or "",
-                    "aria_label": btn.get_attribute("aria-label") or ""
-                })
+                if text.strip():
+                    result["buttons"].append({
+                        "id": i+1,
+                        "text": text,
+                        "class": btn.get_attribute("class") or "",
+                        "aria_label": btn.get_attribute("aria-label") or ""
+                    })
             except:
                 pass
         
+        # Если кнопок нет, пробуем найти через JavaScript
+        if len(result["buttons"]) == 0:
+            try:
+                js_buttons = session.driver.execute_script("""
+                    var buttons = document.querySelectorAll('button, [role="button"]');
+                    var result = [];
+                    buttons.forEach(function(btn) {
+                        if (btn.innerText && btn.innerText.trim().length > 0) {
+                            result.push(btn.innerText.trim());
+                        }
+                    });
+                    return result;
+                """)
+                for i, text in enumerate(js_buttons[:20]):
+                    result["buttons"].append({
+                        "id": i+1,
+                        "text": text[:200],
+                        "class": "",
+                        "aria_label": ""
+                    })
+            except:
+                pass
+        
+        # === 2. ССЫЛКИ ===
         links = session.driver.find_elements(By.TAG_NAME, "a")
-        for i, link in enumerate(links[:50]):
+        for i, link in enumerate(links[:30]):
             try:
                 href = link.get_attribute("href") or ""
                 text = link.text[:200] if link.text else "без текста"
-                result["links"].append({
-                    "id": i+1,
-                    "text": text,
-                    "href": href
-                })
+                if text.strip() or href:
+                    result["links"].append({
+                        "id": i+1,
+                        "text": text,
+                        "href": href
+                    })
             except:
                 pass
         
+        # === 3. ПОЛЯ ВВОДА ===
         inputs = session.driver.find_elements(By.XPATH, "//input | //textarea")
-        for i, inp in enumerate(inputs[:30]):
+        for i, inp in enumerate(inputs[:20]):
             try:
                 result["inputs"].append({
                     "id": i+1,
@@ -421,14 +468,15 @@ def research_x_page(url="https://x.com/login", bot=None, chat_id=None):
             except:
                 pass
         
+        # === 4. ТЕКСТ ===
         try:
             text_elements = session.driver.find_elements(By.XPATH, "//*[text() and not(self::script) and not(self::style)]")
-            for elem in text_elements[:30]:
+            for elem in text_elements[:20]:
                 try:
                     text = elem.text.strip()
                     if text and len(text) > 3:
                         result["text_elements"].append({
-                            "text": text[:300],
+                            "text": text[:200],
                             "tag": elem.tag_name
                         })
                 except:
@@ -436,8 +484,10 @@ def research_x_page(url="https://x.com/login", bot=None, chat_id=None):
         except:
             pass
         
-        result["html"] = session.driver.page_source[:10000]
+        # === 5. HTML ===
+        result["html"] = session.driver.page_source[:15000]
         
+        # === 6. СКРИНШОТ ===
         screenshot_path = session._screenshot("research_x")
         if screenshot_path:
             result["screenshot"] = screenshot_path
