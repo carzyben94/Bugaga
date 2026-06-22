@@ -30,34 +30,28 @@ class AntiDetectBrowser:
     def install_chrome_local(self):
         """Установка Chrome в локальную папку (без root)"""
         try:
-            # Создаем папку для Chrome
             chrome_dir = os.path.join(os.getcwd(), "chrome_local")
             os.makedirs(chrome_dir, exist_ok=True)
             
             chrome_path = os.path.join(chrome_dir, "chrome")
             
-            # Проверяем, установлен ли уже
             if os.path.exists(chrome_path):
                 logger.info("✅ Chrome уже установлен локально")
                 return chrome_path
             
             logger.info("📦 Установка Chrome в локальную папку...")
             
-            # Скачиваем Chrome для Linux
             if sys.platform.startswith('linux'):
                 url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/120.0.6099.109/linux64/chrome-linux64.zip"
                 zip_path = os.path.join(chrome_dir, "chrome.zip")
                 
-                # Скачиваем
                 urllib.request.urlretrieve(url, zip_path)
                 
-                # Распаковываем
                 with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                     zip_ref.extractall(chrome_dir)
                 
                 os.remove(zip_path)
                 
-                # Ищем исполняемый файл
                 for root, dirs, files in os.walk(chrome_dir):
                     if "chrome" in files and not files[0].endswith(".zip"):
                         chrome_path = os.path.join(root, "chrome")
@@ -68,7 +62,6 @@ class AntiDetectBrowser:
                 return chrome_path
                 
             elif sys.platform.startswith('win'):
-                # Windows
                 url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/120.0.6099.109/win64/chrome-win64.zip"
                 zip_path = os.path.join(chrome_dir, "chrome.zip")
                 
@@ -123,7 +116,6 @@ class AntiDetectBrowser:
             
             os.remove(zip_path)
             
-            # Ищем chromedriver
             for root, dirs, files in os.walk(driver_dir):
                 if driver_name in files:
                     driver_path = os.path.join(root, driver_name)
@@ -141,7 +133,6 @@ class AntiDetectBrowser:
         """Настройка драйвера с локальными бинарниками"""
         options = Options()
         
-        # Устанавливаем Chrome локально
         chrome_path = self.install_chrome_local()
         if chrome_path:
             options.binary_location = chrome_path
@@ -149,7 +140,6 @@ class AntiDetectBrowser:
         if self.headless:
             options.add_argument('--headless=new')
         
-        # Анти-детект
         options.add_argument('--disable-blink-features=AutomationControlled')
         options.add_experimental_option('excludeSwitches', ['enable-automation'])
         options.add_experimental_option('useAutomationExtension', False)
@@ -161,7 +151,6 @@ class AntiDetectBrowser:
         options.add_argument('--disable-infobars')
         options.add_argument('--disable-notifications')
         
-        # User-Agent
         options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
         
         options.add_argument('--lang=en-US,en;q=0.9')
@@ -171,19 +160,16 @@ class AntiDetectBrowser:
             'profile.password_manager_enabled': False,
         })
         
-        # Устанавливаем ChromeDriver локально
         driver_path = self.install_chromedriver_local()
         
         if driver_path:
             service = Service(driver_path)
         else:
-            # fallback на webdriver-manager
             from webdriver_manager.chrome import ChromeDriverManager
             service = Service(ChromeDriverManager().install())
         
         self.driver = webdriver.Chrome(service=service, options=options)
         
-        # Скрываем webdriver
         self.driver.execute_script("""
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined
