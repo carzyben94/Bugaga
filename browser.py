@@ -6,8 +6,6 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
-from webdriver_manager.chrome import ChromeDriverManager
-from webdriver_manager.core.utils import ChromeType
 import os
 import time
 import random
@@ -113,25 +111,22 @@ class AntiDetectBrowser:
         options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
         options.add_argument('--window-size=1920,1080')
         
-        # === ИСПРАВЛЕННАЯ УСТАНОВКА CHROMEDRIVER ===
+        # === УСТАНОВКА CHROMEDRIVER ===
         logger.info("🚀 Загрузка ChromeDriver...")
         
+        driver_path = None
+        
+        # Способ 1: webdriver_manager
         try:
-            # Способ 1: webdriver_manager
             from webdriver_manager.chrome import ChromeDriverManager
             driver_path = ChromeDriverManager().install()
-            
-            if driver_path is None:
-                raise Exception("ChromeDriverManager вернул None")
-            
-            logger.info(f"✅ ChromeDriver: {driver_path}")
-            service = Service(driver_path)
-            
+            logger.info(f"✅ ChromeDriver через webdriver_manager: {driver_path}")
         except Exception as e:
             logger.warning(f"⚠️ webdriver_manager не сработал: {e}")
-            logger.info("🔄 Пробую альтернативный способ...")
-            
-            # Способ 2: Скачиваем вручную в /tmp
+        
+        # Способ 2: ручная установка в /tmp
+        if driver_path is None or not os.path.exists(driver_path):
+            logger.info("🔄 Пробую ручную установку ChromeDriver...")
             try:
                 driver_dir = os.path.join(self.install_dir, "chromedriver_local")
                 os.makedirs(driver_dir, exist_ok=True)
@@ -140,7 +135,14 @@ class AntiDetectBrowser:
                 driver_path = os.path.join(driver_dir, driver_name)
                 
                 if not os.path.exists(driver_path):
-                    url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/120.0.6099.109/linux64/chromedriver-linux64.zip"
+                    # Скачиваем ChromeDriver
+                    if sys.platform.startswith('linux'):
+                        url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/120.0.6099.109/linux64/chromedriver-linux64.zip"
+                    elif sys.platform.startswith('win'):
+                        url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/120.0.6099.109/win64/chromedriver-win64.zip"
+                    else:
+                        url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/120.0.6099.109/mac-arm64/chromedriver-mac-arm64.zip"
+                    
                     zip_path = os.path.join(driver_dir, "chromedriver.zip")
                     
                     logger.info("⬇️ Скачивание ChromeDriver...")
@@ -158,11 +160,14 @@ class AntiDetectBrowser:
                             break
                 
                 logger.info(f"✅ ChromeDriver готов: {driver_path}")
-                service = Service(driver_path)
                 
             except Exception as e2:
-                logger.error(f"❌ Ошибка установки ChromeDriver: {e2}")
-                raise Exception("Не удалось установить ChromeDriver")
+                logger.error(f"❌ Ошибка ручной установки: {e2}")
+        
+        if driver_path is None or not os.path.exists(driver_path):
+            raise Exception("Не удалось установить ChromeDriver")
+        
+        service = Service(driver_path)
         
         logger.info("🚀 Запуск Chrome...")
         self.driver = webdriver.Chrome(service=service, options=options)
