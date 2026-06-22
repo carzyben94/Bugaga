@@ -6,7 +6,6 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
-from webdriver_manager.chrome import ChromeDriverManager
 import os
 import time
 import random
@@ -19,6 +18,55 @@ import subprocess
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def get_chromedriver_path():
+    """Получение пути к ChromeDriver (обход бага)"""
+    try:
+        # Пробуем webdriver_manager
+        try:
+            from webdriver_manager.chrome import ChromeDriverManager
+            driver_path = ChromeDriverManager().install()
+            if driver_path and os.path.exists(driver_path):
+                logger.info(f"✅ ChromeDriver через webdriver_manager: {driver_path}")
+                return driver_path
+        except Exception as e:
+            logger.warning(f"⚠️ webdriver_manager не сработал: {e}")
+        
+        # Ручная установка
+        logger.info("🔄 Ручная установка ChromeDriver...")
+        
+        chrome_driver_dir = "/tmp/chromedriver"
+        os.makedirs(chrome_driver_dir, exist_ok=True)
+        
+        if sys.platform.startswith('linux'):
+            url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/120.0.6099.109/linux64/chromedriver-linux64.zip"
+        elif sys.platform.startswith('win'):
+            url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/120.0.6099.109/win64/chromedriver-win64.zip"
+        else:
+            url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/120.0.6099.109/mac-arm64/chromedriver-mac-arm64.zip"
+        
+        zip_path = os.path.join(chrome_driver_dir, "chromedriver.zip")
+        
+        logger.info("⬇️ Скачивание ChromeDriver...")
+        urllib.request.urlretrieve(url, zip_path)
+        
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(chrome_driver_dir)
+        os.remove(zip_path)
+        
+        driver_name = "chromedriver.exe" if sys.platform.startswith('win') else "chromedriver"
+        for root, dirs, files in os.walk(chrome_driver_dir):
+            if driver_name in files:
+                driver_path = os.path.join(root, driver_name)
+                os.chmod(driver_path, 0o755)
+                logger.info(f"✅ ChromeDriver готов: {driver_path}")
+                return driver_path
+        
+        raise Exception("ChromeDriver не найден")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка ChromeDriver: {e}")
+        raise
 
 class AntiDetectBrowser:
     def __init__(self, headless=False, screenshot_callback=None):
@@ -112,26 +160,10 @@ class AntiDetectBrowser:
         options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
         options.add_argument('--window-size=1920,1080')
         
-        # === ПРОСТОЙ СПОСОБ: webdriver_manager ===
+        # Используем функцию для получения ChromeDriver
         logger.info("🚀 Загрузка ChromeDriver...")
-        
-        try:
-            # Устанавливаем ChromeDriver
-            driver_path = ChromeDriverManager().install()
-            logger.info(f"✅ ChromeDriver установлен: {driver_path}")
-            
-            # Проверяем что файл существует
-            if not driver_path or not os.path.exists(driver_path):
-                raise Exception("ChromeDriver не найден")
-            
-            # Даем права на выполнение
-            os.chmod(driver_path, 0o755)
-            
-            service = Service(driver_path)
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка ChromeDriver: {e}")
-            raise Exception(f"Не удалось установить ChromeDriver: {e}")
+        driver_path = get_chromedriver_path()
+        service = Service(driver_path)
         
         logger.info("🚀 Запуск Chrome...")
         self.driver = webdriver.Chrome(service=service, options=options)
