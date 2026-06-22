@@ -51,8 +51,8 @@ def handle_install(message):
     msg = bot.reply_to(
         message,
         "🔄 **Установка Chrome в /tmp...**\n"
-        "⏳ Это может занять 2-3 минуты\n\n"
-        "📦 Скачивается ~100 MB\n"
+        "⏳ Это может занять 1-2 минуты\n\n"
+        "📦 Скачивается ~90 MB\n"
         "📍 Папка: /tmp/chrome_bot/\n\n"
         "⚠️ Root права НЕ требуются"
     )
@@ -156,7 +156,8 @@ def update_status(chat_id, message_id, text):
     except:
         pass
 
-# === КОМАНДА /CHECK ===
+# === ОСТАЛЬНЫЕ КОМАНДЫ ===
+
 @bot.message_handler(commands=['check'])
 def handle_check(message):
     """Проверка всех компонентов"""
@@ -207,8 +208,6 @@ def handle_check(message):
     
     bot.reply_to(message, result, parse_mode='Markdown')
 
-# === ОСТАЛЬНЫЕ КОМАНДЫ ===
-
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     bot.reply_to(
@@ -230,7 +229,7 @@ def send_help(message):
     bot.reply_to(
         message,
         "📋 **Команды:**\n\n"
-        "/install - Установить Chrome + Selenium в /tmp (2-3 минуты)\n"
+        "/install - Установить Chrome + Selenium в /tmp (1-2 минуты)\n"
         "/check - Проверить установку\n"
         "/login логин пароль - Войти в X.com\n"
         "/status - Статус сессии\n"
@@ -243,31 +242,20 @@ def send_help(message):
 def handle_login(message):
     user_id = message.from_user.id
     
-    # Проверяем бинарники
     check = check_installation()
     
     if not check['chrome']:
-        bot.reply_to(
-            message,
-            "❌ Chrome не установлен!\nИспользуйте /install для установки"
-        )
+        bot.reply_to(message, "❌ Chrome не установлен! Используйте /install")
         return
     
     if not check['chromedriver']:
-        bot.reply_to(
-            message,
-            "❌ ChromeDriver не установлен!\nИспользуйте /install для установки"
-        )
+        bot.reply_to(message, "❌ ChromeDriver не установлен! Используйте /install")
         return
     
-    # Проверяем Selenium
     try:
         import selenium
     except ImportError:
-        bot.reply_to(
-            message,
-            "❌ Selenium не установлен!\nИспользуйте /install для установки"
-        )
+        bot.reply_to(message, "❌ Selenium не установлен! Используйте /install")
         return
     
     args = message.text.split()[1:]
@@ -291,20 +279,12 @@ def handle_login(message):
             screenshot = browser.take_screenshot(f"login_{user_id}.png")
             
             with open(screenshot, 'rb') as photo:
-                bot.send_photo(
-                    user_id,
-                    photo,
-                    caption="✅ **Вход выполнен успешно!**"
-                )
+                bot.send_photo(user_id, photo, caption="✅ **Вход выполнен успешно!**")
             os.remove(screenshot)
         else:
             screenshot = browser.take_screenshot(f"error_{user_id}.png")
             with open(screenshot, 'rb') as photo:
-                bot.send_photo(
-                    user_id,
-                    photo,
-                    caption="❌ **Ошибка входа**\n\nПроверьте логин и пароль"
-                )
+                bot.send_photo(user_id, photo, caption="❌ **Ошибка входа**\n\nПроверьте логин и пароль")
             os.remove(screenshot)
             browser.close()
             
@@ -315,24 +295,18 @@ def handle_login(message):
         except:
             pass
 
+# === ОСТАЛЬНЫЕ КОМАНДЫ ===
 @bot.message_handler(commands=['screenshot'])
 def handle_screenshot(message):
     user_id = message.from_user.id
-    
     if user_id not in user_sessions:
         bot.reply_to(message, "❌ Нет активной сессии. Используйте /login")
         return
-    
     try:
         browser = user_sessions[user_id]
         screenshot = browser.take_screenshot(f"ss_{user_id}.png")
-        
         with open(screenshot, 'rb') as photo:
-            bot.send_photo(
-                user_id,
-                photo,
-                caption=f"📸 **Скриншот**\nURL: {browser.driver.current_url}"
-            )
+            bot.send_photo(user_id, photo, caption=f"📸 **Скриншот**\nURL: {browser.driver.current_url}")
         os.remove(screenshot)
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}")
@@ -340,18 +314,12 @@ def handle_screenshot(message):
 @bot.message_handler(commands=['status'])
 def handle_status(message):
     user_id = message.from_user.id
-    
     if user_id in user_sessions:
         try:
             browser = user_sessions[user_id]
             url = browser.driver.current_url
             status = "✅ Авторизован" if "home" in url else "⚠️ Не авторизован"
-            bot.reply_to(
-                message,
-                f"✅ **Сессия активна**\n"
-                f"🔗 URL: {url}\n"
-                f"📊 Статус: {status}"
-            )
+            bot.reply_to(message, f"✅ **Сессия активна**\n🔗 URL: {url}\n📊 Статус: {status}")
         except:
             bot.reply_to(message, "⚠️ Сессия неактивна. Используйте /login")
             del user_sessions[user_id]
@@ -361,7 +329,6 @@ def handle_status(message):
 @bot.message_handler(commands=['close'])
 def handle_close(message):
     user_id = message.from_user.id
-    
     if user_id in user_sessions:
         try:
             browser = user_sessions[user_id]
