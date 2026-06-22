@@ -18,7 +18,8 @@ def install_selenium():
 
 install_selenium()
 
-import telebotfrom flask import Flask, request
+import telebot
+from flask import Flask, request
 import os
 import time
 import requests
@@ -39,6 +40,7 @@ user_sessions = {}
 install_status = {}
 user_logs = {}
 
+# === ФУНКЦИИ ДЛЯ ЛОГИРОВАНИЯ ===
 def add_log(user_id, message, level="INFO"):
     if user_id not in user_logs:
         user_logs[user_id] = []
