@@ -49,213 +49,6 @@ def send_step_screenshot(bot_instance, chat_id, filename, caption):
         print(f"Ошибка отправки: {e}")
     return False
 
-# === КОМАНДА /TEST ===
-@bot.message_handler(commands=['test'])
-def handle_test(message):
-    """Просто открывает X.com и показывает скриншоты"""
-    user_id = message.from_user.id
-    chat_id = message.chat.id
-    
-    check = check_installation()
-    
-    if not check['chrome']:
-        bot.reply_to(message, "❌ Chrome не установлен! Используйте /install")
-        return
-    
-    if not check['chromedriver']:
-        bot.reply_to(message, "❌ ChromeDriver не установлен! Используйте /install")
-        return
-    
-    status_msg = bot.reply_to(
-        message,
-        "🔄 **Открываю X.com...**\n"
-        "📸 Сейчас сделаю скриншоты страницы\n"
-        "⏳ Это может занять 10-15 секунд"
-    )
-    
-    browser = AntiDetectBrowser(headless=True)
-    
-    try:
-        browser.setup_driver()
-        
-        # Шаг 1: Открываем X.com
-        bot.edit_message_text(
-            "🌐 Открываю x.com...",
-            chat_id=chat_id,
-            message_id=status_msg.message_id
-        )
-        browser.driver.get("https://x.com")
-        time.sleep(3)
-        browser.take_screenshot("test_xcom_home.png")
-        send_step_screenshot(bot, chat_id, "test_xcom_home.png", "🌐 Главная страница X.com")
-        
-        # Шаг 2: Скриншот прокрученной страницы
-        bot.edit_message_text(
-            "📸 Делаю скриншот страницы...",
-            chat_id=chat_id,
-            message_id=status_msg.message_id
-        )
-        browser.driver.execute_script("window.scrollTo(0, 300);")
-        time.sleep(1)
-        browser.take_screenshot("test_xcom_scroll.png")
-        send_step_screenshot(bot, chat_id, "test_xcom_scroll.png", "📸 Прокрученная страница")
-        
-        # Шаг 3: Ищем кнопки
-        bot.edit_message_text(
-            "🔍 Ищу кнопки на странице...",
-            chat_id=chat_id,
-            message_id=status_msg.message_id
-        )
-        
-        buttons = browser.driver.find_elements(By.TAG_NAME, "button")
-        button_info = "🔍 **Найденные кнопки:**\n\n"
-        button_texts = []
-        
-        for i, btn in enumerate(buttons[:20]):
-            try:
-                text = btn.text.strip()[:30] if btn.text else "без текста"
-                if text:
-                    button_texts.append(f"{i+1}. `{text}`")
-            except:
-                pass
-        
-        if button_texts:
-            button_info += "\n".join(button_texts)
-            if len(buttons) > 20:
-                button_info += f"\n\n... и еще {len(buttons) - 20} кнопок"
-        else:
-            button_info += "❌ Кнопки с текстом не найдены\n"
-            button_info += f"Всего найдено элементов button: {len(buttons)}"
-        
-        # Шаг 4: Скриншот с кнопками
-        browser.take_screenshot("test_xcom_buttons.png")
-        send_step_screenshot(bot, chat_id, "test_xcom_buttons.png", "🔘 Кнопки на странице")
-        
-        # Шаг 5: Информация
-        current_url = browser.driver.current_url
-        page_title = browser.driver.title
-        
-        browser.close()
-        
-        # Итоговое сообщение
-        bot.edit_message_text(
-            f"✅ **Тест завершен!**\n\n"
-            f"📌 **URL:** {current_url}\n"
-            f"📄 **Заголовок:** {page_title}\n\n"
-            f"📊 **Найдено кнопок:** {len(buttons)}\n\n"
-            f"{button_info}\n\n"
-            f"💡 Теперь можно использовать:\n"
-            f"/login - для входа в X.com\n"
-            f"/screenshot - для скриншота",
-            chat_id=chat_id,
-            message_id=status_msg.message_id,
-            parse_mode='Markdown'
-        )
-        
-    except Exception as e:
-        bot.edit_message_text(
-            f"❌ **Ошибка:** {str(e)[:200]}",
-            chat_id=chat_id,
-            message_id=status_msg.message_id
-        )
-        try:
-            browser.close()
-        except:
-            pass
-
-# === КОМАНДА /LOGIN ===
-@bot.message_handler(commands=['login'])
-def handle_login(message):
-    user_id = message.from_user.id
-    chat_id = message.chat.id
-    
-    check = check_installation()
-    
-    if not check['chrome']:
-        bot.reply_to(message, "❌ Chrome не установлен! Используйте /install")
-        return
-    
-    if not check['chromedriver']:
-        bot.reply_to(message, "❌ ChromeDriver не установлен! Используйте /install")
-        return
-    
-    try:
-        import selenium
-    except ImportError:
-        bot.reply_to(message, "❌ Selenium не установлен! Используйте /install")
-        return
-    
-    args = message.text.split()[1:]
-    if len(args) < 2:
-        bot.reply_to(message, "❌ Используйте: /login <логин> <пароль>")
-        return
-    
-    username = args[0]
-    password = args[1]
-    
-    status_msg = bot.reply_to(
-        message, 
-        "🔄 **Выполняется вход в X.com...**\n\n"
-        "📸 Будет отправлено несколько скриншотов шагов\n"
-        "⏳ Это может занять 15-30 секунд"
-    )
-    
-    def screenshot_callback(filename, caption):
-        send_step_screenshot(bot, chat_id, filename, caption)
-    
-    browser = AntiDetectBrowser(headless=True, screenshot_callback=screenshot_callback)
-    
-    try:
-        browser.setup_driver()
-        result = browser.login_twitter(username, password)
-        
-        if result:
-            user_sessions[user_id] = browser
-            
-            final_screenshot = browser.take_screenshot(f"final_{user_id}.png")
-            if final_screenshot and os.path.exists(final_screenshot):
-                with open(final_screenshot, 'rb') as photo:
-                    bot.send_photo(
-                        chat_id,
-                        photo,
-                        caption="✅ **Вход выполнен успешно!**\n\nМожете использовать /screenshot для новых скриншотов"
-                    )
-                os.remove(final_screenshot)
-            
-            bot.edit_message_text(
-                "✅ **Вход выполнен успешно!**",
-                chat_id=chat_id,
-                message_id=status_msg.message_id
-            )
-        else:
-            error_screenshot = browser.take_screenshot(f"error_{user_id}.png")
-            if error_screenshot and os.path.exists(error_screenshot):
-                with open(error_screenshot, 'rb') as photo:
-                    bot.send_photo(
-                        chat_id,
-                        photo,
-                        caption="❌ **Ошибка входа**\n\nПроверьте логин и пароль"
-                    )
-                os.remove(error_screenshot)
-            
-            bot.edit_message_text(
-                "❌ **Ошибка входа**\n\nПроверьте логин и пароль",
-                chat_id=chat_id,
-                message_id=status_msg.message_id
-            )
-            browser.close()
-            
-    except Exception as e:
-        bot.edit_message_text(
-            f"❌ **Ошибка:** {str(e)[:200]}",
-            chat_id=chat_id,
-            message_id=status_msg.message_id
-        )
-        try:
-            browser.close()
-        except:
-            pass
-
 # === КОМАНДА /INSTALL ===
 @bot.message_handler(commands=['install'])
 def handle_install(message):
@@ -333,8 +126,8 @@ def run_installation(user_id, chat_id, message_id):
                 f"📦 Selenium: {selenium_version}\n\n"
                 "Теперь можно использовать:\n"
                 "/test - Посмотреть X.com\n"
-                "/login логин пароль - Войти в X.com\n"
-                "/screenshot - Скриншот"
+                "/login логин пароль - Обычный вход\n"
+                "/logingoogle email пароль - Вход через Google"
             )
             install_status[user_id] = {'running': False, 'completed': True}
         else:
@@ -404,7 +197,7 @@ def handle_check(message):
             import selenium
             result += "✅ **ВСЕ ГОТОВО К РАБОТЕ!**\n"
             result += "Используйте /test для просмотра X.com\n"
-            result += "Используйте /login для входа"
+            result += "Используйте /login или /logingoogle для входа"
         except:
             result += "⚠️ Selenium не установлен\n"
             result += "   /install для установки"
@@ -412,6 +205,300 @@ def handle_check(message):
         result += "⚠️ Нужно выполнить /install"
     
     bot.reply_to(message, result, parse_mode='Markdown')
+
+# === КОМАНДА /TEST ===
+@bot.message_handler(commands=['test'])
+def handle_test(message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    
+    check = check_installation()
+    
+    if not check['chrome']:
+        bot.reply_to(message, "❌ Chrome не установлен! Используйте /install")
+        return
+    
+    if not check['chromedriver']:
+        bot.reply_to(message, "❌ ChromeDriver не установлен! Используйте /install")
+        return
+    
+    status_msg = bot.reply_to(
+        message,
+        "🔄 **Открываю X.com...**\n"
+        "📸 Сейчас сделаю скриншоты страницы\n"
+        "⏳ Это может занять 10-15 секунд"
+    )
+    
+    browser = AntiDetectBrowser(headless=True)
+    
+    try:
+        browser.setup_driver()
+        
+        bot.edit_message_text(
+            "🌐 Открываю x.com...",
+            chat_id=chat_id,
+            message_id=status_msg.message_id
+        )
+        browser.driver.get("https://x.com")
+        time.sleep(3)
+        browser.take_screenshot("test_xcom_home.png")
+        send_step_screenshot(bot, chat_id, "test_xcom_home.png", "🌐 Главная страница X.com")
+        
+        bot.edit_message_text(
+            "📸 Делаю скриншот страницы...",
+            chat_id=chat_id,
+            message_id=status_msg.message_id
+        )
+        browser.driver.execute_script("window.scrollTo(0, 300);")
+        time.sleep(1)
+        browser.take_screenshot("test_xcom_scroll.png")
+        send_step_screenshot(bot, chat_id, "test_xcom_scroll.png", "📸 Прокрученная страница")
+        
+        bot.edit_message_text(
+            "🔍 Ищу кнопки на странице...",
+            chat_id=chat_id,
+            message_id=status_msg.message_id
+        )
+        
+        buttons = browser.driver.find_elements(By.TAG_NAME, "button")
+        button_info = "🔍 **Найденные кнопки:**\n\n"
+        button_texts = []
+        
+        for i, btn in enumerate(buttons[:20]):
+            try:
+                text = btn.text.strip()[:30] if btn.text else "без текста"
+                if text:
+                    button_texts.append(f"{i+1}. `{text}`")
+            except:
+                pass
+        
+        if button_texts:
+            button_info += "\n".join(button_texts)
+            if len(buttons) > 20:
+                button_info += f"\n\n... и еще {len(buttons) - 20} кнопок"
+        else:
+            button_info += "❌ Кнопки с текстом не найдены\n"
+            button_info += f"Всего найдено элементов button: {len(buttons)}"
+        
+        browser.take_screenshot("test_xcom_buttons.png")
+        send_step_screenshot(bot, chat_id, "test_xcom_buttons.png", "🔘 Кнопки на странице")
+        
+        current_url = browser.driver.current_url
+        page_title = browser.driver.title
+        
+        browser.close()
+        
+        bot.edit_message_text(
+            f"✅ **Тест завершен!**\n\n"
+            f"📌 **URL:** {current_url}\n"
+            f"📄 **Заголовок:** {page_title}\n\n"
+            f"📊 **Найдено кнопок:** {len(buttons)}\n\n"
+            f"{button_info}\n\n"
+            f"💡 Теперь можно использовать:\n"
+            f"/login - обычный вход\n"
+            f"/logingoogle - вход через Google",
+            chat_id=chat_id,
+            message_id=status_msg.message_id,
+            parse_mode='Markdown'
+        )
+        
+    except Exception as e:
+        bot.edit_message_text(
+            f"❌ **Ошибка:** {str(e)[:200]}",
+            chat_id=chat_id,
+            message_id=status_msg.message_id
+        )
+        try:
+            browser.close()
+        except:
+            pass
+
+# === КОМАНДА /LOGINGOOGLE ===
+@bot.message_handler(commands=['logingoogle'])
+def handle_login_google(message):
+    """Вход в X.com через Google"""
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    
+    check = check_installation()
+    
+    if not check['chrome']:
+        bot.reply_to(message, "❌ Chrome не установлен! Используйте /install")
+        return
+    
+    if not check['chromedriver']:
+        bot.reply_to(message, "❌ ChromeDriver не установлен! Используйте /install")
+        return
+    
+    try:
+        import selenium
+    except ImportError:
+        bot.reply_to(message, "❌ Selenium не установлен! Используйте /install")
+        return
+    
+    args = message.text.split()[1:]
+    if len(args) < 2:
+        bot.reply_to(message, "❌ Используйте: /logingoogle <email> <пароль_google>")
+        return
+    
+    email = args[0]
+    password = args[1]
+    
+    status_msg = bot.reply_to(
+        message,
+        "🔄 **Вход через Google...**\n\n"
+        "📸 Будет отправлено несколько скриншотов шагов\n"
+        "⏳ Это может занять 20-40 секунд"
+    )
+    
+    def screenshot_callback(filename, caption):
+        send_step_screenshot(bot, chat_id, filename, caption)
+    
+    browser = AntiDetectBrowser(headless=True, screenshot_callback=screenshot_callback)
+    
+    try:
+        browser.setup_driver()
+        result = browser.login_twitter_with_google(email, password)
+        
+        if result:
+            user_sessions[user_id] = browser
+            
+            final_screenshot = browser.take_screenshot(f"final_{user_id}.png")
+            if final_screenshot and os.path.exists(final_screenshot):
+                with open(final_screenshot, 'rb') as photo:
+                    bot.send_photo(
+                        chat_id,
+                        photo,
+                        caption="✅ **Вход через Google выполнен успешно!**\n\nМожете использовать /screenshot для новых скриншотов"
+                    )
+                os.remove(final_screenshot)
+            
+            bot.edit_message_text(
+                "✅ **Вход через Google выполнен успешно!**",
+                chat_id=chat_id,
+                message_id=status_msg.message_id
+            )
+        else:
+            error_screenshot = browser.take_screenshot(f"error_{user_id}.png")
+            if error_screenshot and os.path.exists(error_screenshot):
+                with open(error_screenshot, 'rb') as photo:
+                    bot.send_photo(
+                        chat_id,
+                        photo,
+                        caption="❌ **Ошибка входа через Google**\n\nПроверьте email и пароль"
+                    )
+                os.remove(error_screenshot)
+            
+            bot.edit_message_text(
+                "❌ **Ошибка входа через Google**\n\nПроверьте email и пароль",
+                chat_id=chat_id,
+                message_id=status_msg.message_id
+            )
+            browser.close()
+            
+    except Exception as e:
+        bot.edit_message_text(
+            f"❌ **Ошибка:** {str(e)[:200]}",
+            chat_id=chat_id,
+            message_id=status_msg.message_id
+        )
+        try:
+            browser.close()
+        except:
+            pass
+
+# === КОМАНДА /LOGIN ===
+@bot.message_handler(commands=['login'])
+def handle_login(message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    
+    check = check_installation()
+    
+    if not check['chrome']:
+        bot.reply_to(message, "❌ Chrome не установлен! Используйте /install")
+        return
+    
+    if not check['chromedriver']:
+        bot.reply_to(message, "❌ ChromeDriver не установлен! Используйте /install")
+        return
+    
+    try:
+        import selenium
+    except ImportError:
+        bot.reply_to(message, "❌ Selenium не установлен! Используйте /install")
+        return
+    
+    args = message.text.split()[1:]
+    if len(args) < 2:
+        bot.reply_to(message, "❌ Используйте: /login <логин> <пароль>")
+        return
+    
+    username = args[0]
+    password = args[1]
+    
+    status_msg = bot.reply_to(
+        message, 
+        "🔄 **Выполняется вход в X.com...**\n\n"
+        "📸 Будет отправлено несколько скриншотов шагов\n"
+        "⏳ Это может занять 15-30 секунд"
+    )
+    
+    def screenshot_callback(filename, caption):
+        send_step_screenshot(bot, chat_id, filename, caption)
+    
+    browser = AntiDetectBrowser(headless=True, screenshot_callback=screenshot_callback)
+    
+    try:
+        browser.setup_driver()
+        result = browser.login_twitter(username, password)
+        
+        if result:
+            user_sessions[user_id] = browser
+            
+            final_screenshot = browser.take_screenshot(f"final_{user_id}.png")
+            if final_screenshot and os.path.exists(final_screenshot):
+                with open(final_screenshot, 'rb') as photo:
+                    bot.send_photo(
+                        chat_id,
+                        photo,
+                        caption="✅ **Вход выполнен успешно!**"
+                    )
+                os.remove(final_screenshot)
+            
+            bot.edit_message_text(
+                "✅ **Вход выполнен успешно!**",
+                chat_id=chat_id,
+                message_id=status_msg.message_id
+            )
+        else:
+            error_screenshot = browser.take_screenshot(f"error_{user_id}.png")
+            if error_screenshot and os.path.exists(error_screenshot):
+                with open(error_screenshot, 'rb') as photo:
+                    bot.send_photo(
+                        chat_id,
+                        photo,
+                        caption="❌ **Ошибка входа**\n\nПроверьте логин и пароль"
+                    )
+                os.remove(error_screenshot)
+            
+            bot.edit_message_text(
+                "❌ **Ошибка входа**\n\nПроверьте логин и пароль",
+                chat_id=chat_id,
+                message_id=status_msg.message_id
+            )
+            browser.close()
+            
+    except Exception as e:
+        bot.edit_message_text(
+            f"❌ **Ошибка:** {str(e)[:200]}",
+            chat_id=chat_id,
+            message_id=status_msg.message_id
+        )
+        try:
+            browser.close()
+        except:
+            pass
 
 # === КОМАНДА /START ===
 @bot.message_handler(commands=['start'])
@@ -424,7 +511,8 @@ def send_welcome(message):
         "/install - Установить Chrome + Selenium в /tmp\n"
         "/check - Проверить установку\n"
         "/test - Открыть X.com и показать скриншоты\n"
-        "/login логин пароль - Войти в X.com\n"
+        "/login логин пароль - Обычный вход в X.com\n"
+        "/logingoogle email пароль - Вход через Google\n"
         "/status - Статус сессии\n"
         "/screenshot - Скриншот\n"
         "/close - Закрыть браузер\n"
@@ -436,15 +524,15 @@ def send_help(message):
     bot.reply_to(
         message,
         "📋 **Команды:**\n\n"
-        "/install - Установить Chrome + Selenium в /tmp (1-2 минуты)\n"
+        "/install - Установка Chrome (1-2 минуты)\n"
         "/check - Проверить установку\n"
-        "/test - Открыть X.com и показать скриншоты\n"
-        "/login логин пароль - Войти в X.com (с скриншотами)\n"
+        "/test - Посмотреть X.com\n"
+        "/login логин пароль - Обычный вход\n"
+        "/logingoogle email пароль - Вход через Google\n"
         "/status - Статус сессии\n"
         "/screenshot - Скриншот\n"
         "/close - Закрыть браузер\n\n"
-        "📂 Chrome: /tmp/chrome_bot/\n"
-        "📸 Скриншоты отправляются в чат"
+        "📸 Все действия сопровождаются скриншотами"
     )
 
 # === КОМАНДА /SCREENSHOT ===
