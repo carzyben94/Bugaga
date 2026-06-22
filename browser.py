@@ -112,22 +112,25 @@ class AntiDetectBrowser:
         options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
         options.add_argument('--window-size=1920,1080')
         
-        # === ТОЛЬКО webdriver_manager ===
-        logger.info("🚀 Загрузка ChromeDriver через webdriver_manager...")
+        # === ПРОСТОЙ СПОСОБ: webdriver_manager ===
+        logger.info("🚀 Загрузка ChromeDriver...")
         
         try:
-            # webdriver_manager сам скачает в ~/.cache/selenium
+            # Устанавливаем ChromeDriver
             driver_path = ChromeDriverManager().install()
-            logger.info(f"✅ ChromeDriver: {driver_path}")
+            logger.info(f"✅ ChromeDriver установлен: {driver_path}")
             
-            if driver_path and os.path.exists(driver_path):
-                os.chmod(driver_path, 0o755)
-                service = Service(driver_path)
-            else:
+            # Проверяем что файл существует
+            if not driver_path or not os.path.exists(driver_path):
                 raise Exception("ChromeDriver не найден")
-                
+            
+            # Даем права на выполнение
+            os.chmod(driver_path, 0o755)
+            
+            service = Service(driver_path)
+            
         except Exception as e:
-            logger.error(f"❌ Ошибка: {e}")
+            logger.error(f"❌ Ошибка ChromeDriver: {e}")
             raise Exception(f"Не удалось установить ChromeDriver: {e}")
         
         logger.info("🚀 Запуск Chrome...")
@@ -348,38 +351,7 @@ def check_installation():
                 chrome_found = os.path.join(root, "chrome")
                 break
     
-    # Проверяем Selenium
-    selenium_ok = False
-    try:
-        import selenium
-        selenium_ok = True
-    except:
-        pass
-    
-    # Проверяем webdriver-manager
-    wdm_ok = False
-    try:
-        import webdriver_manager
-        wdm_ok = True
-    except:
-        pass
-    
-    # Проверяем ChromeDriver
-    driver_ok = False
-    driver_path = None
-    try:
-        from webdriver_manager.chrome import ChromeDriverManager
-        driver_path = ChromeDriverManager().install()
-        if driver_path and os.path.exists(driver_path):
-            driver_ok = True
-    except:
-        pass
-    
     return {
         'chrome': chrome_found is not None,
-        'chrome_path': chrome_found,
-        'selenium': selenium_ok,
-        'webdriver_manager': wdm_ok,
-        'chromedriver': driver_ok,
-        'driver_path': driver_path
+        'chrome_path': chrome_found
     }
