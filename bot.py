@@ -76,13 +76,19 @@ def handle_login_google(message):
         bot.reply_to(message, "❌ Chrome не установлен! Используйте /install")
         return
     
-    args = message.text.split()[1:]
+    # Проверяем текст сообщения
+    text = message.text
+    if not text:
+        bot.reply_to(message, "❌ Команда должна содержать email и пароль")
+        return
+    
+    args = text.split()[1:]  # разбиваем на слова, пропускаем команду
     if len(args) < 2:
         bot.reply_to(message, "❌ Используйте: /logingoogle <email> <пароль>")
         return
     
     email = args[0]
-    password = args[1]
+    password = ' '.join(args[1:])  # пароль может содержать пробелы
     
     msg = bot.reply_to(message, "🔄 Вход через Google... 30-50 секунд")
     
@@ -142,13 +148,19 @@ def handle_login(message):
         bot.reply_to(message, "❌ Chrome не установлен! Используйте /install")
         return
     
-    args = message.text.split()[1:]
+    # Проверяем текст сообщения
+    text = message.text
+    if not text:
+        bot.reply_to(message, "❌ Команда должна содержать логин и пароль")
+        return
+    
+    args = text.split()[1:]
     if len(args) < 2:
         bot.reply_to(message, "❌ Используйте: /login <логин> <пароль>")
         return
     
     username = args[0]
-    password = args[1]
+    password = ' '.join(args[1:])
     
     msg = bot.reply_to(message, "🔄 Выполняется вход...")
     
