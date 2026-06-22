@@ -5,6 +5,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.keys import Keys
 import os
 import time
 import random
@@ -313,81 +314,85 @@ class AntiDetectBrowser:
             self.log(f"❌ Ошибка клика: {e}", "ERROR")
             return False
     
-    def wait_and_type(self, element, text, max_attempts=3):
-        """Ожидание и ввод текста с повторными попытками"""
-        for attempt in range(max_attempts):
-            try:
-                self.log(f"⌨️ Попытка {attempt+1}: ввод текста", "DEBUG")
-                
-                # Ждем пока элемент станет кликабельным
-                WebDriverWait(self.driver, 10).until(
-                    EC.element_to_be_clickable(element)
-                )
-                
-                # Прокручиваем к элементу
-                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
-                self.random_delay(0.3, 0.5)
-                
-                # Кликаем
-                actions = ActionChains(self.driver)
-                actions.move_to_element(element)
-                actions.click()
-                actions.perform()
-                self.random_delay(0.3, 0.5)
-                
-                # Очищаем
-                element.clear()
-                self.random_delay(0.2, 0.3)
-                
-                # Вводим посимвольно
-                for char in text:
-                    element.send_keys(char)
-                    time.sleep(random.uniform(0.03, 0.08))
-                
-                self.log(f"✅ Текст введен", "SUCCESS")
-                return True
-                
-            except Exception as e:
-                self.log(f"⚠️ Попытка {attempt+1} не удалась: {e}", "WARNING")
-                self.random_delay(1, 2)
-                
-                if attempt == max_attempts - 1:
-                    self.log(f"❌ Все попытки ввода текста не удались", "ERROR")
-                    return False
-                
-                # Пробуем найти элемент заново
-                try:
-                    element = self.driver.find_element(By.ID, "password")
-                    if not element:
-                        element = self.driver.find_element(By.NAME, "password")
-                    if not element:
-                        element = self.driver.find_element(By.XPATH, "//input[@type='password']")
-                except:
-                    pass
-        
-        return False
-    
-    def safe_find_element(self, by, selector, timeout=10):
-        """Безопасный поиск элемента с ожиданием кликабельности"""
+    def type_with_actions(self, element, text):
+        """Ввод текста через ActionChains (более надежно)"""
         try:
-            self.log(f"🔍 Поиск элемента: {by}={selector}", "DEBUG")
+            self.log(f"⌨️ Ввод через ActionChains", "DEBUG")
             
-            # Сначала ищем сам элемент
-            element = WebDriverWait(self.driver, timeout).until(
-                EC.presence_of_element_located((by, selector))
-            )
+            # Кликаем по элементу
+            actions = ActionChains(self.driver)
+            actions.move_to_element(element)
+            actions.click()
+            actions.perform()
+            self.random_delay(0.3, 0.5)
             
-            # Затем ждем пока станет кликабельным
-            WebDriverWait(self.driver, timeout).until(
-                EC.element_to_be_clickable((by, selector))
-            )
+            # Очищаем (Ctrl+A + Delete)
+            actions = ActionChains(self.driver)
+            actions.key_down(Keys.CONTROL)
+            actions.send_keys('a')
+            actions.key_up(Keys.CONTROL)
+            actions.send_keys(Keys.DELETE)
+            actions.perform()
+            self.random_delay(0.3, 0.5)
             
-            self.log(f"✅ Элемент найден и кликабелен: {selector}", "SUCCESS")
-            return element
+            # Вводим текст посимвольно через ActionChains
+            for char in text:
+                actions = ActionChains(self.driver)
+                actions.send_keys(char)
+                actions.perform()
+                time.sleep(random.uniform(0.03, 0.08))
+            
+            self.log("✅ Текст введен через ActionChains", "SUCCESS")
+            return True
             
         except Exception as e:
-            self.log(f"❌ Элемент не найден: {selector} ({e})", "WARNING")
-            return None
+            self.log(f"❌ Ошибка ввода через ActionChains: {e}", "ERROR")
+            return False
+    
+    def safe_find_password_field(self, timeout=30):
+        """Найти поле пароля с большим терпением"""
+        selectors = [
+            (By.NAME, "password"),
+            (By.ID, "password"),
+            (By.XPATH, "//input[@type='password']"),
+            (By.XPATH, "//input[@name='password']"),
+            (By.XPATH, "//div[@class='pwd']//input"),
+            (By.CSS_SELECTOR, "input[type='password']"),
+            (By.XPATH, "//div[@data-brand='accounts.google.com']//input[@type='password']"),
+            (By.CSS_SELECTOR, "div[class*='password'] input"),
+        ]
+        
+        for attempt in range(5):
+            self.log(f"🔍 Попытка {attempt+1} поиска поля пароля...", "DEBUG")
+            
+            for by, selector in selectors:
+                try:
+                    self.log(f"   Пробую: {by}={selector}", "DEBUG")
+                    element = WebDriverWait(self.driver, 5).until(
+                        EC.presence_of_element_located((by, selector))
+                    )
+                    if element and element.is_displayed():
+                        # Ждем кликабельности
+                        try:
+                            WebDriverWait(self.driver, 3).until(
+                                EC.element_to_be_clickable((by, selector))
+                            )
+                            self.log(f"✅ Поле пароля найдено: {selector}", "SUCCESS")
+                            return element
+                        except:
+                            self.log(f"   Элемент есть, но не кликабелен", "DEBUG")
+                            continue
+                except Exception as e:
+                    continue
+            
+            self.random_delay(2, 3)
+            
+            # Если не нашли, делаем скриншот для отладки
+            if attempt == 2:
+                self.take_step_screenshot("password_field_search")
+        
+        self.log("❌ Поле пароля не найдено", "ERROR")
+        return None
     
     def get_page_info(self):
         try:
@@ -412,7 +417,7 @@ class AntiDetectBrowser:
         self.log("🌐 ШАГ 1: Открытие Google", "STEP")
         try:
             self.driver.get("https://accounts.google.com/")
-            self.random_delay(2, 3)
+            self.random_delay(3, 5)
             self.log("✅ Google открыт", "SUCCESS")
             self.take_step_screenshot("google_login_page")
         except Exception as e:
@@ -421,11 +426,23 @@ class AntiDetectBrowser:
         
         # ===== ШАГ 2: Ввод email =====
         self.log("🔍 ШАГ 2: Ввод email", "STEP")
-        email_field = self.safe_find_element(By.ID, "identifierId", 15)
-        if not email_field:
-            email_field = self.safe_find_element(By.NAME, "identifier", 10)
-        if not email_field:
-            email_field = self.safe_find_element(By.XPATH, "//input[@type='email']", 10)
+        email_field = None
+        
+        for attempt in range(3):
+            try:
+                email_field = WebDriverWait(self.driver, 10).until(
+                    EC.element_to_be_clickable((By.ID, "identifierId"))
+                )
+                break
+            except:
+                try:
+                    email_field = WebDriverWait(self.driver, 5).until(
+                        EC.element_to_be_clickable((By.NAME, "identifier"))
+                    )
+                    break
+                except:
+                    self.log(f"⏳ Ожидание поля email... попытка {attempt+1}", "DEBUG")
+                    self.random_delay(1, 2)
         
         if email_field:
             self.human_type(email_field, email)
@@ -439,11 +456,29 @@ class AntiDetectBrowser:
         
         # ===== ШАГ 3: Кнопка "Далее" =====
         self.log("🔍 ШАГ 3: Кнопка 'Далее' в Google", "STEP")
-        next_btn = self.safe_find_element(By.XPATH, "//span[text()='Далее']", 10)
-        if not next_btn:
-            next_btn = self.safe_find_element(By.XPATH, "//span[text()='Next']", 10)
-        if not next_btn:
-            next_btn = self.safe_find_element(By.ID, "identifierNext", 10)
+        next_btn = None
+        
+        for attempt in range(3):
+            try:
+                next_btn = WebDriverWait(self.driver, 5).until(
+                    EC.element_to_be_clickable((By.XPATH, "//span[text()='Далее']"))
+                )
+                break
+            except:
+                try:
+                    next_btn = WebDriverWait(self.driver, 5).until(
+                        EC.element_to_be_clickable((By.XPATH, "//span[text()='Next']"))
+                    )
+                    break
+                except:
+                    try:
+                        next_btn = WebDriverWait(self.driver, 5).until(
+                            EC.element_to_be_clickable((By.ID, "identifierNext"))
+                        )
+                        break
+                    except:
+                        self.log(f"⏳ Ожидание кнопки 'Далее'... попытка {attempt+1}", "DEBUG")
+                        self.random_delay(1, 2)
         
         if next_btn:
             self.human_click(next_btn)
@@ -453,57 +488,40 @@ class AntiDetectBrowser:
             self.take_step_screenshot("google_next_not_found")
             return False
         
-        self.random_delay(2, 4)
+        self.random_delay(3, 5)
         
-        # ===== ШАГ 4: Ввод пароля (с повторными попытками) =====
+        # ===== ШАГ 4: Ввод пароля (улучшенный) =====
         self.log("🔍 ШАГ 4: Ввод пароля в Google", "STEP")
         
-        # Ищем поле пароля с ожиданием
-        password_field = None
-        for attempt in range(5):
-            try:
-                self.log(f"⏳ Попытка {attempt+1} поиска поля пароля...", "DEBUG")
-                
-                # Пробуем разные селекторы
-                selectors = [
-                    (By.NAME, "password"),
-                    (By.ID, "password"),
-                    (By.XPATH, "//input[@type='password']"),
-                    (By.XPATH, "//input[@name='password']"),
-                    (By.CSS_SELECTOR, "input[type='password']")
-                ]
-                
-                for by, selector in selectors:
-                    try:
-                        element = WebDriverWait(self.driver, 5).until(
-                            EC.element_to_be_clickable((by, selector))
-                        )
-                        if element and element.is_displayed():
-                            password_field = element
-                            self.log(f"✅ Найдено поле пароля: {selector}", "SUCCESS")
-                            break
-                    except:
-                        continue
-                
-                if password_field:
-                    break
-                
-                self.random_delay(1, 2)
-                
-            except Exception as e:
-                self.log(f"⚠️ Попытка {attempt+1} не удалась: {e}", "WARNING")
-                self.random_delay(1, 2)
+        # Ждем появления поля пароля
+        self.log("⏳ Ожидание появления поля пароля...", "INFO")
+        self.random_delay(2, 4)
+        
+        # Ищем поле пароля
+        password_field = self.safe_find_password_field()
         
         if password_field:
-            # Используем специальный метод для ввода пароля
-            self.log("⌨️ Ввод пароля...", "INFO")
-            success = self.wait_and_type(password_field, password, max_attempts=3)
+            self.log("✅ Поле пароля найдено, пробую ввести...", "SUCCESS")
+            
+            # Пробуем ввести через ActionChains
+            success = self.type_with_actions(password_field, password)
+            
             if success:
                 self.take_step_screenshot("google_password_entered")
             else:
-                self.log("❌ Не удалось ввести пароль", "ERROR")
-                self.take_step_screenshot("google_password_error")
-                return False
+                # Пробуем обычный ввод
+                try:
+                    self.log("🔄 Пробую обычный ввод...", "DEBUG")
+                    password_field.click()
+                    self.random_delay(0.5, 1)
+                    password_field.clear()
+                    password_field.send_keys(password)
+                    self.log("✅ Пароль введен (обычный способ)", "SUCCESS")
+                    self.take_step_screenshot("google_password_entered")
+                except Exception as e:
+                    self.log(f"❌ Ошибка ввода пароля: {e}", "ERROR")
+                    self.take_step_screenshot("google_password_error")
+                    return False
         else:
             self.log("❌ Поле пароля не найдено", "ERROR")
             self.take_step_screenshot("google_password_not_found")
@@ -513,15 +531,41 @@ class AntiDetectBrowser:
         
         # ===== ШАГ 5: Финальная кнопка входа =====
         self.log("🔍 ШАГ 5: Финальный вход в Google", "STEP")
-        login_btn = self.safe_find_element(By.XPATH, "//span[text()='Далее']", 10)
-        if not login_btn:
-            login_btn = self.safe_find_element(By.XPATH, "//span[text()='Next']", 10)
-        if not login_btn:
-            login_btn = self.safe_find_element(By.ID, "passwordNext", 10)
-        if not login_btn:
-            login_btn = self.safe_find_element(By.XPATH, "//span[text()='Войти']", 10)
-        if not login_btn:
-            login_btn = self.safe_find_element(By.XPATH, "//button[@type='submit']", 10)
+        login_btn = None
+        
+        for attempt in range(3):
+            try:
+                login_btn = WebDriverWait(self.driver, 5).until(
+                    EC.element_to_be_clickable((By.XPATH, "//span[text()='Далее']"))
+                )
+                break
+            except:
+                try:
+                    login_btn = WebDriverWait(self.driver, 5).until(
+                        EC.element_to_be_clickable((By.XPATH, "//span[text()='Next']"))
+                    )
+                    break
+                except:
+                    try:
+                        login_btn = WebDriverWait(self.driver, 5).until(
+                            EC.element_to_be_clickable((By.ID, "passwordNext"))
+                        )
+                        break
+                    except:
+                        try:
+                            login_btn = WebDriverWait(self.driver, 5).until(
+                                EC.element_to_be_clickable((By.XPATH, "//span[text()='Войти']"))
+                            )
+                            break
+                        except:
+                            try:
+                                login_btn = WebDriverWait(self.driver, 5).until(
+                                    EC.element_to_be_clickable((By.XPATH, "//button[@type='submit']"))
+                                )
+                                break
+                            except:
+                                self.log(f"⏳ Ожидание кнопки входа... попытка {attempt+1}", "DEBUG")
+                                self.random_delay(1, 2)
         
         if login_btn:
             self.human_click(login_btn)
@@ -540,14 +584,7 @@ class AntiDetectBrowser:
         if "accounts.google.com" in current_url and "signin" in current_url:
             self.log("⚠️ Возможно требуется 2FA или подтверждение", "WARNING")
             self.take_step_screenshot("google_2fa_needed")
-            # Проверяем наличие кода подтверждения
-            try:
-                code_field = self.driver.find_elements(By.XPATH, "//input[@type='text']")
-                if code_field:
-                    self.log("🔢 Найдено поле для кода 2FA", "INFO")
-                    return False
-            except:
-                pass
+            return False
         
         # ===== ШАГ 6: Переход на X.com =====
         self.log("🌐 ШАГ 6: Переход на X.com", "STEP")
