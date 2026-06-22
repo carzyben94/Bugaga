@@ -1,22 +1,3 @@
-import subprocess
-import sys
-
-# === АВТОУСТАНОВКА ===
-def install_dependencies():
-    try:
-        import selenium
-    except ImportError:
-        print("📦 Устанавливаю Selenium...")
-        subprocess.check_call([
-            sys.executable, "-m", "pip", "install",
-            "selenium==4.15.2",
-            "webdriver-manager==4.0.1"
-        ])
-        print("✅ Selenium установлен!")
-
-install_dependencies()
-
-# === ОСНОВНОЙ КОД ===
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -26,13 +7,12 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 import os
 import time
-import json
 import random
 import shutil
 import logging
 import zipfile
 import urllib.request
-import stat
+import sys
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -42,14 +22,11 @@ class AntiDetectBrowser:
         self.headless = headless
         self.driver = None
         self.wait = None
-        self.chrome_path = None
-        self.driver_path = None
-        # Используем /tmp для установки
         self.install_dir = "/tmp/chrome_bot"
         os.makedirs(self.install_dir, exist_ok=True)
         
     def install_chrome_local(self):
-        """Установка Chrome в /tmp (без root)"""
+        """Установка Chrome в /tmp (без apt-get)"""
         try:
             chrome_dir = os.path.join(self.install_dir, "chrome_local")
             os.makedirs(chrome_dir, exist_ok=True)
@@ -66,38 +43,22 @@ class AntiDetectBrowser:
                 url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/120.0.6099.109/linux64/chrome-linux64.zip"
                 zip_path = os.path.join(chrome_dir, "chrome.zip")
                 
+                logger.info("   ⏳ Скачивание Chrome...")
                 urllib.request.urlretrieve(url, zip_path)
                 logger.info("   ✅ Скачано")
                 
+                logger.info("   ⏳ Распаковка...")
                 with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                     zip_ref.extractall(chrome_dir)
                 logger.info("   ✅ Распаковано")
                 
                 os.remove(zip_path)
                 
+                # Ищем исполняемый файл
                 for root, dirs, files in os.walk(chrome_dir):
                     if "chrome" in files and not files[0].endswith(".zip"):
                         chrome_path = os.path.join(root, "chrome")
                         os.chmod(chrome_path, 0o755)
-                        break
-                
-                logger.info(f"✅ Chrome установлен в /tmp: {chrome_path}")
-                return chrome_path
-                
-            elif sys.platform.startswith('win'):
-                url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/120.0.6099.109/win64/chrome-win64.zip"
-                zip_path = os.path.join(chrome_dir, "chrome.zip")
-                
-                urllib.request.urlretrieve(url, zip_path)
-                
-                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                    zip_ref.extractall(chrome_dir)
-                
-                os.remove(zip_path)
-                
-                for root, dirs, files in os.walk(chrome_dir):
-                    if "chrome.exe" in files:
-                        chrome_path = os.path.join(root, "chrome.exe")
                         break
                 
                 logger.info(f"✅ Chrome установлен в /tmp: {chrome_path}")
@@ -110,7 +71,7 @@ class AntiDetectBrowser:
             return None
     
     def install_chromedriver_local(self):
-        """Установка ChromeDriver в /tmp"""
+        """Установка ChromeDriver в /tmp (без apt-get)"""
         try:
             driver_dir = os.path.join(self.install_dir, "chromedriver_local")
             os.makedirs(driver_dir, exist_ok=True)
@@ -132,9 +93,12 @@ class AntiDetectBrowser:
                 url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/120.0.6099.109/mac-arm64/chromedriver-mac-arm64.zip"
             
             zip_path = os.path.join(driver_dir, "chromedriver.zip")
+            
+            logger.info("   ⏳ Скачивание ChromeDriver...")
             urllib.request.urlretrieve(url, zip_path)
             logger.info("   ✅ Скачано")
             
+            logger.info("   ⏳ Распаковка...")
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(driver_dir)
             logger.info("   ✅ Распаковано")
@@ -158,6 +122,7 @@ class AntiDetectBrowser:
         """Настройка драйвера с бинарниками из /tmp"""
         options = Options()
         
+        # Устанавливаем Chrome в /tmp
         chrome_path = self.install_chrome_local()
         if chrome_path:
             options.binary_location = chrome_path
@@ -166,9 +131,12 @@ class AntiDetectBrowser:
         if self.headless:
             options.add_argument('--headless=new')
         
+        # === АНТИ-ДЕТЕКТ ===
         options.add_argument('--disable-blink-features=AutomationControlled')
         options.add_experimental_option('excludeSwitches', ['enable-automation'])
         options.add_experimental_option('useAutomationExtension', False)
+        
+        # === ДЛЯ RENDER ===
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
@@ -178,6 +146,7 @@ class AntiDetectBrowser:
         options.add_argument('--disable-notifications')
         options.add_argument('--remote-debugging-port=9222')
         
+        # User-Agent
         options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
         
         options.add_argument('--lang=en-US,en;q=0.9')
@@ -187,17 +156,20 @@ class AntiDetectBrowser:
             'profile.password_manager_enabled': False,
         })
         
+        # Устанавливаем ChromeDriver в /tmp
         driver_path = self.install_chromedriver_local()
         
         if driver_path:
             service = Service(driver_path)
             logger.info(f"📍 ChromeDriver: {driver_path}")
         else:
+            # fallback
             from webdriver_manager.chrome import ChromeDriverManager
             service = Service(ChromeDriverManager().install())
         
         self.driver = webdriver.Chrome(service=service, options=options)
         
+        # Скрываем webdriver
         self.driver.execute_script("""
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined
@@ -273,6 +245,7 @@ class AntiDetectBrowser:
         self.random_delay(2, 4)
         
         try:
+            # Кнопка входа
             if self.click_safe(By.XPATH, "//span[text()='Войти']") or \
                self.click_safe(By.XPATH, "//span[text()='Sign in']") or \
                self.click_safe(By.CSS_SELECTOR, "[data-testid='loginButton']"):
@@ -280,6 +253,7 @@ class AntiDetectBrowser:
             
             self.random_delay(1, 2)
             
+            # Логин
             username_field = self.find_element(By.NAME, "text")
             if username_field:
                 self.human_type(username_field, username)
@@ -290,12 +264,14 @@ class AntiDetectBrowser:
             
             self.random_delay(1, 2)
             
+            # Далее
             if self.click_safe(By.XPATH, "//span[text()='Далее']") or \
                self.click_safe(By.XPATH, "//span[text()='Next']"):
                 logger.info("✅ Кнопка 'Далее' нажата")
             
             self.random_delay(2, 3)
             
+            # Пароль
             password_field = self.find_element(By.NAME, "password")
             if password_field:
                 self.human_type(password_field, password)
@@ -306,6 +282,7 @@ class AntiDetectBrowser:
             
             self.random_delay(1, 2)
             
+            # Войти
             if self.click_safe(By.XPATH, "//span[text()='Войти']") or \
                self.click_safe(By.XPATH, "//span[text()='Log in']") or \
                self.click_safe(By.CSS_SELECTOR, "[data-testid='LoginForm_Login_Button']"):
