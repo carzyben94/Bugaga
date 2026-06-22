@@ -3,6 +3,9 @@ from flask import Flask, request
 import os
 import time
 import requests
+import sys
+import subprocess
+import shutil
 from browser import AntiDetectBrowser
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
