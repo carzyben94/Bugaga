@@ -315,18 +315,15 @@ class AntiDetectBrowser:
             return False
     
     def type_with_actions(self, element, text):
-        """Ввод текста через ActionChains (более надежно)"""
         try:
             self.log(f"⌨️ Ввод через ActionChains", "DEBUG")
             
-            # Кликаем по элементу
             actions = ActionChains(self.driver)
             actions.move_to_element(element)
             actions.click()
             actions.perform()
             self.random_delay(0.3, 0.5)
             
-            # Очищаем (Ctrl+A + Delete)
             actions = ActionChains(self.driver)
             actions.key_down(Keys.CONTROL)
             actions.send_keys('a')
@@ -335,7 +332,6 @@ class AntiDetectBrowser:
             actions.perform()
             self.random_delay(0.3, 0.5)
             
-            # Вводим текст посимвольно через ActionChains
             for char in text:
                 actions = ActionChains(self.driver)
                 actions.send_keys(char)
@@ -350,16 +346,12 @@ class AntiDetectBrowser:
             return False
     
     def safe_find_password_field(self, timeout=30):
-        """Найти поле пароля с большим терпением"""
         selectors = [
             (By.NAME, "password"),
             (By.ID, "password"),
             (By.XPATH, "//input[@type='password']"),
             (By.XPATH, "//input[@name='password']"),
-            (By.XPATH, "//div[@class='pwd']//input"),
             (By.CSS_SELECTOR, "input[type='password']"),
-            (By.XPATH, "//div[@data-brand='accounts.google.com']//input[@type='password']"),
-            (By.CSS_SELECTOR, "div[class*='password'] input"),
         ]
         
         for attempt in range(5):
@@ -372,7 +364,6 @@ class AntiDetectBrowser:
                         EC.presence_of_element_located((by, selector))
                     )
                     if element and element.is_displayed():
-                        # Ждем кликабельности
                         try:
                             WebDriverWait(self.driver, 3).until(
                                 EC.element_to_be_clickable((by, selector))
@@ -387,33 +378,18 @@ class AntiDetectBrowser:
             
             self.random_delay(2, 3)
             
-            # Если не нашли, делаем скриншот для отладки
             if attempt == 2:
                 self.take_step_screenshot("password_field_search")
         
         self.log("❌ Поле пароля не найдено", "ERROR")
         return None
     
-    def get_page_info(self):
-        try:
-            info = {
-                "url": self.driver.current_url,
-                "title": self.driver.title,
-                "page_source_length": len(self.driver.page_source)
-            }
-            self.log(f"📄 Информация о странице: {info['url']}", "INFO", info)
-            return info
-        except Exception as e:
-            self.log(f"❌ Ошибка получения информации: {e}", "ERROR")
-            return None
-    
-    # ===== ВХОД: СНАЧАЛА GOOGLE, ПОТОМ X.COM =====
     def login_google_first_then_twitter(self, email, password):
         self.log("🚀 ===== НАЧАЛО ВХОДА (Google → X.com) =====", "INFO")
         self.log(f"📧 Email: {email[:3]}***{email[-3:] if len(email) > 6 else ''}", "INFO")
         self.log(f"🔑 Пароль: {'*' * len(password)}", "INFO")
         
-        # ===== ШАГ 1: Открытие Google =====
+        # ШАГ 1: Открытие Google
         self.log("🌐 ШАГ 1: Открытие Google", "STEP")
         try:
             self.driver.get("https://accounts.google.com/")
@@ -424,7 +400,7 @@ class AntiDetectBrowser:
             self.log(f"❌ Ошибка загрузки Google: {e}", "ERROR")
             return False
         
-        # ===== ШАГ 2: Ввод email =====
+        # ШАГ 2: Ввод email
         self.log("🔍 ШАГ 2: Ввод email", "STEP")
         email_field = None
         
@@ -454,7 +430,7 @@ class AntiDetectBrowser:
         
         self.random_delay(1, 2)
         
-        # ===== ШАГ 3: Кнопка "Далее" =====
+        # ШАГ 3: Кнопка "Далее"
         self.log("🔍 ШАГ 3: Кнопка 'Далее' в Google", "STEP")
         next_btn = None
         
@@ -490,26 +466,21 @@ class AntiDetectBrowser:
         
         self.random_delay(3, 5)
         
-        # ===== ШАГ 4: Ввод пароля (улучшенный) =====
+        # ШАГ 4: Ввод пароля
         self.log("🔍 ШАГ 4: Ввод пароля в Google", "STEP")
         
-        # Ждем появления поля пароля
         self.log("⏳ Ожидание появления поля пароля...", "INFO")
         self.random_delay(2, 4)
         
-        # Ищем поле пароля
         password_field = self.safe_find_password_field()
         
         if password_field:
             self.log("✅ Поле пароля найдено, пробую ввести...", "SUCCESS")
-            
-            # Пробуем ввести через ActionChains
             success = self.type_with_actions(password_field, password)
             
             if success:
                 self.take_step_screenshot("google_password_entered")
             else:
-                # Пробуем обычный ввод
                 try:
                     self.log("🔄 Пробую обычный ввод...", "DEBUG")
                     password_field.click()
@@ -529,7 +500,7 @@ class AntiDetectBrowser:
         
         self.random_delay(1, 2)
         
-        # ===== ШАГ 5: Финальная кнопка входа =====
+        # ШАГ 5: Финальная кнопка входа
         self.log("🔍 ШАГ 5: Финальный вход в Google", "STEP")
         login_btn = None
         
@@ -577,14 +548,53 @@ class AntiDetectBrowser:
         self.random_delay(3, 5)
         self.take_step_screenshot("google_logged_in")
         
-        # Проверка: успешно ли вошли в Google
-        current_url = self.driver.current_url
-        self.log(f"📍 URL после Google: {current_url}", "INFO")
+        # ===== ШАГ 5.5: ОЖИДАНИЕ ПОДТВЕРЖДЕНИЯ НА ТЕЛЕФОНЕ =====
+        self.log("🔍 ШАГ 5.5: Проверка подтверждения на телефоне", "STEP")
         
-        if "accounts.google.com" in current_url and "signin" in current_url:
-            self.log("⚠️ Возможно требуется 2FA или подтверждение", "WARNING")
-            self.take_step_screenshot("google_2fa_needed")
-            return False
+        current_url = self.driver.current_url
+        self.log(f"📍 URL после Google: {current_url[:100]}...", "INFO")
+        
+        # Если Google запрашивает подтверждение
+        if "challenge" in current_url or "verify" in current_url.lower():
+            self.log("🔐 Google запрашивает подтверждение на телефоне", "INFO")
+            self.log("📱 Откройте уведомление на телефоне", "INFO")
+            self.log("📱 Нажмите 'Yes' и введите код", "INFO")
+            self.log(f"⏳ У вас есть 90 секунд", "INFO")
+            
+            self.take_step_screenshot("google_waiting_for_phone")
+            
+            start_wait = time.time()
+            confirmed = False
+            
+            while time.time() - start_wait < 90:
+                try:
+                    current_url_check = self.driver.current_url
+                    
+                    if "challenge" not in current_url_check and "verify" not in current_url_check.lower():
+                        self.log("✅ Подтверждение на телефоне пройдено!", "SUCCESS")
+                        confirmed = True
+                        break
+                    
+                    if "accounts.google.com" not in current_url_check:
+                        self.log("✅ Страница изменилась, продолжаем", "SUCCESS")
+                        confirmed = True
+                        break
+                    
+                    elapsed = int(time.time() - start_wait)
+                    self.log(f"⏳ Ожидание подтверждения... {elapsed}с", "DEBUG")
+                    time.sleep(5)
+                    
+                except Exception as e:
+                    self.log(f"⚠️ Ошибка проверки: {e}", "WARNING")
+                    time.sleep(5)
+            
+            if confirmed:
+                self.take_step_screenshot("google_confirmation_complete")
+                self.log("✅ Подтверждение завершено!", "SUCCESS")
+            else:
+                self.log("❌ Таймаут подтверждения", "ERROR")
+                self.take_step_screenshot("google_confirmation_timeout")
+                return False
         
         # ===== ШАГ 6: Переход на X.com =====
         self.log("🌐 ШАГ 6: Переход на X.com", "STEP")
