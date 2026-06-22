@@ -71,24 +71,30 @@ def handle_login_google(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
     
+    # === ДИАГНОСТИКА ===
+    print(f"📩 Получено сообщение: {message}")
+    print(f"📩 Текст: {message.text}")
+    print(f"📩 ID пользователя: {user_id}")
+    # ====================
+    
+    # Проверяем что текст есть
+    if message.text is None:
+        bot.reply_to(message, "❌ Ошибка: команда не содержит текст\nИспользуйте: /logingoogle email@gmail.com password")
+        return
+    
     check = check_installation()
     if not check['chrome']:
         bot.reply_to(message, "❌ Chrome не установлен! Используйте /install")
         return
     
-    # Проверяем текст сообщения
-    text = message.text
-    if not text:
-        bot.reply_to(message, "❌ Команда должна содержать email и пароль")
-        return
-    
-    args = text.split()[1:]  # разбиваем на слова, пропускаем команду
-    if len(args) < 2:
+    # Разбираем команду
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3:
         bot.reply_to(message, "❌ Используйте: /logingoogle <email> <пароль>")
         return
     
-    email = args[0]
-    password = ' '.join(args[1:])  # пароль может содержать пробелы
+    email = parts[1]
+    password = parts[2]
     
     msg = bot.reply_to(message, "🔄 Вход через Google... 30-50 секунд")
     
@@ -143,24 +149,22 @@ def handle_login(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
     
+    if message.text is None:
+        bot.reply_to(message, "❌ Используйте: /login <логин> <пароль>")
+        return
+    
     check = check_installation()
     if not check['chrome']:
         bot.reply_to(message, "❌ Chrome не установлен! Используйте /install")
         return
     
-    # Проверяем текст сообщения
-    text = message.text
-    if not text:
-        bot.reply_to(message, "❌ Команда должна содержать логин и пароль")
-        return
-    
-    args = text.split()[1:]
-    if len(args) < 2:
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3:
         bot.reply_to(message, "❌ Используйте: /login <логин> <пароль>")
         return
     
-    username = args[0]
-    password = ' '.join(args[1:])
+    username = parts[1]
+    password = parts[2]
     
     msg = bot.reply_to(message, "🔄 Выполняется вход...")
     
