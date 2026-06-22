@@ -1,20 +1,14 @@
 import telebot
-from flask import Flask, request
 import os
 import time
-import requests
 import threading
 from browser import AntiDetectBrowser, check_installation
-import subprocess
-import sys
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("❌ TELEGRAM_BOT_TOKEN не найден!")
 
 bot = telebot.TeleBot(TOKEN)
-app = Flask(__name__)
-
 user_sessions = {}
 
 # === КОМАНДА /START ===
@@ -101,7 +95,6 @@ def handle_login_google(message):
         if result:
             user_sessions[user_id] = browser
             
-            # Скриншот
             screenshot = browser.take_screenshot(f"final_{user_id}.png")
             if screenshot:
                 with open(screenshot, 'rb') as photo:
@@ -114,7 +107,6 @@ def handle_login_google(message):
                 message_id=msg.message_id
             )
         else:
-            # Скриншот ошибки
             screenshot = browser.take_screenshot(f"error_{user_id}.png")
             if screenshot:
                 with open(screenshot, 'rb') as photo:
@@ -258,21 +250,10 @@ def handle_close(message):
 def echo_all(message):
     bot.reply_to(message, "Используйте /start для списка команд")
 
-# === WEBHOOK ===
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
-        bot.process_new_updates([update])
-        return 'OK', 200
-    return 'Bad Request', 400
-
+# === ЗАПУСК ===
 if __name__ == '__main__':
-    if os.getenv("PORT") or os.getenv("RAILWAY"):
-        port = int(os.environ.get('PORT', 5000))
-        print(f"🌐 Бот запущен на порту {port}")
-        app.run(host='0.0.0.0', port=port)
-    else:
-        print("🤖 Бот запущен...")
-        bot.polling(none_stop=True)
+    print("🤖 Бот запущен (polling)...")
+    try:
+        bot.polling(none_stop=True, interval=1)
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
