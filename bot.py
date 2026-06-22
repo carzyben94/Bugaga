@@ -26,7 +26,6 @@ import requests
 import threading
 from browser import AntiDetectBrowser, check_installation
 from selenium.webdriver.common.by import By
-import json
 from datetime import datetime
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -40,7 +39,6 @@ user_sessions = {}
 install_status = {}
 user_logs = {}
 
-# === ФУНКЦИИ ДЛЯ ЛОГИРОВАНИЯ ===
 def add_log(user_id, message, level="INFO"):
     if user_id not in user_logs:
         user_logs[user_id] = []
