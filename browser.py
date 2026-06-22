@@ -8,11 +8,7 @@ from selenium.webdriver.common.action_chains import ActionChains
 import os
 import time
 import random
-import shutil
 import logging
-import zipfile
-import urllib.request
-import sys
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,111 +18,21 @@ class AntiDetectBrowser:
         self.headless = headless
         self.driver = None
         self.wait = None
-        self.install_dir = "/tmp/chrome_bot"
-        os.makedirs(self.install_dir, exist_ok=True)
+        # Прямые пути к бинарникам в /tmp
+        self.chrome_path = "/tmp/chrome_bot/chrome_local/chrome"
+        self.driver_path = "/tmp/chrome_bot/chromedriver_local/chromedriver"
         
-    def install_chrome_local(self):
-        """Установка Chrome в /tmp (без apt-get)"""
-        try:
-            chrome_dir = os.path.join(self.install_dir, "chrome_local")
-            os.makedirs(chrome_dir, exist_ok=True)
-            
-            chrome_path = os.path.join(chrome_dir, "chrome")
-            
-            if os.path.exists(chrome_path):
-                logger.info("✅ Chrome уже установлен в /tmp")
-                return chrome_path
-            
-            logger.info("📦 Установка Chrome в /tmp...")
-            
-            if sys.platform.startswith('linux'):
-                url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/120.0.6099.109/linux64/chrome-linux64.zip"
-                zip_path = os.path.join(chrome_dir, "chrome.zip")
-                
-                logger.info("   ⏳ Скачивание Chrome...")
-                urllib.request.urlretrieve(url, zip_path)
-                logger.info("   ✅ Скачано")
-                
-                logger.info("   ⏳ Распаковка...")
-                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                    zip_ref.extractall(chrome_dir)
-                logger.info("   ✅ Распаковано")
-                
-                os.remove(zip_path)
-                
-                # Ищем исполняемый файл
-                for root, dirs, files in os.walk(chrome_dir):
-                    if "chrome" in files and not files[0].endswith(".zip"):
-                        chrome_path = os.path.join(root, "chrome")
-                        os.chmod(chrome_path, 0o755)
-                        break
-                
-                logger.info(f"✅ Chrome установлен в /tmp: {chrome_path}")
-                return chrome_path
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка установки Chrome: {e}")
-            return None
-    
-    def install_chromedriver_local(self):
-        """Установка ChromeDriver в /tmp (без apt-get)"""
-        try:
-            driver_dir = os.path.join(self.install_dir, "chromedriver_local")
-            os.makedirs(driver_dir, exist_ok=True)
-            
-            driver_name = "chromedriver.exe" if sys.platform.startswith('win') else "chromedriver"
-            driver_path = os.path.join(driver_dir, driver_name)
-            
-            if os.path.exists(driver_path):
-                logger.info("✅ ChromeDriver уже установлен в /tmp")
-                return driver_path
-            
-            logger.info("📦 Установка ChromeDriver в /tmp...")
-            
-            if sys.platform.startswith('linux'):
-                url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/120.0.6099.109/linux64/chromedriver-linux64.zip"
-            elif sys.platform.startswith('win'):
-                url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/120.0.6099.109/win64/chromedriver-win64.zip"
-            else:
-                url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/120.0.6099.109/mac-arm64/chromedriver-mac-arm64.zip"
-            
-            zip_path = os.path.join(driver_dir, "chromedriver.zip")
-            
-            logger.info("   ⏳ Скачивание ChromeDriver...")
-            urllib.request.urlretrieve(url, zip_path)
-            logger.info("   ✅ Скачано")
-            
-            logger.info("   ⏳ Распаковка...")
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(driver_dir)
-            logger.info("   ✅ Распаковано")
-            
-            os.remove(zip_path)
-            
-            for root, dirs, files in os.walk(driver_dir):
-                if driver_name in files:
-                    driver_path = os.path.join(root, driver_name)
-                    os.chmod(driver_path, 0o755)
-                    break
-            
-            logger.info(f"✅ ChromeDriver установлен в /tmp: {driver_path}")
-            return driver_path
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка установки ChromeDriver: {e}")
-            return None
-    
     def setup_driver(self):
-        """Настройка драйвера с бинарниками из /tmp"""
+        """Настройка драйвера с готовыми бинарниками"""
         options = Options()
         
-        # Устанавливаем Chrome в /tmp
-        chrome_path = self.install_chrome_local()
-        if chrome_path:
-            options.binary_location = chrome_path
-            logger.info(f"📍 Chrome: {chrome_path}")
+        # Используем готовый Chrome
+        if os.path.exists(self.chrome_path):
+            options.binary_location = self.chrome_path
+            logger.info(f"📍 Chrome: {self.chrome_path}")
+        else:
+            logger.error("❌ Chrome не найден! Запустите /install")
+            raise Exception("Chrome не найден. Используйте /install")
         
         if self.headless:
             options.add_argument('--headless=new')
@@ -156,16 +62,13 @@ class AntiDetectBrowser:
             'profile.password_manager_enabled': False,
         })
         
-        # Устанавливаем ChromeDriver в /tmp
-        driver_path = self.install_chromedriver_local()
-        
-        if driver_path:
-            service = Service(driver_path)
-            logger.info(f"📍 ChromeDriver: {driver_path}")
+        # Используем готовый ChromeDriver
+        if os.path.exists(self.driver_path):
+            service = Service(self.driver_path)
+            logger.info(f"📍 ChromeDriver: {self.driver_path}")
         else:
-            # fallback
-            from webdriver_manager.chrome import ChromeDriverManager
-            service = Service(ChromeDriverManager().install())
+            logger.error("❌ ChromeDriver не найден! Запустите /install")
+            raise Exception("ChromeDriver не найден. Используйте /install")
         
         self.driver = webdriver.Chrome(service=service, options=options)
         
@@ -316,15 +219,17 @@ class AntiDetectBrowser:
             except:
                 pass
 
-# === ОЧИСТКА /tmp ПРИ ЗАПУСКЕ ===
-def cleanup_temp():
-    temp_dir = "/tmp/chrome_bot"
-    if os.path.exists(temp_dir):
-        try:
-            shutil.rmtree(temp_dir)
-            logger.info("🧹 Очищена папка /tmp/chrome_bot")
-        except:
-            pass
-    os.makedirs(temp_dir, exist_ok=True)
-
-cleanup_temp()
+# === ФУНКЦИЯ ДЛЯ ПРОВЕРКИ ===
+def check_installation():
+    """Проверяет наличие бинарников"""
+    chrome_path = "/tmp/chrome_bot/chrome_local/chrome"
+    driver_path = "/tmp/chrome_bot/chromedriver_local/chromedriver"
+    
+    result = {
+        'chrome': os.path.exists(chrome_path),
+        'chromedriver': os.path.exists(driver_path),
+        'chrome_path': chrome_path,
+        'driver_path': driver_path
+    }
+    
+    return result
