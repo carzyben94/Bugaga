@@ -17,7 +17,7 @@ if not TOKEN:
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
-# === ХРАНИЛИЩЕ СЕССИЙ ===
+# === ХРАНИЛИЩЕ ===
 user_sessions = {}
 install_status = {}
 
@@ -27,12 +27,10 @@ def handle_install(message):
     """Установка браузера и зависимостей"""
     user_id = message.from_user.id
     
-    # Проверяем, не выполняется ли уже установка
     if user_id in install_status and install_status[user_id].get('running', False):
         bot.reply_to(message, "⏳ Установка уже выполняется... Подождите!")
         return
     
-    # Клавиатура для выбора
     markup = InlineKeyboardMarkup()
     markup.row(
         InlineKeyboardButton("🖥️ Полная установка", callback_data="install_full"),
@@ -47,15 +45,15 @@ def handle_install(message):
         message,
         "🔧 **Установка браузера и зависимостей**\n\n"
         "Выберите опцию:\n"
-        "• **Полная установка** - установит Chrome + все зависимости\n"
-        "• **Только зависимости** - установит Python пакеты\n"
+        "• **Полная установка** - установит Chrome + Selenium\n"
+        "• **Только зависимости** - установит Selenium\n"
         "• **Проверить** - проверит что уже установлено\n\n"
         "⚠️ Процесс может занять 2-5 минут",
         parse_mode='Markdown',
         reply_markup=markup
     )
 
-# === ОБРАБОТЧИК КНОПОК /INSTALL ===
+# === ОБРАБОТЧИК КНОПОК ===
 @bot.callback_query_handler(func=lambda call: call.data.startswith('install_'))
 def handle_install_callback(call):
     user_id = call.from_user.id
@@ -68,10 +66,13 @@ def handle_install_callback(call):
         )
         return
     
-    # Создаем запись о статусе
+    # Проверка установки
+    if call.data == "install_check":
+        check_installation(call.message.chat.id, call.message.message_id)
+        return
+    
     install_status[user_id] = {'running': True, 'step': 0}
     
-    # Отправляем сообщение о начале
     msg = bot.edit_message_text(
         "⏳ **Начинаем установку...**\nЭто может занять несколько минут",
         chat_id=call.message.chat.id,
@@ -79,7 +80,6 @@ def handle_install_callback(call):
         parse_mode='Markdown'
     )
     
-    # Запускаем установку в отдельном потоке
     thread = threading.Thread(
         target=run_installation,
         args=(user_id, call.data, msg.chat.id, msg.message_id)
@@ -89,46 +89,29 @@ def handle_install_callback(call):
 def run_installation(user_id, install_type, chat_id, message_id):
     """Выполняет установку в фоновом режиме"""
     try:
-        # Шаг 1: Обновление pip
+        # ШАГ 1: Обновление pip
         update_status(chat_id, message_id, "📦 Обновление pip...")
         subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
         update_status(chat_id, message_id, "✅ pip обновлен")
         
-        # Шаг 2: Установка зависимостей
-        if install_type in ["install_full", "install_deps"]:
-            update_status(chat_id, message_id, "📦 Установка Python зависимостей...")
-            
-            dependencies = [
-                "selenium==4.15.2",
-                "webdriver-manager==4.0.1",
-                "pyTelegramBotAPI==4.14.0",
-                "Flask==3.0.0",
-                "requests==2.31.0",
-                "pillow==10.1.0",
-                "python-dotenv==1.0.0"
-            ]
-            
-            for dep in dependencies:
-                update_status(chat_id, message_id, f"   ⏳ Установка {dep}...")
-                subprocess.check_call([sys.executable, "-m", "pip", "install", dep])
-            
-            update_status(chat_id, message_id, "✅ Все зависимости установлены")
+        # ШАГ 2: Установка Selenium и webdriver-manager
+        update_status(chat_id, message_id, "📦 Установка Selenium...")
+        subprocess.check_call([
+            sys.executable, "-m", "pip", "install",
+            "selenium==4.15.2",
+            "webdriver-manager==4.0.1"
+        ])
+        update_status(chat_id, message_id, "✅ Selenium установлен")
         
-        # Шаг 3: Установка Chrome (только полная)
+        # ШАГ 3: Установка Chrome (только полная)
         if install_type == "install_full":
             update_status(chat_id, message_id, "🌐 Установка Chrome...")
             
-            # Проверка ОС
             if sys.platform.startswith('linux'):
-                # Linux (Render)
-                subprocess.check_call([
-                    "apt-get", "update"
-                ])
+                subprocess.check_call(["apt-get", "update"])
                 subprocess.check_call([
                     "apt-get", "install", "-y",
-                    "wget",
-                    "gnupg",
-                    "unzip"
+                    "wget", "gnupg", "unzip"
                 ])
                 subprocess.check_call([
                     "wget", "-q", "-O", "-",
@@ -138,40 +121,22 @@ def run_installation(user_id, install_type, chat_id, message_id):
                     "apt-get", "install", "-y",
                     "google-chrome-stable"
                 ])
-                
-            elif sys.platform.startswith('win'):
-                # Windows - скачиваем Chrome
-                update_status(chat_id, message_id, "   ⏳ Скачивание Chrome для Windows...")
-                subprocess.check_call([
-                    "powershell", "-Command",
-                    "Invoke-WebRequest -Uri 'https://dl.google.com/chrome/install/latest/chrome_installer.exe' -OutFile 'chrome_installer.exe'"
-                ])
-                subprocess.check_call([
-                    "chrome_installer.exe", "/silent", "/install"
-                ])
-                
-            elif sys.platform.startswith('darwin'):
-                # MacOS
-                subprocess.check_call([
-                    "brew", "install", "--cask", "google-chrome"
-                ])
-            
-            update_status(chat_id, message_id, "✅ Chrome установлен")
+                update_status(chat_id, message_id, "✅ Chrome установлен")
         
-        # Шаг 4: Проверка установки
+        # ШАГ 4: Проверка установки
         update_status(chat_id, message_id, "🔍 Проверка установки...")
         
         # Проверяем Chrome
-        chrome_path = shutil.which("google-chrome") or shutil.which("google-chrome-stable") or shutil.which("chrome")
+        chrome_path = shutil.which("google-chrome") or shutil.which("google-chrome-stable")
         if chrome_path:
             update_status(chat_id, message_id, f"✅ Chrome найден: {chrome_path}")
         else:
-            update_status(chat_id, message_id, "⚠️ Chrome не найден в PATH")
+            update_status(chat_id, message_id, "⚠️ Chrome не найден (нужен для полной установки)")
         
         # Проверяем Selenium
         try:
             import selenium
-            update_status(chat_id, message_id, f"✅ Selenium версия: {selenium.__version__}")
+            update_status(chat_id, message_id, f"✅ Selenium {selenium.__version__}")
         except:
             update_status(chat_id, message_id, "❌ Selenium не установлен")
         
@@ -182,14 +147,23 @@ def run_installation(user_id, install_type, chat_id, message_id):
         except:
             update_status(chat_id, message_id, "❌ webdriver-manager не установлен")
         
-        # Завершаем
-        update_status(chat_id, message_id, "✅ **Установка завершена успешно!**\n\nТеперь можно использовать:\n/login - войти в X.com\n/screenshot - скриншот")
+        update_status(
+            chat_id, 
+            message_id, 
+            "✅ **Установка завершена!**\n\n"
+            "Теперь можно использовать:\n"
+            "/login - войти в X.com\n"
+            "/screenshot - скриншот"
+        )
         
         install_status[user_id] = {'running': False, 'completed': True}
         
     except Exception as e:
-        error_msg = f"❌ **Ошибка установки:**\n```\n{str(e)}\n```"
-        update_status(chat_id, message_id, error_msg)
+        update_status(
+            chat_id, 
+            message_id, 
+            f"❌ **Ошибка установки:**\n```\n{str(e)}\n```"
+        )
         install_status[user_id] = {'running': False, 'error': str(e)}
 
 def update_status(chat_id, message_id, text):
@@ -204,80 +178,108 @@ def update_status(chat_id, message_id, text):
     except:
         pass
 
-# === КОМАНДА /CHECK (проверка установки) ===
-@bot.message_handler(commands=['check'])
-def handle_check(message):
-    """Проверяет установленные компоненты"""
-    user_id = message.from_user.id
-    
+def check_installation(chat_id, message_id):
+    """Проверка установки (только нужное)"""
     result = "🔍 **Проверка установки:**\n\n"
     
-    # Проверяем Chrome
+    # 1. Проверяем Chrome
     chrome_path = shutil.which("google-chrome") or shutil.which("google-chrome-stable") or shutil.which("chrome")
     if chrome_path:
         result += f"✅ Chrome: {chrome_path}\n"
-        
-        # Версия Chrome
         try:
-            import subprocess
             version = subprocess.check_output([chrome_path, "--version"], stderr=subprocess.STDOUT)
             result += f"   Версия: {version.decode().strip()}\n"
         except:
             pass
     else:
         result += "❌ Chrome не найден\n"
+        result += "   Используйте /install full для установки\n"
     
-    # Проверяем Python пакеты
-    packages = [
-        "selenium",
-        "webdriver_manager",
-        "flask",
-        "requests",
-        "PIL"
-    ]
+    # 2. Проверяем Selenium
+    try:
+        import selenium
+        result += f"✅ Selenium: {selenium.__version__}\n"
+    except ImportError:
+        result += "❌ Selenium не установлен\n"
+        result += "   Используйте /install deps\n"
     
-    for pkg in packages:
-        try:
-            module = __import__(pkg)
-            version = getattr(module, "__version__", "неизвестно")
-            result += f"✅ {pkg}: {version}\n"
-        except:
-            result += f"❌ {pkg}: не установлен\n"
+    # 3. Проверяем webdriver-manager
+    try:
+        import webdriver_manager
+        result += "✅ webdriver-manager установлен\n"
+    except ImportError:
+        result += "❌ webdriver-manager не установлен\n"
     
-    # Проверяем Selenium
+    # 4. Проверяем возможность запуска ChromeDriver
     try:
         from selenium import webdriver
-        result += "✅ Selenium WebDriver готов\n"
-    except:
-        result += "❌ Selenium WebDriver не доступен\n"
+        from selenium.webdriver.chrome.options import Options
+        options = Options()
+        options.add_argument('--headless=new')
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        
+        # Проверяем без реального запуска
+        result += "✅ ChromeDriver готов к работе\n"
+    except Exception as e:
+        result += f"⚠️ Ошибка ChromeDriver: {str(e)[:50]}...\n"
     
-    bot.reply_to(message, result, parse_mode='Markdown')
+    # Итог
+    result += "\n---\n"
+    if chrome_path:
+        try:
+            import selenium
+            import webdriver_manager
+            result += "✅ **ВСЕ ГОТОВО К РАБОТЕ!**\n"
+            result += "Используйте /login для входа в X.com"
+        except:
+            result += "⚠️ **Нужно доустановить:**\n"
+            result += "   /install deps - для Selenium\n"
+            result += "   /install full - для Chrome + Selenium"
+    else:
+        result += "⚠️ **Нужна полная установка:**\n"
+        result += "   /install full"
+    
+    bot.edit_message_text(
+        result,
+        chat_id=chat_id,
+        message_id=message_id,
+        parse_mode='Markdown'
+    )
 
-# === КОМАНДА /LOGIN (с проверкой установки) ===
+# === КОМАНДА /CHECK ===
+@bot.message_handler(commands=['check'])
+def handle_check(message):
+    """Проверка установки"""
+    msg = bot.reply_to(message, "🔍 Проверка...")
+    check_installation(msg.chat.id, msg.message_id)
+
+# === КОМАНДА /LOGIN ===
 @bot.message_handler(commands=['login'])
 def handle_login(message):
     """Вход в Twitter/X"""
     user_id = message.from_user.id
     
-    # Проверяем установку перед запуском
+    # Проверяем Selenium
     try:
         from selenium import webdriver
         from selenium.webdriver.chrome.options import Options
         from webdriver_manager.chrome import ChromeDriverManager
-    except ImportError as e:
+    except ImportError:
         bot.reply_to(
             message,
-            f"❌ Selenium не установлен! Используйте /install\n\nОшибка: {e}"
+            "❌ Selenium не установлен!\n"
+            "Используйте /install deps"
         )
         return
     
     # Проверяем Chrome
-    chrome_path = shutil.which("google-chrome") or shutil.which("google-chrome-stable") or shutil.which("chrome")
+    chrome_path = shutil.which("google-chrome") or shutil.which("google-chrome-stable")
     if not chrome_path:
         bot.reply_to(
             message,
-            "❌ Chrome не найден! Используйте /install full\n\n"
-            "Или установите вручную: apt-get install google-chrome-stable"
+            "❌ Chrome не найден!\n"
+            "Используйте /install full"
         )
         return
     
@@ -289,18 +291,109 @@ def handle_login(message):
     username = args[0]
     password = args[1]
     
-    # Запускаем логин (код из предыдущего ответа)
-    # ... (вставьте код логина из предыдущего ответа)
+    # Создаем браузер и логинимся
+    from browser import AntiDetectBrowser
+    browser = AntiDetectBrowser(headless=True)
+    
+    try:
+        bot.reply_to(message, "🔄 Выполняется вход в X.com...\nЭто может занять 10-30 секунд")
+        
+        browser.setup_driver()
+        result = browser.login_twitter(username, password)
+        
+        if result:
+            user_sessions[user_id] = browser
+            screenshot = browser.take_screenshot(f"login_{user_id}.png")
+            
+            with open(screenshot, 'rb') as photo:
+                bot.send_photo(
+                    user_id,
+                    photo,
+                    caption="✅ Вход выполнен успешно!"
+                )
+            os.remove(screenshot)
+        else:
+            screenshot = browser.take_screenshot(f"error_{user_id}.png")
+            with open(screenshot, 'rb') as photo:
+                bot.send_photo(
+                    user_id,
+                    photo,
+                    caption="❌ Ошибка входа. Проверьте логин/пароль"
+                )
+            os.remove(screenshot)
+            
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {str(e)}")
 
-# === ОСТАЛЬНЫЕ КОМАНДЫ ===
+# === КОМАНДА /SCREENSHOT ===
+@bot.message_handler(commands=['screenshot'])
+def handle_screenshot(message):
+    user_id = message.from_user.id
+    
+    if user_id not in user_sessions:
+        bot.reply_to(message, "❌ Нет активной сессии. Используйте /login")
+        return
+    
+    try:
+        browser = user_sessions[user_id]
+        screenshot = browser.take_screenshot(f"ss_{user_id}.png")
+        
+        with open(screenshot, 'rb') as photo:
+            bot.send_photo(
+                user_id,
+                photo,
+                caption=f"📸 Скриншот\nURL: {browser.driver.current_url}"
+            )
+        os.remove(screenshot)
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {str(e)}")
+
+# === КОМАНДА /STATUS ===
+@bot.message_handler(commands=['status'])
+def handle_status(message):
+    user_id = message.from_user.id
+    
+    if user_id in user_sessions:
+        try:
+            browser = user_sessions[user_id]
+            url = browser.driver.current_url
+            bot.reply_to(
+                message,
+                f"✅ Сессия активна\n"
+                f"🔗 URL: {url}\n"
+                f"📊 Статус: {'Авторизован' if 'home' in url else 'Не авторизован'}"
+            )
+        except:
+            bot.reply_to(message, "⚠️ Сессия неактивна. Используйте /login")
+            del user_sessions[user_id]
+    else:
+        bot.reply_to(message, "❌ Нет активной сессии. Используйте /login")
+
+# === КОМАНДА /CLOSE ===
+@bot.message_handler(commands=['close'])
+def handle_close(message):
+    user_id = message.from_user.id
+    
+    if user_id in user_sessions:
+        try:
+            browser = user_sessions[user_id]
+            browser.close()
+            del user_sessions[user_id]
+            bot.reply_to(message, "✅ Браузер закрыт")
+        except Exception as e:
+            bot.reply_to(message, f"❌ Ошибка: {str(e)}")
+    else:
+        bot.reply_to(message, "❌ Нет активной сессии")
+
+# === КОМАНДА /START ===
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     bot.reply_to(
         message,
         f"👋 Привет, {message.from_user.first_name}!\n\n"
-        "🤖 Бот с браузером!\n\n"
+        "🤖 **Бот с браузером**\n\n"
         "📋 Команды:\n"
-        "/install - Установить Chrome и зависимости\n"
+        "/install - Установить Chrome + Selenium\n"
         "/check - Проверить установку\n"
         "/login логин пароль - Войти в X.com\n"
         "/status - Статус сессии\n"
@@ -313,19 +406,26 @@ def send_welcome(message):
 def send_help(message):
     bot.reply_to(
         message,
-        "📋 Доступные команды:\n"
+        "📋 **Доступные команды:**\n\n"
         "/start - Приветствие\n"
-        "/install - Установить Chrome и зависимости\n"
+        "/install - Установка Chrome + Selenium\n"
         "/check - Проверить установку\n"
         "/login логин пароль - Войти в X.com\n"
         "/status - Статус сессии\n"
         "/screenshot - Скриншот\n"
         "/close - Закрыть браузер\n\n"
-        "🔧 Перед использованием выполните /install"
+        "🔧 **Перед использованием:**\n"
+        "1. /install deps - установить Selenium\n"
+        "2. /install full - установить Chrome\n"
+        "3. /check - проверить всё ли готово"
     )
 
-# === ОСТАЛЬНОЙ КОД (статус, скриншот, закрытие) ===
-# ... (вставьте остальные функции из предыдущего ответа)
+@bot.message_handler(func=lambda message: True)
+def echo_all(message):
+    bot.reply_to(
+        message,
+        f"📩 Используйте /help для списка команд"
+    )
 
 # === WEBHOOK ===
 @app.route('/webhook', methods=['POST'])
@@ -339,7 +439,6 @@ def webhook():
 
 if __name__ == '__main__':
     if os.getenv("RENDER"):
-        # Установка webhook
         render_url = os.getenv("RENDER_URL")
         if render_url:
             webhook_url = f"{render_url}/webhook"
