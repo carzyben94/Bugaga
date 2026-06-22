@@ -58,12 +58,65 @@ def handle_install(message):
 # === КОМАНДА /CHECK ===
 @bot.message_handler(commands=['check'])
 def handle_check(message):
-    check = check_installation()
+    result = "🔍 **Проверка компонентов:**\n\n"
     
+    # 1. Selenium
+    try:
+        import selenium
+        result += f"✅ Selenium: {selenium.__version__}\n"
+    except ImportError:
+        result += "❌ Selenium: не установлен\n"
+        result += "   Установка: pip install selenium\n"
+    
+    # 2. webdriver-manager
+    try:
+        import webdriver_manager
+        result += "✅ webdriver-manager установлен\n"
+    except ImportError:
+        result += "❌ webdriver-manager: не установлен\n"
+        result += "   Установка: pip install webdriver-manager\n"
+    
+    # 3. Chrome
+    check = check_installation()
     if check['chrome']:
-        bot.reply_to(message, f"✅ Chrome установлен:\n📍 {check['chrome_path']}")
+        result += f"✅ Chrome: {check['chrome_path']}\n"
     else:
-        bot.reply_to(message, "❌ Chrome не установлен\nИспользуйте /install")
+        result += "❌ Chrome: не найден\n"
+        result += "   Используйте /install\n"
+    
+    # 4. ChromeDriver
+    try:
+        from webdriver_manager.chrome import ChromeDriverManager
+        driver_path = ChromeDriverManager().install()
+        if driver_path and os.path.exists(driver_path):
+            result += f"✅ ChromeDriver: {driver_path}\n"
+        else:
+            result += "❌ ChromeDriver: не найден\n"
+    except Exception as e:
+        result += f"⚠️ ChromeDriver: ошибка\n"
+    
+    # Итог
+    result += "\n---\n"
+    
+    selenium_ok = False
+    try:
+        import selenium
+        selenium_ok = True
+    except:
+        pass
+    
+    if check['chrome'] and selenium_ok:
+        try:
+            import webdriver_manager
+            result += "✅ **ВСЕ ГОТОВО К РАБОТЕ!**\n"
+            result += "Используйте /logingoogle для входа"
+        except:
+            result += "⚠️ Нужно установить webdriver-manager\n"
+            result += "   pip install webdriver-manager"
+    else:
+        result += "⚠️ Нужно выполнить /install"
+    
+    bot.reply_to(message, result, parse_mode='Markdown')
 
 # === КОМАНДА /LOGINGOOGLE ===
 @bot.message_handler(commands=['logingoogle'])
@@ -71,15 +124,8 @@ def handle_login_google(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
     
-    # === ДИАГНОСТИКА ===
-    print(f"📩 Получено сообщение: {message}")
-    print(f"📩 Текст: {message.text}")
-    print(f"📩 ID пользователя: {user_id}")
-    # ====================
-    
-    # Проверяем что текст есть
     if message.text is None:
-        bot.reply_to(message, "❌ Ошибка: команда не содержит текст\nИспользуйте: /logingoogle email@gmail.com password")
+        bot.reply_to(message, "❌ Используйте: /logingoogle email@gmail.com password")
         return
     
     check = check_installation()
@@ -87,7 +133,6 @@ def handle_login_google(message):
         bot.reply_to(message, "❌ Chrome не установлен! Используйте /install")
         return
     
-    # Разбираем команду
     parts = message.text.split(maxsplit=2)
     if len(parts) < 3:
         bot.reply_to(message, "❌ Используйте: /logingoogle <email> <пароль>")
