@@ -1,3 +1,22 @@
+import subprocess
+import sys
+
+# === АВТОУСТАНОВКА ===
+def install_dependencies():
+    try:
+        import selenium
+    except ImportError:
+        print("📦 Устанавливаю Selenium...")
+        subprocess.check_call([
+            sys.executable, "-m", "pip", "install",
+            "selenium==4.15.2",
+            "webdriver-manager==4.0.1"
+        ])
+        print("✅ Selenium установлен!")
+
+install_dependencies()
+
+# === ОСНОВНОЙ КОД ===
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -11,10 +30,9 @@ import json
 import random
 import shutil
 import logging
-import subprocess
-import sys
 import zipfile
 import urllib.request
+import stat
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -26,29 +44,34 @@ class AntiDetectBrowser:
         self.wait = None
         self.chrome_path = None
         self.driver_path = None
+        # Используем /tmp для установки
+        self.install_dir = "/tmp/chrome_bot"
+        os.makedirs(self.install_dir, exist_ok=True)
         
     def install_chrome_local(self):
-        """Установка Chrome в локальную папку (без root)"""
+        """Установка Chrome в /tmp (без root)"""
         try:
-            chrome_dir = os.path.join(os.getcwd(), "chrome_local")
+            chrome_dir = os.path.join(self.install_dir, "chrome_local")
             os.makedirs(chrome_dir, exist_ok=True)
             
             chrome_path = os.path.join(chrome_dir, "chrome")
             
             if os.path.exists(chrome_path):
-                logger.info("✅ Chrome уже установлен локально")
+                logger.info("✅ Chrome уже установлен в /tmp")
                 return chrome_path
             
-            logger.info("📦 Установка Chrome в локальную папку...")
+            logger.info("📦 Установка Chrome в /tmp...")
             
             if sys.platform.startswith('linux'):
                 url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/120.0.6099.109/linux64/chrome-linux64.zip"
                 zip_path = os.path.join(chrome_dir, "chrome.zip")
                 
                 urllib.request.urlretrieve(url, zip_path)
+                logger.info("   ✅ Скачано")
                 
                 with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                     zip_ref.extractall(chrome_dir)
+                logger.info("   ✅ Распаковано")
                 
                 os.remove(zip_path)
                 
@@ -58,7 +81,7 @@ class AntiDetectBrowser:
                         os.chmod(chrome_path, 0o755)
                         break
                 
-                logger.info(f"✅ Chrome установлен: {chrome_path}")
+                logger.info(f"✅ Chrome установлен в /tmp: {chrome_path}")
                 return chrome_path
                 
             elif sys.platform.startswith('win'):
@@ -77,7 +100,7 @@ class AntiDetectBrowser:
                         chrome_path = os.path.join(root, "chrome.exe")
                         break
                 
-                logger.info(f"✅ Chrome установлен: {chrome_path}")
+                logger.info(f"✅ Chrome установлен в /tmp: {chrome_path}")
                 return chrome_path
             
             return None
@@ -87,19 +110,19 @@ class AntiDetectBrowser:
             return None
     
     def install_chromedriver_local(self):
-        """Установка ChromeDriver в локальную папку"""
+        """Установка ChromeDriver в /tmp"""
         try:
-            driver_dir = os.path.join(os.getcwd(), "chromedriver_local")
+            driver_dir = os.path.join(self.install_dir, "chromedriver_local")
             os.makedirs(driver_dir, exist_ok=True)
             
             driver_name = "chromedriver.exe" if sys.platform.startswith('win') else "chromedriver"
             driver_path = os.path.join(driver_dir, driver_name)
             
             if os.path.exists(driver_path):
-                logger.info("✅ ChromeDriver уже установлен локально")
+                logger.info("✅ ChromeDriver уже установлен в /tmp")
                 return driver_path
             
-            logger.info("📦 Установка ChromeDriver в локальную папку...")
+            logger.info("📦 Установка ChromeDriver в /tmp...")
             
             if sys.platform.startswith('linux'):
                 url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/120.0.6099.109/linux64/chromedriver-linux64.zip"
@@ -110,9 +133,11 @@ class AntiDetectBrowser:
             
             zip_path = os.path.join(driver_dir, "chromedriver.zip")
             urllib.request.urlretrieve(url, zip_path)
+            logger.info("   ✅ Скачано")
             
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(driver_dir)
+            logger.info("   ✅ Распаковано")
             
             os.remove(zip_path)
             
@@ -122,7 +147,7 @@ class AntiDetectBrowser:
                     os.chmod(driver_path, 0o755)
                     break
             
-            logger.info(f"✅ ChromeDriver установлен: {driver_path}")
+            logger.info(f"✅ ChromeDriver установлен в /tmp: {driver_path}")
             return driver_path
             
         except Exception as e:
@@ -130,12 +155,13 @@ class AntiDetectBrowser:
             return None
     
     def setup_driver(self):
-        """Настройка драйвера с локальными бинарниками"""
+        """Настройка драйвера с бинарниками из /tmp"""
         options = Options()
         
         chrome_path = self.install_chrome_local()
         if chrome_path:
             options.binary_location = chrome_path
+            logger.info(f"📍 Chrome: {chrome_path}")
         
         if self.headless:
             options.add_argument('--headless=new')
@@ -143,13 +169,14 @@ class AntiDetectBrowser:
         options.add_argument('--disable-blink-features=AutomationControlled')
         options.add_experimental_option('excludeSwitches', ['enable-automation'])
         options.add_experimental_option('useAutomationExtension', False)
-        options.add_argument('--disable-gpu')
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-gpu')
         options.add_argument('--disable-web-security')
         options.add_argument('--disable-extensions')
         options.add_argument('--disable-infobars')
         options.add_argument('--disable-notifications')
+        options.add_argument('--remote-debugging-port=9222')
         
         options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
         
@@ -164,6 +191,7 @@ class AntiDetectBrowser:
         
         if driver_path:
             service = Service(driver_path)
+            logger.info(f"📍 ChromeDriver: {driver_path}")
         else:
             from webdriver_manager.chrome import ChromeDriverManager
             service = Service(ChromeDriverManager().install())
@@ -310,3 +338,16 @@ class AntiDetectBrowser:
                 logger.info("✅ Браузер закрыт")
             except:
                 pass
+
+# === ОЧИСТКА /tmp ПРИ ЗАПУСКЕ ===
+def cleanup_temp():
+    temp_dir = "/tmp/chrome_bot"
+    if os.path.exists(temp_dir):
+        try:
+            shutil.rmtree(temp_dir)
+            logger.info("🧹 Очищена папка /tmp/chrome_bot")
+        except:
+            pass
+    os.makedirs(temp_dir, exist_ok=True)
+
+cleanup_temp()
