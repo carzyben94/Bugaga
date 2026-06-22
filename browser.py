@@ -176,6 +176,7 @@ class AntiDetectBrowser:
         if self.headless:
             options.add_argument('--headless=new')
         
+        # === ОПТИМИЗАЦИЯ ===
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
@@ -193,25 +194,60 @@ class AntiDetectBrowser:
         options.add_argument('--disable-dev-tools')
         options.add_argument('--disable-extensions')
         options.add_argument('--disable-plugins')
-        options.add_argument('--disable-images')
-        options.add_argument('--disable-javascript')
         options.add_argument('--disable-popup-blocking')
         options.add_argument('--disable-notifications')
         options.add_argument('--disable-infobars')
         options.add_argument('--disable-session-crashed-bubble')
         
-        options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+        # === ДЕСКТОПНЫЙ USER-AGENT ===
+        desktop_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        options.add_argument(f'--user-agent={desktop_user_agent}')
+        
+        # === ДЕСКТОПНЫЙ РАЗМЕР ЭКРАНА ===
+        options.add_argument('--window-size=1920,1080')
+        options.add_argument('--start-maximized')
         
         options.add_argument('--lang=en-US,en;q=0.9')
+        
+        # === ДЕСКТОПНЫЕ ЗАГОЛОВКИ ===
         options.add_experimental_option('prefs', {
             'intl.accept_languages': 'en-US,en;q=0.9',
             'credentials_enable_service': False,
             'profile.password_manager_enabled': False,
             'profile.default_content_settings': {
-                'images': 2,
-                'javascript': 2,
+                'images': 1,  # Включаем картинки для десктопа
+                'javascript': 1,
                 'popups': 2,
                 'notifications': 2,
+            },
+            'profile.managed_default_content_settings': {
+                'images': 1,
+                'javascript': 1,
+            }
+        })
+        
+        # === ДОПОЛНИТЕЛЬНЫЕ ЗАГОЛОВКИ ===
+        options.add_experimental_option('prefs', {
+            'profile.default_content_setting_values': {
+                'cookies': 1,
+                'images': 1,
+                'javascript': 1,
+                'plugins': 1,
+                'popups': 1,
+                'geolocation': 2,
+                'notifications': 2,
+                'auto_select_certificate': 2,
+                'fullscreen': 1,
+                'mouselock': 1,
+                'mixed_script': 1,
+                'media_stream': 2,
+                'media_stream_mic': 2,
+                'media_stream_camera': 2,
+                'protocol_handlers': 1,
+                'ppapi_broker': 2,
+                'renderer': 1,
+                'ssl_cert_decisions': 1,
+                'web_ui': 1,
             }
         })
         
@@ -225,10 +261,15 @@ class AntiDetectBrowser:
             self.driver = webdriver.Chrome(service=service, options=options)
             self.driver.set_page_load_timeout(30)
             self.driver.implicitly_wait(10)
+            
+            # === УСТАНАВЛИВАЕМ ДЕСКТОПНЫЙ РАЗМЕР ===
+            self.driver.set_window_size(1920, 1080)
+            
         except Exception as e:
             logger.error(f"❌ Ошибка запуска Chrome: {e}")
             raise
         
+        # === СКРЫВАЕМ WEBDRIVER ===
         self.driver.execute_script("""
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined
@@ -239,6 +280,12 @@ class AntiDetectBrowser:
             Object.defineProperty(navigator, 'languages', {
                 get: () => ['en-US', 'en']
             });
+            Object.defineProperty(navigator, 'platform', {
+                get: () => 'Win32'
+            });
+            Object.defineProperty(navigator, 'userAgent', {
+                get: () => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            });
             window.chrome = {
                 runtime: {},
                 loadTimes: function() {},
@@ -248,7 +295,7 @@ class AntiDetectBrowser:
         """)
         
         self.wait = WebDriverWait(self.driver, 10)
-        logger.info("✅ Браузер готов")
+        logger.info("✅ Браузер готов (десктопная версия)")
         return self.driver
     
     def random_delay(self, min_sec=0.3, max_sec=1.0):
@@ -298,9 +345,9 @@ class AntiDetectBrowser:
         except:
             return False
     
-    # ===== ВХОД ЧЕРЕЗ GOOGLE =====
+    # ===== ВХОД ЧЕРЕЗ GOOGLE (ДЕСКТОП) =====
     def login_twitter_with_google(self, username, password):
-        logger.info("🚀 Открываем Twitter...")
+        logger.info("🚀 Открываем Twitter (десктоп)...")
         try:
             self.driver.get("https://x.com/login")
             self.random_delay(2, 3)
@@ -467,7 +514,7 @@ class AntiDetectBrowser:
     
     # ===== ОБЫЧНЫЙ ВХОД =====
     def login_twitter(self, username, password):
-        logger.info("🚀 Открываем Twitter...")
+        logger.info("🚀 Открываем Twitter (десктоп)...")
         try:
             self.driver.get("https://x.com/login")
             self.random_delay(2, 3)
