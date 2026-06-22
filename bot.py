@@ -18,8 +18,7 @@ def install_selenium():
 
 install_selenium()
 
-import telebot
-from flask import Flask, request
+import telebotfrom flask import Flask, request
 import os
 import time
 import requests
@@ -40,7 +39,6 @@ user_sessions = {}
 install_status = {}
 user_logs = {}
 
-# === ФУНКЦИИ ДЛЯ ЛОГИРОВАНИЯ ===
 def add_log(user_id, message, level="INFO"):
     if user_id not in user_logs:
         user_logs[user_id] = []
@@ -128,7 +126,7 @@ def send_help(message):
         "/check - Проверить установку\n"
         "/test - Открыть X.com и показать кнопки\n"
         "/login логин пароль - Обычный вход\n"
-        "/logingoogle email пароль - Вход через Google (сначала Google, потом X.com)\n"
+        "/logingoogle email пароль - Вход через Google\n"
         "/log - Показать логи сессии\n"
         "/clearlog - Очистить логи\n"
         "/status - Статус сессии\n"
@@ -381,7 +379,6 @@ def handle_test(message):
             bot.send_photo(chat_id, photo, caption="🌐 Главная страница X.com")
         os.remove("test_xcom_home.png")
         
-        # Ищем кнопки
         buttons = browser.driver.find_elements(By.TAG_NAME, "button")
         button_info = "🔍 **Найденные кнопки:**\n\n"
         button_texts = []
@@ -474,7 +471,8 @@ def handle_login_google(message):
         message,
         "🔄 **Вход (Google → X.com)...**\n\n"
         "1️⃣ Авторизация в Google\n"
-        "2️⃣ Переход на X.com\n"
+        "2️⃣ Ожидание подтверждения на телефоне (если нужно)\n"
+        "3️⃣ Переход на X.com\n"
         "⏳ 30-50 секунд"
     )
     
@@ -528,7 +526,6 @@ def handle_login_google(message):
                     bot.send_photo(chat_id, photo, caption="❌ **Ошибка входа**")
                 os.remove(error_screenshot)
             
-            # Отправляем логи
             logs = browser.get_detailed_logs()
             if logs:
                 log_parts = [logs[i:i+3500] for i in range(0, len(logs), 3500)]
