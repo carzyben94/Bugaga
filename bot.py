@@ -26,7 +26,7 @@ import os
 import time
 import requests
 import threading
-from browser import AntiDetectBrowser
+from browser import AntiDetectBrowser, check_installation
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
@@ -110,31 +110,15 @@ def run_installation(user_id, chat_id, message_id):
         # ШАГ 4: Проверка всех компонентов
         update_status(chat_id, message_id, "🔍 Проверка всех компонентов...")
         
-        # Проверяем Chrome
-        chrome_dir = "/tmp/chrome_bot/chrome_local"
-        chrome_ok = os.path.exists(chrome_dir) and len(os.listdir(chrome_dir)) > 0
+        check = check_installation()
         
-        # Проверяем ChromeDriver
-        driver_dir = "/tmp/chrome_bot/chromedriver_local"
-        driver_ok = os.path.exists(driver_dir) and len(os.listdir(driver_dir)) > 0
-        
-        # Проверяем Selenium
-        selenium_ok = False
-        try:
-            import selenium
-            selenium_ok = True
-            selenium_version = selenium.__version__
-        except:
-            selenium_ok = False
-        
-        # ШАГ 5: Итог
-        if chrome_ok and driver_ok and selenium_ok:
+        if check['chrome'] and check['chromedriver']:
             update_status(
                 chat_id,
                 message_id,
                 f"✅ **Установка завершена успешно!**\n\n"
-                f"📍 Chrome: /tmp/chrome_bot/chrome_local/\n"
-                f"📍 ChromeDriver: /tmp/chrome_bot/chromedriver_local/\n"
+                f"📍 Chrome: {check['chrome_path']}\n"
+                f"📍 ChromeDriver: {check['driver_path']}\n"
                 f"📦 Selenium: {selenium_version}\n\n"
                 "Теперь можно использовать:\n"
                 "/login логин пароль - Войти в X.com\n"
@@ -144,12 +128,10 @@ def run_installation(user_id, chat_id, message_id):
             install_status[user_id] = {'running': False, 'completed': True}
         else:
             error_msg = "❌ **Ошибка установки:**\n\n"
-            if not chrome_ok:
+            if not check['chrome']:
                 error_msg += "❌ Chrome не установлен\n"
-            if not driver_ok:
+            if not check['chromedriver']:
                 error_msg += "❌ ChromeDriver не установлен\n"
-            if not selenium_ok:
-                error_msg += "❌ Selenium не установлен\n"
             error_msg += "\nПопробуйте еще раз: /install"
             
             update_status(chat_id, message_id, error_msg)
@@ -195,25 +177,24 @@ def handle_check(message):
     except ImportError:
         result += "❌ webdriver-manager не установлен\n"
     
-    # Проверяем Chrome
-    chrome_path = "/tmp/chrome_bot/chrome_local/chrome"
-    if os.path.exists(chrome_path):
-        result += f"✅ Chrome: {chrome_path}\n"
+    # Проверяем бинарники
+    check = check_installation()
+    
+    if check['chrome']:
+        result += f"✅ Chrome: {check['chrome_path']}\n"
     else:
         result += "❌ Chrome: не найден\n"
         result += "   /install для установки\n"
     
-    # Проверяем ChromeDriver
-    driver_path = "/tmp/chrome_bot/chromedriver_local/chromedriver"
-    if os.path.exists(driver_path):
-        result += f"✅ ChromeDriver: {driver_path}\n"
+    if check['chromedriver']:
+        result += f"✅ ChromeDriver: {check['driver_path']}\n"
     else:
         result += "❌ ChromeDriver: не найден\n"
         result += "   /install для установки\n"
     
     # Итог
     result += "\n---\n"
-    if os.path.exists(chrome_path) and os.path.exists(driver_path):
+    if check['chrome'] and check['chromedriver']:
         try:
             import selenium
             result += "✅ **ВСЕ ГОТОВО К РАБОТЕ!**\n"
@@ -262,12 +243,20 @@ def send_help(message):
 def handle_login(message):
     user_id = message.from_user.id
     
-    # Проверяем Chrome
-    chrome_path = "/tmp/chrome_bot/chrome_local/chrome"
-    if not os.path.exists(chrome_path):
+    # Проверяем бинарники
+    check = check_installation()
+    
+    if not check['chrome']:
         bot.reply_to(
             message,
             "❌ Chrome не установлен!\nИспользуйте /install для установки"
+        )
+        return
+    
+    if not check['chromedriver']:
+        bot.reply_to(
+            message,
+            "❌ ChromeDriver не установлен!\nИспользуйте /install для установки"
         )
         return
     
