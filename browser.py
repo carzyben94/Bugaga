@@ -6,6 +6,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
+from webdriver_manager.chrome import ChromeDriverManager
 import os
 import time
 import random
@@ -71,23 +72,8 @@ class AntiDetectBrowser:
             self.log(f"❌ Ошибка скриншота: {e}", "ERROR")
             return None
     
-    def extract_zip_fast(self, zip_path, extract_to):
-        try:
-            if shutil.which('unzip'):
-                self.log("⏳ Распаковка через system unzip...", "DEBUG")
-                subprocess.check_call(['unzip', '-q', zip_path, '-d', extract_to])
-                self.log("✅ Распаковано (unzip)", "SUCCESS")
-                return True
-        except Exception as e:
-            self.log(f"⚠️ Ошибка unzip: {e}, пробую Python", "WARNING")
-        
-        self.log("⏳ Распаковка через Python zipfile...", "DEBUG")
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(extract_to)
-        self.log("✅ Распаковано (Python)", "SUCCESS")
-        return True
-    
     def install_chrome_local(self):
+        """Установка Chrome в /tmp"""
         try:
             chrome_dir = os.path.join(self.install_dir, "chrome_local")
             os.makedirs(chrome_dir, exist_ok=True)
@@ -106,11 +92,13 @@ class AntiDetectBrowser:
                 url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/120.0.6099.109/linux64/chrome-linux64.zip"
                 zip_path = os.path.join(chrome_dir, "chrome.zip")
                 
-                self.log(f"⬇️ Скачивание Chrome: {url}", "INFO")
+                self.log(f"⬇️ Скачивание Chrome...", "INFO")
                 urllib.request.urlretrieve(url, zip_path)
-                self.log(f"✅ Скачано: {os.path.getsize(zip_path)} bytes", "SUCCESS")
+                self.log(f"✅ Скачано", "SUCCESS")
                 
-                self.extract_zip_fast(zip_path, chrome_dir)
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    zip_ref.extractall(chrome_dir)
+                
                 os.remove(zip_path)
                 
                 for root, dirs, files in os.walk(chrome_dir):
@@ -127,78 +115,23 @@ class AntiDetectBrowser:
             self.log(f"❌ Ошибка установки Chrome: {e}", "ERROR")
             return None
     
-    def install_chromedriver_local(self):
-        try:
-            driver_dir = os.path.join(self.install_dir, "chromedriver_local")
-            os.makedirs(driver_dir, exist_ok=True)
-            
-            driver_name = "chromedriver.exe" if sys.platform.startswith('win') else "chromedriver"
-            
-            for root, dirs, files in os.walk(driver_dir):
-                if driver_name in files:
-                    driver_path = os.path.join(root, driver_name)
-                    os.chmod(driver_path, 0o755)
-                    self.driver_path = driver_path
-                    self.log(f"✅ ChromeDriver уже установлен: {driver_path}", "SUCCESS")
-                    return driver_path
-            
-            self.log("📦 Установка ChromeDriver в /tmp...", "INFO")
-            
-            if sys.platform.startswith('linux'):
-                url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/120.0.6099.109/linux64/chromedriver-linux64.zip"
-            elif sys.platform.startswith('win'):
-                url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/120.0.6099.109/win64/chromedriver-win64.zip"
-            else:
-                url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/120.0.6099.109/mac-arm64/chromedriver-mac-arm64.zip"
-            
-            zip_path = os.path.join(driver_dir, "chromedriver.zip")
-            
-            self.log(f"⬇️ Скачивание ChromeDriver: {url}", "INFO")
-            urllib.request.urlretrieve(url, zip_path)
-            self.log(f"✅ Скачано: {os.path.getsize(zip_path)} bytes", "SUCCESS")
-            
-            self.extract_zip_fast(zip_path, driver_dir)
-            os.remove(zip_path)
-            
-            for root, dirs, files in os.walk(driver_dir):
-                if driver_name in files:
-                    driver_path = os.path.join(root, driver_name)
-                    os.chmod(driver_path, 0o755)
-                    self.driver_path = driver_path
-                    self.log(f"✅ ChromeDriver готов: {driver_path}", "SUCCESS")
-                    return driver_path
-            
-            return None
-            
-        except Exception as e:
-            self.log(f"❌ Ошибка установки ChromeDriver: {e}", "ERROR")
-            return None
-    
     def setup_driver(self):
+        """Настройка драйвера с webdriver-manager"""
         self.log("🔧 Настройка драйвера...", "INFO")
         
+        # Проверяем Chrome
         if not self.chrome_path or not os.path.exists(self.chrome_path):
+            self.log("🔍 Поиск Chrome...", "DEBUG")
             chrome_dir = os.path.join(self.install_dir, "chrome_local")
             for root, dirs, files in os.walk(chrome_dir):
                 if "chrome" in files and not files[0].endswith(".zip"):
                     self.chrome_path = os.path.join(root, "chrome")
+                    os.chmod(self.chrome_path, 0o755)
                     self.log(f"✅ Найден Chrome: {self.chrome_path}", "SUCCESS")
-                    break
-        
-        if not self.driver_path or not os.path.exists(self.driver_path):
-            driver_name = "chromedriver.exe" if sys.platform.startswith('win') else "chromedriver"
-            driver_dir = os.path.join(self.install_dir, "chromedriver_local")
-            for root, dirs, files in os.walk(driver_dir):
-                if driver_name in files:
-                    self.driver_path = os.path.join(root, driver_name)
-                    self.log(f"✅ Найден ChromeDriver: {self.driver_path}", "SUCCESS")
                     break
         
         if not self.chrome_path or not os.path.exists(self.chrome_path):
             raise Exception("Chrome не найден. Используйте /install")
-        
-        if not self.driver_path or not os.path.exists(self.driver_path):
-            raise Exception("ChromeDriver не найден. Используйте /install")
         
         options = Options()
         options.binary_location = self.chrome_path
@@ -207,6 +140,7 @@ class AntiDetectBrowser:
             options.add_argument('--headless=new')
             self.log("🔇 Headless режим включен", "INFO")
         
+        # === ФЛАГИ ДЛЯ RENDER/RAILWAY ===
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
@@ -231,7 +165,6 @@ class AntiDetectBrowser:
         
         desktop_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         options.add_argument(f'--user-agent={desktop_user_agent}')
-        self.log(f"🖥️ User-Agent: {desktop_user_agent[:50]}...", "DEBUG")
         
         options.add_argument('--window-size=1920,1080')
         options.add_argument('--start-maximized')
@@ -249,11 +182,23 @@ class AntiDetectBrowser:
             },
         })
         
-        service = Service(
-            self.driver_path,
-            service_args=['--verbose', '--log-path=chromedriver.log'],
-            log_output=subprocess.DEVNULL
-        )
+        # === ИСПОЛЬЗУЕМ webdriver-manager (САМОЕ ВАЖНОЕ) ===
+        self.log("🚀 Установка ChromeDriver через webdriver-manager...", "INFO")
+        
+        try:
+            # webdriver-manager сам скачает нужную версию
+            driver_path = ChromeDriverManager().install()
+            self.log(f"✅ ChromeDriver установлен: {driver_path}", "SUCCESS")
+            
+            # Даем права на выполнение
+            if driver_path and os.path.exists(driver_path):
+                os.chmod(driver_path, 0o755)
+            
+            service = Service(driver_path)
+            
+        except Exception as e:
+            self.log(f"❌ Ошибка ChromeDriver: {e}", "ERROR")
+            raise
         
         try:
             self.log("🚀 Запуск Chrome...", "INFO")
@@ -266,6 +211,7 @@ class AntiDetectBrowser:
             self.log(f"❌ Ошибка запуска Chrome: {e}", "ERROR")
             raise
         
+        # Скрываем webdriver
         self.log("🔧 Скрытие признаков автоматизации...", "DEBUG")
         self.driver.execute_script("""
             Object.defineProperty(navigator, 'webdriver', {
@@ -384,12 +330,46 @@ class AntiDetectBrowser:
         self.log("❌ Поле пароля не найдено", "ERROR")
         return None
     
+    def human_type(self, element, text):
+        try:
+            self.log(f"⌨️ Ввод текста: {text[:3]}***{text[-3:] if len(text) > 6 else ''}", "DEBUG")
+            element.click()
+            self.random_delay(0.2, 0.3)
+            element.clear()
+            for char in text:
+                element.send_keys(char)
+                time.sleep(random.uniform(0.02, 0.08))
+            self.random_delay(0.2, 0.4)
+            self.log("✅ Текст введен", "SUCCESS")
+            return True
+        except Exception as e:
+            self.log(f"❌ Ошибка ввода: {e}", "ERROR")
+            return False
+    
+    def find_element(self, by, selector, timeout=10):
+        try:
+            return WebDriverWait(self.driver, timeout).until(
+                EC.presence_of_element_located((by, selector))
+            )
+        except:
+            return None
+    
+    def click_safe(self, by, selector, timeout=10):
+        try:
+            element = WebDriverWait(self.driver, timeout).until(
+                EC.element_to_be_clickable((by, selector))
+            )
+            return self.human_click(element)
+        except:
+            return False
+    
+    # ===== ВХОД ЧЕРЕЗ GOOGLE =====
     def login_google_first_then_twitter(self, email, password):
         self.log("🚀 ===== НАЧАЛО ВХОДА (Google → X.com) =====", "INFO")
         self.log(f"📧 Email: {email[:3]}***{email[-3:] if len(email) > 6 else ''}", "INFO")
         self.log(f"🔑 Пароль: {'*' * len(password)}", "INFO")
         
-        # ===== ШАГ 1: Открытие Google =====
+        # ШАГ 1: Открытие Google
         self.log("🌐 ШАГ 1: Открытие Google", "STEP")
         try:
             self.driver.get("https://accounts.google.com/")
@@ -400,7 +380,7 @@ class AntiDetectBrowser:
             self.log(f"❌ Ошибка загрузки Google: {e}", "ERROR")
             return False
         
-        # ===== ШАГ 2: Ввод email =====
+        # ШАГ 2: Ввод email
         self.log("🔍 ШАГ 2: Ввод email", "STEP")
         email_field = None
         
@@ -430,7 +410,7 @@ class AntiDetectBrowser:
         
         self.random_delay(1, 2)
         
-        # ===== ШАГ 3: Кнопка "Далее" =====
+        # ШАГ 3: Кнопка "Далее"
         self.log("🔍 ШАГ 3: Кнопка 'Далее' в Google", "STEP")
         next_btn = None
         
@@ -466,7 +446,7 @@ class AntiDetectBrowser:
         
         self.random_delay(3, 5)
         
-        # ===== ШАГ 4: Ввод пароля =====
+        # ШАГ 4: Ввод пароля
         self.log("🔍 ШАГ 4: Ввод пароля в Google", "STEP")
         
         self.log("⏳ Ожидание появления поля пароля...", "INFO")
@@ -500,7 +480,7 @@ class AntiDetectBrowser:
         
         self.random_delay(1, 2)
         
-        # ===== ШАГ 5: Финальная кнопка входа =====
+        # ШАГ 5: Финальная кнопка входа
         self.log("🔍 ШАГ 5: Финальный вход в Google", "STEP")
         login_btn = None
         
@@ -548,7 +528,7 @@ class AntiDetectBrowser:
         self.random_delay(3, 5)
         self.take_step_screenshot("google_logged_in")
         
-        # ===== ШАГ 5.5: Ожидание подтверждения на телефоне =====
+        # ШАГ 5.5: Ожидание подтверждения на телефоне
         self.log("🔍 ШАГ 5.5: Проверка подтверждения на телефоне", "STEP")
         
         current_url = self.driver.current_url
@@ -595,7 +575,7 @@ class AntiDetectBrowser:
                 self.take_step_screenshot("google_confirmation_timeout")
                 return False
         
-        # ===== ШАГ 6: Переход на X.com (ГЛАВНАЯ) =====
+        # ШАГ 6: Переход на X.com
         self.log("🌐 ШАГ 6: Переход на X.com", "STEP")
         try:
             self.driver.get("https://x.com")
@@ -603,51 +583,35 @@ class AntiDetectBrowser:
             self.log("✅ X.com открыт", "SUCCESS")
             self.take_step_screenshot("xcom_home_page")
             
-            # Проверяем URL
             current_url = self.driver.current_url
             self.log(f"📍 Текущий URL: {current_url}", "INFO")
             
-            # Если на странице входа или логина
             if "login" in current_url.lower() or "i/flow" in current_url:
                 self.log("🔍 На странице входа, ищем кнопку входа", "INFO")
                 
                 button_found = False
                 
-                # Все возможные варианты кнопок
                 selectors = [
-                    # Continue with Google
                     "//span[contains(text(), 'Continue with Google')]",
                     "//span[contains(text(), 'Continue with Google')]/ancestor::button",
                     "//div[contains(text(), 'Continue with Google')]",
                     "//button[contains(@class, 'google')]",
-                    
-                    # Continue as [имя]
                     "//span[contains(text(), 'Continue as')]",
                     "//span[contains(text(), 'Continue as')]/ancestor::button",
                     "//div[contains(text(), 'Continue as')]",
                     "//*[contains(text(), 'Continue as')]",
-                    
-                    # Continue
                     "//span[text()='Continue']",
                     "//span[text()='Continue']/ancestor::button",
                     "//button[contains(@class, 'continue')]",
-                    
-                    # По email
                     "//div[contains(text(), '@gmail.com')]",
                     "//span[contains(text(), '@gmail.com')]",
                     f"//*[contains(text(), '{email}')]",
-                    
-                    # По имени (Babe)
                     "//span[text()='Babe']",
                     "//div[contains(text(), 'Babe')]",
-                    
-                    # Универсальные
                     "//button[contains(@class, 'button')]",
                     "//button[@type='button']",
                     "//div[@role='button']",
                     "//a[@role='button']",
-                    
-                    # CSS селекторы
                     "[data-testid='google-login-button']",
                     "[data-testid='loginButton']",
                 ]
@@ -672,9 +636,8 @@ class AntiDetectBrowser:
                     except Exception as e:
                         continue
                 
-                # Если не нашли - ищем все кнопки
                 if not button_found:
-                    self.log("⚠️ Кнопка не найдена, ищем все кликабельные элементы...", "WARNING")
+                    self.log("⚠️ Кнопка не найдена, ищем все кнопки...", "WARNING")
                     all_buttons = self.driver.find_elements(By.TAG_NAME, "button")
                     self.log(f"📊 Найдено кнопок: {len(all_buttons)}", "INFO")
                     
@@ -708,7 +671,7 @@ class AntiDetectBrowser:
         self.random_delay(3, 5)
         self.take_step_screenshot("xcom_final_result")
         
-        # ===== ШАГ 7: Проверка результата =====
+        # ШАГ 7: Проверка результата
         self.log("🔍 ШАГ 7: Проверка результата", "STEP")
         current_url = self.driver.current_url
         self.log(f"📍 Финальный URL: {current_url}", "INFO")
@@ -721,22 +684,6 @@ class AntiDetectBrowser:
             return True
         else:
             self.log(f"⚠️ Неизвестный URL: {current_url}", "WARNING")
-            return False
-    
-    def human_type(self, element, text):
-        try:
-            self.log(f"⌨️ Ввод текста: {text[:3]}***{text[-3:] if len(text) > 6 else ''}", "DEBUG")
-            element.click()
-            self.random_delay(0.2, 0.3)
-            element.clear()
-            for char in text:
-                element.send_keys(char)
-                time.sleep(random.uniform(0.02, 0.08))
-            self.random_delay(0.2, 0.4)
-            self.log("✅ Текст введен", "SUCCESS")
-            return True
-        except Exception as e:
-            self.log(f"❌ Ошибка ввода: {e}", "ERROR")
             return False
     
     def login_twitter(self, username, password):
@@ -810,26 +757,6 @@ class AntiDetectBrowser:
             self.take_step_screenshot("error_crash")
             return False
     
-    def click_safe(self, by, selector, timeout=10):
-        try:
-            self.log(f"🔍 Поиск элемента: {by}={selector}", "DEBUG")
-            element = WebDriverWait(self.driver, timeout).until(
-                EC.element_to_be_clickable((by, selector))
-            )
-            self.log(f"✅ Элемент найден", "SUCCESS")
-            return self.human_click(element)
-        except Exception as e:
-            self.log(f"❌ Ошибка: {e}", "WARNING")
-            return False
-    
-    def find_element(self, by, selector, timeout=10):
-        try:
-            return WebDriverWait(self.driver, timeout).until(
-                EC.presence_of_element_located((by, selector))
-            )
-        except:
-            return None
-    
     def take_screenshot(self, filename="screenshot.png"):
         try:
             self.driver.save_screenshot(filename)
@@ -858,10 +785,8 @@ class AntiDetectBrowser:
 def check_installation():
     install_dir = "/tmp/chrome_bot"
     chrome_dir = os.path.join(install_dir, "chrome_local")
-    driver_dir = os.path.join(install_dir, "chromedriver_local")
     
     chrome_found = None
-    driver_found = None
     
     if os.path.exists(chrome_dir):
         for root, dirs, files in os.walk(chrome_dir):
@@ -869,18 +794,11 @@ def check_installation():
                 chrome_found = os.path.join(root, "chrome")
                 break
     
-    if os.path.exists(driver_dir):
-        driver_name = "chromedriver.exe" if sys.platform.startswith('win') else "chromedriver"
-        for root, dirs, files in os.walk(driver_dir):
-            if driver_name in files:
-                driver_found = os.path.join(root, driver_name)
-                break
-    
     return {
         'chrome': chrome_found is not None,
-        'chromedriver': driver_found is not None,
+        'chromedriver': True,  # webdriver-manager справится
         'chrome_path': chrome_found,
-        'driver_path': driver_found
+        'driver_path': None
     }
 
 def cleanup_temp():
