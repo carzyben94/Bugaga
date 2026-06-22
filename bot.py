@@ -101,7 +101,7 @@ def send_welcome(message):
     bot.reply_to(
         message,
         f"👋 Привет, {message.from_user.first_name}!\n\n"
-        "🤖 **Бот с браузером в /tmp**\n\n"
+        "🤖 **Бот с браузером**\n\n"
         "📋 Команды:\n"
         "/install - Установить Chrome\n"
         "/check - Проверить установку\n"
@@ -233,26 +233,17 @@ def run_installation(user_id, chat_id, message_id):
             install_status[user_id] = {'running': False, 'error': 'Chrome не установлен'}
             return
         
-        update_status(chat_id, message_id, "📦 Установка ChromeDriver в /tmp...")
-        driver_path = browser.install_chromedriver_local()
+        update_status(chat_id, message_id, "✅ ChromeDriver установится автоматически при первом запуске")
         
-        if driver_path:
-            update_status(chat_id, message_id, "✅ ChromeDriver установлен!")
-        else:
-            update_status(chat_id, message_id, "❌ Ошибка установки ChromeDriver")
-            install_status[user_id] = {'running': False, 'error': 'ChromeDriver не установлен'}
-            return
-        
-        update_status(chat_id, message_id, "🔍 Проверка всех компонентов...")
+        update_status(chat_id, message_id, "🔍 Проверка...")
         check = check_installation()
         
-        if check['chrome'] and check['chromedriver']:
+        if check['chrome']:
             update_status(
                 chat_id,
                 message_id,
-                f"✅ **Установка завершена успешно!**\n\n"
+                f"✅ **Установка завершена!**\n\n"
                 f"📍 Chrome: {check['chrome_path']}\n"
-                f"📍 ChromeDriver: {check['driver_path']}\n"
                 f"📦 Selenium: {selenium_version}\n\n"
                 "Теперь можно использовать:\n"
                 "/test - Посмотреть X.com\n"
@@ -264,11 +255,9 @@ def run_installation(user_id, chat_id, message_id):
             error_msg = "❌ **Ошибка установки:**\n\n"
             if not check['chrome']:
                 error_msg += "❌ Chrome не установлен\n"
-            if not check['chromedriver']:
-                error_msg += "❌ ChromeDriver не установлен\n"
             error_msg += "\nПопробуйте еще раз: /install"
             update_status(chat_id, message_id, error_msg)
-            install_status[user_id] = {'running': False, 'error': 'Не все компоненты установлены'}
+            install_status[user_id] = {'running': False, 'error': 'Chrome не установлен'}
         
     except Exception as e:
         update_status(
@@ -315,22 +304,19 @@ def handle_check(message):
         result += "❌ Chrome: не найден\n"
         result += "   /install для установки\n"
     
-    if check['chromedriver']:
-        result += f"✅ ChromeDriver: {check['driver_path']}\n"
-    else:
-        result += "❌ ChromeDriver: не найден\n"
-        result += "   /install для установки\n"
+    result += "✅ ChromeDriver: установится автоматически\n"
     
     result += "\n---\n"
-    if check['chrome'] and check['chromedriver']:
+    if check['chrome']:
         try:
             import selenium
+            import webdriver_manager
             result += "✅ **ВСЕ ГОТОВО К РАБОТЕ!**\n"
             result += "Используйте /test для просмотра X.com\n"
             result += "Используйте /login или /logingoogle для входа"
         except:
-            result += "⚠️ Selenium не установлен\n"
-            result += "   /install для установки"
+            result += "⚠️ Нужно установить зависимости\n"
+            result += "   /install"
     else:
         result += "⚠️ Нужно выполнить /install"
     
@@ -349,10 +335,6 @@ def handle_test(message):
     
     if not check['chrome']:
         bot.reply_to(message, "❌ Chrome не установлен! Используйте /install")
-        return
-    
-    if not check['chromedriver']:
-        bot.reply_to(message, "❌ ChromeDriver не установлен! Используйте /install")
         return
     
     status_msg = bot.reply_to(
@@ -430,7 +412,7 @@ def handle_test(message):
         except:
             pass
 
-# === КОМАНДА /LOGINGOOGLE ===
+# === ОСТАЛЬНЫЕ КОМАНДЫ ===
 @bot.message_handler(commands=['logingoogle'])
 def handle_login_google(message):
     user_id = message.from_user.id
@@ -444,10 +426,6 @@ def handle_login_google(message):
     
     if not check['chrome']:
         bot.reply_to(message, "❌ Chrome не установлен! Используйте /install")
-        return
-    
-    if not check['chromedriver']:
-        bot.reply_to(message, "❌ ChromeDriver не установлен! Используйте /install")
         return
     
     try:
@@ -558,7 +536,6 @@ def handle_login_google(message):
         except:
             pass
 
-# === КОМАНДА /LOGIN ===
 @bot.message_handler(commands=['login'])
 def handle_login(message):
     user_id = message.from_user.id
@@ -572,10 +549,6 @@ def handle_login(message):
     
     if not check['chrome']:
         bot.reply_to(message, "❌ Chrome не установлен! Используйте /install")
-        return
-    
-    if not check['chromedriver']:
-        bot.reply_to(message, "❌ ChromeDriver не установлен! Используйте /install")
         return
     
     try:
@@ -671,7 +644,6 @@ def handle_login(message):
         except:
             pass
 
-# === КОМАНДА /STATUS ===
 @bot.message_handler(commands=['status'])
 def handle_status(message):
     user_id = message.from_user.id
@@ -690,7 +662,6 @@ def handle_status(message):
     else:
         bot.reply_to(message, "❌ Нет активной сессии. Используйте /login")
 
-# === КОМАНДА /SCREENSHOT ===
 @bot.message_handler(commands=['screenshot'])
 def handle_screenshot(message):
     user_id = message.from_user.id
@@ -711,7 +682,6 @@ def handle_screenshot(message):
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}")
 
-# === КОМАНДА /CLOSE ===
 @bot.message_handler(commands=['close'])
 def handle_close(message):
     user_id = message.from_user.id
@@ -743,14 +713,7 @@ def webhook():
     return 'Bad Request', 400
 
 if __name__ == '__main__':
-    if os.getenv("RENDER"):
-        render_url = os.getenv("RENDER_URL")
-        if render_url:
-            webhook_url = f"{render_url}/webhook"
-            url = f"https://api.telegram.org/bot{TOKEN}/setWebhook?url={webhook_url}"
-            requests.get(url)
-            print(f"✅ Webhook: {webhook_url}")
-        
+    if os.getenv("RENDER") or os.getenv("RAILWAY") or os.getenv("PORT"):
         port = int(os.environ.get('PORT', 5000))
         print(f"🌐 Бот запущен на порту {port}")
         app.run(host='0.0.0.0', port=port)
