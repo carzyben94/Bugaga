@@ -5,13 +5,12 @@ import time
 import requests
 from flask import Flask, jsonify
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from browser import take_screenshot, get_page_content, execute_js
+from telegram.ext import Application, CommandHandler, ContextTypes
+from playwright.async_api import async_playwright
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 
-# Токен
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("❌ TELEGRAM_BOT_TOKEN не найден!")
@@ -21,7 +20,7 @@ app_flask = Flask(__name__)
 
 @app_flask.route('/')
 def home():
-    return jsonify({"status": "Бот работает!", "mode": "polling"})
+    return jsonify({"status": "Бот работает!"})
 
 @app_flask.route('/health')
 def health():
@@ -37,30 +36,118 @@ def keep_alive():
             pass
         time.sleep(1200)
 
+# ============ БРАУЗЕР ============
+
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+VIEWPORT = {"width": 1920, "height": 1080}
+LOCALE = "ru-RU"
+TIMEZONE = "Europe/Moscow"
+
+async def get_browser_page():
+    playwright = await async_playwright().start()
+    
+    browser = await playwright.chromium.launch(
+        headless=True,
+        args=[
+            '--disable-blink-features=AutomationControlled',
+            '--disable-dev-shm-usage',
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-web-security',
+            '--disable-features=IsolateOrigins,site-per-process',
+            '--disable-gpu',
+            '--disable-accelerated-2d-canvas',
+            '--disable-pdf-viewer',
+            '--disable-component-extensions-with-background-pages',
+            '--disable-default-apps',
+            '--mute-audio',
+            '--no-first-run',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-renderer-backgrounding',
+        ]
+    )
+    
+    context = await browser.new_context(
+        viewport=VIEWPORT,
+        user_agent=USER_AGENT,
+        locale=LOCALE,
+        timezone_id=TIMEZONE,
+        java_script_enabled=True,
+        bypass_csp=True,
+        extra_http_headers={
+            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Cache-Control": "max-age=0"
+        }
+    )
+    
+    await context.set_geolocation({"latitude": 55.7558, "longitude": 37.6173})
+    await context.grant_permissions(["geolocation"])
+    
+    page = await context.new_page()
+    
+    await page.add_init_script("""
+        Object.defineProperty(navigator, 'webdriver', {
+            get: () => undefined
+        });
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => [1, 2, 3, 4, 5]
+        });
+        Object.defineProperty(navigator, 'languages', {
+            get: () => ['ru-RU', 'ru', 'en-US', 'en']
+        });
+        window.chrome = {
+            runtime: {}
+        };
+    """)
+    
+    return page, browser, context
+
+async def take_screenshot(url: str) -> bytes:
+    page, browser, context = await get_browser_page()
+    
+    try:
+        await page.goto(url, wait_until="networkidle", timeout=30000)
+        await page.wait_for_load_state("networkidle", timeout=10000)
+        
+        await page.evaluate("""
+            window.scrollTo(0, document.body.scrollHeight);
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            window.scrollTo(0, 0);
+        """)
+        
+        await page.wait_for_timeout(1000)
+        
+        screenshot = await page.screenshot(full_page=True, type="png")
+        return screenshot
+    
+    except Exception as e:
+        print(f"❌ Ошибка скриншота: {e}")
+        try:
+            screenshot = await page.screenshot(full_page=True, type="png")
+            return screenshot
+        except:
+            return None
+    
+    finally:
+        await browser.close()
+
 # ============ КОМАНДЫ БОТА ============
 
-# /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "👋 Привет! Я бот с браузером.\n\n"
         "Команды:\n"
-        "/open google.com - Открыть сайт и показать скриншот\n"
-        "/screenshot google.com - Скриншот\n"
-        "/html google.com - HTML код\n"
-        "/js google.com 'document.title' - Выполнить JS"
+        "/open google.com - Открыть сайт и показать скриншот"
     )
 
-# /help
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
-        "📖 Команды:\n\n"
-        "/open google.com - Скриншот сайта\n"
-        "/screenshot google.com - То же самое\n"
-        "/html google.com - HTML код\n"
-        "/js google.com 'document.title' - Выполнить JS"
-    )
-
-# /open - ОТКРЫТЬ САЙТ И СДЕЛАТЬ СКРИН
 async def open_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     args = context.args
     if not args:
@@ -83,73 +170,6 @@ async def open_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     else:
         await update.message.reply_text("❌ Не удалось открыть страницу")
 
-# /screenshot
-async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    args = context.args
-    if not args:
-        await update.message.reply_text("❌ Укажите URL: /screenshot google.com")
-        return
-    
-    url = args[0]
-    if not url.startswith("http"):
-        url = "https://" + url
-    
-    await update.message.reply_text("📸 Делаю скриншот...")
-    
-    screenshot = await take_screenshot(url)
-    
-    if screenshot:
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption=f"✅ {url}"
-        )
-    else:
-        await update.message.reply_text("❌ Не удалось сделать скриншот")
-
-# /html
-async def html_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    args = context.args
-    if not args:
-        await update.message.reply_text("❌ Укажите URL: /html google.com")
-        return
-    
-    url = args[0]
-    if not url.startswith("http"):
-        url = "https://" + url
-    
-    await update.message.reply_text("📄 Получаю HTML...")
-    
-    content = await get_page_content(url)
-    
-    if content:
-        if len(content) > 4000:
-            content = content[:4000] + "\n\n... (обрезано)"
-        await update.message.reply_text(f"```html\n{content}\n```", parse_mode="Markdown")
-    else:
-        await update.message.reply_text("❌ Не удалось получить HTML")
-
-# /js
-async def js_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    args = context.args
-    if len(args) < 2:
-        await update.message.reply_text("❌ Использование: /js google.com 'document.title'")
-        return
-    
-    url = args[0]
-    script = ' '.join(args[1:])
-    
-    if not url.startswith("http"):
-        url = "https://" + url
-    
-    await update.message.reply_text("⚡ Выполняю JS...")
-    
-    result = await execute_js(url, script)
-    
-    if result is not None:
-        await update.message.reply_text(f"✅ Результат:\n```\n{result}\n```", parse_mode="Markdown")
-    else:
-        await update.message.reply_text("❌ Не удалось выполнить скрипт")
-
 # ============ ЗАПУСК ============
 
 def run_flask():
@@ -161,13 +181,8 @@ def main():
     threading.Thread(target=keep_alive, daemon=True).start()
     
     bot_app = Application.builder().token(BOT_TOKEN).build()
-    
     bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(CommandHandler("help", help_command))
     bot_app.add_handler(CommandHandler("open", open_command))
-    bot_app.add_handler(CommandHandler("screenshot", screenshot_command))
-    bot_app.add_handler(CommandHandler("html", html_command))
-    bot_app.add_handler(CommandHandler("js", js_command))
     
     print("✅ Бот запущен")
     bot_app.run_polling()
