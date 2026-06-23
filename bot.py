@@ -280,7 +280,6 @@ def handle_diag(message):
     browser = user_sessions[user_id]
     
     try:
-        # 1. Информация о странице
         current_url = browser.driver.current_url
         bot.send_message(chat_id, f"📍 URL: {current_url}")
         
@@ -290,9 +289,7 @@ def handle_diag(message):
         html_len = len(browser.driver.page_source)
         bot.send_message(chat_id, f"📊 HTML длина: {html_len} символов")
         
-        # 2. Поиск всех элементов с текстом
-        bot.send_message(chat_id, "🔍 Поиск всех элементов с текстом...")
-        
+        # Поиск всех элементов с текстом
         all_elements = browser.driver.find_elements(By.XPATH, "//*[text()!='']")
         
         result = "🔍 **Найденные элементы с текстом:**\n"
@@ -313,9 +310,7 @@ def handle_diag(message):
         
         bot.send_message(chat_id, result, parse_mode='Markdown')
         
-        # 3. Поиск через JavaScript
-        bot.send_message(chat_id, "🔍 Поиск через JavaScript...")
-        
+        # Поиск через JavaScript
         js_result = browser.driver.execute_script("""
             var elements = document.querySelectorAll('*');
             var found = [];
@@ -342,7 +337,7 @@ def handle_diag(message):
         else:
             bot.send_message(chat_id, "❌ Через JavaScript ничего не найдено")
         
-        # 4. Скриншот
+        # Скриншот
         screenshot = browser.take_screenshot(f"diag_{user_id}.png")
         if screenshot:
             with open(screenshot, 'rb') as photo:
@@ -352,10 +347,10 @@ def handle_diag(message):
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {e}")
 
-# === КОМАНДА /CLICK_JS ===
-@bot.message_handler(commands=['click_js'])
-def handle_click_js(message):
-    """Клик через JavaScript — находит и нажимает"""
+# === КОМАНДА /CLICK_XY ===
+@bot.message_handler(commands=['click_xy'])
+def handle_click_xy(message):
+    """Клик по координатам"""
     user_id = message.from_user.id
     chat_id = message.chat.id
     
@@ -363,49 +358,52 @@ def handle_click_js(message):
         bot.reply_to(message, "❌ Нет активной сессии")
         return
     
+    if message.text is None:
+        bot.reply_to(message, "❌ Используйте: /click_xy X Y")
+        return
+    
+    parts = message.text.split()
+    if len(parts) < 3:
+        bot.reply_to(message, "❌ Используйте: /click_xy X Y")
+        return
+    
+    try:
+        x = int(parts[1])
+        y = int(parts[2])
+    except ValueError:
+        bot.reply_to(message, "❌ Введите числа: /click_xy 960 380")
+        return
+    
     browser = user_sessions[user_id]
     
     try:
-        # Ищем и кликаем через JavaScript
-        result = browser.driver.execute_script("""
-            // Ищем элементы с текстом
-            var elements = document.querySelectorAll('*');
-            var found = [];
-            
-            for (var i = 0; i < elements.length; i++) {
-                var text = elements[i].textContent || '';
-                // Проверяем все варианты
-                if (text.includes('Continue as') || 
-                    text.includes('Continue with') || 
-                    text.includes('@gmail.com') ||
-                    text.includes('Babe')) {
-                    found.push({
-                        element: elements[i],
-                        text: text.slice(0, 50),
-                        tag: elements[i].tagName
-                    });
-                }
-            }
-            
-            // Если нашли — кликаем
-            if (found.length > 0) {
-                // Пробуем кликнуть по первому подходящему
-                var el = found[0].element;
-                el.scrollIntoView({block: 'center'});
+        bot.reply_to(message, f"🖱️ Кликаю по ({x}, {y})")
+        
+        result = browser.driver.execute_script(f"""
+            var el = document.elementFromPoint({x}, {y});
+            if (el) {{
+                el.scrollIntoView({{block: 'center'}});
                 el.click();
-                return '✅ Кликнут: ' + found[0].text;
-            }
-            
-            return '❌ Ничего не найдено';
+                return true;
+            }}
+            return false;
         """)
         
-        bot.reply_to(message, f"🖱️ {result}")
+        if result:
+            bot.send_message(chat_id, f"✅ Клик по ({x}, {y}) выполнен")
+        else:
+            bot.send_message(chat_id, f"⚠️ Элемент по ({x}, {y}) не найден, но клик выполнен")
+            browser.driver.execute_script(f"""
+                var el = document.elementFromPoint({x}, {y});
+                if (el) {{
+                    el.click();
+                }}
+            """)
         
-        # Делаем скриншот
-        screenshot = browser.take_screenshot(f"click_js_{user_id}.png")
+        screenshot = browser.take_screenshot(f"click_xy_{user_id}.png")
         if screenshot:
             with open(screenshot, 'rb') as photo:
-                bot.send_photo(chat_id, photo, caption="📸 После клика")
+                bot.send_photo(chat_id, photo, caption=f"📸 Клик по ({x}, {y})")
             os.remove(screenshot)
         
     except Exception as e:
@@ -477,14 +475,15 @@ def send_welcome(message):
         "/logingoogle email пароль - Вход через Google\n"
         "/joystick - Джойстик с принудительным кликом\n"
         "/diag - Диагностика страницы\n"
-        "/click_js - Клик через JavaScript\n"
+        "/click_xy X Y - Клик по координатам\n"
         "/screen_now - Скриншот с курсором\n"
         "/stop_x - Остановить джойстик\n"
         "/log - Показать логи\n"
         "/getlog - Скачать лог-файл\n"
         "/status - Статус сессии\n"
         "/screenshot - Скриншот\n"
-        "/close - Закрыть браузер"
+        "/close - Закрыть браузер\n\n"
+        "💡 Попробуйте /click_xy 960 380 для клика по кнопке"
     )
 
 @bot.message_handler(commands=['check'])
