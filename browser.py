@@ -85,8 +85,9 @@ class AntiDetectBrowser:
         else:
             logger.info(message)
         
+        # === ИСПРАВЛЕНО: передаем 2 аргумента ===
         if self.log_callback:
-            self.log_callback(log_entry)
+            self.log_callback(log_entry, level)
         
         return log_entry
         
@@ -164,20 +165,17 @@ class AntiDetectBrowser:
             self.log(f"❌ Ошибка клика: {e}", "ERROR")
             return False
     
-    # ===== НОВЫЙ МЕТОД ВВОДА ЧЕРЕЗ ACTIONCHAINS =====
     def type_with_actions(self, element, text):
         """Ввод текста через ActionChains (надежно)"""
         try:
             self.log(f"⌨️ Ввод через ActionChains", "DEBUG")
             
-            # Кликаем по элементу
             actions = ActionChains(self.driver)
             actions.move_to_element(element)
             actions.click()
             actions.perform()
             time.sleep(0.5)
             
-            # Очищаем (Ctrl+A + Delete)
             actions = ActionChains(self.driver)
             actions.key_down(Keys.CONTROL)
             actions.send_keys('a')
@@ -186,7 +184,6 @@ class AntiDetectBrowser:
             actions.perform()
             time.sleep(0.5)
             
-            # Вводим текст посимвольно
             for char in text:
                 actions = ActionChains(self.driver)
                 actions.send_keys(char)
@@ -200,7 +197,6 @@ class AntiDetectBrowser:
             self.log(f"❌ Ошибка ввода через ActionChains: {e}", "ERROR")
             return False
     
-    # ===== НОВЫЙ МЕТОД ПОИСКА ПОЛЯ ПАРОЛЯ =====
     def safe_find_password_field(self, timeout=30):
         """Найти поле пароля с большим терпением"""
         selectors = [
@@ -225,7 +221,6 @@ class AntiDetectBrowser:
                         EC.presence_of_element_located((by, selector))
                     )
                     if element and element.is_displayed():
-                        # Ждем кликабельности
                         try:
                             WebDriverWait(self.driver, 3).until(
                                 EC.element_to_be_clickable((by, selector))
@@ -246,15 +241,12 @@ class AntiDetectBrowser:
         self.log("❌ Поле пароля не найдено", "ERROR")
         return None
     
-    # ===== СТАРЫЙ МЕТОД human_type (оставляем для совместимости) =====
     def human_type(self, element, text):
         try:
             self.log(f"⌨️ Ввод текста: {text[:3]}***{text[-3:] if len(text) > 6 else ''}", "DEBUG")
             
-            # Ждем 2 секунды перед вводом
             time.sleep(2)
             
-            # Пробуем кликнуть несколько раз
             for attempt in range(5):
                 try:
                     element.click()
@@ -309,7 +301,7 @@ class AntiDetectBrowser:
             self.log(f"❌ Ошибка Google: {e}", "ERROR")
             return False
         
-        # === ВВОД EMAIL ===
+        # Ввод email
         self.log("🔍 Поиск поля email...", "INFO")
         email_field = self.find_element(By.ID, "identifierId")
         if email_field:
@@ -322,7 +314,7 @@ class AntiDetectBrowser:
         
         self.random_delay(1, 2)
         
-        # === КНОПКА "ДАЛЕЕ" ===
+        # Кнопка "Далее"
         self.log("🔍 Поиск кнопки 'Далее'...", "INFO")
         next_btn = self.find_element_clickable(By.XPATH, "//span[text()='Далее']")
         if not next_btn:
@@ -339,10 +331,9 @@ class AntiDetectBrowser:
         
         self.random_delay(2, 4)
         
-        # === ПРОВЕРЯЕМ СТРАНИЦУ ===
+        # Проверяем страницу
         current_url = self.driver.current_url
         
-        # Если страница подтверждения
         if "challenge" in current_url or "verify" in current_url.lower():
             self.log("🔐 Страница подтверждения Google", "INFO")
             self.take_step_screenshot("google_verify_page")
@@ -361,27 +352,21 @@ class AntiDetectBrowser:
             self.log("✅ Продолжаем...", "INFO")
             return True
         
-        # === ВВОД ПАРОЛЯ (НОВЫЙ МЕТОД) ===
+        # Ввод пароля
         self.log("🔍 Поиск поля пароля...", "INFO")
-        
-        # Ждем появления поля пароля
-        self.log("⏳ Ожидание появления поля пароля...", "INFO")
         self.random_delay(2, 4)
         
-        # Ищем поле пароля через safe_find_password_field
         password_field = self.safe_find_password_field()
         
         if password_field:
             self.log("✅ Поле пароля найдено, пробую ввести...", "SUCCESS")
             
-            # Пробуем ввести через ActionChains
             success = self.type_with_actions(password_field, password)
             
             if success:
                 self.take_step_screenshot("google_password_entered")
                 self.log("✅ Пароль введен через ActionChains", "SUCCESS")
             else:
-                # Fallback: обычный ввод
                 try:
                     self.log("🔄 Пробую обычный ввод...", "DEBUG")
                     password_field.click()
@@ -401,7 +386,7 @@ class AntiDetectBrowser:
         
         self.random_delay(1, 2)
         
-        # === ФИНАЛЬНАЯ КНОПКА ===
+        # Финальная кнопка
         self.log("🔍 Поиск кнопки входа...", "INFO")
         login_btn = self.find_element_clickable(By.XPATH, "//span[text()='Далее']")
         if not login_btn:
@@ -420,7 +405,6 @@ class AntiDetectBrowser:
         
         self.random_delay(3, 5)
         
-        # === ПРОВЕРКА 2FA ===
         current_url = self.driver.current_url
         self.log(f"📍 Финальный URL: {current_url[:80]}...", "INFO")
         
