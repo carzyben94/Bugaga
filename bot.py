@@ -48,7 +48,7 @@ def keep_alive():
             pass
         time.sleep(1200)
 
-# ============ БРАУЗЕР С ПОЛНОЙ МАСКИРОВКОЙ ============
+# ============ БРАУЗЕР ============
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 VIEWPORT = {"width": 1366, "height": 768}
 LOCALE = "ru-RU"
@@ -212,10 +212,10 @@ async def goto_url(page, url: str):
         print(f"❌ Ошибка загрузки {url}: {e}")
         raise e
 
-# ============ ACTIONCHAINS (РЕАЛИСТИЧНЫЕ ДЕЙСТВИЯ) ============
+# ============ ACTIONCHAINS ============
 
 async def human_move(page, x: int, y: int, steps: int = 10):
-    """Реалистичное движение мыши с случайными остановками"""
+    """Реалистичное движение мыши"""
     try:
         current = await page.evaluate("""
             ({
@@ -240,7 +240,7 @@ async def human_move(page, x: int, y: int, steps: int = 10):
         return False
 
 async def human_click(page, x: int, y: int, button: str = "left"):
-    """Реалистичный клик с нажатием и задержкой"""
+    """Реалистичный клик"""
     try:
         await human_move(page, x, y, steps=8)
         await page.wait_for_timeout(random.randint(100, 300))
@@ -253,7 +253,7 @@ async def human_click(page, x: int, y: int, button: str = "left"):
         return False
 
 async def human_type(page, text: str, delay: int = 50):
-    """Реалистичный ввод текста с случайными задержками"""
+    """Реалистичный ввод текста"""
     try:
         for i, char in enumerate(text):
             wait_time = delay + random.randint(-20, 30)
@@ -457,7 +457,7 @@ async def update_joystick_message(query, page, user_id, mode, caption=""):
     except Exception as e:
         print(f"Ошибка редактирования: {e}")
 
-# ============ АВТОМАТИЧЕСКИЙ ВХОД В GOOGLE ============
+# ============ АВТОВХОД В GOOGLE ============
 async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     args = context.args
@@ -481,27 +481,32 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     session = user_sessions[user_id]
     page = session["page"]
     
-    await update.message.reply_text("🔐 Начинаю вход в Google (с эмуляцией человека)...")
+    await update.message.reply_text("🔐 Начинаю вход в Google...")
     
     try:
         await update.message.reply_text("🌐 Открываю accounts.google.com...")
         await goto_url(page, "https://accounts.google.com")
-        await page.wait_for_timeout(3000)
+        await page.wait_for_timeout(5000)
         
         await update.message.reply_text("🔍 Ищу поле для email...")
         
-        email_selectors = [
-            'input[type="email"]',
-            'input[name="identifier"]',
-            'input[autocomplete="username"]',
-            'input[aria-label*="Email"]'
+        # XPath селекторы
+        email_xpaths = [
+            '//input[@type="email"]',
+            '//input[@name="identifier"]',
+            '//input[@autocomplete="username"]',
+            '//input[@aria-label*="Email"]',
+            '//input[@aria-label*="телефон"]',
+            '//input[@jsname="YPqjbf"]',
+            '//input[contains(@class, "whsOnd")]',
+            '//input[contains(@class, "zHQkBf")]',
         ]
         
         email_found = False
-        for selector in email_selectors:
+        for xpath in email_xpaths:
             try:
-                await page.wait_for_selector(selector, timeout=3000)
-                el = await page.locator(selector).first
+                await page.wait_for_selector(f'xpath={xpath}', timeout=5000)
+                el = await page.locator(f'xpath={xpath}').first
                 if await el.count() > 0 and await el.is_visible():
                     box = await el.bounding_box()
                     if box:
@@ -513,15 +518,71 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     await page.wait_for_timeout(500)
                     await human_type(page, email)
                     email_found = True
+                    print(f"✅ Email введён через XPath: {xpath}")
                     break
             except:
                 continue
         
         if not email_found:
+            # CSS селекторы
+            css_selectors = [
+                'input[type="email"]',
+                'input[name="identifier"]',
+                'input[autocomplete="username"]',
+                'input[aria-label*="Email"]',
+                '.whsOnd',
+                '.zHQkBf'
+            ]
+            
+            for selector in css_selectors:
+                try:
+                    await page.wait_for_selector(selector, timeout=3000)
+                    el = await page.locator(selector).first
+                    if await el.count() > 0 and await el.is_visible():
+                        box = await el.bounding_box()
+                        if box:
+                            x = box['x'] + box['width'] // 2
+                            y = box['y'] + box['height'] // 2
+                            await human_click(page, x, y)
+                        else:
+                            await el.click()
+                        await page.wait_for_timeout(500)
+                        await human_type(page, email)
+                        email_found = True
+                        print(f"✅ Email введён через CSS: {selector}")
+                        break
+                except:
+                    continue
+        
+        if not email_found:
+            # Ищем любой input
+            try:
+                inputs = await page.locator('input').all()
+                for inp in inputs:
+                    if await inp.is_visible():
+                        input_type = await inp.get_attribute('type')
+                        if input_type in ['email', 'text', None]:
+                            box = await inp.bounding_box()
+                            if box:
+                                x = box['x'] + box['width'] // 2
+                                y = box['y'] + box['height'] // 2
+                                await human_click(page, x, y)
+                                await page.wait_for_timeout(500)
+                                await human_type(page, email)
+                                email_found = True
+                                print("✅ Email введён через первый input")
+                                break
+            except:
+                pass
+        
+        if not email_found:
             screenshot = await human_screenshot(page, 100, 100)
             await update.message.reply_photo(
                 photo=screenshot,
-                caption="❌ **Не найдено поле для email**\n\nПопробуй /refresh"
+                caption="❌ **Не найдено поле для email**\n\n"
+                        "Попробуй:\n"
+                        "1. /refresh - обновить страницу\n"
+                        "2. /login email pass - попробовать снова"
             )
             return
         
@@ -530,17 +591,24 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("⏭️ Нажимаю 'Далее'...")
         
         next_selectors = [
-            'button:has-text("Далее")',
-            'button:has-text("Next")',
+            '//button[contains(., "Далее")]',
+            '//button[contains(., "Next")]',
+            '//span[text()="Далее"]/parent::button',
+            '//span[text()="Next"]/parent::button',
             '#identifierNext',
-            '[jsname="V67aGc"]'
+            '[jsname="V67aGc"]',
         ]
         
         next_clicked = False
         for selector in next_selectors:
             try:
-                await page.wait_for_selector(selector, timeout=2000)
-                el = await page.locator(selector).first
+                if selector.startswith('//'):
+                    await page.wait_for_selector(f'xpath={selector}', timeout=2000)
+                    el = await page.locator(f'xpath={selector}').first
+                else:
+                    await page.wait_for_selector(selector, timeout=2000)
+                    el = await page.locator(selector).first
+                    
                 if await el.count() > 0 and await el.is_visible():
                     box = await el.bounding_box()
                     if box:
@@ -561,17 +629,19 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         
         await update.message.reply_text("🔑 Ввожу пароль...")
         
-        password_selectors = [
-            'input[type="password"]',
-            'input[name="password"]',
-            'input[aria-label*="Password"]'
+        password_xpaths = [
+            '//input[@type="password"]',
+            '//input[@name="password"]',
+            '//input[@aria-label*="Password"]',
+            '//input[@aria-label*="пароль"]',
+            '//input[@jsname="YPqjbf"]',
         ]
         
         password_found = False
-        for selector in password_selectors:
+        for xpath in password_xpaths:
             try:
-                await page.wait_for_selector(selector, timeout=3000)
-                el = await page.locator(selector).first
+                await page.wait_for_selector(f'xpath={xpath}', timeout=3000)
+                el = await page.locator(f'xpath={xpath}').first
                 if await el.count() > 0 and await el.is_visible():
                     box = await el.bounding_box()
                     if box:
@@ -588,6 +658,27 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 continue
         
         if not password_found:
+            css_selectors = ['input[type="password"]', 'input[name="password"]']
+            for selector in css_selectors:
+                try:
+                    await page.wait_for_selector(selector, timeout=3000)
+                    el = await page.locator(selector).first
+                    if await el.count() > 0 and await el.is_visible():
+                        box = await el.bounding_box()
+                        if box:
+                            x = box['x'] + box['width'] // 2
+                            y = box['y'] + box['height'] // 2
+                            await human_click(page, x, y)
+                        else:
+                            await el.click()
+                        await page.wait_for_timeout(500)
+                        await human_type(page, password)
+                        password_found = True
+                        break
+                except:
+                    continue
+        
+        if not password_found:
             screenshot = await human_screenshot(page, 100, 100)
             await update.message.reply_photo(
                 photo=screenshot,
@@ -602,8 +693,13 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         next_clicked = False
         for selector in next_selectors:
             try:
-                await page.wait_for_selector(selector, timeout=2000)
-                el = await page.locator(selector).first
+                if selector.startswith('//'):
+                    await page.wait_for_selector(f'xpath={selector}', timeout=2000)
+                    el = await page.locator(f'xpath={selector}').first
+                else:
+                    await page.wait_for_selector(selector, timeout=2000)
+                    el = await page.locator(selector).first
+                    
                 if await el.count() > 0 and await el.is_visible():
                     box = await el.bounding_box()
                     if box:
@@ -644,7 +740,7 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         else:
             await update.message.reply_photo(
                 photo=screenshot,
-                caption=f"📸 Текущая страница: {current_url}"
+                caption=f"📸 Страница: {current_url}"
             )
         
     except Exception as e:
@@ -687,7 +783,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     await update.message.reply_photo(photo=screenshot, caption=status_text)
 
-# ============ КОМАНДЫ БОТА ============
+# ============ КОМАНДЫ ============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "👋 Привет! Я бот с управлением браузером!\n\n"
@@ -810,7 +906,7 @@ async def joystick_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     
     joystick_messages[user_id] = msg.message_id
 
-# ============ ОБРАБОТЧИК КНОПОК ДЖОЙСТИКА ============
+# ============ ОБРАБОТЧИК КНОПОК ============
 async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -885,7 +981,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка ПКМ: {e}")
     
-    # КЛИК ПО КУРСОРУ
+    # КЛИК
     elif data == "click_center":
         try:
             await human_click(page, current_x, current_y)
@@ -973,7 +1069,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         if user_id in joystick_messages:
             del joystick_messages[user_id]
     
-    # ПЕРЕКЛЮЧЕНИЕ РЕЖИМА
+    # РЕЖИМ
     elif data == "toggle_mode":
         current_mode = joystick_states.get(user_id, {}).get("mode", "normal")
         
