@@ -484,140 +484,87 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text("🔐 Начинаю вход в Google...")
     
     try:
+        # 1. Открываем страницу входа
         await update.message.reply_text("🌐 Открываю accounts.google.com...")
         await goto_url(page, "https://accounts.google.com")
         await page.wait_for_timeout(5000)
         
+        # 2. ВВОД EMAIL
         await update.message.reply_text("🔍 Ищу поле для email...")
         
-        # XPath селекторы
-        email_xpaths = [
-            '//input[@type="email"]',
-            '//input[@name="identifier"]',
-            '//input[@autocomplete="username"]',
-            '//input[@aria-label*="Email"]',
-            '//input[@aria-label*="телефон"]',
-            '//input[@jsname="YPqjbf"]',
-            '//input[contains(@class, "whsOnd")]',
-            '//input[contains(@class, "zHQkBf")]',
+        email_selectors = [
+            'input[type="email"]',
+            'input[name="identifier"]',
+            'input[autocomplete="username"]',
+            'input[aria-label*="Email"]',
+            'input[aria-label*="телефон"]',
+            'input[jsname="YPqjbf"]',
+            'input.whsOnd',
+            'input.zHQkBf',
         ]
         
         email_found = False
-        for xpath in email_xpaths:
+        for selector in email_selectors:
             try:
-                await page.wait_for_selector(f'xpath={xpath}', timeout=5000)
-                el = await page.locator(f'xpath={xpath}').first
+                await page.wait_for_selector(selector, timeout=3000)
+                el = await page.locator(selector).first
                 if await el.count() > 0 and await el.is_visible():
-                    box = await el.bounding_box()
-                    if box:
-                        x = box['x'] + box['width'] // 2
-                        y = box['y'] + box['height'] // 2
-                        await human_click(page, x, y)
-                    else:
-                        await el.click()
-                    await page.wait_for_timeout(500)
-                    await human_type(page, email)
+                    await el.click()
+                    await page.wait_for_timeout(300)
+                    await el.fill(email)
                     email_found = True
-                    print(f"✅ Email введён через XPath: {xpath}")
+                    print(f"✅ Email введён: {selector}")
                     break
             except:
                 continue
         
         if not email_found:
-            # CSS селекторы
-            css_selectors = [
-                'input[type="email"]',
-                'input[name="identifier"]',
-                'input[autocomplete="username"]',
-                'input[aria-label*="Email"]',
-                '.whsOnd',
-                '.zHQkBf'
-            ]
-            
-            for selector in css_selectors:
-                try:
-                    await page.wait_for_selector(selector, timeout=3000)
-                    el = await page.locator(selector).first
-                    if await el.count() > 0 and await el.is_visible():
-                        box = await el.bounding_box()
-                        if box:
-                            x = box['x'] + box['width'] // 2
-                            y = box['y'] + box['height'] // 2
-                            await human_click(page, x, y)
-                        else:
-                            await el.click()
-                        await page.wait_for_timeout(500)
-                        await human_type(page, email)
-                        email_found = True
-                        print(f"✅ Email введён через CSS: {selector}")
-                        break
-                except:
-                    continue
-        
-        if not email_found:
-            # Ищем любой input
+            # Пробуем через XPath
             try:
-                inputs = await page.locator('input').all()
-                for inp in inputs:
-                    if await inp.is_visible():
-                        input_type = await inp.get_attribute('type')
-                        if input_type in ['email', 'text', None]:
-                            box = await inp.bounding_box()
-                            if box:
-                                x = box['x'] + box['width'] // 2
-                                y = box['y'] + box['height'] // 2
-                                await human_click(page, x, y)
-                                await page.wait_for_timeout(500)
-                                await human_type(page, email)
-                                email_found = True
-                                print("✅ Email введён через первый input")
-                                break
+                el = await page.locator('//input[@type="email"]').first
+                if await el.count() > 0:
+                    await el.click()
+                    await page.wait_for_timeout(300)
+                    await el.fill(email)
+                    email_found = True
+                    print("✅ Email введён через XPath")
             except:
                 pass
         
         if not email_found:
-            screenshot = await human_screenshot(page, 100, 100)
+            screenshot = await page.screenshot(full_page=True, type="png")
             await update.message.reply_photo(
                 photo=screenshot,
-                caption="❌ **Не найдено поле для email**\n\n"
-                        "Попробуй:\n"
-                        "1. /refresh - обновить страницу\n"
-                        "2. /login email pass - попробовать снова"
+                caption="❌ **Не найдено поле для email**\n\nПопробуй /refresh"
             )
             return
         
         await page.wait_for_timeout(1000)
         
+        # 3. НАЖИМАЕМ "ДАЛЕЕ"
         await update.message.reply_text("⏭️ Нажимаю 'Далее'...")
         
+        next_clicked = False
         next_selectors = [
-            '//button[contains(., "Далее")]',
-            '//button[contains(., "Next")]',
+            '#identifierNext',
+            'button:has-text("Далее")',
+            'button:has-text("Next")',
+            '[jsname="V67aGc"]',
             '//span[text()="Далее"]/parent::button',
             '//span[text()="Next"]/parent::button',
-            '#identifierNext',
-            '[jsname="V67aGc"]',
         ]
         
-        next_clicked = False
         for selector in next_selectors:
             try:
                 if selector.startswith('//'):
-                    await page.wait_for_selector(f'xpath={selector}', timeout=2000)
                     el = await page.locator(f'xpath={selector}').first
                 else:
-                    await page.wait_for_selector(selector, timeout=2000)
                     el = await page.locator(selector).first
                     
                 if await el.count() > 0 and await el.is_visible():
-                    box = await el.bounding_box()
-                    if box:
-                        x = box['x'] + box['width'] // 2
-                        y = box['y'] + box['height'] // 2
-                        await human_click(page, x, y)
-                    else:
-                        await el.click()
+                    await el.click()
                     next_clicked = True
+                    print(f"✅ Нажато 'Далее': {selector}")
                     break
             except:
                 continue
@@ -625,89 +572,119 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if not next_clicked:
             await page.keyboard.press("Enter")
         
-        await page.wait_for_timeout(3000)
+        # 4. ЖДЁМ ПОЛЯ ДЛЯ ПАРОЛЯ
+        await update.message.reply_text("⏳ Жду появления поля для пароля...")
+        await page.wait_for_timeout(5000)
         
-        await update.message.reply_text("🔑 Ввожу пароль...")
+        # 5. ВВОД ПАРОЛЯ
+        await update.message.reply_text("🔑 Ищу поле для пароля...")
         
-        password_xpaths = [
+        password_selectors = [
+            'input[type="password"]',
+            'input[name="password"]',
+            'input[aria-label*="Password"]',
+            'input[aria-label*="пароль"]',
+            'input[aria-label*="Пароль"]',
+            'input[jsname="YPqjbf"]',
+            'input.whsOnd',
+            'input.zHQkBf',
             '//input[@type="password"]',
             '//input[@name="password"]',
-            '//input[@aria-label*="Password"]',
-            '//input[@aria-label*="пароль"]',
-            '//input[@jsname="YPqjbf"]',
         ]
         
         password_found = False
-        for xpath in password_xpaths:
+        password_element = None
+        
+        # Сначала пробуем CSS/XPath селекторы
+        for selector in password_selectors:
             try:
-                await page.wait_for_selector(f'xpath={xpath}', timeout=3000)
-                el = await page.locator(f'xpath={xpath}').first
+                if selector.startswith('//'):
+                    el = await page.locator(f'xpath={selector}').first
+                else:
+                    el = await page.locator(selector).first
+                    
                 if await el.count() > 0 and await el.is_visible():
-                    box = await el.bounding_box()
-                    if box:
-                        x = box['x'] + box['width'] // 2
-                        y = box['y'] + box['height'] // 2
-                        await human_click(page, x, y)
-                    else:
-                        await el.click()
-                    await page.wait_for_timeout(500)
-                    await human_type(page, password)
+                    password_element = el
                     password_found = True
+                    print(f"✅ Найдено поле для пароля: {selector}")
                     break
             except:
                 continue
         
+        # Если не нашли - ищем любой input с типом password
         if not password_found:
-            css_selectors = ['input[type="password"]', 'input[name="password"]']
-            for selector in css_selectors:
-                try:
-                    await page.wait_for_selector(selector, timeout=3000)
-                    el = await page.locator(selector).first
-                    if await el.count() > 0 and await el.is_visible():
-                        box = await el.bounding_box()
-                        if box:
-                            x = box['x'] + box['width'] // 2
-                            y = box['y'] + box['height'] // 2
-                            await human_click(page, x, y)
-                        else:
-                            await el.click()
-                        await page.wait_for_timeout(500)
-                        await human_type(page, password)
-                        password_found = True
-                        break
-                except:
-                    continue
+            try:
+                inputs = await page.locator('input').all()
+                for inp in inputs:
+                    if await inp.is_visible():
+                        input_type = await inp.get_attribute('type')
+                        if input_type == 'password':
+                            password_element = inp
+                            password_found = True
+                            print("✅ Найдено поле для пароля через поиск всех input")
+                            break
+            except:
+                pass
         
         if not password_found:
-            screenshot = await human_screenshot(page, 100, 100)
+            # Пробуем найти через XPath
+            try:
+                el = await page.locator('//input[@type="password"]').first
+                if await el.count() > 0:
+                    password_element = el
+                    password_found = True
+                    print("✅ Найдено поле для пароля через XPath")
+            except:
+                pass
+        
+        if not password_found:
+            # Делаем скриншот для диагностики
+            screenshot = await page.screenshot(full_page=True, type="png")
+            
+            # Проверяем, может быть уже прошли пароль
+            current_url = page.url
+            if "myaccount.google.com" in current_url or "mail.google.com" in current_url:
+                await update.message.reply_photo(
+                    photo=screenshot,
+                    caption="✅ **Вход уже выполнен!** 🎉\n\n"
+                            "Теперь:\n"
+                            "🔗 /go x.com - открыть Twitter/X\n"
+                            "🎮 /joystick - открыть джойстик"
+                )
+                return
+            
             await update.message.reply_photo(
                 photo=screenshot,
-                caption="❌ **Не найдено поле для пароля**"
+                caption="❌ **Не найдено поле для пароля**\n\n"
+                        "Страница: " + current_url + "\n\n"
+                        "Попробуй:\n"
+                        "1. /refresh - обновить страницу\n"
+                        "2. /login email pass - попробовать снова\n"
+                        "3. Ввести вручную через /joystick"
             )
             return
         
+        # Вводим пароль
+        await password_element.click()
+        await page.wait_for_timeout(500)
+        await human_type(page, password)
+        print("✅ Пароль введён")
+        
         await page.wait_for_timeout(1000)
         
+        # 6. НАЖИМАЕМ "ДАЛЕЕ" ДЛЯ ВХОДА
         await update.message.reply_text("⏭️ Завершаю вход...")
         
         next_clicked = False
         for selector in next_selectors:
             try:
                 if selector.startswith('//'):
-                    await page.wait_for_selector(f'xpath={selector}', timeout=2000)
                     el = await page.locator(f'xpath={selector}').first
                 else:
-                    await page.wait_for_selector(selector, timeout=2000)
                     el = await page.locator(selector).first
                     
                 if await el.count() > 0 and await el.is_visible():
-                    box = await el.bounding_box()
-                    if box:
-                        x = box['x'] + box['width'] // 2
-                        y = box['y'] + box['height'] // 2
-                        await human_click(page, x, y)
-                    else:
-                        await el.click()
+                    await el.click()
                     next_clicked = True
                     break
             except:
@@ -718,6 +695,7 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         
         await page.wait_for_timeout(5000)
         
+        # 7. ПРОВЕРЯЕМ РЕЗУЛЬТАТ
         current_url = page.url
         cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
         screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
@@ -735,12 +713,18 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await update.message.reply_photo(
                 photo=screenshot,
                 caption="⚠️ **Требуется 2FA**\n\n"
-                        "Введи код вручную через джойстик: /joystick"
+                        "Введи код вручную через джойстик:\n"
+                        "1. /joystick - открыть джойстик\n"
+                        "2. Наведи на поле с кодом\n"
+                        "3. Нажми ЛКМ\n"
+                        "4. Напиши /type <код>\n"
+                        "5. Нажми Enter на джойстике"
             )
         else:
             await update.message.reply_photo(
                 photo=screenshot,
-                caption=f"📸 Страница: {current_url}"
+                caption=f"📸 Текущая страница: {current_url[:80]}\n\n"
+                        "Проверь статус: /status"
             )
         
     except Exception as e:
