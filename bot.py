@@ -66,7 +66,7 @@ def get_joystick_keyboard():
     )
     keyboard.row(
         InlineKeyboardButton("⬅️", callback_data="move_left"),
-        InlineKeyboardButton("💪 КЛИК", callback_data="click_cursor"),
+        InlineKeyboardButton("💣 МЕГА-КЛИК", callback_data="mega_click"),
         InlineKeyboardButton("➡️", callback_data="move_right")
     )
     keyboard.row(
@@ -77,12 +77,6 @@ def get_joystick_keyboard():
     keyboard.row(
         InlineKeyboardButton("📸 Скриншот", callback_data="take_screenshot"),
         InlineKeyboardButton("📍 Позиция", callback_data="show_position")
-    )
-    keyboard.row(
-        InlineKeyboardButton("🎯 CLICK (960,380)", callback_data="click_coords_960_380")
-    )
-    keyboard.row(
-        InlineKeyboardButton("🔍 FIND", callback_data="find_elements")
     )
     return keyboard
 
@@ -113,7 +107,6 @@ def click_at_cursor(user_id):
         result = browser.driver.execute_script(f"""
             var el = document.elementFromPoint({x}, {y});
             if (el) {{
-                el.scrollIntoView({{block: 'center'}});
                 el.click();
                 return true;
             }}
@@ -156,14 +149,13 @@ def handle_joystick(message):
                     photo,
                     caption="🎮 **Джойстик управления**\n\n"
                            "⬆️ ⬇️ ⬅️ ➡️ — двигать курсор\n"
-                           "💪 КЛИК — клик по позиции курсора\n"
-                           "🎯 CLICK (960,380) — клик по кнопке\n"
-                           "🔍 FIND — найти все элементы\n"
+                           "💣 МЕГА-КЛИК — пробует 15 методов\n"
                            "🔄 — обновить экран\n"
                            "📍 — позиция курсора\n"
                            "📸 — скриншот\n"
                            "🏠 — центр\n"
-                           "⏹️ СТОП — закрыть браузер",
+                           "⏹️ СТОП — закрыть браузер\n\n"
+                           "🔴 Красный крест — позиция курсора",
                     reply_markup=get_joystick_keyboard(),
                     parse_mode='Markdown'
                 )
@@ -229,6 +221,24 @@ def handle_joystick_callback(call):
                 bot.send_photo(chat_id, photo, caption="📍 Центр (960, 400)", reply_markup=get_joystick_keyboard())
             os.remove(screenshot)
     
+    elif call.data == "mega_click":
+        bot.answer_callback_query(call.id, "💣 МЕГА-КЛИК запущен!")
+        bot.send_message(chat_id, "💣 Запущен МЕГА-КЛИК — пробует 15 методов...")
+        
+        try:
+            result = browser.mega_click(x=960, y=380, text="Continue as")
+            if result:
+                bot.send_message(chat_id, "✅ МЕГА-КЛИК сработал!")
+                screenshot = browser.take_screenshot(f"mega_click_{user_id}.png")
+                if screenshot:
+                    with open(screenshot, 'rb') as photo:
+                        bot.send_photo(chat_id, photo, caption="📸 После МЕГА-КЛИКА", reply_markup=get_joystick_keyboard())
+                    os.remove(screenshot)
+            else:
+                bot.send_message(chat_id, "❌ МЕГА-КЛИК не сработал", reply_markup=get_joystick_keyboard())
+        except Exception as e:
+            bot.send_message(chat_id, f"❌ Ошибка: {e}", reply_markup=get_joystick_keyboard())
+    
     elif call.data == "click_cursor":
         success, msg = click_at_cursor(user_id)
         bot.answer_callback_query(call.id, msg)
@@ -247,59 +257,6 @@ def handle_joystick_callback(call):
             os.remove(screenshot)
         else:
             bot.send_message(chat_id, "❌ Не удалось сделать скриншот", reply_markup=get_joystick_keyboard())
-    
-    elif call.data == "click_coords_960_380":
-        try:
-            x, y = 960, 380
-            bot.answer_callback_query(call.id, f"🖱️ Клик по ({x}, {y})")
-            
-            result = browser.driver.execute_script(f"""
-                var el = document.elementFromPoint({x}, {y});
-                if (el) {{
-                    el.scrollIntoView({{block: 'center'}});
-                    el.click();
-                    return true;
-                }}
-                return false;
-            """)
-            
-            if result:
-                bot.send_message(chat_id, f"✅ Клик по ({x}, {y}) выполнен")
-            else:
-                browser.driver.execute_script(f"""
-                    var el = document.elementFromPoint({x}, {y});
-                    if (el) {{
-                        el.click();
-                    }}
-                """)
-                bot.send_message(chat_id, f"✅ Принудительный клик по ({x}, {y})")
-            
-            screenshot = browser.take_screenshot(f"click_960_380_{user_id}.png")
-            if screenshot:
-                with open(screenshot, 'rb') as photo:
-                    bot.send_photo(chat_id, photo, caption=f"📸 Клик по ({x}, {y})", reply_markup=get_joystick_keyboard())
-                os.remove(screenshot)
-                
-        except Exception as e:
-            bot.send_message(chat_id, f"❌ Ошибка: {e}")
-            bot.answer_callback_query(call.id, f"❌ Ошибка: {e}")
-    
-    elif call.data == "find_elements":
-        try:
-            elements = browser.find_all_elements_js()
-            result = "🔍 **Найденные элементы:**\n\n"
-            count = 0
-            for elem in elements:
-                if elem['text'] and len(elem['text']) > 2:
-                    count += 1
-                    visible = '✅' if elem['visible'] else '👻'
-                    result += f"{count}. [{elem['tag']}] {visible} '{elem['text'][:50]}'\n"
-            if count == 0:
-                result += "❌ Элементы не найдены"
-            bot.send_message(chat_id, result, parse_mode='Markdown')
-            bot.answer_callback_query(call.id, "🔍 Найдено элементов: " + str(count))
-        except Exception as e:
-            bot.send_message(chat_id, f"❌ Ошибка: {e}")
     
     elif call.data == "take_screenshot":
         screenshot = make_screenshot_with_cursor(browser, user_id, f"ss_{user_id}.png")
@@ -356,7 +313,7 @@ def send_welcome(message):
         "/check - Проверить установку\n"
         "/login логин пароль - Обычный вход\n"
         "/logingoogle email пароль - Вход через Google\n"
-        "/joystick - Джойстик с кнопками\n"
+        "/joystick - Джойстик с МЕГА-КЛИКОМ\n"
         "/screen_now - Скриншот с курсором\n"
         "/stop_x - Остановить джойстик\n"
         "/log - Показать логи\n"
@@ -366,4 +323,29 @@ def send_welcome(message):
         "/close - Закрыть браузер"
     )
 
-# ... остальные команды без изменений
+@bot.message_handler(commands=['check'])
+def handle_check(message):
+    result = "🔍 **Проверка компонентов:**\n\n"
+    
+    try:
+        import selenium
+        result += f"✅ Selenium: {selenium.__version__}\n"
+    except ImportError:
+        result += "❌ Selenium: не установлен\n"
+    
+    check = check_installation()
+    if check['chrome']:
+        result += f"✅ Chrome: {check['chrome_path']}\n"
+    else:
+        result += "❌ Chrome: не найден\n"
+    
+    result += "\n---\n"
+    if check['chrome']:
+        result += "✅ **ВСЕ ГОТОВО К РАБОТЕ!**\n"
+        result += "Используйте /logingoogle для входа"
+    else:
+        result += "⚠️ Chrome не установлен в Dockerfile"
+    
+    bot.reply_to(message, result, parse_mode='Markdown')
+
+# ... остальные команды (log, getlog, logingoogle, login, status, screenshot, close) без изменений
