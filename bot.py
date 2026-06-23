@@ -4,6 +4,7 @@ import time
 from browser import AntiDetectBrowser, check_installation
 from datetime import datetime
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from PIL import Image, ImageDraw
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
@@ -28,6 +29,35 @@ def send_log_to_chat(chat_id, log_entry):
             bot.send_message(chat_id, log_entry)
     except:
         pass
+
+# === ФУНКЦИЯ ДЛЯ СКРИНШОТА С КУРСОРОМ ===
+def make_screenshot_with_cursor(browser, user_id, filename="screenshot.png"):
+    try:
+        if user_id in user_cursor:
+            cursor_x = user_cursor[user_id]['x']
+            cursor_y = user_cursor[user_id]['y']
+        else:
+            cursor_x = 960
+            cursor_y = 400
+        
+        browser.driver.save_screenshot(filename)
+        
+        img = Image.open(filename)
+        draw = ImageDraw.Draw(img)
+        
+        size = 20
+        
+        draw.line((cursor_x - size, cursor_y, cursor_x + size, cursor_y), fill="red", width=3)
+        draw.line((cursor_x, cursor_y - size, cursor_x, cursor_y + size), fill="red", width=3)
+        draw.ellipse((cursor_x - 5, cursor_y - 5, cursor_x + 5, cursor_y + 5), fill="red")
+        draw.text((cursor_x + 25, cursor_y - 10), f"({cursor_x}, {cursor_y})", fill="red")
+        
+        img.save(filename)
+        return filename
+        
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        return None
 
 # === КНОПКИ ДЖОЙСТИКА ===
 def get_joystick_keyboard():
@@ -95,7 +125,7 @@ def handle_joystick(message):
     user_cursor[user_id] = {'x': 960, 'y': 400}
     
     try:
-        screenshot = browser.take_screenshot(f"joystick_{user_id}.png")
+        screenshot = make_screenshot_with_cursor(browser, user_id, f"joystick_{user_id}.png")
         if screenshot:
             with open(screenshot, 'rb') as photo:
                 bot.send_photo(
@@ -108,7 +138,8 @@ def handle_joystick(message):
                            "📍 — позиция курсора\n"
                            "📸 — скриншот\n"
                            "🏠 — центр\n"
-                           "⏹️ СТОП — закрыть браузер",
+                           "⏹️ СТОП — закрыть браузер\n\n"
+                           "🔴 Красный крест — позиция курсора",
                     reply_markup=get_joystick_keyboard(),
                     parse_mode='Markdown'
                 )
@@ -132,28 +163,53 @@ def handle_joystick_callback(call):
     if call.data == "move_up":
         x, y = move_cursor(user_id, 0, -30)
         bot.answer_callback_query(call.id, f"📍 ({x}, {y})")
+        screenshot = make_screenshot_with_cursor(browser, user_id, f"move_{user_id}.png")
+        if screenshot:
+            with open(screenshot, 'rb') as photo:
+                bot.send_photo(chat_id, photo, caption=f"📍 Курсор: ({x}, {y})", reply_markup=get_joystick_keyboard())
+            os.remove(screenshot)
         
     elif call.data == "move_down":
         x, y = move_cursor(user_id, 0, 30)
         bot.answer_callback_query(call.id, f"📍 ({x}, {y})")
+        screenshot = make_screenshot_with_cursor(browser, user_id, f"move_{user_id}.png")
+        if screenshot:
+            with open(screenshot, 'rb') as photo:
+                bot.send_photo(chat_id, photo, caption=f"📍 Курсор: ({x}, {y})", reply_markup=get_joystick_keyboard())
+            os.remove(screenshot)
         
     elif call.data == "move_left":
         x, y = move_cursor(user_id, -30, 0)
         bot.answer_callback_query(call.id, f"📍 ({x}, {y})")
+        screenshot = make_screenshot_with_cursor(browser, user_id, f"move_{user_id}.png")
+        if screenshot:
+            with open(screenshot, 'rb') as photo:
+                bot.send_photo(chat_id, photo, caption=f"📍 Курсор: ({x}, {y})", reply_markup=get_joystick_keyboard())
+            os.remove(screenshot)
         
     elif call.data == "move_right":
         x, y = move_cursor(user_id, 30, 0)
         bot.answer_callback_query(call.id, f"📍 ({x}, {y})")
+        screenshot = make_screenshot_with_cursor(browser, user_id, f"move_{user_id}.png")
+        if screenshot:
+            with open(screenshot, 'rb') as photo:
+                bot.send_photo(chat_id, photo, caption=f"📍 Курсор: ({x}, {y})", reply_markup=get_joystick_keyboard())
+            os.remove(screenshot)
         
     elif call.data == "move_center":
         user_cursor[user_id] = {'x': 960, 'y': 400}
         bot.answer_callback_query(call.id, "📍 Центр (960, 400)")
+        screenshot = make_screenshot_with_cursor(browser, user_id, f"center_{user_id}.png")
+        if screenshot:
+            with open(screenshot, 'rb') as photo:
+                bot.send_photo(chat_id, photo, caption="📍 Центр (960, 400)", reply_markup=get_joystick_keyboard())
+            os.remove(screenshot)
     
     elif call.data == "click_cursor":
         success, msg = click_at_cursor(user_id)
         bot.answer_callback_query(call.id, msg)
         
-        screenshot = browser.take_screenshot(f"after_click_{user_id}.png")
+        screenshot = make_screenshot_with_cursor(browser, user_id, f"after_click_{user_id}.png")
         if screenshot:
             with open(screenshot, 'rb') as photo:
                 x = user_cursor[user_id]['x']
@@ -169,7 +225,7 @@ def handle_joystick_callback(call):
             bot.send_message(chat_id, "❌ Не удалось сделать скриншот", reply_markup=get_joystick_keyboard())
     
     elif call.data == "take_screenshot":
-        screenshot = browser.take_screenshot(f"ss_{user_id}.png")
+        screenshot = make_screenshot_with_cursor(browser, user_id, f"ss_{user_id}.png")
         if screenshot:
             with open(screenshot, 'rb') as photo:
                 bot.send_photo(chat_id, photo, caption="📸 Скриншот", reply_markup=get_joystick_keyboard())
@@ -185,7 +241,7 @@ def handle_joystick_callback(call):
             bot.answer_callback_query(call.id, "📍 Курсор не инициализирован")
     
     elif call.data == "refresh_screen":
-        screenshot = browser.take_screenshot(f"refresh_{user_id}.png")
+        screenshot = make_screenshot_with_cursor(browser, user_id, f"refresh_{user_id}.png")
         if screenshot:
             with open(screenshot, 'rb') as photo:
                 bot.send_photo(chat_id, photo, caption="🔄 Обновленный экран", reply_markup=get_joystick_keyboard())
@@ -216,7 +272,6 @@ def handle_joystick_callback(call):
 # === КОМАНДА /SCREEN_NOW ===
 @bot.message_handler(commands=['screen_now'])
 def handle_screen_now(message):
-    """Сделать скриншот текущей страницы"""
     user_id = message.from_user.id
     chat_id = message.chat.id
     
@@ -227,15 +282,16 @@ def handle_screen_now(message):
     browser = user_sessions[user_id]
     
     try:
-        screenshot = browser.take_screenshot(f"screen_now_{user_id}.png")
+        screenshot = make_screenshot_with_cursor(browser, user_id, f"screen_now_{user_id}.png")
         if screenshot:
             with open(screenshot, 'rb') as photo:
-                bot.send_photo(
-                    chat_id,
-                    photo,
-                    caption=f"📸 **Текущий экран**\n📍 URL: {browser.driver.current_url}",
-                    parse_mode='Markdown'
-                )
+                if user_id in user_cursor:
+                    x = user_cursor[user_id]['x']
+                    y = user_cursor[user_id]['y']
+                    caption = f"📸 **Текущий экран**\n📍 URL: {browser.driver.current_url}\n🎯 Курсор: ({x}, {y})"
+                else:
+                    caption = f"📸 **Текущий экран**\n📍 URL: {browser.driver.current_url}"
+                bot.send_photo(chat_id, photo, caption=caption, parse_mode='Markdown')
             os.remove(screenshot)
         else:
             bot.reply_to(message, "❌ Не удалось сделать скриншот")
@@ -277,8 +333,8 @@ def send_welcome(message):
         "/check - Проверить установку\n"
         "/login логин пароль - Обычный вход\n"
         "/logingoogle email пароль - Вход через Google\n"
-        "/joystick - Управление курсором\n"
-        "/screen_now - Скриншот текущей страницы\n"
+        "/joystick - Управление курсором (с видимым курсором)\n"
+        "/screen_now - Скриншот с курсором\n"
         "/stop_x - Остановить джойстик\n"
         "/log - Показать логи\n"
         "/getlog - Скачать лог-файл\n"
@@ -520,10 +576,10 @@ def handle_screenshot(message):
         return
     try:
         browser = user_sessions[user_id]
-        screenshot = browser.take_screenshot(f"ss_{user_id}.png")
+        screenshot = make_screenshot_with_cursor(browser, user_id, f"ss_{user_id}.png")
         if screenshot:
             with open(screenshot, 'rb') as photo:
-                bot.send_photo(user_id, photo, caption="📸 Скриншот")
+                bot.send_photo(user_id, photo, caption="📸 Скриншот с курсором")
             os.remove(screenshot)
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}")
