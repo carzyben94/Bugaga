@@ -233,6 +233,150 @@ class AntiDetectBrowser:
             self.log(f"❌ Ошибка ввода: {e}", "ERROR")
             return False
     
+    def wait_for_page_load(self, timeout=30):
+        """Ожидание полной загрузки страницы"""
+        try:
+            WebDriverWait(self.driver, timeout).until(
+                lambda driver: driver.execute_script("return document.readyState") == "complete"
+            )
+            self.log("✅ Страница полностью загружена", "SUCCESS")
+            return True
+        except Exception as e:
+            self.log(f"⚠️ Таймаут загрузки: {e}", "WARNING")
+            return False
+    
+    def check_javascript(self):
+        """Проверка работы JavaScript"""
+        try:
+            result = self.driver.execute_script("""
+                return {
+                    window: typeof window !== 'undefined',
+                    document: typeof document !== 'undefined',
+                    navigator: typeof navigator !== 'undefined'
+                }
+            """)
+            self.log(f"🔍 JavaScript: {result}", "DEBUG")
+            return all(result.values())
+        except Exception as e:
+            self.log(f"❌ JavaScript ошибка: {e}", "ERROR")
+            return False
+    
+    def smart_click_at_coordinates(self, x, y):
+        """Умный клик — пробует все способы"""
+        self.log(f"🧠 Умный клик по ({x}, {y})", "INFO")
+        
+        # ШАГ 1: Проверяем элемент по координатам
+        element_info = self.driver.execute_script(f"""
+            var el = document.elementFromPoint({x}, {y});
+            if (el) {{
+                return {{
+                    tag: el.tagName,
+                    visible: el.offsetParent !== null,
+                    enabled: !el.disabled,
+                    text: el.textContent.slice(0, 50)
+                }};
+            }}
+            return null;
+        """)
+        
+        if element_info:
+            self.log(f"🔍 Найден элемент: {element_info}", "DEBUG")
+        else:
+            self.log(f"⚠️ Элемент не найден по координатам ({x}, {y})", "WARNING")
+        
+        # ШАГ 2: Прокручиваем к месту
+        self.driver.execute_script(f"window.scrollTo({x - 200}, {y - 200});")
+        time.sleep(0.5)
+        
+        # ШАГ 3: Пробуем все способы клика
+        methods = [
+            ("JavaScript", lambda: self.driver.execute_script(f"""
+                var el = document.elementFromPoint({x}, {y});
+                if (el) {{
+                    el.click();
+                    return true;
+                }}
+                return false;
+            """)),
+            
+            ("MouseEvent", lambda: self.driver.execute_script(f"""
+                var el = document.elementFromPoint({x}, {y});
+                if (el) {{
+                    var event = new MouseEvent('click', {{
+                        bubbles: true,
+                        cancelable: true,
+                        view: window
+                    }});
+                    el.dispatchEvent(event);
+                    return true;
+                }}
+                return false;
+            """)),
+            
+            ("Родитель", lambda: self.driver.execute_script(f"""
+                var el = document.elementFromPoint({x}, {y});
+                if (el && el.parentElement) {{
+                    el.parentElement.click();
+                    return true;
+                }}
+                return false;
+            """)),
+            
+            ("ActionChains", lambda: self.driver.execute_script(f"""
+                var el = document.elementFromPoint({x}, {y});
+                if (el) {{
+                    var rect = el.getBoundingClientRect();
+                    var cx = rect.left + rect.width / 2;
+                    var cy = rect.top + rect.height / 2;
+                    
+                    var event = new MouseEvent('click', {{
+                        clientX: cx,
+                        clientY: cy,
+                        bubbles: true,
+                        cancelable: true,
+                        view: window
+                    }});
+                    el.dispatchEvent(event);
+                    return true;
+                }}
+                return false;
+            """)),
+        ]
+        
+        for name, method in methods:
+            try:
+                if method():
+                    self.log(f"✅ Клик через {name} выполнен", "SUCCESS")
+                    return True
+            except Exception as e:
+                self.log(f"   ❌ {name} не сработал: {e}", "DEBUG")
+                continue
+        
+        # ШАГ 4: Если не сработало — ищем по тексту
+        self.log("🔄 Ищу кнопку по тексту...", "INFO")
+        try:
+            elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue as') or contains(text(), 'Continue with') or contains(text(), 'Accept') or contains(text(), 'Allow')]")
+            for elem in elements:
+                if elem.is_displayed() and elem.is_enabled():
+                    self.log(f"✅ Найдена кнопка по тексту: '{elem.text[:30]}'", "SUCCESS")
+                    self.driver.execute_script("arguments[0].click();", elem)
+                    return True
+        except Exception as e:
+            self.log(f"⚠️ Ошибка поиска по тексту: {e}", "WARNING")
+        
+        # ШАГ 5: Если ничего не сработало — пробуем Enter
+        self.log("🔄 Пробую Enter...", "INFO")
+        try:
+            body = self.driver.find_element(By.TAG_NAME, "body")
+            body.send_keys(Keys.ENTER)
+            self.log("✅ Нажат Enter", "SUCCESS")
+            return True
+        except:
+            pass
+        
+        self.log("❌ Все способы клика не сработали", "ERROR")
+        return False
+    
     def login_google(self, email, password):
         self.email = email
         self.log(f"🚀 Вход в Google: {email}", "INFO")
@@ -379,13 +523,19 @@ class AntiDetectBrowser:
         return True
     
     def go_to_xcom(self):
+        """Переход на X.com с полной загрузкой"""
         self.log("🌐 ПЕРЕХОД НА X.COM", "INFO")
         
         try:
             self.driver.get("https://x.com")
             self.log("✅ X.com открыт", "SUCCESS")
-            time.sleep(5)
-            self.take_step_screenshot("xcom_home")
+            
+            self.wait_for_page_load(timeout=30)
+            time.sleep(3)
+            self.take_step_screenshot("xcom_loaded")
+            
+            if not self.check_javascript():
+                self.log("⚠️ JavaScript не работает!", "WARNING")
             
             current_url = self.driver.current_url
             self.log(f"📍 URL: {current_url}", "INFO")
@@ -404,45 +554,8 @@ class AntiDetectBrowser:
             return False
     
     def click_by_coordinates(self, x, y):
-        try:
-            self.log(f"🖱️ Клик по координатам ({x}, {y})", "INFO")
-            
-            window_size = self.driver.get_window_size()
-            width = window_size['width']
-            height = window_size['height']
-            
-            if x < 0 or x > width or y < 0 or y > height:
-                self.log(f"⚠️ Координаты ({x}, {y}) вне окна {width}x{height}", "WARNING")
-                x = width // 2
-                y = height // 2
-                self.log(f"🔄 Использую центр окна: ({x}, {y})", "INFO")
-            
-            result = self.driver.execute_script(f"""
-                var el = document.elementFromPoint({x}, {y});
-                if (el) {{
-                    el.click();
-                    return true;
-                }}
-                return false;
-            """)
-            
-            if result:
-                self.log(f"✅ Клик по ({x}, {y}) выполнен", "SUCCESS")
-                return True
-            
-            actions = ActionChains(self.driver)
-            actions.move_by_offset(x, y)
-            time.sleep(0.3)
-            actions.click()
-            time.sleep(0.2)
-            actions.perform()
-            
-            self.log(f"✅ Клик по ({x}, {y}) выполнен через ActionChains", "SUCCESS")
-            return True
-            
-        except Exception as e:
-            self.log(f"❌ Ошибка клика по координатам: {e}", "ERROR")
-            return False
+        """Клик по координатам (использует умный клик)"""
+        return self.smart_click_at_coordinates(x, y)
     
     def login_twitter(self, username, password):
         self.log("🚀 Обычный вход", "INFO")
@@ -521,4 +634,4 @@ def check_installation():
     return {
         'chrome': os.path.exists("/usr/bin/google-chrome"),
         'chrome_path': "/usr/bin/google-chrome"
-    } 
+    }
