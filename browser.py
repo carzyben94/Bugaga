@@ -374,6 +374,64 @@ class AntiDetectBrowser:
             self.log(f"❌ Ошибка: {e}", "ERROR")
             return False
     
+    def login_twitter(self, username, password):
+        self.log("🚀 Обычный вход", "INFO")
+        
+        self.driver.get("https://x.com/login")
+        self.random_delay(2, 3)
+        self.take_step_screenshot("twitter_login")
+        
+        try:
+            if self.click_safe(By.XPATH, "//span[text()='Войти']") or \
+               self.click_safe(By.XPATH, "//span[text()='Sign in']"):
+                self.take_step_screenshot("twitter_click_login")
+            
+            self.random_delay(1, 2)
+            
+            username_field = self.find_element(By.NAME, "text")
+            if username_field:
+                self.human_type(username_field, username)
+                self.take_step_screenshot("twitter_username")
+            
+            self.random_delay(1, 2)
+            
+            if self.click_safe(By.XPATH, "//span[text()='Далее']") or \
+               self.click_safe(By.XPATH, "//span[text()='Next']"):
+                self.take_step_screenshot("twitter_next")
+            
+            self.random_delay(2, 3)
+            
+            password_field = self.find_element(By.NAME, "password")
+            if password_field:
+                self.human_type(password_field, password)
+                self.take_step_screenshot("twitter_password")
+            
+            self.random_delay(1, 2)
+            
+            if self.click_safe(By.XPATH, "//span[text()='Войти']") or \
+               self.click_safe(By.XPATH, "//span[text()='Log in']"):
+                self.take_step_screenshot("twitter_final")
+            
+            self.random_delay(3, 5)
+            
+            if "home" in self.driver.current_url:
+                self.log("🎉 Вход выполнен!", "SUCCESS")
+                return True
+            return False
+            
+        except Exception as e:
+            self.log(f"❌ Ошибка: {e}", "ERROR")
+            return False
+    
+    def click_safe(self, by, selector, timeout=10):
+        try:
+            element = WebDriverWait(self.driver, timeout).until(
+                EC.element_to_be_clickable((by, selector))
+            )
+            return self.human_click(element)
+        except:
+            return False
+    
     def take_screenshot(self, filename="screenshot.png"):
         try:
             self.driver.save_screenshot(filename)
