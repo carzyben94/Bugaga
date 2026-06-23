@@ -5,7 +5,7 @@ from browser import AntiDetectBrowser, check_installation
 from datetime import datetime
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from PIL import Image, ImageDraw
-from selenium.webdriver.common.by import By  # ← ДОБАВЛЕНО!
+from selenium.webdriver.common.by import By
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
@@ -280,71 +280,69 @@ def handle_diag(message):
     browser = user_sessions[user_id]
     
     try:
-        info = browser.get_page_info()
-        bot.send_message(chat_id, f"📍 URL: {info.get('url', 'Неизвестно')}")
-        bot.send_message(chat_id, f"📄 Title: {info.get('title', 'Неизвестно')}")
-        bot.send_message(chat_id, f"📊 HTML длина: {info.get('html_length', 0)} символов")
+        # 1. Информация о странице
+        current_url = browser.driver.current_url
+        bot.send_message(chat_id, f"📍 URL: {current_url}")
         
-        # Ищем все кнопки с помощью By
-        buttons = browser.driver.find_elements(By.TAG_NAME, "button")
-        result = "🔍 **Найденные кнопки:**\n"
-        for i, btn in enumerate(buttons[:10]):
-            try:
-                text = btn.text.strip()
-                if text:
-                    visible = btn.is_displayed()
-                    enabled = btn.is_enabled()
-                    result += f"{i+1}. '{text[:30]}' (видима: {'✅' if visible else '❌'}, активна: {'✅' if enabled else '❌'})\n"
-            except:
-                continue
+        title = browser.driver.title
+        bot.send_message(chat_id, f"📄 Title: {title}")
         
-        if not buttons:
-            result += "❌ Кнопки не найдены"
+        html_len = len(browser.driver.page_source)
+        bot.send_message(chat_id, f"📊 HTML длина: {html_len} символов")
         
-        bot.send_message(chat_id, result, parse_mode='Markdown')
+        # 2. Поиск всех элементов с текстом
+        bot.send_message(chat_id, "🔍 Поиск всех элементов с текстом...")
         
-        # Ищем элементы с "Continue"
-        continue_elements = browser.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue')]")
-        result2 = "🔍 **Элементы с 'Continue':**\n"
-        for i, elem in enumerate(continue_elements[:10]):
+        all_elements = browser.driver.find_elements(By.XPATH, "//*[text()!='']")
+        
+        result = "🔍 **Найденные элементы с текстом:**\n"
+        count = 0
+        for i, elem in enumerate(all_elements[:30]):
             try:
                 text = elem.text.strip()
                 tag = elem.tag_name
-                if text:
-                    result2 += f"{i+1}. [{tag}] '{text[:40]}'\n"
+                visible = elem.is_displayed()
+                if text and len(text) < 100:
+                    count += 1
+                    result += f"{count}. [{tag}] {'✅' if visible else '👻'} '{text[:50]}'\n"
             except:
                 continue
-        bot.send_message(chat_id, result2, parse_mode='Markdown')
         
-        # Ищем "Continue as"
-        try:
-            continue_as = browser.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue as')]")
-            if continue_as:
-                result3 = "🔍 **Элементы с 'Continue as':**\n"
-                for i, elem in enumerate(continue_as[:5]):
-                    try:
-                        text = elem.text.strip()
-                        tag = elem.tag_name
-                        if text:
-                            result3 += f"{i+1}. [{tag}] '{text[:40]}'\n"
-                    except:
-                        continue
-                bot.send_message(chat_id, result3, parse_mode='Markdown')
-            else:
-                bot.send_message(chat_id, "❌ 'Continue as' не найдено")
-        except:
-            pass
+        if count == 0:
+            result += "❌ Элементы с текстом не найдены"
         
-        # Ищем по email
-        try:
-            email_elements = browser.driver.find_elements(By.XPATH, f"//*[contains(text(), '{browser.email}')]")
-            if email_elements:
-                bot.send_message(chat_id, f"✅ Найдено {len(email_elements)} элементов с email: {browser.email}")
-            else:
-                bot.send_message(chat_id, f"❌ Email не найден: {browser.email}")
-        except:
-            pass
+        bot.send_message(chat_id, result, parse_mode='Markdown')
         
+        # 3. Поиск через JavaScript
+        bot.send_message(chat_id, "🔍 Поиск через JavaScript...")
+        
+        js_result = browser.driver.execute_script("""
+            var elements = document.querySelectorAll('*');
+            var found = [];
+            for (var i = 0; i < elements.length; i++) {
+                var text = elements[i].textContent || '';
+                if (text.includes('Continue') || text.includes('Babe') || text.includes('@gmail.com')) {
+                    found.push({
+                        tag: elements[i].tagName,
+                        text: text.slice(0, 60),
+                        visible: elements[i].offsetParent !== null
+                    });
+                }
+                if (found.length > 20) break;
+            }
+            return found;
+        """)
+        
+        if js_result:
+            result2 = "🔍 **Найдено через JavaScript:**\n"
+            for i, item in enumerate(js_result[:15]):
+                visible = '✅' if item['visible'] else '👻'
+                result2 += f"{i+1}. [{item['tag']}] {visible} '{item['text']}'\n"
+            bot.send_message(chat_id, result2, parse_mode='Markdown')
+        else:
+            bot.send_message(chat_id, "❌ Через JavaScript ничего не найдено")
+        
+        # 4. Скриншот
         screenshot = browser.take_screenshot(f"diag_{user_id}.png")
         if screenshot:
             with open(screenshot, 'rb') as photo:
@@ -354,9 +352,10 @@ def handle_diag(message):
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {e}")
 
-# === КОМАНДА /CLICK_TEXT ===
-@bot.message_handler(commands=['click_text'])
-def handle_click_text(message):
+# === КОМАНДА /CLICK_JS ===
+@bot.message_handler(commands=['click_js'])
+def handle_click_js(message):
+    """Клик через JavaScript — находит и нажимает"""
     user_id = message.from_user.id
     chat_id = message.chat.id
     
@@ -364,43 +363,51 @@ def handle_click_text(message):
         bot.reply_to(message, "❌ Нет активной сессии")
         return
     
-    if message.text is None:
-        bot.reply_to(message, "❌ Используйте: /click_text <текст>")
-        return
-    
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        bot.reply_to(message, "❌ Используйте: /click_text <текст>")
-        return
-    
-    text = parts[1]
     browser = user_sessions[user_id]
     
     try:
-        success = browser.simple_click_by_text(text)
-        if success:
-            bot.reply_to(message, f"✅ Клик по '{text}' выполнен")
+        # Ищем и кликаем через JavaScript
+        result = browser.driver.execute_script("""
+            // Ищем элементы с текстом
+            var elements = document.querySelectorAll('*');
+            var found = [];
             
-            screenshot = browser.take_screenshot(f"click_text_{user_id}.png")
-            if screenshot:
-                with open(screenshot, 'rb') as photo:
-                    bot.send_photo(chat_id, photo, caption=f"📸 После клика по '{text}'")
-                os.remove(screenshot)
-        else:
-            bot.reply_to(message, f"❌ Не удалось кликнуть по '{text}'")
+            for (var i = 0; i < elements.length; i++) {
+                var text = elements[i].textContent || '';
+                // Проверяем все варианты
+                if (text.includes('Continue as') || 
+                    text.includes('Continue with') || 
+                    text.includes('@gmail.com') ||
+                    text.includes('Babe')) {
+                    found.push({
+                        element: elements[i],
+                        text: text.slice(0, 50),
+                        tag: elements[i].tagName
+                    });
+                }
+            }
             
-            # Показываем все элементы с текстом
-            elements = browser.driver.find_elements(By.XPATH, "//*[text()!='']")
-            result = "🔍 **Элементы с текстом:**\n"
-            for i, elem in enumerate(elements[:20]):
-                try:
-                    txt = elem.text.strip()
-                    if txt and len(txt) < 50:
-                        result += f"{i+1}. [{elem.tag_name}] '{txt}'\n"
-                except:
-                    continue
-            bot.send_message(chat_id, result, parse_mode='Markdown')
+            // Если нашли — кликаем
+            if (found.length > 0) {
+                // Пробуем кликнуть по первому подходящему
+                var el = found[0].element;
+                el.scrollIntoView({block: 'center'});
+                el.click();
+                return '✅ Кликнут: ' + found[0].text;
+            }
             
+            return '❌ Ничего не найдено';
+        """)
+        
+        bot.reply_to(message, f"🖱️ {result}")
+        
+        # Делаем скриншот
+        screenshot = browser.take_screenshot(f"click_js_{user_id}.png")
+        if screenshot:
+            with open(screenshot, 'rb') as photo:
+                bot.send_photo(chat_id, photo, caption="📸 После клика")
+            os.remove(screenshot)
+        
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {e}")
 
@@ -470,7 +477,7 @@ def send_welcome(message):
         "/logingoogle email пароль - Вход через Google\n"
         "/joystick - Джойстик с принудительным кликом\n"
         "/diag - Диагностика страницы\n"
-        "/click_text <текст> - Клик по тексту\n"
+        "/click_js - Клик через JavaScript\n"
         "/screen_now - Скриншот с курсором\n"
         "/stop_x - Остановить джойстик\n"
         "/log - Показать логи\n"
