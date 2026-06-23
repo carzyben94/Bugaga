@@ -394,7 +394,6 @@ class AntiDetectBrowser:
             # Проверяем, что координаты в пределах окна
             if x < 0 or x > width or y < 0 or y > height:
                 self.log(f"⚠️ Координаты ({x}, {y}) вне окна {width}x{height}", "WARNING")
-                # Корректируем
                 x = width // 2
                 y = height // 2 - 50
                 self.log(f"🔄 Использую центр окна: ({x}, {y})", "INFO")
@@ -461,20 +460,70 @@ class AntiDetectBrowser:
             if result:
                 self.log("✅ Клик выполнен", "SUCCESS")
                 self.take_step_screenshot("xcom_click_coords")
-                time.sleep(2)
+                
+                # === ВАЖНО: ПАУЗА ПОСЛЕ КЛИКА ===
+                self.log("⏳ Ожидание загрузки после клика (5 секунд)...", "INFO")
+                time.sleep(5)
+                
+                # Делаем скриншот после паузы
+                self.take_step_screenshot("xcom_after_click")
+                self.log("📸 Скриншот после клика", "INFO")
+                
+                # Проверяем URL еще раз
+                current_url = self.driver.current_url
+                self.log(f"📍 URL после клика: {current_url}", "INFO")
+                
+                if "home" in current_url or "x.com/home" in current_url:
+                    self.log("🎉 ВХОД ВЫПОЛНЕН!", "SUCCESS")
+                    return True
+                
+                # Если открылось окно Google
+                if "accounts.google.com" in current_url:
+                    self.log("✅ Открылось окно Google!", "SUCCESS")
+                    self.take_step_screenshot("xcom_google_window")
+                    time.sleep(3)
+                    return True
+                
+                # Если страница входа — пробуем еще раз
+                if "login" in current_url or "i/flow" in current_url:
+                    self.log("🔄 Все еще на странице входа, пробую еще раз...", "INFO")
+                    
+                    # Пробуем другие координаты
+                    coords_to_try = [
+                        (960, 350),   # чуть выше
+                        (960, 410),   # чуть ниже
+                        (960, 400),   # центр
+                        (900, 380),   # левее
+                        (1020, 380),  # правее
+                    ]
+                    
+                    for cx, cy in coords_to_try:
+                        self.log(f"🔄 Пробую ({cx}, {cy})...", "DEBUG")
+                        self.click_by_coordinates(cx, cy)
+                        time.sleep(2)
+                        self.take_step_screenshot(f"xcom_click_{cx}_{cy}")
+                        
+                        current_url = self.driver.current_url
+                        if "home" in current_url or "x.com/home" in current_url:
+                            self.log("🎉 ВХОД ВЫПОЛНЕН!", "SUCCESS")
+                            return True
+                        if "accounts.google.com" in current_url:
+                            self.log("✅ Открылось окно Google!", "SUCCESS")
+                            return True
             else:
-                # Если не сработало — пробуем центр окна
-                self.log("🔄 Пробую центр окна...", "INFO")
-                self.click_by_coordinates(960, 400)
-                time.sleep(2)
+                self.log("❌ Клик не выполнен", "ERROR")
             
-            # Проверяем результат
+            # === ФИНАЛЬНАЯ ПРОВЕРКА ===
+            self.log("🔍 Финальная проверка...", "INFO")
+            time.sleep(3)
             current_url = self.driver.current_url
+            self.take_step_screenshot("xcom_final")
+            
             if "home" in current_url or "x.com/home" in current_url:
                 self.log("🎉 ВХОД ВЫПОЛНЕН!", "SUCCESS")
                 return True
             
-            self.log("❌ Вход не выполнен", "ERROR")
+            self.log(f"❌ Вход не выполнен. URL: {current_url}", "ERROR")
             return False
             
         except Exception as e:
