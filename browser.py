@@ -16,8 +16,6 @@ import urllib.request
 import sys
 import subprocess
 import json
-import tempfile
-import uuid
 from datetime import datetime
 
 logging.basicConfig(level=logging.INFO)
@@ -64,7 +62,6 @@ class AntiDetectBrowser:
         self.log_callback = log_callback
         self.step = 0
         self.email = None
-        self.user_data_dir = None
         
     def log(self, message, level="INFO"):
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -104,12 +101,6 @@ class AntiDetectBrowser:
         if self.headless:
             options.add_argument('--headless=new')
             self.log("🔇 Headless режим", "INFO")
-        
-        # === USER-DATA-DIR — сохраняем Google-сессию ===
-        self.user_data_dir = os.path.join(tempfile.gettempdir(), f"chrome_x_profile_{uuid.uuid4().hex[:8]}")
-        os.makedirs(self.user_data_dir, exist_ok=True)
-        options.add_argument(f'--user-data-dir={self.user_data_dir}')
-        self.log(f"📁 Профиль: {self.user_data_dir}", "INFO")
         
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
@@ -158,16 +149,6 @@ class AntiDetectBrowser:
             self.log(f"❌ Ошибка запуска Chrome: {e}", "ERROR")
             raise
         
-        # === CDP-скрипты для скрытия automation ===
-        self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
-            'source': '''
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-                window.chrome = { runtime: {} };
-                Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-            '''
-        })
-        
         self.driver.set_page_load_timeout(60)
         self.driver.implicitly_wait(20)
         
@@ -183,250 +164,6 @@ class AntiDetectBrowser:
     
     def random_delay(self, min_sec=0.3, max_sec=1.0):
         time.sleep(random.uniform(min_sec, max_sec))
-    
-    # ============================================================
-    # === GOOGLE ONE TAP / GIS КЛИК ===
-    # ============================================================
-    
-    def click_google_one_tap(self, timeout=30):
-        """
-        Кликает по Google One Tap кнопке "Continue as [имя]" на X.com
-        Это специальная кнопка Google Identity Services внутри iframe/Shadow DOM
-        """
-        self.log("🔍 Поиск Google One Tap кнопки...", "INFO")
-        start_time = time.time()
-        
-        while time.time() - start_time < timeout:
-            btn = None
-            
-            # Метод 1: Поиск по видимому тексту "Continue as"
-            try:
-                elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue as')]")
-                for el in elements:
-                    if el.is_displayed():
-                        # Проверяем что это внутри Google-контейнера или рядом с gmail
-                        parent = self.driver.execute_script("""
-                            var el = arguments[0];
-                            for (var i = 0; i < 5; i++) {
-                                if (el.parentElement) {
-                                    var text = el.parentElement.textContent || '';
-                                    if (text.includes('gmail') || text.includes('google') || text.includes('Continue as')) {
-                                        return el.parentElement;
-                                    }
-                                    el = el.parentElement;
-                                }
-                            }
-                            return el;
-                        """, el)
-                        if parent and parent.is_displayed():
-                            btn = parent
-                            self.log(f"✅ Найдена One Tap кнопка (текст): '{el.text[:50]}'", "SUCCESS")
-                            break
-            except:
-                pass
-            
-            # Метод 2: Поиск по data-атрибутам Google
-            if not btn:
-                try:
-                    selectors = [
-                        "//div[@data-provider='google']",
-                        "//div[@data-testid='google-login']",
-                        "//button[@data-testid='google-login']",
-                        "//div[contains(@data-testid, 'google')]",
-                        "//div[contains(@aria-label, 'Google')]",
-                    ]
-                    for sel in selectors:
-                        elements = self.driver.find_elements(By.XPATH, sel)
-                        for el in elements:
-                            if el.is_displayed():
-                                btn = el
-                                self.log("✅ Найдена Google-кнопка (data-attr)", "SUCCESS")
-                                break
-                        if btn:
-                            break
-                except:
-                    pass
-            
-            # Метод 3: Поиск в iframe Google
-            if not btn:
-                try:
-                    iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
-                    for iframe in iframes:
-                        try:
-                            self.driver.switch_to.frame(iframe)
-                            elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue') or contains(text(), 'Sign in')]")
-                            for el in elements:
-                                if el.is_displayed():
-                                    btn = el
-                                    self.log(f"✅ Найдена кнопка в iframe: '{el.text[:40]}'", "SUCCESS")
-                                    break
-                            self.driver.switch_to.default_content()
-                            if btn:
-                                break
-                        except:
-                            self.driver.switch_to.default_content()
-                            continue
-                except:
-                    self.driver.switch_to.default_content()
-            
-            # Метод 4: Shadow DOM Google
-            if not btn:
-                try:
-                    hosts = self.driver.find_elements(By.CSS_SELECTOR, "*")
-                    for host in hosts:
-                        try:
-                            shadow_root = self.driver.execute_script("return arguments[0].shadowRoot", host)
-                            if shadow_root:
-                                elements = shadow_root.find_elements(By.CSS_SELECTOR, "*")
-                                for el in elements:
-                                    text = el.text or ""
-                                    if "Continue" in text and el.is_displayed():
-                                        btn = el
-                                        self.log(f"✅ Найдена кнопка в Shadow DOM: '{text[:40]}'", "SUCCESS")
-                                        break
-                                if btn:
-                                    break
-                        except:
-                            continue
-                except:
-                    pass
-            
-            # Метод 5: Координаты (кнопка примерно на y=300-350)
-            if not btn:
-                try:
-                    # Проверяем что есть элемент в районе кнопки
-                    el = self.driver.execute_script("""
-                        var el = document.elementFromPoint(960, 320);
-                        if (el) {
-                            var text = el.textContent || '';
-                            var parent = el;
-                            for (var i = 0; i < 3; i++) {
-                                if (parent.parentElement) parent = parent.parentElement;
-                            }
-                            var parentText = parent.textContent || '';
-                            if (parentText.includes('Continue as') || parentText.includes('Google')) {
-                                return parent;
-                            }
-                            return el;
-                        }
-                        return null;
-                    """)
-                    if el:
-                        btn = el
-                        self.log("✅ Найдена кнопка по координатам", "SUCCESS")
-                except:
-                    pass
-            
-            if btn:
-                # Клик
-                try:
-                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", btn)
-                    time.sleep(0.5)
-                    
-                    # ActionChains клик (самый человечный)
-                    actions = ActionChains(self.driver)
-                    actions.move_to_element(btn)
-                    actions.pause(0.3)
-                    actions.click()
-                    actions.perform()
-                    
-                    self.log("✅ Клик по One Tap кнопке (ActionChains)", "SUCCESS")
-                    self.take_step_screenshot("one_tap_clicked")
-                    return True
-                    
-                except Exception as e:
-                    self.log(f"⚠️ ActionChains не сработал: {e}, пробую JS", "WARNING")
-                    try:
-                        self.driver.execute_script("arguments[0].click();", btn)
-                        self.log("✅ Клик по One Tap кнопке (JS)", "SUCCESS")
-                        self.take_step_screenshot("one_tap_clicked_js")
-                        return True
-                    except Exception as e2:
-                        self.log(f"❌ JS тоже не сработал: {e2}", "ERROR")
-            
-            time.sleep(1)
-            self.log("⏳ Жду появления кнопки...", "DEBUG")
-        
-        self.log("❌ One Tap кнопка не найдена за 30 сек", "ERROR")
-        return False
-    
-    # ============================================================
-    # === POPUP / NEW WINDOW ===
-    # ============================================================
-    
-    def wait_for_popup_or_new_window(self, timeout=10):
-        self.log("⏳ Ожидание popup-окна...", "INFO")
-        start = time.time()
-        original_handles = self.driver.window_handles
-        while time.time() - start < timeout:
-            current_handles = self.driver.window_handles
-            if len(current_handles) > len(original_handles):
-                new_handles = [h for h in current_handles if h not in original_handles]
-                if new_handles:
-                    self.driver.switch_to.window(new_handles[0])
-                    self.log(f"✅ Переключился на popup: {self.driver.title[:40]}", "SUCCESS")
-                    return True
-            time.sleep(0.5)
-        self.log("⚠️ Popup не появился", "WARNING")
-        return False
-
-    def click_in_popup(self, text="Continue as", timeout=15):
-        self.log("🔍 Поиск кнопки в popup...", "INFO")
-        
-        if self.wait_for_popup_or_new_window(timeout=5):
-            self.wait_for_page_load(timeout=10)
-            time.sleep(2)
-        
-        element = None
-        selectors = [
-            f"//span[contains(text(), '{text}')]",
-            f"//div[contains(text(), '{text}')]",
-            f"//button[contains(., '{text}')]",
-            "//div[@role='button']",
-            "//button[@type='button']",
-            "//div[contains(@class, 'VfPpkd')]",
-            "//div[contains(@class, 'nsm7Bb')]",
-        ]
-        
-        for by, selector in [(By.XPATH, s) for s in selectors]:
-            try:
-                elements = self.driver.find_elements(by, selector)
-                for elem in elements:
-                    if elem.is_displayed() and text.lower() in (elem.text or "").lower():
-                        element = elem
-                        self.log(f"🔍 Найдена кнопка: '{elem.text[:50]}'", "SUCCESS")
-                        break
-                if element:
-                    break
-            except:
-                continue
-        
-        if element:
-            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
-            time.sleep(0.5)
-            
-            try:
-                actions = ActionChains(self.driver)
-                actions.move_to_element(element)
-                actions.pause(0.3)
-                actions.click()
-                actions.perform()
-                self.log("✅ Клик через ActionChains в popup", "SUCCESS")
-            except Exception as e:
-                self.log(f"⚠️ ActionChains не сработал: {e}, пробую JS", "WARNING")
-                self.driver.execute_script("arguments[0].click();", element)
-                self.log("✅ Клик через JS в popup", "SUCCESS")
-            
-            time.sleep(3)
-            self.take_step_screenshot("popup_clicked")
-            self.driver.switch_to.window(self.driver.window_handles[0])
-            self.log("↩️ Вернулся на основное окно", "INFO")
-            return True
-        
-        self.log("❌ Кнопка не найдена в popup", "ERROR")
-        if len(self.driver.window_handles) > 1:
-            self.driver.switch_to.window(self.driver.window_handles[0])
-        return False
     
     # ============================================================
     # === ТЯЖЕЛЫЙ АРСЕНАЛ — ВСЕ МЕТОДЫ КЛИКА ===
@@ -946,9 +683,9 @@ class AntiDetectBrowser:
             self.log("✅ X.com открыт", "SUCCESS")
             
             self.wait_for_page_load(timeout=60)
-            time.sleep(5)  # React грузит кнопки лениво
-            self.wait_for_react(timeout=30)
             time.sleep(3)
+            self.wait_for_react(timeout=30)
+            time.sleep(2)
             self.scroll_to_load()
             self.take_step_screenshot("xcom_loaded")
             
@@ -959,41 +696,25 @@ class AntiDetectBrowser:
                 self.log("🎉 Уже на главной", "SUCCESS")
                 return True
             
-            # === СНАЧАЛА ПРОБУЕМ GOOGLE ONE TAP ===
-            result = self.click_google_one_tap(timeout=30)
+            # === ЗАПУСКАЕМ МЕГА-КЛИК ===
+            result = self.mega_click(x=960, y=380, text="Continue as")
             
             if result:
-                self.log("⏳ Жду редиректа после One Tap...", "INFO")
-                for i in range(15):
-                    time.sleep(2)
-                    current_url = self.driver.current_url
-                    self.log(f"   ⏳ URL: {current_url[:60]}", "DEBUG")
-                    
-                    if "home" in current_url or "x.com/home" in current_url:
-                        self.log("🎉 ВХОД ВЫПОЛНЕН!", "SUCCESS")
-                        self.take_step_screenshot("xcom_login_success")
-                        return True
-                    
-                    # Проверяем popup
-                    if len(self.driver.window_handles) > 1:
-                        self.click_in_popup(text="Continue")
-                        time.sleep(3)
-            
-            # === FALLBACK: MEGA CLICK ===
-            self.log("⚠️ One Tap не сработал, пробую mega_click", "WARNING")
-            result = self.mega_click(x=960, y=320, text="Continue")
-            
-            if result:
-                time.sleep(5)
+                self.log("🎉 МЕГА-КЛИК сработал!", "SUCCESS")
+                time.sleep(3)
+                self.take_step_screenshot("xcom_mega_click_success")
+                
                 current_url = self.driver.current_url
                 if "home" in current_url or "x.com/home" in current_url:
-                    self.log("🎉 ВХОД ВЫПОЛНЕН через mega_click!", "SUCCESS")
+                    self.log("🎉 ВХОД ВЫПОЛНЕН!", "SUCCESS")
                     return True
+            else:
+                self.log("⚠️ МЕГА-КЛИК не сработал", "WARNING")
+                self.take_step_screenshot("xcom_mega_click_failed")
             
-            self.take_step_screenshot("xcom_auto_failed")
             self.log("🔄 Используйте /joystick для ручного управления", "INFO")
             return True
-                
+            
         except Exception as e:
             self.log(f"❌ ОШИБКА: {e}", "ERROR")
             return False
