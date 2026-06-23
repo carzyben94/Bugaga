@@ -6,7 +6,6 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
-from webdriver_manager.chrome import ChromeDriverManager
 import os
 import time
 import random
@@ -15,11 +14,55 @@ import zipfile
 import urllib.request
 import sys
 import subprocess
-import json
 from datetime import datetime
 
-logging.basicConfig(level=logging.DEBUG)
+# === НАСТРОЙКА ЛОГИРОВАНИЯ ===
+LOG_FILE = "bot.log"
+
+if os.path.exists(LOG_FILE):
+    os.remove(LOG_FILE)
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
+
+def get_chromedriver_path():
+    logger.info("📦 Загрузка ChromeDriver...")
+    chrome_driver_dir = "/tmp/chromedriver"
+    os.makedirs(chrome_driver_dir, exist_ok=True)
+    
+    driver_name = "chromedriver.exe" if sys.platform.startswith('win') else "chromedriver"
+    driver_path = os.path.join(chrome_driver_dir, driver_name)
+    
+    if os.path.exists(driver_path):
+        logger.info("✅ ChromeDriver уже есть")
+        os.chmod(driver_path, 0o755)
+        return driver_path
+    
+    url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/149.0.7827.155/linux64/chromedriver-linux64.zip"
+    zip_path = os.path.join(chrome_driver_dir, "chromedriver.zip")
+    
+    urllib.request.urlretrieve(url, zip_path)
+    
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        zip_ref.extractall(chrome_driver_dir)
+    
+    os.remove(zip_path)
+    
+    for root, dirs, files in os.walk(chrome_driver_dir):
+        if driver_name in files:
+            driver_path = os.path.join(root, driver_name)
+            os.chmod(driver_path, 0o755)
+            logger.info("✅ ChromeDriver готов")
+            return driver_path
+    
+    raise Exception("ChromeDriver не найден")
 
 class AntiDetectBrowser:
     def __init__(self, headless=False, screenshot_callback=None, log_callback=None):
@@ -29,39 +72,32 @@ class AntiDetectBrowser:
         self.screenshot_callback = screenshot_callback
         self.log_callback = log_callback
         self.step = 0
-        self.detailed_logs = []
+        self.email = None
         
-    def log(self, message, level="INFO", data=None):
-        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-        log_entry = {
-            "time": timestamp,
-            "level": level,
-            "message": message,
-            "data": data
-        }
-        self.detailed_logs.append(log_entry)
+    def log(self, message, level="INFO"):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        log_entry = f"[{timestamp}] [{level}] {message}"
         
-        log_text = f"[{timestamp}] [{level}] {message}"
-        if data:
-            log_text += f"\n   📎 {json.dumps(data, ensure_ascii=False, indent=2)}"
-        
-        logger.info(log_text)
+        if level == "ERROR":
+            logger.error(message)
+        elif level == "WARNING":
+            logger.warning(message)
+        else:
+            logger.info(message)
         
         if self.log_callback:
-            self.log_callback(log_text, level)
+            self.log_callback(log_entry)
         
         return log_entry
-    
+        
     def take_step_screenshot(self, name="step"):
         try:
             self.step += 1
             filename = f"step_{self.step}_{name}.png"
             self.driver.save_screenshot(filename)
-            self.log(f"📸 Скриншот: {name}", "STEP", {"filename": filename, "step": self.step})
-            
+            self.log(f"📸 Скриншот: {name}", "STEP")
             if self.screenshot_callback:
                 self.screenshot_callback(filename, f"Шаг {self.step}: {name}")
-            
             return filename
         except Exception as e:
             self.log(f"❌ Ошибка скриншота: {e}", "ERROR")
@@ -71,14 +107,11 @@ class AntiDetectBrowser:
         self.log("🔧 Настройка драйвера...", "INFO")
         
         options = Options()
-        
-        # === ИСПОЛЬЗУЕМ СИСТЕМНЫЙ CHROME ИЗ DOCKER ===
         options.binary_location = "/usr/bin/google-chrome"
-        self.log(f"📍 Chrome: /usr/bin/google-chrome", "INFO")
         
         if self.headless:
             options.add_argument('--headless=new')
-            self.log("🔇 Headless режим включен", "INFO")
+            self.log("🔇 Headless режим", "INFO")
         
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
@@ -90,131 +123,75 @@ class AntiDetectBrowser:
         options.add_experimental_option('excludeSwitches', ['enable-automation'])
         options.add_experimental_option('useAutomationExtension', False)
         
-        options.add_argument('--memory-pressure-off')
-        options.add_argument('--max_old_space_size=256')
-        options.add_argument('--js-flags=--max-old-space-size=256')
-        options.add_argument('--disable-dev-tools')
-        options.add_argument('--disable-extensions')
-        options.add_argument('--disable-plugins')
-        options.add_argument('--disable-popup-blocking')
-        options.add_argument('--disable-notifications')
-        options.add_argument('--disable-infobars')
-        options.add_argument('--disable-session-crashed-bubble')
-        
-        desktop_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
-        options.add_argument(f'--user-agent={desktop_user_agent}')
-        self.log(f"🖥️ User-Agent: {desktop_user_agent[:50]}...", "DEBUG")
-        
+        options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36')
         options.add_argument('--window-size=1920,1080')
-        options.add_argument('--start-maximized')
-        options.add_argument('--lang=en-US,en;q=0.9')
         
-        options.add_experimental_option('prefs', {
-            'intl.accept_languages': 'en-US,en;q=0.9',
-            'credentials_enable_service': False,
-            'profile.password_manager_enabled': False,
-            'profile.default_content_settings': {
-                'images': 1,
-                'javascript': 1,
-                'popups': 2,
-                'notifications': 2,
-            },
-        })
-        
-        # === CHROMEDRIVER ЧЕРЕЗ WEBDRIVER_MANAGER (САМ СКАЧАЕТ) ===
-        self.log("🚀 Загрузка ChromeDriver через webdriver-manager...", "INFO")
-        try:
-            driver_path = ChromeDriverManager().install()
-            self.log(f"✅ ChromeDriver: {driver_path}", "SUCCESS")
-        except Exception as e:
-            self.log(f"❌ Ошибка ChromeDriver: {e}", "ERROR")
-            raise
-        
+        driver_path = get_chromedriver_path()
         service = Service(driver_path)
         
         try:
-            self.log("🚀 Запуск Chrome...", "INFO")
             self.driver = webdriver.Chrome(service=service, options=options)
-            self.driver.set_page_load_timeout(30)
-            self.driver.implicitly_wait(10)
-            self.driver.set_window_size(1920, 1080)
             self.log("✅ Chrome запущен", "SUCCESS")
         except Exception as e:
             self.log(f"❌ Ошибка запуска Chrome: {e}", "ERROR")
             raise
         
-        self.log("🔧 Скрытие признаков автоматизации...", "DEBUG")
+        self.driver.set_page_load_timeout(30)
+        self.driver.implicitly_wait(10)
+        
         self.driver.execute_script("""
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined
             });
-            Object.defineProperty(navigator, 'plugins', {
-                get: () => [1, 2, 3, 4, 5]
-            });
-            Object.defineProperty(navigator, 'languages', {
-                get: () => ['en-US', 'en']
-            });
-            Object.defineProperty(navigator, 'platform', {
-                get: () => 'Win32'
-            });
-            window.chrome = {
-                runtime: {},
-                loadTimes: function() {},
-                csi: function() {},
-                app: {}
-            };
         """)
-        self.log("✅ WebDriver скрыт", "SUCCESS")
         
         self.wait = WebDriverWait(self.driver, 10)
-        self.log("✅ Браузер готов (десктопная версия)", "SUCCESS")
+        self.log("✅ Браузер готов", "SUCCESS")
         return self.driver
     
     def random_delay(self, min_sec=0.3, max_sec=1.0):
-        delay = random.uniform(min_sec, max_sec)
-        time.sleep(delay)
-        return delay
+        time.sleep(random.uniform(min_sec, max_sec))
     
     def human_click(self, element):
         try:
-            element_text = element.text[:30] if element.text else "без текста"
-            self.log(f"🖱️ Клик по элементу: '{element_text}'", "DEBUG")
             actions = ActionChains(self.driver)
             actions.move_to_element(element)
-            self.random_delay(0.1, 0.2)
             actions.click()
             actions.perform()
             self.random_delay(0.2, 0.5)
-            self.log("✅ Клик выполнен", "SUCCESS")
             return True
         except Exception as e:
             self.log(f"❌ Ошибка клика: {e}", "ERROR")
             return False
     
+    # ===== НОВЫЙ МЕТОД ВВОДА ЧЕРЕЗ ACTIONCHAINS =====
     def type_with_actions(self, element, text):
-        """Ввод текста через ActionChains (более надежно)"""
+        """Ввод текста через ActionChains (надежно)"""
         try:
             self.log(f"⌨️ Ввод через ActionChains", "DEBUG")
             
+            # Кликаем по элементу
             actions = ActionChains(self.driver)
             actions.move_to_element(element)
             actions.click()
             actions.perform()
-            self.random_delay(0.3, 0.5)
+            time.sleep(0.5)
             
+            # Очищаем (Ctrl+A + Delete)
             actions = ActionChains(self.driver)
             actions.key_down(Keys.CONTROL)
             actions.send_keys('a')
             actions.key_up(Keys.CONTROL)
             actions.send_keys(Keys.DELETE)
             actions.perform()
-            self.random_delay(0.3, 0.5)
+            time.sleep(0.5)
             
+            # Вводим текст посимвольно
             for char in text:
                 actions = ActionChains(self.driver)
                 actions.send_keys(char)
                 actions.perform()
-                time.sleep(random.uniform(0.03, 0.08))
+                time.sleep(random.uniform(0.05, 0.15))
             
             self.log("✅ Текст введен через ActionChains", "SUCCESS")
             return True
@@ -223,6 +200,7 @@ class AntiDetectBrowser:
             self.log(f"❌ Ошибка ввода через ActionChains: {e}", "ERROR")
             return False
     
+    # ===== НОВЫЙ МЕТОД ПОИСКА ПОЛЯ ПАРОЛЯ =====
     def safe_find_password_field(self, timeout=30):
         """Найти поле пароля с большим терпением"""
         selectors = [
@@ -234,6 +212,7 @@ class AntiDetectBrowser:
             (By.CSS_SELECTOR, "input[type='password']"),
             (By.XPATH, "//div[@data-brand='accounts.google.com']//input[@type='password']"),
             (By.CSS_SELECTOR, "div[class*='password'] input"),
+            (By.XPATH, "//input[@autocomplete='current-password']"),
         ]
         
         for attempt in range(5):
@@ -246,6 +225,7 @@ class AntiDetectBrowser:
                         EC.presence_of_element_located((by, selector))
                     )
                     if element and element.is_displayed():
+                        # Ждем кликабельности
                         try:
                             WebDriverWait(self.driver, 3).until(
                                 EC.element_to_be_clickable((by, selector))
@@ -266,18 +246,34 @@ class AntiDetectBrowser:
         self.log("❌ Поле пароля не найдено", "ERROR")
         return None
     
+    # ===== СТАРЫЙ МЕТОД human_type (оставляем для совместимости) =====
     def human_type(self, element, text):
         try:
             self.log(f"⌨️ Ввод текста: {text[:3]}***{text[-3:] if len(text) > 6 else ''}", "DEBUG")
-            element.click()
-            self.random_delay(0.2, 0.3)
+            
+            # Ждем 2 секунды перед вводом
+            time.sleep(2)
+            
+            # Пробуем кликнуть несколько раз
+            for attempt in range(5):
+                try:
+                    element.click()
+                    time.sleep(0.5)
+                    if element.is_enabled():
+                        break
+                except:
+                    time.sleep(0.5)
+            
             element.clear()
+            time.sleep(0.5)
+            
             for char in text:
                 element.send_keys(char)
-                time.sleep(random.uniform(0.02, 0.08))
-            self.random_delay(0.2, 0.4)
+                time.sleep(random.uniform(0.05, 0.15))
+            
             self.log("✅ Текст введен", "SUCCESS")
             return True
+            
         except Exception as e:
             self.log(f"❌ Ошибка ввода: {e}", "ERROR")
             return False
@@ -287,7 +283,8 @@ class AntiDetectBrowser:
             return WebDriverWait(self.driver, timeout).until(
                 EC.presence_of_element_located((by, selector))
             )
-        except:
+        except Exception as e:
+            self.log(f"❌ Элемент не найден: {selector}", "WARNING")
             return None
     
     def find_element_clickable(self, by, selector, timeout=10):
@@ -299,6 +296,7 @@ class AntiDetectBrowser:
             return None
     
     def login_google(self, email, password):
+        self.email = email
         self.log(f"🚀 Вход в Google: {email[:3]}***{email[-3:] if len(email) > 6 else ''}", "INFO")
         
         try:
@@ -311,7 +309,7 @@ class AntiDetectBrowser:
             self.log(f"❌ Ошибка Google: {e}", "ERROR")
             return False
         
-        # Ввод email
+        # === ВВОД EMAIL ===
         self.log("🔍 Поиск поля email...", "INFO")
         email_field = self.find_element(By.ID, "identifierId")
         if email_field:
@@ -324,7 +322,7 @@ class AntiDetectBrowser:
         
         self.random_delay(1, 2)
         
-        # Кнопка "Далее"
+        # === КНОПКА "ДАЛЕЕ" ===
         self.log("🔍 Поиск кнопки 'Далее'...", "INFO")
         next_btn = self.find_element_clickable(By.XPATH, "//span[text()='Далее']")
         if not next_btn:
@@ -341,9 +339,10 @@ class AntiDetectBrowser:
         
         self.random_delay(2, 4)
         
-        # Проверяем страницу
+        # === ПРОВЕРЯЕМ СТРАНИЦУ ===
         current_url = self.driver.current_url
         
+        # Если страница подтверждения
         if "challenge" in current_url or "verify" in current_url.lower():
             self.log("🔐 Страница подтверждения Google", "INFO")
             self.take_step_screenshot("google_verify_page")
@@ -362,20 +361,27 @@ class AntiDetectBrowser:
             self.log("✅ Продолжаем...", "INFO")
             return True
         
-        # Ввод пароля
+        # === ВВОД ПАРОЛЯ (НОВЫЙ МЕТОД) ===
         self.log("🔍 Поиск поля пароля...", "INFO")
+        
+        # Ждем появления поля пароля
+        self.log("⏳ Ожидание появления поля пароля...", "INFO")
         self.random_delay(2, 4)
         
+        # Ищем поле пароля через safe_find_password_field
         password_field = self.safe_find_password_field()
         
         if password_field:
             self.log("✅ Поле пароля найдено, пробую ввести...", "SUCCESS")
             
+            # Пробуем ввести через ActionChains
             success = self.type_with_actions(password_field, password)
             
             if success:
                 self.take_step_screenshot("google_password_entered")
+                self.log("✅ Пароль введен через ActionChains", "SUCCESS")
             else:
+                # Fallback: обычный ввод
                 try:
                     self.log("🔄 Пробую обычный ввод...", "DEBUG")
                     password_field.click()
@@ -395,7 +401,7 @@ class AntiDetectBrowser:
         
         self.random_delay(1, 2)
         
-        # Финальная кнопка
+        # === ФИНАЛЬНАЯ КНОПКА ===
         self.log("🔍 Поиск кнопки входа...", "INFO")
         login_btn = self.find_element_clickable(By.XPATH, "//span[text()='Далее']")
         if not login_btn:
@@ -414,6 +420,7 @@ class AntiDetectBrowser:
         
         self.random_delay(3, 5)
         
+        # === ПРОВЕРКА 2FA ===
         current_url = self.driver.current_url
         self.log(f"📍 Финальный URL: {current_url[:80]}...", "INFO")
         
@@ -466,6 +473,19 @@ class AntiDetectBrowser:
                             break
                     except:
                         continue
+                
+                if self.email:
+                    try:
+                        email_elements = self.driver.find_elements(By.XPATH, f"//*[contains(text(), '{self.email}')]")
+                        for elem in email_elements:
+                            if elem.is_displayed():
+                                self.log(f"✅ Найден email: {self.email}", "SUCCESS")
+                                self.human_click(elem)
+                                self.random_delay(2, 3)
+                                self.take_step_screenshot("xcom_click_email")
+                                break
+                    except:
+                        pass
                 
                 try:
                     continue_elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue')]")
@@ -559,12 +579,11 @@ class AntiDetectBrowser:
         except:
             return None
     
-    def get_detailed_logs(self):
-        result = []
-        for log in self.detailed_logs:
-            text = f"[{log['time']}] [{log['level']}] {log['message']}"
-            result.append(text)
-        return "\n".join(result)
+    def get_logs(self):
+        if os.path.exists(LOG_FILE):
+            with open(LOG_FILE, 'r', encoding='utf-8') as f:
+                return f.read()
+        return "Логов пока нет"
     
     def close(self):
         if self.driver:
