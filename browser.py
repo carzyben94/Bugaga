@@ -289,70 +289,53 @@ class AntiDetectBrowser:
             self.log("✅ Клик через MouseEvent выполнен", "SUCCESS")
             return True
         
-        try:
-            elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue as') or contains(text(), 'Continue with') or contains(text(), 'Continue')]")
-            for elem in elements:
-                if elem.is_displayed():
-                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elem)
-                    time.sleep(0.3)
-                    self.driver.execute_script("arguments[0].click();", elem)
-                    self.log(f"✅ Найдена кнопка по тексту: '{elem.text[:30]}'", "SUCCESS")
-                    return True
-        except:
-            pass
-        
         self.log("❌ Клик не сработал", "ERROR")
         return False
     
-    def simple_click_by_text(self, text):
-        self.log(f"🔍 Ищу элемент с текстом: '{text}'", "INFO")
+    def click_by_text_js(self, text):
+        """Клик через JavaScript по тексту"""
+        self.log(f"🔍 JS поиск и клик по тексту: '{text}'", "INFO")
         
         try:
-            elements = self.driver.find_elements(By.XPATH, f"//*[contains(text(), '{text}')]")
-            self.log(f"📊 Найдено элементов: {len(elements)}", "DEBUG")
+            result = self.driver.execute_script(f"""
+                var elements = document.querySelectorAll('*');
+                for (var i = 0; i < elements.length; i++) {{
+                    var text = elements[i].textContent || '';
+                    if (text.includes('{text}')) {{
+                        elements[i].scrollIntoView({{block: 'center'}});
+                        elements[i].click();
+                        return true;
+                    }}
+                }}
+                return false;
+            """)
             
-            for elem in elements:
-                try:
-                    if elem.is_displayed():
-                        elem_text = elem.text.strip()[:40]
-                        self.log(f"🔍 Найден элемент: '{elem_text}'", "DEBUG")
-                        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elem)
-                        time.sleep(0.5)
-                        self.driver.execute_script("arguments[0].click();", elem)
-                        self.log(f"✅ Клик по '{elem_text}' выполнен", "SUCCESS")
-                        return True
-                except:
-                    continue
-            
-            self.log("❌ Элемент не найден", "ERROR")
-            return False
+            if result:
+                self.log(f"✅ Клик по '{text}' выполнен через JS", "SUCCESS")
+                return True
+            else:
+                self.log(f"❌ Текст '{text}' не найден", "WARNING")
+                return False
         except Exception as e:
             self.log(f"❌ Ошибка: {e}", "ERROR")
             return False
     
-    def get_page_info(self):
+    def find_all_elements_with_text(self):
+        """Находит все элементы с текстом"""
         try:
-            info = {
-                "url": self.driver.current_url,
-                "title": self.driver.title,
-                "html_length": len(self.driver.page_source)
-            }
-            return info
-        except:
-            return {"error": "Не удалось получить информацию"}
-    
-    def get_buttons_info(self):
-        try:
-            buttons = self.driver.find_elements(By.TAG_NAME, "button")
+            elements = self.driver.find_elements(By.XPATH, "//*[text()!='']")
             result = []
-            for btn in buttons[:10]:
+            for elem in elements[:50]:
                 try:
-                    text = btn.text.strip()
-                    if text:
+                    text = elem.text.strip()
+                    tag = elem.tag_name
+                    visible = elem.is_displayed()
+                    if text and len(text) < 100:
                         result.append({
-                            "text": text[:50],
-                            "visible": btn.is_displayed(),
-                            "enabled": btn.is_enabled()
+                            "tag": tag,
+                            "text": text[:60],
+                            "visible": visible,
+                            "enabled": elem.is_enabled() if visible else False
                         })
                 except:
                     continue
