@@ -24,7 +24,7 @@ JOYSTICK_FAST_STEP = 150
 user_sessions = {}
 joystick_states = {}
 joystick_messages = {}
-cursor_positions = {}  # Храним реальные координаты курсора
+cursor_positions = {}
 
 # ============ FLASK ============
 app_flask = Flask(__name__)
@@ -129,7 +129,6 @@ async def get_user_browser(user_id: int):
             "current_url": "about:blank"
         }
         await page.goto("about:blank")
-        # Инициализируем курсор в центре
         cursor_positions[user_id] = {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2}
         return user_sessions[user_id]
     return user_sessions[user_id]
@@ -144,6 +143,24 @@ async def close_user_browser(user_id: int):
             del joystick_states[user_id]
         if user_id in cursor_positions:
             del cursor_positions[user_id]
+
+async def goto_url(page, url: str):
+    """Универсальный переход по URL с авто-выбором режима ожидания"""
+    try:
+        # Сначала пробуем networkidle (быстро, но не для всех сайтов)
+        await page.goto(url, wait_until="networkidle", timeout=15000)
+        print(f"✅ {url} загружен (networkidle)")
+        return True
+    except Exception as e:
+        print(f"⚠️ networkidle не сработал, пробую domcontentloaded: {e}")
+        try:
+            # Если networkidle не сработал - используем domcontentloaded
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            print(f"✅ {url} загружен (domcontentloaded)")
+            return True
+        except Exception as e2:
+            print(f"❌ Ошибка загрузки {url}: {e2}")
+            raise e2
 
 async def screenshot_with_cursor(page, x: int, y: int) -> bytes:
     try:
@@ -231,14 +248,10 @@ def get_joystick_keyboard(mode="normal"):
     return InlineKeyboardMarkup(keyboard)
 
 async def update_joystick_message(query, page, user_id, mode, caption=""):
-    """Обновляет сообщение джойстика с новым скриншотом"""
-    
-    # Получаем реальные координаты курсора из хранилища
     cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
     current_x = cursor["x"]
     current_y = cursor["y"]
     
-    # Определяем шаг
     if mode == "fast":
         step = JOYSTICK_FAST_STEP
         mode_label = "⚡ БЫСТРЫЙ"
@@ -249,10 +262,8 @@ async def update_joystick_message(query, page, user_id, mode, caption=""):
         step = JOYSTICK_STEP
         mode_label = "🔄 НОРМАЛЬНЫЙ"
     
-    # Делаем скриншот с курсором
     screenshot = await screenshot_with_cursor(page, current_x, current_y)
     
-    # Текст сообщения
     text = (
         f"🎮 ДЖОЙСТИК 🎮\n\n"
         f"📍 Координаты: ({current_x}, {current_y})\n"
@@ -262,7 +273,6 @@ async def update_joystick_message(query, page, user_id, mode, caption=""):
     if caption:
         text += f"\n{caption}"
     
-    # Редактируем сообщение с фото
     try:
         await query.edit_message_media(
             media=InputMediaPhoto(
@@ -273,7 +283,6 @@ async def update_joystick_message(query, page, user_id, mode, caption=""):
         )
     except Exception as e:
         print(f"Ошибка редактирования: {e}")
-        # Если не получается отредактировать, отправляем новое
         msg = await query.message.reply_photo(
             photo=screenshot,
             caption=text,
@@ -324,11 +333,14 @@ async def go_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         page = session["page"]
         
         await update.message.reply_text(f"🌐 Перехожу на {url}...")
-        await page.goto(url, wait_until="networkidle", timeout=30000)
+        
+        # Универсальный переход
+        await goto_url(page, url)
         session["current_url"] = url
         
-        # Сбрасываем курсор в центр после перехода
         cursor_positions[user_id] = {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2}
+        
+        await page.wait_for_timeout(2000)
         
         screenshot = await screenshot_with_cursor(page, VIEWPORT["width"] // 2, VIEWPORT["height"] // 2)
         await update.message.reply_photo(
@@ -371,7 +383,6 @@ async def joystick_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
         return
     
-    # Если джойстик уже открыт - не открываем новый
     if user_id in joystick_messages:
         await update.message.reply_text("🎮 Джойстик уже открыт!")
         return
@@ -422,7 +433,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     page = session["page"]
     mode = joystick_states.get(user_id, {}).get("mode", "normal")
     
-    # Получаем реальные координаты курсора из хранилища
     cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
     current_x = cursor["x"]
     current_y = cursor["y"]
@@ -437,14 +447,11 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             new_x = current_x + dx
             new_y = current_y + dy
             
-            # Ограничиваем координаты
             new_x = max(0, min(VIEWPORT["width"], new_x))
             new_y = max(0, min(VIEWPORT["height"], new_y))
             
-            # Обновляем позицию курсора в хранилище
             cursor_positions[user_id] = {"x": new_x, "y": new_y}
             
-            # Двигаем курсор в браузере
             await page.mouse.move(new_x, new_y, steps=5)
             await page.wait_for_timeout(100)
             
@@ -456,22 +463,15 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка движения: {e}")
     
-    # ============ КЛИК ПО ЦЕНТРУ ============
+    # ============ КЛИК ПО КУРСОРУ ============
     elif data == "click_center":
         try:
-            x = VIEWPORT["width"] // 2
-            y = VIEWPORT["height"] // 2
-            
-            cursor_positions[user_id] = {"x": x, "y": y}
-            
-            await page.mouse.move(x, y, steps=3)
-            await page.wait_for_timeout(100)
-            await page.mouse.click(x, y)
+            await page.mouse.click(current_x, current_y, button="left")
             await page.wait_for_timeout(300)
             
             await update_joystick_message(
                 query, page, user_id, mode,
-                f"🖱️ Клик по центру ({x}, {y})"
+                f"🖱️ Клик по курсору ({current_x}, {current_y})"
             )
             
         except Exception as e:
