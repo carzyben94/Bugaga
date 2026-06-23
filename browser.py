@@ -167,14 +167,34 @@ class AntiDetectBrowser:
     def human_type(self, element, text):
         try:
             # Ждем чтобы элемент стал активным
-            time.sleep(1)
-            element.click()
-            time.sleep(0.5)
+            self.log("⏳ Подготовка к вводу...", "DEBUG")
+            time.sleep(2)
+            
+            # Пробуем кликнуть несколько раз
+            for attempt in range(5):
+                try:
+                    element.click()
+                    time.sleep(0.5)
+                    if element.is_enabled():
+                        self.log(f"✅ Элемент активен (попытка {attempt+1})", "DEBUG")
+                        break
+                except:
+                    time.sleep(0.5)
+                    continue
+            
+            # Очищаем поле
             element.clear()
+            time.sleep(0.5)
+            
+            # Вводим медленно
+            self.log("⌨️ Ввод текста...", "DEBUG")
             for char in text:
                 element.send_keys(char)
-                time.sleep(random.uniform(0.03, 0.08))
+                time.sleep(random.uniform(0.05, 0.15))
+            
+            self.log("✅ Текст введен", "SUCCESS")
             return True
+            
         except Exception as e:
             self.log(f"❌ Ошибка ввода: {e}", "ERROR")
             return False
@@ -240,7 +260,7 @@ class AntiDetectBrowser:
         
         self.random_delay(2, 4)
         
-        # === ПРОВЕРЯЕМ: ЧТО ПОКАЗЫВАЕТ СТРАНИЦА ===
+        # === ПРОВЕРЯЕМ СТРАНИЦУ ===
         current_url = self.driver.current_url
         
         # Если страница подтверждения
@@ -286,32 +306,35 @@ class AntiDetectBrowser:
                 continue
         
         if password_field:
-            # === ЖДЕМ ПОКА ПОЛЕ СТАНЕТ АКТИВНЫМ ===
+            # === ОЖИДАНИЕ АКТИВАЦИИ ПОЛЯ ===
             self.log("⏳ Ожидание активации поля пароля...", "INFO")
             
-            for attempt in range(10):
+            for attempt in range(15):
                 try:
                     if password_field.is_enabled():
-                        self.log("✅ Поле пароля активно", "SUCCESS")
+                        self.log("✅ Поле активно", "SUCCESS")
                         break
                     time.sleep(1)
-                    self.log(f"⏳ Ожидание... {attempt+1}/10", "DEBUG")
+                    self.log(f"⏳ Ожидание... {attempt+1}/15", "DEBUG")
                 except:
                     time.sleep(1)
             
             # === ВВОД ПАРОЛЯ ===
+            self.log("🔑 Ввод пароля...", "INFO")
+            
             try:
                 self.human_type(password_field, password)
                 self.take_step_screenshot("google_password")
                 self.log("✅ Пароль введен", "SUCCESS")
             except Exception as e:
-                self.log(f"❌ Ошибка ввода пароля: {e}", "ERROR")
+                self.log(f"❌ Ошибка ввода: {e}", "ERROR")
                 self.take_step_screenshot("google_password_error")
                 return False
         else:
             self.log("⚠️ Поле пароля не найдено", "WARNING")
             self.take_step_screenshot("google_password_not_found")
             
+            # Если поле не найдено — ждем подтверждение
             self.log("📱 Возможно, требуется подтверждение на телефоне", "INFO")
             self.log("⏳ Ожидание... 60 секунд", "INFO")
             
