@@ -234,7 +234,6 @@ class AntiDetectBrowser:
             return False
     
     def wait_for_page_load(self, timeout=30):
-        """Ожидание полной загрузки страницы"""
         try:
             WebDriverWait(self.driver, timeout).until(
                 lambda driver: driver.execute_script("return document.readyState") == "complete"
@@ -245,127 +244,89 @@ class AntiDetectBrowser:
             self.log(f"⚠️ Таймаут загрузки: {e}", "WARNING")
             return False
     
-    def check_javascript(self):
-        """Проверка работы JavaScript"""
-        try:
-            result = self.driver.execute_script("""
-                return {
-                    window: typeof window !== 'undefined',
-                    document: typeof document !== 'undefined',
-                    navigator: typeof navigator !== 'undefined'
-                }
-            """)
-            self.log(f"🔍 JavaScript: {result}", "DEBUG")
-            return all(result.values())
-        except Exception as e:
-            self.log(f"❌ JavaScript ошибка: {e}", "ERROR")
-            return False
-    
-    def smart_click_at_coordinates(self, x, y):
-        """Умный клик — пробует все способы"""
-        self.log(f"🧠 Умный клик по ({x}, {y})", "INFO")
+    def force_click(self, x, y):
+        """ПРИНУДИТЕЛЬНЫЙ КЛИК — игнорирует блокировки"""
+        self.log(f"💪 Принудительный клик по ({x}, {y})", "INFO")
         
-        # ШАГ 1: Проверяем элемент по координатам
-        element_info = self.driver.execute_script(f"""
+        # 1. Клик по странице для фокуса
+        try:
+            self.driver.execute_script("document.body.click();")
+            time.sleep(0.3)
+            self.log("   ✅ Фокус на странице", "DEBUG")
+        except:
+            pass
+        
+        # 2. JavaScript клик
+        self.log("   🔄 Пробую JavaScript клик...", "DEBUG")
+        result = self.driver.execute_script(f"""
             var el = document.elementFromPoint({x}, {y});
             if (el) {{
-                return {{
-                    tag: el.tagName,
-                    visible: el.offsetParent !== null,
-                    enabled: !el.disabled,
-                    text: el.textContent.slice(0, 50)
-                }};
+                el.scrollIntoView({{block: 'center'}});
+                el.click();
+                return true;
             }}
-            return null;
+            return false;
         """)
+        if result:
+            self.log("✅ Принудительный клик выполнен через JS", "SUCCESS")
+            return True
         
-        if element_info:
-            self.log(f"🔍 Найден элемент: {element_info}", "DEBUG")
-        else:
-            self.log(f"⚠️ Элемент не найден по координатам ({x}, {y})", "WARNING")
+        # 3. MouseEvent
+        self.log("   🔄 Пробую MouseEvent...", "DEBUG")
+        result = self.driver.execute_script(f"""
+            var el = document.elementFromPoint({x}, {y});
+            if (el) {{
+                var rect = el.getBoundingClientRect();
+                var cx = rect.left + rect.width / 2;
+                var cy = rect.top + rect.height / 2;
+                
+                var event = new MouseEvent('click', {{
+                    clientX: cx,
+                    clientY: cy,
+                    bubbles: true,
+                    cancelable: true,
+                    view: window
+                }});
+                el.dispatchEvent(event);
+                return true;
+            }}
+            return false;
+        """)
+        if result:
+            self.log("✅ Принудительный клик выполнен через MouseEvent", "SUCCESS")
+            return True
         
-        # ШАГ 2: Прокручиваем к месту
-        self.driver.execute_script(f"window.scrollTo({x - 200}, {y - 200});")
-        time.sleep(0.5)
-        
-        # ШАГ 3: Пробуем все способы клика
-        methods = [
-            ("JavaScript", lambda: self.driver.execute_script(f"""
-                var el = document.elementFromPoint({x}, {y});
-                if (el) {{
-                    el.click();
-                    return true;
-                }}
-                return false;
-            """)),
-            
-            ("MouseEvent", lambda: self.driver.execute_script(f"""
-                var el = document.elementFromPoint({x}, {y});
-                if (el) {{
-                    var event = new MouseEvent('click', {{
-                        bubbles: true,
-                        cancelable: true,
-                        view: window
-                    }});
-                    el.dispatchEvent(event);
-                    return true;
-                }}
-                return false;
-            """)),
-            
-            ("Родитель", lambda: self.driver.execute_script(f"""
-                var el = document.elementFromPoint({x}, {y});
-                if (el && el.parentElement) {{
-                    el.parentElement.click();
-                    return true;
-                }}
-                return false;
-            """)),
-            
-            ("ActionChains", lambda: self.driver.execute_script(f"""
-                var el = document.elementFromPoint({x}, {y});
-                if (el) {{
-                    var rect = el.getBoundingClientRect();
-                    var cx = rect.left + rect.width / 2;
-                    var cy = rect.top + rect.height / 2;
-                    
-                    var event = new MouseEvent('click', {{
-                        clientX: cx,
-                        clientY: cy,
-                        bubbles: true,
-                        cancelable: true,
-                        view: window
-                    }});
-                    el.dispatchEvent(event);
-                    return true;
-                }}
-                return false;
-            """)),
-        ]
-        
-        for name, method in methods:
-            try:
-                if method():
-                    self.log(f"✅ Клик через {name} выполнен", "SUCCESS")
-                    return True
-            except Exception as e:
-                self.log(f"   ❌ {name} не сработал: {e}", "DEBUG")
-                continue
-        
-        # ШАГ 4: Если не сработало — ищем по тексту
-        self.log("🔄 Ищу кнопку по тексту...", "INFO")
+        # 4. Поиск по тексту
+        self.log("   🔄 Ищу кнопку по тексту...", "DEBUG")
         try:
-            elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue as') or contains(text(), 'Continue with') or contains(text(), 'Accept') or contains(text(), 'Allow')]")
+            elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue as') or contains(text(), 'Continue with') or contains(text(), 'Continue')]")
             for elem in elements:
-                if elem.is_displayed() and elem.is_enabled():
-                    self.log(f"✅ Найдена кнопка по тексту: '{elem.text[:30]}'", "SUCCESS")
+                if elem.is_displayed():
+                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elem)
+                    time.sleep(0.3)
                     self.driver.execute_script("arguments[0].click();", elem)
+                    self.log(f"✅ Найдена кнопка по тексту: '{elem.text[:30]}'", "SUCCESS")
                     return True
         except Exception as e:
-            self.log(f"⚠️ Ошибка поиска по тексту: {e}", "WARNING")
+            self.log(f"   ❌ Ошибка поиска: {e}", "DEBUG")
         
-        # ШАГ 5: Если ничего не сработало — пробуем Enter
-        self.log("🔄 Пробую Enter...", "INFO")
+        # 5. Клик по родителю
+        self.log("   🔄 Пробую клик по родителю...", "DEBUG")
+        result = self.driver.execute_script(f"""
+            var el = document.elementFromPoint({x}, {y});
+            if (el && el.parentElement) {{
+                el.parentElement.scrollIntoView({{block: 'center'}});
+                el.parentElement.click();
+                return true;
+            }}
+            return false;
+        """)
+        if result:
+            self.log("✅ Принудительный клик выполнен по родителю", "SUCCESS")
+            return True
+        
+        # 6. Enter (если кнопка в фокусе)
+        self.log("   🔄 Пробую Enter...", "DEBUG")
         try:
             body = self.driver.find_element(By.TAG_NAME, "body")
             body.send_keys(Keys.ENTER)
@@ -374,7 +335,7 @@ class AntiDetectBrowser:
         except:
             pass
         
-        self.log("❌ Все способы клика не сработали", "ERROR")
+        self.log("❌ Принудительный клик не сработал", "ERROR")
         return False
     
     def login_google(self, email, password):
@@ -523,7 +484,6 @@ class AntiDetectBrowser:
         return True
     
     def go_to_xcom(self):
-        """Переход на X.com с полной загрузкой"""
         self.log("🌐 ПЕРЕХОД НА X.COM", "INFO")
         
         try:
@@ -533,9 +493,6 @@ class AntiDetectBrowser:
             self.wait_for_page_load(timeout=30)
             time.sleep(3)
             self.take_step_screenshot("xcom_loaded")
-            
-            if not self.check_javascript():
-                self.log("⚠️ JavaScript не работает!", "WARNING")
             
             current_url = self.driver.current_url
             self.log(f"📍 URL: {current_url}", "INFO")
@@ -554,8 +511,7 @@ class AntiDetectBrowser:
             return False
     
     def click_by_coordinates(self, x, y):
-        """Клик по координатам (использует умный клик)"""
-        return self.smart_click_at_coordinates(x, y)
+        return self.force_click(x, y)
     
     def login_twitter(self, username, password):
         self.log("🚀 Обычный вход", "INFO")
