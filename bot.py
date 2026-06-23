@@ -1,20 +1,29 @@
 import telebot
 import os
 import time
-from browser import AntiDetectBrowser, check_installation, LOG_FILE
+from browser import AntiDetectBrowser, check_installation
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("❌ TELEGRAM_BOT_TOKEN не найден!")
 
 bot = telebot.TeleBot(TOKEN)
+
+# === ЛОГ-ФАЙЛ ===
+LOG_FILE = "bot.log"
+
+# === СБРОС WEBHOOK ===
+try:
+    bot.remove_webhook()
+    print("✅ Webhook сброшен")
+except Exception as e:
+    print(f"⚠️ Ошибка сброса webhook: {e}")
+
 user_sessions = {}
 
-# === ОТПРАВКА ЛОГОВ В ЧАТ ===
 def send_log_to_chat(chat_id, log_entry):
-    """Отправляет лог в чат"""
     try:
-        if "✅" in log_entry or "❌" in log_entry or "⚠️" in log_entry or "🎉" in log_entry:
+        if any(x in log_entry for x in ["✅", "❌", "⚠️", "🎉", "🔐", "📱", "⌨️"]):
             bot.send_message(chat_id, log_entry)
     except:
         pass
@@ -61,7 +70,6 @@ def handle_check(message):
 
 @bot.message_handler(commands=['log'])
 def handle_log(message):
-    """Отправляет полный лог-файл"""
     try:
         if os.path.exists(LOG_FILE):
             with open(LOG_FILE, 'r', encoding='utf-8') as f:
@@ -281,4 +289,7 @@ def echo_all(message):
 
 if __name__ == '__main__':
     print("🤖 Бот запущен...")
-    bot.polling(none_stop=True)
+    try:
+        bot.polling(none_stop=True, interval=1)
+    except Exception as e:
+        print(f"❌ Ошибка polling: {e}")
