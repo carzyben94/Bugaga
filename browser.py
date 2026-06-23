@@ -20,7 +20,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def get_chromedriver_path():
-    """Получение пути к ChromeDriver (обход бага)"""
+    """Получение пути к ChromeDriver"""
     try:
         # Пробуем webdriver_manager
         try:
@@ -28,11 +28,12 @@ def get_chromedriver_path():
             driver_path = ChromeDriverManager().install()
             if driver_path and os.path.exists(driver_path):
                 logger.info(f"✅ ChromeDriver через webdriver_manager: {driver_path}")
+                os.chmod(driver_path, 0o755)
                 return driver_path
         except Exception as e:
             logger.warning(f"⚠️ webdriver_manager не сработал: {e}")
         
-        # Ручная установка
+        # Ручная установка в /tmp
         logger.info("🔄 Ручная установка ChromeDriver...")
         
         chrome_driver_dir = "/tmp/chromedriver"
@@ -147,12 +148,16 @@ class AntiDetectBrowser:
         options = Options()
         options.binary_location = self.chrome_path
         
+        # === ВАЖНЫЕ ФЛАГИ ДЛЯ HEADLESS ===
         if self.headless:
             options.add_argument('--headless=new')
         
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
+        options.add_argument('--remote-debugging-port=9222')
+        options.add_argument('--disable-setuid-sandbox')
+        options.add_argument('--disable-features=IsolateOrigins,site-per-process')
         options.add_argument('--disable-blink-features=AutomationControlled')
         options.add_experimental_option('excludeSwitches', ['enable-automation'])
         options.add_experimental_option('useAutomationExtension', False)
@@ -160,7 +165,7 @@ class AntiDetectBrowser:
         options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
         options.add_argument('--window-size=1920,1080')
         
-        # Используем функцию для получения ChromeDriver
+        # === ЗАГРУЗКА CHROMEDRIVER ===
         logger.info("🚀 Загрузка ChromeDriver...")
         driver_path = get_chromedriver_path()
         service = Service(driver_path)
