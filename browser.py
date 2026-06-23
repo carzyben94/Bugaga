@@ -405,43 +405,119 @@ class AntiDetectBrowser:
             current_url = self.driver.current_url
             self.log(f"📍 URL: {current_url}", "INFO")
             
+            # === ВАРИАНТ 1: Уже на главной ===
             if "home" in current_url or "x.com/home" in current_url:
                 self.log("🎉 Уже на главной", "SUCCESS")
                 return True
             
+            # === ВАРИАНТ 2: Страница входа ===
             if "login" in current_url or "i/flow" in current_url:
-                self.log("🔍 Ищу кнопку входа...", "INFO")
+                self.log("🔍 На странице входа", "INFO")
                 
-                # Ищем все кнопки
-                buttons = self.driver.find_elements(By.TAG_NAME, "button")
-                self.log(f"📊 Найдено кнопок: {len(buttons)}", "INFO")
+                # Проверяем, есть ли уже кнопка "Continue as ..."
+                try:
+                    continue_as = self.driver.find_element(By.XPATH, "//span[contains(text(), 'Continue as')]")
+                    if continue_as and continue_as.is_displayed():
+                        self.log("✅ Найдена кнопка 'Continue as'", "SUCCESS")
+                        self.human_click(continue_as)
+                        self.random_delay(2, 3)
+                        self.take_step_screenshot("xcom_click_continue_as")
+                        
+                        # Проверяем результат
+                        current_url = self.driver.current_url
+                        if "home" in current_url or "x.com/home" in current_url:
+                            self.log("🎉 Вход выполнен!", "SUCCESS")
+                            return True
+                except:
+                    pass
                 
-                for btn in buttons:
+                # === ВАРИАНТ 3: Ищем "Continue" ===
+                self.log("🔍 Ищу кнопку 'Continue'...", "INFO")
+                
+                selectors = [
+                    # Continue as
+                    "//span[contains(text(), 'Continue as')]",
+                    "//span[contains(text(), 'Continue as')]/ancestor::button",
+                    "//div[contains(text(), 'Continue as')]",
+                    "//*[contains(text(), 'Continue as')]",
+                    
+                    # Continue
+                    "//span[text()='Continue']",
+                    "//span[text()='Continue']/ancestor::button",
+                    "//button[contains(@class, 'continue')]",
+                    "//div[contains(text(), 'Continue')]",
+                    "//*[text()='Continue']",
+                    
+                    # По email
+                    f"//*[contains(text(), '{self.email}')]",
+                    "//div[contains(text(), '@gmail.com')]",
+                    "//span[contains(text(), '@gmail.com')]",
+                    
+                    # По имени
+                    "//span[text()='Babe']",
+                    "//div[contains(text(), 'Babe')]",
+                    
+                    # Google
+                    "//span[contains(text(), 'Google')]",
+                    "//*[contains(text(), 'Google')]//ancestor::button",
+                    
+                    # Универсальные
+                    "//button[@type='button']",
+                    "//div[@role='button']",
+                    "//a[@role='button']",
+                ]
+                
+                button_found = False
+                
+                for selector in selectors:
                     try:
-                        text = btn.text.strip()
-                        if text and ("Continue" in text or "Войти" in text or "Google" in text):
-                            self.log(f"✅ Нажимаю: '{text[:30]}'", "SUCCESS")
-                            self.human_click(btn)
-                            self.random_delay(2, 3)
-                            self.take_step_screenshot("xcom_click")
-                            break
-                    except:
+                        if selector.startswith('//'):
+                            element = self.driver.find_element(By.XPATH, selector)
+                        else:
+                            element = self.driver.find_element(By.CSS_SELECTOR, selector)
+                        
+                        if element and element.is_displayed() and element.is_enabled():
+                            text = element.text.strip()
+                            self.log(f"🔍 Найден элемент: '{text[:40]}'", "DEBUG")
+                            
+                            if any(keyword in text for keyword in ["Continue", "Babe", "@gmail.com", "Google", "Войти"]):
+                                self.log(f"✅ Нажимаю: '{text[:30]}'", "SUCCESS")
+                                self.human_click(element)
+                                button_found = True
+                                self.take_step_screenshot("xcom_click_button")
+                                break
+                    except Exception as e:
                         continue
                 
-                # Ищем по email
-                if self.email:
-                    try:
-                        email_elements = self.driver.find_elements(By.XPATH, f"//*[contains(text(), '{self.email}')]")
-                        for elem in email_elements:
-                            if elem.is_displayed():
-                                self.log(f"✅ Найден email", "SUCCESS")
-                                self.human_click(elem)
-                                self.random_delay(2, 3)
-                                self.take_step_screenshot("xcom_click_email")
+                # === ВАРИАНТ 4: Если не нашли — ищем все кнопки ===
+                if not button_found:
+                    self.log("⚠️ Кнопка не найдена, ищу все кнопки...", "WARNING")
+                    all_buttons = self.driver.find_elements(By.TAG_NAME, "button")
+                    self.log(f"📊 Найдено кнопок: {len(all_buttons)}", "INFO")
+                    
+                    for btn in all_buttons:
+                        try:
+                            btn_text = btn.text.strip()
+                            if btn_text and any(keyword in btn_text for keyword in ["Continue", "Babe", "@gmail.com", "Google", "Войти"]):
+                                self.log(f"✅ Кликаю по: '{btn_text[:30]}'", "SUCCESS")
+                                self.human_click(btn)
+                                button_found = True
+                                self.take_step_screenshot("xcom_click_button_fallback")
                                 break
+                        except:
+                            continue
+                
+                # === ВАРИАНТ 5: Пробуем Enter ===
+                if not button_found:
+                    self.log("⚠️ Кнопка не найдена, пробую Enter", "WARNING")
+                    try:
+                        body = self.driver.find_element(By.TAG_NAME, "body")
+                        body.send_keys(Keys.ENTER)
+                        self.log("✅ Нажат Enter", "SUCCESS")
                     except:
                         pass
             
+            # === ПРОВЕРКА РЕЗУЛЬТАТА ===
             self.random_delay(2, 3)
             current_url = self.driver.current_url
             self.log(f"📍 Финальный URL: {current_url}", "INFO")
@@ -459,6 +535,7 @@ class AntiDetectBrowser:
     
     def login_twitter(self, username, password):
         self.log("🚀 Обычный вход", "INFO")
+        
         self.driver.get("https://x.com/login")
         self.random_delay(2, 3)
         self.take_step_screenshot("twitter_login")
