@@ -110,7 +110,6 @@ class AntiDetectBrowser:
         options.add_experimental_option('excludeSwitches', ['enable-automation'])
         options.add_experimental_option('useAutomationExtension', False)
         
-        # === ДЕСКТОПНЫЙ USER-AGENT ===
         desktop_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
         options.add_argument(f'--user-agent={desktop_user_agent}')
         self.log(f"🖥️ User-Agent: {desktop_user_agent[:50]}...", "DEBUG")
@@ -234,9 +233,6 @@ class AntiDetectBrowser:
             self.log(f"❌ Ошибка ввода: {e}", "ERROR")
             return False
     
-    # ============================================================
-    # === АВТОРИЗАЦИЯ В GOOGLE ===
-    # ============================================================
     def login_google(self, email, password):
         self.email = email
         self.log(f"🚀 Вход в Google: {email}", "INFO")
@@ -251,8 +247,6 @@ class AntiDetectBrowser:
             self.log(f"❌ Ошибка: {e}", "ERROR")
             return False
         
-        # === ВВОД EMAIL ===
-        self.log("🔍 Ввод email...", "INFO")
         email_field = self.find_element(By.ID, "identifierId")
         if email_field:
             self.human_type(email_field, email)
@@ -264,8 +258,6 @@ class AntiDetectBrowser:
         
         self.random_delay(1, 2)
         
-        # === КНОПКА "ДАЛЕЕ" ===
-        self.log("🔍 Кнопка 'Далее'...", "INFO")
         next_btn = self.find_element_clickable(By.XPATH, "//span[text()='Далее']")
         if not next_btn:
             next_btn = self.find_element_clickable(By.XPATH, "//span[text()='Next']")
@@ -281,7 +273,6 @@ class AntiDetectBrowser:
         
         self.random_delay(2, 4)
         
-        # === ВВОД ПАРОЛЯ ===
         self.log("🔍 Поиск поля пароля...", "INFO")
         
         password_field = None
@@ -333,7 +324,6 @@ class AntiDetectBrowser:
         
         self.random_delay(1, 2)
         
-        # === КНОПКА "ВОЙТИ" ===
         self.log("🔍 Кнопка входа...", "INFO")
         
         login_btn = None
@@ -369,7 +359,6 @@ class AntiDetectBrowser:
         
         self.random_delay(3, 5)
         
-        # === ПРОВЕРКА 2FA ===
         current_url = self.driver.current_url
         self.log(f"📍 URL: {current_url[:80]}...", "INFO")
         
@@ -390,10 +379,10 @@ class AntiDetectBrowser:
         return True
     
     # ============================================================
-    # === ПЕРЕХОД НА X.COM С АВТОМАТИЧЕСКИМ АНАЛИЗОМ ===
+    # === ПЕРЕХОД НА X.COM С АНАЛИЗОМ ===
     # ============================================================
     def go_to_xcom(self, bot=None, chat_id=None, user_id=None):
-        """Переход на X.com — автоматический анализ и ожидание команды"""
+        """Переход на X.com — анализ и ожидание команды"""
         self.log("=" * 60, "INFO")
         self.log("🌐 ПЕРЕХОД НА X.COM", "INFO")
         self.log("=" * 60, "INFO")
@@ -453,23 +442,25 @@ class AntiDetectBrowser:
                 result += "\n\n💡 Используйте /click <номер> для нажатия"
                 
                 bot.send_message(chat_id, result, parse_mode='Markdown')
+                self.log("✅ Список кнопок отправлен в Telegram", "SUCCESS")
                 
                 # Сохраняем кнопки для пользователя
                 if user_id:
                     try:
-                        # Импортируем глобальную переменную
-                        import sys
-                        sys.path.append('.')
                         from bot import user_buttons
                         user_buttons[user_id] = {
-                            'buttons': button_list,
+                            'buttons': all_buttons,
                             'list': button_texts
                         }
-                    except:
-                        pass
+                        self.log(f"✅ Кнопки сохранены для пользователя {user_id}", "SUCCESS")
+                    except Exception as e:
+                        self.log(f"⚠️ Ошибка сохранения кнопок: {e}", "WARNING")
+            else:
+                self.log(f"⚠️ bot={bot}, chat_id={chat_id} — список НЕ отправлен", "WARNING")
             
-            # === ШАГ 7: Ждем пока пользователь нажмет кнопку ===
+            # === ШАГ 7: Ждем команду /click ===
             self.log("⏳ Ожидание команды /click... (60 секунд)", "INFO")
+            self.log("💡 Введите /click <номер> для нажатия", "INFO")
             
             waited = 0
             while waited < 60:
@@ -486,39 +477,12 @@ class AntiDetectBrowser:
                     self.log("🎉 ВХОД ВЫПОЛНЕН!", "SUCCESS")
                     return True
             
-            # Если пользователь не нажал кнопку — пробуем автоматически
-            self.log("⏳ Время ожидания истекло, пробую автоматический вход...", "INFO")
-            
-            # Пробуем найти "Continue as" или "Continue"
-            for btn in button_list[:5]:
-                try:
-                    btn_text = btn.text.strip()
-                    if "Continue as" in btn_text or "Continue" in btn_text:
-                        self.log(f"✅ Автоматически нажимаю: '{btn_text}'", "SUCCESS")
-                        actions = ActionChains(self.driver)
-                        actions.move_to_element(btn)
-                        time.sleep(0.3)
-                        actions.click()
-                        time.sleep(0.2)
-                        actions.perform()
-                        break
-                except:
-                    continue
-            
-            # === ШАГ 8: Проверяем результат ===
-            self.log("🔍 ШАГ 6: Проверка результата...", "INFO")
-            time.sleep(2)
-            current_url = self.driver.current_url
-            self.log(f"📍 Финальный URL: {current_url}", "INFO")
-            
-            if "home" in current_url or "x.com/home" in current_url:
-                self.log("🎉 ВХОД ВЫПОЛНЕН УСПЕШНО!", "SUCCESS")
-                self.take_step_screenshot("xcom_success")
-                return True
-            else:
-                self.log(f"⚠️ Вход не выполнен. URL: {current_url}", "WARNING")
-                self.take_step_screenshot("xcom_failed")
-                return False
+            # === 60 секунд прошло, не нажимаем автоматически ===
+            self.log("⏳ Время ожидания истекло", "INFO")
+            self.log("💡 Используйте /analyze для просмотра кнопок", "INFO")
+            self.log("💡 Затем /click <номер> для нажатия", "INFO")
+            self.take_step_screenshot("xcom_waiting_for_click")
+            return False
             
         except Exception as e:
             self.log(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}", "ERROR")
