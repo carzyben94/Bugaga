@@ -3,7 +3,7 @@ import os
 import time
 from browser import AntiDetectBrowser, check_installation
 from datetime import datetime
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from PIL import Image, ImageDraw
 from selenium.webdriver.common.by import By
 
@@ -24,17 +24,7 @@ except Exception as e:
 user_sessions = {}
 user_cursor = {}
 
-# === МЕНЮ ===
-def get_main_keyboard():
-    keyboard = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    keyboard.add(
-        KeyboardButton("🌐 /logingoogle"),
-        KeyboardButton("🎮 /joystick"),
-        KeyboardButton("📸 /screenshot"),
-        KeyboardButton("❌ /close")
-    )
-    return keyboard
-
+# === ДЖОЙСТИК (кнопки остаются только здесь) ===
 def get_joystick_keyboard():
     keyboard = InlineKeyboardMarkup(row_width=3)
     keyboard.row(
@@ -101,13 +91,12 @@ def move_cursor(user_id, dx, dy):
 def send_welcome(message):
     bot.reply_to(
         message,
-        "👋 Привет! Я бот для автоматизации X.com\n\n"
-        "📋 Команды:\n"
+        "👋 Привет!\n\n"
+        "📋 Команды :\n"
         "/logingoogle email пароль - Вход через Google\n"
         "/joystick - Джойстик управления\n"
         "/screenshot - Скриншот\n"
-        "/close - Закрыть браузер",
-        reply_markup=get_main_keyboard()
+        "/close - Закрыть браузер"
     )
 
 # === КОМАНДА /LOGINGOOGLE ===
@@ -117,17 +106,17 @@ def handle_login_google(message):
     chat_id = message.chat.id
     
     if message.text is None:
-        bot.reply_to(message, "❌ Используйте: /logingoogle email пароль", reply_markup=get_main_keyboard())
+        bot.reply_to(message, "❌ Используйте: /logingoogle email пароль")
         return
     
     check = check_installation()
     if not check['chrome']:
-        bot.reply_to(message, "❌ Chrome не установлен!", reply_markup=get_main_keyboard())
+        bot.reply_to(message, "❌ Chrome не установлен!")
         return
     
     parts = message.text.split(maxsplit=2)
     if len(parts) < 3:
-        bot.reply_to(message, "❌ Используйте: /logingoogle <email> <пароль>", reply_markup=get_main_keyboard())
+        bot.reply_to(message, "❌ Используйте: /logingoogle <email> <пароль>")
         return
     
     email = parts[1]
@@ -190,7 +179,7 @@ def handle_joystick(message):
     chat_id = message.chat.id
     
     if user_id not in user_sessions:
-        bot.reply_to(message, "❌ Нет активной сессии. Используйте /logingoogle", reply_markup=get_main_keyboard())
+        bot.reply_to(message, "❌ Нет активной сессии. Используйте /logingoogle")
         return
     
     browser = user_sessions[user_id]
@@ -218,7 +207,7 @@ def handle_joystick(message):
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {e}")
 
-# === ОБРАБОТЧИК КНОПОК ===
+# === ОБРАБОТЧИК КНОПОК ДЖОЙСТИКА ===
 @bot.callback_query_handler(func=lambda call: True)
 def handle_joystick_callback(call):
     user_id = call.from_user.id
@@ -334,17 +323,17 @@ def handle_joystick_callback(call):
 def handle_screenshot(message):
     user_id = message.from_user.id
     if user_id not in user_sessions:
-        bot.reply_to(message, "❌ Нет активной сессии", reply_markup=get_main_keyboard())
+        bot.reply_to(message, "❌ Нет активной сессии")
         return
     try:
         browser = user_sessions[user_id]
         screenshot = make_screenshot_with_cursor(browser, user_id, f"ss_{user_id}.png")
         if screenshot:
             with open(screenshot, 'rb') as photo:
-                bot.send_photo(user_id, photo, caption="📸 Скриншот", reply_markup=get_main_keyboard())
+                bot.send_photo(user_id, photo, caption="📸 Скриншот")
             os.remove(screenshot)
     except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}", reply_markup=get_main_keyboard())
+        bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}")
 
 # === КОМАНДА /CLOSE ===
 @bot.message_handler(commands=['close'])
@@ -357,19 +346,18 @@ def handle_close(message):
             del user_sessions[user_id]
             if user_id in user_cursor:
                 del user_cursor[user_id]
-            bot.reply_to(message, "✅ Браузер закрыт", reply_markup=get_main_keyboard())
+            bot.reply_to(message, "✅ Браузер закрыт")
         except Exception as e:
-            bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}", reply_markup=get_main_keyboard())
+            bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}")
     else:
-        bot.reply_to(message, "❌ Нет активной сессии", reply_markup=get_main_keyboard())
+        bot.reply_to(message, "❌ Нет активной сессии")
 
 # === ЭХО ===
 @bot.message_handler(func=lambda message: True)
 def echo_all(message):
     bot.reply_to(
         message,
-        "Используйте /start для меню",
-        reply_markup=get_main_keyboard()
+        "Используйте /start для списка команд"
     )
 
 # === ЗАПУСК ===
