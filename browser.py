@@ -84,15 +84,19 @@ class Browser:
             await self.page.wait_for_load_state('domcontentloaded', timeout=30000)
             self.log("✅ DOM загружен")
             
-            # Этап 3: Полная загрузка
-            self.log("⏳ Этап 3: Полная загрузка страницы...")
-            await self.page.wait_for_load_state('networkidle', timeout=60000)
-            self.log("✅ Страница полностью загружена")
+            # Этап 3: Ждем load (не networkidle!)
+            self.log("⏳ Этап 3: Загрузка страницы (load)...")
+            await self.page.wait_for_load_state('load', timeout=60000)
+            self.log("✅ Страница загружена (load)")
             
             # Этап 4: Дополнительная загрузка (для тяжелых сайтов)
             self.log("⏳ Этап 4: Ожидание дополнительных элементов...")
             await asyncio.sleep(5)
             self.log("✅ Дополнительные элементы загружены")
+            
+            # Проверяем текущий URL
+            current_url = self.page.url
+            self.log(f"📍 Текущий URL: {current_url}")
             
             return True
             
@@ -110,8 +114,13 @@ class Browser:
     async def click(self, selector):
         """Клик по селектору"""
         self.log(f"🖱️ Клик: {selector}")
-        await self.page.click(selector)
-        self.log("✅ Клик выполнен")
+        try:
+            await self.page.click(selector, timeout=5000)
+            self.log("✅ Клик выполнен")
+            return True
+        except Exception as e:
+            self.log(f"❌ Ошибка клика: {e}")
+            return False
     
     async def click_by_text(self, text):
         """Клик по тексту"""
@@ -127,6 +136,9 @@ class Browser:
     async def mega_click(self, x=None, y=None, text=None):
         """Мега-клик - пробует все методы"""
         self.log("💣 МЕГА-КЛИК")
+        
+        # Даем странице время
+        await asyncio.sleep(1)
         
         # 1. Клик по координатам
         if x is not None and y is not None:
