@@ -3,6 +3,7 @@ import logging
 import threading
 import time
 import asyncio
+import random
 import requests
 from flask import Flask, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
@@ -204,14 +205,75 @@ async def close_user_browser(user_id: int):
 
 async def goto_url(page, url: str):
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
         print(f"✅ {url} загружен")
         return True
     except Exception as e:
         print(f"❌ Ошибка загрузки {url}: {e}")
         raise e
 
-async def screenshot_with_cursor(page, x: int, y: int) -> bytes:
+# ============ ACTIONCHAINS (РЕАЛИСТИЧНЫЕ ДЕЙСТВИЯ) ============
+
+async def human_move(page, x: int, y: int, steps: int = 10):
+    """Реалистичное движение мыши с случайными остановками"""
+    try:
+        current = await page.evaluate("""
+            ({
+                x: window.scrollX + window.innerWidth / 2,
+                y: window.scrollY + window.innerHeight / 2
+            })
+        """)
+        
+        for i in range(steps):
+            progress = (i + 1) / steps
+            ease = 1 - (1 - progress) ** 3
+            target_x = current["x"] + (x - current["x"]) * ease + random.randint(-2, 2)
+            target_y = current["y"] + (y - current["y"]) * ease + random.randint(-2, 2)
+            await page.mouse.move(target_x, target_y)
+            await page.wait_for_timeout(random.randint(20, 60))
+        
+        await page.mouse.move(x, y)
+        await page.wait_for_timeout(random.randint(50, 150))
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка движения: {e}")
+        return False
+
+async def human_click(page, x: int, y: int, button: str = "left"):
+    """Реалистичный клик с нажатием и задержкой"""
+    try:
+        await human_move(page, x, y, steps=8)
+        await page.wait_for_timeout(random.randint(100, 300))
+        await page.mouse.down(button=button)
+        await page.wait_for_timeout(random.randint(50, 150))
+        await page.mouse.up(button=button)
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка клика: {e}")
+        return False
+
+async def human_type(page, text: str, delay: int = 50):
+    """Реалистичный ввод текста с случайными задержками"""
+    try:
+        for i, char in enumerate(text):
+            wait_time = delay + random.randint(-20, 30)
+            if char.isupper() or char in '!@#$%^&*()_+':
+                wait_time += random.randint(20, 50)
+            await page.keyboard.type(char, delay=wait_time)
+            
+            if random.random() < 0.02 and len(text) > 5:
+                await page.keyboard.press("Backspace")
+                await page.wait_for_timeout(random.randint(50, 150))
+                await page.keyboard.type(char, delay=wait_time)
+        
+        await page.wait_for_timeout(random.randint(200, 500))
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка ввода: {e}")
+        return False
+
+async def human_screenshot(page, x: int, y: int) -> bytes:
+    """Скриншот с курсором"""
     try:
         await page.evaluate(f"""
             const cursor = document.createElement('div');
@@ -220,27 +282,35 @@ async def screenshot_with_cursor(page, x: int, y: int) -> bytes:
                 position: fixed;
                 left: {x}px;
                 top: {y}px;
-                width: 24px;
-                height: 24px;
+                width: 28px;
+                height: 28px;
                 pointer-events: none;
                 z-index: 99999;
                 transform: translate(-50%, -50%);
+                filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3));
             `;
             cursor.innerHTML = `
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                    <path d="M5.5 3.5L19.5 12L5.5 20.5V3.5Z" fill="red" stroke="white" stroke-width="2"/>
+                <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+                    <path d="M6 4L22 14L6 24V4Z" fill="#FF0000" stroke="white" stroke-width="2"/>
+                    <circle cx="6" cy="14" r="2" fill="white"/>
                 </svg>
             `;
             document.body.appendChild(cursor);
-            setTimeout(() => cursor.remove(), 300);
+            setTimeout(() => {{
+                cursor.style.transform = 'translate(-50%, -50%) scale(1.1)';
+            }}, 100);
+            setTimeout(() => {{
+                cursor.style.transform = 'translate(-50%, -50%) scale(1)';
+            }}, 200);
+            setTimeout(() => cursor.remove(), 500);
         """)
         
-        await page.wait_for_timeout(100)
+        await page.wait_for_timeout(200)
         screenshot = await page.screenshot(full_page=True, type="png")
         return screenshot
         
     except Exception as e:
-        print(f"Ошибка курсора: {e}")
+        print(f"Ошибка скриншота: {e}")
         return await page.screenshot(full_page=True, type="png")
 
 # ============ УМНЫЙ КЛИК ============
@@ -259,8 +329,13 @@ async def smart_click(page, x: int, y: int):
                         elements = await frame.locator(selector).all()
                         for el in elements:
                             if await el.is_visible():
-                                await el.click()
-                                print(f"✅ Клик в iframe: {selector}")
+                                box = await el.bounding_box()
+                                if box:
+                                    cx = box['x'] + box['width'] // 2
+                                    cy = box['y'] + box['height'] // 2
+                                    await human_click(page, cx, cy)
+                                else:
+                                    await el.click()
                                 return True
                     except:
                         continue
@@ -273,20 +348,24 @@ async def smart_click(page, x: int, y: int):
                 elements = await page.locator(selector).all()
                 for el in elements:
                     if await el.is_visible():
-                        await el.click()
-                        print(f"✅ Клик на странице: {selector}")
+                        box = await el.bounding_box()
+                        if box:
+                            cx = box['x'] + box['width'] // 2
+                            cy = box['y'] + box['height'] // 2
+                            await human_click(page, cx, cy)
+                        else:
+                            await el.click()
                         return True
             except:
                 continue
         
-        await page.mouse.click(x, y, button="left")
-        print(f"✅ Клик по координатам ({x}, {y})")
+        await human_click(page, x, y)
         return True
         
     except Exception as e:
         print(f"❌ Ошибка клика: {e}")
         try:
-            await page.mouse.click(x, y, button="left")
+            await human_click(page, x, y)
             return True
         except:
             return False
@@ -359,7 +438,7 @@ async def update_joystick_message(query, page, user_id, mode, caption=""):
         step = JOYSTICK_STEP
         mode_label = "🔄 НОРМАЛЬНЫЙ"
     
-    screenshot = await screenshot_with_cursor(page, current_x, current_y)
+    screenshot = await human_screenshot(page, current_x, current_y)
     
     text = (
         f"🎮 ДЖОЙСТИК 🎮\n\n"
@@ -402,95 +481,150 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     session = user_sessions[user_id]
     page = session["page"]
     
-    await update.message.reply_text("🔐 Начинаю вход в Google...")
+    await update.message.reply_text("🔐 Начинаю вход в Google (с эмуляцией человека)...")
     
     try:
         await update.message.reply_text("🌐 Открываю accounts.google.com...")
         await goto_url(page, "https://accounts.google.com")
-        await page.wait_for_timeout(2000)
+        await page.wait_for_timeout(3000)
         
-        await update.message.reply_text(f"📧 Ввожу email: {email}")
+        await update.message.reply_text("🔍 Ищу поле для email...")
         
         email_selectors = [
-            'input[type="email"]', 'input[name="identifier"]',
-            'input[autocomplete="username"]', 'input[aria-label*="Email"]'
+            'input[type="email"]',
+            'input[name="identifier"]',
+            'input[autocomplete="username"]',
+            'input[aria-label*="Email"]'
         ]
         
         email_found = False
         for selector in email_selectors:
             try:
+                await page.wait_for_selector(selector, timeout=3000)
                 el = await page.locator(selector).first
                 if await el.count() > 0 and await el.is_visible():
-                    await el.fill(email)
+                    box = await el.bounding_box()
+                    if box:
+                        x = box['x'] + box['width'] // 2
+                        y = box['y'] + box['height'] // 2
+                        await human_click(page, x, y)
+                    else:
+                        await el.click()
+                    await page.wait_for_timeout(500)
+                    await human_type(page, email)
                     email_found = True
                     break
             except:
                 continue
         
         if not email_found:
-            await update.message.reply_text("❌ Не найдено поле для email")
+            screenshot = await human_screenshot(page, 100, 100)
+            await update.message.reply_photo(
+                photo=screenshot,
+                caption="❌ **Не найдено поле для email**\n\nПопробуй /refresh"
+            )
             return
         
-        await page.wait_for_timeout(500)
+        await page.wait_for_timeout(1000)
         
         await update.message.reply_text("⏭️ Нажимаю 'Далее'...")
         
         next_selectors = [
-            'button:has-text("Далее")', 'button:has-text("Next")',
-            '#identifierNext', '[jsname="V67aGc"]'
+            'button:has-text("Далее")',
+            'button:has-text("Next")',
+            '#identifierNext',
+            '[jsname="V67aGc"]'
         ]
         
+        next_clicked = False
         for selector in next_selectors:
             try:
+                await page.wait_for_selector(selector, timeout=2000)
                 el = await page.locator(selector).first
                 if await el.count() > 0 and await el.is_visible():
-                    await el.click()
+                    box = await el.bounding_box()
+                    if box:
+                        x = box['x'] + box['width'] // 2
+                        y = box['y'] + box['height'] // 2
+                        await human_click(page, x, y)
+                    else:
+                        await el.click()
+                    next_clicked = True
                     break
             except:
                 continue
         
-        await page.wait_for_timeout(2000)
+        if not next_clicked:
+            await page.keyboard.press("Enter")
+        
+        await page.wait_for_timeout(3000)
         
         await update.message.reply_text("🔑 Ввожу пароль...")
         
         password_selectors = [
-            'input[type="password"]', 'input[name="password"]',
-            'input[aria-label*="Password"]', 'input[aria-label*="пароль"]'
+            'input[type="password"]',
+            'input[name="password"]',
+            'input[aria-label*="Password"]'
         ]
         
         password_found = False
         for selector in password_selectors:
             try:
+                await page.wait_for_selector(selector, timeout=3000)
                 el = await page.locator(selector).first
                 if await el.count() > 0 and await el.is_visible():
-                    await el.fill(password)
+                    box = await el.bounding_box()
+                    if box:
+                        x = box['x'] + box['width'] // 2
+                        y = box['y'] + box['height'] // 2
+                        await human_click(page, x, y)
+                    else:
+                        await el.click()
+                    await page.wait_for_timeout(500)
+                    await human_type(page, password)
                     password_found = True
                     break
             except:
                 continue
         
         if not password_found:
-            await update.message.reply_text("❌ Не найдено поле для пароля")
+            screenshot = await human_screenshot(page, 100, 100)
+            await update.message.reply_photo(
+                photo=screenshot,
+                caption="❌ **Не найдено поле для пароля**"
+            )
             return
         
-        await page.wait_for_timeout(500)
+        await page.wait_for_timeout(1000)
         
-        await update.message.reply_text("⏭️ Нажимаю 'Далее' для входа...")
+        await update.message.reply_text("⏭️ Завершаю вход...")
         
+        next_clicked = False
         for selector in next_selectors:
             try:
+                await page.wait_for_selector(selector, timeout=2000)
                 el = await page.locator(selector).first
                 if await el.count() > 0 and await el.is_visible():
-                    await el.click()
+                    box = await el.bounding_box()
+                    if box:
+                        x = box['x'] + box['width'] // 2
+                        y = box['y'] + box['height'] // 2
+                        await human_click(page, x, y)
+                    else:
+                        await el.click()
+                    next_clicked = True
                     break
             except:
                 continue
         
-        await page.wait_for_timeout(3000)
+        if not next_clicked:
+            await page.keyboard.press("Enter")
+        
+        await page.wait_for_timeout(5000)
         
         current_url = page.url
         cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
-        screenshot = await screenshot_with_cursor(page, cursor["x"], cursor["y"])
+        screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
         
         if "myaccount.google.com" in current_url or "mail.google.com" in current_url:
             await update.message.reply_photo(
@@ -504,18 +638,22 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         elif "challenge" in current_url or "verify" in current_url:
             await update.message.reply_photo(
                 photo=screenshot,
-                caption="⚠️ **Требуется дополнительная проверка**\n\n"
-                        "Google запросил 2FA или код подтверждения.\n"
-                        "Введи код вручную через браузер."
+                caption="⚠️ **Требуется 2FA**\n\n"
+                        "Введи код вручную через джойстик: /joystick"
             )
         else:
             await update.message.reply_photo(
                 photo=screenshot,
-                caption=f"📸 Текущая страница: {current_url}\nПроверь ввод."
+                caption=f"📸 Текущая страница: {current_url}"
             )
         
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
+        try:
+            screenshot = await page.screenshot(full_page=True, type="png")
+            await update.message.reply_photo(photo=screenshot, caption="📸 Скриншот для диагностики")
+        except:
+            pass
 
 # ============ СТАТУС ============
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -545,7 +683,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         status_text += f"📱 Сайт: {url[:30]}\n"
     
     cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
-    screenshot = await screenshot_with_cursor(page, cursor["x"], cursor["y"])
+    screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
     
     await update.message.reply_photo(photo=screenshot, caption=status_text)
 
@@ -603,7 +741,7 @@ async def go_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         
         await page.wait_for_timeout(2000)
         
-        screenshot = await screenshot_with_cursor(page, VIEWPORT["width"] // 2, VIEWPORT["height"] // 2)
+        screenshot = await human_screenshot(page, VIEWPORT["width"] // 2, VIEWPORT["height"] // 2)
         await update.message.reply_photo(
             photo=screenshot,
             caption=f"✅ {url}"
@@ -623,7 +761,7 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         page = session["page"]
         cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
         
-        screenshot = await screenshot_with_cursor(page, cursor["x"], cursor["y"])
+        screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
         await update.message.reply_photo(
             photo=screenshot,
             caption=f"📸 Скриншот ({cursor['x']}, {cursor['y']})"
@@ -656,7 +794,7 @@ async def joystick_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     current_x = cursor["x"]
     current_y = cursor["y"]
     
-    screenshot = await screenshot_with_cursor(page, current_x, current_y)
+    screenshot = await human_screenshot(page, current_x, current_y)
     
     msg = await update.message.reply_photo(
         photo=screenshot,
@@ -709,8 +847,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             
             cursor_positions[user_id] = {"x": new_x, "y": new_y}
             
-            await page.mouse.move(new_x, new_y, steps=5)
-            await page.wait_for_timeout(100)
+            await human_move(page, new_x, new_y, steps=5)
             
             await update_joystick_message(
                 query, page, user_id, mode,
@@ -737,7 +874,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # ПКМ
     elif data == "click_right":
         try:
-            await page.mouse.click(current_x, current_y, button="right")
+            await human_click(page, current_x, current_y, button="right")
             await page.wait_for_timeout(300)
             
             await update_joystick_message(
@@ -751,7 +888,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # КЛИК ПО КУРСОРУ
     elif data == "click_center":
         try:
-            await page.mouse.click(current_x, current_y, button="left")
+            await human_click(page, current_x, current_y)
             await page.wait_for_timeout(300)
             
             await update_joystick_message(
