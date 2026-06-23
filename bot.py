@@ -442,8 +442,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/loadsavedcookies — Загрузить saved куки\n"
         "/savecookies — Сохранить куки\n\n"
         "🐦 **X**\n"
-        "/start_x_com — Быстрый старт (всё сразу)\n"
-        "/x_profile_info — Инфо профиля\n\n"
+        "/startxspeed — Быстрый старт (всё сразу)\n"
+        "/xprofile — Инфо профиля\n\n"
         "🎮 **УПРАВЛЕНИЕ**\n"
         "/joystick — Открыть джойстик\n\n"
         "📸 **ИНФО**\n"
@@ -583,7 +583,7 @@ async def load_saved_cookies_command(update: Update, context: ContextTypes.DEFAU
         saved_cookies_data = load_saved_cookies()
         cookies_to_load = saved_cookies_data.get(str(user_id), [])
         if not cookies_to_load:
-            await update.message.reply_text("❌ Нет сохранённых кук. Сначала используй /start_x_com или /x_profile_info")
+            await update.message.reply_text("❌ Нет сохранённых кук. Сначала используй /startxspeed или /xprofile")
             return
         session = user_sessions[user_id]
         page = session["page"]
@@ -620,7 +620,7 @@ async def save_cookies_command(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-# ============ КОМАНДА /START_X_COM ============
+# ============ КОМАНДА /STARTXSPEED ============
 async def start_x_com(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     await update.message.reply_text("🚀 Запускаю X.com с куками...")
@@ -633,7 +633,7 @@ async def start_x_com(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     page = session["page"]
     context_browser = session["context"]
     
-    # ⚠️ ВСТАВЬ СВОИ АКТУАЛЬНЫЕ КУКИ СЮДА
+    # ВСТАВЬ СВОИ АКТУАЛЬНЫЕ КУКИ
     cookies_to_add = [
         {"name": "auth_token", "value": "09fe982487255e707f7a9b3d380ea429421adae3", "domain": ".x.com", "path": "/"},
         {"name": "ct0", "value": "18f7448391062aaaa323ea38f4fd129f5f682f09ec0989f899ebc4ddaa4d7bf7de0e0c359240145428b7cc1d410adbc5565fa9bbe2c4380b5341327ea3c53f03a89fcb12ee617d0fea848882ae6ff281", "domain": ".x.com", "path": "/"},
@@ -730,7 +730,7 @@ async def start_x_com(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text(f"✅ X.com открыт!\n\nКуки установлены и сохранены.")
         print(f"Ошибка получения профиля: {e}")
 
-# ============ КОМАНДА /X_PROFILE_INFO ============
+# ============ КОМАНДА /XPROFILE ============
 async def x_profile_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     if user_id not in user_sessions:
@@ -751,7 +751,7 @@ async def x_profile_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await page.wait_for_timeout(2000)
         profile_data = await page.evaluate("""
             () => {
-                const data = { name: '', username: '', avatar: '', followers: 0, following: 0, tweets: 0, bio: '', location: '', joinDate: '' };
+                const data = { name: '', username: '', avatar: '', followers: 0, following: 0, tweets: 0, bio: '' };
                 try {
                     const nameEl = document.querySelector('[data-testid="UserName"]');
                     if (nameEl) {
@@ -1039,8 +1039,8 @@ def main():
     bot_app.add_handler(CommandHandler("loadcookies", load_cookies))
     bot_app.add_handler(CommandHandler("loadsavedcookies", load_saved_cookies_command))
     bot_app.add_handler(CommandHandler("savecookies", save_cookies_command))
-    bot_app.add_handler(CommandHandler("start_x_com", start_x_com))
-    bot_app.add_handler(CommandHandler("x_profile_info", x_profile_info))
+    bot_app.add_handler(CommandHandler("startxspeed", start_x_com))
+    bot_app.add_handler(CommandHandler("xprofile", x_profile_info))
     bot_app.add_handler(CommandHandler("joystick", joystick_command))
     bot_app.add_handler(CommandHandler("screenshot", screenshot_command))
     bot_app.add_handler(CommandHandler("status", status_command))
