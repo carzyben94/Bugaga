@@ -9,117 +9,44 @@ from selenium.webdriver.common.keys import Keys
 import os
 import time
 import random
-import shutil
 import logging
 import zipfile
 import urllib.request
 import sys
 import subprocess
-import json
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def get_chrome_version():
-    """Получает версию Chrome"""
-    try:
-        result = subprocess.run(['/usr/bin/google-chrome', '--version'], 
-                              capture_output=True, text=True)
-        version = result.stdout.strip().split()[-1]
-        logger.info(f"📌 Версия Chrome: {version}")
-        return version
-    except:
-        return None
-
 def get_chromedriver_path():
-    """Скачивает ChromeDriver под версию Chrome"""
     chrome_driver_dir = "/tmp/chromedriver"
     os.makedirs(chrome_driver_dir, exist_ok=True)
     
     driver_name = "chromedriver.exe" if sys.platform.startswith('win') else "chromedriver"
     driver_path = os.path.join(chrome_driver_dir, driver_name)
     
-    # Получаем версию Chrome
-    chrome_version = get_chrome_version()
-    if not chrome_version:
-        chrome_version = "149.0.7827.155"  # fallback
+    if os.path.exists(driver_path):
+        logger.info(f"✅ ChromeDriver уже есть")
+        os.chmod(driver_path, 0o755)
+        return driver_path
     
-    # Берем мажорную версию (149)
-    major_version = chrome_version.split('.')[0]
-    logger.info(f"📌 Мажорная версия Chrome: {major_version}")
+    logger.info("📦 Скачивание ChromeDriver...")
     
-    # Проверяем, есть ли уже подходящий ChromeDriver
-    version_file = os.path.join(chrome_driver_dir, "version.txt")
-    if os.path.exists(driver_path) and os.path.exists(version_file):
-        with open(version_file, 'r') as f:
-            saved_version = f.read().strip()
-            if saved_version == major_version:
-                logger.info(f"✅ ChromeDriver уже есть для версии {major_version}")
-                os.chmod(driver_path, 0o755)
-                return driver_path
-    
-    logger.info(f"📦 Скачивание ChromeDriver для Chrome {major_version}...")
-    
-    # Формируем URL
-    # Используем Chrome for Testing API
-    try:
-        # Получаем актуальную версию
-        api_url = f"https://googlechromelabs.github.io/chrome-for-testing/latest-versions-per-milestone.json"
-        req = urllib.request.urlopen(api_url)
-        data = json.loads(req.read().decode())
-        
-        if major_version in data['milestones']:
-            version = data['milestones'][major_version]['version']
-            logger.info(f"📌 Найдена версия ChromeDriver: {version}")
-            
-            if sys.platform.startswith('linux'):
-                url = f"https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/{version}/linux64/chromedriver-linux64.zip"
-            elif sys.platform.startswith('win'):
-                url = f"https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/{version}/win64/chromedriver-win64.zip"
-            else:
-                url = f"https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/{version}/mac-arm64/chromedriver-mac-arm64.zip"
-        else:
-            raise Exception(f"Версия {major_version} не найдена")
-            
-    except Exception as e:
-        logger.warning(f"⚠️ Ошибка API: {e}, пробую прямой URL...")
-        # Fallback
-        if sys.platform.startswith('linux'):
-            url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/149.0.7827.155/linux64/chromedriver-linux64.zip"
-        elif sys.platform.startswith('win'):
-            url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/149.0.7827.155/win64/chromedriver-win64.zip"
-        else:
-            url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/149.0.7827.155/mac-arm64/chromedriver-mac-arm64.zip"
-    
+    url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/149.0.7827.155/linux64/chromedriver-linux64.zip"
     zip_path = os.path.join(chrome_driver_dir, "chromedriver.zip")
     
-    try:
-        urllib.request.urlretrieve(url, zip_path)
-        logger.info("✅ Скачано")
-    except Exception as e:
-        logger.error(f"❌ Ошибка скачивания: {e}")
-        raise
+    urllib.request.urlretrieve(url, zip_path)
     
-    # Распаковываем
-    try:
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(chrome_driver_dir)
-        logger.info("✅ Распаковано")
-    except Exception as e:
-        logger.error(f"❌ Ошибка распаковки: {e}")
-        raise
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        zip_ref.extractall(chrome_driver_dir)
     
     os.remove(zip_path)
     
-    # Ищем chromedriver
     for root, dirs, files in os.walk(chrome_driver_dir):
         if driver_name in files:
             driver_path = os.path.join(root, driver_name)
             os.chmod(driver_path, 0o755)
-            # Сохраняем версию
-            with open(version_file, 'w') as f:
-                f.write(major_version)
-            logger.info(f"✅ ChromeDriver готов: {driver_path}")
+            logger.info(f"✅ ChromeDriver готов")
             return driver_path
     
     raise Exception("ChromeDriver не найден")
@@ -165,11 +92,9 @@ class AntiDetectBrowser:
         options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36')
         options.add_argument('--window-size=1920,1080')
         
-        logger.info("🚀 Загрузка ChromeDriver...")
         driver_path = get_chromedriver_path()
         service = Service(driver_path)
         
-        logger.info("🚀 Запуск Chrome...")
         self.driver = webdriver.Chrome(service=service, options=options)
         self.driver.set_page_load_timeout(30)
         self.driver.implicitly_wait(10)
@@ -217,17 +142,18 @@ class AntiDetectBrowser:
         except:
             return None
     
-    def click_safe(self, by, selector, timeout=10):
+    def find_element_clickable(self, by, selector, timeout=10):
         try:
-            element = WebDriverWait(self.driver, timeout).until(
+            return WebDriverWait(self.driver, timeout).until(
                 EC.element_to_be_clickable((by, selector))
             )
-            return self.human_click(element)
         except:
-            return False
+            return None
     
-    def login_google_first_then_twitter(self, email, password):
-        logger.info("🚀 Начало входа через Google")
+    # ==== ВХОД ЧЕРЕЗ GOOGLE ====
+    def login_google(self, email, password):
+        """Только вход в Google"""
+        logger.info("🚀 Вход в Google...")
         
         try:
             self.driver.get("https://accounts.google.com/")
@@ -237,6 +163,7 @@ class AntiDetectBrowser:
             logger.error(f"Ошибка Google: {e}")
             return False
         
+        # Ввод email
         email_field = self.find_element(By.ID, "identifierId")
         if email_field:
             self.human_type(email_field, email)
@@ -247,11 +174,12 @@ class AntiDetectBrowser:
         
         self.random_delay(1, 2)
         
-        next_btn = self.find_element(By.XPATH, "//span[text()='Далее']")
+        # Кнопка "Далее"
+        next_btn = self.find_element_clickable(By.XPATH, "//span[text()='Далее']")
         if not next_btn:
-            next_btn = self.find_element(By.XPATH, "//span[text()='Next']")
+            next_btn = self.find_element_clickable(By.XPATH, "//span[text()='Next']")
         if not next_btn:
-            next_btn = self.find_element(By.ID, "identifierNext")
+            next_btn = self.find_element_clickable(By.ID, "identifierNext")
         
         if next_btn:
             self.human_click(next_btn)
@@ -259,6 +187,7 @@ class AntiDetectBrowser:
         
         self.random_delay(2, 3)
         
+        # Ввод пароля
         password_field = self.find_element(By.NAME, "password")
         if not password_field:
             password_field = self.find_element(By.ID, "password")
@@ -272,13 +201,14 @@ class AntiDetectBrowser:
         
         self.random_delay(1, 2)
         
-        login_btn = self.find_element(By.XPATH, "//span[text()='Далее']")
+        # Финальная кнопка
+        login_btn = self.find_element_clickable(By.XPATH, "//span[text()='Далее']")
         if not login_btn:
-            login_btn = self.find_element(By.XPATH, "//span[text()='Next']")
+            login_btn = self.find_element_clickable(By.XPATH, "//span[text()='Next']")
         if not login_btn:
-            login_btn = self.find_element(By.ID, "passwordNext")
+            login_btn = self.find_element_clickable(By.ID, "passwordNext")
         if not login_btn:
-            login_btn = self.find_element(By.XPATH, "//button[@type='submit']")
+            login_btn = self.find_element_clickable(By.XPATH, "//button[@type='submit']")
         
         if login_btn:
             self.human_click(login_btn)
@@ -286,6 +216,7 @@ class AntiDetectBrowser:
         
         self.random_delay(3, 5)
         
+        # Проверка 2FA
         current_url = self.driver.current_url
         if "challenge" in current_url or "verify" in current_url:
             logger.info("🔐 Ожидание подтверждения на телефоне...")
@@ -298,16 +229,70 @@ class AntiDetectBrowser:
                     logger.info("✅ Подтверждение пройдено!")
                     break
         
-        self.driver.get("https://x.com")
-        self.random_delay(2, 3)
-        self.take_step_screenshot("xcom_home")
+        logger.info("✅ Вход в Google выполнен!")
+        self.take_step_screenshot("google_done")
+        return True
+    
+    def go_to_xcom(self):
+        """Переход на X.com"""
+        logger.info("🌐 Переход на X.com...")
         
-        current_url = self.driver.current_url
-        if "home" in current_url or "x.com/home" in current_url:
-            logger.info("🎉 Вход выполнен!")
-            return True
-        else:
-            logger.warning(f"⚠️ URL: {current_url}")
+        try:
+            self.driver.get("https://x.com")
+            self.random_delay(2, 3)
+            self.take_step_screenshot("xcom_home")
+            
+            current_url = self.driver.current_url
+            logger.info(f"📍 URL: {current_url}")
+            
+            if "home" in current_url or "x.com/home" in current_url:
+                logger.info("🎉 Уже на главной X.com")
+                return True
+            
+            # Если на странице входа
+            if "login" in current_url:
+                logger.info("🔍 На странице входа, ищу кнопки...")
+                
+                # Пробуем найти кнопку "Continue" или аккаунт
+                buttons = self.driver.find_elements(By.TAG_NAME, "button")
+                for btn in buttons:
+                    try:
+                        text = btn.text.strip()
+                        if text and ("Continue" in text or "Google" in text or "Войти" in text):
+                            logger.info(f"✅ Нажимаю кнопку: '{text}'")
+                            self.human_click(btn)
+                            self.random_delay(2, 3)
+                            self.take_step_screenshot("xcom_click_button")
+                            break
+                    except:
+                        continue
+                
+                # Если есть email на странице — кликаем
+                try:
+                    email_elements = self.driver.find_elements(By.XPATH, f"//*[contains(text(), '{email}')]")
+                    for elem in email_elements:
+                        if elem.is_displayed():
+                            logger.info("✅ Найден email, нажимаю...")
+                            self.human_click(elem)
+                            self.random_delay(2, 3)
+                            self.take_step_screenshot("xcom_click_email")
+                            break
+                except:
+                    pass
+            
+            # Проверяем результат
+            self.random_delay(2, 3)
+            current_url = self.driver.current_url
+            
+            if "home" in current_url or "x.com/home" in current_url:
+                logger.info("🎉 Вход выполнен!")
+                return True
+            else:
+                logger.warning(f"⚠️ URL: {current_url}")
+                return False
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка перехода на X.com: {e}")
             return False
     
     def login_twitter(self, username, password):
@@ -357,6 +342,15 @@ class AntiDetectBrowser:
             
         except Exception as e:
             logger.error(f"Ошибка: {e}")
+            return False
+    
+    def click_safe(self, by, selector, timeout=10):
+        try:
+            element = WebDriverWait(self.driver, timeout).until(
+                EC.element_to_be_clickable((by, selector))
+            )
+            return self.human_click(element)
+        except:
             return False
     
     def take_screenshot(self, filename="screenshot.png"):
