@@ -137,7 +137,6 @@ async def close_user_browser(user_id: int):
     if user_id in user_sessions:
         await user_sessions[user_id]["browser"].close()
         del user_sessions[user_id]
-        # Полная очистка
         if user_id in joystick_messages:
             del joystick_messages[user_id]
         if user_id in joystick_states:
@@ -146,15 +145,15 @@ async def close_user_browser(user_id: int):
             del cursor_positions[user_id]
 
 async def goto_url(page, url: str):
-    """Универсальный переход по URL с авто-выбором режима ожидания"""
+    """Универсальный переход по URL - используем domcontentloaded"""
     try:
-        await page.goto(url, wait_until="networkidle", timeout=15000)
-        print(f"✅ {url} загружен (networkidle)")
-        return True
-    except:
+        # Используем domcontentloaded - работает для всех сайтов
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
         print(f"✅ {url} загружен (domcontentloaded)")
         return True
+    except Exception as e:
+        print(f"❌ Ошибка загрузки {url}: {e}")
+        raise e
 
 async def screenshot_with_cursor(page, x: int, y: int) -> bytes:
     try:
@@ -187,6 +186,59 @@ async def screenshot_with_cursor(page, x: int, y: int) -> bytes:
     except Exception as e:
         print(f"Ошибка курсора: {e}")
         return await page.screenshot(full_page=True, type="png")
+
+# ============ УМНЫЙ КЛИК (РАБОТАЕТ С IFRAME) ============
+async def smart_click(page, x: int, y: int):
+    """Умный клик: ищет кнопки в iframe и на странице"""
+    try:
+        # 1. Ищем кнопку "Continue with Google" во всех iframe
+        for frame in page.frames:
+            try:
+                # Пробуем найти по тексту
+                elements = await frame.locator('text="Continue with Google"').all()
+                for el in elements:
+                    if await el.is_visible():
+                        await el.click()
+                        print("✅ Клик по 'Continue with Google' в iframe")
+                        return True
+            except:
+                pass
+            
+            try:
+                # Пробуем найти по aria-label
+                elements = await frame.locator('[aria-label*="Google"]').all()
+                for el in elements:
+                    if await el.is_visible():
+                        await el.click()
+                        print("✅ Клик по Google (aria-label) в iframe")
+                        return True
+            except:
+                pass
+        
+        # 2. Ищем на самой странице (не в iframe)
+        try:
+            elements = await page.locator('text="Continue with Google"').all()
+            for el in elements:
+                if await el.is_visible():
+                    await el.click()
+                    print("✅ Клик по 'Continue with Google' на странице")
+                    return True
+        except:
+            pass
+        
+        # 3. Если ничего не нашли - клик по координатам
+        await page.mouse.click(x, y, button="left")
+        print(f"✅ Клик по координатам ({x}, {y})")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Ошибка клика: {e}")
+        # Пробуем кликнуть по координатам даже если была ошибка
+        try:
+            await page.mouse.click(x, y, button="left")
+            return True
+        except:
+            return False
 
 # ============ ДЖОЙСТИК ============
 def get_joystick_keyboard(mode="normal"):
@@ -242,7 +294,7 @@ def get_joystick_keyboard(mode="normal"):
     return InlineKeyboardMarkup(keyboard)
 
 async def update_joystick_message(query, page, user_id, mode, caption=""):
-    """Обновляет сообщение джойстика с новым скриншотом - ТОЛЬКО РЕДАКТИРУЕТ"""
+    """Обновляет сообщение джойстика с новым скриншотом"""
     
     cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
     current_x = cursor["x"]
@@ -269,7 +321,6 @@ async def update_joystick_message(query, page, user_id, mode, caption=""):
     if caption:
         text += f"\n{caption}"
     
-    # ВСЕГДА редактируем существующее сообщение
     try:
         await query.edit_message_media(
             media=InputMediaPhoto(
@@ -279,14 +330,7 @@ async def update_joystick_message(query, page, user_id, mode, caption=""):
             reply_markup=get_joystick_keyboard(mode)
         )
     except Exception as e:
-        print(f"❌ Ошибка редактирования: {e}")
-        try:
-            await query.edit_message_caption(
-                caption=text,
-                reply_markup=get_joystick_keyboard(mode)
-            )
-        except:
-            pass
+        print(f"Ошибка редактирования: {e}")
 
 # ============ КОМАНДЫ БОТА ============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -380,7 +424,6 @@ async def joystick_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
         return
     
-    # Проверяем, есть ли уже открытый джойстик
     if user_id in joystick_messages:
         await update.message.reply_text("🎮 Джойстик уже открыт!")
         return
@@ -464,8 +507,9 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # ============ ЛКМ ============
     elif data == "click_left":
         try:
-            await page.mouse.click(current_x, current_y, button="left")
-            await page.wait_for_timeout(300)
+            # Используем умный клик (работает с iframe)
+            await smart_click(page, current_x, current_y)
+            await page.wait_for_timeout(500)
             
             await update_joystick_message(
                 query, page, user_id, mode,
@@ -611,7 +655,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     
     # ============ СКРЫТЬ ДЖОЙСТИК ============
     elif data == "hide_joystick":
-        # Полностью удаляем джойстик
         if user_id in joystick_messages:
             del joystick_messages[user_id]
         if user_id in joystick_states:
