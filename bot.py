@@ -30,7 +30,6 @@ def send_log_to_chat(chat_id, log_entry):
     except:
         pass
 
-# === ФУНКЦИЯ ДЛЯ СКРИНШОТА С КУРСОРОМ ===
 def make_screenshot_with_cursor(browser, user_id, filename="screenshot.png"):
     try:
         if user_id in user_cursor:
@@ -46,8 +45,6 @@ def make_screenshot_with_cursor(browser, user_id, filename="screenshot.png"):
         draw = ImageDraw.Draw(img)
         
         size = 20
-        
-        # Красный крестик
         draw.line((cursor_x - size, cursor_y, cursor_x + size, cursor_y), fill="red", width=3)
         draw.line((cursor_x, cursor_y - size, cursor_x, cursor_y + size), fill="red", width=3)
         draw.ellipse((cursor_x - 5, cursor_y - 5, cursor_x + 5, cursor_y + 5), fill="red")
@@ -60,7 +57,6 @@ def make_screenshot_with_cursor(browser, user_id, filename="screenshot.png"):
         print(f"❌ Ошибка: {e}")
         return None
 
-# === КНОПКИ ДЖОЙСТИКА ===
 def get_joystick_keyboard():
     keyboard = InlineKeyboardMarkup(row_width=3)
     keyboard.row(
@@ -69,7 +65,7 @@ def get_joystick_keyboard():
     )
     keyboard.row(
         InlineKeyboardButton("⬅️", callback_data="move_left"),
-        InlineKeyboardButton("🧠 КЛИК", callback_data="click_cursor"),
+        InlineKeyboardButton("💪 КЛИК", callback_data="click_cursor"),
         InlineKeyboardButton("➡️", callback_data="move_right")
     )
     keyboard.row(
@@ -107,9 +103,8 @@ def click_at_cursor(user_id):
     y = user_cursor[user_id]['y']
     
     try:
-        # Используем умный клик
-        success = browser.smart_click_at_coordinates(x, y)
-        return success, f"✅ Умный клик по ({x}, {y})" if success else f"❌ Клик не сработал"
+        success = browser.force_click(x, y)
+        return success, f"✅ Принудительный клик по ({x}, {y})" if success else f"❌ Клик не сработал"
     except Exception as e:
         return False, f"❌ Ошибка: {e}"
 
@@ -135,7 +130,7 @@ def handle_joystick(message):
                     photo,
                     caption="🎮 **Джойстик управления**\n\n"
                            "⬆️ ⬇️ ⬅️ ➡️ — двигать курсор\n"
-                           "🧠 КЛИК — умный клик (пробует 5 способов)\n"
+                           "💪 КЛИК — принудительный клик (игнорирует блокировки)\n"
                            "🔄 — обновить экран\n"
                            "📍 — позиция курсора\n"
                            "📸 — скриншот\n"
@@ -219,7 +214,7 @@ def handle_joystick_callback(call):
                 bot.send_photo(
                     chat_id, 
                     photo, 
-                    caption=f"🧠 Умный клик по ({x}, {y})\n{msg}",
+                    caption=f"💪 Принудительный клик по ({x}, {y})\n{msg}",
                     reply_markup=get_joystick_keyboard()
                 )
             os.remove(screenshot)
@@ -325,6 +320,38 @@ def handle_stop_x(message):
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {str(e)[:200]}")
 
+# === КОМАНДА /CLICK_CONTINUE ===
+@bot.message_handler(commands=['click_continue'])
+def handle_click_continue(message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    
+    if user_id not in user_sessions:
+        bot.reply_to(message, "❌ Нет активной сессии")
+        return
+    
+    browser = user_sessions[user_id]
+    
+    try:
+        elements = browser.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue as') or contains(text(), 'Continue with')]")
+        for elem in elements:
+            if elem.is_displayed():
+                browser.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elem)
+                time.sleep(0.5)
+                browser.driver.execute_script("arguments[0].click();", elem)
+                bot.reply_to(message, f"✅ Кнопка найдена и нажата: '{elem.text[:30]}'")
+                
+                screenshot = browser.take_screenshot(f"click_continue_{user_id}.png")
+                if screenshot:
+                    with open(screenshot, 'rb') as photo:
+                        bot.send_photo(chat_id, photo, caption="📸 После клика")
+                    os.remove(screenshot)
+                return
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {e}")
+    
+    bot.reply_to(message, "❌ Кнопка не найдена")
+
 # === ОСТАЛЬНЫЕ КОМАНДЫ ===
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -335,7 +362,8 @@ def send_welcome(message):
         "/check - Проверить установку\n"
         "/login логин пароль - Обычный вход\n"
         "/logingoogle email пароль - Вход через Google\n"
-        "/joystick - Управление курсором (умный клик)\n"
+        "/joystick - Джойстик с принудительным кликом\n"
+        "/click_continue - Найти и нажать Continue\n"
         "/screen_now - Скриншот с курсором\n"
         "/stop_x - Остановить джойстик\n"
         "/log - Показать логи\n"
