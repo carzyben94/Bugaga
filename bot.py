@@ -439,7 +439,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "🍪 **КУКИ**\n"
         "/setcookie — Установить куки\n"
         "/loadcookies — Загрузить куки из файла\n"
-        "/loadsavedcookies — Загрузить сохранённые куки\n"
+        "/loadsavedcookies — Загрузить saved куки\n"
         "/savecookies — Сохранить куки\n\n"
         "🐦 **X**\n"
         "/start_x_com — Быстрый старт (всё сразу)\n"
@@ -450,8 +450,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/screenshot — Скриншот\n"
         "/status — Статус браузера\n\n"
         "🛠️ **ДРУГОЕ**\n"
-        "/installpillow — Установить Pillow\n\n"
-        "🚀 Быстрый старт: /start_x_com",
+        "/installpillow — Установить Pillow",
         parse_mode="Markdown"
     )
 
@@ -633,6 +632,8 @@ async def start_x_com(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     session = user_sessions[user_id]
     page = session["page"]
     context_browser = session["context"]
+    
+    # ⚠️ ВСТАВЬ СВОИ АКТУАЛЬНЫЕ КУКИ СЮДА
     cookies_to_add = [
         {"name": "auth_token", "value": "09fe982487255e707f7a9b3d380ea429421adae3", "domain": ".x.com", "path": "/"},
         {"name": "ct0", "value": "18f7448391062aaaa323ea38f4fd129f5f682f09ec0989f899ebc4ddaa4d7bf7de0e0c359240145428b7cc1d410adbc5565fa9bbe2c4380b5341327ea3c53f03a89fcb12ee617d0fea848882ae6ff281", "domain": ".x.com", "path": "/"},
@@ -642,6 +643,7 @@ async def start_x_com(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         {"name": "guest_id_marketing", "value": "v1%3A178224957371538879", "domain": ".x.com", "path": "/"},
         {"name": "lang", "value": "ru", "domain": ".x.com", "path": "/"},
     ]
+    
     try:
         await context_browser.clear_cookies()
         await context_browser.add_cookies(cookies_to_add)
