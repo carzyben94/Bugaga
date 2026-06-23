@@ -20,7 +20,6 @@ chat_id_log = None
 
 
 def run_async(coro):
-    """Запуск асинхронной функции"""
     global loop
     if loop is None:
         loop = asyncio.new_event_loop()
@@ -29,8 +28,6 @@ def run_async(coro):
 
 
 def log_callback(message):
-    """Логи отправляются в Telegram"""
-    global chat_id_log
     print(message)
     if chat_id_log:
         try:
@@ -261,9 +258,19 @@ def joystick_callback(call):
             bot.answer_callback_query(call.id, "💣 Клик...")
             x, y = user_cursor.get(user_id, {'x': 960, 'y': 400}).values()
             
-            result = run_async(browser.mega_click(x=int(x), y=int(y)))
+            # Пробуем кликнуть с текстом "Continue"
+            result = run_async(browser.mega_click(
+                x=int(x), 
+                y=int(y), 
+                text="Continue"
+            ))
+            
             if result:
                 bot.answer_callback_query(call.id, "✅ Клик успешен!")
+                # Проверяем URL через 2 секунды
+                time.sleep(2)
+                url = run_async(browser.get_url())
+                bot.send_message(chat_id, f"📍 Текущий URL: {url}")
             else:
                 bot.answer_callback_query(call.id, "❌ Не сработал")
         
