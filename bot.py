@@ -23,6 +23,7 @@ JOYSTICK_FAST_STEP = 150
 # Хранилища
 user_sessions = {}
 joystick_states = {}
+joystick_messages = {}  # Храним ID сообщений с джойстиком
 
 # ============ FLASK ============
 app_flask = Flask(__name__)
@@ -134,6 +135,10 @@ async def close_user_browser(user_id: int):
     if user_id in user_sessions:
         await user_sessions[user_id]["browser"].close()
         del user_sessions[user_id]
+        if user_id in joystick_messages:
+            del joystick_messages[user_id]
+        if user_id in joystick_states:
+            del joystick_states[user_id]
 
 async def screenshot_with_cursor(page, x: int, y: int) -> bytes:
     try:
@@ -273,11 +278,12 @@ async def update_joystick_message(query, page, user_id, mode, caption=""):
     except Exception as e:
         print(f"Ошибка редактирования: {e}")
         # Если не получается отредактировать, отправляем новое
-        await query.message.reply_photo(
+        msg = await query.message.reply_photo(
             photo=screenshot,
             caption=text,
             reply_markup=get_joystick_keyboard(mode)
         )
+        joystick_messages[user_id] = msg.message_id
 
 # ============ КОМАНДЫ БОТА ============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -365,6 +371,11 @@ async def joystick_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
         return
     
+    # Если джойстик уже открыт - не открываем новый
+    if user_id in joystick_messages:
+        await update.message.reply_text("🎮 Джойстик уже открыт!")
+        return
+    
     joystick_states[user_id] = {"mode": "normal"}
     
     session = user_sessions[user_id]
@@ -385,7 +396,7 @@ async def joystick_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     
     screenshot = await screenshot_with_cursor(page, current_x, current_y)
     
-    await update.message.reply_photo(
+    msg = await update.message.reply_photo(
         photo=screenshot,
         caption=(
             f"🎮 ДЖОЙСТИК 🎮\n\n"
@@ -396,6 +407,9 @@ async def joystick_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         ),
         reply_markup=get_joystick_keyboard("normal")
     )
+    
+    # Сохраняем ID сообщения
+    joystick_messages[user_id] = msg.message_id
 
 # ============ ОБРАБОТЧИК КНОПОК ДЖОЙСТИКА ============
 async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -410,6 +424,8 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             "⚠️ Браузер закрыт. Открой: /browser",
             reply_markup=None
         )
+        if user_id in joystick_messages:
+            del joystick_messages[user_id]
         return
     
     session = user_sessions[user_id]
@@ -449,7 +465,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             )
             
         except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка: {e}")
+            await query.edit_message_text(f"❌ Ошибка движения: {e}")
     
     # ============ КЛИК ПО ЦЕНТРУ ============
     elif data == "click_center":
@@ -469,7 +485,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             )
             
         except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка: {e}")
+            await query.edit_message_text(f"❌ Ошибка клика: {e}")
     
     # ============ ЛКМ ============
     elif data == "click_left":
@@ -483,7 +499,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             )
             
         except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка: {e}")
+            await query.edit_message_text(f"❌ Ошибка ЛКМ: {e}")
     
     # ============ ПКМ ============
     elif data == "click_right":
@@ -497,7 +513,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             )
             
         except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка: {e}")
+            await query.edit_message_text(f"❌ Ошибка ПКМ: {e}")
     
     # ============ ENTER ============
     elif data == "press_enter":
@@ -511,7 +527,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             )
             
         except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка: {e}")
+            await query.edit_message_text(f"❌ Ошибка Enter: {e}")
     
     # ============ ОБНОВИТЬ ============
     elif data == "refresh":
@@ -525,7 +541,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             )
             
         except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка: {e}")
+            await query.edit_message_text(f"❌ Ошибка обновления: {e}")
     
     # ============ НАЗАД ============
     elif data == "go_back":
@@ -539,7 +555,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             )
             
         except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка: {e}")
+            await query.edit_message_text(f"❌ Ошибка назад: {e}")
     
     # ============ ВПЕРЁД ============
     elif data == "go_forward":
@@ -553,7 +569,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             )
             
         except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка: {e}")
+            await query.edit_message_text(f"❌ Ошибка вперёд: {e}")
     
     # ============ СКРИНШОТ ============
     elif data == "screenshot":
@@ -564,12 +580,14 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             )
             
         except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка: {e}")
+            await query.edit_message_text(f"❌ Ошибка скриншота: {e}")
     
     # ============ ЗАКРЫТЬ БРАУЗЕР ============
     elif data == "close_browser":
         await close_user_browser(user_id)
         await query.edit_message_text("❌ Браузер закрыт", reply_markup=None)
+        if user_id in joystick_messages:
+            del joystick_messages[user_id]
     
     # ============ ПЕРЕКЛЮЧЕНИЕ РЕЖИМА ============
     elif data == "toggle_mode":
@@ -600,6 +618,8 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             f"После ввода вернись в джойстик: /joystick",
             reply_markup=None
         )
+        if user_id in joystick_messages:
+            del joystick_messages[user_id]
     
     # ============ СКРЫТЬ ДЖОЙСТИК ============
     elif data == "hide_joystick":
@@ -607,6 +627,8 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             "✅ Джойстик скрыт\n\nВернуть: /joystick",
             reply_markup=None
         )
+        if user_id in joystick_messages:
+            del joystick_messages[user_id]
 
 # ============ ЗАПУСК ============
 def run_flask():
