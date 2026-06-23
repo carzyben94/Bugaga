@@ -125,7 +125,7 @@ def start_browser(message):
     msg = bot.reply_to(message, "🔄 Запуск браузера...")
     
     try:
-        browser = Browser(headless=True, log_callback=log_callback)
+        browser = Browser(headless=False, log_callback=log_callback)
         run_async(browser.start())
         bot.edit_message_text("✅ Браузер запущен!\n/open google.com", chat_id=message.chat.id, message_id=msg.message_id)
     except Exception as e:
@@ -152,15 +152,18 @@ def login_x(message):
     
     try:
         # Открываем X
+        bot.send_message(message.chat.id, "🌐 Открываю X.com...")
         run_async(browser.goto("https://x.com"))
+        bot.send_message(message.chat.id, "✅ X.com открыт")
         
         # Вход через Google
+        bot.send_message(message.chat.id, "🔑 Начинаю вход через Google...")
         success = run_async(browser.login_google_via_popup(email, password))
         
         if success:
             bot.send_message(message.chat.id, "✅ Вход в X выполнен!\n/joy для управления")
         else:
-            bot.send_message(message.chat.id, "❌ Ошибка входа")
+            bot.send_message(message.chat.id, "❌ Ошибка входа. Проверьте логи.")
             
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Ошибка: {str(e)[:100]}")
