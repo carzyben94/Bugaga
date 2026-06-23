@@ -130,7 +130,7 @@ def handle_joystick(message):
                     photo,
                     caption="🎮 **Джойстик управления**\n\n"
                            "⬆️ ⬇️ ⬅️ ➡️ — двигать курсор\n"
-                           "💪 КЛИК — принудительный клик (игнорирует блокировки)\n"
+                           "💪 КЛИК — принудительный клик\n"
                            "🔄 — обновить экран\n"
                            "📍 — позиция курсора\n"
                            "📸 — скриншот\n"
@@ -266,6 +266,111 @@ def handle_joystick_callback(call):
     except:
         pass
 
+# === КОМАНДА /DIAG ===
+@bot.message_handler(commands=['diag'])
+def handle_diag(message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    
+    if user_id not in user_sessions:
+        bot.reply_to(message, "❌ Нет активной сессии")
+        return
+    
+    browser = user_sessions[user_id]
+    
+    try:
+        info = browser.get_page_info()
+        bot.send_message(chat_id, f"📍 URL: {info.get('url', 'Неизвестно')}")
+        bot.send_message(chat_id, f"📄 Title: {info.get('title', 'Неизвестно')}")
+        bot.send_message(chat_id, f"📊 HTML длина: {info.get('html_length', 0)} символов")
+        
+        buttons = browser.get_buttons_info()
+        result = "🔍 **Найденные кнопки:**\n"
+        for i, btn in enumerate(buttons):
+            visible = "✅" if btn['visible'] else "❌"
+            enabled = "✅" if btn['enabled'] else "❌"
+            result += f"{i+1}. '{btn['text'][:30]}' (видима: {visible}, активна: {enabled})\n"
+        
+        if not buttons:
+            result += "❌ Кнопки не найдены"
+        
+        bot.send_message(chat_id, result, parse_mode='Markdown')
+        
+        # Пробуем найти "Continue as"
+        try:
+            elements = browser.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue')]")
+            result2 = "🔍 **Элементы с 'Continue':**\n"
+            for i, elem in enumerate(elements[:10]):
+                try:
+                    text = elem.text.strip()
+                    tag = elem.tag_name
+                    if text:
+                        result2 += f"{i+1}. [{tag}] '{text[:40]}'\n"
+                except:
+                    continue
+            bot.send_message(chat_id, result2, parse_mode='Markdown')
+        except:
+            pass
+        
+        screenshot = browser.take_screenshot(f"diag_{user_id}.png")
+        if screenshot:
+            with open(screenshot, 'rb') as photo:
+                bot.send_photo(chat_id, photo, caption="📸 Диагностический скриншот")
+            os.remove(screenshot)
+        
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {e}")
+
+# === КОМАНДА /CLICK_TEXT ===
+@bot.message_handler(commands=['click_text'])
+def handle_click_text(message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    
+    if user_id not in user_sessions:
+        bot.reply_to(message, "❌ Нет активной сессии")
+        return
+    
+    if message.text is None:
+        bot.reply_to(message, "❌ Используйте: /click_text <текст>")
+        return
+    
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        bot.reply_to(message, "❌ Используйте: /click_text <текст>")
+        return
+    
+    text = parts[1]
+    browser = user_sessions[user_id]
+    
+    try:
+        success = browser.simple_click_by_text(text)
+        if success:
+            bot.reply_to(message, f"✅ Клик по '{text}' выполнен")
+            
+            screenshot = browser.take_screenshot(f"click_text_{user_id}.png")
+            if screenshot:
+                with open(screenshot, 'rb') as photo:
+                    bot.send_photo(chat_id, photo, caption=f"📸 После клика по '{text}'")
+                os.remove(screenshot)
+        else:
+            bot.reply_to(message, f"❌ Не удалось кликнуть по '{text}'")
+            
+            # Показываем все элементы с текстом
+            elements = browser.driver.find_elements(By.XPATH, "//*[text()!='']")
+            result = "🔍 **Элементы с текстом:**\n"
+            for i, elem in enumerate(elements[:20]):
+                try:
+                    txt = elem.text.strip()
+                    if txt and len(txt) < 50:
+                        result += f"{i+1}. [{elem.tag_name}] '{txt}'\n"
+                except:
+                    continue
+            bot.send_message(chat_id, result, parse_mode='Markdown')
+            
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {e}")
+
 # === КОМАНДА /SCREEN_NOW ===
 @bot.message_handler(commands=['screen_now'])
 def handle_screen_now(message):
@@ -320,38 +425,6 @@ def handle_stop_x(message):
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {str(e)[:200]}")
 
-# === КОМАНДА /CLICK_CONTINUE ===
-@bot.message_handler(commands=['click_continue'])
-def handle_click_continue(message):
-    user_id = message.from_user.id
-    chat_id = message.chat.id
-    
-    if user_id not in user_sessions:
-        bot.reply_to(message, "❌ Нет активной сессии")
-        return
-    
-    browser = user_sessions[user_id]
-    
-    try:
-        elements = browser.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue as') or contains(text(), 'Continue with')]")
-        for elem in elements:
-            if elem.is_displayed():
-                browser.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elem)
-                time.sleep(0.5)
-                browser.driver.execute_script("arguments[0].click();", elem)
-                bot.reply_to(message, f"✅ Кнопка найдена и нажата: '{elem.text[:30]}'")
-                
-                screenshot = browser.take_screenshot(f"click_continue_{user_id}.png")
-                if screenshot:
-                    with open(screenshot, 'rb') as photo:
-                        bot.send_photo(chat_id, photo, caption="📸 После клика")
-                    os.remove(screenshot)
-                return
-    except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: {e}")
-    
-    bot.reply_to(message, "❌ Кнопка не найдена")
-
 # === ОСТАЛЬНЫЕ КОМАНДЫ ===
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -363,7 +436,8 @@ def send_welcome(message):
         "/login логин пароль - Обычный вход\n"
         "/logingoogle email пароль - Вход через Google\n"
         "/joystick - Джойстик с принудительным кликом\n"
-        "/click_continue - Найти и нажать Continue\n"
+        "/diag - Диагностика страницы\n"
+        "/click_text <текст> - Клик по тексту\n"
         "/screen_now - Скриншот с курсором\n"
         "/stop_x - Остановить джойстик\n"
         "/log - Показать логи\n"
