@@ -5,6 +5,8 @@ import time
 import asyncio
 import random
 import re
+import json
+from io import BytesIO
 import requests
 from flask import Flask, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
@@ -1002,6 +1004,183 @@ async def continue_as_google(update: Update, context: ContextTypes.DEFAULT_TYPE)
         except:
             pass
 
+# ============ РАБОТА С КУКАМИ ============
+
+# ЗАГРУЗКА КУК ИЗ ФАЙЛА
+async def load_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    
+    if user_id not in user_sessions:
+        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
+        return
+    
+    if not update.message.document:
+        await update.message.reply_text(
+            "❌ Отправь файл cookies.json\n\n"
+            "Формат:\n"
+            '[{"name":"auth_token","value":"...","domain":".x.com","path":"/"}, ...]'
+        )
+        return
+    
+    document = update.message.document
+    if not document.file_name.endswith('.json'):
+        await update.message.reply_text("❌ Файл должен быть .json")
+        return
+    
+    file = await context.bot.get_file(document.file_id)
+    file_path = f"/tmp/cookies_{user_id}.json"
+    await file.download_to_drive(file_path)
+    
+    try:
+        with open(file_path, 'r') as f:
+            cookies_data = json.load(f)
+        
+        session = user_sessions[user_id]
+        page = session["page"]
+        context_browser = session["context"]
+        
+        await context_browser.clear_cookies()
+        await context_browser.add_cookies(cookies_data)
+        
+        await update.message.reply_text(f"✅ Загружено {len(cookies_data)} кук")
+        
+        await page.reload()
+        await page.wait_for_timeout(2000)
+        
+        cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
+        screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
+        
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption="✅ Куки загружены! Страница перезагружена."
+        )
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+    finally:
+        try:
+            os.remove(file_path)
+        except:
+            pass
+
+# СОХРАНИТЬ ТЕКУЩИЕ КУКИ
+async def save_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    
+    if user_id not in user_sessions:
+        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
+        return
+    
+    session = user_sessions[user_id]
+    page = session["page"]
+    
+    try:
+        cookies = await page.context.cookies()
+        json_data = json.dumps(cookies, indent=2)
+        
+        # Сохраняем в буфер
+        buffer = BytesIO(json_data.encode('utf-8'))
+        buffer.name = "cookies.json"
+        
+        await update.message.reply_document(
+            document=buffer,
+            filename="cookies.json",
+            caption=f"📦 Куки сохранены ({len(cookies)} шт.)"
+        )
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+# УСТАНОВИТЬ КУКИ ВРУЧНУЮ
+async def set_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    
+    if user_id not in user_sessions:
+        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
+        return
+    
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text(
+            "❌ Использование:\n"
+            "/setcookie auth_token=значение ct0=значение\n\n"
+            "Пример:\n"
+            "/setcookie auth_token=09fe982487255e... ct0=18f7448391062..."
+        )
+        return
+    
+    session = user_sessions[user_id]
+    page = session["page"]
+    context_browser = session["context"]
+    
+    try:
+        cookies_to_add = []
+        i = 0
+        while i < len(args):
+            if "=" in args[i]:
+                key, value = args[i].split("=", 1)
+                cookies_to_add.append({"name": key, "value": value, "domain": ".x.com", "path": "/"})
+            elif i + 1 < len(args):
+                key = args[i]
+                value = args[i + 1]
+                cookies_to_add.append({"name": key, "value": value, "domain": ".x.com", "path": "/"})
+                i += 1
+            i += 1
+        
+        if not cookies_to_add:
+            await update.message.reply_text("❌ Не найдены куки для установки")
+            return
+        
+        await context_browser.add_cookies(cookies_to_add)
+        
+        await update.message.reply_text(f"✅ Установлено {len(cookies_to_add)} кук")
+        
+        await page.reload()
+        await page.wait_for_timeout(2000)
+        
+        cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
+        screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
+        
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption="✅ Куки установлены! Страница перезагружена."
+        )
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+# ============ СТАТУС ============
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    
+    if user_id not in user_sessions:
+        await update.message.reply_text("⚠️ Браузер не открыт. Используй: /browser")
+        return
+    
+    session = user_sessions[user_id]
+    page = session["page"]
+    url = page.url
+    
+    cookies = await page.context.cookies()
+    has_cookie = any(c['name'] in ['auth_token', 'ct0', 'twid'] for c in cookies)
+    
+    status_text = f"📊 **Статус браузера**\n\n"
+    status_text += f"🌐 Текущий URL: {url[:60]}\n"
+    status_text += f"🍪 Куки: {'✅ Есть' if has_cookie else '❌ Нет'}\n"
+    
+    if "x.com" in url:
+        status_text += "📱 На сайте: Twitter/X\n"
+        status_text += f"✅ **Вы {'вошли' if has_cookie else 'НЕ вошли'} в Twitter!**\n"
+    elif "google" in url:
+        status_text += "📱 На сайте: Google\n"
+    else:
+        status_text += f"📱 Сайт: {url[:30]}\n"
+    
+    cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
+    screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
+    
+    await update.message.reply_photo(photo=screenshot, caption=status_text)
+
 # ============ ПОКАЗАТЬ ВСЕ IFRAME ============
 async def show_frames(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
@@ -1031,37 +1210,95 @@ async def show_frames(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-# ============ СТАТУС ============
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+# ============ НАЖАТЬ "ВОЙТИ" ============
+async def click_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     
     if user_id not in user_sessions:
-        await update.message.reply_text("⚠️ Браузер не открыт. Используй: /browser")
+        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
         return
     
     session = user_sessions[user_id]
     page = session["page"]
-    url = page.url
     
-    cookies = await page.context.cookies()
-    has_cookie = any(c['name'] in ['auth_token', 'ct0', 'twid'] for c in cookies)
+    await update.message.reply_text("🔍 Ищу кнопку 'Войти'...")
     
-    status_text = f"📊 **Статус браузера**\n\n"
-    status_text += f"🌐 Текущий URL: {url[:60]}\n"
-    status_text += f"🍪 Сессия: {'✅ Активна' if has_cookie else '❌ Нет сессии'}\n"
+    try:
+        clicked = False
+        
+        selectors = [
+            'text="Войти"',
+            'text="Sign in"',
+            'text="Log in"',
+            'a:has-text("Войти")',
+            'a:has-text("Sign in")',
+            'div[role="button"]:has-text("Войти")',
+            '[data-testid="loginButton"]',
+        ]
+        
+        for selector in selectors:
+            try:
+                el = await page.locator(selector).first
+                if await el.count() > 0 and await el.is_visible():
+                    box = await el.bounding_box()
+                    if box:
+                        x = box['x'] + box['width'] // 2
+                        y = box['y'] + box['height'] // 2
+                        await human_click(page, x, y)
+                    else:
+                        await el.click()
+                    clicked = True
+                    await update.message.reply_text("✅ Нажата кнопка 'Войти'")
+                    break
+            except:
+                continue
+        
+        if not clicked:
+            await update.message.reply_text("❌ Кнопка 'Войти' не найдена")
+            return
+        
+        await page.wait_for_timeout(3000)
+        
+        cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
+        screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
+        
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption="✅ Страница входа открыта\n\n"
+                    "Теперь нажми /google_btn"
+        )
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+# ============ ПЕРЕЙТИ НА СТРАНИЦУ ВХОДА ============
+async def goto_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
     
-    if "x.com" in url:
-        status_text += "📱 На сайте: Twitter/X\n"
-        status_text += f"✅ **Вы {'вошли' if has_cookie else 'НЕ вошли'} в Twitter!**\n"
-    elif "google" in url:
-        status_text += "📱 На сайте: Google\n"
-    else:
-        status_text += f"📱 Сайт: {url[:30]}\n"
+    if user_id not in user_sessions:
+        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
+        return
     
-    cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
-    screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
+    session = user_sessions[user_id]
+    page = session["page"]
     
-    await update.message.reply_photo(photo=screenshot, caption=status_text)
+    try:
+        await update.message.reply_text("🌐 Перехожу на страницу входа X.com...")
+        await goto_url(page, "https://x.com/login")
+        
+        await page.wait_for_timeout(3000)
+        
+        cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
+        screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
+        
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption="✅ Страница входа открыта\n\n"
+                    "Теперь нажми /google_btn"
+        )
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
 
 # ============ КОМАНДЫ ============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1069,7 +1306,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "👋 Привет! Я бот с управлением браузером!\n\n"
         "🌐 /browser - Открыть браузер\n"
         "🔐 /login email pass - Войти в Google (автоматически)\n"
+        "🍪 /setcookie key=value - Установить куки вручную\n"
+        "📄 /loadcookies - Загрузить куки из файла\n"
+        "💾 /savecookies - Сохранить текущие куки\n"
         "🐦 /twitter - Открыть X.com\n"
+        "🔘 /login_btn - Нажать 'Войти'\n"
         "🔘 /google_btn - Нажать 'Continue with Google'\n"
         "🔘 /continue - Нажать 'Continue as Babe'\n"
         "📦 /frames - Показать все iframe\n"
@@ -1077,8 +1318,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "📊 /status - Проверить статус\n"
         "📸 /screenshot - Сделать скриншот\n"
         "❌ /close - Закрыть браузер\n\n"
-        "🚀 Полный вход в Twitter:\n"
-        "/login email pass → /twitter → /google_btn → /continue"
+        "🚀 Быстрый вход с куками:\n"
+        "/browser → /setcookie auth_token=... → /twitter"
     )
 
 async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1090,7 +1331,7 @@ async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await get_user_browser(user_id)
         await update.message.reply_text(
             "✅ Браузер готов!\n\n"
-            "🔐 /login email pass - войти в Google\n"
+            "🍪 /setcookie ключ=значение - установить куки\n"
             "🐦 /twitter - открыть X.com\n"
             "🎮 /joystick - открыть джойстик"
         )
@@ -1407,19 +1648,34 @@ def main():
     
     bot_app = Application.builder().token(BOT_TOKEN).build()
     
+    # Основные команды
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CommandHandler("browser", browser_command))
     bot_app.add_handler(CommandHandler("go", go_command))
     bot_app.add_handler(CommandHandler("screenshot", screenshot_command))
     bot_app.add_handler(CommandHandler("close", close_command))
     bot_app.add_handler(CommandHandler("joystick", joystick_command))
-    bot_app.add_handler(CommandHandler("login", login_google))
     bot_app.add_handler(CommandHandler("status", status_command))
+    
+    # Вход в Google
+    bot_app.add_handler(CommandHandler("login", login_google))
+    
+    # Twitter команды
     bot_app.add_handler(CommandHandler("twitter", twitter_command))
+    bot_app.add_handler(CommandHandler("login_btn", click_login))
     bot_app.add_handler(CommandHandler("google_btn", google_login_button))
     bot_app.add_handler(CommandHandler("continue", continue_as_google))
-    bot_app.add_handler(CommandHandler("frames", show_frames))
     
+    # Куки команды
+    bot_app.add_handler(CommandHandler("loadcookies", load_cookies))
+    bot_app.add_handler(CommandHandler("savecookies", save_cookies))
+    bot_app.add_handler(CommandHandler("setcookie", set_cookies))
+    
+    # Диагностика
+    bot_app.add_handler(CommandHandler("frames", show_frames))
+    bot_app.add_handler(CommandHandler("gologin", goto_login))
+    
+    # Обработчик кнопок
     bot_app.add_handler(CallbackQueryHandler(joystick_callback))
     
     print("✅ Бот запущен")
