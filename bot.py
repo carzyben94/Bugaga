@@ -118,7 +118,7 @@ def handle_login_google(message):
     
     msg = bot.reply_to(message, "🔄 Вход через Google... 30-50 секунд")
     
-    # === ИСПРАВЛЕННАЯ ФУНКЦИЯ (принимает 2 аргумента) ===
+    # === ИСПРАВЛЕННАЯ ФУНКЦИЯ ===
     def log_callback(log_text, level):
         send_log_to_chat(chat_id, log_text)
     
@@ -197,6 +197,7 @@ def handle_login(message):
     
     msg = bot.reply_to(message, "🔄 Выполняется вход...")
     
+    # === ИСПРАВЛЕННАЯ ФУНКЦИЯ ===
     def log_callback(log_text, level):
         send_log_to_chat(chat_id, log_text)
     
