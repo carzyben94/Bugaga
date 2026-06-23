@@ -493,7 +493,6 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         
         email_found = False
         
-        # get_by_role
         try:
             el = await page.get_by_role("textbox", name=re.compile(r"(Email|телефон|Username|Эл. почта)", re.IGNORECASE)).first
             if await el.count() > 0 and await el.is_visible():
@@ -842,7 +841,7 @@ async def google_login_button(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-# ============ НАЖАТЬ "CONTINUE AS BABE" ============
+# ============ НАЖАТЬ "CONTINUE AS BABE" (С ПОИСКОМ В IFRAME) ============
 async def continue_as_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     
@@ -853,17 +852,23 @@ async def continue_as_google(update: Update, context: ContextTypes.DEFAULT_TYPE)
     session = user_sessions[user_id]
     page = session["page"]
     
-    await update.message.reply_text("🔍 Ищу кнопку 'Continue as...'...")
+    await update.message.reply_text("🔍 Ищу кнопку 'Continue as...' во всех iframe...")
     
     try:
         clicked = False
+        button_text = ""
         
-        # Ищем в iframe
-        for frame in page.frames:
+        # 1. Ищем ВО ВСЕХ iframe
+        frames = page.frames
+        await update.message.reply_text(f"📦 Найдено iframe: {len(frames)}")
+        
+        for idx, frame in enumerate(frames):
             try:
+                # Пробуем найти кнопку в этом iframe
                 selectors = [
                     'text="Continue as"',
                     'text="Продолжить как"',
+                    'text="Continue with Google"',
                     'button:has-text("Continue as")',
                     'button:has-text("Продолжить как")',
                     'div:has-text("Continue as")',
@@ -877,9 +882,10 @@ async def continue_as_google(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     try:
                         elements = await frame.locator(selector).all()
                         for el in elements:
-                            text = await el.text_content()
-                            if text and ('Continue as' in text or 'Продолжить как' in text or 'babe' in text.lower() or 'baruhbenn' in text.lower()):
-                                if await el.is_visible():
+                            if await el.is_visible():
+                                text = await el.text_content() or ""
+                                # Проверяем, что текст содержит нужные слова
+                                if any(keyword in text for keyword in ['Continue as', 'Продолжить как', 'Google', 'babe']):
                                     box = await el.bounding_box()
                                     if box:
                                         x = box['x'] + box['width'] // 2
@@ -888,17 +894,20 @@ async def continue_as_google(update: Update, context: ContextTypes.DEFAULT_TYPE)
                                     else:
                                         await el.click()
                                     clicked = True
-                                    await update.message.reply_text(f"✅ Нажата кнопка: {text[:50]}")
+                                    button_text = text[:50]
+                                    await update.message.reply_text(f"✅ Нажата кнопка в iframe {idx}: {button_text}")
                                     break
                     except:
                         continue
                 if clicked:
                     break
-            except:
+            except Exception as e:
+                print(f"Ошибка в iframe {idx}: {e}")
                 continue
         
-        # Если не нашли в iframe, ищем на странице
+        # 2. Если не нашли в iframe, ищем на странице
         if not clicked:
+            await update.message.reply_text("🔍 Ищу на основной странице...")
             selectors = [
                 'text="Continue as"',
                 'text="Продолжить как"',
@@ -907,17 +916,15 @@ async def continue_as_google(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 'div:has-text("Continue as")',
                 'div:has-text("Продолжить как")',
                 'div[role="button"]',
-                '[jsname]',
-                '[data-testid]',
             ]
             
             for selector in selectors:
                 try:
                     elements = await page.locator(selector).all()
                     for el in elements:
-                        text = await el.text_content()
-                        if text and ('Continue as' in text or 'Продолжить как' in text or 'babe' in text.lower() or 'baruhbenn' in text.lower()):
-                            if await el.is_visible():
+                        if await el.is_visible():
+                            text = await el.text_content() or ""
+                            if any(keyword in text for keyword in ['Continue as', 'Продолжить как', 'Google']):
                                 box = await el.bounding_box()
                                 if box:
                                     x = box['x'] + box['width'] // 2
@@ -926,52 +933,24 @@ async def continue_as_google(update: Update, context: ContextTypes.DEFAULT_TYPE)
                                 else:
                                     await el.click()
                                 clicked = True
-                                await update.message.reply_text(f"✅ Нажата кнопка: {text[:50]}")
+                                button_text = text[:50]
+                                await update.message.reply_text(f"✅ Нажата кнопка на странице: {button_text}")
                                 break
                 except:
                     continue
         
         if not clicked:
-            # Ищем по почте
-            try:
-                elements = await page.locator('text="babe"').all()
-                for el in elements:
-                    if await el.is_visible():
-                        box = await el.bounding_box()
-                        if box:
-                            x = box['x'] + box['width'] // 2
-                            y = box['y'] + box['height'] // 2
-                            await human_click(page, x, y)
-                            clicked = True
-                            await update.message.reply_text("✅ Нажата кнопка с почтой")
-                            break
-            except:
-                pass
-        
-        if not clicked:
-            # Ищем по email
-            try:
-                elements = await page.locator('text="baruhbenn@gmail.com"').all()
-                for el in elements:
-                    if await el.is_visible():
-                        box = await el.bounding_box()
-                        if box:
-                            x = box['x'] + box['width'] // 2
-                            y = box['y'] + box['height'] // 2
-                            await human_click(page, x, y)
-                            clicked = True
-                            await update.message.reply_text("✅ Нажата кнопка с email")
-                            break
-            except:
-                pass
-        
-        if not clicked:
-            await update.message.reply_text(
-                "❌ Кнопка не найдена\n\n"
-                "Попробуй через джойстик:\n"
-                "1. /joystick\n"
-                "2. Наведи на кнопку\n"
-                "3. Нажми ЛКМ"
+            # Показываем скриншот для диагностики
+            cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
+            screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
+            await update.message.reply_photo(
+                photo=screenshot,
+                caption="❌ **Кнопка не найдена**\n\n"
+                        "Попробуй через джойстик:\n"
+                        "1. /joystick\n"
+                        "2. Наведи на кнопку\n"
+                        "3. Нажми ЛКМ\n\n"
+                        "Или нажми 'Войти' вручную."
             )
             return
         
@@ -996,10 +975,10 @@ async def continue_as_google(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_photo(
                 photo=screenshot,
                 caption="⚠️ **Кнопка нажата, но вход не выполнен**\n\n"
-                        "Возможно, нужно:\n"
-                        "1. Нажать 'Войти' ещё раз\n"
-                        "2. Или нажать 'Continue with Google' сначала\n"
-                        "3. /joystick - попробовать вручную"
+                        "Попробуй:\n"
+                        "1. Нажать 'Войти' вручную через джойстик\n"
+                        "2. /joystick → наведи на 'Войти' → ЛКМ\n"
+                        "3. Потом снова /continue"
             )
         elif "accounts.google.com" in current_url:
             await update.message.reply_photo(
@@ -1022,6 +1001,35 @@ async def continue_as_google(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_photo(photo=screenshot, caption="📸 Скриншот для диагностики")
         except:
             pass
+
+# ============ ПОКАЗАТЬ ВСЕ IFRAME ============
+async def show_frames(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    
+    if user_id not in user_sessions:
+        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
+        return
+    
+    session = user_sessions[user_id]
+    page = session["page"]
+    
+    try:
+        frames = page.frames
+        await update.message.reply_text(f"📦 Найдено iframe: {len(frames)}")
+        
+        for i, frame in enumerate(frames):
+            try:
+                url = frame.url
+                await update.message.reply_text(f"🔹 iframe {i}: {url[:80]}")
+            except:
+                await update.message.reply_text(f"🔹 iframe {i}: <недоступно>")
+        
+        cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
+        screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
+        await update.message.reply_photo(photo=screenshot, caption="📸 Скриншот страницы")
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
 
 # ============ СТАТУС ============
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1064,6 +1072,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "🐦 /twitter - Открыть X.com\n"
         "🔘 /google_btn - Нажать 'Continue with Google'\n"
         "🔘 /continue - Нажать 'Continue as Babe'\n"
+        "📦 /frames - Показать все iframe\n"
         "🎮 /joystick - Открыть джойстик\n"
         "📊 /status - Проверить статус\n"
         "📸 /screenshot - Сделать скриншот\n"
@@ -1409,6 +1418,7 @@ def main():
     bot_app.add_handler(CommandHandler("twitter", twitter_command))
     bot_app.add_handler(CommandHandler("google_btn", google_login_button))
     bot_app.add_handler(CommandHandler("continue", continue_as_google))
+    bot_app.add_handler(CommandHandler("frames", show_frames))
     
     bot_app.add_handler(CallbackQueryHandler(joystick_callback))
     
