@@ -5,6 +5,7 @@ from browser import AntiDetectBrowser, check_installation
 from datetime import datetime
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from PIL import Image, ImageDraw
+from selenium.webdriver.common.by import By  # ← ДОБАВЛЕНО!
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
@@ -284,31 +285,63 @@ def handle_diag(message):
         bot.send_message(chat_id, f"📄 Title: {info.get('title', 'Неизвестно')}")
         bot.send_message(chat_id, f"📊 HTML длина: {info.get('html_length', 0)} символов")
         
-        buttons = browser.get_buttons_info()
+        # Ищем все кнопки с помощью By
+        buttons = browser.driver.find_elements(By.TAG_NAME, "button")
         result = "🔍 **Найденные кнопки:**\n"
-        for i, btn in enumerate(buttons):
-            visible = "✅" if btn['visible'] else "❌"
-            enabled = "✅" if btn['enabled'] else "❌"
-            result += f"{i+1}. '{btn['text'][:30]}' (видима: {visible}, активна: {enabled})\n"
+        for i, btn in enumerate(buttons[:10]):
+            try:
+                text = btn.text.strip()
+                if text:
+                    visible = btn.is_displayed()
+                    enabled = btn.is_enabled()
+                    result += f"{i+1}. '{text[:30]}' (видима: {'✅' if visible else '❌'}, активна: {'✅' if enabled else '❌'})\n"
+            except:
+                continue
         
         if not buttons:
             result += "❌ Кнопки не найдены"
         
         bot.send_message(chat_id, result, parse_mode='Markdown')
         
-        # Пробуем найти "Continue as"
+        # Ищем элементы с "Continue"
+        continue_elements = browser.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue')]")
+        result2 = "🔍 **Элементы с 'Continue':**\n"
+        for i, elem in enumerate(continue_elements[:10]):
+            try:
+                text = elem.text.strip()
+                tag = elem.tag_name
+                if text:
+                    result2 += f"{i+1}. [{tag}] '{text[:40]}'\n"
+            except:
+                continue
+        bot.send_message(chat_id, result2, parse_mode='Markdown')
+        
+        # Ищем "Continue as"
         try:
-            elements = browser.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue')]")
-            result2 = "🔍 **Элементы с 'Continue':**\n"
-            for i, elem in enumerate(elements[:10]):
-                try:
-                    text = elem.text.strip()
-                    tag = elem.tag_name
-                    if text:
-                        result2 += f"{i+1}. [{tag}] '{text[:40]}'\n"
-                except:
-                    continue
-            bot.send_message(chat_id, result2, parse_mode='Markdown')
+            continue_as = browser.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue as')]")
+            if continue_as:
+                result3 = "🔍 **Элементы с 'Continue as':**\n"
+                for i, elem in enumerate(continue_as[:5]):
+                    try:
+                        text = elem.text.strip()
+                        tag = elem.tag_name
+                        if text:
+                            result3 += f"{i+1}. [{tag}] '{text[:40]}'\n"
+                    except:
+                        continue
+                bot.send_message(chat_id, result3, parse_mode='Markdown')
+            else:
+                bot.send_message(chat_id, "❌ 'Continue as' не найдено")
+        except:
+            pass
+        
+        # Ищем по email
+        try:
+            email_elements = browser.driver.find_elements(By.XPATH, f"//*[contains(text(), '{browser.email}')]")
+            if email_elements:
+                bot.send_message(chat_id, f"✅ Найдено {len(email_elements)} элементов с email: {browser.email}")
+            else:
+                bot.send_message(chat_id, f"❌ Email не найден: {browser.email}")
         except:
             pass
         
