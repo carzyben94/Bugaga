@@ -47,6 +47,7 @@ def make_screenshot_with_cursor(browser, user_id, filename="screenshot.png"):
         
         size = 20
         
+        # Красный крестик
         draw.line((cursor_x - size, cursor_y, cursor_x + size, cursor_y), fill="red", width=3)
         draw.line((cursor_x, cursor_y - size, cursor_x, cursor_y + size), fill="red", width=3)
         draw.ellipse((cursor_x - 5, cursor_y - 5, cursor_x + 5, cursor_y + 5), fill="red")
@@ -68,7 +69,7 @@ def get_joystick_keyboard():
     )
     keyboard.row(
         InlineKeyboardButton("⬅️", callback_data="move_left"),
-        InlineKeyboardButton("🖱️ КЛИК", callback_data="click_cursor"),
+        InlineKeyboardButton("🧠 КЛИК", callback_data="click_cursor"),
         InlineKeyboardButton("➡️", callback_data="move_right")
     )
     keyboard.row(
@@ -106,8 +107,9 @@ def click_at_cursor(user_id):
     y = user_cursor[user_id]['y']
     
     try:
-        success = browser.click_by_coordinates(x, y)
-        return success, f"✅ Клик по ({x}, {y})" if success else f"❌ Ошибка клика по ({x}, {y})"
+        # Используем умный клик
+        success = browser.smart_click_at_coordinates(x, y)
+        return success, f"✅ Умный клик по ({x}, {y})" if success else f"❌ Клик не сработал"
     except Exception as e:
         return False, f"❌ Ошибка: {e}"
 
@@ -133,7 +135,7 @@ def handle_joystick(message):
                     photo,
                     caption="🎮 **Джойстик управления**\n\n"
                            "⬆️ ⬇️ ⬅️ ➡️ — двигать курсор\n"
-                           "🖱️ КЛИК — нажать (скриншот автоматически)\n"
+                           "🧠 КЛИК — умный клик (пробует 5 способов)\n"
                            "🔄 — обновить экран\n"
                            "📍 — позиция курсора\n"
                            "📸 — скриншот\n"
@@ -217,7 +219,7 @@ def handle_joystick_callback(call):
                 bot.send_photo(
                     chat_id, 
                     photo, 
-                    caption=f"🖱️ Клик по ({x}, {y})\n{msg}",
+                    caption=f"🧠 Умный клик по ({x}, {y})\n{msg}",
                     reply_markup=get_joystick_keyboard()
                 )
             os.remove(screenshot)
@@ -333,7 +335,7 @@ def send_welcome(message):
         "/check - Проверить установку\n"
         "/login логин пароль - Обычный вход\n"
         "/logingoogle email пароль - Вход через Google\n"
-        "/joystick - Управление курсором (с видимым курсором)\n"
+        "/joystick - Управление курсором (умный клик)\n"
         "/screen_now - Скриншот с курсором\n"
         "/stop_x - Остановить джойстик\n"
         "/log - Показать логи\n"
@@ -609,4 +611,4 @@ if __name__ == '__main__':
     try:
         bot.polling(none_stop=True, interval=1)
     except Exception as e:
-        print(f"❌ Ошибка polling: {e}") 
+        print(f"❌ Ошибка polling: {e}")
