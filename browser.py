@@ -164,10 +164,94 @@ class AntiDetectBrowser:
             self.log(f"❌ Ошибка клика: {e}", "ERROR")
             return False
     
+    # ===== НОВЫЙ МЕТОД ВВОДА ЧЕРЕЗ ACTIONCHAINS =====
+    def type_with_actions(self, element, text):
+        """Ввод текста через ActionChains (надежно)"""
+        try:
+            self.log(f"⌨️ Ввод через ActionChains", "DEBUG")
+            
+            # Кликаем по элементу
+            actions = ActionChains(self.driver)
+            actions.move_to_element(element)
+            actions.click()
+            actions.perform()
+            time.sleep(0.5)
+            
+            # Очищаем (Ctrl+A + Delete)
+            actions = ActionChains(self.driver)
+            actions.key_down(Keys.CONTROL)
+            actions.send_keys('a')
+            actions.key_up(Keys.CONTROL)
+            actions.send_keys(Keys.DELETE)
+            actions.perform()
+            time.sleep(0.5)
+            
+            # Вводим текст посимвольно
+            for char in text:
+                actions = ActionChains(self.driver)
+                actions.send_keys(char)
+                actions.perform()
+                time.sleep(random.uniform(0.05, 0.15))
+            
+            self.log("✅ Текст введен через ActionChains", "SUCCESS")
+            return True
+            
+        except Exception as e:
+            self.log(f"❌ Ошибка ввода через ActionChains: {e}", "ERROR")
+            return False
+    
+    # ===== НОВЫЙ МЕТОД ПОИСКА ПОЛЯ ПАРОЛЯ =====
+    def safe_find_password_field(self, timeout=30):
+        """Найти поле пароля с большим терпением"""
+        selectors = [
+            (By.NAME, "password"),
+            (By.ID, "password"),
+            (By.XPATH, "//input[@type='password']"),
+            (By.XPATH, "//input[@name='password']"),
+            (By.XPATH, "//div[@class='pwd']//input"),
+            (By.CSS_SELECTOR, "input[type='password']"),
+            (By.XPATH, "//div[@data-brand='accounts.google.com']//input[@type='password']"),
+            (By.CSS_SELECTOR, "div[class*='password'] input"),
+            (By.XPATH, "//input[@autocomplete='current-password']"),
+        ]
+        
+        for attempt in range(5):
+            self.log(f"🔍 Попытка {attempt+1} поиска поля пароля...", "DEBUG")
+            
+            for by, selector in selectors:
+                try:
+                    self.log(f"   Пробую: {by}={selector}", "DEBUG")
+                    element = WebDriverWait(self.driver, 5).until(
+                        EC.presence_of_element_located((by, selector))
+                    )
+                    if element and element.is_displayed():
+                        # Ждем кликабельности
+                        try:
+                            WebDriverWait(self.driver, 3).until(
+                                EC.element_to_be_clickable((by, selector))
+                            )
+                            self.log(f"✅ Поле пароля найдено: {selector}", "SUCCESS")
+                            return element
+                        except:
+                            self.log(f"   Элемент есть, но не кликабелен", "DEBUG")
+                            continue
+                except Exception as e:
+                    continue
+            
+            self.random_delay(2, 3)
+            
+            if attempt == 2:
+                self.take_step_screenshot("password_field_search")
+        
+        self.log("❌ Поле пароля не найдено", "ERROR")
+        return None
+    
+    # ===== СТАРЫЙ МЕТОД human_type (оставляем для совместимости) =====
     def human_type(self, element, text):
         try:
-            # Ждем чтобы элемент стал активным
-            self.log("⏳ Подготовка к вводу...", "DEBUG")
+            self.log(f"⌨️ Ввод текста: {text[:3]}***{text[-3:] if len(text) > 6 else ''}", "DEBUG")
+            
+            # Ждем 2 секунды перед вводом
             time.sleep(2)
             
             # Пробуем кликнуть несколько раз
@@ -176,18 +260,13 @@ class AntiDetectBrowser:
                     element.click()
                     time.sleep(0.5)
                     if element.is_enabled():
-                        self.log(f"✅ Элемент активен (попытка {attempt+1})", "DEBUG")
                         break
                 except:
                     time.sleep(0.5)
-                    continue
             
-            # Очищаем поле
             element.clear()
             time.sleep(0.5)
             
-            # Вводим медленно
-            self.log("⌨️ Ввод текста...", "DEBUG")
             for char in text:
                 element.send_keys(char)
                 time.sleep(random.uniform(0.05, 0.15))
@@ -282,72 +361,43 @@ class AntiDetectBrowser:
             self.log("✅ Продолжаем...", "INFO")
             return True
         
-        # === ВВОД ПАРОЛЯ ===
+        # === ВВОД ПАРОЛЯ (НОВЫЙ МЕТОД) ===
         self.log("🔍 Поиск поля пароля...", "INFO")
         
-        password_field = None
-        selectors = [
-            (By.NAME, "password"),
-            (By.ID, "password"),
-            (By.XPATH, "//input[@type='password']"),
-            (By.XPATH, "//input[@name='password']"),
-            (By.XPATH, "//input[@autocomplete='current-password']"),
-            (By.CSS_SELECTOR, "input[type='password']"),
-        ]
+        # Ждем появления поля пароля
+        self.log("⏳ Ожидание появления поля пароля...", "INFO")
+        self.random_delay(2, 4)
         
-        for by, selector in selectors:
-            try:
-                element = self.driver.find_element(by, selector)
-                if element and element.is_displayed():
-                    password_field = element
-                    self.log(f"✅ Поле пароля найдено: {selector}", "SUCCESS")
-                    break
-            except:
-                continue
+        # Ищем поле пароля через safe_find_password_field
+        password_field = self.safe_find_password_field()
         
         if password_field:
-            # === ОЖИДАНИЕ АКТИВАЦИИ ПОЛЯ ===
-            self.log("⏳ Ожидание активации поля пароля...", "INFO")
+            self.log("✅ Поле пароля найдено, пробую ввести...", "SUCCESS")
             
-            for attempt in range(15):
+            # Пробуем ввести через ActionChains
+            success = self.type_with_actions(password_field, password)
+            
+            if success:
+                self.take_step_screenshot("google_password_entered")
+                self.log("✅ Пароль введен через ActionChains", "SUCCESS")
+            else:
+                # Fallback: обычный ввод
                 try:
-                    if password_field.is_enabled():
-                        self.log("✅ Поле активно", "SUCCESS")
-                        break
-                    time.sleep(1)
-                    self.log(f"⏳ Ожидание... {attempt+1}/15", "DEBUG")
-                except:
-                    time.sleep(1)
-            
-            # === ВВОД ПАРОЛЯ ===
-            self.log("🔑 Ввод пароля...", "INFO")
-            
-            try:
-                self.human_type(password_field, password)
-                self.take_step_screenshot("google_password")
-                self.log("✅ Пароль введен", "SUCCESS")
-            except Exception as e:
-                self.log(f"❌ Ошибка ввода: {e}", "ERROR")
-                self.take_step_screenshot("google_password_error")
-                return False
+                    self.log("🔄 Пробую обычный ввод...", "DEBUG")
+                    password_field.click()
+                    self.random_delay(0.5, 1)
+                    password_field.clear()
+                    password_field.send_keys(password)
+                    self.log("✅ Пароль введен (обычный способ)", "SUCCESS")
+                    self.take_step_screenshot("google_password_entered")
+                except Exception as e:
+                    self.log(f"❌ Ошибка ввода пароля: {e}", "ERROR")
+                    self.take_step_screenshot("google_password_error")
+                    return False
         else:
-            self.log("⚠️ Поле пароля не найдено", "WARNING")
+            self.log("❌ Поле пароля не найдено", "ERROR")
             self.take_step_screenshot("google_password_not_found")
-            
-            # Если поле не найдено — ждем подтверждение
-            self.log("📱 Возможно, требуется подтверждение на телефоне", "INFO")
-            self.log("⏳ Ожидание... 60 секунд", "INFO")
-            
-            for i in range(12):
-                time.sleep(5)
-                new_url = self.driver.current_url
-                if "challenge" not in new_url and "verify" not in new_url.lower():
-                    self.log("✅ Подтверждение пройдено!", "SUCCESS")
-                    break
-                self.log(f"⏳ Ожидание... {i+1}/12", "INFO")
-            
-            self.log("✅ Продолжаем...", "INFO")
-            return True
+            return False
         
         self.random_delay(1, 2)
         
