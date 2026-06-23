@@ -46,7 +46,7 @@ def keep_alive():
             pass
         time.sleep(1200)
 
-# ============ БРАУЗЕР ============
+# ============ БРАУЗЕР С ПОЛНОЙ МАСКИРОВКОЙ ============
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 VIEWPORT = {"width": 1366, "height": 768}
 LOCALE = "ru-RU"
@@ -74,6 +74,17 @@ async def get_browser_page():
             '--disable-background-timer-throttling',
             '--disable-backgrounding-occluded-windows',
             '--disable-renderer-backgrounding',
+            '--disable-features=BlockInsecurePrivateNetworkRequests',
+            '--disable-features=OutOfBlinkCors',
+            '--disable-background-networking',
+            '--disable-sync',
+            '--disable-default-apps',
+            '--disable-extensions',
+            '--disable-component-update',
+            '--disable-domain-reliability',
+            '--disable-client-side-phishing-detection',
+            '--disable-crash-reporter',
+            '--disable-breakpad',
         ]
     )
     
@@ -84,8 +95,12 @@ async def get_browser_page():
         timezone_id=TIMEZONE,
         java_script_enabled=True,
         bypass_csp=True,
+        device_scale_factor=1,
+        is_mobile=False,
+        has_touch=False,
         extra_http_headers={
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
             "Connection": "keep-alive",
             "Upgrade-Insecure-Requests": "1",
@@ -93,28 +108,119 @@ async def get_browser_page():
             "Sec-Fetch-Mode": "navigate",
             "Sec-Fetch-Site": "none",
             "Sec-Fetch-User": "?1",
-            "Cache-Control": "max-age=0"
+            "Cache-Control": "max-age=0",
+            "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
         }
     )
+    
+    # Добавляем куки
+    await context.add_cookies([
+        {
+            "name": "_ga",
+            "value": "GA1.2.1234567890.1234567890",
+            "domain": ".x.com",
+            "path": "/"
+        }
+    ])
     
     await context.set_geolocation({"latitude": 55.7558, "longitude": 37.6173})
     await context.grant_permissions(["geolocation"])
     
     page = await context.new_page()
     
+    # ============ ПОЛНАЯ МАСКИРОВКА ============
     await page.add_init_script("""
+        // Маскируем webdriver
         Object.defineProperty(navigator, 'webdriver', {
             get: () => undefined
         });
+        
+        // Маскируем plugins
         Object.defineProperty(navigator, 'plugins', {
-            get: () => [1, 2, 3, 4, 5]
+            get: () => {
+                const plugins = [
+                    { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+                    { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+                    { name: 'Native Client', filename: 'internal-nacl-plugin' }
+                ];
+                plugins.item = (i) => plugins[i];
+                plugins.namedItem = (name) => plugins.find(p => p.name === name);
+                return plugins;
+            }
         });
+        
+        // Маскируем languages
         Object.defineProperty(navigator, 'languages', {
             get: () => ['ru-RU', 'ru', 'en-US', 'en']
         });
+        
+        // Маскируем platform
+        Object.defineProperty(navigator, 'platform', {
+            get: () => 'Win32'
+        });
+        
+        // Маскируем hardwareConcurrency
+        Object.defineProperty(navigator, 'hardwareConcurrency', {
+            get: () => 8
+        });
+        
+        // Маскируем deviceMemory
+        Object.defineProperty(navigator, 'deviceMemory', {
+            get: () => 8
+        });
+        
+        // Добавляем chrome
         window.chrome = {
-            runtime: {}
+            runtime: {},
+            loadTimes: function() {},
+            csi: function() {},
+            app: {
+                isInstalled: false,
+                InstallState: {
+                    DISABLED: 'disabled',
+                    INSTALLED: 'installed',
+                    NOT_INSTALLED: 'not_installed'
+                },
+                RunningState: {
+                    CANNOT_RUN: 'cannot_run',
+                    READY_TO_RUN: 'ready_to_run',
+                    RUNNING: 'running'
+                }
+            }
         };
+        
+        // Удаляем webdriver
+        delete Object.getPrototypeOf(navigator).webdriver;
+        
+        // Маскируем WebGL
+        const getParameter = WebGLRenderingContext.prototype.getParameter;
+        WebGLRenderingContext.prototype.getParameter = function(parameter) {
+            if (parameter === 37445) {
+                return 'Intel Inc.';
+            }
+            if (parameter === 37446) {
+                return 'Intel Iris OpenGL Engine';
+            }
+            return getParameter(parameter);
+        };
+        
+        // Маскируем screen
+        Object.defineProperty(screen, 'availWidth', {
+            get: () => 1920
+        });
+        Object.defineProperty(screen, 'availHeight', {
+            get: () => 1080
+        });
+        Object.defineProperty(screen, 'width', {
+            get: () => 1920
+        });
+        Object.defineProperty(screen, 'height', {
+            get: () => 1080
+        });
+        
+        console.log('✅ Полная маскировка браузера включена');
     """)
     
     return page, browser, context
@@ -145,11 +251,9 @@ async def close_user_browser(user_id: int):
             del cursor_positions[user_id]
 
 async def goto_url(page, url: str):
-    """Универсальный переход по URL - используем domcontentloaded"""
     try:
-        # Используем domcontentloaded - работает для всех сайтов
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        print(f"✅ {url} загружен (domcontentloaded)")
+        print(f"✅ {url} загружен")
         return True
     except Exception as e:
         print(f"❌ Ошибка загрузки {url}: {e}")
@@ -194,37 +298,45 @@ async def smart_click(page, x: int, y: int):
         # 1. Ищем кнопку "Continue with Google" во всех iframe
         for frame in page.frames:
             try:
-                # Пробуем найти по тексту
-                elements = await frame.locator('text="Continue with Google"').all()
-                for el in elements:
-                    if await el.is_visible():
-                        await el.click()
-                        print("✅ Клик по 'Continue with Google' в iframe")
-                        return True
+                selectors = [
+                    'text="Continue with Google"',
+                    'text="Continue with Google"',
+                    '[aria-label*="Google"]',
+                    'div:has-text("Continue with Google")',
+                    'button:has-text("Google")',
+                    'span:has-text("Google")'
+                ]
+                
+                for selector in selectors:
+                    try:
+                        elements = await frame.locator(selector).all()
+                        for el in elements:
+                            if await el.is_visible():
+                                await el.click()
+                                print(f"✅ Клик по '{selector}' в iframe")
+                                return True
+                    except:
+                        continue
             except:
-                pass
-            
-            try:
-                # Пробуем найти по aria-label
-                elements = await frame.locator('[aria-label*="Google"]').all()
-                for el in elements:
-                    if await el.is_visible():
-                        await el.click()
-                        print("✅ Клик по Google (aria-label) в iframe")
-                        return True
-            except:
-                pass
+                continue
         
-        # 2. Ищем на самой странице (не в iframe)
-        try:
-            elements = await page.locator('text="Continue with Google"').all()
-            for el in elements:
-                if await el.is_visible():
-                    await el.click()
-                    print("✅ Клик по 'Continue with Google' на странице")
-                    return True
-        except:
-            pass
+        # 2. Ищем на самой странице
+        selectors = [
+            'text="Continue with Google"',
+            'button:has-text("Google")',
+            'div:has-text("Continue with Google")'
+        ]
+        
+        for selector in selectors:
+            try:
+                elements = await page.locator(selector).all()
+                for el in elements:
+                    if await el.is_visible():
+                        await el.click()
+                        print(f"✅ Клик по '{selector}' на странице")
+                        return True
+            except:
+                continue
         
         # 3. Если ничего не нашли - клик по координатам
         await page.mouse.click(x, y, button="left")
@@ -233,7 +345,6 @@ async def smart_click(page, x: int, y: int):
         
     except Exception as e:
         print(f"❌ Ошибка клика: {e}")
-        # Пробуем кликнуть по координатам даже если была ошибка
         try:
             await page.mouse.click(x, y, button="left")
             return True
@@ -294,8 +405,6 @@ def get_joystick_keyboard(mode="normal"):
     return InlineKeyboardMarkup(keyboard)
 
 async def update_joystick_message(query, page, user_id, mode, caption=""):
-    """Обновляет сообщение джойстика с новым скриншотом"""
-    
     cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
     current_x = cursor["x"]
     current_y = cursor["y"]
@@ -340,7 +449,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "🎮 /joystick - Открыть джойстик\n"
         "🔗 /go <url> - Перейти на сайт\n"
         "📸 /screenshot - Сделать скриншот\n"
-        "❌ /close - Закрыть браузер"
+        "❌ /close - Закрыть браузер\n"
+        "🔐 /twitter - Войти в Twitter/X"
     )
 
 async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -415,6 +525,71 @@ async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     user_id = update.effective_user.id
     await close_user_browser(user_id)
     await update.message.reply_text("❌ Браузер закрыт")
+
+# ============ ВХОД В TWITTER/X ============
+async def twitter_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    
+    if user_id not in user_sessions:
+        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
+        return
+    
+    session = user_sessions[user_id]
+    page = session["page"]
+    
+    try:
+        await update.message.reply_text("🔐 Открываю страницу входа в Twitter/X...")
+        
+        await goto_url(page, "https://x.com/login")
+        await page.wait_for_timeout(3000)
+        
+        await update.message.reply_text("🔍 Ищу кнопку 'Continue with Google'...")
+        
+        found = False
+        
+        # Ищем в iframe
+        for frame in page.frames:
+            try:
+                elements = await frame.locator('text="Continue with Google"').all()
+                for el in elements:
+                    if await el.is_visible():
+                        await el.click()
+                        found = True
+                        await update.message.reply_text("✅ Нажата кнопка в iframe")
+                        break
+                if found:
+                    break
+            except:
+                continue
+        
+        if not found:
+            # Ищем на странице
+            try:
+                elements = await page.locator('text="Continue with Google"').all()
+                for el in elements:
+                    if await el.is_visible():
+                        await el.click()
+                        found = True
+                        await update.message.reply_text("✅ Нажата кнопка на странице")
+                        break
+            except:
+                pass
+        
+        if found:
+            await page.wait_for_timeout(3000)
+            
+            cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
+            screenshot = await screenshot_with_cursor(page, cursor["x"], cursor["y"])
+            
+            await update.message.reply_photo(
+                photo=screenshot,
+                caption="✅ Открылось окно входа в Google"
+            )
+        else:
+            await update.message.reply_text("❌ Кнопка 'Continue with Google' не найдена")
+            
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
 
 # ============ ДЖОЙСТИК КОМАНДА ============
 async def joystick_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -507,7 +682,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # ============ ЛКМ ============
     elif data == "click_left":
         try:
-            # Используем умный клик (работает с iframe)
             await smart_click(page, current_x, current_y)
             await page.wait_for_timeout(500)
             
@@ -684,6 +858,7 @@ def main():
     bot_app.add_handler(CommandHandler("screenshot", screenshot_command))
     bot_app.add_handler(CommandHandler("close", close_command))
     bot_app.add_handler(CommandHandler("joystick", joystick_command))
+    bot_app.add_handler(CommandHandler("twitter", twitter_command))
     
     bot_app.add_handler(CallbackQueryHandler(joystick_callback))
     
