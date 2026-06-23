@@ -23,7 +23,8 @@ JOYSTICK_FAST_STEP = 150
 # Хранилища
 user_sessions = {}
 joystick_states = {}
-joystick_messages = {}  # Храним ID сообщений с джойстиком
+joystick_messages = {}
+cursor_positions = {}  # Храним реальные координаты курсора
 
 # ============ FLASK ============
 app_flask = Flask(__name__)
@@ -128,6 +129,8 @@ async def get_user_browser(user_id: int):
             "current_url": "about:blank"
         }
         await page.goto("about:blank")
+        # Инициализируем курсор в центре
+        cursor_positions[user_id] = {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2}
         return user_sessions[user_id]
     return user_sessions[user_id]
 
@@ -139,6 +142,8 @@ async def close_user_browser(user_id: int):
             del joystick_messages[user_id]
         if user_id in joystick_states:
             del joystick_states[user_id]
+        if user_id in cursor_positions:
+            del cursor_positions[user_id]
 
 async def screenshot_with_cursor(page, x: int, y: int) -> bytes:
     try:
@@ -228,19 +233,10 @@ def get_joystick_keyboard(mode="normal"):
 async def update_joystick_message(query, page, user_id, mode, caption=""):
     """Обновляет сообщение джойстика с новым скриншотом"""
     
-    # Получаем координаты
-    try:
-        coords = await page.evaluate("""
-            ({
-                x: window.scrollX + window.innerWidth / 2,
-                y: window.scrollY + window.innerHeight / 2
-            })
-        """)
-        current_x = int(coords["x"])
-        current_y = int(coords["y"])
-    except:
-        current_x = 0
-        current_y = 0
+    # Получаем реальные координаты курсора из хранилища
+    cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
+    current_x = cursor["x"]
+    current_y = cursor["y"]
     
     # Определяем шаг
     if mode == "fast":
@@ -331,7 +327,10 @@ async def go_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await page.goto(url, wait_until="networkidle", timeout=30000)
         session["current_url"] = url
         
-        screenshot = await screenshot_with_cursor(page, 100, 100)
+        # Сбрасываем курсор в центр после перехода
+        cursor_positions[user_id] = {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2}
+        
+        screenshot = await screenshot_with_cursor(page, VIEWPORT["width"] // 2, VIEWPORT["height"] // 2)
         await update.message.reply_photo(
             photo=screenshot,
             caption=f"✅ {url}"
@@ -349,11 +348,12 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         session = user_sessions[user_id]
         page = session["page"]
+        cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
         
-        screenshot = await page.screenshot(full_page=True, type="png")
+        screenshot = await screenshot_with_cursor(page, cursor["x"], cursor["y"])
         await update.message.reply_photo(
             photo=screenshot,
-            caption="📸 Скриншот"
+            caption=f"📸 Скриншот ({cursor['x']}, {cursor['y']})"
         )
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
@@ -381,18 +381,9 @@ async def joystick_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     session = user_sessions[user_id]
     page = session["page"]
     
-    try:
-        coords = await page.evaluate("""
-            ({
-                x: window.scrollX + window.innerWidth / 2,
-                y: window.scrollY + window.innerHeight / 2
-            })
-        """)
-        current_x = int(coords["x"])
-        current_y = int(coords["y"])
-    except:
-        current_x = 0
-        current_y = 0
+    cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
+    current_x = cursor["x"]
+    current_y = cursor["y"]
     
     screenshot = await screenshot_with_cursor(page, current_x, current_y)
     
@@ -408,7 +399,6 @@ async def joystick_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         reply_markup=get_joystick_keyboard("normal")
     )
     
-    # Сохраняем ID сообщения
     joystick_messages[user_id] = msg.message_id
 
 # ============ ОБРАБОТЧИК КНОПОК ДЖОЙСТИКА ============
@@ -432,19 +422,10 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     page = session["page"]
     mode = joystick_states.get(user_id, {}).get("mode", "normal")
     
-    # Получаем текущие координаты
-    try:
-        coords = await page.evaluate("""
-            ({
-                x: window.scrollX + window.innerWidth / 2,
-                y: window.scrollY + window.innerHeight / 2
-            })
-        """)
-        current_x = int(coords["x"])
-        current_y = int(coords["y"])
-    except:
-        current_x = 0
-        current_y = 0
+    # Получаем реальные координаты курсора из хранилища
+    cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
+    current_x = cursor["x"]
+    current_y = cursor["y"]
     
     # ============ ДВИЖЕНИЕ ============
     if data.startswith("move_"):
@@ -456,12 +437,20 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             new_x = current_x + dx
             new_y = current_y + dy
             
+            # Ограничиваем координаты
+            new_x = max(0, min(VIEWPORT["width"], new_x))
+            new_y = max(0, min(VIEWPORT["height"], new_y))
+            
+            # Обновляем позицию курсора в хранилище
+            cursor_positions[user_id] = {"x": new_x, "y": new_y}
+            
+            # Двигаем курсор в браузере
             await page.mouse.move(new_x, new_y, steps=5)
             await page.wait_for_timeout(100)
             
             await update_joystick_message(
                 query, page, user_id, mode,
-                f"🖱️ Движение: ({dx}, {dy})"
+                f"🖱️ Движение: ({dx}, {dy}) → ({new_x}, {new_y})"
             )
             
         except Exception as e:
@@ -470,9 +459,10 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # ============ КЛИК ПО ЦЕНТРУ ============
     elif data == "click_center":
         try:
-            viewport = page.viewport_size
-            x = viewport['width'] // 2
-            y = viewport['height'] // 2
+            x = VIEWPORT["width"] // 2
+            y = VIEWPORT["height"] // 2
+            
+            cursor_positions[user_id] = {"x": x, "y": y}
             
             await page.mouse.move(x, y, steps=3)
             await page.wait_for_timeout(100)
@@ -641,7 +631,6 @@ def main():
     
     bot_app = Application.builder().token(BOT_TOKEN).build()
     
-    # Команды
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CommandHandler("browser", browser_command))
     bot_app.add_handler(CommandHandler("go", go_command))
@@ -649,7 +638,6 @@ def main():
     bot_app.add_handler(CommandHandler("close", close_command))
     bot_app.add_handler(CommandHandler("joystick", joystick_command))
     
-    # Обработчик кнопок
     bot_app.add_handler(CallbackQueryHandler(joystick_callback))
     
     print("✅ Бот запущен")
