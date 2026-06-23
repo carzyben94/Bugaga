@@ -6,6 +6,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
+from selenium_stealth import stealth
 import os
 import time
 import random
@@ -111,28 +112,18 @@ class AntiDetectBrowser:
         options.add_experimental_option('excludeSwitches', ['enable-automation'])
         options.add_experimental_option('useAutomationExtension', False)
         
-        # === ПОЛНАЯ ЗАГРУЗКА ===
-        options.page_load_strategy = 'normal'
-        
         # === ОПТИМИЗАЦИЯ ===
         options.add_argument('--disable-web-security')
         options.add_argument('--disable-features=VizDisplayCompositor')
         options.add_argument('--disable-accelerated-2d-canvas')
         options.add_argument('--disable-accelerated-javascript-decoding')
-        options.add_argument('--disable-accelerated-mjpeg-decode')
-        options.add_argument('--disable-accelerated-video-decode')
         options.add_argument('--disable-popup-blocking')
         options.add_argument('--disable-notifications')
         options.add_argument('--disable-infobars')
-        options.add_argument('--disable-session-crashed-bubble')
         options.add_argument('--disable-extensions')
         options.add_argument('--disable-plugins')
-        
-        # === ТАЙМАУТЫ ===
         options.add_argument('--page-load-timeout=60')
         options.add_argument('--script-timeout=30')
-        
-        # === ПАМЯТЬ ===
         options.add_argument('--memory-pressure-off')
         options.add_argument('--max_old_space_size=512')
         options.add_argument('--js-flags=--max-old-space-size=512')
@@ -170,14 +161,46 @@ class AntiDetectBrowser:
         self.driver.set_page_load_timeout(60)
         self.driver.implicitly_wait(20)
         
+        # === ПРИМЕНЯЕМ SELENIUM-STEALTH ===
+        try:
+            stealth(
+                self.driver,
+                languages=["en-US", "en", "ru"],
+                vendor="Google Inc.",
+                platform="Win32",
+                webgl_vendor="Intel Inc.",
+                renderer="Intel Iris OpenGL Engine",
+                fix_hairline=True,
+                run_on_insecure_origins=True,
+            )
+            self.log("✅ Stealth применен", "SUCCESS")
+        except Exception as e:
+            self.log(f"⚠️ Ошибка stealth: {e}", "WARNING")
+        
+        # Дополнительное скрытие
         self.driver.execute_script("""
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined
             });
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3, 4, 5]
+            });
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['en-US', 'en', 'ru']
+            });
+            Object.defineProperty(navigator, 'platform', {
+                get: () => 'Win32'
+            });
+            window.chrome = {
+                runtime: {},
+                loadTimes: function() {},
+                csi: function() {},
+                app: {}
+            };
         """)
         
         self.wait = WebDriverWait(self.driver, 10)
-        self.log("✅ Браузер готов", "SUCCESS")
+        self.log("✅ Браузер готов (с анти-детектом)", "SUCCESS")
         return self.driver
     
     def random_delay(self, min_sec=0.3, max_sec=1.0):
@@ -324,29 +347,111 @@ class AntiDetectBrowser:
             self.log(f"⚠️ Ошибка прокрутки: {e}", "WARNING")
             return False
     
-    def find_all_elements_js(self):
+    def smart_find_and_click(self):
+        self.log("🧠 Умный поиск кнопки...", "INFO")
+        
+        # Способ 1: По тексту
+        self.log("   🔍 Способ 1: Поиск по тексту 'Continue as'...", "DEBUG")
         try:
-            result = self.driver.execute_script("""
-                var elements = document.querySelectorAll('*');
-                var found = [];
-                for (var i = 0; i < elements.length; i++) {
-                    var text = elements[i].textContent || '';
-                    if (text.trim()) {
-                        found.push({
-                            tag: elements[i].tagName,
-                            text: text.slice(0, 60),
-                            visible: elements[i].offsetParent !== null,
-                            id: elements[i].id || '',
-                            className: elements[i].className || ''
-                        });
-                    }
-                    if (found.length > 30) break;
-                }
-                return found;
-            """)
-            return result
+            elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue as') or contains(text(), 'Continue with')]")
+            for elem in elements:
+                if elem.is_displayed():
+                    text = elem.text.strip()
+                    self.log(f"   ✅ Найдено: '{text[:30]}'", "SUCCESS")
+                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elem)
+                    time.sleep(0.5)
+                    self.driver.execute_script("arguments[0].click();", elem)
+                    self.log("   ✅ Клик по тексту выполнен", "SUCCESS")
+                    return True
         except:
-            return []
+            pass
+        
+        # Способ 2: По email
+        if self.email:
+            self.log(f"   🔍 Способ 2: Поиск по email '{self.email}'...", "DEBUG")
+            try:
+                elements = self.driver.find_elements(By.XPATH, f"//*[contains(text(), '{self.email}')]")
+                for elem in elements:
+                    if elem.is_displayed():
+                        self.log(f"   ✅ Найден email", "SUCCESS")
+                        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elem)
+                        time.sleep(0.5)
+                        self.driver.execute_script("arguments[0].click();", elem)
+                        self.log("   ✅ Клик по email выполнен", "SUCCESS")
+                        return True
+            except:
+                pass
+        
+        # Способ 3: По "Continue"
+        self.log("   🔍 Способ 3: Поиск по 'Continue'...", "DEBUG")
+        try:
+            elements = self.driver.find_elements(By.XPATH, "//*[text()='Continue']")
+            for elem in elements:
+                if elem.is_displayed():
+                    self.log(f"   ✅ Найдено 'Continue'", "SUCCESS")
+                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elem)
+                    time.sleep(0.5)
+                    self.driver.execute_script("arguments[0].click();", elem)
+                    self.log("   ✅ Клик по 'Continue' выполнен", "SUCCESS")
+                    return True
+        except:
+            pass
+        
+        # Способ 4: Координаты
+        self.log("   🔍 Способ 4: Поиск по координатам...", "DEBUG")
+        window_size = self.driver.get_window_size()
+        width = window_size['width']
+        height = window_size['height']
+        
+        coords_to_try = [
+            (width // 2, int(height * 0.35)),
+            (width // 2, int(height * 0.38)),
+            (width // 2, int(height * 0.40)),
+            (width // 2, int(height * 0.42)),
+            (width // 2, int(height * 0.45)),
+        ]
+        
+        for x, y in coords_to_try:
+            try:
+                self.log(f"      Пробую ({x}, {y})...", "DEBUG")
+                result = self.driver.execute_script(f"""
+                    var el = document.elementFromPoint({x}, {y});
+                    if (el && el.textContent.includes('Continue')) {{
+                        el.scrollIntoView({{block: 'center'}});
+                        el.click();
+                        return true;
+                    }}
+                    return false;
+                """)
+                if result:
+                    self.log(f"   ✅ Клик по ({x}, {y}) выполнен", "SUCCESS")
+                    return True
+            except:
+                continue
+        
+        # Способ 5: Все кнопки
+        self.log("   🔍 Способ 5: Поиск всех кнопок...", "DEBUG")
+        try:
+            buttons = self.driver.find_elements(By.TAG_NAME, "button")
+            self.log(f"   📊 Найдено кнопок: {len(buttons)}", "DEBUG")
+            for btn in buttons:
+                try:
+                    text = btn.text.strip()
+                    if text and ("Continue" in text or "Войти" in text or "Sign" in text):
+                        if btn.is_displayed():
+                            self.log(f"   ✅ Найдена кнопка: '{text[:30]}'", "SUCCESS")
+                            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
+                            time.sleep(0.5)
+                            self.driver.execute_script("arguments[0].click();", btn)
+                            self.log("   ✅ Клик по кнопке выполнен", "SUCCESS")
+                            return True
+                except:
+                    continue
+        except:
+            pass
+        
+        self.log("❌ Не удалось найти кнопку", "ERROR")
+        return False
     
     def force_click(self, x, y):
         self.log(f"💪 Принудительный клик по ({x}, {y})", "INFO")
@@ -368,29 +473,6 @@ class AntiDetectBrowser:
         """)
         if result:
             self.log("✅ Клик через JS выполнен", "SUCCESS")
-            return True
-        
-        result = self.driver.execute_script(f"""
-            var el = document.elementFromPoint({x}, {y});
-            if (el) {{
-                var rect = el.getBoundingClientRect();
-                var cx = rect.left + rect.width / 2;
-                var cy = rect.top + rect.height / 2;
-                
-                var event = new MouseEvent('click', {{
-                    clientX: cx,
-                    clientY: cy,
-                    bubbles: true,
-                    cancelable: true,
-                    view: window
-                }});
-                el.dispatchEvent(event);
-                return true;
-            }}
-            return false;
-        """)
-        if result:
-            self.log("✅ Клик через MouseEvent выполнен", "SUCCESS")
             return True
         
         self.log("❌ Клик не сработал", "ERROR")
@@ -548,17 +630,12 @@ class AntiDetectBrowser:
             self.driver.get("https://x.com")
             self.log("✅ X.com открыт", "SUCCESS")
             
-            # 1. Ожидание загрузки
+            # Ждем загрузки
             self.wait_for_page_load(timeout=60)
             time.sleep(3)
-            
-            # 2. Ожидание React
             self.wait_for_react(timeout=30)
             time.sleep(2)
-            
-            # 3. Прокрутка для загрузки элементов
             self.scroll_to_load()
-            
             self.take_step_screenshot("xcom_loaded")
             
             current_url = self.driver.current_url
@@ -568,9 +645,23 @@ class AntiDetectBrowser:
                 self.log("🎉 Уже на главной", "SUCCESS")
                 return True
             
-            self.log("🔄 Ожидание действий через джойстик...", "INFO")
-            self.take_step_screenshot("xcom_waiting_joystick")
+            # === УМНЫЙ ПОИСК ===
+            result = self.smart_find_and_click()
             
+            if result:
+                self.log("✅ Кнопка найдена и нажата!", "SUCCESS")
+                time.sleep(3)
+                self.take_step_screenshot("xcom_clicked")
+                
+                current_url = self.driver.current_url
+                if "home" in current_url or "x.com/home" in current_url:
+                    self.log("🎉 ВХОД ВЫПОЛНЕН!", "SUCCESS")
+                    return True
+            else:
+                self.log("⚠️ Используйте /joystick для ручного управления", "WARNING")
+                self.take_step_screenshot("xcom_not_found")
+            
+            self.log("🔄 Используйте /joystick для ручного управления", "INFO")
             return True
             
         except Exception as e:
