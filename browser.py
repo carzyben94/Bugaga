@@ -15,39 +15,110 @@ import zipfile
 import urllib.request
 import sys
 import subprocess
+import json
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def get_chrome_version():
+    """Получает версию Chrome"""
+    try:
+        result = subprocess.run(['/usr/bin/google-chrome', '--version'], 
+                              capture_output=True, text=True)
+        version = result.stdout.strip().split()[-1]
+        logger.info(f"📌 Версия Chrome: {version}")
+        return version
+    except:
+        return None
+
 def get_chromedriver_path():
-    """Скачивание ChromeDriver в /tmp (один раз)"""
+    """Скачивает ChromeDriver под версию Chrome"""
     chrome_driver_dir = "/tmp/chromedriver"
     os.makedirs(chrome_driver_dir, exist_ok=True)
     
     driver_name = "chromedriver.exe" if sys.platform.startswith('win') else "chromedriver"
     driver_path = os.path.join(chrome_driver_dir, driver_name)
     
-    if os.path.exists(driver_path):
-        logger.info(f"✅ ChromeDriver уже есть: {driver_path}")
-        os.chmod(driver_path, 0o755)
-        return driver_path
+    # Получаем версию Chrome
+    chrome_version = get_chrome_version()
+    if not chrome_version:
+        chrome_version = "149.0.7827.155"  # fallback
     
-    logger.info("📦 Скачивание ChromeDriver...")
+    # Берем мажорную версию (149)
+    major_version = chrome_version.split('.')[0]
+    logger.info(f"📌 Мажорная версия Chrome: {major_version}")
     
-    url = "https://storage.googleapis.com/chrome-for-testing-public/120.0.6099.109/linux64/chromedriver-linux64.zip"
+    # Проверяем, есть ли уже подходящий ChromeDriver
+    version_file = os.path.join(chrome_driver_dir, "version.txt")
+    if os.path.exists(driver_path) and os.path.exists(version_file):
+        with open(version_file, 'r') as f:
+            saved_version = f.read().strip()
+            if saved_version == major_version:
+                logger.info(f"✅ ChromeDriver уже есть для версии {major_version}")
+                os.chmod(driver_path, 0o755)
+                return driver_path
+    
+    logger.info(f"📦 Скачивание ChromeDriver для Chrome {major_version}...")
+    
+    # Формируем URL
+    # Используем Chrome for Testing API
+    try:
+        # Получаем актуальную версию
+        api_url = f"https://googlechromelabs.github.io/chrome-for-testing/latest-versions-per-milestone.json"
+        req = urllib.request.urlopen(api_url)
+        data = json.loads(req.read().decode())
+        
+        if major_version in data['milestones']:
+            version = data['milestones'][major_version]['version']
+            logger.info(f"📌 Найдена версия ChromeDriver: {version}")
+            
+            if sys.platform.startswith('linux'):
+                url = f"https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/{version}/linux64/chromedriver-linux64.zip"
+            elif sys.platform.startswith('win'):
+                url = f"https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/{version}/win64/chromedriver-win64.zip"
+            else:
+                url = f"https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/{version}/mac-arm64/chromedriver-mac-arm64.zip"
+        else:
+            raise Exception(f"Версия {major_version} не найдена")
+            
+    except Exception as e:
+        logger.warning(f"⚠️ Ошибка API: {e}, пробую прямой URL...")
+        # Fallback
+        if sys.platform.startswith('linux'):
+            url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/149.0.7827.155/linux64/chromedriver-linux64.zip"
+        elif sys.platform.startswith('win'):
+            url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/149.0.7827.155/win64/chromedriver-win64.zip"
+        else:
+            url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/149.0.7827.155/mac-arm64/chromedriver-mac-arm64.zip"
+    
     zip_path = os.path.join(chrome_driver_dir, "chromedriver.zip")
     
-    urllib.request.urlretrieve(url, zip_path)
+    try:
+        urllib.request.urlretrieve(url, zip_path)
+        logger.info("✅ Скачано")
+    except Exception as e:
+        logger.error(f"❌ Ошибка скачивания: {e}")
+        raise
     
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        zip_ref.extractall(chrome_driver_dir)
+    # Распаковываем
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(chrome_driver_dir)
+        logger.info("✅ Распаковано")
+    except Exception as e:
+        logger.error(f"❌ Ошибка распаковки: {e}")
+        raise
     
     os.remove(zip_path)
     
+    # Ищем chromedriver
     for root, dirs, files in os.walk(chrome_driver_dir):
         if driver_name in files:
             driver_path = os.path.join(root, driver_name)
             os.chmod(driver_path, 0o755)
+            # Сохраняем версию
+            with open(version_file, 'w') as f:
+                f.write(major_version)
             logger.info(f"✅ ChromeDriver готов: {driver_path}")
             return driver_path
     
@@ -76,14 +147,11 @@ class AntiDetectBrowser:
         logger.info("🔧 Настройка драйвера...")
         
         options = Options()
-        
-        # === ИСПОЛЬЗУЕМ СИСТЕМНЫЙ CHROME ===
         options.binary_location = "/usr/bin/google-chrome"
         
         if self.headless:
             options.add_argument('--headless=new')
         
-        # === ФЛАГИ ДЛЯ STABILITY ===
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
@@ -94,10 +162,9 @@ class AntiDetectBrowser:
         options.add_experimental_option('excludeSwitches', ['enable-automation'])
         options.add_experimental_option('useAutomationExtension', False)
         
-        options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+        options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36')
         options.add_argument('--window-size=1920,1080')
         
-        # === ЗАГРУЗКА CHROMEDRIVER ===
         logger.info("🚀 Загрузка ChromeDriver...")
         driver_path = get_chromedriver_path()
         service = Service(driver_path)
