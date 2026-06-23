@@ -166,6 +166,94 @@ class AntiDetectBrowser:
         time.sleep(random.uniform(min_sec, max_sec))
     
     # ============================================================
+    # === POPUP / NEW WINDOW ОБРАБОТКА ===
+    # ============================================================
+    
+    def wait_for_popup_or_new_window(self, timeout=10):
+        """Ждём появления popup-окна (новой вкладки или окна)"""
+        self.log("⏳ Ожидание popup-окна...", "INFO")
+        start = time.time()
+        original_handles = self.driver.window_handles
+        while time.time() - start < timeout:
+            current_handles = self.driver.window_handles
+            if len(current_handles) > len(original_handles):
+                new_handles = [h for h in current_handles if h not in original_handles]
+                if new_handles:
+                    self.driver.switch_to.window(new_handles[0])
+                    self.log(f"✅ Переключился на popup: {self.driver.title[:40]}", "SUCCESS")
+                    return True
+            time.sleep(0.5)
+        self.log("⚠️ Popup не появился", "WARNING")
+        return False
+
+    def click_in_popup(self, text="Continue as", timeout=15):
+        """Ищет и кликает кнопку в popup/iframe/new window"""
+        self.log("🔍 Поиск кнопки в popup...", "INFO")
+        
+        # 1. Сначала проверим, нет ли popup-окна
+        if self.wait_for_popup_or_new_window(timeout=5):
+            self.wait_for_page_load(timeout=10)
+            time.sleep(2)
+        
+        # 2. Пробуем найти кнопку на текущей странице (может быть уже в popup)
+        element = None
+        selectors = [
+            f"//span[contains(text(), '{text}')]",
+            f"//div[contains(text(), '{text}')]",
+            f"//button[contains(., '{text}')]",
+            "//div[@role='button']",
+            "//button[@type='button']",
+            "//input[@type='submit']",
+            "//div[contains(@class, 'VfPpkd')]",  # Google Material кнопки
+            "//div[contains(@class, 'nsm7Bb')]",  # Google Sign-In кнопки
+        ]
+        
+        for by, selector in [(By.XPATH, s) for s in selectors]:
+            try:
+                elements = self.driver.find_elements(by, selector)
+                for elem in elements:
+                    if elem.is_displayed() and text.lower() in (elem.text or "").lower():
+                        element = elem
+                        self.log(f"🔍 Найдена кнопка: '{elem.text[:50]}'", "SUCCESS")
+                        break
+                if element:
+                    break
+            except:
+                continue
+        
+        if element:
+            # Прокручиваем и кликаем
+            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
+            time.sleep(0.5)
+            
+            # Пробуем ActionChains клик (самый надёжный для Google OAuth)
+            try:
+                actions = ActionChains(self.driver)
+                actions.move_to_element(element)
+                actions.pause(0.3)
+                actions.click()
+                actions.perform()
+                self.log("✅ Клик через ActionChains в popup", "SUCCESS")
+            except Exception as e:
+                self.log(f"⚠️ ActionChains не сработал: {e}, пробую JS", "WARNING")
+                self.driver.execute_script("arguments[0].click();", element)
+                self.log("✅ Клик через JS в popup", "SUCCESS")
+            
+            time.sleep(3)
+            self.take_step_screenshot("popup_clicked")
+            
+            # Возвращаемся на основное окно
+            self.driver.switch_to.window(self.driver.window_handles[0])
+            self.log("↩️ Вернулся на основное окно", "INFO")
+            return True
+        
+        self.log("❌ Кнопка не найдена в popup", "ERROR")
+        # На всякий случай вернёмся на основное окно
+        if len(self.driver.window_handles) > 1:
+            self.driver.switch_to.window(self.driver.window_handles[0])
+        return False
+    
+    # ============================================================
     # === ТЯЖЕЛЫЙ АРСЕНАЛ — ВСЕ МЕТОДЫ КЛИКА ===
     # ============================================================
     
@@ -696,25 +784,67 @@ class AntiDetectBrowser:
                 self.log("🎉 Уже на главной", "SUCCESS")
                 return True
             
-            # === ЗАПУСКАЕМ МЕГА-КЛИК ===
-            result = self.mega_click(x=960, y=380, text="Continue as")
+            # === НОВЫЙ ПОРЯДОК: сначала ищем и кликаем Google-кнопку на X.com ===
+            self.log("🔍 Поиск кнопки 'Sign in with Google'...", "INFO")
             
-            if result:
-                self.log("🎉 МЕГА-КЛИК сработал!", "SUCCESS")
+            google_btn = None
+            google_selectors = [
+                "//span[contains(text(), 'Sign in with Google')]",
+                "//span[contains(text(), 'Continue with Google')]",
+                "//div[contains(text(), 'Google')]",
+                "//button[contains(., 'Google')]",
+                "//div[@role='button'][contains(., 'Google')]",
+                "//a[contains(@href, 'google')]",
+            ]
+            
+            for selector in google_selectors:
+                try:
+                    elements = self.driver.find_elements(By.XPATH, selector)
+                    for elem in elements:
+                        if elem.is_displayed():
+                            google_btn = elem
+                            self.log(f"✅ Найдена Google-кнопка: '{elem.text[:40]}'", "SUCCESS")
+                            break
+                    if google_btn:
+                        break
+                except:
+                    continue
+            
+            if google_btn:
+                self.human_click(google_btn)
+                self.log("🖱️ Клик по Google-кнопке", "SUCCESS")
+                self.take_step_screenshot("clicked_google_btn")
                 time.sleep(3)
-                self.take_step_screenshot("xcom_mega_click_success")
                 
-                current_url = self.driver.current_url
-                if "home" in current_url or "x.com/home" in current_url:
-                    self.log("🎉 ВХОД ВЫПОЛНЕН!", "SUCCESS")
-                    return True
+                # === ТЕПЕРЬ ОБРАБАТЫВАЕМ POPUP ===
+                result = self.click_in_popup(text="Continue as")
+                
+                if result:
+                    self.log("🎉 Авторизация через popup прошла!", "SUCCESS")
+                    time.sleep(5)  # Ждём редиректа
+                    
+                    # Проверяем результат
+                    current_url = self.driver.current_url
+                    self.log(f"📍 URL после авторизации: {current_url}", "INFO")
+                    
+                    if "home" in current_url or "x.com/home" in current_url:
+                        self.log("🎉 ВХОД ВЫПОЛНЕН!", "SUCCESS")
+                        self.take_step_screenshot("xcom_login_success")
+                        return True
+                else:
+                    self.log("⚠️ Popup-клик не сработал, пробую mega_click как fallback", "WARNING")
+                    result = self.mega_click(x=960, y=380, text="Continue as")
             else:
-                self.log("⚠️ МЕГА-КЛИК не сработал", "WARNING")
-                self.take_step_screenshot("xcom_mega_click_failed")
+                self.log("⚠️ Google-кнопка не найдена, пробую mega_click", "WARNING")
+                result = self.mega_click(x=960, y=380, text="Continue as")
+            
+            if not result:
+                self.log("⚠️ Автоклики не сработали", "WARNING")
+                self.take_step_screenshot("xcom_auto_failed")
             
             self.log("🔄 Используйте /joystick для ручного управления", "INFO")
             return True
-            
+                
         except Exception as e:
             self.log(f"❌ ОШИБКА: {e}", "ERROR")
             return False
