@@ -245,19 +245,14 @@ class AntiDetectBrowser:
             return False
     
     def force_click(self, x, y):
-        """ПРИНУДИТЕЛЬНЫЙ КЛИК — игнорирует блокировки"""
         self.log(f"💪 Принудительный клик по ({x}, {y})", "INFO")
         
-        # 1. Клик по странице для фокуса
         try:
             self.driver.execute_script("document.body.click();")
             time.sleep(0.3)
-            self.log("   ✅ Фокус на странице", "DEBUG")
         except:
             pass
         
-        # 2. JavaScript клик
-        self.log("   🔄 Пробую JavaScript клик...", "DEBUG")
         result = self.driver.execute_script(f"""
             var el = document.elementFromPoint({x}, {y});
             if (el) {{
@@ -268,11 +263,9 @@ class AntiDetectBrowser:
             return false;
         """)
         if result:
-            self.log("✅ Принудительный клик выполнен через JS", "SUCCESS")
+            self.log("✅ Клик через JS выполнен", "SUCCESS")
             return True
         
-        # 3. MouseEvent
-        self.log("   🔄 Пробую MouseEvent...", "DEBUG")
         result = self.driver.execute_script(f"""
             var el = document.elementFromPoint({x}, {y});
             if (el) {{
@@ -293,11 +286,9 @@ class AntiDetectBrowser:
             return false;
         """)
         if result:
-            self.log("✅ Принудительный клик выполнен через MouseEvent", "SUCCESS")
+            self.log("✅ Клик через MouseEvent выполнен", "SUCCESS")
             return True
         
-        # 4. Поиск по тексту
-        self.log("   🔄 Ищу кнопку по тексту...", "DEBUG")
         try:
             elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue as') or contains(text(), 'Continue with') or contains(text(), 'Continue')]")
             for elem in elements:
@@ -307,36 +298,67 @@ class AntiDetectBrowser:
                     self.driver.execute_script("arguments[0].click();", elem)
                     self.log(f"✅ Найдена кнопка по тексту: '{elem.text[:30]}'", "SUCCESS")
                     return True
-        except Exception as e:
-            self.log(f"   ❌ Ошибка поиска: {e}", "DEBUG")
-        
-        # 5. Клик по родителю
-        self.log("   🔄 Пробую клик по родителю...", "DEBUG")
-        result = self.driver.execute_script(f"""
-            var el = document.elementFromPoint({x}, {y});
-            if (el && el.parentElement) {{
-                el.parentElement.scrollIntoView({{block: 'center'}});
-                el.parentElement.click();
-                return true;
-            }}
-            return false;
-        """)
-        if result:
-            self.log("✅ Принудительный клик выполнен по родителю", "SUCCESS")
-            return True
-        
-        # 6. Enter (если кнопка в фокусе)
-        self.log("   🔄 Пробую Enter...", "DEBUG")
-        try:
-            body = self.driver.find_element(By.TAG_NAME, "body")
-            body.send_keys(Keys.ENTER)
-            self.log("✅ Нажат Enter", "SUCCESS")
-            return True
         except:
             pass
         
-        self.log("❌ Принудительный клик не сработал", "ERROR")
+        self.log("❌ Клик не сработал", "ERROR")
         return False
+    
+    def simple_click_by_text(self, text):
+        self.log(f"🔍 Ищу элемент с текстом: '{text}'", "INFO")
+        
+        try:
+            elements = self.driver.find_elements(By.XPATH, f"//*[contains(text(), '{text}')]")
+            self.log(f"📊 Найдено элементов: {len(elements)}", "DEBUG")
+            
+            for elem in elements:
+                try:
+                    if elem.is_displayed():
+                        elem_text = elem.text.strip()[:40]
+                        self.log(f"🔍 Найден элемент: '{elem_text}'", "DEBUG")
+                        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elem)
+                        time.sleep(0.5)
+                        self.driver.execute_script("arguments[0].click();", elem)
+                        self.log(f"✅ Клик по '{elem_text}' выполнен", "SUCCESS")
+                        return True
+                except:
+                    continue
+            
+            self.log("❌ Элемент не найден", "ERROR")
+            return False
+        except Exception as e:
+            self.log(f"❌ Ошибка: {e}", "ERROR")
+            return False
+    
+    def get_page_info(self):
+        try:
+            info = {
+                "url": self.driver.current_url,
+                "title": self.driver.title,
+                "html_length": len(self.driver.page_source)
+            }
+            return info
+        except:
+            return {"error": "Не удалось получить информацию"}
+    
+    def get_buttons_info(self):
+        try:
+            buttons = self.driver.find_elements(By.TAG_NAME, "button")
+            result = []
+            for btn in buttons[:10]:
+                try:
+                    text = btn.text.strip()
+                    if text:
+                        result.append({
+                            "text": text[:50],
+                            "visible": btn.is_displayed(),
+                            "enabled": btn.is_enabled()
+                        })
+                except:
+                    continue
+            return result
+        except:
+            return []
     
     def login_google(self, email, password):
         self.email = email
