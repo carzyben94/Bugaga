@@ -1,7 +1,6 @@
 import telebot
 import os
 import time
-import pickle
 from browser import AntiDetectBrowser, check_installation
 from datetime import datetime
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -14,13 +13,8 @@ if not TOKEN:
 
 bot = telebot.TeleBot(TOKEN)
 
-# === ФАЙЛЫ СЕССИЙ ===
-GOOGLE_SESSION_FILE = "google_session.pkl"
-X_SESSION_FILE = "x_session.pkl"
-
-# === ГЛОБАЛЬНЫЕ СЕССИИ ===
-google_browser = None  # Один браузер для Google
-x_browsers = {}        # user_id -> browser для X
+# === ГЛОБАЛЬНЫЙ БРАУЗЕР ===
+browser = None
 user_cursor = {}
 
 try:
@@ -76,23 +70,22 @@ def move_cursor(user_id, dx, dy):
     user_cursor[user_id]['y'] = max(0, min(1080, user_cursor[user_id]['y'] + dy))
     return user_cursor[user_id]['x'], user_cursor[user_id]['y']
 
-# === КОМАНДА /START ===
+# === /START ===
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     bot.reply_to(message,
         "👋 Команды:\n"
-        "/logingoogle email пароль — Вход в Google (сохраняет сессию)\n"
-        "/status_google — Проверить Google-сессию\n"
-        "/loginx — Войти в X.com через Google\n"
-        "/joystick — Управление X\n"
-        "/screenshot — Скриншот X\n"
+        "/logingoogle email пароль — Вход в Google\n"
+        "/loginx — Войти в X.com (Google уже залогинен)\n"
+        "/joystick — Управление\n"
+        "/screenshot — Скриншот\n"
         "/close — Закрыть всё"
     )
 
-# === /LOGINGOOGLE — только Google, сохраняет куки ===
+# === /LOGINGOOGLE ===
 @bot.message_handler(commands=['logingoogle'])
 def handle_login_google(message):
-    global google_browser
+    global browser
     
     chat_id = message.chat.id
     parts = message.text.split(maxsplit=2)
@@ -103,124 +96,54 @@ def handle_login_google(message):
     email, password = parts[1], parts[2]
     msg = bot.reply_to(message, "🔄 Google...")
     
-    # Закрываем старый если есть
-    if google_browser:
+    if browser:
         try:
-            google_browser.close()
+            browser.close()
         except:
             pass
-    
-    google_browser = AntiDetectBrowser(headless=True)
+        browser = None
     
     try:
-        google_browser.setup_driver()
-        ok = google_browser.login_google(email, password)
+        browser = AntiDetectBrowser(headless=True)
+        browser.setup_driver()
+        ok = browser.login_google(email, password)
         
         if ok:
-            # Сохраняем куки
-            try:
-                cookies = google_browser.driver.get_cookies()
-                with open(GOOGLE_SESSION_FILE, "wb") as f:
-                    pickle.dump(cookies, f)
-            except:
-                pass
-            
-            bot.edit_message_text("✅ Google OK", chat_id=chat_id, message_id=msg.message_id)
+            bot.edit_message_text("✅ Google OK. /loginx", chat_id=chat_id, message_id=msg.message_id)
         else:
             bot.edit_message_text("❌ Google fail", chat_id=chat_id, message_id=msg.message_id)
-            google_browser.close()
-            google_browser = None
+            browser.close()
+            browser = None
             
     except Exception as e:
         bot.edit_message_text(f"❌ {str(e)[:100]}", chat_id=chat_id, message_id=msg.message_id)
-        google_browser = None
+        browser = None
 
-# === /STATUS_GOOGLE — проверяет/восстанавливает сессию ===
-@bot.message_handler(commands=['status_google'])
-def handle_status_google(message):
-    global google_browser
-    
-    chat_id = message.chat.id
-    
-    if not google_browser or not google_browser.driver:
-        bot.reply_to(message, "❌ Нет сессии. /logingoogle")
-        return
-    
-    try:
-        # Проверяем что Google помнит нас
-        google_browser.driver.get("https://accounts.google.com/")
-        time.sleep(2)
-        url = google_browser.driver.current_url
-        
-        if "myaccount" in url or "signin" not in url:
-            bot.reply_to(message, "✅ Google активен")
-        else:
-            # Пробуем восстановить из куки
-            try:
-                if os.path.exists(GOOGLE_SESSION_FILE):
-                    with open(GOOGLE_SESSION_FILE, "rb") as f:
-                        cookies = pickle.load(f)
-                    for c in cookies:
-                        try:
-                            google_browser.driver.add_cookie(c)
-                        except:
-                            pass
-                    google_browser.driver.get("https://accounts.google.com/")
-                    time.sleep(2)
-                    url = google_browser.driver.current_url
-                    
-                    if "myaccount" in url or "signin" not in url:
-                        bot.reply_to(message, "✅ Google восстановлен из куки")
-                        return
-            except:
-                pass
-            
-            bot.reply_to(message, "⚠️ Google вышел. /logingoogle заново")
-            
-    except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}")
-
-# === /LOGINX — вход в X через Google-сессию ===
+# === /LOGINX ===
 @bot.message_handler(commands=['loginx'])
 def handle_login_x(message):
-    global google_browser
+    global browser
     
     user_id = message.from_user.id
     chat_id = message.chat.id
     
-    if not google_browser or not google_browser.driver:
+    if not browser or not browser.driver:
         bot.reply_to(message, "❌ Сначала /logingoogle")
         return
     
     msg = bot.reply_to(message, "🔄 X.com...")
     
-    # Создаём новый браузер для X, но копируем куки Google
-    x_browser = AntiDetectBrowser(headless=True)
-    
     try:
-        x_browser.setup_driver()
-        
-        # Копируем Google-куки
-        try:
-            cookies = google_browser.driver.get_cookies()
-            x_browser.driver.get("https://google.com")
-            time.sleep(1)
-            for c in cookies:
-                try:
-                    x_browser.driver.add_cookie(c)
-                except:
-                    pass
-        except:
-            pass
-        
-        # Идём на X
-        x_browser.driver.get("https://x.com")
+        browser.driver.get("https://x.com")
         time.sleep(5)
         
-        # Ищем кнопку Google
-        x_browser.log("🔍 Поиск Google-кнопки...")
-        btn = None
+        url = browser.driver.current_url
+        if "home" in url:
+            bot.reply_to(message, "✅ X уже залогинен!")
+            return
         
+        # Ищем Google-кнопку
+        btn = None
         for sel in [
             "//span[contains(text(), 'Continue as')]",
             "//span[contains(text(), 'Sign in with Google')]",
@@ -228,7 +151,7 @@ def handle_login_x(message):
             "//button[contains(., 'Google')]",
         ]:
             try:
-                els = x_browser.driver.find_elements(By.XPATH, sel)
+                els = browser.driver.find_elements(By.XPATH, sel)
                 for el in els:
                     if el.is_displayed():
                         btn = el
@@ -239,50 +162,41 @@ def handle_login_x(message):
                 continue
         
         if btn:
-            x_browser.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
+            browser.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
             time.sleep(0.5)
-            try:
-                from selenium.webdriver.common.action_chains import ActionChains
-                ActionChains(x_browser.driver).move_to_element(btn).pause(0.3).click().perform()
-            except:
-                x_browser.driver.execute_script("arguments[0].click();", btn)
+            from selenium.webdriver.common.action_chains import ActionChains
+            ActionChains(browser.driver).move_to_element(btn).pause(0.3).click().perform()
             
-            x_browser.log("✅ Клик по Google")
             time.sleep(5)
+            url = browser.driver.current_url
             
-            url = x_browser.driver.current_url
             if "home" in url:
-                x_browsers[user_id] = x_browser
-                bot.edit_message_text("✅ X OK! /joystick", chat_id=chat_id, message_id=msg.message_id)
+                bot.reply_to(message, "✅ X OK! /joystick")
                 return
         
-        # Если не получилось — скрин и джойстик
-        x_browser.driver.save_screenshot("x_fail.png")
+        # Не получилось — скрин для джойстика
+        browser.driver.save_screenshot("x_fail.png")
         with open("x_fail.png", "rb") as f:
             bot.send_photo(chat_id, f, caption="⚠️ Нужен джойстик")
         os.remove("x_fail.png")
         
-        x_browsers[user_id] = x_browser
-        bot.edit_message_text("⚠️ /joystick для ручного клика", chat_id=chat_id, message_id=msg.message_id)
+        bot.reply_to(message, "⚠️ /joystick для ручного клика")
         
     except Exception as e:
-        bot.edit_message_text(f"❌ {str(e)[:100]}", chat_id=chat_id, message_id=msg.message_id)
-        try:
-            x_browser.close()
-        except:
-            pass
+        bot.reply_to(message, f"❌ {str(e)[:100]}")
 
-# === /JOYSTICK — только для X ===
+# === /JOYSTICK ===
 @bot.message_handler(commands=['joystick'])
 def handle_joystick(message):
+    global browser
+    
     user_id = message.from_user.id
     chat_id = message.chat.id
     
-    if user_id not in x_browsers:
-        bot.reply_to(message, "❌ Нет сессии X. /loginx")
+    if not browser or not browser.driver:
+        bot.reply_to(message, "❌ Нет сессии. /logingoogle")
         return
     
-    browser = x_browsers[user_id]
     user_cursor[user_id] = {'x': 960, 'y': 400}
     
     try:
@@ -297,15 +211,15 @@ def handle_joystick(message):
 # === ОБРАБОТЧИК КНОПОК ===
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
+    global browser
+    
     user_id = call.from_user.id
     chat_id = call.message.chat.id
     msg_id = call.message.message_id
     
-    if user_id not in x_browsers:
+    if not browser or not browser.driver:
         bot.answer_callback_query(call.id, "❌ Нет сессии")
         return
-    
-    browser = x_browsers[user_id]
     
     if call.data == "move_up":
         x, y = move_cursor(user_id, 0, -30)
@@ -346,15 +260,15 @@ def handle_callback(call):
     elif call.data == "stop_joystick":
         try:
             browser.close()
-            del x_browsers[user_id]
-            del user_cursor[user_id]
+            browser = None
+            if user_id in user_cursor:
+                del user_cursor[user_id]
         except:
             pass
         bot.answer_callback_query(call.id, "Закрыт")
         bot.edit_message_text("✅ Закрыт", chat_id=chat_id, message_id=msg_id)
         return
     
-    # Обновляем скрин
     try:
         fn = make_screenshot_with_cursor(browser, user_id, f"upd_{user_id}.png")
         if fn:
@@ -372,12 +286,14 @@ def handle_callback(call):
 # === /SCREENSHOT ===
 @bot.message_handler(commands=['screenshot'])
 def handle_screenshot(message):
+    global browser
+    
     user_id = message.from_user.id
-    if user_id not in x_browsers:
+    if not browser or not browser.driver:
         bot.reply_to(message, "❌ Нет сессии")
         return
     try:
-        fn = x_browsers[user_id].take_screenshot(f"ss_{user_id}.png")
+        fn = browser.take_screenshot(f"ss_{user_id}.png")
         if fn:
             with open(fn, "rb") as f:
                 bot.send_photo(user_id, f)
@@ -385,32 +301,24 @@ def handle_screenshot(message):
     except Exception as e:
         bot.reply_to(message, f"❌ {str(e)[:100]}")
 
-# === /CLOSE — закрывает всё ===
+# === /CLOSE ===
 @bot.message_handler(commands=['close'])
 def handle_close(message):
-    global google_browser
+    global browser
+    
     user_id = message.from_user.id
     
-    # Закрываем X
-    if user_id in x_browsers:
+    if browser:
         try:
-            x_browsers[user_id].close()
+            browser.close()
         except:
             pass
-        del x_browsers[user_id]
-    
-    # Закрываем Google
-    if google_browser:
-        try: 
-            google_browser.close()
-        except:
-            pass
-        google_browser = None
+        browser = None
     
     if user_id in user_cursor:
         del user_cursor[user_id]
     
-    bot.reply_to(message, "✅ Всё закрыто")
+    bot.reply_to(message, "✅ Закрыто")
 
 # === ЭХО ===
 @bot.message_handler(func=lambda m: True)
