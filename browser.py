@@ -166,7 +166,10 @@ class AntiDetectBrowser:
     
     def human_type(self, element, text):
         try:
+            # Ждем чтобы элемент стал активным
+            time.sleep(1)
             element.click()
+            time.sleep(0.5)
             element.clear()
             for char in text:
                 element.send_keys(char)
@@ -194,7 +197,6 @@ class AntiDetectBrowser:
             return None
     
     def login_google(self, email, password):
-        """Вход в Google"""
         self.email = email
         self.log(f"🚀 Вход в Google: {email[:3]}***{email[-3:] if len(email) > 6 else ''}", "INFO")
         
@@ -238,20 +240,39 @@ class AntiDetectBrowser:
         
         self.random_delay(2, 4)
         
-        # === ВВОД ПАРОЛЯ (ВСЕ СЕЛЕКТОРЫ) ===
+        # === ПРОВЕРЯЕМ: ЧТО ПОКАЗЫВАЕТ СТРАНИЦА ===
+        current_url = self.driver.current_url
+        
+        # Если страница подтверждения
+        if "challenge" in current_url or "verify" in current_url.lower():
+            self.log("🔐 Страница подтверждения Google", "INFO")
+            self.take_step_screenshot("google_verify_page")
+            
+            self.log("📱 Подтвердите вход на телефоне", "INFO")
+            self.log("⏳ Ожидание... 60 секунд", "INFO")
+            
+            for i in range(12):
+                time.sleep(5)
+                new_url = self.driver.current_url
+                if "challenge" not in new_url and "verify" not in new_url.lower():
+                    self.log("✅ Подтверждение пройдено!", "SUCCESS")
+                    break
+                self.log(f"⏳ Ожидание... {i+1}/12", "INFO")
+            
+            self.log("✅ Продолжаем...", "INFO")
+            return True
+        
+        # === ВВОД ПАРОЛЯ ===
         self.log("🔍 Поиск поля пароля...", "INFO")
         
         password_field = None
-        
         selectors = [
             (By.NAME, "password"),
             (By.ID, "password"),
             (By.XPATH, "//input[@type='password']"),
             (By.XPATH, "//input[@name='password']"),
-            (By.XPATH, "//div[@class='pwd']//input"),
             (By.XPATH, "//input[@autocomplete='current-password']"),
             (By.CSS_SELECTOR, "input[type='password']"),
-            (By.XPATH, "//div[@data-brand='accounts.google.com']//input[@type='password']"),
         ]
         
         for by, selector in selectors:
@@ -265,13 +286,45 @@ class AntiDetectBrowser:
                 continue
         
         if password_field:
-            self.human_type(password_field, password)
-            self.take_step_screenshot("google_password")
-            self.log("✅ Пароль введен", "SUCCESS")
+            # === ЖДЕМ ПОКА ПОЛЕ СТАНЕТ АКТИВНЫМ ===
+            self.log("⏳ Ожидание активации поля пароля...", "INFO")
+            
+            for attempt in range(10):
+                try:
+                    if password_field.is_enabled():
+                        self.log("✅ Поле пароля активно", "SUCCESS")
+                        break
+                    time.sleep(1)
+                    self.log(f"⏳ Ожидание... {attempt+1}/10", "DEBUG")
+                except:
+                    time.sleep(1)
+            
+            # === ВВОД ПАРОЛЯ ===
+            try:
+                self.human_type(password_field, password)
+                self.take_step_screenshot("google_password")
+                self.log("✅ Пароль введен", "SUCCESS")
+            except Exception as e:
+                self.log(f"❌ Ошибка ввода пароля: {e}", "ERROR")
+                self.take_step_screenshot("google_password_error")
+                return False
         else:
-            self.log("❌ Поле пароля не найдено ни по одному селектору", "ERROR")
+            self.log("⚠️ Поле пароля не найдено", "WARNING")
             self.take_step_screenshot("google_password_not_found")
-            return False
+            
+            self.log("📱 Возможно, требуется подтверждение на телефоне", "INFO")
+            self.log("⏳ Ожидание... 60 секунд", "INFO")
+            
+            for i in range(12):
+                time.sleep(5)
+                new_url = self.driver.current_url
+                if "challenge" not in new_url and "verify" not in new_url.lower():
+                    self.log("✅ Подтверждение пройдено!", "SUCCESS")
+                    break
+                self.log(f"⏳ Ожидание... {i+1}/12", "INFO")
+            
+            self.log("✅ Продолжаем...", "INFO")
+            return True
         
         self.random_delay(1, 2)
         
@@ -296,7 +349,7 @@ class AntiDetectBrowser:
         
         # === ПРОВЕРКА 2FA ===
         current_url = self.driver.current_url
-        self.log(f"📍 URL после Google: {current_url[:80]}...", "INFO")
+        self.log(f"📍 Финальный URL: {current_url[:80]}...", "INFO")
         
         if "challenge" in current_url or "verify" in current_url.lower():
             self.log("🔐 Требуется подтверждение на телефоне", "INFO")
