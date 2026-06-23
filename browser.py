@@ -12,8 +12,26 @@ class Browser:
     async def start(self):
         """Запуск браузера"""
         self.playwright = await async_playwright().start()
-        self.browser = await self.playwright.chromium.launch(headless=self.headless)
-        self.page = await self.browser.new_page()
+        self.browser = await self.playwright.chromium.launch(
+            headless=self.headless,
+            args=[
+                '--no-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-blink-features=AutomationControlled'
+            ]
+        )
+        
+        self.page = await self.browser.new_page(
+            viewport={'width': 1920, 'height': 1080}
+        )
+        
+        # Маскировка
+        await self.page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+            });
+        """)
+        
         return self.page
     
     async def close(self):
@@ -30,12 +48,69 @@ class Browser:
     
     async def goto(self, url):
         """Переход на URL"""
-        await self.page.goto(url)
+        if not url.startswith('http'):
+            url = 'https://' + url
+        await self.page.goto(url, timeout=30000)
+        await self.page.wait_for_load_state("networkidle")
     
     async def click(self, selector):
         """Клик по селектору"""
         await self.page.click(selector)
     
-    async def fill(self, selector, text):
-        """Ввод текста"""
-        await self.page.fill(selector, text)
+    async def click_by_text(self, text):
+        """Клик по тексту"""
+        try:
+            await self.page.get_by_text(text).click(timeout=3000)
+            return True
+        except:
+            return False
+    
+    async def mega_click(self, x=None, y=None, text=None):
+        """Мега-клик - пробует все методы"""
+        
+        # 1. Клик по координатам
+        if x is not None and y is not None:
+            try:
+                await self.page.mouse.click(x, y)
+                return True
+            except:
+                pass
+        
+        # 2. Клик по тексту
+        if text:
+            try:
+                await self.page.get_by_text(text).click(timeout=2000)
+                return True
+            except:
+                pass
+            
+            try:
+                await self.page.locator(f"button:has-text('{text}')").click(timeout=2000)
+                return True
+            except:
+                pass
+            
+            try:
+                await self.page.locator(f"*:has-text('{text}')").first.click(timeout=2000)
+                return True
+            except:
+                pass
+        
+        # 3. Клик по центру
+        try:
+            viewport = self.page.viewport_size
+            await self.page.mouse.click(viewport['width'] // 2, viewport['height'] // 2)
+            return True
+        except:
+            pass
+        
+        # 4. JavaScript клик
+        try:
+            await self.page.evaluate("""
+                document.querySelector('*:contains("Continue")')?.click()
+            """)
+            return True
+        except:
+            pass
+        
+        return False
