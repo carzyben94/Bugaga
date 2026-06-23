@@ -9,7 +9,7 @@ if not TOKEN:
 
 bot = telebot.TeleBot(TOKEN)
 
-# === ЛОГ-ФАЙЛ (создаём здесь, а не импортируем) ===
+# === ЛОГ-ФАЙЛ ===
 LOG_FILE = "bot.log"
 
 # === СБРОС WEBHOOK ===
@@ -118,6 +118,7 @@ def handle_login_google(message):
     
     msg = bot.reply_to(message, "🔄 Вход через Google... 30-50 секунд")
     
+    # === ИСПРАВЛЕННАЯ ФУНКЦИЯ (принимает 2 аргумента) ===
     def log_callback(log_text, level):
         send_log_to_chat(chat_id, log_text)
     
