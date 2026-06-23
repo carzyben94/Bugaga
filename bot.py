@@ -2,6 +2,7 @@ import os
 import logging
 import threading
 import time
+import asyncio
 import requests
 from flask import Flask, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
@@ -115,14 +116,8 @@ async def get_browser_page():
         }
     )
     
-    # Добавляем куки
     await context.add_cookies([
-        {
-            "name": "_ga",
-            "value": "GA1.2.1234567890.1234567890",
-            "domain": ".x.com",
-            "path": "/"
-        }
+        {"name": "_ga", "value": "GA1.2.1234567890.1234567890", "domain": ".x.com", "path": "/"}
     ])
     
     await context.set_geolocation({"latitude": 55.7558, "longitude": 37.6173})
@@ -130,14 +125,10 @@ async def get_browser_page():
     
     page = await context.new_page()
     
-    # ============ ПОЛНАЯ МАСКИРОВКА ============
+    # Полная маскировка
     await page.add_init_script("""
-        // Маскируем webdriver
-        Object.defineProperty(navigator, 'webdriver', {
-            get: () => undefined
-        });
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
         
-        // Маскируем plugins
         Object.defineProperty(navigator, 'plugins', {
             get: () => {
                 const plugins = [
@@ -151,74 +142,35 @@ async def get_browser_page():
             }
         });
         
-        // Маскируем languages
-        Object.defineProperty(navigator, 'languages', {
-            get: () => ['ru-RU', 'ru', 'en-US', 'en']
-        });
+        Object.defineProperty(navigator, 'languages', { get: () => ['ru-RU', 'ru', 'en-US', 'en'] });
+        Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+        Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+        Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
         
-        // Маскируем platform
-        Object.defineProperty(navigator, 'platform', {
-            get: () => 'Win32'
-        });
-        
-        // Маскируем hardwareConcurrency
-        Object.defineProperty(navigator, 'hardwareConcurrency', {
-            get: () => 8
-        });
-        
-        // Маскируем deviceMemory
-        Object.defineProperty(navigator, 'deviceMemory', {
-            get: () => 8
-        });
-        
-        // Добавляем chrome
         window.chrome = {
             runtime: {},
             loadTimes: function() {},
             csi: function() {},
             app: {
                 isInstalled: false,
-                InstallState: {
-                    DISABLED: 'disabled',
-                    INSTALLED: 'installed',
-                    NOT_INSTALLED: 'not_installed'
-                },
-                RunningState: {
-                    CANNOT_RUN: 'cannot_run',
-                    READY_TO_RUN: 'ready_to_run',
-                    RUNNING: 'running'
-                }
+                InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+                RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' }
             }
         };
         
-        // Удаляем webdriver
         delete Object.getPrototypeOf(navigator).webdriver;
         
-        // Маскируем WebGL
         const getParameter = WebGLRenderingContext.prototype.getParameter;
         WebGLRenderingContext.prototype.getParameter = function(parameter) {
-            if (parameter === 37445) {
-                return 'Intel Inc.';
-            }
-            if (parameter === 37446) {
-                return 'Intel Iris OpenGL Engine';
-            }
+            if (parameter === 37445) return 'Intel Inc.';
+            if (parameter === 37446) return 'Intel Iris OpenGL Engine';
             return getParameter(parameter);
         };
         
-        // Маскируем screen
-        Object.defineProperty(screen, 'availWidth', {
-            get: () => 1920
-        });
-        Object.defineProperty(screen, 'availHeight', {
-            get: () => 1080
-        });
-        Object.defineProperty(screen, 'width', {
-            get: () => 1920
-        });
-        Object.defineProperty(screen, 'height', {
-            get: () => 1080
-        });
+        Object.defineProperty(screen, 'availWidth', { get: () => 1920 });
+        Object.defineProperty(screen, 'availHeight', { get: () => 1080 });
+        Object.defineProperty(screen, 'width', { get: () => 1920 });
+        Object.defineProperty(screen, 'height', { get: () => 1080 });
         
         console.log('✅ Полная маскировка браузера включена');
     """)
@@ -291,54 +243,42 @@ async def screenshot_with_cursor(page, x: int, y: int) -> bytes:
         print(f"Ошибка курсора: {e}")
         return await page.screenshot(full_page=True, type="png")
 
-# ============ УМНЫЙ КЛИК (РАБОТАЕТ С IFRAME) ============
+# ============ УМНЫЙ КЛИК ============
 async def smart_click(page, x: int, y: int):
-    """Умный клик: ищет кнопки в iframe и на странице"""
     try:
-        # 1. Ищем кнопку "Continue with Google" во всех iframe
         for frame in page.frames:
             try:
                 selectors = [
                     'text="Continue with Google"',
-                    'text="Continue with Google"',
                     '[aria-label*="Google"]',
                     'div:has-text("Continue with Google")',
-                    'button:has-text("Google")',
-                    'span:has-text("Google")'
+                    'button:has-text("Google")'
                 ]
-                
                 for selector in selectors:
                     try:
                         elements = await frame.locator(selector).all()
                         for el in elements:
                             if await el.is_visible():
                                 await el.click()
-                                print(f"✅ Клик по '{selector}' в iframe")
+                                print(f"✅ Клик в iframe: {selector}")
                                 return True
                     except:
                         continue
             except:
                 continue
         
-        # 2. Ищем на самой странице
-        selectors = [
-            'text="Continue with Google"',
-            'button:has-text("Google")',
-            'div:has-text("Continue with Google")'
-        ]
-        
+        selectors = ['text="Continue with Google"', 'button:has-text("Google")']
         for selector in selectors:
             try:
                 elements = await page.locator(selector).all()
                 for el in elements:
                     if await el.is_visible():
                         await el.click()
-                        print(f"✅ Клик по '{selector}' на странице")
+                        print(f"✅ Клик на странице: {selector}")
                         return True
             except:
                 continue
         
-        # 3. Если ничего не нашли - клик по координатам
         await page.mouse.click(x, y, button="left")
         print(f"✅ Клик по координатам ({x}, {y})")
         return True
@@ -432,25 +372,194 @@ async def update_joystick_message(query, page, user_id, mode, caption=""):
     
     try:
         await query.edit_message_media(
-            media=InputMediaPhoto(
-                media=screenshot,
-                caption=text
-            ),
+            media=InputMediaPhoto(media=screenshot, caption=text),
             reply_markup=get_joystick_keyboard(mode)
         )
     except Exception as e:
         print(f"Ошибка редактирования: {e}")
+
+# ============ АВТОМАТИЧЕСКИЙ ВХОД В GOOGLE ============
+async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    args = context.args
+    
+    if user_id not in user_sessions:
+        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
+        return
+    
+    if len(args) < 2:
+        await update.message.reply_text(
+            "❌ Использование:\n"
+            "/login email@gmail.com пароль\n\n"
+            "Пример:\n"
+            "/login myemail@gmail.com mypassword123"
+        )
+        return
+    
+    email = args[0]
+    password = ' '.join(args[1:])
+    
+    session = user_sessions[user_id]
+    page = session["page"]
+    
+    await update.message.reply_text("🔐 Начинаю вход в Google...")
+    
+    try:
+        await update.message.reply_text("🌐 Открываю accounts.google.com...")
+        await goto_url(page, "https://accounts.google.com")
+        await page.wait_for_timeout(2000)
+        
+        await update.message.reply_text(f"📧 Ввожу email: {email}")
+        
+        email_selectors = [
+            'input[type="email"]', 'input[name="identifier"]',
+            'input[autocomplete="username"]', 'input[aria-label*="Email"]'
+        ]
+        
+        email_found = False
+        for selector in email_selectors:
+            try:
+                el = await page.locator(selector).first
+                if await el.count() > 0 and await el.is_visible():
+                    await el.fill(email)
+                    email_found = True
+                    break
+            except:
+                continue
+        
+        if not email_found:
+            await update.message.reply_text("❌ Не найдено поле для email")
+            return
+        
+        await page.wait_for_timeout(500)
+        
+        await update.message.reply_text("⏭️ Нажимаю 'Далее'...")
+        
+        next_selectors = [
+            'button:has-text("Далее")', 'button:has-text("Next")',
+            '#identifierNext', '[jsname="V67aGc"]'
+        ]
+        
+        for selector in next_selectors:
+            try:
+                el = await page.locator(selector).first
+                if await el.count() > 0 and await el.is_visible():
+                    await el.click()
+                    break
+            except:
+                continue
+        
+        await page.wait_for_timeout(2000)
+        
+        await update.message.reply_text("🔑 Ввожу пароль...")
+        
+        password_selectors = [
+            'input[type="password"]', 'input[name="password"]',
+            'input[aria-label*="Password"]', 'input[aria-label*="пароль"]'
+        ]
+        
+        password_found = False
+        for selector in password_selectors:
+            try:
+                el = await page.locator(selector).first
+                if await el.count() > 0 and await el.is_visible():
+                    await el.fill(password)
+                    password_found = True
+                    break
+            except:
+                continue
+        
+        if not password_found:
+            await update.message.reply_text("❌ Не найдено поле для пароля")
+            return
+        
+        await page.wait_for_timeout(500)
+        
+        await update.message.reply_text("⏭️ Нажимаю 'Далее' для входа...")
+        
+        for selector in next_selectors:
+            try:
+                el = await page.locator(selector).first
+                if await el.count() > 0 and await el.is_visible():
+                    await el.click()
+                    break
+            except:
+                continue
+        
+        await page.wait_for_timeout(3000)
+        
+        current_url = page.url
+        cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
+        screenshot = await screenshot_with_cursor(page, cursor["x"], cursor["y"])
+        
+        if "myaccount.google.com" in current_url or "mail.google.com" in current_url:
+            await update.message.reply_photo(
+                photo=screenshot,
+                caption="✅ **Вход в Google выполнен успешно!** 🎉\n\n"
+                        "Теперь:\n"
+                        "🔗 /go x.com - открыть Twitter/X\n"
+                        "🎮 /joystick - открыть джойстик\n"
+                        "🖱️ Нажать 'Continue with Google' через джойстик"
+            )
+        elif "challenge" in current_url or "verify" in current_url:
+            await update.message.reply_photo(
+                photo=screenshot,
+                caption="⚠️ **Требуется дополнительная проверка**\n\n"
+                        "Google запросил 2FA или код подтверждения.\n"
+                        "Введи код вручную через браузер."
+            )
+        else:
+            await update.message.reply_photo(
+                photo=screenshot,
+                caption=f"📸 Текущая страница: {current_url}\nПроверь ввод."
+            )
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+# ============ СТАТУС ============
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    
+    if user_id not in user_sessions:
+        await update.message.reply_text("⚠️ Браузер не открыт. Используй: /browser")
+        return
+    
+    session = user_sessions[user_id]
+    page = session["page"]
+    url = page.url
+    
+    cookies = await page.context.cookies()
+    has_cookie = any(c['name'] in ['auth_token', 'ct0', 'twid'] for c in cookies)
+    
+    status_text = f"📊 **Статус браузера**\n\n"
+    status_text += f"🌐 Текущий URL: {url[:60]}\n"
+    status_text += f"🍪 Сессия: {'✅ Активна' if has_cookie else '❌ Нет сессии'}\n"
+    
+    if "x.com" in url:
+        status_text += "📱 На сайте: Twitter/X\n"
+        status_text += f"✅ **Вы {'вошли' if has_cookie else 'НЕ вошли'} в Twitter!**\n"
+    elif "google" in url:
+        status_text += "📱 На сайте: Google\n"
+    else:
+        status_text += f"📱 Сайт: {url[:30]}\n"
+    
+    cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
+    screenshot = await screenshot_with_cursor(page, cursor["x"], cursor["y"])
+    
+    await update.message.reply_photo(photo=screenshot, caption=status_text)
 
 # ============ КОМАНДЫ БОТА ============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "👋 Привет! Я бот с управлением браузером!\n\n"
         "🌐 /browser - Открыть браузер\n"
-        "🎮 /joystick - Открыть джойстик\n"
+        "🔐 /login email pass - Войти в Google\n"
         "🔗 /go <url> - Перейти на сайт\n"
+        "🎮 /joystick - Открыть джойстик\n"
         "📸 /screenshot - Сделать скриншот\n"
-        "❌ /close - Закрыть браузер\n"
-        "🔐 /twitter - Войти в Twitter/X"
+        "📊 /status - Проверить статус\n"
+        "❌ /close - Закрыть браузер"
     )
 
 async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -462,8 +571,9 @@ async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await get_user_browser(user_id)
         await update.message.reply_text(
             "✅ Браузер готов!\n\n"
-            "🎮 Открой джойстик: /joystick\n"
-            "🔗 Перейти на сайт: /go google.com"
+            "🔐 /login email pass - войти в Google\n"
+            "🔗 /go x.com - открыть Twitter\n"
+            "🎮 /joystick - открыть джойстик"
         )
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
@@ -526,72 +636,6 @@ async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await close_user_browser(user_id)
     await update.message.reply_text("❌ Браузер закрыт")
 
-# ============ ВХОД В TWITTER/X ============
-async def twitter_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    
-    if user_id not in user_sessions:
-        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
-        return
-    
-    session = user_sessions[user_id]
-    page = session["page"]
-    
-    try:
-        await update.message.reply_text("🔐 Открываю страницу входа в Twitter/X...")
-        
-        await goto_url(page, "https://x.com/login")
-        await page.wait_for_timeout(3000)
-        
-        await update.message.reply_text("🔍 Ищу кнопку 'Continue with Google'...")
-        
-        found = False
-        
-        # Ищем в iframe
-        for frame in page.frames:
-            try:
-                elements = await frame.locator('text="Continue with Google"').all()
-                for el in elements:
-                    if await el.is_visible():
-                        await el.click()
-                        found = True
-                        await update.message.reply_text("✅ Нажата кнопка в iframe")
-                        break
-                if found:
-                    break
-            except:
-                continue
-        
-        if not found:
-            # Ищем на странице
-            try:
-                elements = await page.locator('text="Continue with Google"').all()
-                for el in elements:
-                    if await el.is_visible():
-                        await el.click()
-                        found = True
-                        await update.message.reply_text("✅ Нажата кнопка на странице")
-                        break
-            except:
-                pass
-        
-        if found:
-            await page.wait_for_timeout(3000)
-            
-            cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
-            screenshot = await screenshot_with_cursor(page, cursor["x"], cursor["y"])
-            
-            await update.message.reply_photo(
-                photo=screenshot,
-                caption="✅ Открылось окно входа в Google"
-            )
-        else:
-            await update.message.reply_text("❌ Кнопка 'Continue with Google' не найдена")
-            
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-
-# ============ ДЖОЙСТИК КОМАНДА ============
 async def joystick_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     
@@ -653,18 +697,15 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     current_x = cursor["x"]
     current_y = cursor["y"]
     
-    # ============ ДВИЖЕНИЕ ============
+    # ДВИЖЕНИЕ
     if data.startswith("move_"):
         parts = data.split("_")
         dx = int(parts[1])
         dy = int(parts[2])
         
         try:
-            new_x = current_x + dx
-            new_y = current_y + dy
-            
-            new_x = max(0, min(VIEWPORT["width"], new_x))
-            new_y = max(0, min(VIEWPORT["height"], new_y))
+            new_x = max(0, min(VIEWPORT["width"], current_x + dx))
+            new_y = max(0, min(VIEWPORT["height"], current_y + dy))
             
             cursor_positions[user_id] = {"x": new_x, "y": new_y}
             
@@ -673,13 +714,13 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             
             await update_joystick_message(
                 query, page, user_id, mode,
-                f"🖱️ Движение: ({dx}, {dy}) → ({new_x}, {new_y})"
+                f"🖱️ Движение → ({new_x}, {new_y})"
             )
             
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка движения: {e}")
     
-    # ============ ЛКМ ============
+    # ЛКМ
     elif data == "click_left":
         try:
             await smart_click(page, current_x, current_y)
@@ -693,7 +734,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка ЛКМ: {e}")
     
-    # ============ ПКМ ============
+    # ПКМ
     elif data == "click_right":
         try:
             await page.mouse.click(current_x, current_y, button="right")
@@ -707,7 +748,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка ПКМ: {e}")
     
-    # ============ КЛИК ПО КУРСОРУ ============
+    # КЛИК ПО КУРСОРУ
     elif data == "click_center":
         try:
             await page.mouse.click(current_x, current_y, button="left")
@@ -715,13 +756,13 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             
             await update_joystick_message(
                 query, page, user_id, mode,
-                f"🖱️ Клик по курсору ({current_x}, {current_y})"
+                f"🖱️ Клик ({current_x}, {current_y})"
             )
             
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка клика: {e}")
     
-    # ============ ENTER ============
+    # ENTER
     elif data == "press_enter":
         try:
             await page.keyboard.press("Enter")
@@ -729,13 +770,13 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             
             await update_joystick_message(
                 query, page, user_id, mode,
-                "⌨️ Нажат Enter"
+                "⌨️ Enter"
             )
             
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка Enter: {e}")
     
-    # ============ ОБНОВИТЬ ============
+    # ОБНОВИТЬ
     elif data == "refresh":
         try:
             await page.reload()
@@ -743,13 +784,13 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             
             await update_joystick_message(
                 query, page, user_id, mode,
-                "🔄 Страница обновлена"
+                "🔄 Обновлено"
             )
             
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка обновления: {e}")
     
-    # ============ НАЗАД ============
+    # НАЗАД
     elif data == "go_back":
         try:
             await page.go_back()
@@ -763,7 +804,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка назад: {e}")
     
-    # ============ ВПЕРЁД ============
+    # ВПЕРЁД
     elif data == "go_forward":
         try:
             await page.go_forward()
@@ -777,25 +818,25 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка вперёд: {e}")
     
-    # ============ СКРИНШОТ ============
+    # СКРИНШОТ
     elif data == "screenshot":
         try:
             await update_joystick_message(
                 query, page, user_id, mode,
-                "📸 Скриншот обновлён"
+                "📸 Скриншот"
             )
             
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка скриншота: {e}")
     
-    # ============ ЗАКРЫТЬ БРАУЗЕР ============
+    # ЗАКРЫТЬ БРАУЗЕР
     elif data == "close_browser":
         await close_user_browser(user_id)
         await query.edit_message_text("❌ Браузер закрыт", reply_markup=None)
         if user_id in joystick_messages:
             del joystick_messages[user_id]
     
-    # ============ ПЕРЕКЛЮЧЕНИЕ РЕЖИМА ============
+    # ПЕРЕКЛЮЧЕНИЕ РЕЖИМА
     elif data == "toggle_mode":
         current_mode = joystick_states.get(user_id, {}).get("mode", "normal")
         
@@ -813,21 +854,19 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         
         await update_joystick_message(
             query, page, user_id, new_mode,
-            f"🔄 Режим: {mode_label}"
+            f"🔄 {mode_label}"
         )
     
-    # ============ СМЕНИТЬ САЙТ ============
+    # СМЕНИТЬ САЙТ
     elif data == "change_url":
         await query.edit_message_text(
-            f"🔗 Введи новый URL командой:\n/go <url>\n\n"
-            f"Пример: /go google.com\n\n"
-            f"После ввода вернись в джойстик: /joystick",
+            "🔗 Введи URL: /go <url>",
             reply_markup=None
         )
         if user_id in joystick_messages:
             del joystick_messages[user_id]
     
-    # ============ СКРЫТЬ ДЖОЙСТИК ============
+    # СКРЫТЬ ДЖОЙСТИК
     elif data == "hide_joystick":
         if user_id in joystick_messages:
             del joystick_messages[user_id]
@@ -835,9 +874,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             del joystick_states[user_id]
         
         await query.edit_message_text(
-            "✅ Джойстик закрыт\n\n"
-            "🎮 Открыть заново: /joystick\n"
-            "🌐 Браузер всё ещё работает",
+            "✅ Джойстик закрыт\n\n🎮 /joystick - открыть заново",
             reply_markup=None
         )
 
@@ -858,7 +895,8 @@ def main():
     bot_app.add_handler(CommandHandler("screenshot", screenshot_command))
     bot_app.add_handler(CommandHandler("close", close_command))
     bot_app.add_handler(CommandHandler("joystick", joystick_command))
-    bot_app.add_handler(CommandHandler("twitter", twitter_command))
+    bot_app.add_handler(CommandHandler("login", login_google))
+    bot_app.add_handler(CommandHandler("status", status_command))
     
     bot_app.add_handler(CallbackQueryHandler(joystick_callback))
     
