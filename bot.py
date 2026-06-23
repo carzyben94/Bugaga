@@ -6,13 +6,14 @@ import asyncio
 import random
 import re
 import json
+import subprocess
+import sys
 from io import BytesIO
 import requests
 from flask import Flask, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from playwright.async_api import async_playwright
-from PIL import Image
 
 # ============ НАСТРОЙКИ ============
 logging.basicConfig(level=logging.INFO)
@@ -276,11 +277,10 @@ async def human_type(page, text: str, delay: int = 50):
         print(f"❌ Ошибка ввода: {e}")
         return False
 
-# ============ СКРИНШОТ С ОГРАНИЧЕНИЕМ РАЗМЕРА ============
+# ============ СКРИНШОТ БЕЗ PIL ============
 async def human_screenshot(page, x: int, y: int) -> bytes:
-    """Скриншот с курсором и автоматическим сжатием"""
+    """Скриншот с курсором (без PIL, только видимая часть)"""
     try:
-        # Добавляем курсор
         await page.evaluate(f"""
             const cursor = document.createElement('div');
             cursor.id = 'telegram-cursor';
@@ -313,33 +313,9 @@ async def human_screenshot(page, x: int, y: int) -> bytes:
         
         await page.wait_for_timeout(200)
         
-        # Делаем скриншот (не full_page, чтобы избежать слишком больших размеров)
-        screenshot_bytes = await page.screenshot(full_page=False, type="png")
-        
-        # Проверяем размер
-        if len(screenshot_bytes) > 8 * 1024 * 1024:  # Если больше 8MB
-            # Сжимаем
-            img = Image.open(BytesIO(screenshot_bytes))
-            
-            # Уменьшаем размер если слишком большой
-            if img.width > 2000 or img.height > 2000:
-                img.thumbnail((2000, 2000), Image.Resampling.LANCZOS)
-            
-            # Сохраняем с сжатием
-            output = BytesIO()
-            img.save(output, format='PNG', optimize=True, compress_level=9)
-            screenshot_bytes = output.getvalue()
-            
-            # Если всё ещё слишком большой - конвертируем в JPEG
-            if len(screenshot_bytes) > 8 * 1024 * 1024:
-                output = BytesIO()
-                # Конвертируем в RGB если нужно
-                if img.mode in ('RGBA', 'LA', 'P'):
-                    img = img.convert('RGB')
-                img.save(output, format='JPEG', quality=70, optimize=True)
-                screenshot_bytes = output.getvalue()
-        
-        return screenshot_bytes
+        # Делаем скриншот ТОЛЬКО видимой части
+        screenshot = await page.screenshot(full_page=False, type="png")
+        return screenshot
         
     except Exception as e:
         print(f"Ошибка скриншота: {e}")
@@ -492,6 +468,42 @@ async def update_joystick_message(query, page, user_id, mode, caption=""):
         )
     except Exception as e:
         print(f"Ошибка редактирования: {e}")
+
+# ============ УСТАНОВКА PILLOW ============
+async def install_pillow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Устанавливает Pillow прямо из бота"""
+    user_id = update.effective_user.id
+    
+    # Проверка админа
+    ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+    if ADMIN_ID and user_id != ADMIN_ID:
+        await update.message.reply_text("⛔ Только для администратора!")
+        return
+    
+    await update.message.reply_text("📦 Начинаю установку Pillow...")
+    
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "Pillow>=10.0.0"],
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+        
+        if result.returncode == 0:
+            await update.message.reply_text(
+                "✅ **Pillow установлен успешно!**\n\n"
+                "Теперь перезапусти бота вручную на Railway"
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ **Ошибка установки:**\n```\n{result.stderr[:500]}\n```"
+            )
+            
+    except subprocess.TimeoutExpired:
+        await update.message.reply_text("❌ Установка заняла слишком много времени")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
 
 # ============ АВТОВХОД В GOOGLE ============
 async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1338,6 +1350,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "🎮 /joystick - Открыть джойстик\n"
         "📊 /status - Проверить статус\n"
         "📸 /screenshot - Сделать скриншот\n"
+        "📦 /installpillow - Установить Pillow\n"
         "❌ /close - Закрыть браузер\n\n"
         "🚀 Быстрый вход с куками:\n"
         "/browser → /setcookie auth_token=... → /twitter"
@@ -1673,6 +1686,7 @@ def main():
     bot_app.add_handler(CommandHandler("setcookie", set_cookies))
     bot_app.add_handler(CommandHandler("frames", show_frames))
     bot_app.add_handler(CommandHandler("gologin", goto_login))
+    bot_app.add_handler(CommandHandler("installpillow", install_pillow))
     
     bot_app.add_handler(CallbackQueryHandler(joystick_callback))
     
