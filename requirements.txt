@@ -1,22 +1,3 @@
-# Основные
 pyTelegramBotAPI>=4.10.0
 Pillow>=10.0.0
 playwright>=1.40.0
-aiohttp>=3.9.0
-
-# Для асинхронности и работы с Playwright
-asyncio>=3.4.3
-typing-extensions>=4.8.0
-
-# Для работы с cookie и сессиями
-pyee>=11.0.0
-greenlet>=3.0.0
-
-# Для работы с API и сетью
-certifi>=2023.0.0
-charset-normalizer>=3.0.0
-idna>=3.0.0
-urllib3>=2.0.0
-
-# Для работы с JSON и датами (уже в Python)
-# json, datetime, logging - встроенные
