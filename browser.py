@@ -379,59 +379,10 @@ class AntiDetectBrowser:
         return True
     
     # ============================================================
-    # === КЛИК ПО КООРДИНАТАМ ===
-    # ============================================================
-    def click_by_coordinates(self, x, y):
-        """Клик по координатам"""
-        try:
-            self.log(f"🖱️ Клик по координатам ({x}, {y})", "INFO")
-            
-            # Получаем размер окна
-            window_size = self.driver.get_window_size()
-            width = window_size['width']
-            height = window_size['height']
-            
-            # Проверяем, что координаты в пределах окна
-            if x < 0 or x > width or y < 0 or y > height:
-                self.log(f"⚠️ Координаты ({x}, {y}) вне окна {width}x{height}", "WARNING")
-                x = width // 2
-                y = height // 2 - 50
-                self.log(f"🔄 Использую центр окна: ({x}, {y})", "INFO")
-            
-            # Способ 1: JavaScript клик
-            result = self.driver.execute_script(f"""
-                var el = document.elementFromPoint({x}, {y});
-                if (el) {{
-                    el.click();
-                    return true;
-                }}
-                return false;
-            """)
-            
-            if result:
-                self.log(f"✅ Клик по ({x}, {y}) выполнен через JS", "SUCCESS")
-                return True
-            
-            # Способ 2: ActionChains
-            actions = ActionChains(self.driver)
-            actions.move_by_offset(x, y)
-            time.sleep(0.3)
-            actions.click()
-            time.sleep(0.2)
-            actions.perform()
-            
-            self.log(f"✅ Клик по ({x}, {y}) выполнен через ActionChains", "SUCCESS")
-            return True
-            
-        except Exception as e:
-            self.log(f"❌ Ошибка клика по координатам: {e}", "ERROR")
-            return False
-    
-    # ============================================================
-    # === ПЕРЕХОД НА X.COM ===
+    # === ОТКРЫТИЕ X.COM (БЕЗ АВТОМАТИЧЕСКИХ КЛИКОВ) ===
     # ============================================================
     def go_to_xcom(self):
-        """Переход на X.com — клик по координатам"""
+        """Только открывает X.com — дальше джойстик"""
         self.log("🌐 ПЕРЕХОД НА X.COM", "INFO")
         
         try:
@@ -447,87 +398,55 @@ class AntiDetectBrowser:
                 self.log("🎉 Уже на главной", "SUCCESS")
                 return True
             
-            # === КЛИК ПО КООРДИНАТАМ ===
-            self.log("🖱️ Клик по координатам кнопки 'Continue as Babe'...", "INFO")
+            self.log("🔄 Ожидание действий через джойстик...", "INFO")
+            self.take_step_screenshot("xcom_waiting_joystick")
             
-            # Координаты из скрина (для десктопа 1920x1080)
-            x = 960
-            y = 380
-            
-            # Пробуем кликнуть
-            result = self.click_by_coordinates(x, y)
-            
-            if result:
-                self.log("✅ Клик выполнен", "SUCCESS")
-                self.take_step_screenshot("xcom_click_coords")
-                
-                # === ВАЖНО: ПАУЗА ПОСЛЕ КЛИКА ===
-                self.log("⏳ Ожидание загрузки после клика (5 секунд)...", "INFO")
-                time.sleep(5)
-                
-                # Делаем скриншот после паузы
-                self.take_step_screenshot("xcom_after_click")
-                self.log("📸 Скриншот после клика", "INFO")
-                
-                # Проверяем URL еще раз
-                current_url = self.driver.current_url
-                self.log(f"📍 URL после клика: {current_url}", "INFO")
-                
-                if "home" in current_url or "x.com/home" in current_url:
-                    self.log("🎉 ВХОД ВЫПОЛНЕН!", "SUCCESS")
-                    return True
-                
-                # Если открылось окно Google
-                if "accounts.google.com" in current_url:
-                    self.log("✅ Открылось окно Google!", "SUCCESS")
-                    self.take_step_screenshot("xcom_google_window")
-                    time.sleep(3)
-                    return True
-                
-                # Если страница входа — пробуем еще раз
-                if "login" in current_url or "i/flow" in current_url:
-                    self.log("🔄 Все еще на странице входа, пробую еще раз...", "INFO")
-                    
-                    # Пробуем другие координаты
-                    coords_to_try = [
-                        (960, 350),   # чуть выше
-                        (960, 410),   # чуть ниже
-                        (960, 400),   # центр
-                        (900, 380),   # левее
-                        (1020, 380),  # правее
-                    ]
-                    
-                    for cx, cy in coords_to_try:
-                        self.log(f"🔄 Пробую ({cx}, {cy})...", "DEBUG")
-                        self.click_by_coordinates(cx, cy)
-                        time.sleep(2)
-                        self.take_step_screenshot(f"xcom_click_{cx}_{cy}")
-                        
-                        current_url = self.driver.current_url
-                        if "home" in current_url or "x.com/home" in current_url:
-                            self.log("🎉 ВХОД ВЫПОЛНЕН!", "SUCCESS")
-                            return True
-                        if "accounts.google.com" in current_url:
-                            self.log("✅ Открылось окно Google!", "SUCCESS")
-                            return True
-            else:
-                self.log("❌ Клик не выполнен", "ERROR")
-            
-            # === ФИНАЛЬНАЯ ПРОВЕРКА ===
-            self.log("🔍 Финальная проверка...", "INFO")
-            time.sleep(3)
-            current_url = self.driver.current_url
-            self.take_step_screenshot("xcom_final")
-            
-            if "home" in current_url or "x.com/home" in current_url:
-                self.log("🎉 ВХОД ВЫПОЛНЕН!", "SUCCESS")
-                return True
-            
-            self.log(f"❌ Вход не выполнен. URL: {current_url}", "ERROR")
-            return False
+            return True
             
         except Exception as e:
             self.log(f"❌ ОШИБКА: {e}", "ERROR")
+            return False
+    
+    def click_by_coordinates(self, x, y):
+        """Клик по координатам (для джойстика)"""
+        try:
+            self.log(f"🖱️ Клик по координатам ({x}, {y})", "INFO")
+            
+            window_size = self.driver.get_window_size()
+            width = window_size['width']
+            height = window_size['height']
+            
+            if x < 0 or x > width or y < 0 or y > height:
+                self.log(f"⚠️ Координаты ({x}, {y}) вне окна {width}x{height}", "WARNING")
+                x = width // 2
+                y = height // 2
+                self.log(f"🔄 Использую центр окна: ({x}, {y})", "INFO")
+            
+            result = self.driver.execute_script(f"""
+                var el = document.elementFromPoint({x}, {y});
+                if (el) {{
+                    el.click();
+                    return true;
+                }}
+                return false;
+            """)
+            
+            if result:
+                self.log(f"✅ Клик по ({x}, {y}) выполнен", "SUCCESS")
+                return True
+            
+            actions = ActionChains(self.driver)
+            actions.move_by_offset(x, y)
+            time.sleep(0.3)
+            actions.click()
+            time.sleep(0.2)
+            actions.perform()
+            
+            self.log(f"✅ Клик по ({x}, {y}) выполнен через ActionChains", "SUCCESS")
+            return True
+            
+        except Exception as e:
+            self.log(f"❌ Ошибка клика по координатам: {e}", "ERROR")
             return False
     
     def login_twitter(self, username, password):
