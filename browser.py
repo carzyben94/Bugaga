@@ -379,10 +379,10 @@ class AntiDetectBrowser:
         return True
     
     # ============================================================
-    # === ПЕРЕХОД НА X.COM С РАСШИРЕННЫМ ПОИСКОМ ===
+    # === ПЕРЕХОД НА X.COM — ПОИСК ПО ТЕКСТУ ===
     # ============================================================
     def go_to_xcom(self, bot=None, chat_id=None, user_id=None):
-        """Переход на X.com — поиск всех кликабельных элементов"""
+        """Переход на X.com — поиск по тексту в любом элементе"""
         self.log("=" * 60, "INFO")
         self.log("🌐 ПЕРЕХОД НА X.COM", "INFO")
         self.log("=" * 60, "INFO")
@@ -412,87 +412,111 @@ class AntiDetectBrowser:
                 self.log("🎉 УЖЕ НА ГЛАВНОЙ! Вход выполнен.", "SUCCESS")
                 return True
             
-            # === ШАГ 6: Ищем ВСЕ кликабельные элементы ===
-            self.log("🔍 ШАГ 6: Поиск всех кликабельных элементов...", "INFO")
-            
-            all_clickable = []
-            
-            # 1. Кнопки
-            buttons = self.driver.find_elements(By.TAG_NAME, "button")
-            all_clickable.extend(buttons)
-            
-            # 2. Элементы с role="button"
-            role_buttons = self.driver.find_elements(By.XPATH, "//*[@role='button']")
-            all_clickable.extend(role_buttons)
-            
-            # 3. Элементы с onclick
-            onclick = self.driver.find_elements(By.XPATH, "//*[@onclick]")
-            all_clickable.extend(onclick)
-            
-            # 4. Элементы с классом содержащим "button"
-            class_buttons = self.driver.find_elements(By.XPATH, "//*[contains(@class, 'button')]")
-            all_clickable.extend(class_buttons)
-            
-            # 5. Все div, span, a (которые обычно бывают кнопками)
-            divs = self.driver.find_elements(By.XPATH, "//div[contains(@class, 'css-')]")
-            all_clickable.extend(divs)
-            
-            # Удаляем дубликаты
-            all_clickable = list(dict.fromkeys(all_clickable))
-            
-            self.log(f"📊 Найдено кликабельных элементов: {len(all_clickable)}", "INFO")
-            
-            # === ШАГ 7: Ищем "Continue as Babe" ===
-            self.log("🔍 ШАГ 7: Ищу 'Continue as...'", "INFO")
+            # === ШАГ 6: Ищем ТЕКСТ "Continue as Babe" В ЛЮБОМ ЭЛЕМЕНТЕ ===
+            self.log("🔍 ШАГ 6: Ищу текст 'Continue as'...", "INFO")
             
             button_found = False
             
-            # Пробуем найти по тексту
-            for elem in all_clickable:
-                try:
-                    text = elem.text.strip()
-                    if "Continue as" in text or "Continue with" in text:
-                        self.log(f"✅ Найдено: {text}", "SUCCESS")
-                        self.human_click(elem)
-                        button_found = True
-                        self.take_step_screenshot("xcom_click_continue_as")
-                        break
-                except:
-                    continue
+            # 1. Ищем "Continue as"
+            try:
+                elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue as')]")
+                self.log(f"📊 Найдено элементов с 'Continue as': {len(elements)}", "INFO")
+                
+                for elem in elements:
+                    try:
+                        text = elem.text.strip()
+                        self.log(f"🔍 Найден текст: '{text}'", "DEBUG")
+                        
+                        if "Continue as" in text:
+                            self.log(f"✅ Нашли: '{text}'", "SUCCESS")
+                            
+                            # Пробуем найти родительскую кнопку
+                            try:
+                                parent = elem.find_element(By.XPATH, "./ancestor::button")
+                                if parent and parent.is_displayed() and parent.is_enabled():
+                                    self.log("✅ Кликаем по кнопке-родителю", "SUCCESS")
+                                    self.human_click(parent)
+                                    button_found = True
+                                    self.take_step_screenshot("xcom_click_button_parent")
+                                    break
+                            except:
+                                pass
+                            
+                            # Если нет родительской кнопки — кликаем по самому элементу
+                            if not button_found:
+                                try:
+                                    if elem.is_displayed() and elem.is_enabled():
+                                        self.log("✅ Кликаем по элементу с текстом", "SUCCESS")
+                                        self.human_click(elem)
+                                        button_found = True
+                                        self.take_step_screenshot("xcom_click_text_element")
+                                        break
+                                except:
+                                    pass
+                    except:
+                        continue
+            except Exception as e:
+                self.log(f"⚠️ Ошибка поиска 'Continue as': {e}", "WARNING")
             
-            # Если не нашли — ищем по email
+            # 2. Если не нашли — ищем по email
             if not button_found and self.email:
                 self.log(f"🔍 Ищу по email: {self.email}", "INFO")
-                for elem in all_clickable:
-                    try:
-                        text = elem.text.strip()
-                        if self.email in text:
-                            self.log(f"✅ Найдено по email", "SUCCESS")
-                            self.human_click(elem)
-                            button_found = True
-                            self.take_step_screenshot("xcom_click_email")
-                            break
-                    except:
-                        continue
+                try:
+                    elements = self.driver.find_elements(By.XPATH, f"//*[contains(text(), '{self.email}')]")
+                    self.log(f"📊 Найдено элементов с email: {len(elements)}", "INFO")
+                    
+                    for elem in elements:
+                        try:
+                            text = elem.text.strip()
+                            if self.email in text:
+                                self.log(f"✅ Нашли email", "SUCCESS")
+                                
+                                try:
+                                    parent = elem.find_element(By.XPATH, "./ancestor::button")
+                                    if parent and parent.is_displayed() and parent.is_enabled():
+                                        self.log("✅ Кликаем по кнопке-родителю", "SUCCESS")
+                                        self.human_click(parent)
+                                        button_found = True
+                                        self.take_step_screenshot("xcom_click_email_parent")
+                                        break
+                                except:
+                                    pass
+                                
+                                if not button_found:
+                                    if elem.is_displayed() and elem.is_enabled():
+                                        self.log("✅ Кликаем по элементу с email", "SUCCESS")
+                                        self.human_click(elem)
+                                        button_found = True
+                                        self.take_step_screenshot("xcom_click_email_element")
+                                        break
+                        except:
+                            continue
+                except Exception as e:
+                    self.log(f"⚠️ Ошибка поиска email: {e}", "WARNING")
             
-            # Если не нашли — ищем по "Continue"
+            # 3. Если не нашли — ищем "Continue"
             if not button_found:
                 self.log("🔍 Ищу 'Continue'...", "INFO")
-                for elem in all_clickable:
-                    try:
-                        text = elem.text.strip()
-                        if text == "Continue":
-                            self.log(f"✅ Найдено 'Continue'", "SUCCESS")
-                            self.human_click(elem)
-                            button_found = True
-                            self.take_step_screenshot("xcom_click_continue")
-                            break
-                    except:
-                        continue
+                try:
+                    elements = self.driver.find_elements(By.XPATH, "//*[text()='Continue']")
+                    self.log(f"📊 Найдено элементов с 'Continue': {len(elements)}", "INFO")
+                    
+                    for elem in elements:
+                        try:
+                            if elem.is_displayed() and elem.is_enabled():
+                                self.log("✅ Нашли 'Continue'", "SUCCESS")
+                                self.human_click(elem)
+                                button_found = True
+                                self.take_step_screenshot("xcom_click_continue_text")
+                                break
+                        except:
+                            continue
+                except Exception as e:
+                    self.log(f"⚠️ Ошибка поиска 'Continue': {e}", "WARNING")
             
-            # === ШАГ 8: Если не нашли — пробуем Enter ===
+            # 4. Если не нашли — пробуем Enter
             if not button_found:
-                self.log("⚠️ Кнопка не найдена, пробую Enter", "WARNING")
+                self.log("⚠️ Ничего не найдено, пробую Enter", "WARNING")
                 try:
                     body = self.driver.find_element(By.TAG_NAME, "body")
                     body.send_keys(Keys.ENTER)
@@ -501,8 +525,8 @@ class AntiDetectBrowser:
                 except:
                     pass
             
-            # === ШАГ 9: Проверяем результат ===
-            self.log("🔍 ШАГ 8: Проверка результата...", "INFO")
+            # === ШАГ 7: Проверяем результат ===
+            self.log("🔍 ШАГ 7: Проверка результата...", "INFO")
             time.sleep(2)
             current_url = self.driver.current_url
             self.log(f"📍 Финальный URL: {current_url}", "INFO")
@@ -515,26 +539,25 @@ class AntiDetectBrowser:
                 self.log(f"⚠️ Вход не выполнен. URL: {current_url}", "WARNING")
                 self.take_step_screenshot("xcom_failed")
                 
-                # Отправляем список найденных элементов
+                # Если не сработало — отправляем список всех элементов с текстом
                 if bot and chat_id:
-                    self.log("📤 Отправляю список...", "INFO")
-                    result = "🔍 **Найденные кликабельные элементы:**\n\n"
+                    self.log("📤 Отправляю список элементов с текстом...", "INFO")
+                    all_elements = self.driver.find_elements(By.XPATH, "//*[text()!='' and not(self::script)]")
+                    result = "🔍 **Найденные элементы с текстом:**\n\n"
                     count = 0
-                    for elem in all_clickable[:30]:
+                    for elem in all_elements[:30]:
                         try:
                             text = elem.text.strip()
                             tag = elem.tag_name
-                            if text:
+                            if text and len(text) < 50:
                                 count += 1
-                                result += f"{count}. [{tag}] '{text[:40]}'\n"
+                                result += f"{count}. [{tag}] '{text}'\n"
                         except:
                             continue
                     
                     if count > 0:
                         result += "\n💡 Используйте /click <номер> для нажатия"
                         bot.send_message(chat_id, result, parse_mode='Markdown')
-                    else:
-                        bot.send_message(chat_id, "❌ Не найдено кликабельных элементов с текстом")
                 
                 return False
             
