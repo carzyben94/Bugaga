@@ -378,9 +378,6 @@ class AntiDetectBrowser:
         self.take_step_screenshot("google_done")
         return True
     
-    # ============================================================
-    # === ПЕРЕХОД НА X.COM С АНАЛИЗОМ ===
-    # ============================================================
     def go_to_xcom(self, bot=None, chat_id=None, user_id=None):
         """Переход на X.com — анализ и ожидание команды"""
         self.log("=" * 60, "INFO")
@@ -415,9 +412,30 @@ class AntiDetectBrowser:
             # === ШАГ 6: АНАЛИЗИРУЕМ СТРАНИЦУ ===
             self.log("🔍 ШАГ 5: Анализ страницы...", "INFO")
             
-            # === Ищем все кнопки ===
+            # === Ищем все кнопки (включая скрытые) ===
             self.log("📊 Поиск всех кнопок...", "INFO")
-            all_buttons = self.driver.find_elements(By.TAG_NAME, "button")
+            
+            all_buttons = []
+            
+            # 1. Обычные кнопки
+            buttons = self.driver.find_elements(By.TAG_NAME, "button")
+            all_buttons.extend(buttons)
+            
+            # 2. Кнопки с role="button"
+            role_buttons = self.driver.find_elements(By.XPATH, "//div[@role='button']")
+            all_buttons.extend(role_buttons)
+            
+            # 3. Кнопки с классом button
+            class_buttons = self.driver.find_elements(By.XPATH, "//*[contains(@class, 'button')]")
+            all_buttons.extend(class_buttons)
+            
+            # 4. Кликабельные элементы
+            clickable = self.driver.find_elements(By.XPATH, "//*[@role='button' or @type='button']")
+            all_buttons.extend(clickable)
+            
+            # Удаляем дубликаты
+            all_buttons = list(dict.fromkeys(all_buttons))
+            
             self.log(f"📊 Найдено кнопок: {len(all_buttons)}", "INFO")
             
             button_list = []
@@ -432,19 +450,36 @@ class AntiDetectBrowser:
                 except:
                     continue
             
+            # === Прокручиваем страницу для поиска скрытых кнопок ===
+            self.log("📜 Прокручиваю страницу для поиска скрытых кнопок...", "INFO")
+            self.driver.execute_script("window.scrollTo(0, 300);")
+            time.sleep(1)
+            
+            # === Дополнительный поиск после прокрутки ===
+            more_buttons = self.driver.find_elements(By.TAG_NAME, "button")
+            for btn in more_buttons:
+                try:
+                    btn_text = btn.text.strip()
+                    if btn_text and btn not in all_buttons:
+                        all_buttons.append(btn)
+                        idx = len(button_texts) + 1
+                        button_texts.append(f"{idx}. '{btn_text}'")
+                        self.log(f"   Найдена скрытая кнопка: '{btn_text[:40]}'", "DEBUG")
+                except:
+                    continue
+            
             # === ОТПРАВЛЯЕМ СПИСОК В TELEGRAM ===
             if bot and chat_id:
                 result = "🔍 **Найденные кнопки на X.com:**\n\n"
-                for text in button_texts[:20]:
+                for text in button_texts[:30]:
                     result += f"{text}\n"
-                if len(button_texts) > 20:
-                    result += f"\n... и еще {len(button_texts) - 20} кнопок"
+                if len(button_texts) > 30:
+                    result += f"\n... и еще {len(button_texts) - 30} кнопок"
                 result += "\n\n💡 Используйте /click <номер> для нажатия"
                 
                 bot.send_message(chat_id, result, parse_mode='Markdown')
                 self.log("✅ Список кнопок отправлен в Telegram", "SUCCESS")
                 
-                # Сохраняем кнопки для пользователя
                 if user_id:
                     try:
                         from bot import user_buttons
