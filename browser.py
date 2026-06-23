@@ -390,10 +390,10 @@ class AntiDetectBrowser:
         return True
     
     # ============================================================
-    # === ПЕРЕХОД НА X.COM И ВХОД ===
+    # === ПЕРЕХОД НА X.COM С АВТОМАТИЧЕСКИМ АНАЛИЗОМ ===
     # ============================================================
-    def go_to_xcom(self):
-        """Переход на X.com — анализ кнопок и вход"""
+    def go_to_xcom(self, bot=None, chat_id=None, user_id=None):
+        """Переход на X.com — автоматический анализ и ожидание команды"""
         self.log("=" * 60, "INFO")
         self.log("🌐 ПЕРЕХОД НА X.COM", "INFO")
         self.log("=" * 60, "INFO")
@@ -426,111 +426,87 @@ class AntiDetectBrowser:
             # === ШАГ 6: АНАЛИЗИРУЕМ СТРАНИЦУ ===
             self.log("🔍 ШАГ 5: Анализ страницы...", "INFO")
             
-            # === 6.1 Ищем все кнопки ===
+            # === Ищем все кнопки ===
             self.log("📊 Поиск всех кнопок...", "INFO")
             all_buttons = self.driver.find_elements(By.TAG_NAME, "button")
             self.log(f"📊 Найдено кнопок: {len(all_buttons)}", "INFO")
             
-            button_info = []
+            button_list = []
+            button_texts = []
             for idx, btn in enumerate(all_buttons):
                 try:
                     btn_text = btn.text.strip()
                     if btn_text:
-                        button_info.append(f"   Кнопка {idx+1}: '{btn_text}'")
+                        button_list.append(btn)
+                        button_texts.append(f"{idx+1}. '{btn_text}'")
                         self.log(f"   Кнопка {idx+1}: '{btn_text[:40]}'", "DEBUG")
                 except:
                     continue
             
-            # === 6.2 Ищем поля ===
-            self.log("📊 Поиск полей ввода...", "INFO")
-            inputs = self.driver.find_elements(By.TAG_NAME, "input")
-            self.log(f"📊 Найдено полей: {len(inputs)}", "INFO")
+            # === ОТПРАВЛЯЕМ СПИСОК В TELEGRAM ===
+            if bot and chat_id:
+                result = "🔍 **Найденные кнопки на X.com:**\n\n"
+                for text in button_texts[:20]:
+                    result += f"{text}\n"
+                if len(button_texts) > 20:
+                    result += f"\n... и еще {len(button_texts) - 20} кнопок"
+                result += "\n\n💡 Используйте /click <номер> для нажатия"
+                
+                bot.send_message(chat_id, result, parse_mode='Markdown')
+                
+                # Сохраняем кнопки для пользователя
+                if user_id:
+                    try:
+                        # Импортируем глобальную переменную
+                        import sys
+                        sys.path.append('.')
+                        from bot import user_buttons
+                        user_buttons[user_id] = {
+                            'buttons': button_list,
+                            'list': button_texts
+                        }
+                    except:
+                        pass
             
-            for idx, inp in enumerate(inputs):
+            # === ШАГ 7: Ждем пока пользователь нажмет кнопку ===
+            self.log("⏳ Ожидание команды /click... (60 секунд)", "INFO")
+            
+            waited = 0
+            while waited < 60:
+                time.sleep(2)
+                waited += 2
                 try:
-                    input_type = inp.get_attribute("type")
-                    input_placeholder = inp.get_attribute("placeholder")
-                    input_name = inp.get_attribute("name")
-                    self.log(f"   Поле {idx+1}: type='{input_type}', placeholder='{input_placeholder}', name='{input_name}'", "DEBUG")
+                    if not self.driver:
+                        break
+                except:
+                    break
+                
+                current_url = self.driver.current_url
+                if "home" in current_url or "x.com/home" in current_url:
+                    self.log("🎉 ВХОД ВЫПОЛНЕН!", "SUCCESS")
+                    return True
+            
+            # Если пользователь не нажал кнопку — пробуем автоматически
+            self.log("⏳ Время ожидания истекло, пробую автоматический вход...", "INFO")
+            
+            # Пробуем найти "Continue as" или "Continue"
+            for btn in button_list[:5]:
+                try:
+                    btn_text = btn.text.strip()
+                    if "Continue as" in btn_text or "Continue" in btn_text:
+                        self.log(f"✅ Автоматически нажимаю: '{btn_text}'", "SUCCESS")
+                        actions = ActionChains(self.driver)
+                        actions.move_to_element(btn)
+                        time.sleep(0.3)
+                        actions.click()
+                        time.sleep(0.2)
+                        actions.perform()
+                        break
                 except:
                     continue
             
-            # === ШАГ 7: Ищем нужную кнопку ===
-            self.log("🔍 ШАГ 6: Поиск кнопки для входа...", "INFO")
-            
-            button_found = False
-            
-            # Приоритет кнопок
-            priority_texts = [
-                "Continue as",
-                "Continue with Google",
-                "Continue",
-                "Войти",
-                "Sign in",
-                "Log in"
-            ]
-            
-            # Сначала ищем по приоритету
-            for priority in priority_texts:
-                if button_found:
-                    break
-                self.log(f"   Ищу кнопку с текстом: '{priority}'", "DEBUG")
-                
-                for btn in all_buttons:
-                    try:
-                        btn_text = btn.text.strip()
-                        if priority.lower() in btn_text.lower():
-                            self.log(f"✅ Нашёл кнопку: '{btn_text}'", "SUCCESS")
-                            
-                            # === Кликаем ===
-                            self.log("🖱️ Кликаю...", "INFO")
-                            actions = ActionChains(self.driver)
-                            actions.move_to_element(btn)
-                            time.sleep(0.3)
-                            actions.click()
-                            time.sleep(0.2)
-                            actions.perform()
-                            
-                            button_found = True
-                            self.take_step_screenshot("xcom_click_button")
-                            self.log("✅ Клик выполнен", "SUCCESS")
-                            break
-                    except:
-                        continue
-            
-            # === Если не нашли — кликаем по email ===
-            if not button_found and self.email:
-                self.log("🔍 Ищу кнопку с email...", "INFO")
-                try:
-                    email_elements = self.driver.find_elements(By.XPATH, f"//*[contains(text(), '{self.email}')]")
-                    for elem in email_elements:
-                        if elem.is_displayed() and elem.is_enabled():
-                            self.log(f"✅ Нашёл email: {self.email}", "SUCCESS")
-                            actions = ActionChains(self.driver)
-                            actions.move_to_element(elem)
-                            time.sleep(0.3)
-                            actions.click()
-                            time.sleep(0.2)
-                            actions.perform()
-                            button_found = True
-                            self.take_step_screenshot("xcom_click_email")
-                            break
-                except:
-                    pass
-            
-            # === Если не нашли — пробуем Enter ===
-            if not button_found:
-                self.log("❌ Кнопка не найдена, пробую Enter", "WARNING")
-                try:
-                    body = self.driver.find_element(By.TAG_NAME, "body")
-                    body.send_keys(Keys.ENTER)
-                    self.log("✅ Нажат Enter", "SUCCESS")
-                    time.sleep(2)
-                except:
-                    pass
-            
             # === ШАГ 8: Проверяем результат ===
-            self.log("🔍 ШАГ 7: Проверка результата...", "INFO")
+            self.log("🔍 ШАГ 6: Проверка результата...", "INFO")
             time.sleep(2)
             current_url = self.driver.current_url
             self.log(f"📍 Финальный URL: {current_url}", "INFO")
@@ -548,7 +524,6 @@ class AntiDetectBrowser:
             self.log(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}", "ERROR")
             import traceback
             self.log(f"📋 Трассировка:\n{traceback.format_exc()}", "ERROR")
-            self.take_step_screenshot("xcom_error")
             return False
     
     def login_twitter(self, username, password):
