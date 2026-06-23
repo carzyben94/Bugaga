@@ -14,7 +14,6 @@ user_sessions = {}
 def send_log_to_chat(chat_id, log_entry):
     """Отправляет лог в чат"""
     try:
-        # Отправляем только важные логи (не спамим)
         if "✅" in log_entry or "❌" in log_entry or "⚠️" in log_entry or "🎉" in log_entry:
             bot.send_message(chat_id, log_entry)
     except:
