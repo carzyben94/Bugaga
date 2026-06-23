@@ -1,6 +1,9 @@
 import os
 import asyncio
+import time
 import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
+from PIL import Image, ImageDraw
 from browser import Browser
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -11,6 +14,7 @@ bot = telebot.TeleBot(TOKEN)
 
 # === ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ===
 browser = None
+user_cursor = {}
 loop = None
 
 
@@ -23,15 +27,74 @@ def run_async(coro):
     return loop.run_until_complete(coro)
 
 
+# === КЛАВИАТУРА ДЖОЙСТИКА ===
+def get_joystick():
+    keyboard = InlineKeyboardMarkup(row_width=3)
+    keyboard.row(
+        InlineKeyboardButton("⬆️", callback_data="up"),
+        InlineKeyboardButton("🔄", callback_data="refresh")
+    )
+    keyboard.row(
+        InlineKeyboardButton("⬅️", callback_data="left"),
+        InlineKeyboardButton("💣 КЛИК", callback_data="click"),
+        InlineKeyboardButton("➡️", callback_data="right")
+    )
+    keyboard.row(
+        InlineKeyboardButton("⬇️", callback_data="down"),
+        InlineKeyboardButton("🏠", callback_data="center"),
+        InlineKeyboardButton("⏹️ СТОП", callback_data="stop")
+    )
+    keyboard.row(
+        InlineKeyboardButton("📸 Скрин", callback_data="screenshot"),
+        InlineKeyboardButton("📍 Позиция", callback_data="position")
+    )
+    return keyboard
+
+
+# === СКРИНШОТ С КУРСОРОМ ===
+def screenshot_with_cursor(user_id, filename="screen.png"):
+    try:
+        cursor = user_cursor.get(user_id, {'x': 960, 'y': 400})
+        
+        # Делаем скриншот
+        run_async(browser.screenshot(filename))
+        
+        # Рисуем курсор
+        img = Image.open(filename)
+        draw = ImageDraw.Draw(img)
+        x, y = cursor['x'], cursor['y']
+        
+        draw.line((x-20, y, x+20, y), fill="red", width=3)
+        draw.line((x, y-20, x, y+20), fill="red", width=3)
+        draw.ellipse((x-5, y-5, x+5, y+5), fill="red")
+        draw.text((x+25, y-10), f"({x},{y})", fill="red")
+        
+        img.save(filename)
+        return filename
+    except Exception as e:
+        print(f"❌ Скрин: {e}")
+        return None
+
+
+def move_cursor(user_id, dx, dy):
+    if user_id not in user_cursor:
+        user_cursor[user_id] = {'x': 960, 'y': 400}
+    
+    user_cursor[user_id]['x'] = max(0, min(1920, user_cursor[user_id]['x'] + dx))
+    user_cursor[user_id]['y'] = max(0, min(1080, user_cursor[user_id]['y'] + dy))
+    return user_cursor[user_id]['x'], user_cursor[user_id]['y']
+
+
+# === КОМАНДЫ ===
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.reply_to(message, 
-        "👋 Привет!\n"
-        "Команды:\n"
+    bot.reply_to(message,
+        "👋 Команды:\n"
         "/browser — Запустить браузер\n"
-        "/close — Закрыть браузер\n"
+        "/open url — Открыть сайт\n"
+        "/joy — Джойстик\n"
         "/screen — Скриншот\n"
-        "/google — Открыть Google"
+        "/close — Закрыть браузер"
     )
 
 
@@ -46,9 +109,77 @@ def start_browser(message):
     try:
         browser = Browser(headless=True)
         run_async(browser.start())
-        bot.reply_to(message, "✅ Браузер запущен!")
+        bot.reply_to(message, "✅ Браузер запущен!\nОткрой сайт: /open google.com")
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}")
+
+
+@bot.message_handler(commands=['open'])
+def open_url(message):
+    global browser
+    
+    if not browser:
+        bot.reply_to(message, "❌ Сначала /browser")
+        return
+    
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        bot.reply_to(message, "❌ /open google.com")
+        return
+    
+    url = parts[1]
+    
+    try:
+        run_async(browser.goto(url))
+        bot.reply_to(message, f"✅ Открыто: {url}\n/joy для управления")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}")
+
+
+@bot.message_handler(commands=['joy'])
+def joystick(message):
+    global browser
+    
+    if not browser:
+        bot.reply_to(message, "❌ Сначала /browser")
+        return
+    
+    user_id = message.from_user.id
+    user_cursor[user_id] = {'x': 960, 'y': 400}
+    
+    try:
+        fn = screenshot_with_cursor(user_id, f"joy_{user_id}.png")
+        if fn:
+            with open(fn, "rb") as f:
+                bot.send_photo(
+                    message.chat.id, 
+                    f, 
+                    caption="🎮 Управление курсором",
+                    reply_markup=get_joystick()
+                )
+            os.remove(fn)
+    except Exception as e:
+        bot.reply_to(message, f"❌ {str(e)[:100]}")
+
+
+@bot.message_handler(commands=['screen'])
+def screenshot(message):
+    global browser
+    
+    if not browser:
+        bot.reply_to(message, "❌ Сначала /browser")
+        return
+    
+    try:
+        fn = f"screen_{message.from_user.id}.png"
+        run_async(browser.screenshot(fn))
+        
+        with open(fn, "rb") as f:
+            bot.send_photo(message.chat.id, f, caption="📸 Скриншот")
+        
+        os.remove(fn)
+    except Exception as e:
+        bot.reply_to(message, f"❌ {str(e)[:100]}")
 
 
 @bot.message_handler(commands=['close'])
@@ -62,44 +193,104 @@ def close_browser(message):
     try:
         run_async(browser.close())
         browser = None
+        user_cursor.clear()
         bot.reply_to(message, "✅ Браузер закрыт")
     except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}")
+        bot.reply_to(message, f"❌ {str(e)[:100]}")
 
 
-@bot.message_handler(commands=['screen'])
-def screenshot(message):
+# === ОБРАБОТЧИК КНОПОК ДЖОЙСТИКА ===
+@bot.callback_query_handler(func=lambda call: True)
+def joystick_callback(call):
     global browser
     
     if not browser:
-        bot.reply_to(message, "❌ Сначала /browser")
+        bot.answer_callback_query(call.id, "❌ Нет браузера")
         return
     
-    try:
-        filename = f"screen_{message.from_user.id}.png"
-        run_async(browser.screenshot(filename))
-        
-        with open(filename, "rb") as f:
-            bot.send_photo(message.chat.id, f, caption="📸 Скриншот")
-        
-        os.remove(filename)
-    except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}")
-
-
-@bot.message_handler(commands=['google'])
-def open_google(message):
-    global browser
-    
-    if not browser:
-        bot.reply_to(message, "❌ Сначала /browser")
-        return
+    user_id = call.from_user.id
+    chat_id = call.message.chat.id
+    msg_id = call.message.message_id
     
     try:
-        run_async(browser.goto("https://google.com"))
-        bot.reply_to(message, "✅ Google открыт! /screen чтобы посмотреть")
+        # Движение
+        if call.data == "up":
+            x, y = move_cursor(user_id, 0, -30)
+            bot.answer_callback_query(call.id, f"⬆️ ({x},{y})")
+        
+        elif call.data == "down":
+            x, y = move_cursor(user_id, 0, 30)
+            bot.answer_callback_query(call.id, f"⬇️ ({x},{y})")
+        
+        elif call.data == "left":
+            x, y = move_cursor(user_id, -30, 0)
+            bot.answer_callback_query(call.id, f"⬅️ ({x},{y})")
+        
+        elif call.data == "right":
+            x, y = move_cursor(user_id, 30, 0)
+            bot.answer_callback_query(call.id, f"➡️ ({x},{y})")
+        
+        elif call.data == "center":
+            user_cursor[user_id] = {'x': 960, 'y': 400}
+            bot.answer_callback_query(call.id, "🏠 Центр")
+        
+        # Клик
+        elif call.data == "click":
+            bot.answer_callback_query(call.id, "💣 Клик...")
+            x, y = user_cursor.get(user_id, {'x': 960, 'y': 400}).values()
+            
+            result = run_async(browser.mega_click(x=int(x), y=int(y)))
+            if result:
+                bot.answer_callback_query(call.id, "✅ Клик успешен!")
+            else:
+                bot.answer_callback_query(call.id, "❌ Не сработал")
+        
+        # Скриншот
+        elif call.data == "screenshot":
+            bot.answer_callback_query(call.id, "📸...")
+            fn = f"ss_{user_id}.png"
+            run_async(browser.screenshot(fn))
+            with open(fn, "rb") as f:
+                bot.send_photo(chat_id, f)
+            os.remove(fn)
+            return
+        
+        # Позиция
+        elif call.data == "position":
+            c = user_cursor.get(user_id, {'x': 960, 'y': 400})
+            bot.answer_callback_query(call.id, f"📍 ({c['x']},{c['y']})")
+            return
+        
+        # Обновить
+        elif call.data == "refresh":
+            bot.answer_callback_query(call.id, "🔄 Обновление...")
+        
+        # Стоп
+        elif call.data == "stop":
+            try:
+                run_async(browser.close())
+                browser = None
+                user_cursor.clear()
+            except:
+                pass
+            bot.answer_callback_query(call.id, "⏹️ Закрыт")
+            bot.edit_message_text("✅ Браузер закрыт", chat_id=chat_id, message_id=msg_id)
+            return
+        
+        # Обновляем картинку с курсором
+        fn = screenshot_with_cursor(user_id, f"upd_{user_id}.png")
+        if fn:
+            with open(fn, "rb") as f:
+                bot.edit_message_media(
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                    media=InputMediaPhoto(f),
+                    reply_markup=get_joystick()
+                )
+            os.remove(fn)
+            
     except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}")
+        bot.answer_callback_query(call.id, f"❌ {str(e)[:30]}")
 
 
 @bot.message_handler(func=lambda m: True)
