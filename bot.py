@@ -41,6 +41,7 @@ def send_welcome(message):
         "/logingoogle email пароль - Вход через Google\n"
         "/analyze - Показать все кнопки на странице\n"
         "/click <номер> - Нажать кнопку по номеру\n"
+        "/clickpos X Y - Кликнуть по координатам\n"
         "/log - Показать логи\n"
         "/getlog - Скачать лог-файл\n"
         "/status - Статус сессии\n"
@@ -211,6 +212,54 @@ def handle_click(message):
         if screenshot:
             with open(screenshot, 'rb') as photo:
                 bot.send_photo(chat_id, photo, caption="📸 После нажатия")
+            os.remove(screenshot)
+        
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {str(e)[:200]}")
+
+@bot.message_handler(commands=['clickpos'])
+def handle_clickpos(message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    
+    if user_id not in user_sessions:
+        bot.reply_to(message, "❌ Нет активной сессии")
+        return
+    
+    if message.text is None:
+        bot.reply_to(message, "❌ Используйте: /clickpos X Y")
+        return
+    
+    parts = message.text.split()
+    if len(parts) < 3:
+        bot.reply_to(message, "❌ Используйте: /clickpos X Y")
+        return
+    
+    try:
+        x = int(parts[1])
+        y = int(parts[2])
+    except ValueError:
+        bot.reply_to(message, "❌ Введите числа: /clickpos 500 300")
+        return
+    
+    browser = user_sessions[user_id]
+    
+    try:
+        bot.reply_to(message, f"🖱️ Кликаю по координатам: ({x}, {y})")
+        
+        actions = ActionChains(browser.driver)
+        actions.move_by_offset(x, y)
+        time.sleep(0.3)
+        actions.click()
+        time.sleep(0.2)
+        actions.perform()
+        
+        bot.send_message(chat_id, f"✅ Клик выполнен по ({x}, {y})")
+        
+        screenshot = browser.take_screenshot(f"clickpos_{user_id}.png")
+        if screenshot:
+            with open(screenshot, 'rb') as photo:
+                bot.send_photo(chat_id, photo, caption=f"📸 Клик по ({x}, {y})")
             os.remove(screenshot)
         
     except Exception as e:
