@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Устанавливаем Chrome без apt-key
+# Устанавливаем Chrome (через правильный способ, без apt-key)
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
