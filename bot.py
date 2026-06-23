@@ -401,7 +401,7 @@ def handle_close(message):
     
     # Закрываем Google
     if google_browser:
-        try:
+        try: 
             google_browser.close()
         except:
             pass
