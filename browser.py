@@ -521,4 +521,4 @@ def check_installation():
     return {
         'chrome': os.path.exists("/usr/bin/google-chrome"),
         'chrome_path': "/usr/bin/google-chrome"
-    }
+    } 
