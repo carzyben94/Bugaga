@@ -4,7 +4,7 @@ import threading
 import time
 import requests
 from flask import Flask, jsonify
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from playwright.async_api import async_playwright
 
@@ -220,6 +220,65 @@ def get_joystick_keyboard(mode="normal"):
     
     return InlineKeyboardMarkup(keyboard)
 
+async def update_joystick_message(query, page, user_id, mode, caption=""):
+    """Обновляет сообщение джойстика с новым скриншотом"""
+    
+    # Получаем координаты
+    try:
+        coords = await page.evaluate("""
+            ({
+                x: window.scrollX + window.innerWidth / 2,
+                y: window.scrollY + window.innerHeight / 2
+            })
+        """)
+        current_x = int(coords["x"])
+        current_y = int(coords["y"])
+    except:
+        current_x = 0
+        current_y = 0
+    
+    # Определяем шаг
+    if mode == "fast":
+        step = JOYSTICK_FAST_STEP
+        mode_label = "⚡ БЫСТРЫЙ"
+    elif mode == "slow":
+        step = JOYSTICK_SLOW_STEP
+        mode_label = "🐢 МЕДЛЕННЫЙ"
+    else:
+        step = JOYSTICK_STEP
+        mode_label = "🔄 НОРМАЛЬНЫЙ"
+    
+    # Делаем скриншот с курсором
+    screenshot = await screenshot_with_cursor(page, current_x, current_y)
+    
+    # Текст сообщения
+    text = (
+        f"🎮 ДЖОЙСТИК 🎮\n\n"
+        f"📍 Координаты: ({current_x}, {current_y})\n"
+        f"📏 Шаг: {step}px\n"
+        f"🔄 Режим: {mode_label}\n"
+    )
+    if caption:
+        text += f"\n{caption}"
+    
+    # Редактируем сообщение с фото
+    try:
+        await query.edit_message_media(
+            media=InputMediaPhoto(
+                media=screenshot,
+                caption=text
+            ),
+            reply_markup=get_joystick_keyboard(mode)
+        )
+    except Exception as e:
+        print(f"Ошибка редактирования: {e}")
+        # Если не получается отредактировать, отправляем новое
+        await query.message.reply_photo(
+            photo=screenshot,
+            caption=text,
+            reply_markup=get_joystick_keyboard(mode)
+        )
+
 # ============ КОМАНДЫ БОТА ============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
@@ -324,12 +383,17 @@ async def joystick_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         current_x = 0
         current_y = 0
     
-    await update.message.reply_text(
-        f"🎮 ДЖОЙСТИК 🎮\n\n"
-        f"📍 Координаты: ({current_x}, {current_y})\n"
-        f"📏 Шаг: {JOYSTICK_STEP}px\n"
-        f"🔄 Режим: НОРМАЛЬНЫЙ\n\n"
-        f"Используй кнопки для управления:",
+    screenshot = await screenshot_with_cursor(page, current_x, current_y)
+    
+    await update.message.reply_photo(
+        photo=screenshot,
+        caption=(
+            f"🎮 ДЖОЙСТИК 🎮\n\n"
+            f"📍 Координаты: ({current_x}, {current_y})\n"
+            f"📏 Шаг: {JOYSTICK_STEP}px\n"
+            f"🔄 Режим: НОРМАЛЬНЫЙ\n\n"
+            f"Используй кнопки для управления:"
+        ),
         reply_markup=get_joystick_keyboard("normal")
     )
 
@@ -352,7 +416,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     page = session["page"]
     mode = joystick_states.get(user_id, {}).get("mode", "normal")
     
-    # Получаем текущие координаты курсора
+    # Получаем текущие координаты
     try:
         coords = await page.evaluate("""
             ({
@@ -366,7 +430,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         current_x = 0
         current_y = 0
     
-    # ДВИЖЕНИЕ
+    # ============ ДВИЖЕНИЕ ============
     if data.startswith("move_"):
         parts = data.split("_")
         dx = int(parts[1])
@@ -379,28 +443,15 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await page.mouse.move(new_x, new_y, steps=5)
             await page.wait_for_timeout(100)
             
-            screenshot = await screenshot_with_cursor(page, new_x, new_y)
-            
-            try:
-                await query.edit_message_text(
-                    f"🎮 ДЖОЙСТИК 🎮\n\n"
-                    f"📍 Координаты: ({new_x}, {new_y})\n"
-                    f"📏 Шаг: {abs(dx)}px\n"
-                    f"🔄 Режим: {mode.upper()}",
-                    reply_markup=get_joystick_keyboard(mode)
-                )
-            except:
-                pass
-            
-            await query.message.reply_photo(
-                photo=screenshot,
-                caption=f"🖱️ ({new_x}, {new_y})"
+            await update_joystick_message(
+                query, page, user_id, mode,
+                f"🖱️ Движение: ({dx}, {dy})"
             )
             
         except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка: {e}", reply_markup=get_joystick_keyboard(mode))
+            await query.edit_message_text(f"❌ Ошибка: {e}")
     
-    # КЛИК ПО ЦЕНТРУ
+    # ============ КЛИК ПО ЦЕНТРУ ============
     elif data == "click_center":
         try:
             viewport = page.viewport_size
@@ -410,215 +461,138 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await page.mouse.move(x, y, steps=3)
             await page.wait_for_timeout(100)
             await page.mouse.click(x, y)
-            await page.wait_for_timeout(200)
+            await page.wait_for_timeout(300)
             
-            screenshot = await screenshot_with_cursor(page, x, y)
-            
-            try:
-                await query.edit_message_text(
-                    f"🎮 ДЖОЙСТИК 🎮\n\n"
-                    f"🖱️ Клик по центру ({x}, {y})",
-                    reply_markup=get_joystick_keyboard(mode)
-                )
-            except:
-                pass
-            
-            await query.message.reply_photo(photo=screenshot, caption=f"✅ Клик ({x}, {y})")
+            await update_joystick_message(
+                query, page, user_id, mode,
+                f"🖱️ Клик по центру ({x}, {y})"
+            )
             
         except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка: {e}", reply_markup=get_joystick_keyboard(mode))
+            await query.edit_message_text(f"❌ Ошибка: {e}")
     
-    # ЛКМ
+    # ============ ЛКМ ============
     elif data == "click_left":
         try:
             await page.mouse.click(current_x, current_y, button="left")
-            await page.wait_for_timeout(200)
+            await page.wait_for_timeout(300)
             
-            screenshot = await screenshot_with_cursor(page, current_x, current_y)
-            
-            try:
-                await query.edit_message_text(
-                    f"🎮 ДЖОЙСТИК 🎮\n\n"
-                    f"🖱️ ЛКМ в ({current_x}, {current_y})",
-                    reply_markup=get_joystick_keyboard(mode)
-                )
-            except:
-                pass
-            
-            await query.message.reply_photo(photo=screenshot, caption=f"✅ ЛКМ ({current_x}, {current_y})")
+            await update_joystick_message(
+                query, page, user_id, mode,
+                f"🖱️ ЛКМ ({current_x}, {current_y})"
+            )
             
         except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка: {e}", reply_markup=get_joystick_keyboard(mode))
+            await query.edit_message_text(f"❌ Ошибка: {e}")
     
-    # ПКМ
+    # ============ ПКМ ============
     elif data == "click_right":
         try:
             await page.mouse.click(current_x, current_y, button="right")
-            await page.wait_for_timeout(200)
+            await page.wait_for_timeout(300)
             
-            screenshot = await screenshot_with_cursor(page, current_x, current_y)
-            
-            try:
-                await query.edit_message_text(
-                    f"🎮 ДЖОЙСТИК 🎮\n\n"
-                    f"🖱️ ПКМ в ({current_x}, {current_y})",
-                    reply_markup=get_joystick_keyboard(mode)
-                )
-            except:
-                pass
-            
-            await query.message.reply_photo(photo=screenshot, caption=f"✅ ПКМ ({current_x}, {current_y})")
+            await update_joystick_message(
+                query, page, user_id, mode,
+                f"🖱️ ПКМ ({current_x}, {current_y})"
+            )
             
         except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка: {e}", reply_markup=get_joystick_keyboard(mode))
+            await query.edit_message_text(f"❌ Ошибка: {e}")
     
-    # ENTER
+    # ============ ENTER ============
     elif data == "press_enter":
         try:
             await page.keyboard.press("Enter")
             await page.wait_for_timeout(300)
             
-            screenshot = await screenshot_with_cursor(page, current_x, current_y)
-            
-            try:
-                await query.edit_message_text(
-                    f"🎮 ДЖОЙСТИК 🎮\n\n"
-                    f"⌨️ Нажат Enter",
-                    reply_markup=get_joystick_keyboard(mode)
-                )
-            except:
-                pass
-            
-            await query.message.reply_photo(photo=screenshot, caption="⌨️ Enter")
+            await update_joystick_message(
+                query, page, user_id, mode,
+                "⌨️ Нажат Enter"
+            )
             
         except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка: {e}", reply_markup=get_joystick_keyboard(mode))
+            await query.edit_message_text(f"❌ Ошибка: {e}")
     
-    # ОБНОВИТЬ
+    # ============ ОБНОВИТЬ ============
     elif data == "refresh":
         try:
             await page.reload()
             await page.wait_for_timeout(500)
             
-            screenshot = await screenshot_with_cursor(page, current_x, current_y)
-            
-            try:
-                await query.edit_message_text(
-                    f"🎮 ДЖОЙСТИК 🎮\n\n"
-                    f"🔄 Страница обновлена",
-                    reply_markup=get_joystick_keyboard(mode)
-                )
-            except:
-                pass
-            
-            await query.message.reply_photo(photo=screenshot, caption="🔄 Обновлено")
+            await update_joystick_message(
+                query, page, user_id, mode,
+                "🔄 Страница обновлена"
+            )
             
         except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка: {e}", reply_markup=get_joystick_keyboard(mode))
+            await query.edit_message_text(f"❌ Ошибка: {e}")
     
-    # НАЗАД
+    # ============ НАЗАД ============
     elif data == "go_back":
         try:
             await page.go_back()
             await page.wait_for_timeout(300)
             
-            screenshot = await screenshot_with_cursor(page, current_x, current_y)
-            
-            try:
-                await query.edit_message_text(
-                    f"🎮 ДЖОЙСТИК 🎮\n\n"
-                    f"⬅️ Назад",
-                    reply_markup=get_joystick_keyboard(mode)
-                )
-            except:
-                pass
-            
-            await query.message.reply_photo(photo=screenshot, caption="⬅️ Назад")
+            await update_joystick_message(
+                query, page, user_id, mode,
+                "⬅️ Назад"
+            )
             
         except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка: {e}", reply_markup=get_joystick_keyboard(mode))
+            await query.edit_message_text(f"❌ Ошибка: {e}")
     
-    # ВПЕРЁД
+    # ============ ВПЕРЁД ============
     elif data == "go_forward":
         try:
             await page.go_forward()
             await page.wait_for_timeout(300)
             
-            screenshot = await screenshot_with_cursor(page, current_x, current_y)
-            
-            try:
-                await query.edit_message_text(
-                    f"🎮 ДЖОЙСТИК 🎮\n\n"
-                    f"➡️ Вперёд",
-                    reply_markup=get_joystick_keyboard(mode)
-                )
-            except:
-                pass
-            
-            await query.message.reply_photo(photo=screenshot, caption="➡️ Вперёд")
+            await update_joystick_message(
+                query, page, user_id, mode,
+                "➡️ Вперёд"
+            )
             
         except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка: {e}", reply_markup=get_joystick_keyboard(mode))
+            await query.edit_message_text(f"❌ Ошибка: {e}")
     
-    # СКРИНШОТ
+    # ============ СКРИНШОТ ============
     elif data == "screenshot":
         try:
-            screenshot = await screenshot_with_cursor(page, current_x, current_y)
-            
-            try:
-                await query.edit_message_text(
-                    f"🎮 ДЖОЙСТИК 🎮\n\n"
-                    f"📸 Скриншот сделан\n"
-                    f"📍 ({current_x}, {current_y})",
-                    reply_markup=get_joystick_keyboard(mode)
-                )
-            except:
-                pass
-            
-            await query.message.reply_photo(photo=screenshot, caption=f"📸 ({current_x}, {current_y})")
+            await update_joystick_message(
+                query, page, user_id, mode,
+                "📸 Скриншот обновлён"
+            )
             
         except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка: {e}", reply_markup=get_joystick_keyboard(mode))
+            await query.edit_message_text(f"❌ Ошибка: {e}")
     
-    # ЗАКРЫТЬ БРАУЗЕР
+    # ============ ЗАКРЫТЬ БРАУЗЕР ============
     elif data == "close_browser":
         await close_user_browser(user_id)
         await query.edit_message_text("❌ Браузер закрыт", reply_markup=None)
     
-    # ПЕРЕКЛЮЧЕНИЕ РЕЖИМА
+    # ============ ПЕРЕКЛЮЧЕНИЕ РЕЖИМА ============
     elif data == "toggle_mode":
         current_mode = joystick_states.get(user_id, {}).get("mode", "normal")
         
         if current_mode == "normal":
             new_mode = "fast"
             mode_label = "⚡ БЫСТРЫЙ"
-            step = JOYSTICK_FAST_STEP
         elif current_mode == "fast":
             new_mode = "slow"
             mode_label = "🐢 МЕДЛЕННЫЙ"
-            step = JOYSTICK_SLOW_STEP
         else:
             new_mode = "normal"
             mode_label = "🔄 НОРМАЛЬНЫЙ"
-            step = JOYSTICK_STEP
         
         joystick_states[user_id]["mode"] = new_mode
         
-        try:
-            await query.edit_message_text(
-                f"🎮 ДЖОЙСТИК 🎮\n\n"
-                f"📏 Шаг: {step}px\n"
-                f"🔄 Режим: {mode_label}\n"
-                f"📍 ({current_x}, {current_y})",
-                reply_markup=get_joystick_keyboard(new_mode)
-            )
-        except:
-            pass
-        
-        screenshot = await screenshot_with_cursor(page, current_x, current_y)
-        await query.message.reply_photo(photo=screenshot, caption=f"🔄 {mode_label}")
+        await update_joystick_message(
+            query, page, user_id, new_mode,
+            f"🔄 Режим: {mode_label}"
+        )
     
-    # СМЕНИТЬ САЙТ
+    # ============ СМЕНИТЬ САЙТ ============
     elif data == "change_url":
         await query.edit_message_text(
             f"🔗 Введи новый URL командой:\n/go <url>\n\n"
@@ -627,7 +601,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             reply_markup=None
         )
     
-    # СКРЫТЬ ДЖОЙСТИК
+    # ============ СКРЫТЬ ДЖОЙСТИК ============
     elif data == "hide_joystick":
         await query.edit_message_text(
             "✅ Джойстик скрыт\n\nВернуть: /joystick",
