@@ -12,6 +12,7 @@ from flask import Flask, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from playwright.async_api import async_playwright
+from PIL import Image
 
 # ============ НАСТРОЙКИ ============
 logging.basicConfig(level=logging.INFO)
@@ -275,9 +276,11 @@ async def human_type(page, text: str, delay: int = 50):
         print(f"❌ Ошибка ввода: {e}")
         return False
 
+# ============ СКРИНШОТ С ОГРАНИЧЕНИЕМ РАЗМЕРА ============
 async def human_screenshot(page, x: int, y: int) -> bytes:
-    """Скриншот с курсором"""
+    """Скриншот с курсором и автоматическим сжатием"""
     try:
+        # Добавляем курсор
         await page.evaluate(f"""
             const cursor = document.createElement('div');
             cursor.id = 'telegram-cursor';
@@ -309,12 +312,42 @@ async def human_screenshot(page, x: int, y: int) -> bytes:
         """)
         
         await page.wait_for_timeout(200)
-        screenshot = await page.screenshot(full_page=True, type="png")
-        return screenshot
+        
+        # Делаем скриншот (не full_page, чтобы избежать слишком больших размеров)
+        screenshot_bytes = await page.screenshot(full_page=False, type="png")
+        
+        # Проверяем размер
+        if len(screenshot_bytes) > 8 * 1024 * 1024:  # Если больше 8MB
+            # Сжимаем
+            img = Image.open(BytesIO(screenshot_bytes))
+            
+            # Уменьшаем размер если слишком большой
+            if img.width > 2000 or img.height > 2000:
+                img.thumbnail((2000, 2000), Image.Resampling.LANCZOS)
+            
+            # Сохраняем с сжатием
+            output = BytesIO()
+            img.save(output, format='PNG', optimize=True, compress_level=9)
+            screenshot_bytes = output.getvalue()
+            
+            # Если всё ещё слишком большой - конвертируем в JPEG
+            if len(screenshot_bytes) > 8 * 1024 * 1024:
+                output = BytesIO()
+                # Конвертируем в RGB если нужно
+                if img.mode in ('RGBA', 'LA', 'P'):
+                    img = img.convert('RGB')
+                img.save(output, format='JPEG', quality=70, optimize=True)
+                screenshot_bytes = output.getvalue()
+        
+        return screenshot_bytes
         
     except Exception as e:
         print(f"Ошибка скриншота: {e}")
-        return await page.screenshot(full_page=True, type="png")
+        try:
+            screenshot = await page.screenshot(full_page=False, type="png")
+            return screenshot
+        except:
+            return b""
 
 # ============ УМНЫЙ КЛИК ============
 async def smart_click(page, x: int, y: int):
@@ -843,7 +876,7 @@ async def google_login_button(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-# ============ НАЖАТЬ "CONTINUE AS BABE" (С ПОИСКОМ В IFRAME) ============
+# ============ НАЖАТЬ "CONTINUE AS BABE" ============
 async def continue_as_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     
@@ -860,13 +893,11 @@ async def continue_as_google(update: Update, context: ContextTypes.DEFAULT_TYPE)
         clicked = False
         button_text = ""
         
-        # 1. Ищем ВО ВСЕХ iframe
         frames = page.frames
         await update.message.reply_text(f"📦 Найдено iframe: {len(frames)}")
         
         for idx, frame in enumerate(frames):
             try:
-                # Пробуем найти кнопку в этом iframe
                 selectors = [
                     'text="Continue as"',
                     'text="Продолжить как"',
@@ -886,7 +917,6 @@ async def continue_as_google(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         for el in elements:
                             if await el.is_visible():
                                 text = await el.text_content() or ""
-                                # Проверяем, что текст содержит нужные слова
                                 if any(keyword in text for keyword in ['Continue as', 'Продолжить как', 'Google', 'babe']):
                                     box = await el.bounding_box()
                                     if box:
@@ -907,7 +937,6 @@ async def continue_as_google(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 print(f"Ошибка в iframe {idx}: {e}")
                 continue
         
-        # 2. Если не нашли в iframe, ищем на странице
         if not clicked:
             await update.message.reply_text("🔍 Ищу на основной странице...")
             selectors = [
@@ -942,7 +971,6 @@ async def continue_as_google(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     continue
         
         if not clicked:
-            # Показываем скриншот для диагностики
             cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
             screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
             await update.message.reply_photo(
@@ -951,19 +979,16 @@ async def continue_as_google(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         "Попробуй через джойстик:\n"
                         "1. /joystick\n"
                         "2. Наведи на кнопку\n"
-                        "3. Нажми ЛКМ\n\n"
-                        "Или нажми 'Войти' вручную."
+                        "3. Нажми ЛКМ"
             )
             return
         
         await page.wait_for_timeout(5000)
         
-        # ПРОВЕРЯЕМ РЕЗУЛЬТАТ
         current_url = page.url
         cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
         screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
         
-        # Проверяем куки сессии Twitter
         cookies = await page.context.cookies()
         has_session = any(c['name'] in ['auth_token', 'ct0', 'twid'] for c in cookies)
         
@@ -1006,7 +1031,6 @@ async def continue_as_google(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 # ============ РАБОТА С КУКАМИ ============
 
-# ЗАГРУЗКА КУК ИЗ ФАЙЛА
 async def load_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     
@@ -1018,7 +1042,7 @@ async def load_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text(
             "❌ Отправь файл cookies.json\n\n"
             "Формат:\n"
-            '[{"name":"auth_token","value":"...","domain":".x.com","path":"/"}, ...]'
+            '[{"name":"auth_token","value":"...","domain":".x.com","path":"/"}]'
         )
         return
     
@@ -1063,7 +1087,6 @@ async def load_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except:
             pass
 
-# СОХРАНИТЬ ТЕКУЩИЕ КУКИ
 async def save_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     
@@ -1078,7 +1101,6 @@ async def save_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         cookies = await page.context.cookies()
         json_data = json.dumps(cookies, indent=2)
         
-        # Сохраняем в буфер
         buffer = BytesIO(json_data.encode('utf-8'))
         buffer.name = "cookies.json"
         
@@ -1091,7 +1113,6 @@ async def save_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-# УСТАНОВИТЬ КУКИ ВРУЧНУЮ
 async def set_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     
@@ -1457,7 +1478,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     current_x = cursor["x"]
     current_y = cursor["y"]
     
-    # ДВИЖЕНИЕ
     if data.startswith("move_"):
         parts = data.split("_")
         dx = int(parts[1])
@@ -1479,7 +1499,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка движения: {e}")
     
-    # ЛКМ
     elif data == "click_left":
         try:
             await smart_click(page, current_x, current_y)
@@ -1493,7 +1512,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка ЛКМ: {e}")
     
-    # ПКМ
     elif data == "click_right":
         try:
             await human_click(page, current_x, current_y, button="right")
@@ -1507,7 +1525,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка ПКМ: {e}")
     
-    # КЛИК
     elif data == "click_center":
         try:
             await human_click(page, current_x, current_y)
@@ -1521,7 +1538,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка клика: {e}")
     
-    # ENTER
     elif data == "press_enter":
         try:
             await page.keyboard.press("Enter")
@@ -1535,7 +1551,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка Enter: {e}")
     
-    # ОБНОВИТЬ
     elif data == "refresh":
         try:
             await page.reload()
@@ -1549,7 +1564,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка обновления: {e}")
     
-    # НАЗАД
     elif data == "go_back":
         try:
             await page.go_back()
@@ -1563,7 +1577,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка назад: {e}")
     
-    # ВПЕРЁД
     elif data == "go_forward":
         try:
             await page.go_forward()
@@ -1577,7 +1590,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка вперёд: {e}")
     
-    # СКРИНШОТ
     elif data == "screenshot":
         try:
             await update_joystick_message(
@@ -1588,14 +1600,12 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка скриншота: {e}")
     
-    # ЗАКРЫТЬ БРАУЗЕР
     elif data == "close_browser":
         await close_user_browser(user_id)
         await query.edit_message_text("❌ Браузер закрыт", reply_markup=None)
         if user_id in joystick_messages:
             del joystick_messages[user_id]
     
-    # РЕЖИМ
     elif data == "toggle_mode":
         current_mode = joystick_states.get(user_id, {}).get("mode", "normal")
         
@@ -1616,7 +1626,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             f"🔄 {mode_label}"
         )
     
-    # СМЕНИТЬ САЙТ
     elif data == "change_url":
         await query.edit_message_text(
             "🔗 Введи URL: /go <url>",
@@ -1625,7 +1634,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         if user_id in joystick_messages:
             del joystick_messages[user_id]
     
-    # СКРЫТЬ ДЖОЙСТИК
     elif data == "hide_joystick":
         if user_id in joystick_messages:
             del joystick_messages[user_id]
@@ -1648,7 +1656,6 @@ def main():
     
     bot_app = Application.builder().token(BOT_TOKEN).build()
     
-    # Основные команды
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CommandHandler("browser", browser_command))
     bot_app.add_handler(CommandHandler("go", go_command))
@@ -1656,26 +1663,17 @@ def main():
     bot_app.add_handler(CommandHandler("close", close_command))
     bot_app.add_handler(CommandHandler("joystick", joystick_command))
     bot_app.add_handler(CommandHandler("status", status_command))
-    
-    # Вход в Google
     bot_app.add_handler(CommandHandler("login", login_google))
-    
-    # Twitter команды
     bot_app.add_handler(CommandHandler("twitter", twitter_command))
     bot_app.add_handler(CommandHandler("login_btn", click_login))
     bot_app.add_handler(CommandHandler("google_btn", google_login_button))
     bot_app.add_handler(CommandHandler("continue", continue_as_google))
-    
-    # Куки команды
     bot_app.add_handler(CommandHandler("loadcookies", load_cookies))
     bot_app.add_handler(CommandHandler("savecookies", save_cookies))
     bot_app.add_handler(CommandHandler("setcookie", set_cookies))
-    
-    # Диагностика
     bot_app.add_handler(CommandHandler("frames", show_frames))
     bot_app.add_handler(CommandHandler("gologin", goto_login))
     
-    # Обработчик кнопок
     bot_app.add_handler(CallbackQueryHandler(joystick_callback))
     
     print("✅ Бот запущен")
