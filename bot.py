@@ -1,7 +1,7 @@
 import telebot
 import os
 import time
-from browser import AntiDetectBrowser, check_installation
+from browser import AntiDetectBrowser, check_installation, LOG_FILE
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
@@ -9,6 +9,16 @@ if not TOKEN:
 
 bot = telebot.TeleBot(TOKEN)
 user_sessions = {}
+
+# === ОТПРАВКА ЛОГОВ В ЧАТ ===
+def send_log_to_chat(chat_id, log_entry):
+    """Отправляет лог в чат"""
+    try:
+        # Отправляем только важные логи (не спамим)
+        if "✅" in log_entry or "❌" in log_entry or "⚠️" in log_entry or "🎉" in log_entry:
+            bot.send_message(chat_id, log_entry)
+    except:
+        pass
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -19,6 +29,7 @@ def send_welcome(message):
         "/check - Проверить установку\n"
         "/login логин пароль - Обычный вход\n"
         "/logingoogle email пароль - Вход через Google\n"
+        "/log - Показать логи\n"
         "/status - Статус сессии\n"
         "/screenshot - Скриншот\n"
         "/close - Закрыть браузер"
@@ -49,6 +60,33 @@ def handle_check(message):
     
     bot.reply_to(message, result, parse_mode='Markdown')
 
+@bot.message_handler(commands=['log'])
+def handle_log(message):
+    """Отправляет полный лог-файл"""
+    try:
+        if os.path.exists(LOG_FILE):
+            with open(LOG_FILE, 'r', encoding='utf-8') as f:
+                logs = f.read()
+            
+            if len(logs) > 4000:
+                parts = [logs[i:i+3500] for i in range(0, len(logs), 3500)]
+                for part in parts[:3]:
+                    bot.send_message(
+                        message.chat.id,
+                        f"📋 **Логи:**\n```\n{part}\n```",
+                        parse_mode='Markdown'
+                    )
+            else:
+                bot.reply_to(
+                    message,
+                    f"📋 **Логи:**\n```\n{logs}\n```",
+                    parse_mode='Markdown'
+                )
+        else:
+            bot.reply_to(message, "📋 Логов пока нет")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}")
+
 @bot.message_handler(commands=['logingoogle'])
 def handle_login_google(message):
     user_id = message.from_user.id
@@ -73,19 +111,32 @@ def handle_login_google(message):
     
     msg = bot.reply_to(message, "🔄 Вход через Google... 30-50 секунд")
     
-    browser = AntiDetectBrowser(headless=True)
+    def log_callback(log_entry):
+        send_log_to_chat(chat_id, log_entry)
+    
+    def screenshot_callback(filename, caption):
+        try:
+            with open(filename, 'rb') as photo:
+                bot.send_photo(chat_id, photo, caption=f"📸 {caption}")
+            os.remove(filename)
+        except:
+            pass
+    
+    browser = AntiDetectBrowser(
+        headless=True,
+        screenshot_callback=screenshot_callback,
+        log_callback=log_callback
+    )
     
     try:
         browser.setup_driver()
         
-        # ШАГ 1: Вход в Google
         google_ok = browser.login_google(email, password)
         if not google_ok:
             bot.edit_message_text("❌ Ошибка входа в Google", chat_id=chat_id, message_id=msg.message_id)
             browser.close()
             return
         
-        # ШАГ 2: Переход на X.com
         xcom_ok = browser.go_to_xcom()
         
         if xcom_ok:
@@ -96,6 +147,7 @@ def handle_login_google(message):
                     bot.send_photo(chat_id, photo, caption="✅ Вход выполнен!")
                 os.remove(screenshot)
             bot.edit_message_text("✅ Вход выполнен успешно!", chat_id=chat_id, message_id=msg.message_id)
+            bot.send_message(chat_id, "📋 Используйте /log для просмотра полных логов")
         else:
             screenshot = browser.take_screenshot(f"error_{user_id}.png")
             if screenshot:
@@ -103,6 +155,7 @@ def handle_login_google(message):
                     bot.send_photo(chat_id, photo, caption="❌ Ошибка входа")
                 os.remove(screenshot)
             bot.edit_message_text("❌ Ошибка входа\nПроверьте email и пароль", chat_id=chat_id, message_id=msg.message_id)
+            bot.send_message(chat_id, "📋 Используйте /log для просмотра полных логов")
             browser.close()
             
     except Exception as e:
@@ -136,7 +189,22 @@ def handle_login(message):
     
     msg = bot.reply_to(message, "🔄 Выполняется вход...")
     
-    browser = AntiDetectBrowser(headless=True)
+    def log_callback(log_entry):
+        send_log_to_chat(chat_id, log_entry)
+    
+    def screenshot_callback(filename, caption):
+        try:
+            with open(filename, 'rb') as photo:
+                bot.send_photo(chat_id, photo, caption=f"📸 {caption}")
+            os.remove(filename)
+        except:
+            pass
+    
+    browser = AntiDetectBrowser(
+        headless=True,
+        screenshot_callback=screenshot_callback,
+        log_callback=log_callback
+    )
     
     try:
         browser.setup_driver()
