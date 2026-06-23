@@ -155,14 +155,12 @@ def handle_login_google(message):
     try:
         browser.setup_driver()
         
-        # ШАГ 1: Вход в Google
         google_ok = browser.login_google(email, password)
         if not google_ok:
             bot.edit_message_text("❌ Ошибка входа в Google", chat_id=chat_id, message_id=msg.message_id)
             browser.close()
             return
         
-        # ШАГ 2: Переход на X.com и Tab
         xcom_ok = browser.go_to_xcom()
         
         if xcom_ok:
@@ -186,9 +184,10 @@ def handle_login_google(message):
             
     except Exception as e:
         bot.edit_message_text(f"❌ Ошибка: {str(e)[:200]}", chat_id=chat_id, message_id=msg.message_id)
-        # НЕ ЗАКРЫВАЕМ БРАУЗЕР СРАЗУ — даем пользователю посмотреть логи
-        bot.send_message(chat_id, f"❌ Ошибка: {str(e)[:200]}\n\nИспользуйте /getlog для скачивания логов")
-        # browser.close()  # ← УБРАЛИ!
+        try:
+            browser.close()
+        except:
+            pass
 
 @bot.message_handler(commands=['login'])
 def handle_login(message):
