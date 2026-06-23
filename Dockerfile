@@ -1,10 +1,11 @@
 FROM python:3.11-slim
 
-# Устанавливаем необходимые библиотеки
+# Устанавливаем минимально необходимые зависимости
 RUN apt-get update && apt-get install -y \
     wget \
     unzip \
-    libgconf-2-4 \
+    curl \
+    gnupg \
     libnss3 \
     libx11-6 \
     libxcb1 \
