@@ -61,11 +61,14 @@ def get_joystick():
 
 
 # === СКРИНШОТ С КУРСОРОМ ===
-def screenshot_with_cursor(user_id, filename="screen.png"):
+def screenshot_with_cursor(user_id, filename="screen.png", page=None):
     try:
         cursor = user_cursor.get(user_id, {'x': 960, 'y': 400})
         
-        run_async(browser.screenshot(filename))
+        if page:
+            run_async(page.screenshot(path=filename, full_page=True))
+        else:
+            run_async(browser.screenshot(filename))
         
         img = Image.open(filename)
         draw = ImageDraw.Draw(img)
@@ -102,6 +105,7 @@ def start(message):
         "👋 Команды:\n"
         "/browser — Запустить браузер\n"
         "/open url — Открыть сайт\n"
+        "/loginx email password — Войти в X через Google\n"
         "/joy — Джойстик\n"
         "/screen — Скриншот\n"
         "/close — Закрыть браузер\n"
@@ -126,6 +130,40 @@ def start_browser(message):
         bot.edit_message_text("✅ Браузер запущен!\n/open google.com", chat_id=message.chat.id, message_id=msg.message_id)
     except Exception as e:
         bot.edit_message_text(f"❌ Ошибка: {str(e)[:100]}", chat_id=message.chat.id, message_id=msg.message_id)
+
+
+@bot.message_handler(commands=['loginx'])
+def login_x(message):
+    global browser, chat_id_log
+    
+    if not browser:
+        bot.reply_to(message, "❌ Сначала /browser")
+        return
+    
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        bot.reply_to(message, "❌ /loginx email password")
+        return
+    
+    email, password = parts[1], parts[2]
+    chat_id_log = message.chat.id
+    
+    bot.reply_to(message, "🔄 Вход в X через Google...\n📋 Следите за логами...")
+    
+    try:
+        # Открываем X
+        run_async(browser.goto("https://x.com"))
+        
+        # Вход через Google
+        success = run_async(browser.login_google_via_popup(email, password))
+        
+        if success:
+            bot.send_message(message.chat.id, "✅ Вход в X выполнен!\n/joy для управления")
+        else:
+            bot.send_message(message.chat.id, "❌ Ошибка входа")
+            
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка: {str(e)[:100]}")
 
 
 @bot.message_handler(commands=['open'])
@@ -258,19 +296,13 @@ def joystick_callback(call):
             bot.answer_callback_query(call.id, "💣 Клик...")
             x, y = user_cursor.get(user_id, {'x': 960, 'y': 400}).values()
             
-            # Пробуем кликнуть с текстом "Continue"
-            result = run_async(browser.mega_click(
-                x=int(x), 
-                y=int(y), 
-                text="Continue"
-            ))
+            result = run_async(browser.mega_click(x=int(x), y=int(y), text="Continue"))
             
             if result:
                 bot.answer_callback_query(call.id, "✅ Клик успешен!")
-                # Проверяем URL через 2 секунды
                 time.sleep(2)
                 url = run_async(browser.get_url())
-                bot.send_message(chat_id, f"📍 Текущий URL: {url}")
+                bot.send_message(chat_id, f"📍 URL: {url}")
             else:
                 bot.answer_callback_query(call.id, "❌ Не сработал")
         
