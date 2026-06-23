@@ -244,6 +244,72 @@ class AntiDetectBrowser:
             self.log(f"⚠️ Таймаут загрузки: {e}", "WARNING")
             return False
     
+    def force_load_all_elements(self):
+        """Принудительная загрузка всех элементов на странице"""
+        self.log("🔄 Принудительная загрузка всех элементов...", "INFO")
+        
+        try:
+            # 1. Прокручиваем страницу вниз и вверх
+            self.log("   📜 Прокрутка страницы...", "DEBUG")
+            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(2)
+            self.driver.execute_script("window.scrollTo(0, 0);")
+            time.sleep(2)
+            
+            # 2. Прокручиваем на 500px
+            self.driver.execute_script("window.scrollTo(0, 500);")
+            time.sleep(2)
+            self.driver.execute_script("window.scrollTo(0, 0);")
+            time.sleep(2)
+            
+            # 3. Ждем React
+            self.log("   ⏳ Ожидание рендеринга React...", "DEBUG")
+            time.sleep(3)
+            
+            # 4. Ищем все элементы с текстом
+            all_elements = self.driver.find_elements(By.XPATH, "//*[text()!='']")
+            self.log(f"   📊 Найдено элементов с текстом: {len(all_elements)}", "INFO")
+            
+            # 5. Ищем "Continue as"
+            continue_elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue as') or contains(text(), 'Continue with')]")
+            self.log(f"   📊 Найдено 'Continue': {len(continue_elements)}", "INFO")
+            
+            for elem in continue_elements:
+                try:
+                    self.driver.execute_script("arguments[0].style.display = 'block';", elem)
+                    self.driver.execute_script("arguments[0].style.visibility = 'visible';", elem)
+                    self.log(f"   ✅ Показан элемент: '{elem.text[:30]}'", "SUCCESS")
+                except:
+                    pass
+            
+            # 6. Ищем по email
+            if self.email:
+                email_elements = self.driver.find_elements(By.XPATH, f"//*[contains(text(), '{self.email}')]")
+                if email_elements:
+                    self.log(f"   ✅ Найдено {len(email_elements)} элементов с email", "SUCCESS")
+                    for elem in email_elements:
+                        try:
+                            self.driver.execute_script("arguments[0].style.display = 'block';", elem)
+                            self.driver.execute_script("arguments[0].style.visibility = 'visible';", elem)
+                            self.log(f"   ✅ Показан email: '{elem.text[:30]}'", "SUCCESS")
+                        except:
+                            pass
+            
+            self.take_step_screenshot("xcom_after_force_load")
+            
+            # 7. Проверяем результат
+            check_result = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue as')]")
+            if check_result:
+                self.log(f"✅ Найдено {len(check_result)} элементов 'Continue as' после загрузки", "SUCCESS")
+                return True
+            else:
+                self.log("⚠️ Элементы 'Continue as' не найдены после загрузки", "WARNING")
+                return False
+                
+        except Exception as e:
+            self.log(f"❌ Ошибка принудительной загрузки: {e}", "ERROR")
+            return False
+    
     def force_click(self, x, y):
         self.log(f"💪 Принудительный клик по ({x}, {y})", "INFO")
         
@@ -291,57 +357,6 @@ class AntiDetectBrowser:
         
         self.log("❌ Клик не сработал", "ERROR")
         return False
-    
-    def click_by_text_js(self, text):
-        """Клик через JavaScript по тексту"""
-        self.log(f"🔍 JS поиск и клик по тексту: '{text}'", "INFO")
-        
-        try:
-            result = self.driver.execute_script(f"""
-                var elements = document.querySelectorAll('*');
-                for (var i = 0; i < elements.length; i++) {{
-                    var text = elements[i].textContent || '';
-                    if (text.includes('{text}')) {{
-                        elements[i].scrollIntoView({{block: 'center'}});
-                        elements[i].click();
-                        return true;
-                    }}
-                }}
-                return false;
-            """)
-            
-            if result:
-                self.log(f"✅ Клик по '{text}' выполнен через JS", "SUCCESS")
-                return True
-            else:
-                self.log(f"❌ Текст '{text}' не найден", "WARNING")
-                return False
-        except Exception as e:
-            self.log(f"❌ Ошибка: {e}", "ERROR")
-            return False
-    
-    def find_all_elements_with_text(self):
-        """Находит все элементы с текстом"""
-        try:
-            elements = self.driver.find_elements(By.XPATH, "//*[text()!='']")
-            result = []
-            for elem in elements[:50]:
-                try:
-                    text = elem.text.strip()
-                    tag = elem.tag_name
-                    visible = elem.is_displayed()
-                    if text and len(text) < 100:
-                        result.append({
-                            "tag": tag,
-                            "text": text[:60],
-                            "visible": visible,
-                            "enabled": elem.is_enabled() if visible else False
-                        })
-                except:
-                    continue
-            return result
-        except:
-            return []
     
     def login_google(self, email, password):
         self.email = email
@@ -498,6 +513,38 @@ class AntiDetectBrowser:
             self.wait_for_page_load(timeout=30)
             time.sleep(3)
             self.take_step_screenshot("xcom_loaded")
+            
+            # === ПРИНУДИТЕЛЬНАЯ ЗАГРУЗКА ВСЕХ ЭЛЕМЕНТОВ ===
+            self.log("🔄 Принудительная загрузка всех элементов...", "INFO")
+            
+            # Прокручиваем для загрузки
+            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(2)
+            self.driver.execute_script("window.scrollTo(0, 0);")
+            time.sleep(2)
+            
+            self.driver.execute_script("window.scrollTo(0, 500);")
+            time.sleep(2)
+            self.driver.execute_script("window.scrollTo(0, 0);")
+            time.sleep(2)
+            
+            self.take_step_screenshot("xcom_after_scroll")
+            
+            # Проверяем, появилась ли кнопка
+            continue_elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue as') or contains(text(), 'Continue with')]")
+            self.log(f"📊 Найдено элементов 'Continue': {len(continue_elements)}", "INFO")
+            
+            for elem in continue_elements:
+                try:
+                    text = elem.text.strip()
+                    self.log(f"   🔍 Найден: '{text[:40]}'", "DEBUG")
+                except:
+                    pass
+            
+            # Проверяем email
+            if self.email:
+                email_elements = self.driver.find_elements(By.XPATH, f"//*[contains(text(), '{self.email}')]")
+                self.log(f"📊 Найдено элементов с email: {len(email_elements)}", "INFO")
             
             current_url = self.driver.current_url
             self.log(f"📍 URL: {current_url}", "INFO")
