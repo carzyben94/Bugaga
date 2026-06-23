@@ -19,11 +19,9 @@ from datetime import datetime
 # === НАСТРОЙКА ЛОГИРОВАНИЯ ===
 LOG_FILE = "bot.log"
 
-# Очищаем старый лог
 if os.path.exists(LOG_FILE):
     os.remove(LOG_FILE)
 
-# Настраиваем логирование в файл
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -77,11 +75,9 @@ class AntiDetectBrowser:
         self.email = None
         
     def log(self, message, level="INFO"):
-        """Логирование с отправкой в чат"""
         timestamp = datetime.now().strftime("%H:%M:%S")
         log_entry = f"[{timestamp}] [{level}] {message}"
         
-        # Пишем в файл
         if level == "ERROR":
             logger.error(message)
         elif level == "WARNING":
@@ -89,7 +85,6 @@ class AntiDetectBrowser:
         else:
             logger.info(message)
         
-        # Отправляем в чат
         if self.log_callback:
             self.log_callback(log_entry)
         
@@ -199,7 +194,7 @@ class AntiDetectBrowser:
             return None
     
     def login_google(self, email, password):
-        """Только вход в Google"""
+        """Вход в Google"""
         self.email = email
         self.log(f"🚀 Вход в Google: {email[:3]}***{email[-3:] if len(email) > 6 else ''}", "INFO")
         
@@ -213,7 +208,7 @@ class AntiDetectBrowser:
             self.log(f"❌ Ошибка Google: {e}", "ERROR")
             return False
         
-        # Ввод email
+        # === ВВОД EMAIL ===
         self.log("🔍 Поиск поля email...", "INFO")
         email_field = self.find_element(By.ID, "identifierId")
         if email_field:
@@ -226,7 +221,7 @@ class AntiDetectBrowser:
         
         self.random_delay(1, 2)
         
-        # Кнопка "Далее"
+        # === КНОПКА "ДАЛЕЕ" ===
         self.log("🔍 Поиск кнопки 'Далее'...", "INFO")
         next_btn = self.find_element_clickable(By.XPATH, "//span[text()='Далее']")
         if not next_btn:
@@ -241,25 +236,46 @@ class AntiDetectBrowser:
         else:
             self.log("⚠️ Кнопка 'Далее' не найдена", "WARNING")
         
-        self.random_delay(2, 3)
+        self.random_delay(2, 4)
         
-        # Ввод пароля
+        # === ВВОД ПАРОЛЯ (ВСЕ СЕЛЕКТОРЫ) ===
         self.log("🔍 Поиск поля пароля...", "INFO")
-        password_field = self.find_element(By.NAME, "password")
-        if not password_field:
-            password_field = self.find_element(By.ID, "password")
+        
+        password_field = None
+        
+        selectors = [
+            (By.NAME, "password"),
+            (By.ID, "password"),
+            (By.XPATH, "//input[@type='password']"),
+            (By.XPATH, "//input[@name='password']"),
+            (By.XPATH, "//div[@class='pwd']//input"),
+            (By.XPATH, "//input[@autocomplete='current-password']"),
+            (By.CSS_SELECTOR, "input[type='password']"),
+            (By.XPATH, "//div[@data-brand='accounts.google.com']//input[@type='password']"),
+        ]
+        
+        for by, selector in selectors:
+            try:
+                element = self.driver.find_element(by, selector)
+                if element and element.is_displayed():
+                    password_field = element
+                    self.log(f"✅ Поле пароля найдено: {selector}", "SUCCESS")
+                    break
+            except:
+                continue
         
         if password_field:
             self.human_type(password_field, password)
             self.take_step_screenshot("google_password")
             self.log("✅ Пароль введен", "SUCCESS")
         else:
-            self.log("❌ Поле пароля не найдено", "ERROR")
+            self.log("❌ Поле пароля не найдено ни по одному селектору", "ERROR")
+            self.take_step_screenshot("google_password_not_found")
             return False
         
         self.random_delay(1, 2)
         
-        # Финальная кнопка
+        # === ФИНАЛЬНАЯ КНОПКА ===
         self.log("🔍 Поиск кнопки входа...", "INFO")
         login_btn = self.find_element_clickable(By.XPATH, "//span[text()='Далее']")
         if not login_btn:
@@ -278,20 +294,21 @@ class AntiDetectBrowser:
         
         self.random_delay(3, 5)
         
-        # Проверка 2FA
+        # === ПРОВЕРКА 2FA ===
         current_url = self.driver.current_url
         self.log(f"📍 URL после Google: {current_url[:80]}...", "INFO")
         
-        if "challenge" in current_url or "verify" in current_url:
-            self.log("🔐 Ожидание подтверждения на телефоне...", "INFO")
+        if "challenge" in current_url or "verify" in current_url.lower():
+            self.log("🔐 Требуется подтверждение на телефоне", "INFO")
             self.take_step_screenshot("google_2fa_wait")
             
             for i in range(12):
                 time.sleep(5)
                 new_url = self.driver.current_url
-                if "challenge" not in new_url and "verify" not in new_url:
+                if "challenge" not in new_url and "verify" not in new_url.lower():
                     self.log("✅ Подтверждение пройдено!", "SUCCESS")
                     break
+                self.log(f"⏳ Ожидание подтверждения... {i+1}/12", "INFO")
         
         self.log("✅ Вход в Google выполнен!", "SUCCESS")
         self.take_step_screenshot("google_done")
@@ -316,7 +333,6 @@ class AntiDetectBrowser:
             if "login" in current_url or "i/flow" in current_url:
                 self.log("🔍 На странице входа, ищу кнопки...", "INFO")
                 
-                # Ищем все кнопки
                 buttons = self.driver.find_elements(By.TAG_NAME, "button")
                 self.log(f"📊 Найдено кнопок: {len(buttons)}", "INFO")
                 
@@ -332,7 +348,6 @@ class AntiDetectBrowser:
                     except:
                         continue
                 
-                # Ищем элемент с email
                 if self.email:
                     try:
                         email_elements = self.driver.find_elements(By.XPATH, f"//*[contains(text(), '{self.email}')]")
@@ -346,7 +361,6 @@ class AntiDetectBrowser:
                     except:
                         pass
                 
-                # Ищем любой "Continue"
                 try:
                     continue_elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue')]")
                     for elem in continue_elements:
