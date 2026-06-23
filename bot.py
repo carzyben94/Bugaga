@@ -363,7 +363,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "🌐 **БРАУЗЕР**\n"
         "/browser — Открыть браузер\n"
         "/close — Закрыть браузер\n"
-        "/go url — Перейти на сайт\n\n"
+        "/go url — Перейти на сайт\n"
+        "/status — Статус браузера\n"
+        "/screenshot — Скриншот\n\n"
         "🍪 **КУКИ**\n"
         "/setcookie — Установить куки\n"
         "/loadcookies — Загрузить куки из файла\n"
@@ -372,10 +374,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "🐦 **X**\n"
         "/startxspeed — Быстрый старт (всё сразу)\n"
         "/xprofile — Инфо профиля\n"
-        "/twittermenu — Открыть меню Twitter\n\n"
-        "📸 **ИНФО**\n"
-        "/screenshot — Скриншот\n"
-        "/status — Статус браузера",
+        "/twittermenu — Открыть меню Twitter",
         parse_mode="Markdown"
     )
 
@@ -415,6 +414,44 @@ async def go_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await page.wait_for_timeout(2000)
         screenshot = await human_screenshot(page, VIEWPORT["width"] // 2, VIEWPORT["height"] // 2)
         await update.message.reply_photo(photo=screenshot, caption=f"✅ {url}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+# ============ КОМАНДА /STATUS ============
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if user_id not in user_sessions:
+        await update.message.reply_text("⚠️ Браузер не открыт. Используй: /browser")
+        return
+    session = user_sessions[user_id]
+    page = session["page"]
+    url = page.url
+    cookies = await page.context.cookies()
+    has_cookie = any(c['name'] in ['auth_token', 'ct0', 'twid'] for c in cookies)
+    status_text = f"📊 **Статус браузера**\n\n"
+    status_text += f"🌐 URL: {url[:60]}\n"
+    status_text += f"🍪 Куки: {'✅ Есть' if has_cookie else '❌ Нет'}\n"
+    if "x.com" in url:
+        status_text += f"📱 X.com - {'✅ Вошли' if has_cookie else '❌ Не вошли'}\n"
+    cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
+    screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
+    await update.message.reply_photo(photo=screenshot, caption=status_text)
+
+# ============ КОМАНДА /SCREENSHOT ============
+async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if user_id not in user_sessions:
+        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
+        return
+    try:
+        session = user_sessions[user_id]
+        page = session["page"]
+        cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
+        screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption=f"📸 Скриншот ({cursor['x']}, {cursor['y']})"
+        )
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
@@ -1034,44 +1071,6 @@ async def send_post(message, post):
     await message.reply_text(text, parse_mode="Markdown")
     await asyncio.sleep(0.3)
 
-# ============ КОМАНДА /SCREENSHOT ============
-async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    if user_id not in user_sessions:
-        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
-        return
-    try:
-        session = user_sessions[user_id]
-        page = session["page"]
-        cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
-        screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption=f"📸 Скриншот ({cursor['x']}, {cursor['y']})"
-        )
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-
-# ============ КОМАНДА /STATUS ============
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    if user_id not in user_sessions:
-        await update.message.reply_text("⚠️ Браузер не открыт. Используй: /browser")
-        return
-    session = user_sessions[user_id]
-    page = session["page"]
-    url = page.url
-    cookies = await page.context.cookies()
-    has_cookie = any(c['name'] in ['auth_token', 'ct0', 'twid'] for c in cookies)
-    status_text = f"📊 **Статус браузера**\n\n"
-    status_text += f"🌐 URL: {url[:60]}\n"
-    status_text += f"🍪 Куки: {'✅ Есть' if has_cookie else '❌ Нет'}\n"
-    if "x.com" in url:
-        status_text += f"📱 X.com - {'✅ Вошли' if has_cookie else '❌ Не вошли'}\n"
-    cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
-    screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
-    await update.message.reply_photo(photo=screenshot, caption=status_text)
-
 # ============ ЗАПУСК ============
 def run_flask():
     port = int(os.getenv("PORT", 8080))
@@ -1087,6 +1086,8 @@ def main():
     bot_app.add_handler(CommandHandler("browser", browser_command))
     bot_app.add_handler(CommandHandler("close", close_command))
     bot_app.add_handler(CommandHandler("go", go_command))
+    bot_app.add_handler(CommandHandler("status", status_command))
+    bot_app.add_handler(CommandHandler("screenshot", screenshot_command))
     bot_app.add_handler(CommandHandler("setcookie", set_cookies))
     bot_app.add_handler(CommandHandler("loadcookies", load_cookies))
     bot_app.add_handler(CommandHandler("loadsavedcookies", load_saved_cookies_command))
@@ -1094,8 +1095,6 @@ def main():
     bot_app.add_handler(CommandHandler("startxspeed", start_x_com))
     bot_app.add_handler(CommandHandler("xprofile", x_profile_info))
     bot_app.add_handler(CommandHandler("twittermenu", twitter_menu))
-    bot_app.add_handler(CommandHandler("screenshot", screenshot_command))
-    bot_app.add_handler(CommandHandler("status", status_command))
     
     bot_app.add_handler(CallbackQueryHandler(twitter_callback, pattern="^twitter_"))
     
