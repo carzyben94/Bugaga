@@ -15,6 +15,13 @@ bot = telebot.TeleBot(TOKEN)
 
 LOG_FILE = "bot.log"
 
+# === ОЧИСТКА ЛОГ-ФАЙЛА ПРИ СТАРТЕ ===
+try:
+    with open(LOG_FILE, "w", encoding="utf-8") as f:
+        f.write(f"=== Бот запущен {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+except:
+    pass
+
 try:
     bot.remove_webhook()
     print("✅ Webhook сброшен")
@@ -24,7 +31,42 @@ except Exception as e:
 user_sessions = {}
 user_cursor = {}
 
-# === ДЖОЙСТИК (кнопки остаются только здесь) ===
+# === ФУНКЦИЯ ЛОГИРОВАНИЯ В ФАЙЛ И ЧАТ ===
+def log_to_file_and_chat(chat_id, message, level="INFO"):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    log_entry = f"[{timestamp}] [{level}] {message}"
+    
+    # Пишем в файл
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(log_entry + "\n")
+    except Exception as e:
+        print(f"❌ Ошибка записи в лог: {e}")
+    
+    # Отправляем в чат (только INFO, WARNING, ERROR — не DEBUG)
+    if level in ["INFO", "WARNING", "ERROR", "SUCCESS"] and chat_id:
+        try:
+            # Обрезаем длинные сообщения
+            if len(log_entry) > 4000:
+                log_entry = log_entry[:4000] + "..."
+            bot.send_message(chat_id, f"`{log_entry}`", parse_mode='Markdown')
+        except:
+            pass
+    
+    return log_entry
+
+# === ОТПРАВКА ЛОГ-ФАЙЛА В ЧАТ ===
+def send_log_file(chat_id):
+    try:
+        if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 0:
+            with open(LOG_FILE, "rb") as f:
+                bot.send_document(chat_id, f, caption="📄 Лог-файл")
+            return True
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ Ошибка отправки лога: {e}")
+    return False
+
+# === ДЖОЙСТИК ===
 def get_joystick_keyboard():
     keyboard = InlineKeyboardMarkup(row_width=3)
     keyboard.row(
@@ -44,6 +86,9 @@ def get_joystick_keyboard():
     keyboard.row(
         InlineKeyboardButton("📸 Скриншот", callback_data="take_screenshot"),
         InlineKeyboardButton("📍 Позиция", callback_data="show_position")
+    )
+    keyboard.row(
+        InlineKeyboardButton("📄 Логи", callback_data="send_logs")
     )
     return keyboard
 
@@ -92,12 +137,22 @@ def send_welcome(message):
     bot.reply_to(
         message,
         "👋 Привет!\n\n"
-        "📋 Команды :\n"
+        "📋 Команды:\n"
         "/logingoogle email пароль - Вход через Google\n"
         "/joystick - Джойстик управления\n"
         "/screenshot - Скриншот\n"
+        "/logs - Отправить лог-файл\n"
         "/close - Закрыть браузер"
     )
+
+# === КОМАНДА /LOGS ===
+@bot.message_handler(commands=['logs'])
+def handle_logs(message):
+    chat_id = message.chat.id
+    if send_log_file(chat_id):
+        bot.reply_to(message, "✅ Лог-файл отправлен")
+    else:
+        bot.reply_to(message, "❌ Лог-файл пуст или не найден")
 
 # === КОМАНДА /LOGINGOOGLE ===
 @bot.message_handler(commands=['logingoogle'])
@@ -122,7 +177,15 @@ def handle_login_google(message):
     email = parts[1]
     password = parts[2]
     
+    # Очищаем лог-файл для новой сессии
+    try:
+        with open(LOG_FILE, "w", encoding="utf-8") as f:
+            f.write(f"=== Сессия {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {email} ===\n")
+    except:
+        pass
+    
     msg = bot.reply_to(message, "🔄 Вход через Google... 30-50 секунд")
+    log_to_file_and_chat(chat_id, f"🚀 Начало входа: {email}", "INFO")
     
     def screenshot_callback(filename, caption):
         try:
@@ -132,20 +195,29 @@ def handle_login_google(message):
         except:
             pass
     
+    def log_callback(log_entry, level):
+        log_to_file_and_chat(chat_id, log_entry, level)
+    
     browser = AntiDetectBrowser(
         headless=True,
-        screenshot_callback=screenshot_callback
+        screenshot_callback=screenshot_callback,
+        log_callback=log_callback
     )
     
     try:
+        log_to_file_and_chat(chat_id, "🔧 Настройка драйвера...", "INFO")
         browser.setup_driver()
         
+        log_to_file_and_chat(chat_id, "🔐 Вход в Google...", "INFO")
         google_ok = browser.login_google(email, password)
         if not google_ok:
+            log_to_file_and_chat(chat_id, "❌ Ошибка входа в Google", "ERROR")
             bot.edit_message_text("❌ Ошибка входа в Google", chat_id=chat_id, message_id=msg.message_id)
             browser.close()
+            send_log_file(chat_id)
             return
         
+        log_to_file_and_chat(chat_id, "🌐 Переход на X.com...", "INFO")
         xcom_ok = browser.go_to_xcom()
         
         if xcom_ok:
@@ -156,6 +228,7 @@ def handle_login_google(message):
                     bot.send_photo(chat_id, photo, caption="✅ Вход выполнен!\n\nИспользуйте /joystick")
                 os.remove(screenshot)
             bot.edit_message_text("✅ Вход выполнен!\n\nИспользуйте /joystick", chat_id=chat_id, message_id=msg.message_id)
+            log_to_file_and_chat(chat_id, "✅ Вход выполнен!", "SUCCESS")
         else:
             screenshot = browser.take_screenshot(f"error_{user_id}.png")
             if screenshot:
@@ -163,14 +236,21 @@ def handle_login_google(message):
                     bot.send_photo(chat_id, photo, caption="❌ Ошибка входа")
                 os.remove(screenshot)
             bot.edit_message_text("❌ Ошибка входа", chat_id=chat_id, message_id=msg.message_id)
+            log_to_file_and_chat(chat_id, "❌ Ошибка входа в X.com", "ERROR")
             browser.close()
+        
+        # Отправляем лог-файл в конце
+        send_log_file(chat_id)
             
     except Exception as e:
-        bot.edit_message_text(f"❌ Ошибка: {str(e)[:200]}", chat_id=chat_id, message_id=msg.message_id)
+        error_msg = f"❌ Ошибка: {str(e)[:200]}"
+        log_to_file_and_chat(chat_id, error_msg, "ERROR")
+        bot.edit_message_text(error_msg, chat_id=chat_id, message_id=msg.message_id)
         try:
             browser.close()
         except:
             pass
+        send_log_file(chat_id)
 
 # === КОМАНДА /JOYSTICK ===
 @bot.message_handler(commands=['joystick'])
@@ -199,6 +279,7 @@ def handle_joystick(message):
                            "📍 — позиция курсора\n"
                            "📸 — скриншот\n"
                            "🏠 — центр\n"
+                           "📄 — логи\n"
                            "⏹️ СТОП — закрыть браузер",
                     reply_markup=get_joystick_keyboard(),
                     parse_mode='Markdown'
@@ -301,6 +382,13 @@ def handle_joystick_callback(call):
                 bot.send_photo(chat_id, photo, caption="🔄 Обновленный экран", reply_markup=get_joystick_keyboard())
             os.remove(screenshot)
         bot.answer_callback_query(call.id, "🔄 Обновлено")
+    
+    elif call.data == "send_logs":
+        bot.answer_callback_query(call.id, "📄 Отправка логов...")
+        if send_log_file(chat_id):
+            bot.send_message(chat_id, "✅ Лог-файл отправлен", reply_markup=get_joystick_keyboard())
+        else:
+            bot.send_message(chat_id, "❌ Лог-файл пуст", reply_markup=get_joystick_keyboard())
     
     elif call.data == "stop_joystick":
         try:
