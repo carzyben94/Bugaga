@@ -33,6 +33,9 @@ joystick_states = {}
 joystick_messages = {}
 cursor_positions = {}
 
+# Файл для сохранения кук
+COOKIES_FILE = "cookies_data.json"
+
 # ============ FLASK ============
 app_flask = Flask(__name__)
 
@@ -52,6 +55,27 @@ def keep_alive():
         except:
             pass
         time.sleep(1200)
+
+# ============ РАБОТА С КУКАМИ ============
+def load_saved_cookies():
+    try:
+        if os.path.exists(COOKIES_FILE):
+            with open(COOKIES_FILE, 'r') as f:
+                return json.load(f)
+    except:
+        pass
+    return {}
+
+def save_cookies_to_file(user_id: int, cookies: list):
+    try:
+        data = load_saved_cookies()
+        data[str(user_id)] = cookies
+        with open(COOKIES_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+        return True
+    except Exception as e:
+        print(f"Ошибка сохранения кук: {e}")
+        return False
 
 # ============ БРАУЗЕР ============
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -131,7 +155,6 @@ async def get_browser_page():
     
     page = await context.new_page()
     
-    # Полная маскировка
     await page.add_init_script("""
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
         
@@ -220,7 +243,6 @@ async def goto_url(page, url: str):
 # ============ ACTIONCHAINS ============
 
 async def human_move(page, x: int, y: int, steps: int = 10):
-    """Реалистичное движение мыши"""
     try:
         current = await page.evaluate("""
             ({
@@ -245,7 +267,6 @@ async def human_move(page, x: int, y: int, steps: int = 10):
         return False
 
 async def human_click(page, x: int, y: int, button: str = "left"):
-    """Реалистичный клик"""
     try:
         await human_move(page, x, y, steps=8)
         await page.wait_for_timeout(random.randint(100, 300))
@@ -258,7 +279,6 @@ async def human_click(page, x: int, y: int, button: str = "left"):
         return False
 
 async def human_type(page, text: str, delay: int = 50):
-    """Реалистичный ввод текста"""
     try:
         for i, char in enumerate(text):
             wait_time = delay + random.randint(-20, 30)
@@ -277,9 +297,7 @@ async def human_type(page, text: str, delay: int = 50):
         print(f"❌ Ошибка ввода: {e}")
         return False
 
-# ============ СКРИНШОТ БЕЗ PIL ============
 async def human_screenshot(page, x: int, y: int) -> bytes:
-    """Скриншот с курсором (без PIL, только видимая часть)"""
     try:
         await page.evaluate(f"""
             const cursor = document.createElement('div');
@@ -312,8 +330,6 @@ async def human_screenshot(page, x: int, y: int) -> bytes:
         """)
         
         await page.wait_for_timeout(200)
-        
-        # Делаем скриншот ТОЛЬКО видимой части
         screenshot = await page.screenshot(full_page=False, type="png")
         return screenshot
         
@@ -324,63 +340,6 @@ async def human_screenshot(page, x: int, y: int) -> bytes:
             return screenshot
         except:
             return b""
-
-# ============ УМНЫЙ КЛИК ============
-async def smart_click(page, x: int, y: int):
-    try:
-        for frame in page.frames:
-            try:
-                selectors = [
-                    'text="Continue with Google"',
-                    '[aria-label*="Google"]',
-                    'div:has-text("Continue with Google")',
-                    'button:has-text("Google")'
-                ]
-                for selector in selectors:
-                    try:
-                        elements = await frame.locator(selector).all()
-                        for el in elements:
-                            if await el.is_visible():
-                                box = await el.bounding_box()
-                                if box:
-                                    cx = box['x'] + box['width'] // 2
-                                    cy = box['y'] + box['height'] // 2
-                                    await human_click(page, cx, cy)
-                                else:
-                                    await el.click()
-                                return True
-                    except:
-                        continue
-            except:
-                continue
-        
-        selectors = ['text="Continue with Google"', 'button:has-text("Google")']
-        for selector in selectors:
-            try:
-                elements = await page.locator(selector).all()
-                for el in elements:
-                    if await el.is_visible():
-                        box = await el.bounding_box()
-                        if box:
-                            cx = box['x'] + box['width'] // 2
-                            cy = box['y'] + box['height'] // 2
-                            await human_click(page, cx, cy)
-                        else:
-                            await el.click()
-                        return True
-            except:
-                continue
-        
-        await human_click(page, x, y)
-        return True
-        
-    except Exception as e:
-        print(f"❌ Ошибка клика: {e}")
-        try:
-            await human_click(page, x, y)
-            return True
-        except:
-            return False
 
 # ============ ДЖОЙСТИК ============
 def get_joystick_keyboard(mode="normal"):
@@ -469,683 +428,88 @@ async def update_joystick_message(query, page, user_id, mode, caption=""):
     except Exception as e:
         print(f"Ошибка редактирования: {e}")
 
-# ============ УСТАНОВКА PILLOW ============
-async def install_pillow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Устанавливает Pillow прямо из бота"""
+# ============ КОМАНДА /START ============
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        "🤖 **КОМАНДЫ БОТА**\n\n"
+        "🌐 **БРАУЗЕР**\n"
+        "/browser — Открыть браузер\n"
+        "/close — Закрыть браузер\n"
+        "/go url — Перейти на сайт\n\n"
+        "🍪 **КУКИ**\n"
+        "/setcookie — Установить куки\n"
+        "/loadcookies — Загрузить куки из файла\n"
+        "/loadsavedcookies — Загрузить сохранённые куки\n"
+        "/savecookies — Сохранить куки\n\n"
+        "🐦 **X**\n"
+        "/start_x_com — Быстрый старт (всё сразу)\n"
+        "/x_profile_info — Инфо профиля\n\n"
+        "🎮 **УПРАВЛЕНИЕ**\n"
+        "/joystick — Открыть джойстик\n\n"
+        "📸 **ИНФО**\n"
+        "/screenshot — Скриншот\n"
+        "/status — Статус браузера\n\n"
+        "🛠️ **ДРУГОЕ**\n"
+        "/installpillow — Установить Pillow\n\n"
+        "🚀 Быстрый старт: /start_x_com",
+        parse_mode="Markdown"
+    )
+
+# ============ КОМАНДА /BROWSER ============
+async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    
-    # Проверка админа
-    ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-    if ADMIN_ID and user_id != ADMIN_ID:
-        await update.message.reply_text("⛔ Только для администратора!")
-        return
-    
-    await update.message.reply_text("📦 Начинаю установку Pillow...")
-    
+    await update.message.reply_text("🌐 Открываю браузер...")
     try:
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "Pillow>=10.0.0"],
-            capture_output=True,
-            text=True,
-            timeout=120
-        )
-        
-        if result.returncode == 0:
-            await update.message.reply_text(
-                "✅ **Pillow установлен успешно!**\n\n"
-                "Теперь перезапусти бота вручную на Railway"
-            )
-        else:
-            await update.message.reply_text(
-                f"❌ **Ошибка установки:**\n```\n{result.stderr[:500]}\n```"
-            )
-            
-    except subprocess.TimeoutExpired:
-        await update.message.reply_text("❌ Установка заняла слишком много времени")
+        await get_user_browser(user_id)
+        await update.message.reply_text("✅ Браузер готов!")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-# ============ АВТОВХОД В GOOGLE ============
-async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+# ============ КОМАНДА /CLOSE ============
+async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    await close_user_browser(user_id)
+    await update.message.reply_text("❌ Браузер закрыт")
+
+# ============ КОМАНДА /GO ============
+async def go_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     args = context.args
-    
-    if user_id not in user_sessions:
-        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
+    if not args:
+        await update.message.reply_text("❌ Укажите URL: /go google.com")
         return
-    
-    if len(args) < 2:
-        await update.message.reply_text(
-            "❌ Использование:\n"
-            "/login email@gmail.com пароль\n\n"
-            "Пример:\n"
-            "/login myemail@gmail.com mypassword123"
-        )
-        return
-    
-    email = args[0]
-    password = ' '.join(args[1:])
-    
-    session = user_sessions[user_id]
-    page = session["page"]
-    
-    await update.message.reply_text("🔐 Начинаю вход в Google...")
-    
+    url = args[0]
+    if not url.startswith("http"):
+        url = "https://" + url
     try:
-        await update.message.reply_text("🌐 Открываю accounts.google.com...")
-        await goto_url(page, "https://accounts.google.com")
-        await page.wait_for_timeout(8000)
-        
-        await update.message.reply_text("🔍 Ищу поле для email...")
-        
-        email_found = False
-        
-        try:
-            el = await page.get_by_role("textbox", name=re.compile(r"(Email|телефон|Username|Эл. почта)", re.IGNORECASE)).first
-            if await el.count() > 0 and await el.is_visible():
-                await el.click()
-                await page.wait_for_timeout(300)
-                await el.fill(email)
-                email_found = True
-                print("✅ Email через get_by_role")
-        except:
-            pass
-        
-        if not email_found:
-            try:
-                el = await page.get_by_placeholder(re.compile(r"(Email|телефон|Username|Эл. почта|Адрес)", re.IGNORECASE)).first
-                if await el.count() > 0 and await el.is_visible():
-                    await el.click()
-                    await page.wait_for_timeout(300)
-                    await el.fill(email)
-                    email_found = True
-                    print("✅ Email через get_by_placeholder")
-            except:
-                pass
-        
-        if not email_found:
-            css_selectors = [
-                'input[type="email"]',
-                'input[name="identifier"]',
-                'input[autocomplete="username"]',
-                'input[autocomplete="email"]',
-                'input[aria-label*="Email" i]',
-                'input[aria-label*="телефон" i]',
-                'input[jsname="YPqjbf"]',
-                'input.whsOnd',
-                'input.zHQkBf',
-            ]
-            
-            for selector in css_selectors:
-                try:
-                    await page.wait_for_selector(selector, timeout=2000)
-                    el = await page.locator(selector).first
-                    if await el.count() > 0 and await el.is_visible():
-                        await el.click()
-                        await page.wait_for_timeout(300)
-                        await el.fill(email)
-                        email_found = True
-                        print(f"✅ Email через CSS: {selector}")
-                        break
-                except:
-                    continue
-        
-        if not email_found:
-            try:
-                inputs = await page.locator('input').all()
-                for inp in inputs:
-                    if await inp.is_visible():
-                        inp_type = await inp.get_attribute('type') or ''
-                        inp_name = await inp.get_attribute('name') or ''
-                        inp_id = await inp.get_attribute('id') or ''
-                        inp_class = await inp.get_attribute('class') or ''
-                        
-                        email_keywords = ['email', 'mail', 'user', 'login', 'identifier', 'username']
-                        is_email = False
-                        for kw in email_keywords:
-                            if kw in inp_name.lower() or kw in inp_id.lower() or kw in inp_class.lower():
-                                is_email = True
-                                break
-                        
-                        if is_email or inp_type == 'email' or inp_type == 'text':
-                            box = await inp.bounding_box()
-                            if box:
-                                x = box['x'] + box['width'] // 2
-                                y = box['y'] + box['height'] // 2
-                                await human_click(page, x, y)
-                                await page.wait_for_timeout(300)
-                                await inp.fill(email)
-                                email_found = True
-                                print("✅ Email через первый подходящий input")
-                                break
-            except:
-                pass
-        
-        if not email_found:
-            screenshot = await page.screenshot(full_page=True, type="png")
-            await update.message.reply_photo(
-                photo=screenshot,
-                caption="❌ **Не найдено поле для email**\n\nПопробуй ввести вручную через джойстик"
-            )
-            return
-        
-        await page.wait_for_timeout(1000)
-        
-        await update.message.reply_text("⏭️ Нажимаю 'Далее'...")
-        
-        next_clicked = False
-        next_selectors = [
-            'button:has-text("Далее")',
-            'button:has-text("Next")',
-            'button:has-text("Продолжить")',
-            '#identifierNext',
-            '[jsname="V67aGc"]',
-            'button[jsname="LgbsSe"]',
-            '//span[text()="Далее"]/parent::button',
-            '//span[text()="Next"]/parent::button',
-            '//span[text()="Продолжить"]/parent::button',
-        ]
-        
-        for selector in next_selectors:
-            try:
-                if selector.startswith('//'):
-                    el = await page.locator(f'xpath={selector}').first
-                else:
-                    el = await page.locator(selector).first
-                    
-                if await el.count() > 0 and await el.is_visible():
-                    await el.click()
-                    next_clicked = True
-                    print(f"✅ Нажато 'Далее': {selector}")
-                    break
-            except:
-                continue
-        
-        if not next_clicked:
-            await page.keyboard.press("Enter")
-        
-        await update.message.reply_text("⏳ Жду появления поля для пароля...")
-        await page.wait_for_timeout(5000)
-        
-        await update.message.reply_text("🔑 Ищу поле для пароля...")
-        
-        password_found = False
-        password_element = None
-        
-        try:
-            el = await page.get_by_placeholder(re.compile(r"(Password|пароль|Пароль)", re.IGNORECASE)).first
-            if await el.count() > 0 and await el.is_visible():
-                password_element = el
-                password_found = True
-                print("✅ Пароль через get_by_placeholder")
-        except:
-            pass
-        
-        if not password_found:
-            css_selectors = [
-                'input[type="password"]',
-                'input[name="password"]',
-                'input[autocomplete="current-password"]',
-                'input[aria-label*="Password" i]',
-                'input[aria-label*="пароль" i]',
-                'input[jsname="YPqjbf"]',
-            ]
-            
-            for selector in css_selectors:
-                try:
-                    await page.wait_for_selector(selector, timeout=2000)
-                    el = await page.locator(selector).first
-                    if await el.count() > 0 and await el.is_visible():
-                        password_element = el
-                        password_found = True
-                        print(f"✅ Пароль через CSS: {selector}")
-                        break
-                except:
-                    continue
-        
-        if not password_found:
-            try:
-                inputs = await page.locator('input[type="password"]').all()
-                for inp in inputs:
-                    if await inp.is_visible():
-                        password_element = inp
-                        password_found = True
-                        print("✅ Пароль через input[type=password]")
-                        break
-            except:
-                pass
-        
-        if not password_found:
-            current_url = page.url
-            if "myaccount.google.com" in current_url or "mail.google.com" in current_url:
-                screenshot = await human_screenshot(page, 100, 100)
-                await update.message.reply_photo(
-                    photo=screenshot,
-                    caption="✅ **Вход уже выполнен!** 🎉"
-                )
-                return
-            
-            screenshot = await page.screenshot(full_page=True, type="png")
-            await update.message.reply_photo(
-                photo=screenshot,
-                caption="❌ **Не найдено поле для пароля**\n\nВведи вручную через джойстик"
-            )
-            return
-        
-        await password_element.click()
-        await page.wait_for_timeout(500)
-        await human_type(page, password)
-        print("✅ Пароль введён")
-        
-        await page.wait_for_timeout(1000)
-        
-        await update.message.reply_text("⏭️ Завершаю вход...")
-        
-        next_clicked = False
-        for selector in next_selectors:
-            try:
-                if selector.startswith('//'):
-                    el = await page.locator(f'xpath={selector}').first
-                else:
-                    el = await page.locator(selector).first
-                    
-                if await el.count() > 0 and await el.is_visible():
-                    await el.click()
-                    next_clicked = True
-                    break
-            except:
-                continue
-        
-        if not next_clicked:
-            await page.keyboard.press("Enter")
-        
-        await page.wait_for_timeout(5000)
-        
-        current_url = page.url
-        cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
-        screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
-        
-        if "myaccount.google.com" in current_url or "mail.google.com" in current_url:
-            await update.message.reply_photo(
-                photo=screenshot,
-                caption="✅ **Вход в Google выполнен успешно!** 🎉\n\n"
-                        "Теперь:\n"
-                        "🔗 /twitter - открыть X.com\n"
-                        "🔘 /google_btn - нажать 'Continue with Google'\n"
-                        "🔘 /continue - нажать 'Continue as Babe'"
-            )
-        else:
-            await update.message.reply_photo(
-                photo=screenshot,
-                caption=f"📸 Текущая страница\n\nПроверь статус: /status"
-            )
-        
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-        try:
-            screenshot = await page.screenshot(full_page=True, type="png")
-            await update.message.reply_photo(photo=screenshot, caption="📸 Скриншот для диагностики")
-        except:
-            pass
-
-# ============ ОТКРЫТЬ TWITTER/X ============
-async def twitter_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    
-    if user_id not in user_sessions:
-        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
-        return
-    
-    session = user_sessions[user_id]
-    page = session["page"]
-    
-    try:
-        await update.message.reply_text("🌐 Открываю X.com...")
-        await goto_url(page, "https://x.com")
-        session["current_url"] = "https://x.com"
-        
-        await page.wait_for_timeout(3000)
-        
-        cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
-        screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
-        
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption="✅ **X.com открыт!**\n\n"
-                    "🔘 /google_btn - нажать 'Continue with Google'\n"
-                    "🔘 /continue - нажать 'Continue as Babe'\n"
-                    "🎮 /joystick - управлять вручную"
-        )
-        
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-
-# ============ НАЖАТЬ "CONTINUE WITH GOOGLE" ============
-async def google_login_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    
-    if user_id not in user_sessions:
-        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
-        return
-    
-    session = user_sessions[user_id]
-    page = session["page"]
-    
-    await update.message.reply_text("🔍 Ищу кнопку 'Continue with Google'...")
-    
-    try:
-        clicked = False
-        
-        for frame in page.frames:
-            try:
-                selectors = [
-                    'text="Continue with Google"',
-                    'button:has-text("Continue with Google")',
-                    'div:has-text("Continue with Google")',
-                    'span:has-text("Continue with Google")',
-                    '[aria-label*="Google"]',
-                ]
-                
-                for selector in selectors:
-                    try:
-                        el = await frame.locator(selector).first
-                        if await el.count() > 0 and await el.is_visible():
-                            box = await el.bounding_box()
-                            if box:
-                                x = box['x'] + box['width'] // 2
-                                y = box['y'] + box['height'] // 2
-                                await human_click(page, x, y)
-                            else:
-                                await el.click()
-                            clicked = True
-                            await update.message.reply_text("✅ Нажата кнопка 'Continue with Google'")
-                            break
-                    except:
-                        continue
-                if clicked:
-                    break
-            except:
-                continue
-        
-        if not clicked:
-            await update.message.reply_text(
-                "❌ Кнопка не найдена\n\n"
-                "Попробуй через джойстик: /joystick"
-            )
-            return
-        
-        await page.wait_for_timeout(3000)
-        
-        cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
-        screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
-        
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption="✅ **Кнопка нажата!**\n\n"
-                    "🔘 /continue - нажать 'Continue as Babe'"
-        )
-        
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-
-# ============ НАЖАТЬ "CONTINUE AS BABE" ============
-async def continue_as_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    
-    if user_id not in user_sessions:
-        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
-        return
-    
-    session = user_sessions[user_id]
-    page = session["page"]
-    
-    await update.message.reply_text("🔍 Ищу кнопку 'Continue as...' во всех iframe...")
-    
-    try:
-        clicked = False
-        button_text = ""
-        
-        frames = page.frames
-        await update.message.reply_text(f"📦 Найдено iframe: {len(frames)}")
-        
-        for idx, frame in enumerate(frames):
-            try:
-                selectors = [
-                    'text="Continue as"',
-                    'text="Продолжить как"',
-                    'text="Continue with Google"',
-                    'button:has-text("Continue as")',
-                    'button:has-text("Продолжить как")',
-                    'div:has-text("Continue as")',
-                    'div:has-text("Продолжить как")',
-                    'div[role="button"]',
-                    '[jsname]',
-                    '[data-testid]',
-                ]
-                
-                for selector in selectors:
-                    try:
-                        elements = await frame.locator(selector).all()
-                        for el in elements:
-                            if await el.is_visible():
-                                text = await el.text_content() or ""
-                                if any(keyword in text for keyword in ['Continue as', 'Продолжить как', 'Google', 'babe']):
-                                    box = await el.bounding_box()
-                                    if box:
-                                        x = box['x'] + box['width'] // 2
-                                        y = box['y'] + box['height'] // 2
-                                        await human_click(page, x, y)
-                                    else:
-                                        await el.click()
-                                    clicked = True
-                                    button_text = text[:50]
-                                    await update.message.reply_text(f"✅ Нажата кнопка в iframe {idx}: {button_text}")
-                                    break
-                    except:
-                        continue
-                if clicked:
-                    break
-            except Exception as e:
-                print(f"Ошибка в iframe {idx}: {e}")
-                continue
-        
-        if not clicked:
-            await update.message.reply_text("🔍 Ищу на основной странице...")
-            selectors = [
-                'text="Continue as"',
-                'text="Продолжить как"',
-                'button:has-text("Continue as")',
-                'button:has-text("Продолжить как")',
-                'div:has-text("Continue as")',
-                'div:has-text("Продолжить как")',
-                'div[role="button"]',
-            ]
-            
-            for selector in selectors:
-                try:
-                    elements = await page.locator(selector).all()
-                    for el in elements:
-                        if await el.is_visible():
-                            text = await el.text_content() or ""
-                            if any(keyword in text for keyword in ['Continue as', 'Продолжить как', 'Google']):
-                                box = await el.bounding_box()
-                                if box:
-                                    x = box['x'] + box['width'] // 2
-                                    y = box['y'] + box['height'] // 2
-                                    await human_click(page, x, y)
-                                else:
-                                    await el.click()
-                                clicked = True
-                                button_text = text[:50]
-                                await update.message.reply_text(f"✅ Нажата кнопка на странице: {button_text}")
-                                break
-                except:
-                    continue
-        
-        if not clicked:
-            cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
-            screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
-            await update.message.reply_photo(
-                photo=screenshot,
-                caption="❌ **Кнопка не найдена**\n\n"
-                        "Попробуй через джойстик:\n"
-                        "1. /joystick\n"
-                        "2. Наведи на кнопку\n"
-                        "3. Нажми ЛКМ"
-            )
-            return
-        
-        await page.wait_for_timeout(5000)
-        
-        current_url = page.url
-        cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
-        screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
-        
-        cookies = await page.context.cookies()
-        has_session = any(c['name'] in ['auth_token', 'ct0', 'twid'] for c in cookies)
-        
-        if "x.com" in current_url and "login" not in current_url and has_session:
-            await update.message.reply_photo(
-                photo=screenshot,
-                caption="✅ **Вход в Twitter выполнен успешно!** 🎉\n\n"
-                        "Ты в аккаунте! 🥳"
-            )
-        elif "x.com" in current_url and "login" in current_url:
-            await update.message.reply_photo(
-                photo=screenshot,
-                caption="⚠️ **Кнопка нажата, но вход не выполнен**\n\n"
-                        "Попробуй:\n"
-                        "1. Нажать 'Войти' вручную через джойстик\n"
-                        "2. /joystick → наведи на 'Войти' → ЛКМ\n"
-                        "3. Потом снова /continue"
-            )
-        elif "accounts.google.com" in current_url:
-            await update.message.reply_photo(
-                photo=screenshot,
-                caption="🔐 **Открылось окно Google**\n\n"
-                        "Бот уже вошёл в Google.\n"
-                        "Нажми /twitter и попробуй снова."
-            )
-        else:
-            await update.message.reply_photo(
-                photo=screenshot,
-                caption=f"📸 Текущая страница: {current_url[:60]}\n\n"
-                        "Проверь статус: /status"
-            )
-        
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-        try:
-            screenshot = await page.screenshot(full_page=True, type="png")
-            await update.message.reply_photo(photo=screenshot, caption="📸 Скриншот для диагностики")
-        except:
-            pass
-
-# ============ РАБОТА С КУКАМИ ============
-
-async def load_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    
-    if user_id not in user_sessions:
-        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
-        return
-    
-    if not update.message.document:
-        await update.message.reply_text(
-            "❌ Отправь файл cookies.json\n\n"
-            "Формат:\n"
-            '[{"name":"auth_token","value":"...","domain":".x.com","path":"/"}]'
-        )
-        return
-    
-    document = update.message.document
-    if not document.file_name.endswith('.json'):
-        await update.message.reply_text("❌ Файл должен быть .json")
-        return
-    
-    file = await context.bot.get_file(document.file_id)
-    file_path = f"/tmp/cookies_{user_id}.json"
-    await file.download_to_drive(file_path)
-    
-    try:
-        with open(file_path, 'r') as f:
-            cookies_data = json.load(f)
-        
-        session = user_sessions[user_id]
+        session = await get_user_browser(user_id)
         page = session["page"]
-        context_browser = session["context"]
-        
-        await context_browser.clear_cookies()
-        await context_browser.add_cookies(cookies_data)
-        
-        await update.message.reply_text(f"✅ Загружено {len(cookies_data)} кук")
-        
-        await page.reload()
+        await update.message.reply_text(f"🌐 Перехожу на {url}...")
+        await goto_url(page, url)
+        session["current_url"] = url
+        cursor_positions[user_id] = {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2}
         await page.wait_for_timeout(2000)
-        
-        cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
-        screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
-        
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption="✅ Куки загружены! Страница перезагружена."
-        )
-        
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-    finally:
-        try:
-            os.remove(file_path)
-        except:
-            pass
-
-async def save_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    
-    if user_id not in user_sessions:
-        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
-        return
-    
-    session = user_sessions[user_id]
-    page = session["page"]
-    
-    try:
-        cookies = await page.context.cookies()
-        json_data = json.dumps(cookies, indent=2)
-        
-        buffer = BytesIO(json_data.encode('utf-8'))
-        buffer.name = "cookies.json"
-        
-        await update.message.reply_document(
-            document=buffer,
-            filename="cookies.json",
-            caption=f"📦 Куки сохранены ({len(cookies)} шт.)"
-        )
-        
+        screenshot = await human_screenshot(page, VIEWPORT["width"] // 2, VIEWPORT["height"] // 2)
+        await update.message.reply_photo(photo=screenshot, caption=f"✅ {url}")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
+# ============ КОМАНДА /SETCOOKIE ============
 async def set_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    
-    if user_id not in user_sessions:
-        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
-        return
-    
     args = context.args
     if len(args) < 2:
         await update.message.reply_text(
             "❌ Использование:\n"
-            "/setcookie auth_token=значение ct0=значение\n\n"
-            "Пример:\n"
-            "/setcookie auth_token=09fe982487255e... ct0=18f7448391062..."
+            "/setcookie auth_token=значение ct0=значение"
         )
         return
-    
+    if user_id not in user_sessions:
+        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
+        return
     session = user_sessions[user_id]
     page = session["page"]
     context_browser = session["context"]
-    
     try:
         cookies_to_add = []
         i = 0
@@ -1159,299 +523,313 @@ async def set_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 cookies_to_add.append({"name": key, "value": value, "domain": ".x.com", "path": "/"})
                 i += 1
             i += 1
-        
         if not cookies_to_add:
             await update.message.reply_text("❌ Не найдены куки для установки")
             return
-        
         await context_browser.add_cookies(cookies_to_add)
-        
         await update.message.reply_text(f"✅ Установлено {len(cookies_to_add)} кук")
-        
         await page.reload()
         await page.wait_for_timeout(2000)
-        
         cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
         screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
-        
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption="✅ Куки установлены! Страница перезагружена."
-        )
-        
+        await update.message.reply_photo(photo=screenshot, caption="✅ Куки установлены! Страница перезагружена.")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-# ============ СТАТУС ============
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+# ============ КОМАНДА /LOADCOOKIES ============
+async def load_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    
-    if user_id not in user_sessions:
-        await update.message.reply_text("⚠️ Браузер не открыт. Используй: /browser")
-        return
-    
-    session = user_sessions[user_id]
-    page = session["page"]
-    url = page.url
-    
-    cookies = await page.context.cookies()
-    has_cookie = any(c['name'] in ['auth_token', 'ct0', 'twid'] for c in cookies)
-    
-    status_text = f"📊 **Статус браузера**\n\n"
-    status_text += f"🌐 Текущий URL: {url[:60]}\n"
-    status_text += f"🍪 Куки: {'✅ Есть' if has_cookie else '❌ Нет'}\n"
-    
-    if "x.com" in url:
-        status_text += "📱 На сайте: Twitter/X\n"
-        status_text += f"✅ **Вы {'вошли' if has_cookie else 'НЕ вошли'} в Twitter!**\n"
-    elif "google" in url:
-        status_text += "📱 На сайте: Google\n"
-    else:
-        status_text += f"📱 Сайт: {url[:30]}\n"
-    
-    cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
-    screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
-    
-    await update.message.reply_photo(photo=screenshot, caption=status_text)
-
-# ============ ПОКАЗАТЬ ВСЕ IFRAME ============
-async def show_frames(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    
     if user_id not in user_sessions:
         await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
         return
-    
-    session = user_sessions[user_id]
-    page = session["page"]
-    
-    try:
-        frames = page.frames
-        await update.message.reply_text(f"📦 Найдено iframe: {len(frames)}")
-        
-        for i, frame in enumerate(frames):
-            try:
-                url = frame.url
-                await update.message.reply_text(f"🔹 iframe {i}: {url[:80]}")
-            except:
-                await update.message.reply_text(f"🔹 iframe {i}: <недоступно>")
-        
-        cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
-        screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
-        await update.message.reply_photo(photo=screenshot, caption="📸 Скриншот страницы")
-        
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-
-# ============ НАЖАТЬ "ВОЙТИ" ============
-async def click_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    
-    if user_id not in user_sessions:
-        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
+    if not update.message.document:
+        await update.message.reply_text("❌ Отправь файл cookies.json")
         return
-    
-    session = user_sessions[user_id]
-    page = session["page"]
-    
-    await update.message.reply_text("🔍 Ищу кнопку 'Войти'...")
-    
-    try:
-        clicked = False
-        
-        selectors = [
-            'text="Войти"',
-            'text="Sign in"',
-            'text="Log in"',
-            'a:has-text("Войти")',
-            'a:has-text("Sign in")',
-            'div[role="button"]:has-text("Войти")',
-            '[data-testid="loginButton"]',
-        ]
-        
-        for selector in selectors:
-            try:
-                el = await page.locator(selector).first
-                if await el.count() > 0 and await el.is_visible():
-                    box = await el.bounding_box()
-                    if box:
-                        x = box['x'] + box['width'] // 2
-                        y = box['y'] + box['height'] // 2
-                        await human_click(page, x, y)
-                    else:
-                        await el.click()
-                    clicked = True
-                    await update.message.reply_text("✅ Нажата кнопка 'Войти'")
-                    break
-            except:
-                continue
-        
-        if not clicked:
-            await update.message.reply_text("❌ Кнопка 'Войти' не найдена")
-            return
-        
-        await page.wait_for_timeout(3000)
-        
-        cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
-        screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
-        
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption="✅ Страница входа открыта\n\n"
-                    "Теперь нажми /google_btn"
-        )
-        
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-
-# ============ ПЕРЕЙТИ НА СТРАНИЦУ ВХОДА ============
-async def goto_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    
-    if user_id not in user_sessions:
-        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
+    document = update.message.document
+    if not document.file_name.endswith('.json'):
+        await update.message.reply_text("❌ Файл должен быть .json")
         return
-    
-    session = user_sessions[user_id]
-    page = session["page"]
-    
+    file = await context.bot.get_file(document.file_id)
+    file_path = f"/tmp/cookies_{user_id}.json"
+    await file.download_to_drive(file_path)
     try:
-        await update.message.reply_text("🌐 Перехожу на страницу входа X.com...")
-        await goto_url(page, "https://x.com/login")
-        
-        await page.wait_for_timeout(3000)
-        
-        cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
-        screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
-        
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption="✅ Страница входа открыта\n\n"
-                    "Теперь нажми /google_btn"
-        )
-        
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-
-# ============ КОМАНДЫ ============
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
-        "👋 Привет! Я бот с управлением браузером!\n\n"
-        "🌐 /browser - Открыть браузер\n"
-        "🔐 /login email pass - Войти в Google (автоматически)\n"
-        "🍪 /setcookie key=value - Установить куки вручную\n"
-        "📄 /loadcookies - Загрузить куки из файла\n"
-        "💾 /savecookies - Сохранить текущие куки\n"
-        "🐦 /twitter - Открыть X.com\n"
-        "🔘 /login_btn - Нажать 'Войти'\n"
-        "🔘 /google_btn - Нажать 'Continue with Google'\n"
-        "🔘 /continue - Нажать 'Continue as Babe'\n"
-        "📦 /frames - Показать все iframe\n"
-        "🎮 /joystick - Открыть джойстик\n"
-        "📊 /status - Проверить статус\n"
-        "📸 /screenshot - Сделать скриншот\n"
-        "📦 /installpillow - Установить Pillow\n"
-        "❌ /close - Закрыть браузер\n\n"
-        "🚀 Быстрый вход с куками:\n"
-        "/browser → /setcookie auth_token=... → /twitter"
-    )
-
-async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    
-    await update.message.reply_text("🌐 Открываю браузер...")
-    
-    try:
-        await get_user_browser(user_id)
-        await update.message.reply_text(
-            "✅ Браузер готов!\n\n"
-            "🍪 /setcookie ключ=значение - установить куки\n"
-            "🐦 /twitter - открыть X.com\n"
-            "🎮 /joystick - открыть джойстик"
-        )
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-
-async def go_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    args = context.args
-    
-    if not args:
-        await update.message.reply_text("❌ Укажите URL: /go google.com")
-        return
-    
-    url = args[0]
-    if not url.startswith("http"):
-        url = "https://" + url
-    
-    try:
-        session = await get_user_browser(user_id)
-        page = session["page"]
-        
-        await update.message.reply_text(f"🌐 Перехожу на {url}...")
-        
-        await goto_url(page, url)
-        session["current_url"] = url
-        
-        cursor_positions[user_id] = {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2}
-        
-        await page.wait_for_timeout(2000)
-        
-        screenshot = await human_screenshot(page, VIEWPORT["width"] // 2, VIEWPORT["height"] // 2)
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption=f"✅ {url}"
-        )
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-
-async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    
-    if user_id not in user_sessions:
-        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
-        return
-    
-    try:
+        with open(file_path, 'r') as f:
+            cookies_data = json.load(f)
         session = user_sessions[user_id]
         page = session["page"]
+        context_browser = session["context"]
+        await context_browser.clear_cookies()
+        await context_browser.add_cookies(cookies_data)
+        await update.message.reply_text(f"✅ Загружено {len(cookies_data)} кук")
+        await page.reload()
+        await page.wait_for_timeout(2000)
         cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
-        
         screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption=f"📸 Скриншот ({cursor['x']}, {cursor['y']})"
+        await update.message.reply_photo(photo=screenshot, caption="✅ Куки загружены!")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+    finally:
+        try:
+            os.remove(file_path)
+        except:
+            pass
+
+# ============ КОМАНДА /LOADSAVEDCOOKIES ============
+async def load_saved_cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if user_id not in user_sessions:
+        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
+        return
+    try:
+        saved_cookies_data = load_saved_cookies()
+        cookies_to_load = saved_cookies_data.get(str(user_id), [])
+        if not cookies_to_load:
+            await update.message.reply_text("❌ Нет сохранённых кук. Сначала используй /start_x_com или /x_profile_info")
+            return
+        session = user_sessions[user_id]
+        page = session["page"]
+        context_browser = session["context"]
+        await context_browser.clear_cookies()
+        await context_browser.add_cookies(cookies_to_load)
+        await update.message.reply_text(f"✅ Загружено {len(cookies_to_load)} кук из файла")
+        await page.reload()
+        await page.wait_for_timeout(2000)
+        cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
+        screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
+        await update.message.reply_photo(photo=screenshot, caption="✅ Сохранённые куки загружены!")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+# ============ КОМАНДА /SAVECOOKIES ============
+async def save_cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if user_id not in user_sessions:
+        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
+        return
+    session = user_sessions[user_id]
+    page = session["page"]
+    try:
+        cookies = await page.context.cookies()
+        json_data = json.dumps(cookies, indent=2)
+        buffer = BytesIO(json_data.encode('utf-8'))
+        buffer.name = "cookies.json"
+        await update.message.reply_document(
+            document=buffer,
+            filename="cookies.json",
+            caption=f"📦 Куки сохранены ({len(cookies)} шт.)"
         )
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+# ============ КОМАНДА /START_X_COM ============
+async def start_x_com(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    await close_user_browser(user_id)
-    await update.message.reply_text("❌ Браузер закрыт")
+    await update.message.reply_text("🚀 Запускаю X.com с куками...")
+    try:
+        await get_user_browser(user_id)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка открытия браузера: {e}")
+        return
+    session = user_sessions[user_id]
+    page = session["page"]
+    context_browser = session["context"]
+    cookies_to_add = [
+        {"name": "auth_token", "value": "09fe982487255e707f7a9b3d380ea429421adae3", "domain": ".x.com", "path": "/"},
+        {"name": "ct0", "value": "18f7448391062aaaa323ea38f4fd129f5f682f09ec0989f899ebc4ddaa4d7bf7de0e0c359240145428b7cc1d410adbc5565fa9bbe2c4380b5341327ea3c53f03a89fcb12ee617d0fea848882ae6ff281", "domain": ".x.com", "path": "/"},
+        {"name": "twid", "value": "u%3D2067347503503052800", "domain": ".x.com", "path": "/"},
+        {"name": "guest_id", "value": "v1%3A178224957371538879", "domain": ".x.com", "path": "/"},
+        {"name": "guest_id_ads", "value": "v1%3A178224957371538879", "domain": ".x.com", "path": "/"},
+        {"name": "guest_id_marketing", "value": "v1%3A178224957371538879", "domain": ".x.com", "path": "/"},
+        {"name": "lang", "value": "ru", "domain": ".x.com", "path": "/"},
+    ]
+    try:
+        await context_browser.clear_cookies()
+        await context_browser.add_cookies(cookies_to_add)
+        await update.message.reply_text(f"✅ Установлено {len(cookies_to_add)} кук")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка установки кук: {e}")
+        return
+    try:
+        await goto_url(page, "https://x.com")
+        session["current_url"] = "https://x.com"
+        await page.wait_for_timeout(3000)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка открытия X.com: {e}")
+        return
+    try:
+        profile_data = await page.evaluate("""
+            () => {
+                const data = { name: '', username: '', avatar: '', followers: 0, following: 0, tweets: 0, bio: '' };
+                try {
+                    const nameEl = document.querySelector('[data-testid="UserName"]');
+                    if (nameEl) {
+                        const spans = nameEl.querySelectorAll('span');
+                        if (spans.length > 0) data.name = spans[0].textContent;
+                        if (spans.length > 1) data.username = spans[1].textContent.replace('@', '');
+                    }
+                    const bioEl = document.querySelector('[data-testid="UserDescription"]');
+                    if (bioEl) data.bio = bioEl.textContent;
+                    const avatarEl = document.querySelector('img[src*="profile_images"]');
+                    if (avatarEl) data.avatar = avatarEl.src;
+                    const stats = document.querySelectorAll('[data-testid="UserStats"]');
+                    if (stats.length > 0) {
+                        const texts = stats[0].textContent.split('·');
+                        if (texts.length > 0) {
+                            const followers = texts[0].match(/\\d+/);
+                            if (followers) data.followers = parseInt(followers[0]);
+                        }
+                        if (texts.length > 1) {
+                            const following = texts[1].match(/\\d+/);
+                            if (following) data.following = parseInt(following[0]);
+                        }
+                    }
+                } catch(e) {}
+                return data;
+            }
+        """)
+        name = profile_data.get('name', 'Неизвестно')
+        username = profile_data.get('username', 'Неизвестно')
+        avatar = profile_data.get('avatar', '')
+        followers = profile_data.get('followers', 0)
+        following = profile_data.get('following', 0)
+        tweets = profile_data.get('tweets', 0)
+        bio = profile_data.get('bio', '')
+        cookies = await page.context.cookies()
+        save_cookies_to_file(user_id, cookies)
+        text = (
+            f"🐦 **X.com запущен!**\n\n"
+            f"✅ Куки установлены и сохранены\n"
+            f"👤 **Имя:** {name}\n"
+            f"🔹 **@** {username}\n"
+            f"📝 **Био:** {bio[:100] + '...' if len(bio) > 100 else bio or 'Не указана'}\n\n"
+            f"📊 **Статистика:**\n"
+            f"   📌 Подписчиков: {followers:,}\n"
+            f"   📌 Подписок: {following:,}\n"
+            f"   📌 Твитов: {tweets:,}\n\n"
+            f"💾 Куки сохранены навсегда!"
+        )
+        if avatar:
+            try:
+                import aiohttp
+                async with aiohttp.ClientSession() as session_http:
+                    async with session_http.get(avatar) as resp:
+                        if resp.status == 200:
+                            avatar_data = await resp.read()
+                            await update.message.reply_photo(
+                                photo=BytesIO(avatar_data),
+                                caption=text,
+                                parse_mode="Markdown"
+                            )
+                            return
+            except:
+                pass
+        await update.message.reply_text(text, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"✅ X.com открыт!\n\nКуки установлены и сохранены.")
+        print(f"Ошибка получения профиля: {e}")
 
-async def joystick_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+# ============ КОМАНДА /X_PROFILE_INFO ============
+async def x_profile_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    
     if user_id not in user_sessions:
         await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
         return
-    
+    session = user_sessions[user_id]
+    page = session["page"]
+    await update.message.reply_text("🔍 Получаю информацию о профиле X...")
+    try:
+        cookies = await page.context.cookies()
+        has_session = any(c['name'] in ['auth_token', 'ct0', 'twid'] for c in cookies)
+        if not has_session:
+            await update.message.reply_text("❌ Нет активной сессии X. Сначала войди.")
+            return
+        if save_cookies_to_file(user_id, cookies):
+            await update.message.reply_text("💾 Куки сохранены навсегда!")
+        await page.goto("https://x.com", wait_until="domcontentloaded")
+        await page.wait_for_timeout(2000)
+        profile_data = await page.evaluate("""
+            () => {
+                const data = { name: '', username: '', avatar: '', followers: 0, following: 0, tweets: 0, bio: '', location: '', joinDate: '' };
+                try {
+                    const nameEl = document.querySelector('[data-testid="UserName"]');
+                    if (nameEl) {
+                        const spans = nameEl.querySelectorAll('span');
+                        if (spans.length > 0) data.name = spans[0].textContent;
+                        if (spans.length > 1) data.username = spans[1].textContent.replace('@', '');
+                    }
+                    const bioEl = document.querySelector('[data-testid="UserDescription"]');
+                    if (bioEl) data.bio = bioEl.textContent;
+                    const avatarEl = document.querySelector('img[src*="profile_images"]');
+                    if (avatarEl) data.avatar = avatarEl.src;
+                    const stats = document.querySelectorAll('[data-testid="UserStats"]');
+                    if (stats.length > 0) {
+                        const texts = stats[0].textContent.split('·');
+                        if (texts.length > 0) {
+                            const followers = texts[0].match(/\\d+/);
+                            if (followers) data.followers = parseInt(followers[0]);
+                        }
+                        if (texts.length > 1) {
+                            const following = texts[1].match(/\\d+/);
+                            if (following) data.following = parseInt(following[0]);
+                        }
+                    }
+                } catch(e) {}
+                return data;
+            }
+        """)
+        name = profile_data.get('name', 'Неизвестно')
+        username = profile_data.get('username', 'Неизвестно')
+        avatar = profile_data.get('avatar', '')
+        followers = profile_data.get('followers', 0)
+        following = profile_data.get('following', 0)
+        tweets = profile_data.get('tweets', 0)
+        bio = profile_data.get('bio', '')
+        text = (
+            f"🐦 **Профиль X**\n\n"
+            f"👤 **Имя:** {name}\n"
+            f"🔹 **@** {username}\n"
+            f"📝 **Био:** {bio[:100] + '...' if len(bio) > 100 else bio or 'Не указана'}\n\n"
+            f"📊 **Статистика:**\n"
+            f"   📌 Подписчиков: {followers:,}\n"
+            f"   📌 Подписок: {following:,}\n"
+            f"   📌 Твитов: {tweets:,}\n\n"
+            f"💾 Куки сохранены навсегда!"
+        )
+        if avatar:
+            try:
+                import aiohttp
+                async with aiohttp.ClientSession() as session_http:
+                    async with session_http.get(avatar) as resp:
+                        if resp.status == 200:
+                            avatar_data = await resp.read()
+                            await update.message.reply_photo(
+                                photo=BytesIO(avatar_data),
+                                caption=text,
+                                parse_mode="Markdown"
+                            )
+                            return
+            except:
+                pass
+        await update.message.reply_text(text, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+# ============ КОМАНДА /JOYSTICK ============
+async def joystick_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if user_id not in user_sessions:
+        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
+        return
     if user_id in joystick_messages:
         await update.message.reply_text("🎮 Джойстик уже открыт!")
         return
-    
     joystick_states[user_id] = {"mode": "normal"}
-    
     session = user_sessions[user_id]
     page = session["page"]
-    
     cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
     current_x = cursor["x"]
     current_y = cursor["y"]
-    
     screenshot = await human_screenshot(page, current_x, current_y)
-    
     msg = await update.message.reply_photo(
         photo=screenshot,
         caption=(
@@ -1463,30 +841,84 @@ async def joystick_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         ),
         reply_markup=get_joystick_keyboard("normal")
     )
-    
     joystick_messages[user_id] = msg.message_id
 
-# ============ ОБРАБОТЧИК КНОПОК ============
+# ============ КОМАНДА /SCREENSHOT ============
+async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if user_id not in user_sessions:
+        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
+        return
+    try:
+        session = user_sessions[user_id]
+        page = session["page"]
+        cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
+        screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption=f"📸 Скриншот ({cursor['x']}, {cursor['y']})"
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+# ============ КОМАНДА /STATUS ============
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if user_id not in user_sessions:
+        await update.message.reply_text("⚠️ Браузер не открыт. Используй: /browser")
+        return
+    session = user_sessions[user_id]
+    page = session["page"]
+    url = page.url
+    cookies = await page.context.cookies()
+    has_cookie = any(c['name'] in ['auth_token', 'ct0', 'twid'] for c in cookies)
+    status_text = f"📊 **Статус браузера**\n\n"
+    status_text += f"🌐 URL: {url[:60]}\n"
+    status_text += f"🍪 Куки: {'✅ Есть' if has_cookie else '❌ Нет'}\n"
+    if "x.com" in url:
+        status_text += f"📱 X.com - {'✅ Вошли' if has_cookie else '❌ Не вошли'}\n"
+    cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
+    screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
+    await update.message.reply_photo(photo=screenshot, caption=status_text)
+
+# ============ КОМАНДА /INSTALLPILLOW ============
+async def install_pillow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+    if ADMIN_ID and user_id != ADMIN_ID:
+        await update.message.reply_text("⛔ Только для администратора!")
+        return
+    await update.message.reply_text("📦 Начинаю установку Pillow...")
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "Pillow>=10.0.0"],
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+        if result.returncode == 0:
+            await update.message.reply_text("✅ Pillow установлен успешно!")
+        else:
+            await update.message.reply_text(f"❌ Ошибка установки:\n```\n{result.stderr[:500]}\n```")
+    except subprocess.TimeoutExpired:
+        await update.message.reply_text("❌ Установка заняла слишком много времени")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+# ============ ОБРАБОТЧИК КНОПОК ДЖОЙСТИКА ============
 async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-    
     user_id = update.effective_user.id
     data = query.data
-    
     if user_id not in user_sessions:
-        await query.edit_message_text(
-            "⚠️ Браузер закрыт. Открой: /browser",
-            reply_markup=None
-        )
+        await query.edit_message_text("⚠️ Браузер закрыт. Открой: /browser", reply_markup=None)
         if user_id in joystick_messages:
             del joystick_messages[user_id]
         return
-    
     session = user_sessions[user_id]
     page = session["page"]
     mode = joystick_states.get(user_id, {}).get("mode", "normal")
-    
     cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
     current_x = cursor["x"]
     current_y = cursor["y"]
@@ -1495,133 +927,75 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         parts = data.split("_")
         dx = int(parts[1])
         dy = int(parts[2])
-        
         try:
             new_x = max(0, min(VIEWPORT["width"], current_x + dx))
             new_y = max(0, min(VIEWPORT["height"], current_y + dy))
-            
             cursor_positions[user_id] = {"x": new_x, "y": new_y}
-            
             await human_move(page, new_x, new_y, steps=5)
-            
-            await update_joystick_message(
-                query, page, user_id, mode,
-                f"🖱️ Движение → ({new_x}, {new_y})"
-            )
-            
+            await update_joystick_message(query, page, user_id, mode, f"🖱️ Движение → ({new_x}, {new_y})")
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка движения: {e}")
-    
     elif data == "click_left":
         try:
-            await smart_click(page, current_x, current_y)
-            await page.wait_for_timeout(500)
-            
-            await update_joystick_message(
-                query, page, user_id, mode,
-                f"🖱️ ЛКМ ({current_x}, {current_y})"
-            )
-            
+            await human_click(page, current_x, current_y)
+            await page.wait_for_timeout(300)
+            await update_joystick_message(query, page, user_id, mode, f"🖱️ ЛКМ ({current_x}, {current_y})")
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка ЛКМ: {e}")
-    
     elif data == "click_right":
         try:
             await human_click(page, current_x, current_y, button="right")
             await page.wait_for_timeout(300)
-            
-            await update_joystick_message(
-                query, page, user_id, mode,
-                f"🖱️ ПКМ ({current_x}, {current_y})"
-            )
-            
+            await update_joystick_message(query, page, user_id, mode, f"🖱️ ПКМ ({current_x}, {current_y})")
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка ПКМ: {e}")
-    
     elif data == "click_center":
         try:
             await human_click(page, current_x, current_y)
             await page.wait_for_timeout(300)
-            
-            await update_joystick_message(
-                query, page, user_id, mode,
-                f"🖱️ Клик ({current_x}, {current_y})"
-            )
-            
+            await update_joystick_message(query, page, user_id, mode, f"🖱️ Клик ({current_x}, {current_y})")
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка клика: {e}")
-    
     elif data == "press_enter":
         try:
             await page.keyboard.press("Enter")
             await page.wait_for_timeout(300)
-            
-            await update_joystick_message(
-                query, page, user_id, mode,
-                "⌨️ Enter"
-            )
-            
+            await update_joystick_message(query, page, user_id, mode, "⌨️ Enter")
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка Enter: {e}")
-    
     elif data == "refresh":
         try:
             await page.reload()
             await page.wait_for_timeout(500)
-            
-            await update_joystick_message(
-                query, page, user_id, mode,
-                "🔄 Обновлено"
-            )
-            
+            await update_joystick_message(query, page, user_id, mode, "🔄 Обновлено")
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка обновления: {e}")
-    
     elif data == "go_back":
         try:
             await page.go_back()
             await page.wait_for_timeout(300)
-            
-            await update_joystick_message(
-                query, page, user_id, mode,
-                "⬅️ Назад"
-            )
-            
+            await update_joystick_message(query, page, user_id, mode, "⬅️ Назад")
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка назад: {e}")
-    
     elif data == "go_forward":
         try:
             await page.go_forward()
             await page.wait_for_timeout(300)
-            
-            await update_joystick_message(
-                query, page, user_id, mode,
-                "➡️ Вперёд"
-            )
-            
+            await update_joystick_message(query, page, user_id, mode, "➡️ Вперёд")
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка вперёд: {e}")
-    
     elif data == "screenshot":
         try:
-            await update_joystick_message(
-                query, page, user_id, mode,
-                "📸 Скриншот"
-            )
-            
+            await update_joystick_message(query, page, user_id, mode, "📸 Скриншот")
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка скриншота: {e}")
-    
     elif data == "close_browser":
         await close_user_browser(user_id)
         await query.edit_message_text("❌ Браузер закрыт", reply_markup=None)
         if user_id in joystick_messages:
             del joystick_messages[user_id]
-    
     elif data == "toggle_mode":
         current_mode = joystick_states.get(user_id, {}).get("mode", "normal")
-        
         if current_mode == "normal":
             new_mode = "fast"
             mode_label = "⚡ БЫСТРЫЙ"
@@ -1631,32 +1005,18 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         else:
             new_mode = "normal"
             mode_label = "🔄 НОРМАЛЬНЫЙ"
-        
         joystick_states[user_id]["mode"] = new_mode
-        
-        await update_joystick_message(
-            query, page, user_id, new_mode,
-            f"🔄 {mode_label}"
-        )
-    
+        await update_joystick_message(query, page, user_id, new_mode, f"🔄 {mode_label}")
     elif data == "change_url":
-        await query.edit_message_text(
-            "🔗 Введи URL: /go <url>",
-            reply_markup=None
-        )
+        await query.edit_message_text("🔗 Введи URL: /go <url>", reply_markup=None)
         if user_id in joystick_messages:
             del joystick_messages[user_id]
-    
     elif data == "hide_joystick":
         if user_id in joystick_messages:
             del joystick_messages[user_id]
         if user_id in joystick_states:
             del joystick_states[user_id]
-        
-        await query.edit_message_text(
-            "✅ Джойстик закрыт\n\n🎮 /joystick - открыть заново",
-            reply_markup=None
-        )
+        await query.edit_message_text("✅ Джойстик закрыт\n\n🎮 /joystick - открыть заново", reply_markup=None)
 
 # ============ ЗАПУСК ============
 def run_flask():
@@ -1671,21 +1031,17 @@ def main():
     
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CommandHandler("browser", browser_command))
-    bot_app.add_handler(CommandHandler("go", go_command))
-    bot_app.add_handler(CommandHandler("screenshot", screenshot_command))
     bot_app.add_handler(CommandHandler("close", close_command))
-    bot_app.add_handler(CommandHandler("joystick", joystick_command))
-    bot_app.add_handler(CommandHandler("status", status_command))
-    bot_app.add_handler(CommandHandler("login", login_google))
-    bot_app.add_handler(CommandHandler("twitter", twitter_command))
-    bot_app.add_handler(CommandHandler("login_btn", click_login))
-    bot_app.add_handler(CommandHandler("google_btn", google_login_button))
-    bot_app.add_handler(CommandHandler("continue", continue_as_google))
-    bot_app.add_handler(CommandHandler("loadcookies", load_cookies))
-    bot_app.add_handler(CommandHandler("savecookies", save_cookies))
+    bot_app.add_handler(CommandHandler("go", go_command))
     bot_app.add_handler(CommandHandler("setcookie", set_cookies))
-    bot_app.add_handler(CommandHandler("frames", show_frames))
-    bot_app.add_handler(CommandHandler("gologin", goto_login))
+    bot_app.add_handler(CommandHandler("loadcookies", load_cookies))
+    bot_app.add_handler(CommandHandler("loadsavedcookies", load_saved_cookies_command))
+    bot_app.add_handler(CommandHandler("savecookies", save_cookies_command))
+    bot_app.add_handler(CommandHandler("start_x_com", start_x_com))
+    bot_app.add_handler(CommandHandler("x_profile_info", x_profile_info))
+    bot_app.add_handler(CommandHandler("joystick", joystick_command))
+    bot_app.add_handler(CommandHandler("screenshot", screenshot_command))
+    bot_app.add_handler(CommandHandler("status", status_command))
     bot_app.add_handler(CommandHandler("installpillow", install_pillow))
     
     bot_app.add_handler(CallbackQueryHandler(joystick_callback))
