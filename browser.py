@@ -1,67 +1,27 @@
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.action_chains import ActionChains
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.remote.webelement import WebElement
+import asyncio
 import os
-import time
+import sys
 import random
 import logging
-import zipfile
-import urllib.request
-import sys
-import subprocess
-import json
+import time
 from datetime import datetime
+from playwright.async_api import async_playwright, Page, Browser, BrowserContext, ElementHandle
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def get_chromedriver_path():
-    chrome_driver_dir = "/tmp/chromedriver"
-    os.makedirs(chrome_driver_dir, exist_ok=True)
-    
-    driver_name = "chromedriver.exe" if sys.platform.startswith('win') else "chromedriver"
-    driver_path = os.path.join(chrome_driver_dir, driver_name)
-    
-    if os.path.exists(driver_path):
-        logger.info("✅ ChromeDriver уже есть")
-        os.chmod(driver_path, 0o755)
-        return driver_path
-    
-    logger.info("📦 Скачивание ChromeDriver...")
-    url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/149.0.7827.155/linux64/chromedriver-linux64.zip"
-    zip_path = os.path.join(chrome_driver_dir, "chromedriver.zip")
-    
-    urllib.request.urlretrieve(url, zip_path)
-    
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        zip_ref.extractall(chrome_driver_dir)
-    
-    os.remove(zip_path)
-    
-    for root, dirs, files in os.walk(chrome_driver_dir):
-        if driver_name in files:
-            driver_path = os.path.join(root, driver_name)
-            os.chmod(driver_path, 0o755)
-            logger.info("✅ ChromeDriver готов")
-            return driver_path
-    
-    raise Exception("ChromeDriver не найден")
 
 class AntiDetectBrowser:
     def __init__(self, headless=False, screenshot_callback=None, log_callback=None):
         self.headless = headless
-        self.driver = None
-        self.wait = None
+        self.browser = None
+        self.context = None
+        self.page = None
         self.screenshot_callback = screenshot_callback
         self.log_callback = log_callback
         self.step = 0
         self.email = None
+        self.playwright = None
         
     def log(self, message, level="INFO"):
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -79,11 +39,11 @@ class AntiDetectBrowser:
         
         return log_entry
         
-    def take_step_screenshot(self, name="step"):
+    async def take_step_screenshot(self, name="step"):
         try:
             self.step += 1
             filename = f"step_{self.step}_{name}.png"
-            self.driver.save_screenshot(filename)
+            await self.page.screenshot(path=filename, full_page=True)
             self.log(f"📸 Скриншот: {name}", "STEP")
             if self.screenshot_callback:
                 self.screenshot_callback(filename, f"Шаг {self.step}: {name}")
@@ -92,437 +52,227 @@ class AntiDetectBrowser:
             self.log(f"❌ Ошибка скриншота: {e}", "ERROR")
             return None
     
-    def setup_driver(self):
-        self.log("🔧 Настройка драйвера...", "INFO")
+    async def setup_driver(self):
+        self.log("🔧 Настройка Playwright...", "INFO")
         
-        options = Options()
-        options.binary_location = "/usr/bin/google-chrome"
+        self.playwright = await async_playwright().start()
         
-        if self.headless:
-            options.add_argument('--headless=new')
-            self.log("🔇 Headless режим", "INFO")
+        # Запускаем браузер
+        self.browser = await self.playwright.chromium.launch(
+            headless=self.headless,
+            args=[
+                '--no-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--disable-setuid-sandbox',
+                '--disable-features=IsolateOrigins,site-per-process',
+                '--disable-blink-features=AutomationControlled',
+                '--disable-web-security',
+                '--disable-features=VizDisplayCompositor',
+                '--disable-popup-blocking',
+                '--disable-notifications',
+                '--disable-infobars',
+                '--disable-extensions',
+                '--remote-debugging-port=9222'
+            ]
+        )
         
-        options.add_argument('--no-sandbox')
-        options.add_argument('--disable-dev-shm-usage')
-        options.add_argument('--disable-gpu')
-        options.add_argument('--remote-debugging-port=9222')
-        options.add_argument('--disable-setuid-sandbox')
-        options.add_argument('--disable-features=IsolateOrigins,site-per-process')
-        options.add_argument('--disable-blink-features=AutomationControlled')
-        options.add_experimental_option('excludeSwitches', ['enable-automation'])
-        options.add_experimental_option('useAutomationExtension', False)
-        options.add_argument('--disable-web-security')
-        options.add_argument('--disable-features=VizDisplayCompositor')
-        options.add_argument('--disable-popup-blocking')
-        options.add_argument('--disable-notifications')
-        options.add_argument('--disable-infobars')
-        options.add_argument('--disable-extensions')
-        options.add_argument('--page-load-timeout=60')
-        options.add_argument('--script-timeout=30')
+        # Контекст с максимальной маскировкой
+        self.context = await self.browser.new_context(
+            viewport={'width': 1920, 'height': 1080},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+            locale='en-US',
+            timezone_id='America/New_York',
+            permissions=['geolocation', 'notifications'],
+            geolocation={'longitude': -74.006, 'latitude': 40.7128},
+            java_script_enabled=True,
+            bypass_csp=True,
+            extra_http_headers={
+                'Accept-Language': 'en-US,en;q=0.9',
+            }
+        )
         
-        desktop_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
-        options.add_argument(f'--user-agent={desktop_user_agent}')
-        self.log(f"🖥️ User-Agent: {desktop_user_agent[:50]}...", "DEBUG")
-        
-        options.add_argument('--window-size=1920,1080')
-        options.add_argument('--lang=en-US,en;q=0.9')
-        
-        options.add_experimental_option('prefs', {
-            'intl.accept_languages': 'en-US,en;q=0.9',
-            'credentials_enable_service': False,
-            'profile.password_manager_enabled': False,
-            'profile.default_content_settings': {
-                'images': 1,
-                'javascript': 1,
-                'popups': 2,
-                'notifications': 2,
-            },
-        })
-        
-        driver_path = get_chromedriver_path()
-        service = Service(driver_path)
-        
-        try:
-            self.driver = webdriver.Chrome(service=service, options=options)
-            self.log("✅ Chrome запущен", "SUCCESS")
-        except Exception as e:
-            self.log(f"❌ Ошибка запуска Chrome: {e}", "ERROR")
-            raise
-        
-        self.driver.set_page_load_timeout(60)
-        self.driver.implicitly_wait(20)
-        
-        self.driver.execute_script("""
+        # Маскировка под реального пользователя
+        await self.context.add_init_script("""
+            // Удаляем следы автоматизации
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined
             });
+            
+            // Маскируем plugins
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3, 4, 5]
+            });
+            
+            // Маскируем languages
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['en-US', 'en']
+            });
+            
+            // Добавляем Chrome объект
+            if (!window.chrome) {
+                window.chrome = { runtime: {} };
+            }
+            
+            // Маскируем permissions
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications' ?
+                    Promise.resolve({ state: Notification.permission }) :
+                    originalQuery(parameters)
+            );
         """)
         
-        self.wait = WebDriverWait(self.driver, 10)
-        self.log("✅ Браузер готов", "SUCCESS")
-        return self.driver
+        self.page = await self.context.new_page()
+        
+        # Устанавливаем таймауты
+        self.page.set_default_timeout(60000)
+        self.page.set_default_navigation_timeout(60000)
+        
+        self.log("✅ Playwright готов", "SUCCESS")
+        return self.page
     
     def random_delay(self, min_sec=0.3, max_sec=1.0):
         time.sleep(random.uniform(min_sec, max_sec))
     
-    # ============================================================
-    # === ТЯЖЕЛЫЙ АРСЕНАЛ — ВСЕ МЕТОДЫ КЛИКА ===
-    # ============================================================
-    
-    def click_method_1_standard(self, element):
-        """Метод 1: Стандартный клик"""
+    async def click_element(self, element, method_name="стандартный"):
+        """Универсальный клик с несколькими попытками"""
         try:
-            element.click()
-            self.log("   ✅ Метод 1: Стандартный клик", "SUCCESS")
+            # Пробуем стандартный клик
+            await element.click(timeout=5000)
+            self.log(f"   ✅ Клик {method_name}", "SUCCESS")
             return True
         except:
-            return False
-    
-    def click_method_2_action_chains(self, element):
-        """Метод 2: ActionChains клик"""
+            pass
+        
         try:
-            actions = ActionChains(self.driver)
-            actions.move_to_element(element)
-            actions.click()
-            actions.perform()
-            self.log("   ✅ Метод 2: ActionChains", "SUCCESS")
+            # Пробуем через JavaScript
+            await self.page.evaluate("el => el.click()", element)
+            self.log(f"   ✅ Клик {method_name} (JS)", "SUCCESS")
             return True
         except:
-            return False
-    
-    def click_method_3_js(self, element):
-        """Метод 3: JavaScript клик"""
+            pass
+        
         try:
-            self.driver.execute_script("arguments[0].click();", element)
-            self.log("   ✅ Метод 3: JavaScript", "SUCCESS")
+            # Пробуем с принудительным скроллом
+            await element.scroll_into_view_if_needed()
+            await element.click(force=True, timeout=5000)
+            self.log(f"   ✅ Клик {method_name} (force)", "SUCCESS")
             return True
         except:
-            return False
+            pass
+        
+        return False
     
-    def click_method_4_js_scroll(self, element):
-        """Метод 4: JavaScript со скроллом"""
-        try:
-            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
-            time.sleep(0.3)
-            self.driver.execute_script("arguments[0].click();", element)
-            self.log("   ✅ Метод 4: JS со скроллом", "SUCCESS")
-            return True
-        except:
-            return False
-    
-    def click_method_5_mouse_event(self, element):
-        """Метод 5: MouseEvent"""
-        try:
-            self.driver.execute_script("""
-                var el = arguments[0];
-                var rect = el.getBoundingClientRect();
-                var cx = rect.left + rect.width / 2;
-                var cy = rect.top + rect.height / 2;
-                var event = new MouseEvent('click', {
-                    clientX: cx,
-                    clientY: cy,
-                    bubbles: true,
-                    cancelable: true,
-                    view: window
-                });
-                el.dispatchEvent(event);
-            """, element)
-            self.log("   ✅ Метод 5: MouseEvent", "SUCCESS")
-            return True
-        except:
-            return False
-    
-    def click_method_6_force(self, element):
-        """Метод 6: Принудительный клик"""
-        try:
-            self.driver.execute_script("arguments[0].click();", element)
-            time.sleep(0.1)
-            self.driver.execute_script("arguments[0].click();", element)
-            self.log("   ✅ Метод 6: Принудительный (двойной)", "SUCCESS")
-            return True
-        except:
-            return False
-    
-    def click_method_7_parent(self, element):
-        """Метод 7: Клик по родителю"""
-        try:
-            parent = self.driver.execute_script("return arguments[0].parentElement;", element)
-            if parent:
-                parent.click()
-                self.log("   ✅ Метод 7: Клик по родителю", "SUCCESS")
-                return True
-            return False
-        except:
-            return False
-    
-    def click_method_8_siblings(self, element):
-        """Метод 8: Клик по соседним элементам"""
-        try:
-            siblings = self.driver.execute_script("""
-                var el = arguments[0];
-                var parent = el.parentElement;
-                if (parent) {
-                    return parent.querySelectorAll('*');
-                }
-                return [];
-            """, element)
-            for sibling in siblings[:5]:
-                try:
-                    sibling.click()
-                    self.log("   ✅ Метод 8: Клик по соседу", "SUCCESS")
-                    return True
-                except:
-                    continue
-            return False
-        except:
-            return False
-    
-    def click_method_9_by_coords(self, x, y):
-        """Метод 9: Клик по координатам"""
-        try:
-            self.driver.execute_script(f"""
-                var el = document.elementFromPoint({x}, {y});
-                if (el) {{
-                    el.click();
-                    return true;
-                }}
-                return false;
-            """)
-            self.log(f"   ✅ Метод 9: Клик по координатам ({x}, {y})", "SUCCESS")
-            return True
-        except:
-            return False
-    
-    def click_method_10_by_text(self, text):
-        """Метод 10: Клик по тексту"""
-        try:
-            elements = self.driver.find_elements(By.XPATH, f"//*[contains(text(), '{text}')]")
-            for elem in elements:
-                try:
-                    elem.click()
-                    self.log(f"   ✅ Метод 10: Клик по тексту '{text[:20]}'", "SUCCESS")
-                    return True
-                except:
-                    continue
-            return False
-        except:
-            return False
-    
-    def click_method_11_all_buttons(self):
-        """Метод 11: Перебор всех кнопок"""
-        try:
-            buttons = self.driver.find_elements(By.TAG_NAME, "button")
-            for btn in buttons:
-                try:
-                    if btn.is_displayed() and btn.is_enabled():
-                        btn.click()
-                        self.log(f"   ✅ Метод 11: Кнопка '{btn.text[:20]}'", "SUCCESS")
-                        return True
-                except:
-                    continue
-            return False
-        except:
-            return False
-    
-    def click_method_12_jquery(self):
-        """Метод 12: jQuery клик (если есть)"""
-        try:
-            self.driver.execute_script("""
-                if (typeof jQuery !== 'undefined') {
-                    jQuery('*:contains("Continue as")').click();
-                    return true;
-                }
-                return false;
-            """)
-            self.log("   ✅ Метод 12: jQuery", "SUCCESS")
-            return True
-        except:
-            return False
-    
-    def click_method_13_react(self):
-        """Метод 13: Поиск React компонента"""
-        try:
-            self.driver.execute_script("""
-                var elements = document.querySelectorAll('*');
-                for (var i = 0; i < elements.length; i++) {
-                    var text = elements[i].textContent || '';
-                    if (text.includes('Continue as')) {
-                        var reactKey = Object.keys(elements[i]).find(key => key.startsWith('__react'));
-                        if (reactKey) {
-                            elements[i].click();
-                            return true;
-                        }
-                    }
-                }
-                return false;
-            """)
-            self.log("   ✅ Метод 13: React компонент", "SUCCESS")
-            return True
-        except:
-            return False
-    
-    def click_method_14_shadow_dom(self):
-        """Метод 14: Shadow DOM"""
-        try:
-            self.driver.execute_script("""
-                var hosts = document.querySelectorAll('*');
-                for (var i = 0; i < hosts.length; i++) {
-                    if (hosts[i].shadowRoot) {
-                        var elements = hosts[i].shadowRoot.querySelectorAll('*');
-                        for (var j = 0; j < elements.length; j++) {
-                            var text = elements[j].textContent || '';
-                            if (text.includes('Continue as')) {
-                                elements[j].click();
-                                return true;
-                            }
-                        }
-                    }
-                }
-                return false;
-            """)
-            self.log("   ✅ Метод 14: Shadow DOM", "SUCCESS")
-            return True
-        except:
-            return False
-    
-    def click_method_15_iframe(self):
-        """Метод 15: Поиск в iframe"""
-        try:
-            iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
-            for iframe in iframes:
-                try:
-                    self.driver.switch_to.frame(iframe)
-                    elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue as')]")
-                    for elem in elements:
-                        elem.click()
-                        self.driver.switch_to.default_content()
-                        self.log("   ✅ Метод 15: iframe", "SUCCESS")
-                        return True
-                    self.driver.switch_to.default_content()
-                except:
-                    self.driver.switch_to.default_content()
-                    continue
-            return False
-        except:
-            return False
-    
-    # ============================================================
-    # === МАССИВНЫЙ КЛИК — ПРОБУЕТ ВСЕ МЕТОДЫ ===
-    # ============================================================
-    
-    def mega_click(self, x=960, y=380, text="Continue as"):
+    async def mega_click(self, text="Continue as", selector=None):
         """
-        МЕГА-КЛИК — пробует ВСЕ методы
+        МЕГА-КЛИК — пробует все методы
         """
         self.log("💣 МЕГА-КЛИК — пробую все методы...", "INFO")
         self.log("=" * 60, "INFO")
         
-        # Сначала ищем элемент
-        element = None
+        # 1. Поиск по тексту
+        if text:
+            try:
+                elements = await self.page.get_by_text(text).all()
+                for elem in elements:
+                    if await elem.is_visible():
+                        self.log(f"🔍 Найден элемент по тексту: '{text}'", "SUCCESS")
+                        if await self.click_element(elem, "по тексту"):
+                            await self.take_step_screenshot("mega_click_success")
+                            return True
+            except:
+                pass
+        
+        # 2. Поиск по CSS селектору
+        if selector:
+            try:
+                elements = await self.page.query_selector_all(selector)
+                for elem in elements:
+                    if await elem.is_visible():
+                        self.log(f"🔍 Найден элемент по селектору: '{selector}'", "SUCCESS")
+                        if await self.click_element(elem, "по селектору"):
+                            await self.take_step_screenshot("mega_click_success")
+                            return True
+            except:
+                pass
+        
+        # 3. Поиск всех кнопок
         try:
-            elements = self.driver.find_elements(By.XPATH, f"//*[contains(text(), '{text}')]")
-            for elem in elements:
-                if elem.is_displayed():
-                    element = elem
-                    break
+            buttons = await self.page.query_selector_all("button, input[type='submit'], [role='button']")
+            for btn in buttons:
+                if await btn.is_visible() and await btn.is_enabled():
+                    btn_text = await btn.text_content() or ""
+                    if text.lower() in btn_text.lower() or "continue" in btn_text.lower():
+                        self.log(f"🔍 Найдена кнопка: '{btn_text[:30]}'", "SUCCESS")
+                        if await self.click_element(btn, "кнопка"):
+                            await self.take_step_screenshot("mega_click_success")
+                            return True
         except:
             pass
         
-        # Если нашли элемент — пробуем методы с элементом
-        if element:
-            self.log(f"🔍 Найден элемент: '{element.text[:30]}'", "SUCCESS")
-            
-            methods_with_element = [
-                ("Стандартный клик", self.click_method_1_standard),
-                ("ActionChains", self.click_method_2_action_chains),
-                ("JavaScript", self.click_method_3_js),
-                ("JS со скроллом", self.click_method_4_js_scroll),
-                ("MouseEvent", self.click_method_5_mouse_event),
-                ("Принудительный", self.click_method_6_force),
-                ("Родительский", self.click_method_7_parent),
-                ("Соседние", self.click_method_8_siblings),
-            ]
-            
-            for name, method in methods_with_element:
-                self.log(f"   🔄 Пробую: {name}...", "DEBUG")
-                try:
-                    if method(element):
-                        self.log(f"✅ МЕГА-КЛИК сработал через: {name}", "SUCCESS")
-                        self.take_step_screenshot("mega_click_success")
-                        return True
-                except Exception as e:
-                    self.log(f"   ❌ {name} не сработал: {e}", "DEBUG")
-                    continue
+        # 4. Клик по координатам (центр экрана)
+        try:
+            viewport = self.page.viewport_size
+            if viewport:
+                x = viewport['width'] // 2
+                y = viewport['height'] // 2
+                await self.page.mouse.click(x, y)
+                self.log(f"   ✅ Клик по центру ({x}, {y})", "SUCCESS")
+                await self.take_step_screenshot("mega_click_success")
+                return True
+        except:
+            pass
         
-        # Методы без элемента
-        methods_without_element = [
-            ("Координаты", lambda: self.click_method_9_by_coords(x, y)),
-            ("По тексту", lambda: self.click_method_10_by_text(text)),
-            ("Все кнопки", self.click_method_11_all_buttons),
-            ("jQuery", self.click_method_12_jquery),
-            ("React", self.click_method_13_react),
-            ("Shadow DOM", self.click_method_14_shadow_dom),
-            ("iframe", self.click_method_15_iframe),
-        ]
+        # 5. Клик по координатам (указанным)
+        try:
+            # Пробуем кликнуть в несколько точек
+            for x, y in [(960, 380), (800, 400), (1100, 380)]:
+                await self.page.mouse.click(x, y)
+                self.log(f"   ✅ Клик по координатам ({x}, {y})", "SUCCESS")
+                await self.take_step_screenshot("mega_click_success")
+                return True
+        except:
+            pass
         
-        for name, method in methods_without_element:
-            self.log(f"   🔄 Пробую: {name}...", "DEBUG")
-            try:
-                if method():
-                    self.log(f"✅ МЕГА-КЛИК сработал через: {name}", "SUCCESS")
-                    self.take_step_screenshot("mega_click_success")
-                    return True
-            except Exception as e:
-                self.log(f"   ❌ {name} не сработал: {e}", "DEBUG")
-                continue
+        # 6. Поиск в iframe
+        try:
+            frames = self.page.frames
+            for frame in frames:
+                if frame != self.page.main_frame:
+                    elements = await frame.get_by_text(text).all()
+                    for elem in elements:
+                        if await elem.is_visible():
+                            self.log("🔍 Найден элемент в iframe", "SUCCESS")
+                            if await self.click_element(elem, "iframe"):
+                                await self.take_step_screenshot("mega_click_success")
+                                return True
+        except:
+            pass
         
         self.log("❌ МЕГА-КЛИК не сработал ни одним методом", "ERROR")
-        self.take_step_screenshot("mega_click_failed")
+        await self.take_step_screenshot("mega_click_failed")
         return False
     
-    # ============================================================
-    # === ОСНОВНЫЕ МЕТОДЫ ===
-    # ============================================================
-    
-    def wait_for_page_load(self, timeout=60):
+    async def wait_for_page_load(self, timeout=60):
         try:
-            WebDriverWait(self.driver, timeout).until(
-                lambda driver: driver.execute_script("return document.readyState") == "complete"
-            )
+            await self.page.wait_for_load_state("networkidle", timeout=timeout*1000)
             self.log("✅ Страница полностью загружена", "SUCCESS")
             return True
         except Exception as e:
             self.log(f"⚠️ Таймаут загрузки: {e}", "WARNING")
             return False
     
-    def wait_for_react(self, timeout=30):
-        self.log("⏳ Ожидание React...", "DEBUG")
+    async def scroll_to_load(self):
         try:
-            WebDriverWait(self.driver, timeout).until(
-                lambda driver: driver.execute_script("""
-                    return (
-                        typeof window.__REACT_DEVTOOLS_GLOBAL_HOOK__ !== 'undefined' ||
-                        document.querySelector('[data-reactroot]') !== null ||
-                        document.querySelector('#__next') !== null ||
-                        document.querySelector('#root') !== null
-                    );
-                """)
-            )
-            self.log("✅ React обнаружен", "SUCCESS")
-            return True
-        except:
-            self.log("⚠️ React не обнаружен", "WARNING")
-            return False
-    
-    def scroll_to_load(self):
-        try:
+            # Плавная прокрутка
             for i in range(0, 1000, 100):
-                self.driver.execute_script(f"window.scrollTo(0, {i});")
+                await self.page.evaluate(f"window.scrollTo(0, {i});")
                 time.sleep(0.2)
             
-            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            await self.page.evaluate("window.scrollTo(0, document.body.scrollHeight);")
             time.sleep(2)
-            self.driver.execute_script("window.scrollTo(0, 0);")
+            await self.page.evaluate("window.scrollTo(0, 0);")
             time.sleep(2)
             self.log("✅ Прокрутка выполнена", "SUCCESS")
             return True
@@ -530,166 +280,108 @@ class AntiDetectBrowser:
             self.log(f"⚠️ Ошибка прокрутки: {e}", "WARNING")
             return False
     
-    def login_google(self, email, password):
+    async def login_google(self, email, password):
         self.email = email
         self.log(f"🚀 Вход в Google: {email}", "INFO")
         
         try:
             self.log("🌐 Открытие Google...", "INFO")
-            self.driver.get("https://accounts.google.com/")
+            await self.page.goto("https://accounts.google.com/")
             self.random_delay(2, 3)
-            self.take_step_screenshot("google_login")
+            await self.take_step_screenshot("google_login")
             self.log("✅ Google открыт", "SUCCESS")
         except Exception as e:
             self.log(f"❌ Ошибка: {e}", "ERROR")
             return False
         
-        email_field = self.find_element(By.ID, "identifierId")
-        if email_field:
-            self.human_type(email_field, email)
-            self.take_step_screenshot("google_email")
+        # Ввод email
+        try:
+            email_field = await self.page.wait_for_selector("#identifierId", timeout=10000)
+            await email_field.click()
+            await email_field.fill(email)
+            await self.take_step_screenshot("google_email")
             self.log("✅ Email введен", "SUCCESS")
-        else:
+        except:
             self.log("❌ Поле email не найдено", "ERROR")
             return False
         
         self.random_delay(1, 2)
         
-        next_btn = self.find_element_clickable(By.XPATH, "//span[text()='Далее']")
-        if not next_btn:
-            next_btn = self.find_element_clickable(By.XPATH, "//span[text()='Next']")
-        if not next_btn:
-            next_btn = self.find_element_clickable(By.ID, "identifierNext")
-        
-        if next_btn:
-            self.human_click(next_btn)
-            self.take_step_screenshot("google_next")
+        # Нажатие "Далее"
+        try:
+            next_btn = await self.page.wait_for_selector("#identifierNext, button:has-text('Далее'), button:has-text('Next')", timeout=5000)
+            await next_btn.click()
+            await self.take_step_screenshot("google_next")
             self.log("✅ 'Далее' нажата", "SUCCESS")
-        else:
+        except:
             self.log("⚠️ Кнопка не найдена", "WARNING")
         
         self.random_delay(2, 4)
         
+        # Ввод пароля
         self.log("🔍 Поиск поля пароля...", "INFO")
         
-        password_field = None
-        for selector in [
-            (By.NAME, "password"),
-            (By.ID, "password"),
-            (By.XPATH, "//input[@type='password']"),
-            (By.XPATH, "//input[@name='password']"),
-            (By.XPATH, "//input[@autocomplete='current-password']"),
-            (By.CSS_SELECTOR, "input[type='password']"),
-        ]:
-            try:
-                element = self.driver.find_element(*selector)
-                if element and element.is_displayed():
-                    password_field = element
-                    self.log(f"✅ Поле пароля найдено", "SUCCESS")
-                    break
-            except:
-                continue
-        
-        if password_field:
-            self.log("🔑 Ввод пароля...", "INFO")
-            
-            for attempt in range(5):
-                try:
-                    if password_field.is_enabled():
-                        break
-                    time.sleep(1)
-                except:
-                    time.sleep(1)
-            
-            success = self.type_with_actions(password_field, password)
-            if success:
-                self.take_step_screenshot("google_password")
-                self.log("✅ Пароль введен", "SUCCESS")
-            else:
-                try:
-                    password_field.click()
-                    password_field.clear()
-                    password_field.send_keys(password)
-                    self.take_step_screenshot("google_password")
-                    self.log("✅ Пароль введен (обычный способ)", "SUCCESS")
-                except Exception as e:
-                    self.log(f"❌ Ошибка: {e}", "ERROR")
-                    return False
-        else:
+        try:
+            password_field = await self.page.wait_for_selector("input[type='password']", timeout=10000)
+            await password_field.click()
+            await password_field.fill(password)
+            await self.take_step_screenshot("google_password")
+            self.log("✅ Пароль введен", "SUCCESS")
+        except:
             self.log("❌ Поле пароля не найдено", "ERROR")
             return False
         
         self.random_delay(1, 2)
         
+        # Нажатие "Войти"
         self.log("🔍 Кнопка входа...", "INFO")
         
-        login_btn = None
-        for selector in [
-            (By.XPATH, "//span[text()='Далее']"),
-            (By.XPATH, "//span[text()='Next']"),
-            (By.XPATH, "//span[text()='Войти']"),
-            (By.XPATH, "//span[contains(text(), 'Next')]"),
-            (By.ID, "passwordNext"),
-            (By.XPATH, "//button[@type='submit']"),
-            (By.XPATH, "//div[@role='button']"),
-        ]:
-            try:
-                element = self.driver.find_element(*selector)
-                if element and element.is_displayed() and element.is_enabled():
-                    login_btn = element
-                    self.log(f"✅ Кнопка найдена", "SUCCESS")
-                    break
-            except:
-                continue
-        
-        if login_btn:
-            self.human_click(login_btn)
-            self.take_step_screenshot("google_login_final")
+        try:
+            login_btn = await self.page.wait_for_selector(
+                "#passwordNext, button:has-text('Далее'), button:has-text('Next'), button:has-text('Войти')",
+                timeout=5000
+            )
+            await login_btn.click()
+            await self.take_step_screenshot("google_login_final")
             self.log("✅ Кнопка входа нажата", "SUCCESS")
-        else:
+        except:
             self.log("⚠️ Кнопка не найдена, пробую Enter", "WARNING")
-            try:
-                self.driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ENTER)
-                self.log("✅ Нажат Enter", "SUCCESS")
-            except:
-                pass
+            await self.page.keyboard.press("Enter")
         
         self.random_delay(3, 5)
         
-        current_url = self.driver.current_url
+        current_url = self.page.url
         self.log(f"📍 URL: {current_url[:80]}...", "INFO")
         
         if "challenge" in current_url or "verify" in current_url.lower():
             self.log("🔐 2FA — ожидание подтверждения", "INFO")
-            self.take_step_screenshot("google_2fa")
+            await self.take_step_screenshot("google_2fa")
             
             for i in range(12):
                 time.sleep(5)
-                new_url = self.driver.current_url
+                new_url = self.page.url
                 if "challenge" not in new_url and "verify" not in new_url.lower():
                     self.log("✅ 2FA пройдена!", "SUCCESS")
                     break
                 self.log(f"⏳ Ожидание... {i+1}/12", "INFO")
         
         self.log("✅ Вход в Google выполнен!", "SUCCESS")
-        self.take_step_screenshot("google_done")
+        await self.take_step_screenshot("google_done")
         return True
     
-    def go_to_xcom(self):
+    async def go_to_xcom(self):
         self.log("🌐 ПЕРЕХОД НА X.COM", "INFO")
         
         try:
-            self.driver.get("https://x.com")
+            await self.page.goto("https://x.com", timeout=60000)
             self.log("✅ X.com открыт", "SUCCESS")
             
-            self.wait_for_page_load(timeout=60)
+            await self.wait_for_page_load(timeout=60)
             time.sleep(3)
-            self.wait_for_react(timeout=30)
-            time.sleep(2)
-            self.scroll_to_load()
-            self.take_step_screenshot("xcom_loaded")
+            await self.scroll_to_load()
+            await self.take_step_screenshot("xcom_loaded")
             
-            current_url = self.driver.current_url
+            current_url = self.page.url
             self.log(f"📍 URL: {current_url}", "INFO")
             
             if "home" in current_url or "x.com/home" in current_url:
@@ -697,144 +389,61 @@ class AntiDetectBrowser:
                 return True
             
             # === ЗАПУСКАЕМ МЕГА-КЛИК ===
-            result = self.mega_click(x=960, y=380, text="Continue as")
+            result = await self.mega_click(text="Continue as")
             
             if result:
                 self.log("🎉 МЕГА-КЛИК сработал!", "SUCCESS")
                 time.sleep(3)
-                self.take_step_screenshot("xcom_mega_click_success")
+                await self.take_step_screenshot("xcom_mega_click_success")
                 
-                current_url = self.driver.current_url
+                current_url = self.page.url
                 if "home" in current_url or "x.com/home" in current_url:
                     self.log("🎉 ВХОД ВЫПОЛНЕН!", "SUCCESS")
                     return True
             else:
                 self.log("⚠️ МЕГА-КЛИК не сработал", "WARNING")
-                self.take_step_screenshot("xcom_mega_click_failed")
+                await self.take_step_screenshot("xcom_mega_click_failed")
             
-            self.log("🔄 Используйте /joystick для ручного управления", "INFO")
+            self.log("🔄 Используйте ручное управление", "INFO")
             return True
             
         except Exception as e:
             self.log(f"❌ ОШИБКА: {e}", "ERROR")
             return False
     
-    def human_click(self, element):
-        try:
-            element_text = element.text[:30] if element.text else "без текста"
-            self.log(f"🖱️ Клик по элементу: '{element_text}'", "DEBUG")
-            
-            actions = ActionChains(self.driver)
-            actions.move_to_element(element)
-            time.sleep(0.3)
-            actions.click()
-            time.sleep(0.2)
-            actions.perform()
-            
-            self.random_delay(0.2, 0.5)
-            return True
-        except Exception as e:
-            self.log(f"❌ Ошибка клика: {e}", "ERROR")
-            return False
-    
-    def type_with_actions(self, element, text):
-        try:
-            self.log(f"⌨️ Ввод через ActionChains", "DEBUG")
-            
-            actions = ActionChains(self.driver)
-            actions.move_to_element(element)
-            actions.click()
-            actions.perform()
-            time.sleep(0.5)
-            
-            actions = ActionChains(self.driver)
-            actions.key_down(Keys.CONTROL)
-            actions.send_keys('a')
-            actions.key_up(Keys.CONTROL)
-            actions.send_keys(Keys.DELETE)
-            actions.perform()
-            time.sleep(0.5)
-            
-            for char in text:
-                actions = ActionChains(self.driver)
-                actions.send_keys(char)
-                actions.perform()
-                time.sleep(random.uniform(0.05, 0.15))
-            
-            self.log("✅ Текст введен", "SUCCESS")
-            return True
-            
-        except Exception as e:
-            self.log(f"❌ Ошибка ввода: {e}", "ERROR")
-            return False
-    
-    def find_element(self, by, selector, timeout=10):
-        try:
-            return WebDriverWait(self.driver, timeout).until(
-                EC.presence_of_element_located((by, selector))
-            )
-        except Exception as e:
-            self.log(f"❌ Элемент не найден: {selector}", "WARNING")
-            return None
-    
-    def find_element_clickable(self, by, selector, timeout=10):
-        try:
-            return WebDriverWait(self.driver, timeout).until(
-                EC.element_to_be_clickable((by, selector))
-            )
-        except:
-            return None
-    
-    def human_type(self, element, text):
-        try:
-            self.log(f"⌨️ Ввод текста", "DEBUG")
-            time.sleep(1)
-            for attempt in range(3):
-                try:
-                    element.click()
-                    break
-                except:
-                    time.sleep(0.5)
-            
-            element.clear()
-            time.sleep(0.3)
-            
-            for char in text:
-                element.send_keys(char)
-                time.sleep(random.uniform(0.03, 0.08))
-            
-            self.log("✅ Текст введен", "SUCCESS")
-            return True
-        except Exception as e:
-            self.log(f"❌ Ошибка ввода: {e}", "ERROR")
-            return False
-    
-    def click_safe(self, by, selector, timeout=10):
-        try:
-            element = WebDriverWait(self.driver, timeout).until(
-                EC.element_to_be_clickable((by, selector))
-            )
-            return self.human_click(element)
-        except:
-            return False
-    
-    def take_screenshot(self, filename="screenshot.png"):
-        try:
-            self.driver.save_screenshot(filename)
-            return filename
-        except:
-            return None
-    
-    def close(self):
-        if self.driver:
+    async def close(self):
+        if self.browser:
             try:
-                self.driver.quit()
+                await self.browser.close()
                 self.log("✅ Браузер закрыт", "SUCCESS")
             except:
                 pass
+        if self.playwright:
+            try:
+                await self.playwright.stop()
+            except:
+                pass
 
-def check_installation():
-    return {
-        'chrome': os.path.exists("/usr/bin/google-chrome"),
-        'chrome_path': "/usr/bin/google-chrome"
-    }
+
+async def main():
+    """Пример использования"""
+    browser = AntiDetectBrowser(headless=False)
+    
+    try:
+        await browser.setup_driver()
+        
+        # Вход в Google
+        await browser.login_google("your_email@gmail.com", "your_password")
+        
+        # Переход на X
+        await browser.go_to_xcom()
+        
+        # Ждем для просмотра результата
+        input("Нажмите Enter для завершения...")
+        
+    finally:
+        await browser.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
