@@ -22,15 +22,8 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("❌ TELEGRAM_BOT_TOKEN не найден!")
 
-# Настройки джойстика
-JOYSTICK_STEP = 50
-JOYSTICK_SLOW_STEP = 20
-JOYSTICK_FAST_STEP = 150
-
 # Хранилища
 user_sessions = {}
-joystick_states = {}
-joystick_messages = {}
 cursor_positions = {}
 
 # Файл для сохранения кук
@@ -232,10 +225,6 @@ async def close_user_browser(user_id: int):
     if user_id in user_sessions:
         await user_sessions[user_id]["browser"].close()
         del user_sessions[user_id]
-        if user_id in joystick_messages:
-            del joystick_messages[user_id]
-        if user_id in joystick_states:
-            del joystick_states[user_id]
         if user_id in cursor_positions:
             del cursor_positions[user_id]
 
@@ -349,97 +338,9 @@ async def human_screenshot(page, x: int, y: int) -> bytes:
         except:
             return b""
 
-# ============ ДЖОЙСТИК ============
-def get_joystick_keyboard(mode="normal"):
-    if mode == "fast":
-        step = JOYSTICK_FAST_STEP
-        label = "⚡ БЫСТРЫЙ"
-    elif mode == "slow":
-        step = JOYSTICK_SLOW_STEP
-        label = "🐢 МЕДЛЕННЫЙ"
-    else:
-        step = JOYSTICK_STEP
-        label = "🔄 НОРМАЛЬНЫЙ"
-    
-    keyboard = [
-        [
-            InlineKeyboardButton("↖️", callback_data=f"move_-{step}_-{step}"),
-            InlineKeyboardButton("⬆️", callback_data=f"move_0_-{step}"),
-            InlineKeyboardButton("↗️", callback_data=f"move_{step}_-{step}"),
-        ],
-        [
-            InlineKeyboardButton("⬅️", callback_data=f"move_-{step}_0"),
-            InlineKeyboardButton("🎯", callback_data="click_center"),
-            InlineKeyboardButton("➡️", callback_data=f"move_{step}_0"),
-        ],
-        [
-            InlineKeyboardButton("↙️", callback_data=f"move_-{step}_{step}"),
-            InlineKeyboardButton("⬇️", callback_data=f"move_0_{step}"),
-            InlineKeyboardButton("↘️", callback_data=f"move_{step}_{step}"),
-        ],
-        [
-            InlineKeyboardButton("🔄", callback_data="refresh"),
-            InlineKeyboardButton("⬅️ Назад", callback_data="go_back"),
-            InlineKeyboardButton("➡️ Вперёд", callback_data="go_forward"),
-        ],
-        [
-            InlineKeyboardButton("🖱️ ЛКМ", callback_data="click_left"),
-            InlineKeyboardButton("🖱️ ПКМ", callback_data="click_right"),
-            InlineKeyboardButton("⌨️ Enter", callback_data="press_enter"),
-        ],
-        [
-            InlineKeyboardButton("📸 Скрин", callback_data="screenshot"),
-            InlineKeyboardButton("🗑️ Закрыть", callback_data="close_browser"),
-        ],
-        [
-            InlineKeyboardButton(label, callback_data="toggle_mode"),
-            InlineKeyboardButton("🔀 Сменить сайт", callback_data="change_url"),
-        ],
-        [
-            InlineKeyboardButton("❌ Закрыть джойстик", callback_data="hide_joystick"),
-        ],
-    ]
-    
-    return InlineKeyboardMarkup(keyboard)
-
-async def update_joystick_message(query, page, user_id, mode, caption=""):
-    cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
-    current_x = cursor["x"]
-    current_y = cursor["y"]
-    
-    if mode == "fast":
-        step = JOYSTICK_FAST_STEP
-        mode_label = "⚡ БЫСТРЫЙ"
-    elif mode == "slow":
-        step = JOYSTICK_SLOW_STEP
-        mode_label = "🐢 МЕДЛЕННЫЙ"
-    else:
-        step = JOYSTICK_STEP
-        mode_label = "🔄 НОРМАЛЬНЫЙ"
-    
-    screenshot = await human_screenshot(page, current_x, current_y)
-    
-    text = (
-        f"🎮 ДЖОЙСТИК 🎮\n\n"
-        f"📍 Координаты: ({current_x}, {current_y})\n"
-        f"📏 Шаг: {step}px\n"
-        f"🔄 Режим: {mode_label}\n"
-    )
-    if caption:
-        text += f"\n{caption}"
-    
-    try:
-        await query.edit_message_media(
-            media=InputMediaPhoto(media=screenshot, caption=text),
-            reply_markup=get_joystick_keyboard(mode)
-        )
-    except Exception as e:
-        print(f"Ошибка редактирования: {e}")
-
 # ============ TWITTER MENU ============
 
 def get_twitter_menu():
-    """Создаёт главное меню Twitter"""
     keyboard = [
         [
             InlineKeyboardButton("🏠 Главная лента", callback_data="twitter_home"),
@@ -472,13 +373,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/startxspeed — Быстрый старт (всё сразу)\n"
         "/xprofile — Инфо профиля\n"
         "/twittermenu — Открыть меню Twitter\n\n"
-        "🎮 **УПРАВЛЕНИЕ**\n"
-        "/joystick — Открыть джойстик\n\n"
         "📸 **ИНФО**\n"
         "/screenshot — Скриншот\n"
-        "/status — Статус браузера\n\n"
-        "🛠️ **ДРУГОЕ**\n"
-        "/installpillow — Установить Pillow",
+        "/status — Статус браузера",
         parse_mode="Markdown"
     )
 
@@ -845,7 +742,6 @@ async def x_profile_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 # ============ КОМАНДА /TWITTERMENU ============
 async def twitter_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Открывает главное меню Twitter"""
     user_id = update.effective_user.id
     
     if user_id not in user_sessions:
@@ -1138,35 +1034,6 @@ async def send_post(message, post):
     await message.reply_text(text, parse_mode="Markdown")
     await asyncio.sleep(0.3)
 
-# ============ КОМАНДА /JOYSTICK ============
-async def joystick_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    if user_id not in user_sessions:
-        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
-        return
-    if user_id in joystick_messages:
-        await update.message.reply_text("🎮 Джойстик уже открыт!")
-        return
-    joystick_states[user_id] = {"mode": "normal"}
-    session = user_sessions[user_id]
-    page = session["page"]
-    cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
-    current_x = cursor["x"]
-    current_y = cursor["y"]
-    screenshot = await human_screenshot(page, current_x, current_y)
-    msg = await update.message.reply_photo(
-        photo=screenshot,
-        caption=(
-            f"🎮 ДЖОЙСТИК 🎮\n\n"
-            f"📍 Координаты: ({current_x}, {current_y})\n"
-            f"📏 Шаг: {JOYSTICK_STEP}px\n"
-            f"🔄 Режим: НОРМАЛЬНЫЙ\n\n"
-            f"Используй кнопки для управления:"
-        ),
-        reply_markup=get_joystick_keyboard("normal")
-    )
-    joystick_messages[user_id] = msg.message_id
-
 # ============ КОМАНДА /SCREENSHOT ============
 async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
@@ -1205,143 +1072,6 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
     await update.message.reply_photo(photo=screenshot, caption=status_text)
 
-# ============ КОМАНДА /INSTALLPILLOW ============
-async def install_pillow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-    if ADMIN_ID and user_id != ADMIN_ID:
-        await update.message.reply_text("⛔ Только для администратора!")
-        return
-    await update.message.reply_text("📦 Начинаю установку Pillow...")
-    try:
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "Pillow>=10.0.0"],
-            capture_output=True,
-            text=True,
-            timeout=120
-        )
-        if result.returncode == 0:
-            await update.message.reply_text("✅ Pillow установлен успешно!")
-        else:
-            await update.message.reply_text(f"❌ Ошибка установки:\n```\n{result.stderr[:500]}\n```")
-    except subprocess.TimeoutExpired:
-        await update.message.reply_text("❌ Установка заняла слишком много времени")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-
-# ============ ОБРАБОТЧИК КНОПОК ДЖОЙСТИКА ============
-async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-    user_id = update.effective_user.id
-    data = query.data
-    if user_id not in user_sessions:
-        await query.edit_message_text("⚠️ Браузер закрыт. Открой: /browser", reply_markup=None)
-        if user_id in joystick_messages:
-            del joystick_messages[user_id]
-        return
-    session = user_sessions[user_id]
-    page = session["page"]
-    mode = joystick_states.get(user_id, {}).get("mode", "normal")
-    cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
-    current_x = cursor["x"]
-    current_y = cursor["y"]
-    
-    if data.startswith("move_"):
-        parts = data.split("_")
-        dx = int(parts[1])
-        dy = int(parts[2])
-        try:
-            new_x = max(0, min(VIEWPORT["width"], current_x + dx))
-            new_y = max(0, min(VIEWPORT["height"], current_y + dy))
-            cursor_positions[user_id] = {"x": new_x, "y": new_y}
-            await human_move(page, new_x, new_y, steps=5)
-            await update_joystick_message(query, page, user_id, mode, f"🖱️ Движение → ({new_x}, {new_y})")
-        except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка движения: {e}")
-    elif data == "click_left":
-        try:
-            await human_click(page, current_x, current_y)
-            await page.wait_for_timeout(300)
-            await update_joystick_message(query, page, user_id, mode, f"🖱️ ЛКМ ({current_x}, {current_y})")
-        except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка ЛКМ: {e}")
-    elif data == "click_right":
-        try:
-            await human_click(page, current_x, current_y, button="right")
-            await page.wait_for_timeout(300)
-            await update_joystick_message(query, page, user_id, mode, f"🖱️ ПКМ ({current_x}, {current_y})")
-        except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка ПКМ: {e}")
-    elif data == "click_center":
-        try:
-            await human_click(page, current_x, current_y)
-            await page.wait_for_timeout(300)
-            await update_joystick_message(query, page, user_id, mode, f"🖱️ Клик ({current_x}, {current_y})")
-        except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка клика: {e}")
-    elif data == "press_enter":
-        try:
-            await page.keyboard.press("Enter")
-            await page.wait_for_timeout(300)
-            await update_joystick_message(query, page, user_id, mode, "⌨️ Enter")
-        except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка Enter: {e}")
-    elif data == "refresh":
-        try:
-            await page.reload()
-            await page.wait_for_timeout(500)
-            await update_joystick_message(query, page, user_id, mode, "🔄 Обновлено")
-        except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка обновления: {e}")
-    elif data == "go_back":
-        try:
-            await page.go_back()
-            await page.wait_for_timeout(300)
-            await update_joystick_message(query, page, user_id, mode, "⬅️ Назад")
-        except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка назад: {e}")
-    elif data == "go_forward":
-        try:
-            await page.go_forward()
-            await page.wait_for_timeout(300)
-            await update_joystick_message(query, page, user_id, mode, "➡️ Вперёд")
-        except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка вперёд: {e}")
-    elif data == "screenshot":
-        try:
-            await update_joystick_message(query, page, user_id, mode, "📸 Скриншот")
-        except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка скриншота: {e}")
-    elif data == "close_browser":
-        await close_user_browser(user_id)
-        await query.edit_message_text("❌ Браузер закрыт", reply_markup=None)
-        if user_id in joystick_messages:
-            del joystick_messages[user_id]
-    elif data == "toggle_mode":
-        current_mode = joystick_states.get(user_id, {}).get("mode", "normal")
-        if current_mode == "normal":
-            new_mode = "fast"
-            mode_label = "⚡ БЫСТРЫЙ"
-        elif current_mode == "fast":
-            new_mode = "slow"
-            mode_label = "🐢 МЕДЛЕННЫЙ"
-        else:
-            new_mode = "normal"
-            mode_label = "🔄 НОРМАЛЬНЫЙ"
-        joystick_states[user_id]["mode"] = new_mode
-        await update_joystick_message(query, page, user_id, new_mode, f"🔄 {mode_label}")
-    elif data == "change_url":
-        await query.edit_message_text("🔗 Введи URL: /go <url>", reply_markup=None)
-        if user_id in joystick_messages:
-            del joystick_messages[user_id]
-    elif data == "hide_joystick":
-        if user_id in joystick_messages:
-            del joystick_messages[user_id]
-        if user_id in joystick_states:
-            del joystick_states[user_id]
-        await query.edit_message_text("✅ Джойстик закрыт\n\n🎮 /joystick - открыть заново", reply_markup=None)
-
 # ============ ЗАПУСК ============
 def run_flask():
     port = int(os.getenv("PORT", 8080))
@@ -1364,13 +1094,10 @@ def main():
     bot_app.add_handler(CommandHandler("startxspeed", start_x_com))
     bot_app.add_handler(CommandHandler("xprofile", x_profile_info))
     bot_app.add_handler(CommandHandler("twittermenu", twitter_menu))
-    bot_app.add_handler(CommandHandler("joystick", joystick_command))
     bot_app.add_handler(CommandHandler("screenshot", screenshot_command))
     bot_app.add_handler(CommandHandler("status", status_command))
-    bot_app.add_handler(CommandHandler("installpillow", install_pillow))
     
     bot_app.add_handler(CallbackQueryHandler(twitter_callback, pattern="^twitter_"))
-    bot_app.add_handler(CallbackQueryHandler(joystick_callback))
     
     print("✅ Бот запущен")
     bot_app.run_polling()
