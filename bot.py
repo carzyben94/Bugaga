@@ -16,6 +16,7 @@ bot = telebot.TeleBot(TOKEN)
 browser = None
 user_cursor = {}
 loop = None
+chat_id_log = None
 
 
 def run_async(coro):
@@ -25,6 +26,17 @@ def run_async(coro):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
     return loop.run_until_complete(coro)
+
+
+def log_callback(message):
+    """Логи отправляются в Telegram"""
+    global chat_id_log
+    print(message)
+    if chat_id_log:
+        try:
+            bot.send_message(chat_id_log, f"📋 {message}")
+        except:
+            pass
 
 
 # === КЛАВИАТУРА ДЖОЙСТИКА ===
@@ -56,10 +68,8 @@ def screenshot_with_cursor(user_id, filename="screen.png"):
     try:
         cursor = user_cursor.get(user_id, {'x': 960, 'y': 400})
         
-        # Делаем скриншот
         run_async(browser.screenshot(filename))
         
-        # Рисуем курсор
         img = Image.open(filename)
         draw = ImageDraw.Draw(img)
         x, y = cursor['x'], cursor['y']
@@ -88,52 +98,66 @@ def move_cursor(user_id, dx, dy):
 # === КОМАНДЫ ===
 @bot.message_handler(commands=['start'])
 def start(message):
+    global chat_id_log
+    chat_id_log = message.chat.id
+    
     bot.reply_to(message,
         "👋 Команды:\n"
         "/browser — Запустить браузер\n"
         "/open url — Открыть сайт\n"
         "/joy — Джойстик\n"
         "/screen — Скриншот\n"
-        "/close — Закрыть браузер"
+        "/close — Закрыть браузер\n"
+        "\n📋 Логи будут приходить сюда"
     )
 
 
 @bot.message_handler(commands=['browser'])
 def start_browser(message):
-    global browser
+    global browser, chat_id_log
     
     if browser:
         bot.reply_to(message, "✅ Браузер уже запущен")
         return
     
+    chat_id_log = message.chat.id
+    msg = bot.reply_to(message, "🔄 Запуск браузера...")
+    
     try:
-        browser = Browser(headless=True)
+        browser = Browser(headless=True, log_callback=log_callback)
         run_async(browser.start())
-        bot.reply_to(message, "✅ Браузер запущен!\nОткрой сайт: /open google.com")
+        bot.edit_message_text("✅ Браузер запущен!\n/open google.com", chat_id=message.chat.id, message_id=msg.message_id)
     except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}")
+        bot.edit_message_text(f"❌ Ошибка: {str(e)[:100]}", chat_id=message.chat.id, message_id=msg.message_id)
 
 
 @bot.message_handler(commands=['open'])
 def open_url(message):
-    global browser
+    global browser, chat_id_log
     
     if not browser:
         bot.reply_to(message, "❌ Сначала /browser")
         return
     
+    chat_id_log = message.chat.id
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         bot.reply_to(message, "❌ /open google.com")
         return
     
     url = parts[1]
+    bot.reply_to(message, f"🔄 Открываю {url}...\n📋 Следите за логами...")
     
     try:
-        run_async(browser.goto(url))
-        bot.reply_to(message, f"✅ Открыто: {url}\n/joy для управления")
+        success = run_async(browser.goto(url))
+        
+        if success:
+            bot.send_message(message.chat.id, f"✅ Открыто: {url}\n/joy для управления")
+        else:
+            bot.send_message(message.chat.id, f"⚠️ Ошибка открытия {url}")
+            
     except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}")
+        bot.send_message(message.chat.id, f"❌ Ошибка: {str(e)[:100]}")
 
 
 @bot.message_handler(commands=['joy'])
@@ -213,7 +237,6 @@ def joystick_callback(call):
     msg_id = call.message.message_id
     
     try:
-        # Движение
         if call.data == "up":
             x, y = move_cursor(user_id, 0, -30)
             bot.answer_callback_query(call.id, f"⬆️ ({x},{y})")
@@ -234,7 +257,6 @@ def joystick_callback(call):
             user_cursor[user_id] = {'x': 960, 'y': 400}
             bot.answer_callback_query(call.id, "🏠 Центр")
         
-        # Клик
         elif call.data == "click":
             bot.answer_callback_query(call.id, "💣 Клик...")
             x, y = user_cursor.get(user_id, {'x': 960, 'y': 400}).values()
@@ -245,7 +267,6 @@ def joystick_callback(call):
             else:
                 bot.answer_callback_query(call.id, "❌ Не сработал")
         
-        # Скриншот
         elif call.data == "screenshot":
             bot.answer_callback_query(call.id, "📸...")
             fn = f"ss_{user_id}.png"
@@ -255,17 +276,14 @@ def joystick_callback(call):
             os.remove(fn)
             return
         
-        # Позиция
         elif call.data == "position":
             c = user_cursor.get(user_id, {'x': 960, 'y': 400})
             bot.answer_callback_query(call.id, f"📍 ({c['x']},{c['y']})")
             return
         
-        # Обновить
         elif call.data == "refresh":
             bot.answer_callback_query(call.id, "🔄 Обновление...")
         
-        # Стоп
         elif call.data == "stop":
             try:
                 run_async(browser.close())
@@ -277,7 +295,7 @@ def joystick_callback(call):
             bot.edit_message_text("✅ Браузер закрыт", chat_id=chat_id, message_id=msg_id)
             return
         
-        # Обновляем картинку с курсором
+        # Обновляем картинку
         fn = screenshot_with_cursor(user_id, f"upd_{user_id}.png")
         if fn:
             with open(fn, "rb") as f:
