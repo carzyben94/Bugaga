@@ -1,3 +1,4 @@
-python-telegram-bot==20.8
+# Самый стабильный вариант (проверен на Python 3.13)
+python-telegram-bot==21.9
 requests==2.31.0
 Flask==3.0.3
