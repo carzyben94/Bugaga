@@ -137,6 +137,7 @@ async def close_user_browser(user_id: int):
     if user_id in user_sessions:
         await user_sessions[user_id]["browser"].close()
         del user_sessions[user_id]
+        # Полная очистка
         if user_id in joystick_messages:
             del joystick_messages[user_id]
         if user_id in joystick_states:
@@ -147,20 +148,13 @@ async def close_user_browser(user_id: int):
 async def goto_url(page, url: str):
     """Универсальный переход по URL с авто-выбором режима ожидания"""
     try:
-        # Сначала пробуем networkidle (быстро, но не для всех сайтов)
         await page.goto(url, wait_until="networkidle", timeout=15000)
         print(f"✅ {url} загружен (networkidle)")
         return True
-    except Exception as e:
-        print(f"⚠️ networkidle не сработал, пробую domcontentloaded: {e}")
-        try:
-            # Если networkidle не сработал - используем domcontentloaded
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            print(f"✅ {url} загружен (domcontentloaded)")
-            return True
-        except Exception as e2:
-            print(f"❌ Ошибка загрузки {url}: {e2}")
-            raise e2
+    except:
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        print(f"✅ {url} загружен (domcontentloaded)")
+        return True
 
 async def screenshot_with_cursor(page, x: int, y: int) -> bytes:
     try:
@@ -248,6 +242,8 @@ def get_joystick_keyboard(mode="normal"):
     return InlineKeyboardMarkup(keyboard)
 
 async def update_joystick_message(query, page, user_id, mode, caption=""):
+    """Обновляет сообщение джойстика с новым скриншотом - ТОЛЬКО РЕДАКТИРУЕТ"""
+    
     cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
     current_x = cursor["x"]
     current_y = cursor["y"]
@@ -273,6 +269,7 @@ async def update_joystick_message(query, page, user_id, mode, caption=""):
     if caption:
         text += f"\n{caption}"
     
+    # ВСЕГДА редактируем существующее сообщение
     try:
         await query.edit_message_media(
             media=InputMediaPhoto(
@@ -282,13 +279,14 @@ async def update_joystick_message(query, page, user_id, mode, caption=""):
             reply_markup=get_joystick_keyboard(mode)
         )
     except Exception as e:
-        print(f"Ошибка редактирования: {e}")
-        msg = await query.message.reply_photo(
-            photo=screenshot,
-            caption=text,
-            reply_markup=get_joystick_keyboard(mode)
-        )
-        joystick_messages[user_id] = msg.message_id
+        print(f"❌ Ошибка редактирования: {e}")
+        try:
+            await query.edit_message_caption(
+                caption=text,
+                reply_markup=get_joystick_keyboard(mode)
+            )
+        except:
+            pass
 
 # ============ КОМАНДЫ БОТА ============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -334,7 +332,6 @@ async def go_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         
         await update.message.reply_text(f"🌐 Перехожу на {url}...")
         
-        # Универсальный переход
         await goto_url(page, url)
         session["current_url"] = url
         
@@ -383,6 +380,7 @@ async def joystick_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
         return
     
+    # Проверяем, есть ли уже открытый джойстик
     if user_id in joystick_messages:
         await update.message.reply_text("🎮 Джойстик уже открыт!")
         return
@@ -463,20 +461,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка движения: {e}")
     
-    # ============ КЛИК ПО КУРСОРУ ============
-    elif data == "click_center":
-        try:
-            await page.mouse.click(current_x, current_y, button="left")
-            await page.wait_for_timeout(300)
-            
-            await update_joystick_message(
-                query, page, user_id, mode,
-                f"🖱️ Клик по курсору ({current_x}, {current_y})"
-            )
-            
-        except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка клика: {e}")
-    
     # ============ ЛКМ ============
     elif data == "click_left":
         try:
@@ -504,6 +488,20 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка ПКМ: {e}")
+    
+    # ============ КЛИК ПО КУРСОРУ ============
+    elif data == "click_center":
+        try:
+            await page.mouse.click(current_x, current_y, button="left")
+            await page.wait_for_timeout(300)
+            
+            await update_joystick_message(
+                query, page, user_id, mode,
+                f"🖱️ Клик по курсору ({current_x}, {current_y})"
+            )
+            
+        except Exception as e:
+            await query.edit_message_text(f"❌ Ошибка клика: {e}")
     
     # ============ ENTER ============
     elif data == "press_enter":
@@ -613,12 +611,18 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     
     # ============ СКРЫТЬ ДЖОЙСТИК ============
     elif data == "hide_joystick":
-        await query.edit_message_text(
-            "✅ Джойстик скрыт\n\nВернуть: /joystick",
-            reply_markup=None
-        )
+        # Полностью удаляем джойстик
         if user_id in joystick_messages:
             del joystick_messages[user_id]
+        if user_id in joystick_states:
+            del joystick_states[user_id]
+        
+        await query.edit_message_text(
+            "✅ Джойстик закрыт\n\n"
+            "🎮 Открыть заново: /joystick\n"
+            "🌐 Браузер всё ещё работает",
+            reply_markup=None
+        )
 
 # ============ ЗАПУСК ============
 def run_flask():
