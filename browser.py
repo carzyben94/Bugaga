@@ -20,32 +20,45 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def get_chromedriver_path():
-    """Получение пути к ChromeDriver"""
-    try:
-        from webdriver_manager.chrome import ChromeDriverManager
-        driver_path = ChromeDriverManager().install()
-        if driver_path and os.path.exists(driver_path):
-            logger.info(f"✅ ChromeDriver: {driver_path}")
-            os.chmod(driver_path, 0o755)
-            return driver_path
-    except Exception as e:
-        logger.warning(f"⚠️ webdriver_manager: {e}")
-    
-    # Ручная установка
-    logger.info("🔄 Ручная установка ChromeDriver...")
+    """Прямое скачивание ChromeDriver в /tmp"""
     chrome_driver_dir = "/tmp/chromedriver"
     os.makedirs(chrome_driver_dir, exist_ok=True)
     
-    url = "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/120.0.6099.109/linux64/chromedriver-linux64.zip"
+    driver_name = "chromedriver.exe" if sys.platform.startswith('win') else "chromedriver"
+    driver_path = os.path.join(chrome_driver_dir, driver_name)
+    
+    # Проверяем, есть ли уже
+    if os.path.exists(driver_path):
+        logger.info(f"✅ ChromeDriver уже есть: {driver_path}")
+        os.chmod(driver_path, 0o755)
+        return driver_path
+    
+    logger.info("📦 Скачивание ChromeDriver напрямую...")
+    
+    # Правильная ссылка на ChromeDriver
+    url = "https://storage.googleapis.com/chrome-for-testing-public/120.0.6099.109/linux64/chromedriver-linux64.zip"
+    
     zip_path = os.path.join(chrome_driver_dir, "chromedriver.zip")
     
-    urllib.request.urlretrieve(url, zip_path)
+    try:
+        urllib.request.urlretrieve(url, zip_path)
+        logger.info("✅ Скачано")
+    except Exception as e:
+        logger.error(f"❌ Ошибка скачивания: {e}")
+        raise
     
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        zip_ref.extractall(chrome_driver_dir)
+    # Распаковываем
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(chrome_driver_dir)
+        logger.info("✅ Распаковано")
+    except Exception as e:
+        logger.error(f"❌ Ошибка распаковки: {e}")
+        raise
+    
     os.remove(zip_path)
     
-    driver_name = "chromedriver.exe" if sys.platform.startswith('win') else "chromedriver"
+    # Ищем chromedriver
     for root, dirs, files in os.walk(chrome_driver_dir):
         if driver_name in files:
             driver_path = os.path.join(root, driver_name)
@@ -53,7 +66,7 @@ def get_chromedriver_path():
             logger.info(f"✅ ChromeDriver готов: {driver_path}")
             return driver_path
     
-    raise Exception("ChromeDriver не найден")
+    raise Exception("ChromeDriver не найден после распаковки")
 
 class AntiDetectBrowser:
     def __init__(self, headless=False, screenshot_callback=None):
