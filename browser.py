@@ -57,7 +57,6 @@ class Browser:
             self.log("✅ Playwright остановлен")
     
     async def screenshot(self, filename="screen.png", page=None):
-        """Скриншот (можно указать конкретную страницу)"""
         self.log(f"📸 Скриншот: {filename}")
         if page:
             await page.screenshot(path=filename, full_page=True)
@@ -106,49 +105,65 @@ class Browser:
             return page.url
         return self.page.url
     
-    async def get_pages(self):
-        """Получить все страницы (вкладки)"""
+    async def get_all_pages(self):
+        """Получить все страницы"""
         return self.browser.contexts[0].pages
     
     async def click_with_popup(self, text=None, x=None, y=None):
         """Клик с ожиданием popup окна"""
         self.log("💣 Клик с ожиданием popup...")
         
-        # Ожидаем появления нового окна
-        async with self.browser.contexts[0].expect_page() as popup_info:
-            # Кликаем по тексту
-            if text:
-                self.log(f"   🔄 Клик по тексту '{text}'")
+        # Сначала кликаем
+        if text:
+            self.log(f"   🔄 Клик по тексту '{text}'")
+            try:
+                await self.page.get_by_text(text, exact=True).first.click(timeout=5000)
+                self.log("   ✅ Точное совпадение")
+            except:
                 try:
-                    await self.page.get_by_text(text).first.click(timeout=3000)
+                    await self.page.get_by_text(text).first.click(timeout=5000)
+                    self.log("   ✅ Частичное совпадение")
                 except:
                     try:
-                        await self.page.locator(f"button:has-text('{text}')").click(timeout=3000)
+                        await self.page.locator(f"button:has-text('{text}')").click(timeout=5000)
+                        self.log("   ✅ Кнопка")
                     except:
                         try:
-                            await self.page.locator(f"*:has-text('{text}')").first.click(timeout=3000)
+                            await self.page.locator(f"*:has-text('{text}')").first.click(timeout=5000)
+                            self.log("   ✅ Элемент")
                         except:
-                            await self.page.mouse.click(x or 960, y or 400)
-            
-            # Или клик по координатам
-            elif x is not None and y is not None:
-                self.log(f"   🔄 Клик по координатам ({x}, {y})")
-                await self.page.mouse.click(x, y)
+                            self.log("   ❌ Не найден текст")
+                            return None
         
-        # Получаем popup
-        try:
-            popup = await popup_info.value
-            self.log("✅ Popup окно открылось!")
-            self.log(f"📍 URL popup: {popup.url}")
+        elif x is not None and y is not None:
+            self.log(f"   🔄 Клик по координатам ({x}, {y})")
+            await self.page.mouse.click(x, y)
+            self.log("   ✅ Клик по координатам")
+        
+        # Ждем появления нового окна
+        self.log("⏳ Ожидание popup окна...")
+        
+        for attempt in range(15):  # 15 попыток по 2 секунды = 30 секунд
+            await asyncio.sleep(2)
+            pages = await self.get_all_pages()
             
-            # Ждем загрузки popup
-            await popup.wait_for_load_state('load', timeout=30000)
-            self.log("✅ Popup загружен")
+            # Ищем новое окно (не main page)
+            for page in pages:
+                if page != self.page:
+                    self.log(f"✅ Найдено новое окно: {page.url}")
+                    
+                    try:
+                        await page.wait_for_load_state('load', timeout=10000)
+                    except:
+                        pass
+                    
+                    self.popup = page
+                    return page
             
-            return popup
-        except:
-            self.log("❌ Popup не открылся")
-            return None
+            self.log(f"⏳ Ожидание... {attempt + 1}/15")
+        
+        self.log("❌ Popup не открылся")
+        return None
     
     async def login_google_via_popup(self, email, password):
         """Вход в Google через popup окно"""
@@ -158,14 +173,30 @@ class Browser:
         popup = await self.click_with_popup(text="Continue with Google")
         
         if not popup:
+            # Пробуем другие варианты текста
+            popup = await self.click_with_popup(text="Google")
+        
+        if not popup:
             self.log("❌ Popup не открылся")
             return False
         
         try:
             # Ждем форму входа
-            self.log("⏳ Ожидание формы входа...")
-            await popup.wait_for_selector('input[type="email"]', timeout=30000)
-            self.log("✅ Форма входа найдена")
+            self.log("⏳ Ожидание формы входа в popup...")
+            
+            # Ждем email поле
+            for attempt in range(20):  # 20 попыток по 2 секунды
+                try:
+                    await popup.wait_for_selector('input[type="email"]', timeout=2000)
+                    self.log("✅ Форма входа найдена")
+                    break
+                except:
+                    self.log(f"⏳ Ожидание формы... {attempt + 1}/20")
+                    await asyncio.sleep(2)
+            
+            # Скриншот popup для отладки
+            await self.screenshot("popup_debug.png", page=popup)
+            self.log("📸 Скриншот popup сохранен")
             
             # Ввод email
             self.log("📧 Ввод email...")
@@ -174,7 +205,10 @@ class Browser:
             
             # Нажимаем "Далее"
             self.log("🔄 Нажатие 'Далее'...")
-            await popup.click('button:has-text("Далее"), button:has-text("Next")')
+            try:
+                await popup.click('button:has-text("Далее"), button:has-text("Next")')
+            except:
+                await popup.keyboard.press("Enter")
             await asyncio.sleep(3)
             
             # Ожидаем поле пароля
