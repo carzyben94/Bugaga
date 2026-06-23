@@ -1,4 +1,4 @@
-# Самый стабильный вариант (проверен на Python 3.13)
+playwright==1.59.0
 python-telegram-bot==21.9
 requests==2.31.0
 Flask==3.0.3
