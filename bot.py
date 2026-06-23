@@ -21,7 +21,7 @@ except Exception as e:
     print(f"⚠️ Ошибка сброса webhook: {e}")
 
 user_sessions = {}
-user_buttons = {}  # user_id: {'buttons': [...], 'list': [...]}
+user_buttons = {}
 
 def send_log_to_chat(chat_id, log_entry):
     try:
@@ -266,7 +266,6 @@ def handle_login_google(message):
             browser.close()
             return
         
-        # === ПЕРЕХОД НА X.COM С ПЕРЕДАЧЕЙ ПАРАМЕТРОВ ===
         xcom_ok = browser.go_to_xcom(bot=bot, chat_id=chat_id, user_id=user_id)
         
         if xcom_ok:
