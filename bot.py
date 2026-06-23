@@ -116,6 +116,14 @@ async def get_browser_page():
             '--disable-client-side-phishing-detection',
             '--disable-crash-reporter',
             '--disable-breakpad',
+            '--disable-hang-monitor',
+            '--disable-prompt-on-repost',
+            '--disable-component-extensions-with-background-pages',
+            '--disable-features=TranslateUI',
+            '--disable-ipc-flooding-protection',
+            '--force-color-profile=srgb',
+            '--disable-site-isolation-trials',
+            '--disable-software-rasterizer',
         ]
     )
     
@@ -233,7 +241,7 @@ async def close_user_browser(user_id: int):
 
 async def goto_url(page, url: str):
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        await page.goto(url, wait_until="load", timeout=60000)
         print(f"✅ {url} загружен")
         return True
     except Exception as e:
@@ -766,7 +774,7 @@ async def x_profile_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
         if save_cookies_to_file(user_id, cookies):
             await update.message.reply_text("💾 Куки сохранены навсегда!")
-        await page.goto("https://x.com", wait_until="domcontentloaded")
+        await page.goto("https://x.com", wait_until="load")
         await page.wait_for_timeout(2000)
         profile_data = await page.evaluate("""
             () => {
@@ -847,7 +855,6 @@ async def twitter_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     session = user_sessions[user_id]
     page = session["page"]
     
-    # Проверяем, вошли ли в X
     cookies = await page.context.cookies()
     has_session = any(c['name'] in ['auth_token', 'ct0', 'twid'] for c in cookies)
     
@@ -887,7 +894,7 @@ async def twitter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if data == "twitter_home":
         await query.edit_message_text("📡 Загружаю главную ленту...")
         try:
-            await page.goto("https://x.com", wait_until="domcontentloaded")
+            await page.goto("https://x.com", wait_until="load")
             await page.wait_for_timeout(3000)
             
             for _ in range(3):
@@ -915,7 +922,15 @@ async def twitter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     elif data == "twitter_trends":
         await query.edit_message_text("📈 Загружаю тренды...")
         try:
-            await page.goto("https://x.com/explore/tabs/trending", wait_until="domcontentloaded")
+            try:
+                await page.goto("https://x.com/explore/tabs/trending", wait_until="load", timeout=30000)
+            except Exception as e:
+                await query.edit_message_text("🔄 Перезапускаю браузер...")
+                await close_user_browser(user_id)
+                await get_user_browser(user_id)
+                page = user_sessions[user_id]["page"]
+                await page.goto("https://x.com/explore/tabs/trending", wait_until="load", timeout=30000)
+            
             await page.wait_for_timeout(3000)
             
             trends = await page.evaluate("""
@@ -948,7 +963,7 @@ async def twitter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     elif data == "twitter_profile":
         await query.edit_message_text("👤 Загружаю профиль...")
         try:
-            await page.goto("https://x.com", wait_until="domcontentloaded")
+            await page.goto("https://x.com", wait_until="load")
             await page.wait_for_timeout(2000)
             
             profile = await get_profile_info(page)
@@ -975,7 +990,7 @@ async def twitter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     elif data == "twitter_bookmarks":
         await query.edit_message_text("📥 Загружаю закладки...")
         try:
-            await page.goto("https://x.com/i/bookmarks", wait_until="domcontentloaded")
+            await page.goto("https://x.com/i/bookmarks", wait_until="load")
             await page.wait_for_timeout(3000)
             
             for _ in range(2):
@@ -1006,7 +1021,6 @@ async def twitter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 # ============ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ============
 
 async def get_posts_from_page(page, limit=10):
-    """Собирает посты со страницы"""
     try:
         posts = await page.evaluate(f"""
             () => {{
@@ -1079,7 +1093,6 @@ async def get_posts_from_page(page, limit=10):
         return []
 
 async def get_profile_info(page):
-    """Получает информацию о профиле"""
     try:
         profile = await page.evaluate("""
             () => {
@@ -1114,7 +1127,6 @@ async def get_profile_info(page):
         return {}
 
 async def send_post(message, post):
-    """Отправляет пост в чат"""
     text = (
         f"👤 **{post['author']}**\n"
         f"🔹 @{post['username']}\n"
