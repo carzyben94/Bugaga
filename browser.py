@@ -11,14 +11,12 @@ class Browser:
         self.log_callback = log_callback
     
     def log(self, message):
-        """Логирование"""
         if self.log_callback:
             self.log_callback(message)
         else:
             print(message)
     
     async def start(self):
-        """Запуск браузера"""
         self.log("🔧 Запуск браузера...")
         
         self.playwright = await async_playwright().start()
@@ -39,7 +37,6 @@ class Browser:
         )
         self.log("✅ Страница создана")
         
-        # Маскировка
         await self.page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined
@@ -50,7 +47,6 @@ class Browser:
         return self.page
     
     async def close(self):
-        """Закрытие браузера"""
         self.log("🔧 Закрытие браузера...")
         if self.browser:
             await self.browser.close()
@@ -60,41 +56,34 @@ class Browser:
             self.log("✅ Playwright остановлен")
     
     async def screenshot(self, filename="screen.png"):
-        """Скриншот"""
         self.log(f"📸 Скриншот: {filename}")
         await self.page.screenshot(path=filename, full_page=True)
         self.log("✅ Скриншот сохранен")
         return filename
     
     async def goto(self, url):
-        """Переход на URL с полной загрузкой"""
         if not url.startswith('http'):
             url = 'https://' + url
         
         self.log(f"🌐 Открываю: {url}")
         
         try:
-            # Этап 1: Начальная загрузка
             self.log("⏳ Этап 1: Подключение...")
             await self.page.goto(url, timeout=60000, wait_until='commit')
             self.log("✅ Подключение установлено")
             
-            # Этап 2: DOM загружен
             self.log("⏳ Этап 2: Загрузка DOM...")
             await self.page.wait_for_load_state('domcontentloaded', timeout=30000)
             self.log("✅ DOM загружен")
             
-            # Этап 3: Ждем load (не networkidle!)
             self.log("⏳ Этап 3: Загрузка страницы (load)...")
             await self.page.wait_for_load_state('load', timeout=60000)
-            self.log("✅ Страница загружена (load)")
+            self.log("✅ Страница загружена")
             
-            # Этап 4: Дополнительная загрузка (для тяжелых сайтов)
             self.log("⏳ Этап 4: Ожидание дополнительных элементов...")
             await asyncio.sleep(5)
             self.log("✅ Дополнительные элементы загружены")
             
-            # Проверяем текущий URL
             current_url = self.page.url
             self.log(f"📍 Текущий URL: {current_url}")
             
@@ -108,83 +97,143 @@ class Browser:
             return False
     
     async def get_url(self):
-        """Получить текущий URL"""
         return self.page.url
     
-    async def click(self, selector):
-        """Клик по селектору"""
-        self.log(f"🖱️ Клик: {selector}")
-        try:
-            await self.page.click(selector, timeout=5000)
-            self.log("✅ Клик выполнен")
-            return True
-        except Exception as e:
-            self.log(f"❌ Ошибка клика: {e}")
-            return False
-    
-    async def click_by_text(self, text):
-        """Клик по тексту"""
-        self.log(f"🖱️ Поиск текста: {text}")
-        try:
-            await self.page.get_by_text(text).click(timeout=5000)
-            self.log("✅ Клик по тексту выполнен")
-            return True
-        except:
-            self.log("❌ Текст не найден")
-            return False
-    
-    async def mega_click(self, x=None, y=None, text=None):
-        """Мега-клик - пробует все методы"""
-        self.log("💣 МЕГА-КЛИК")
+    async def mega_click(self, x=None, y=None, text=None, selector=None):
+        """
+        СУПЕР-МЕГА-КЛИК - пробует ВСЕ возможные способы
+        """
+        self.log("💣 СУПЕР-МЕГА-КЛИК")
         
         # Даем странице время
         await asyncio.sleep(1)
         
-        # 1. Клик по координатам
+        # === 1. Клик по координатам ===
         if x is not None and y is not None:
-            self.log(f"   🔄 Метод 1: Клик по координатам ({x}, {y})")
+            self.log(f"   🔄 1. Клик по координатам ({x}, {y})")
             try:
                 await self.page.mouse.click(x, y)
                 self.log("   ✅ Клик по координатам успешен")
+                await asyncio.sleep(1)
                 return True
             except Exception as e:
                 self.log(f"   ❌ Ошибка: {e}")
         
-        # 2. Клик по тексту
+        # === 2. Поиск по тексту ===
         if text:
-            self.log(f"   🔄 Метод 2: Клик по тексту '{text}'")
+            self.log(f"   🔄 2. Клик по тексту '{text}'")
+            try:
+                await self.page.get_by_text(text, exact=True).first.click(timeout=3000)
+                self.log("   ✅ Точное совпадение")
+                await asyncio.sleep(1)
+                return True
+            except:
+                pass
+            
             try:
                 await self.page.get_by_text(text).first.click(timeout=3000)
-                self.log("   ✅ Клик по тексту успешен")
-                return True
-            except:
-                pass
-            
-            self.log("   🔄 Метод 3: Поиск кнопки с текстом")
-            try:
-                await self.page.locator(f"button:has-text('{text}')").click(timeout=3000)
-                self.log("   ✅ Клик по кнопке успешен")
-                return True
-            except:
-                pass
-            
-            self.log("   🔄 Метод 4: Поиск любого элемента с текстом")
-            try:
-                await self.page.locator(f"*:has-text('{text}')").first.click(timeout=3000)
-                self.log("   ✅ Клик по элементу успешен")
+                self.log("   ✅ Частичное совпадение")
+                await asyncio.sleep(1)
                 return True
             except:
                 pass
         
-        # 3. Клик по центру
-        self.log("   🔄 Метод 5: Клик по центру экрана")
+        # === 3. Поиск кнопок ===
+        if text:
+            self.log(f"   🔄 3. Поиск кнопки с текстом '{text}'")
+            try:
+                await self.page.locator(f"button:has-text('{text}')").click(timeout=3000)
+                self.log("   ✅ Кнопка найдена")
+                await asyncio.sleep(1)
+                return True
+            except:
+                pass
+            
+            try:
+                await self.page.locator(f"button:has-text('{text}')").first.click(timeout=3000, force=True)
+                self.log("   ✅ Кнопка (force)")
+                await asyncio.sleep(1)
+                return True
+            except:
+                pass
+        
+        # === 4. Поиск div/span с текстом ===
+        if text:
+            self.log(f"   🔄 4. Поиск элемента с текстом '{text}'")
+            try:
+                await self.page.locator(f"div:has-text('{text}')").first.click(timeout=3000)
+                self.log("   ✅ Div найден")
+                await asyncio.sleep(1)
+                return True
+            except:
+                pass
+            
+            try:
+                await self.page.locator(f"span:has-text('{text}')").first.click(timeout=3000)
+                self.log("   ✅ Span найден")
+                await asyncio.sleep(1)
+                return True
+            except:
+                pass
+        
+        # === 5. JavaScript клик ===
+        if text:
+            self.log(f"   🔄 5. JavaScript клик по тексту '{text}'")
+            try:
+                await self.page.evaluate(f"""
+                    const elements = document.querySelectorAll('*');
+                    for (let el of elements) {{
+                        if (el.textContent && el.textContent.includes('{text}')) {{
+                            el.click();
+                            return true;
+                        }}
+                    }}
+                """)
+                self.log("   ✅ JavaScript клик успешен")
+                await asyncio.sleep(1)
+                return True
+            except:
+                pass
+        
+        # === 6. Клик по селектору ===
+        if selector:
+            self.log(f"   🔄 6. Клик по селектору '{selector}'")
+            try:
+                await self.page.click(selector, timeout=3000)
+                self.log("   ✅ Клик по селектору")
+                await asyncio.sleep(1)
+                return True
+            except:
+                pass
+            
+            try:
+                await self.page.click(selector, timeout=3000, force=True)
+                self.log("   ✅ Клик по селектору (force)")
+                await asyncio.sleep(1)
+                return True
+            except:
+                pass
+        
+        # === 7. Клик по центру экрана ===
+        self.log("   🔄 7. Клик по центру экрана")
         try:
             viewport = self.page.viewport_size
             await self.page.mouse.click(viewport['width'] // 2, viewport['height'] // 2)
-            self.log("   ✅ Клик по центру успешен")
+            self.log("   ✅ Клик по центру")
+            await asyncio.sleep(1)
             return True
         except Exception as e:
             self.log(f"   ❌ Ошибка: {e}")
         
-        self.log("❌ МЕГА-КЛИК не сработал ни одним методом")
+        # === 8. Клик по первому элементу с ролью button ===
+        self.log("   🔄 8. Поиск любой кнопки")
+        try:
+            await self.page.locator("[role='button']").first.click(timeout=3000)
+            self.log("   ✅ Кнопка (role)")
+            await asyncio.sleep(1)
+            return True
+        except:
+            pass
+        
+        self.log("❌ СУПЕР-МЕГА-КЛИК не сработал")
         return False
