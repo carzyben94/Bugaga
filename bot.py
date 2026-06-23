@@ -858,14 +858,19 @@ async def continue_as_google(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         clicked = False
         
+        # Ищем в iframe
         for frame in page.frames:
             try:
                 selectors = [
                     'text="Continue as"',
                     'text="Продолжить как"',
                     'button:has-text("Continue as")',
+                    'button:has-text("Продолжить как")',
                     'div:has-text("Continue as")',
+                    'div:has-text("Продолжить как")',
                     'div[role="button"]',
+                    '[jsname]',
+                    '[data-testid]',
                 ]
                 
                 for selector in selectors:
@@ -873,7 +878,7 @@ async def continue_as_google(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         elements = await frame.locator(selector).all()
                         for el in elements:
                             text = await el.text_content()
-                            if text and ('Continue as' in text or 'Продолжить как' in text):
+                            if text and ('Continue as' in text or 'Продолжить как' in text or 'babe' in text.lower() or 'baruhbenn' in text.lower()):
                                 if await el.is_visible():
                                     box = await el.bounding_box()
                                     if box:
@@ -891,6 +896,40 @@ async def continue_as_google(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     break
             except:
                 continue
+        
+        # Если не нашли в iframe, ищем на странице
+        if not clicked:
+            selectors = [
+                'text="Continue as"',
+                'text="Продолжить как"',
+                'button:has-text("Continue as")',
+                'button:has-text("Продолжить как")',
+                'div:has-text("Continue as")',
+                'div:has-text("Продолжить как")',
+                'div[role="button"]',
+                '[jsname]',
+                '[data-testid]',
+            ]
+            
+            for selector in selectors:
+                try:
+                    elements = await page.locator(selector).all()
+                    for el in elements:
+                        text = await el.text_content()
+                        if text and ('Continue as' in text or 'Продолжить как' in text or 'babe' in text.lower() or 'baruhbenn' in text.lower()):
+                            if await el.is_visible():
+                                box = await el.bounding_box()
+                                if box:
+                                    x = box['x'] + box['width'] // 2
+                                    y = box['y'] + box['height'] // 2
+                                    await human_click(page, x, y)
+                                else:
+                                    await el.click()
+                                clicked = True
+                                await update.message.reply_text(f"✅ Нажата кнопка: {text[:50]}")
+                                break
+                except:
+                    continue
         
         if not clicked:
             # Ищем по почте
@@ -910,32 +949,79 @@ async def continue_as_google(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 pass
         
         if not clicked:
+            # Ищем по email
+            try:
+                elements = await page.locator('text="baruhbenn@gmail.com"').all()
+                for el in elements:
+                    if await el.is_visible():
+                        box = await el.bounding_box()
+                        if box:
+                            x = box['x'] + box['width'] // 2
+                            y = box['y'] + box['height'] // 2
+                            await human_click(page, x, y)
+                            clicked = True
+                            await update.message.reply_text("✅ Нажата кнопка с email")
+                            break
+            except:
+                pass
+        
+        if not clicked:
             await update.message.reply_text(
                 "❌ Кнопка не найдена\n\n"
-                "Попробуй через джойстик: /joystick"
+                "Попробуй через джойстик:\n"
+                "1. /joystick\n"
+                "2. Наведи на кнопку\n"
+                "3. Нажми ЛКМ"
             )
             return
         
-        await page.wait_for_timeout(3000)
+        await page.wait_for_timeout(5000)
         
+        # ПРОВЕРЯЕМ РЕЗУЛЬТАТ
         current_url = page.url
         cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
         screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
         
-        if "x.com" in current_url and "login" not in current_url:
+        # Проверяем куки сессии Twitter
+        cookies = await page.context.cookies()
+        has_session = any(c['name'] in ['auth_token', 'ct0', 'twid'] for c in cookies)
+        
+        if "x.com" in current_url and "login" not in current_url and has_session:
             await update.message.reply_photo(
                 photo=screenshot,
                 caption="✅ **Вход в Twitter выполнен успешно!** 🎉\n\n"
-                        "Ты в аккаунте Babe! 🥳"
+                        "Ты в аккаунте! 🥳"
+            )
+        elif "x.com" in current_url and "login" in current_url:
+            await update.message.reply_photo(
+                photo=screenshot,
+                caption="⚠️ **Кнопка нажата, но вход не выполнен**\n\n"
+                        "Возможно, нужно:\n"
+                        "1. Нажать 'Войти' ещё раз\n"
+                        "2. Или нажать 'Continue with Google' сначала\n"
+                        "3. /joystick - попробовать вручную"
+            )
+        elif "accounts.google.com" in current_url:
+            await update.message.reply_photo(
+                photo=screenshot,
+                caption="🔐 **Открылось окно Google**\n\n"
+                        "Бот уже вошёл в Google.\n"
+                        "Нажми /twitter и попробуй снова."
             )
         else:
             await update.message.reply_photo(
                 photo=screenshot,
-                caption="✅ Кнопка нажата!\n\n📸 Проверь результат на скриншоте."
+                caption=f"📸 Текущая страница: {current_url[:60]}\n\n"
+                        "Проверь статус: /status"
             )
         
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
+        try:
+            screenshot = await page.screenshot(full_page=True, type="png")
+            await update.message.reply_photo(photo=screenshot, caption="📸 Скриншот для диагностики")
+        except:
+            pass
 
 # ============ СТАТУС ============
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
