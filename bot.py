@@ -66,7 +66,6 @@ def handle_check(message):
         result += f"✅ Selenium: {selenium.__version__}\n"
     except ImportError:
         result += "❌ Selenium: не установлен\n"
-        result += "   Установка: pip install selenium\n"
     
     # 2. webdriver-manager
     try:
@@ -74,7 +73,6 @@ def handle_check(message):
         result += "✅ webdriver-manager установлен\n"
     except ImportError:
         result += "❌ webdriver-manager: не установлен\n"
-        result += "   Установка: pip install webdriver-manager\n"
     
     # 3. Chrome
     check = check_installation()
@@ -86,8 +84,8 @@ def handle_check(message):
     
     # 4. ChromeDriver
     try:
-        from webdriver_manager.chrome import ChromeDriverManager
-        driver_path = ChromeDriverManager().install()
+        from browser import get_chromedriver_path
+        driver_path = get_chromedriver_path()
         if driver_path and os.path.exists(driver_path):
             result += f"✅ ChromeDriver: {driver_path}\n"
         else:
@@ -106,13 +104,8 @@ def handle_check(message):
         pass
     
     if check['chrome'] and selenium_ok:
-        try:
-            import webdriver_manager
-            result += "✅ **ВСЕ ГОТОВО К РАБОТЕ!**\n"
-            result += "Используйте /logingoogle для входа"
-        except:
-            result += "⚠️ Нужно установить webdriver-manager\n"
-            result += "   pip install webdriver-manager"
+        result += "✅ **ВСЕ ГОТОВО К РАБОТЕ!**\n"
+        result += "Используйте /logingoogle для входа"
     else:
         result += "⚠️ Нужно выполнить /install"
     
