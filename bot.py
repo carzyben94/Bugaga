@@ -485,17 +485,15 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text("🔐 Начинаю вход в Google...")
     
     try:
-        # 1. Открываем страницу входа
         await update.message.reply_text("🌐 Открываю accounts.google.com...")
         await goto_url(page, "https://accounts.google.com")
         await page.wait_for_timeout(8000)
         
-        # 2. ПОИСК EMAIL
         await update.message.reply_text("🔍 Ищу поле для email...")
         
         email_found = False
         
-        # Способ 1: get_by_role
+        # get_by_role
         try:
             el = await page.get_by_role("textbox", name=re.compile(r"(Email|телефон|Username|Эл. почта)", re.IGNORECASE)).first
             if await el.count() > 0 and await el.is_visible():
@@ -507,7 +505,6 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except:
             pass
         
-        # Способ 2: get_by_placeholder
         if not email_found:
             try:
                 el = await page.get_by_placeholder(re.compile(r"(Email|телефон|Username|Эл. почта|Адрес)", re.IGNORECASE)).first
@@ -520,20 +517,6 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             except:
                 pass
         
-        # Способ 3: get_by_label
-        if not email_found:
-            try:
-                el = await page.get_by_label(re.compile(r"(Email|телефон|Username|Эл. почта)", re.IGNORECASE)).first
-                if await el.count() > 0 and await el.is_visible():
-                    await el.click()
-                    await page.wait_for_timeout(300)
-                    await el.fill(email)
-                    email_found = True
-                    print("✅ Email через get_by_label")
-            except:
-                pass
-        
-        # Способ 4: CSS
         if not email_found:
             css_selectors = [
                 'input[type="email"]',
@@ -545,8 +528,6 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 'input[jsname="YPqjbf"]',
                 'input.whsOnd',
                 'input.zHQkBf',
-                'input[jscontroller]',
-                'input[jsname]',
             ]
             
             for selector in css_selectors:
@@ -563,34 +544,6 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 except:
                     continue
         
-        # Способ 5: XPath
-        if not email_found:
-            xpaths = [
-                '//input[@type="email"]',
-                '//input[@name="identifier"]',
-                '//input[@autocomplete="username"]',
-                '//input[@autocomplete="email"]',
-                '//input[contains(@aria-label, "Email")]',
-                '//input[contains(@aria-label, "телефон")]',
-                '//input[contains(@class, "whsOnd")]',
-                '//input[contains(@class, "zHQkBf")]',
-                '//input[@jsname="YPqjbf"]',
-            ]
-            
-            for xpath in xpaths:
-                try:
-                    el = await page.locator(f'xpath={xpath}').first
-                    if await el.count() > 0 and await el.is_visible():
-                        await el.click()
-                        await page.wait_for_timeout(300)
-                        await el.fill(email)
-                        email_found = True
-                        print(f"✅ Email через XPath: {xpath}")
-                        break
-                except:
-                    continue
-        
-        # Способ 6: Все input
         if not email_found:
             try:
                 inputs = await page.locator('input').all()
@@ -626,18 +579,12 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             screenshot = await page.screenshot(full_page=True, type="png")
             await update.message.reply_photo(
                 photo=screenshot,
-                caption="❌ **Не найдено поле для email**\n\n"
-                        "Попробуй ввести вручную через джойстик:\n"
-                        "1. /joystick\n"
-                        "2. Наведи на поле → ЛКМ\n"
-                        "3. /type email@gmail.com\n"
-                        "4. Нажми Enter"
+                caption="❌ **Не найдено поле для email**\n\nПопробуй ввести вручную через джойстик"
             )
             return
         
         await page.wait_for_timeout(1000)
         
-        # 3. НАЖИМАЕМ "ДАЛЕЕ"
         await update.message.reply_text("⏭️ Нажимаю 'Далее'...")
         
         next_clicked = False
@@ -671,17 +618,14 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if not next_clicked:
             await page.keyboard.press("Enter")
         
-        # 4. ЖДЁМ ПАРОЛЬ
         await update.message.reply_text("⏳ Жду появления поля для пароля...")
         await page.wait_for_timeout(5000)
         
-        # 5. ПОИСК ПАРОЛЯ
         await update.message.reply_text("🔑 Ищу поле для пароля...")
         
         password_found = False
         password_element = None
         
-        # Способ 1: get_by_placeholder
         try:
             el = await page.get_by_placeholder(re.compile(r"(Password|пароль|Пароль)", re.IGNORECASE)).first
             if await el.count() > 0 and await el.is_visible():
@@ -691,18 +635,6 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except:
             pass
         
-        # Способ 2: get_by_label
-        if not password_found:
-            try:
-                el = await page.get_by_label(re.compile(r"(Password|пароль|Пароль)", re.IGNORECASE)).first
-                if await el.count() > 0 and await el.is_visible():
-                    password_element = el
-                    password_found = True
-                    print("✅ Пароль через get_by_label")
-            except:
-                pass
-        
-        # Способ 3: CSS
         if not password_found:
             css_selectors = [
                 'input[type="password"]',
@@ -711,8 +643,6 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 'input[aria-label*="Password" i]',
                 'input[aria-label*="пароль" i]',
                 'input[jsname="YPqjbf"]',
-                'input.whsOnd',
-                'input.zHQkBf',
             ]
             
             for selector in css_selectors:
@@ -727,31 +657,6 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 except:
                     continue
         
-        # Способ 4: XPath
-        if not password_found:
-            xpaths = [
-                '//input[@type="password"]',
-                '//input[@name="password"]',
-                '//input[@autocomplete="current-password"]',
-                '//input[contains(@aria-label, "Password")]',
-                '//input[contains(@aria-label, "пароль")]',
-                '//input[contains(@class, "whsOnd")]',
-                '//input[contains(@class, "zHQkBf")]',
-                '//input[@jsname="YPqjbf"]',
-            ]
-            
-            for xpath in xpaths:
-                try:
-                    el = await page.locator(f'xpath={xpath}').first
-                    if await el.count() > 0 and await el.is_visible():
-                        password_element = el
-                        password_found = True
-                        print(f"✅ Пароль через XPath: {xpath}")
-                        break
-                except:
-                    continue
-        
-        # Способ 5: input type=password
         if not password_found:
             try:
                 inputs = await page.locator('input[type="password"]').all()
@@ -777,16 +682,10 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             screenshot = await page.screenshot(full_page=True, type="png")
             await update.message.reply_photo(
                 photo=screenshot,
-                caption="❌ **Не найдено поле для пароля**\n\n"
-                        "Введи вручную через джойстик:\n"
-                        "1. /joystick\n"
-                        "2. Наведи на поле → ЛКМ\n"
-                        "3. /type пароль\n"
-                        "4. Нажми Enter"
+                caption="❌ **Не найдено поле для пароля**\n\nВведи вручную через джойстик"
             )
             return
         
-        # Вводим пароль
         await password_element.click()
         await page.wait_for_timeout(500)
         await human_type(page, password)
@@ -794,7 +693,6 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         
         await page.wait_for_timeout(1000)
         
-        # 6. НАЖИМАЕМ "ДАЛЕЕ" ДЛЯ ВХОДА
         await update.message.reply_text("⏭️ Завершаю вход...")
         
         next_clicked = False
@@ -817,7 +715,6 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         
         await page.wait_for_timeout(5000)
         
-        # 7. ПРОВЕРКА
         current_url = page.url
         cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
         screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
@@ -827,15 +724,9 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 photo=screenshot,
                 caption="✅ **Вход в Google выполнен успешно!** 🎉\n\n"
                         "Теперь:\n"
-                        "🔗 /go x.com - открыть Twitter/X\n"
-                        "🎮 /joystick - открыть джойстик\n"
-                        "🖱️ Нажать 'Continue with Google' через джойстик"
-            )
-        elif "challenge" in current_url or "verify" in current_url:
-            await update.message.reply_photo(
-                photo=screenshot,
-                caption="⚠️ **Требуется 2FA**\n\n"
-                        "Введи код вручную через джойстик"
+                        "🔗 /twitter - открыть X.com\n"
+                        "🔘 /google_btn - нажать 'Continue with Google'\n"
+                        "🔘 /continue - нажать 'Continue as Babe'"
             )
         else:
             await update.message.reply_photo(
@@ -850,6 +741,201 @@ async def login_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await update.message.reply_photo(photo=screenshot, caption="📸 Скриншот для диагностики")
         except:
             pass
+
+# ============ ОТКРЫТЬ TWITTER/X ============
+async def twitter_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    
+    if user_id not in user_sessions:
+        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
+        return
+    
+    session = user_sessions[user_id]
+    page = session["page"]
+    
+    try:
+        await update.message.reply_text("🌐 Открываю X.com...")
+        await goto_url(page, "https://x.com")
+        session["current_url"] = "https://x.com"
+        
+        await page.wait_for_timeout(3000)
+        
+        cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
+        screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
+        
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption="✅ **X.com открыт!**\n\n"
+                    "🔘 /google_btn - нажать 'Continue with Google'\n"
+                    "🔘 /continue - нажать 'Continue as Babe'\n"
+                    "🎮 /joystick - управлять вручную"
+        )
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+# ============ НАЖАТЬ "CONTINUE WITH GOOGLE" ============
+async def google_login_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    
+    if user_id not in user_sessions:
+        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
+        return
+    
+    session = user_sessions[user_id]
+    page = session["page"]
+    
+    await update.message.reply_text("🔍 Ищу кнопку 'Continue with Google'...")
+    
+    try:
+        clicked = False
+        
+        for frame in page.frames:
+            try:
+                selectors = [
+                    'text="Continue with Google"',
+                    'button:has-text("Continue with Google")',
+                    'div:has-text("Continue with Google")',
+                    'span:has-text("Continue with Google")',
+                    '[aria-label*="Google"]',
+                ]
+                
+                for selector in selectors:
+                    try:
+                        el = await frame.locator(selector).first
+                        if await el.count() > 0 and await el.is_visible():
+                            box = await el.bounding_box()
+                            if box:
+                                x = box['x'] + box['width'] // 2
+                                y = box['y'] + box['height'] // 2
+                                await human_click(page, x, y)
+                            else:
+                                await el.click()
+                            clicked = True
+                            await update.message.reply_text("✅ Нажата кнопка 'Continue with Google'")
+                            break
+                    except:
+                        continue
+                if clicked:
+                    break
+            except:
+                continue
+        
+        if not clicked:
+            await update.message.reply_text(
+                "❌ Кнопка не найдена\n\n"
+                "Попробуй через джойстик: /joystick"
+            )
+            return
+        
+        await page.wait_for_timeout(3000)
+        
+        cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
+        screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
+        
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption="✅ **Кнопка нажата!**\n\n"
+                    "🔘 /continue - нажать 'Continue as Babe'"
+        )
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+# ============ НАЖАТЬ "CONTINUE AS BABE" ============
+async def continue_as_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    
+    if user_id not in user_sessions:
+        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
+        return
+    
+    session = user_sessions[user_id]
+    page = session["page"]
+    
+    await update.message.reply_text("🔍 Ищу кнопку 'Continue as...'...")
+    
+    try:
+        clicked = False
+        
+        for frame in page.frames:
+            try:
+                selectors = [
+                    'text="Continue as"',
+                    'text="Продолжить как"',
+                    'button:has-text("Continue as")',
+                    'div:has-text("Continue as")',
+                    'div[role="button"]',
+                ]
+                
+                for selector in selectors:
+                    try:
+                        elements = await frame.locator(selector).all()
+                        for el in elements:
+                            text = await el.text_content()
+                            if text and ('Continue as' in text or 'Продолжить как' in text):
+                                if await el.is_visible():
+                                    box = await el.bounding_box()
+                                    if box:
+                                        x = box['x'] + box['width'] // 2
+                                        y = box['y'] + box['height'] // 2
+                                        await human_click(page, x, y)
+                                    else:
+                                        await el.click()
+                                    clicked = True
+                                    await update.message.reply_text(f"✅ Нажата кнопка: {text[:50]}")
+                                    break
+                    except:
+                        continue
+                if clicked:
+                    break
+            except:
+                continue
+        
+        if not clicked:
+            # Ищем по почте
+            try:
+                elements = await page.locator('text="babe"').all()
+                for el in elements:
+                    if await el.is_visible():
+                        box = await el.bounding_box()
+                        if box:
+                            x = box['x'] + box['width'] // 2
+                            y = box['y'] + box['height'] // 2
+                            await human_click(page, x, y)
+                            clicked = True
+                            await update.message.reply_text("✅ Нажата кнопка с почтой")
+                            break
+            except:
+                pass
+        
+        if not clicked:
+            await update.message.reply_text(
+                "❌ Кнопка не найдена\n\n"
+                "Попробуй через джойстик: /joystick"
+            )
+            return
+        
+        await page.wait_for_timeout(3000)
+        
+        current_url = page.url
+        cursor = cursor_positions.get(user_id, {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2})
+        screenshot = await human_screenshot(page, cursor["x"], cursor["y"])
+        
+        if "x.com" in current_url and "login" not in current_url:
+            await update.message.reply_photo(
+                photo=screenshot,
+                caption="✅ **Вход в Twitter выполнен успешно!** 🎉\n\n"
+                        "Ты в аккаунте Babe! 🥳"
+            )
+        else:
+            await update.message.reply_photo(
+                photo=screenshot,
+                caption="✅ Кнопка нажата!\n\n📸 Проверь результат на скриншоте."
+            )
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
 
 # ============ СТАТУС ============
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -888,12 +974,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "👋 Привет! Я бот с управлением браузером!\n\n"
         "🌐 /browser - Открыть браузер\n"
-        "🔐 /login email pass - Войти в Google\n"
-        "🔗 /go <url> - Перейти на сайт\n"
+        "🔐 /login email pass - Войти в Google (автоматически)\n"
+        "🐦 /twitter - Открыть X.com\n"
+        "🔘 /google_btn - Нажать 'Continue with Google'\n"
+        "🔘 /continue - Нажать 'Continue as Babe'\n"
         "🎮 /joystick - Открыть джойстик\n"
-        "📸 /screenshot - Сделать скриншот\n"
         "📊 /status - Проверить статус\n"
-        "❌ /close - Закрыть браузер"
+        "📸 /screenshot - Сделать скриншот\n"
+        "❌ /close - Закрыть браузер\n\n"
+        "🚀 Полный вход в Twitter:\n"
+        "/login email pass → /twitter → /google_btn → /continue"
     )
 
 async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -906,7 +996,7 @@ async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text(
             "✅ Браузер готов!\n\n"
             "🔐 /login email pass - войти в Google\n"
-            "🔗 /go x.com - открыть Twitter\n"
+            "🐦 /twitter - открыть X.com\n"
             "🎮 /joystick - открыть джойстик"
         )
     except Exception as e:
@@ -1230,6 +1320,9 @@ def main():
     bot_app.add_handler(CommandHandler("joystick", joystick_command))
     bot_app.add_handler(CommandHandler("login", login_google))
     bot_app.add_handler(CommandHandler("status", status_command))
+    bot_app.add_handler(CommandHandler("twitter", twitter_command))
+    bot_app.add_handler(CommandHandler("google_btn", google_login_button))
+    bot_app.add_handler(CommandHandler("continue", continue_as_google))
     
     bot_app.add_handler(CallbackQueryHandler(joystick_callback))
     
