@@ -379,78 +379,63 @@ class AntiDetectBrowser:
         return True
     
     # ============================================================
-    # === TAB-НАВИГАЦИЯ ===
+    # === КЛИК ПО КООРДИНАТАМ ===
     # ============================================================
-    def tab_to_continue_button(self, max_tabs=40):
-        """
-        Tab-навигация для поиска кнопки "Continue as Babe"
-        """
-        self.log("🔍 Поиск кнопки 'Continue as' через Tab...", "INFO")
-        
+    def click_by_coordinates(self, x, y):
+        """Клик по координатам"""
         try:
-            body = self.driver.find_element(By.TAG_NAME, "body")
+            self.log(f"🖱️ Клик по координатам ({x}, {y})", "INFO")
             
-            for i in range(max_tabs):
-                # === НАЖИМАЕМ TAB ===
-                body.send_keys(Keys.TAB)
-                time.sleep(0.3)
-                
-                # === ПОЛУЧАЕМ ТЕКУЩИЙ ЭЛЕМЕНТ ===
-                current_element = self.driver.execute_script("return document.activeElement;")
-                
-                if current_element:
-                    try:
-                        text = current_element.text.strip()
-                        tag = current_element.tag_name
-                        
-                        self.log(f"   Шаг {i+1}: tag={tag}, text='{text[:40]}'", "DEBUG")
-                        
-                        # === ИЩЕМ "Continue as Babe" ===
-                        if text and ("Continue as" in text or 
-                                     "Continue with Google" in text or
-                                     self.email in text):
-                            self.log(f"✅ НАШЛИ КНОПКУ! Текст: '{text}'", "SUCCESS")
-                            self.take_step_screenshot("xcom_found_continue_button")
-                            
-                            # === НАЖИМАЕМ ENTER ===
-                            body.send_keys(Keys.ENTER)
-                            time.sleep(2)
-                            
-                            # Проверяем результат
-                            current_url = self.driver.current_url
-                            if "home" in current_url or "x.com/home" in current_url:
-                                self.log("🎉 ВХОД ВЫПОЛНЕН!", "SUCCESS")
-                                return True
-                            
-                            # Если открылось окно Google
-                            if "accounts.google.com" in current_url:
-                                self.log("✅ Открылось окно Google!", "SUCCESS")
-                                return True
-                    except:
-                        pass
-                
-                # Если нашли "Continue" без as — тоже пробуем
-                if text and "Continue" in text:
-                    self.log(f"🔍 Нашли 'Continue', пробую...", "DEBUG")
-                    body.send_keys(Keys.ENTER)
-                    time.sleep(1)
+            # Получаем размер окна
+            window_size = self.driver.get_window_size()
+            width = window_size['width']
+            height = window_size['height']
             
-            self.log("❌ Кнопка 'Continue as' не найдена", "WARNING")
-            return False
+            # Проверяем, что координаты в пределах окна
+            if x < 0 or x > width or y < 0 or y > height:
+                self.log(f"⚠️ Координаты ({x}, {y}) вне окна {width}x{height}", "WARNING")
+                # Корректируем
+                x = width // 2
+                y = height // 2 - 50
+                self.log(f"🔄 Использую центр окна: ({x}, {y})", "INFO")
+            
+            # Способ 1: JavaScript клик
+            result = self.driver.execute_script(f"""
+                var el = document.elementFromPoint({x}, {y});
+                if (el) {{
+                    el.click();
+                    return true;
+                }}
+                return false;
+            """)
+            
+            if result:
+                self.log(f"✅ Клик по ({x}, {y}) выполнен через JS", "SUCCESS")
+                return True
+            
+            # Способ 2: ActionChains
+            actions = ActionChains(self.driver)
+            actions.move_by_offset(x, y)
+            time.sleep(0.3)
+            actions.click()
+            time.sleep(0.2)
+            actions.perform()
+            
+            self.log(f"✅ Клик по ({x}, {y}) выполнен через ActionChains", "SUCCESS")
+            return True
             
         except Exception as e:
-            self.log(f"❌ Ошибка: {e}", "ERROR")
+            self.log(f"❌ Ошибка клика по координатам: {e}", "ERROR")
             return False
     
     # ============================================================
     # === ПЕРЕХОД НА X.COM ===
     # ============================================================
     def go_to_xcom(self):
-        """Переход на X.com и поиск кнопки 'Continue as' через Tab"""
+        """Переход на X.com — клик по координатам"""
         self.log("🌐 ПЕРЕХОД НА X.COM", "INFO")
         
         try:
-            # Открываем X.com
             self.driver.get("https://x.com")
             self.log("✅ X.com открыт", "SUCCESS")
             time.sleep(5)
@@ -459,31 +444,35 @@ class AntiDetectBrowser:
             current_url = self.driver.current_url
             self.log(f"📍 URL: {current_url}", "INFO")
             
-            # Если уже на главной
             if "home" in current_url or "x.com/home" in current_url:
                 self.log("🎉 Уже на главной", "SUCCESS")
                 return True
             
-            # === ЗАПУСКАЕМ TAB ===
-            self.log("🔍 Ищу кнопку 'Continue as Babe' через Tab...", "INFO")
-            result = self.tab_to_continue_button(max_tabs=40)
+            # === КЛИК ПО КООРДИНАТАМ ===
+            self.log("🖱️ Клик по координатам кнопки 'Continue as Babe'...", "INFO")
+            
+            # Координаты из скрина (для десктопа 1920x1080)
+            x = 960
+            y = 380
+            
+            # Пробуем кликнуть
+            result = self.click_by_coordinates(x, y)
             
             if result:
-                self.log("🎉 Кнопка найдена и нажата!", "SUCCESS")
-                return True
-            
-            # Если не нашли — пробуем Enter
-            self.log("🔄 Пробую Enter...", "INFO")
-            try:
-                body = self.driver.find_element(By.TAG_NAME, "body")
-                body.send_keys(Keys.ENTER)
+                self.log("✅ Клик выполнен", "SUCCESS")
+                self.take_step_screenshot("xcom_click_coords")
                 time.sleep(2)
-                current_url = self.driver.current_url
-                if "home" in current_url:
-                    self.log("🎉 ВХОД ВЫПОЛНЕН!", "SUCCESS")
-                    return True
-            except:
-                pass
+            else:
+                # Если не сработало — пробуем центр окна
+                self.log("🔄 Пробую центр окна...", "INFO")
+                self.click_by_coordinates(960, 400)
+                time.sleep(2)
+            
+            # Проверяем результат
+            current_url = self.driver.current_url
+            if "home" in current_url or "x.com/home" in current_url:
+                self.log("🎉 ВХОД ВЫПОЛНЕН!", "SUCCESS")
+                return True
             
             self.log("❌ Вход не выполнен", "ERROR")
             return False
