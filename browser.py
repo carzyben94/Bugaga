@@ -378,11 +378,7 @@ class AntiDetectBrowser:
         self.take_step_screenshot("google_done")
         return True
     
-    # ============================================================
-    # === ОТКРЫТИЕ X.COM (БЕЗ АВТОМАТИЧЕСКИХ КЛИКОВ) ===
-    # ============================================================
     def go_to_xcom(self):
-        """Только открывает X.com — дальше джойстик"""
         self.log("🌐 ПЕРЕХОД НА X.COM", "INFO")
         
         try:
@@ -408,7 +404,6 @@ class AntiDetectBrowser:
             return False
     
     def click_by_coordinates(self, x, y):
-        """Клик по координатам (для джойстика)"""
         try:
             self.log(f"🖱️ Клик по координатам ({x}, {y})", "INFO")
             
