@@ -6,7 +6,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
-from selenium_stealth import stealth
+from webdriver_manager.chrome import ChromeDriverManager
 import os
 import time
 import random
@@ -101,7 +101,6 @@ class AntiDetectBrowser:
             options.add_argument('--headless=new')
             self.log("🔇 Headless режим", "INFO")
         
-        # === ОСНОВНЫЕ ФЛАГИ ===
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
@@ -111,24 +110,16 @@ class AntiDetectBrowser:
         options.add_argument('--disable-blink-features=AutomationControlled')
         options.add_experimental_option('excludeSwitches', ['enable-automation'])
         options.add_experimental_option('useAutomationExtension', False)
-        
-        # === ОПТИМИЗАЦИЯ ===
         options.add_argument('--disable-web-security')
         options.add_argument('--disable-features=VizDisplayCompositor')
-        options.add_argument('--disable-accelerated-2d-canvas')
-        options.add_argument('--disable-accelerated-javascript-decoding')
         options.add_argument('--disable-popup-blocking')
         options.add_argument('--disable-notifications')
         options.add_argument('--disable-infobars')
         options.add_argument('--disable-extensions')
-        options.add_argument('--disable-plugins')
         options.add_argument('--page-load-timeout=60')
         options.add_argument('--script-timeout=30')
         options.add_argument('--memory-pressure-off')
-        options.add_argument('--max_old_space_size=512')
-        options.add_argument('--js-flags=--max-old-space-size=512')
         
-        # === User-Agent ===
         desktop_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
         options.add_argument(f'--user-agent={desktop_user_agent}')
         self.log(f"🖥️ User-Agent: {desktop_user_agent[:50]}...", "DEBUG")
@@ -161,46 +152,14 @@ class AntiDetectBrowser:
         self.driver.set_page_load_timeout(60)
         self.driver.implicitly_wait(20)
         
-        # === ПРИМЕНЯЕМ SELENIUM-STEALTH ===
-        try:
-            stealth(
-                self.driver,
-                languages=["en-US", "en", "ru"],
-                vendor="Google Inc.",
-                platform="Win32",
-                webgl_vendor="Intel Inc.",
-                renderer="Intel Iris OpenGL Engine",
-                fix_hairline=True,
-                run_on_insecure_origins=True,
-            )
-            self.log("✅ Stealth применен", "SUCCESS")
-        except Exception as e:
-            self.log(f"⚠️ Ошибка stealth: {e}", "WARNING")
-        
-        # Дополнительное скрытие
         self.driver.execute_script("""
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined
             });
-            Object.defineProperty(navigator, 'plugins', {
-                get: () => [1, 2, 3, 4, 5]
-            });
-            Object.defineProperty(navigator, 'languages', {
-                get: () => ['en-US', 'en', 'ru']
-            });
-            Object.defineProperty(navigator, 'platform', {
-                get: () => 'Win32'
-            });
-            window.chrome = {
-                runtime: {},
-                loadTimes: function() {},
-                csi: function() {},
-                app: {}
-            };
         """)
         
         self.wait = WebDriverWait(self.driver, 10)
-        self.log("✅ Браузер готов (с анти-детектом)", "SUCCESS")
+        self.log("✅ Браузер готов", "SUCCESS")
         return self.driver
     
     def random_delay(self, min_sec=0.3, max_sec=1.0):
@@ -382,23 +341,8 @@ class AntiDetectBrowser:
             except:
                 pass
         
-        # Способ 3: По "Continue"
-        self.log("   🔍 Способ 3: Поиск по 'Continue'...", "DEBUG")
-        try:
-            elements = self.driver.find_elements(By.XPATH, "//*[text()='Continue']")
-            for elem in elements:
-                if elem.is_displayed():
-                    self.log(f"   ✅ Найдено 'Continue'", "SUCCESS")
-                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elem)
-                    time.sleep(0.5)
-                    self.driver.execute_script("arguments[0].click();", elem)
-                    self.log("   ✅ Клик по 'Continue' выполнен", "SUCCESS")
-                    return True
-        except:
-            pass
-        
-        # Способ 4: Координаты
-        self.log("   🔍 Способ 4: Поиск по координатам...", "DEBUG")
+        # Способ 3: Координаты
+        self.log("   🔍 Способ 3: Поиск по координатам...", "DEBUG")
         window_size = self.driver.get_window_size()
         width = window_size['width']
         height = window_size['height']
@@ -413,11 +357,9 @@ class AntiDetectBrowser:
         
         for x, y in coords_to_try:
             try:
-                self.log(f"      Пробую ({x}, {y})...", "DEBUG")
                 result = self.driver.execute_script(f"""
                     var el = document.elementFromPoint({x}, {y});
-                    if (el && el.textContent.includes('Continue')) {{
-                        el.scrollIntoView({{block: 'center'}});
+                    if (el) {{
                         el.click();
                         return true;
                     }}
@@ -428,27 +370,6 @@ class AntiDetectBrowser:
                     return True
             except:
                 continue
-        
-        # Способ 5: Все кнопки
-        self.log("   🔍 Способ 5: Поиск всех кнопок...", "DEBUG")
-        try:
-            buttons = self.driver.find_elements(By.TAG_NAME, "button")
-            self.log(f"   📊 Найдено кнопок: {len(buttons)}", "DEBUG")
-            for btn in buttons:
-                try:
-                    text = btn.text.strip()
-                    if text and ("Continue" in text or "Войти" in text or "Sign" in text):
-                        if btn.is_displayed():
-                            self.log(f"   ✅ Найдена кнопка: '{text[:30]}'", "SUCCESS")
-                            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
-                            time.sleep(0.5)
-                            self.driver.execute_script("arguments[0].click();", btn)
-                            self.log("   ✅ Клик по кнопке выполнен", "SUCCESS")
-                            return True
-                except:
-                    continue
-        except:
-            pass
         
         self.log("❌ Не удалось найти кнопку", "ERROR")
         return False
@@ -465,7 +386,6 @@ class AntiDetectBrowser:
         result = self.driver.execute_script(f"""
             var el = document.elementFromPoint({x}, {y});
             if (el) {{
-                el.scrollIntoView({{block: 'center'}});
                 el.click();
                 return true;
             }}
@@ -630,7 +550,6 @@ class AntiDetectBrowser:
             self.driver.get("https://x.com")
             self.log("✅ X.com открыт", "SUCCESS")
             
-            # Ждем загрузки
             self.wait_for_page_load(timeout=60)
             time.sleep(3)
             self.wait_for_react(timeout=30)
@@ -645,7 +564,6 @@ class AntiDetectBrowser:
                 self.log("🎉 Уже на главной", "SUCCESS")
                 return True
             
-            # === УМНЫЙ ПОИСК ===
             result = self.smart_find_and_click()
             
             if result:
