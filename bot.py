@@ -116,7 +116,6 @@ def handle_login_google(message):
     
     msg = bot.reply_to(message, "🔄 Вход через Google... 30-50 секунд")
     
-    # === log_callback с 2 аргументами ===
     def log_callback(log_text, level):
         send_log_to_chat(chat_id, log_text)
     
