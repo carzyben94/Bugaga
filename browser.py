@@ -16,7 +16,7 @@ import sys
 import subprocess
 from datetime import datetime
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def get_chromedriver_path():
@@ -379,192 +379,224 @@ class AntiDetectBrowser:
         return True
     
     # ============================================================
-    # === ПЕРЕХОД НА X.COM — ПОИСК ПО ТЕКСТУ ===
+    # === ИССЛЕДОВАТЕЛЬ — НАХОДИТ КНОПКУ ЛЮБЫМ СПОСОБОМ ===
     # ============================================================
-    def go_to_xcom(self, bot=None, chat_id=None, user_id=None):
-        """Переход на X.com — поиск по тексту в любом элементе"""
+    def find_and_click_continue_as(self):
+        """Исследовательская функция — ищет 'Continue as Babe' всеми способами"""
         self.log("=" * 60, "INFO")
-        self.log("🌐 ПЕРЕХОД НА X.COM", "INFO")
+        self.log("🔍 ЗАПУСК ИССЛЕДОВАТЕЛЯ", "INFO")
         self.log("=" * 60, "INFO")
         
-        try:
-            # === ШАГ 1: Открываем X.com ===
-            self.log("📍 ШАГ 1: Открываю https://x.com", "INFO")
-            self.driver.get("https://x.com")
-            self.log("✅ GET выполнен", "SUCCESS")
-            
-            # === ШАГ 2: Ждем загрузки ===
-            self.log("⏳ ШАГ 2: Ожидание загрузки страницы...", "INFO")
-            time.sleep(5)
-            self.log("✅ Страница загружена", "SUCCESS")
-            
-            # === ШАГ 3: Скриншот ===
-            self.log("📸 ШАГ 3: Делаю скриншот", "INFO")
-            self.take_step_screenshot("xcom_home")
-            self.log("✅ Скриншот сделан", "SUCCESS")
-            
-            # === ШАГ 4: Проверяем URL ===
-            current_url = self.driver.current_url
-            self.log(f"📍 ШАГ 4: Текущий URL: {current_url}", "INFO")
-            
-            # === ШАГ 5: Если уже на главной ===
-            if "home" in current_url or "x.com/home" in current_url:
-                self.log("🎉 УЖЕ НА ГЛАВНОЙ! Вход выполнен.", "SUCCESS")
-                return True
-            
-            # === ШАГ 6: Ищем ТЕКСТ "Continue as Babe" В ЛЮБОМ ЭЛЕМЕНТЕ ===
-            self.log("🔍 ШАГ 6: Ищу текст 'Continue as'...", "INFO")
-            
-            button_found = False
-            
-            # 1. Ищем "Continue as"
-            try:
-                elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue as')]")
-                self.log(f"📊 Найдено элементов с 'Continue as': {len(elements)}", "INFO")
-                
-                for elem in elements:
-                    try:
-                        text = elem.text.strip()
-                        self.log(f"🔍 Найден текст: '{text}'", "DEBUG")
-                        
-                        if "Continue as" in text:
-                            self.log(f"✅ Нашли: '{text}'", "SUCCESS")
-                            
-                            # Пробуем найти родительскую кнопку
-                            try:
-                                parent = elem.find_element(By.XPATH, "./ancestor::button")
-                                if parent and parent.is_displayed() and parent.is_enabled():
-                                    self.log("✅ Кликаем по кнопке-родителю", "SUCCESS")
-                                    self.human_click(parent)
-                                    button_found = True
-                                    self.take_step_screenshot("xcom_click_button_parent")
-                                    break
-                            except:
-                                pass
-                            
-                            # Если нет родительской кнопки — кликаем по самому элементу
-                            if not button_found:
-                                try:
-                                    if elem.is_displayed() and elem.is_enabled():
-                                        self.log("✅ Кликаем по элементу с текстом", "SUCCESS")
-                                        self.human_click(elem)
-                                        button_found = True
-                                        self.take_step_screenshot("xcom_click_text_element")
-                                        break
-                                except:
-                                    pass
-                    except:
-                        continue
-            except Exception as e:
-                self.log(f"⚠️ Ошибка поиска 'Continue as': {e}", "WARNING")
-            
-            # 2. Если не нашли — ищем по email
-            if not button_found and self.email:
-                self.log(f"🔍 Ищу по email: {self.email}", "INFO")
-                try:
-                    elements = self.driver.find_elements(By.XPATH, f"//*[contains(text(), '{self.email}')]")
-                    self.log(f"📊 Найдено элементов с email: {len(elements)}", "INFO")
-                    
-                    for elem in elements:
-                        try:
-                            text = elem.text.strip()
-                            if self.email in text:
-                                self.log(f"✅ Нашли email", "SUCCESS")
-                                
-                                try:
-                                    parent = elem.find_element(By.XPATH, "./ancestor::button")
-                                    if parent and parent.is_displayed() and parent.is_enabled():
-                                        self.log("✅ Кликаем по кнопке-родителю", "SUCCESS")
-                                        self.human_click(parent)
-                                        button_found = True
-                                        self.take_step_screenshot("xcom_click_email_parent")
-                                        break
-                                except:
-                                    pass
-                                
-                                if not button_found:
-                                    if elem.is_displayed() and elem.is_enabled():
-                                        self.log("✅ Кликаем по элементу с email", "SUCCESS")
-                                        self.human_click(elem)
-                                        button_found = True
-                                        self.take_step_screenshot("xcom_click_email_element")
-                                        break
-                        except:
-                            continue
-                except Exception as e:
-                    self.log(f"⚠️ Ошибка поиска email: {e}", "WARNING")
-            
-            # 3. Если не нашли — ищем "Continue"
-            if not button_found:
-                self.log("🔍 Ищу 'Continue'...", "INFO")
-                try:
-                    elements = self.driver.find_elements(By.XPATH, "//*[text()='Continue']")
-                    self.log(f"📊 Найдено элементов с 'Continue': {len(elements)}", "INFO")
-                    
-                    for elem in elements:
-                        try:
-                            if elem.is_displayed() and elem.is_enabled():
-                                self.log("✅ Нашли 'Continue'", "SUCCESS")
-                                self.human_click(elem)
-                                button_found = True
-                                self.take_step_screenshot("xcom_click_continue_text")
-                                break
-                        except:
-                            continue
-                except Exception as e:
-                    self.log(f"⚠️ Ошибка поиска 'Continue': {e}", "WARNING")
-            
-            # 4. Если не нашли — пробуем Enter
-            if not button_found:
-                self.log("⚠️ Ничего не найдено, пробую Enter", "WARNING")
-                try:
-                    body = self.driver.find_element(By.TAG_NAME, "body")
-                    body.send_keys(Keys.ENTER)
-                    self.log("✅ Нажат Enter", "SUCCESS")
-                    time.sleep(2)
-                except:
-                    pass
-            
-            # === ШАГ 7: Проверяем результат ===
-            self.log("🔍 ШАГ 7: Проверка результата...", "INFO")
-            time.sleep(2)
-            current_url = self.driver.current_url
-            self.log(f"📍 Финальный URL: {current_url}", "INFO")
-            
-            if "home" in current_url or "x.com/home" in current_url:
-                self.log("🎉 ВХОД ВЫПОЛНЕН УСПЕШНО!", "SUCCESS")
-                self.take_step_screenshot("xcom_success")
-                return True
+        # === СОБИРАЕМ ВСЮ ИНФОРМАЦИЮ ===
+        self.log("📊 ШАГ 1: Сбор информации о странице...", "INFO")
+        
+        window_size = self.driver.get_window_size()
+        self.log(f"   Размер окна: {window_size['width']}x{window_size['height']}", "INFO")
+        
+        title = self.driver.title
+        self.log(f"   Заголовок: {title}", "INFO")
+        
+        url = self.driver.current_url
+        self.log(f"   URL: {url}", "INFO")
+        
+        html = self.driver.page_source
+        self.log(f"   Длина HTML: {len(html)} символов", "INFO")
+        
+        # === ПОИСК В HTML ===
+        self.log("🔍 ШАГ 2: Поиск в HTML...", "INFO")
+        
+        keywords = ["Continue as", "Continue with", "Babe", "baruhbenn9@gmail.com"]
+        for keyword in keywords:
+            if keyword in html:
+                self.log(f"   ✅ Найдено в HTML: '{keyword}'", "SUCCESS")
             else:
-                self.log(f"⚠️ Вход не выполнен. URL: {current_url}", "WARNING")
-                self.take_step_screenshot("xcom_failed")
+                self.log(f"   ❌ Не найдено в HTML: '{keyword}'", "WARNING")
+        
+        # === ПОИСК ВСЕМИ МЕТОДАМИ ===
+        self.log("🔍 ШАГ 3: Поиск элемента всеми методами...", "INFO")
+        
+        all_methods = []
+        
+        # Метод 1: По тексту "Continue as"
+        self.log("   Метод 1: Поиск 'Continue as'...", "DEBUG")
+        try:
+            elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue as')]")
+            self.log(f"      Найдено: {len(elements)}", "DEBUG")
+            all_methods.extend(elements)
+        except: pass
+        
+        # Метод 2: По тексту "Continue with"
+        self.log("   Метод 2: Поиск 'Continue with'...", "DEBUG")
+        try:
+            elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue with')]")
+            self.log(f"      Найдено: {len(elements)}", "DEBUG")
+            all_methods.extend(elements)
+        except: pass
+        
+        # Метод 3: По тексту "Babe"
+        self.log("   Метод 3: Поиск 'Babe'...", "DEBUG")
+        try:
+            elements = self.driver.find_elements(By.XPATH, "//*[text()='Babe']")
+            self.log(f"      Найдено: {len(elements)}", "DEBUG")
+            all_methods.extend(elements)
+        except: pass
+        
+        # Метод 4: По email
+        self.log(f"   Метод 4: Поиск '{self.email}'...", "DEBUG")
+        try:
+            elements = self.driver.find_elements(By.XPATH, f"//*[contains(text(), '{self.email}')]")
+            self.log(f"      Найдено: {len(elements)}", "DEBUG")
+            all_methods.extend(elements)
+        except: pass
+        
+        # Метод 5: Все кнопки
+        self.log("   Метод 5: Все кнопки...", "DEBUG")
+        try:
+            elements = self.driver.find_elements(By.TAG_NAME, "button")
+            self.log(f"      Найдено: {len(elements)}", "DEBUG")
+            all_methods.extend(elements)
+        except: pass
+        
+        # Метод 6: Все элементы с role="button"
+        self.log("   Метод 6: role='button'...", "DEBUG")
+        try:
+            elements = self.driver.find_elements(By.XPATH, "//*[@role='button']")
+            self.log(f"      Найдено: {len(elements)}", "DEBUG")
+            all_methods.extend(elements)
+        except: pass
+        
+        # Метод 7: Все кликабельные div
+        self.log("   Метод 7: Кликабельные div...", "DEBUG")
+        try:
+            elements = self.driver.find_elements(By.XPATH, "//div[contains(@class, 'css-')]")
+            self.log(f"      Найдено: {len(elements)}", "DEBUG")
+            all_methods.extend(elements)
+        except: pass
+        
+        # Удаляем дубликаты
+        all_methods = list(dict.fromkeys(all_methods))
+        self.log(f"📊 Всего уникальных элементов: {len(all_methods)}", "INFO")
+        
+        # === ПЕРЕБОР ВСЕХ ЭЛЕМЕНТОВ ===
+        self.log("🖱️ ШАГ 4: Перебор всех элементов...", "INFO")
+        
+        for idx, elem in enumerate(all_methods):
+            try:
+                text = elem.text.strip()
+                tag = elem.tag_name
+                classes = elem.get_attribute("class")
+                role = elem.get_attribute("role")
                 
-                # Если не сработало — отправляем список всех элементов с текстом
-                if bot and chat_id:
-                    self.log("📤 Отправляю список элементов с текстом...", "INFO")
-                    all_elements = self.driver.find_elements(By.XPATH, "//*[text()!='' and not(self::script)]")
-                    result = "🔍 **Найденные элементы с текстом:**\n\n"
-                    count = 0
-                    for elem in all_elements[:30]:
-                        try:
-                            text = elem.text.strip()
-                            tag = elem.tag_name
-                            if text and len(text) < 50:
-                                count += 1
-                                result += f"{count}. [{tag}] '{text}'\n"
-                        except:
-                            continue
+                self.log(f"   Элемент {idx+1}: tag={tag}, text='{text[:30]}', class='{classes[:30]}'", "DEBUG")
+                
+                # Проверяем, подходит ли элемент
+                if any(keyword in text for keyword in ["Continue as", "Continue with", "Babe", self.email]):
+                    self.log(f"✅ НАЙДЕН ПОДХОДЯЩИЙ ЭЛЕМЕНТ: '{text}'", "SUCCESS")
+                    self.log(f"   Tag: {tag}, Class: {classes}, Role: {role}", "INFO")
                     
-                    if count > 0:
-                        result += "\n💡 Используйте /click <номер> для нажатия"
-                        bot.send_message(chat_id, result, parse_mode='Markdown')
-                
-                return False
+                    # === ПРОБУЕМ ВСЕ СПОСОБЫ КЛИКА ===
+                    self.log("🔄 Пробую кликнуть...", "INFO")
+                    
+                    # Способ 1: Обычный клик
+                    try:
+                        self.human_click(elem)
+                        self.log("   ✅ Клик через ActionChains", "SUCCESS")
+                        self.take_step_screenshot("xcom_click_found_1")
+                        return True
+                    except Exception as e:
+                        self.log(f"   ❌ Ошибка ActionChains: {e}", "WARNING")
+                    
+                    # Способ 2: JavaScript клик
+                    try:
+                        self.driver.execute_script("arguments[0].click();", elem)
+                        self.log("   ✅ Клик через JavaScript", "SUCCESS")
+                        self.take_step_screenshot("xcom_click_found_2")
+                        return True
+                    except Exception as e:
+                        self.log(f"   ❌ Ошибка JavaScript: {e}", "WARNING")
+                    
+                    # Способ 3: Клик по родительской кнопке
+                    try:
+                        parent = elem.find_element(By.XPATH, "./ancestor::button")
+                        if parent:
+                            self.driver.execute_script("arguments[0].click();", parent)
+                            self.log("   ✅ Клик по родительской кнопке", "SUCCESS")
+                            self.take_step_screenshot("xcom_click_found_3")
+                            return True
+                    except Exception as e:
+                        self.log(f"   ❌ Ошибка родительской кнопки: {e}", "WARNING")
+                    
+                    # Способ 4: Клик по родительскому div
+                    try:
+                        parent = elem.find_element(By.XPATH, "./ancestor::div[contains(@class, 'css-')]")
+                        if parent:
+                            self.driver.execute_script("arguments[0].click();", parent)
+                            self.log("   ✅ Клик по родительскому div", "SUCCESS")
+                            self.take_step_screenshot("xcom_click_found_4")
+                            return True
+                    except Exception as e:
+                        self.log(f"   ❌ Ошибка родительского div: {e}", "WARNING")
+                    
+                    # Способ 5: Координаты элемента
+                    try:
+                        location = elem.location
+                        size = elem.size
+                        x = location['x'] + size['width'] // 2
+                        y = location['y'] + size['height'] // 2
+                        
+                        self.driver.execute_script(f"""
+                            var element = document.elementFromPoint({x}, {y});
+                            if (element) {{
+                                element.click();
+                            }}
+                        """)
+                        self.log(f"   ✅ Клик по координатам ({x}, {y})", "SUCCESS")
+                        self.take_step_screenshot("xcom_click_found_5")
+                        return True
+                    except Exception as e:
+                        self.log(f"   ❌ Ошибка координат: {e}", "WARNING")
+                    
+                    self.log(f"❌ Не удалось кликнуть по элементу", "ERROR")
+            except:
+                continue
+        
+        self.log("❌ НЕ УДАЛОСЬ НАЙТИ 'Continue as Babe'", "ERROR")
+        return False
+    
+    # ============================================================
+    # === ПЕРЕХОД НА X.COM ===
+    # ============================================================
+    def go_to_xcom(self):
+        """Переход на X.com"""
+        self.log("🌐 ПЕРЕХОД НА X.COM", "INFO")
+        
+        try:
+            self.driver.get("https://x.com")
+            time.sleep(5)
+            self.take_step_screenshot("xcom_home")
+            
+            current_url = self.driver.current_url
+            self.log(f"📍 URL: {current_url}", "INFO")
+            
+            if "home" in current_url or "x.com/home" in current_url:
+                self.log("🎉 Уже на главной", "SUCCESS")
+                return True
+            
+            # === ЗАПУСК ИССЛЕДОВАТЕЛЯ ===
+            result = self.find_and_click_continue_as()
+            
+            if result:
+                time.sleep(2)
+                current_url = self.driver.current_url
+                if "home" in current_url or "x.com/home" in current_url:
+                    self.log("🎉 ВХОД ВЫПОЛНЕН!", "SUCCESS")
+                    return True
+            
+            self.log("❌ Вход не выполнен", "ERROR")
+            return False
             
         except Exception as e:
-            self.log(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}", "ERROR")
-            import traceback
-            self.log(f"📋 Трассировка:\n{traceback.format_exc()}", "ERROR")
+            self.log(f"❌ ОШИБКА: {e}", "ERROR")
             return False
     
     def login_twitter(self, username, password):
