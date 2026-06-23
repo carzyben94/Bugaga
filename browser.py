@@ -100,6 +100,7 @@ class AntiDetectBrowser:
             options.add_argument('--headless=new')
             self.log("🔇 Headless режим", "INFO")
         
+        # === ОСНОВНЫЕ ФЛАГИ ===
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
@@ -110,12 +111,51 @@ class AntiDetectBrowser:
         options.add_experimental_option('excludeSwitches', ['enable-automation'])
         options.add_experimental_option('useAutomationExtension', False)
         
+        # === ПОЛНАЯ ЗАГРУЗКА ===
+        options.page_load_strategy = 'normal'
+        
+        # === ОПТИМИЗАЦИЯ ===
+        options.add_argument('--disable-web-security')
+        options.add_argument('--disable-features=VizDisplayCompositor')
+        options.add_argument('--disable-accelerated-2d-canvas')
+        options.add_argument('--disable-accelerated-javascript-decoding')
+        options.add_argument('--disable-accelerated-mjpeg-decode')
+        options.add_argument('--disable-accelerated-video-decode')
+        options.add_argument('--disable-popup-blocking')
+        options.add_argument('--disable-notifications')
+        options.add_argument('--disable-infobars')
+        options.add_argument('--disable-session-crashed-bubble')
+        options.add_argument('--disable-extensions')
+        options.add_argument('--disable-plugins')
+        
+        # === ТАЙМАУТЫ ===
+        options.add_argument('--page-load-timeout=60')
+        options.add_argument('--script-timeout=30')
+        
+        # === ПАМЯТЬ ===
+        options.add_argument('--memory-pressure-off')
+        options.add_argument('--max_old_space_size=512')
+        options.add_argument('--js-flags=--max-old-space-size=512')
+        
+        # === User-Agent ===
         desktop_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
         options.add_argument(f'--user-agent={desktop_user_agent}')
         self.log(f"🖥️ User-Agent: {desktop_user_agent[:50]}...", "DEBUG")
         
         options.add_argument('--window-size=1920,1080')
         options.add_argument('--lang=en-US,en;q=0.9')
+        
+        options.add_experimental_option('prefs', {
+            'intl.accept_languages': 'en-US,en;q=0.9',
+            'credentials_enable_service': False,
+            'profile.password_manager_enabled': False,
+            'profile.default_content_settings': {
+                'images': 1,
+                'javascript': 1,
+                'popups': 2,
+                'notifications': 2,
+            },
+        })
         
         driver_path = get_chromedriver_path()
         service = Service(driver_path)
@@ -127,8 +167,8 @@ class AntiDetectBrowser:
             self.log(f"❌ Ошибка запуска Chrome: {e}", "ERROR")
             raise
         
-        self.driver.set_page_load_timeout(30)
-        self.driver.implicitly_wait(10)
+        self.driver.set_page_load_timeout(60)
+        self.driver.implicitly_wait(20)
         
         self.driver.execute_script("""
             Object.defineProperty(navigator, 'webdriver', {
@@ -233,7 +273,7 @@ class AntiDetectBrowser:
             self.log(f"❌ Ошибка ввода: {e}", "ERROR")
             return False
     
-    def wait_for_page_load(self, timeout=30):
+    def wait_for_page_load(self, timeout=60):
         try:
             WebDriverWait(self.driver, timeout).until(
                 lambda driver: driver.execute_script("return document.readyState") == "complete"
@@ -244,71 +284,69 @@ class AntiDetectBrowser:
             self.log(f"⚠️ Таймаут загрузки: {e}", "WARNING")
             return False
     
-    def force_load_all_elements(self):
-        """Принудительная загрузка всех элементов на странице"""
-        self.log("🔄 Принудительная загрузка всех элементов...", "INFO")
-        
+    def wait_for_react(self, timeout=30):
+        self.log("⏳ Ожидание React...", "DEBUG")
         try:
-            # 1. Прокручиваем страницу вниз и вверх
-            self.log("   📜 Прокрутка страницы...", "DEBUG")
+            WebDriverWait(self.driver, timeout).until(
+                lambda driver: driver.execute_script("""
+                    return (
+                        typeof window.__REACT_DEVTOOLS_GLOBAL_HOOK__ !== 'undefined' ||
+                        document.querySelector('[data-reactroot]') !== null ||
+                        document.querySelector('#__next') !== null ||
+                        document.querySelector('#root') !== null
+                    );
+                """)
+            )
+            self.log("✅ React обнаружен", "SUCCESS")
+            return True
+        except:
+            self.log("⚠️ React не обнаружен", "WARNING")
+            return False
+    
+    def scroll_to_load(self):
+        try:
+            for i in range(0, 1000, 100):
+                self.driver.execute_script(f"window.scrollTo(0, {i});")
+                time.sleep(0.2)
+            
             self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             time.sleep(2)
             self.driver.execute_script("window.scrollTo(0, 0);")
             time.sleep(2)
-            
-            # 2. Прокручиваем на 500px
-            self.driver.execute_script("window.scrollTo(0, 500);")
-            time.sleep(2)
+            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight / 2);")
+            time.sleep(1)
             self.driver.execute_script("window.scrollTo(0, 0);")
-            time.sleep(2)
+            time.sleep(1)
             
-            # 3. Ждем React
-            self.log("   ⏳ Ожидание рендеринга React...", "DEBUG")
-            time.sleep(3)
-            
-            # 4. Ищем все элементы с текстом
-            all_elements = self.driver.find_elements(By.XPATH, "//*[text()!='']")
-            self.log(f"   📊 Найдено элементов с текстом: {len(all_elements)}", "INFO")
-            
-            # 5. Ищем "Continue as"
-            continue_elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue as') or contains(text(), 'Continue with')]")
-            self.log(f"   📊 Найдено 'Continue': {len(continue_elements)}", "INFO")
-            
-            for elem in continue_elements:
-                try:
-                    self.driver.execute_script("arguments[0].style.display = 'block';", elem)
-                    self.driver.execute_script("arguments[0].style.visibility = 'visible';", elem)
-                    self.log(f"   ✅ Показан элемент: '{elem.text[:30]}'", "SUCCESS")
-                except:
-                    pass
-            
-            # 6. Ищем по email
-            if self.email:
-                email_elements = self.driver.find_elements(By.XPATH, f"//*[contains(text(), '{self.email}')]")
-                if email_elements:
-                    self.log(f"   ✅ Найдено {len(email_elements)} элементов с email", "SUCCESS")
-                    for elem in email_elements:
-                        try:
-                            self.driver.execute_script("arguments[0].style.display = 'block';", elem)
-                            self.driver.execute_script("arguments[0].style.visibility = 'visible';", elem)
-                            self.log(f"   ✅ Показан email: '{elem.text[:30]}'", "SUCCESS")
-                        except:
-                            pass
-            
-            self.take_step_screenshot("xcom_after_force_load")
-            
-            # 7. Проверяем результат
-            check_result = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue as')]")
-            if check_result:
-                self.log(f"✅ Найдено {len(check_result)} элементов 'Continue as' после загрузки", "SUCCESS")
-                return True
-            else:
-                self.log("⚠️ Элементы 'Continue as' не найдены после загрузки", "WARNING")
-                return False
-                
+            self.log("✅ Прокрутка выполнена", "SUCCESS")
+            return True
         except Exception as e:
-            self.log(f"❌ Ошибка принудительной загрузки: {e}", "ERROR")
+            self.log(f"⚠️ Ошибка прокрутки: {e}", "WARNING")
             return False
+    
+    def find_all_elements_js(self):
+        try:
+            result = self.driver.execute_script("""
+                var elements = document.querySelectorAll('*');
+                var found = [];
+                for (var i = 0; i < elements.length; i++) {
+                    var text = elements[i].textContent || '';
+                    if (text.trim()) {
+                        found.push({
+                            tag: elements[i].tagName,
+                            text: text.slice(0, 60),
+                            visible: elements[i].offsetParent !== null,
+                            id: elements[i].id || '',
+                            className: elements[i].className || ''
+                        });
+                    }
+                    if (found.length > 30) break;
+                }
+                return found;
+            """)
+            return result
+        except:
+            return []
     
     def force_click(self, x, y):
         self.log(f"💪 Принудительный клик по ({x}, {y})", "INFO")
@@ -510,41 +548,18 @@ class AntiDetectBrowser:
             self.driver.get("https://x.com")
             self.log("✅ X.com открыт", "SUCCESS")
             
-            self.wait_for_page_load(timeout=30)
+            # 1. Ожидание загрузки
+            self.wait_for_page_load(timeout=60)
             time.sleep(3)
+            
+            # 2. Ожидание React
+            self.wait_for_react(timeout=30)
+            time.sleep(2)
+            
+            # 3. Прокрутка для загрузки элементов
+            self.scroll_to_load()
+            
             self.take_step_screenshot("xcom_loaded")
-            
-            # === ПРИНУДИТЕЛЬНАЯ ЗАГРУЗКА ВСЕХ ЭЛЕМЕНТОВ ===
-            self.log("🔄 Принудительная загрузка всех элементов...", "INFO")
-            
-            # Прокручиваем для загрузки
-            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(2)
-            self.driver.execute_script("window.scrollTo(0, 0);")
-            time.sleep(2)
-            
-            self.driver.execute_script("window.scrollTo(0, 500);")
-            time.sleep(2)
-            self.driver.execute_script("window.scrollTo(0, 0);")
-            time.sleep(2)
-            
-            self.take_step_screenshot("xcom_after_scroll")
-            
-            # Проверяем, появилась ли кнопка
-            continue_elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Continue as') or contains(text(), 'Continue with')]")
-            self.log(f"📊 Найдено элементов 'Continue': {len(continue_elements)}", "INFO")
-            
-            for elem in continue_elements:
-                try:
-                    text = elem.text.strip()
-                    self.log(f"   🔍 Найден: '{text[:40]}'", "DEBUG")
-                except:
-                    pass
-            
-            # Проверяем email
-            if self.email:
-                email_elements = self.driver.find_elements(By.XPATH, f"//*[contains(text(), '{self.email}')]")
-                self.log(f"📊 Найдено элементов с email: {len(email_elements)}", "INFO")
             
             current_url = self.driver.current_url
             self.log(f"📍 URL: {current_url}", "INFO")
