@@ -379,7 +379,7 @@ class AntiDetectBrowser:
         return True
     
     # ============================================================
-    # === TAB-НАВИГАЦИЯ ДЛЯ ПОИСКА "Continue as" ===
+    # === TAB-НАВИГАЦИЯ ===
     # ============================================================
     def tab_to_continue_button(self, max_tabs=40):
         """
@@ -450,19 +450,22 @@ class AntiDetectBrowser:
         self.log("🌐 ПЕРЕХОД НА X.COM", "INFO")
         
         try:
+            # Открываем X.com
             self.driver.get("https://x.com")
+            self.log("✅ X.com открыт", "SUCCESS")
             time.sleep(5)
             self.take_step_screenshot("xcom_home")
             
             current_url = self.driver.current_url
             self.log(f"📍 URL: {current_url}", "INFO")
             
+            # Если уже на главной
             if "home" in current_url or "x.com/home" in current_url:
                 self.log("🎉 Уже на главной", "SUCCESS")
                 return True
             
-            # === ИЩЕМ "Continue as" ЧЕРЕЗ TAB ===
-            self.log("🔍 Ищу кнопку 'Continue as Babe'...", "INFO")
+            # === ЗАПУСКАЕМ TAB ===
+            self.log("🔍 Ищу кнопку 'Continue as Babe' через Tab...", "INFO")
             result = self.tab_to_continue_button(max_tabs=40)
             
             if result:
