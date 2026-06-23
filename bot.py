@@ -2,6 +2,9 @@ import telebot
 import os
 import time
 from browser import AntiDetectBrowser, check_installation
+from datetime import datetime
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.action_chains import ActionChains
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
@@ -18,6 +21,7 @@ except Exception as e:
     print(f"⚠️ Ошибка сброса webhook: {e}")
 
 user_sessions = {}
+user_buttons = {}  # user_id: {'buttons': [...], 'list': [...]}
 
 def send_log_to_chat(chat_id, log_entry):
     try:
@@ -35,7 +39,10 @@ def send_welcome(message):
         "/check - Проверить установку\n"
         "/login логин пароль - Обычный вход\n"
         "/logingoogle email пароль - Вход через Google\n"
+        "/analyze - Показать все кнопки на странице\n"
+        "/click <номер> - Нажать кнопку по номеру\n"
         "/log - Показать логи\n"
+        "/getlog - Скачать лог-файл\n"
         "/status - Статус сессии\n"
         "/screenshot - Скриншот\n"
         "/close - Закрыть браузер"
@@ -92,6 +99,123 @@ def handle_log(message):
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}")
 
+@bot.message_handler(commands=['getlog'])
+def handle_get_log(message):
+    try:
+        if os.path.exists(LOG_FILE):
+            with open(LOG_FILE, 'rb') as f:
+                bot.send_document(
+                    message.chat.id,
+                    f,
+                    caption=f"📋 Лог-файл от {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                    visible_file_name="bot.log"
+                )
+            bot.send_message(message.chat.id, "✅ Лог-файл отправлен!")
+        else:
+            bot.reply_to(message, "📋 Логов пока нет")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}")
+
+@bot.message_handler(commands=['analyze'])
+def handle_analyze(message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    
+    if user_id not in user_sessions:
+        bot.reply_to(message, "❌ Нет активной сессии. Сначала выполните /logingoogle")
+        return
+    
+    browser = user_sessions[user_id]
+    
+    try:
+        all_buttons = browser.driver.find_elements(By.TAG_NAME, "button")
+        result = "🔍 **Найденные кнопки:**\n\n"
+        
+        button_list = []
+        for idx, btn in enumerate(all_buttons):
+            try:
+                btn_text = btn.text.strip()
+                if btn_text:
+                    button_list.append(f"{idx+1}. '{btn_text}'")
+                    result += f"{idx+1}. `{btn_text[:50]}`\n"
+            except:
+                continue
+        
+        if not button_list:
+            bot.reply_to(message, "❌ Кнопки не найдены")
+            return
+        
+        result += f"\n📊 Всего кнопок: {len(button_list)}"
+        result += "\n\n💡 Используйте /click <номер> для нажатия"
+        
+        user_buttons[user_id] = {
+            'buttons': all_buttons,
+            'list': button_list
+        }
+        
+        bot.reply_to(message, result, parse_mode='Markdown')
+        
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {str(e)[:200]}")
+
+@bot.message_handler(commands=['click'])
+def handle_click(message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    
+    if user_id not in user_sessions:
+        bot.reply_to(message, "❌ Нет активной сессии")
+        return
+    
+    if message.text is None:
+        bot.reply_to(message, "❌ Используйте: /click <номер>")
+        return
+    
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        bot.reply_to(message, "❌ Используйте: /click <номер>")
+        return
+    
+    try:
+        number = int(parts[1]) - 1
+    except ValueError:
+        bot.reply_to(message, "❌ Введите номер кнопки")
+        return
+    
+    if user_id not in user_buttons:
+        bot.reply_to(message, "❌ Сначала выполните /analyze")
+        return
+    
+    buttons_data = user_buttons[user_id]
+    if number < 0 or number >= len(buttons_data['buttons']):
+        bot.reply_to(message, f"❌ Введите номер от 1 до {len(buttons_data['buttons'])}")
+        return
+    
+    browser = user_sessions[user_id]
+    btn = buttons_data['buttons'][number]
+    
+    try:
+        btn_text = btn.text.strip()
+        bot.reply_to(message, f"🔄 Нажимаю кнопку: '{btn_text}'")
+        
+        actions = ActionChains(browser.driver)
+        actions.move_to_element(btn)
+        time.sleep(0.3)
+        actions.click()
+        time.sleep(0.2)
+        actions.perform()
+        
+        bot.send_message(chat_id, f"✅ Нажата кнопка: '{btn_text}'")
+        
+        screenshot = browser.take_screenshot(f"click_{user_id}.png")
+        if screenshot:
+            with open(screenshot, 'rb') as photo:
+                bot.send_photo(chat_id, photo, caption="📸 После нажатия")
+            os.remove(screenshot)
+        
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {str(e)[:200]}")
+
 @bot.message_handler(commands=['logingoogle'])
 def handle_login_google(message):
     user_id = message.from_user.id
@@ -142,7 +266,8 @@ def handle_login_google(message):
             browser.close()
             return
         
-        xcom_ok = browser.go_to_xcom()
+        # === ПЕРЕХОД НА X.COM С ПЕРЕДАЧЕЙ ПАРАМЕТРОВ ===
+        xcom_ok = browser.go_to_xcom(bot=bot, chat_id=chat_id, user_id=user_id)
         
         if xcom_ok:
             user_sessions[user_id] = browser
@@ -152,7 +277,7 @@ def handle_login_google(message):
                     bot.send_photo(chat_id, photo, caption="✅ Вход выполнен!")
                 os.remove(screenshot)
             bot.edit_message_text("✅ Вход выполнен успешно!", chat_id=chat_id, message_id=msg.message_id)
-            bot.send_message(chat_id, "📋 Используйте /log для просмотра полных логов")
+            bot.send_message(chat_id, "📋 Используйте /getlog для скачивания полного лога")
         else:
             screenshot = browser.take_screenshot(f"error_{user_id}.png")
             if screenshot:
@@ -160,7 +285,7 @@ def handle_login_google(message):
                     bot.send_photo(chat_id, photo, caption="❌ Ошибка входа")
                 os.remove(screenshot)
             bot.edit_message_text("❌ Ошибка входа\nПроверьте email и пароль", chat_id=chat_id, message_id=msg.message_id)
-            bot.send_message(chat_id, "📋 Используйте /log для просмотра полных логов")
+            bot.send_message(chat_id, "📋 Используйте /getlog для скачивания логов")
             browser.close()
             
     except Exception as e:
