@@ -379,10 +379,10 @@ class AntiDetectBrowser:
         return True
     
     # ============================================================
-    # === ПЕРЕХОД НА X.COM С АВТОМАТИЧЕСКИМ КЛИКОМ ПО КООРДИНАТАМ ===
+    # === ПЕРЕХОД НА X.COM С РАСШИРЕННЫМ ПОИСКОМ ===
     # ============================================================
     def go_to_xcom(self, bot=None, chat_id=None, user_id=None):
-        """Переход на X.com — автоматический клик по координатам"""
+        """Переход на X.com — поиск всех кликабельных элементов"""
         self.log("=" * 60, "INFO")
         self.log("🌐 ПЕРЕХОД НА X.COM", "INFO")
         self.log("=" * 60, "INFO")
@@ -412,41 +412,98 @@ class AntiDetectBrowser:
                 self.log("🎉 УЖЕ НА ГЛАВНОЙ! Вход выполнен.", "SUCCESS")
                 return True
             
-            # === ШАГ 6: АВТОМАТИЧЕСКИЙ КЛИК ПО КООРДИНАТАМ ===
-            self.log("🖱️ ШАГ 6: Автоматический клик по координатам...", "INFO")
+            # === ШАГ 6: Ищем ВСЕ кликабельные элементы ===
+            self.log("🔍 ШАГ 6: Поиск всех кликабельных элементов...", "INFO")
             
-            # === КООРДИНАТЫ ДЛЯ КНОПКИ "Continue as Babe" ===
-            # Для десктопа 1920x1080
-            x = 960
-            y = 400
+            all_clickable = []
             
-            # Для телефона 1080x2400 — раскомментировать и закомментировать выше
-            # x = 540
-            # y = 350
+            # 1. Кнопки
+            buttons = self.driver.find_elements(By.TAG_NAME, "button")
+            all_clickable.extend(buttons)
             
-            self.log(f"📍 Координаты: ({x}, {y})", "INFO")
+            # 2. Элементы с role="button"
+            role_buttons = self.driver.find_elements(By.XPATH, "//*[@role='button']")
+            all_clickable.extend(role_buttons)
             
-            try:
-                # === КЛИК ПО КООРДИНАТАМ ===
-                actions = ActionChains(self.driver)
-                actions.move_by_offset(x, y)
-                time.sleep(0.3)
-                actions.click()
-                time.sleep(0.2)
-                actions.perform()
-                
-                self.log(f"✅ Клик выполнен по ({x}, {y})", "SUCCESS")
-                self.take_step_screenshot("xcom_click_coords")
-                
-                # Ждем реакцию
-                time.sleep(3)
-                
-            except Exception as e:
-                self.log(f"⚠️ Ошибка клика по координатам: {e}", "WARNING")
-                self.take_step_screenshot("xcom_click_error")
+            # 3. Элементы с onclick
+            onclick = self.driver.find_elements(By.XPATH, "//*[@onclick]")
+            all_clickable.extend(onclick)
             
-            # === ШАГ 7: Проверяем результат ===
-            self.log("🔍 ШАГ 7: Проверка результата...", "INFO")
+            # 4. Элементы с классом содержащим "button"
+            class_buttons = self.driver.find_elements(By.XPATH, "//*[contains(@class, 'button')]")
+            all_clickable.extend(class_buttons)
+            
+            # 5. Все div, span, a (которые обычно бывают кнопками)
+            divs = self.driver.find_elements(By.XPATH, "//div[contains(@class, 'css-')]")
+            all_clickable.extend(divs)
+            
+            # Удаляем дубликаты
+            all_clickable = list(dict.fromkeys(all_clickable))
+            
+            self.log(f"📊 Найдено кликабельных элементов: {len(all_clickable)}", "INFO")
+            
+            # === ШАГ 7: Ищем "Continue as Babe" ===
+            self.log("🔍 ШАГ 7: Ищу 'Continue as...'", "INFO")
+            
+            button_found = False
+            
+            # Пробуем найти по тексту
+            for elem in all_clickable:
+                try:
+                    text = elem.text.strip()
+                    if "Continue as" in text or "Continue with" in text:
+                        self.log(f"✅ Найдено: {text}", "SUCCESS")
+                        self.human_click(elem)
+                        button_found = True
+                        self.take_step_screenshot("xcom_click_continue_as")
+                        break
+                except:
+                    continue
+            
+            # Если не нашли — ищем по email
+            if not button_found and self.email:
+                self.log(f"🔍 Ищу по email: {self.email}", "INFO")
+                for elem in all_clickable:
+                    try:
+                        text = elem.text.strip()
+                        if self.email in text:
+                            self.log(f"✅ Найдено по email", "SUCCESS")
+                            self.human_click(elem)
+                            button_found = True
+                            self.take_step_screenshot("xcom_click_email")
+                            break
+                    except:
+                        continue
+            
+            # Если не нашли — ищем по "Continue"
+            if not button_found:
+                self.log("🔍 Ищу 'Continue'...", "INFO")
+                for elem in all_clickable:
+                    try:
+                        text = elem.text.strip()
+                        if text == "Continue":
+                            self.log(f"✅ Найдено 'Continue'", "SUCCESS")
+                            self.human_click(elem)
+                            button_found = True
+                            self.take_step_screenshot("xcom_click_continue")
+                            break
+                    except:
+                        continue
+            
+            # === ШАГ 8: Если не нашли — пробуем Enter ===
+            if not button_found:
+                self.log("⚠️ Кнопка не найдена, пробую Enter", "WARNING")
+                try:
+                    body = self.driver.find_element(By.TAG_NAME, "body")
+                    body.send_keys(Keys.ENTER)
+                    self.log("✅ Нажат Enter", "SUCCESS")
+                    time.sleep(2)
+                except:
+                    pass
+            
+            # === ШАГ 9: Проверяем результат ===
+            self.log("🔍 ШАГ 8: Проверка результата...", "INFO")
+            time.sleep(2)
             current_url = self.driver.current_url
             self.log(f"📍 Финальный URL: {current_url}", "INFO")
             
@@ -458,27 +515,26 @@ class AntiDetectBrowser:
                 self.log(f"⚠️ Вход не выполнен. URL: {current_url}", "WARNING")
                 self.take_step_screenshot("xcom_failed")
                 
-                # Если не сработало — отправляем список кнопок
+                # Отправляем список найденных элементов
                 if bot and chat_id:
-                    self.log("📤 Отправляю список кнопок в Telegram...", "INFO")
-                    all_buttons = self.driver.find_elements(By.TAG_NAME, "button")
-                    button_texts = []
-                    for idx, btn in enumerate(all_buttons):
+                    self.log("📤 Отправляю список...", "INFO")
+                    result = "🔍 **Найденные кликабельные элементы:**\n\n"
+                    count = 0
+                    for elem in all_clickable[:30]:
                         try:
-                            btn_text = btn.text.strip()
-                            if btn_text:
-                                button_texts.append(f"{idx+1}. '{btn_text}'")
+                            text = elem.text.strip()
+                            tag = elem.tag_name
+                            if text:
+                                count += 1
+                                result += f"{count}. [{tag}] '{text[:40]}'\n"
                         except:
                             continue
                     
-                    if button_texts:
-                        result = "🔍 **Найденные кнопки на X.com:**\n\n"
-                        for text in button_texts[:20]:
-                            result += f"{text}\n"
-                        if len(button_texts) > 20:
-                            result += f"\n... и еще {len(button_texts) - 20} кнопок"
-                        result += "\n\n💡 Используйте /click <номер> для нажатия"
+                    if count > 0:
+                        result += "\n💡 Используйте /click <номер> для нажатия"
                         bot.send_message(chat_id, result, parse_mode='Markdown')
+                    else:
+                        bot.send_message(chat_id, "❌ Не найдено кликабельных элементов с текстом")
                 
                 return False
             
