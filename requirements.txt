@@ -1,4 +1,4 @@
 python-telegram-bot==21.9
 requests==2.31.0
 Flask==3.0.3
-camoufox[geoip]>=1.8.0
+camoufox==0.4.11
