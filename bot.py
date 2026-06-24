@@ -4,7 +4,7 @@ import subprocess
 import logging
 import json
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
 # ==================== НАСТРОЙКА ЛОГИРОВАНИЯ ====================
 logging.basicConfig(
@@ -91,7 +91,7 @@ def cookies_to_string(cookies):
         return "❌ Куки не загружены"
     
     lines = []
-    for i, cookie in enumerate(cookies[:20], 1):  # Показываем первые 20
+    for i, cookie in enumerate(cookies[:20], 1):
         name = cookie.get('name', 'unknown')
         value = cookie.get('value', '')[:30]
         domain = cookie.get('domain', '')
@@ -229,10 +229,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "cookies_show":
         cookies = load_cookies()
         if cookies:
-            # Показываем все куки в формате JSON
             cookies_json = json.dumps(cookies, indent=2)
             if len(cookies_json) > 4000:
-                # Если слишком много, отправляем файлом
                 with open("/tmp/cookies_export.json", 'w') as f:
                     json.dump(cookies, f, indent=2)
                 await query.edit_message_text(
@@ -240,7 +238,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "Куки сохранены в файл. Скачайте его:",
                     parse_mode="Markdown"
                 )
-                # Отправляем файл
                 with open("/tmp/cookies_export.json", 'rb') as f:
                     await query.message.reply_document(
                         document=f,
@@ -323,7 +320,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений для загрузки кук"""
     if context.user_data.get('waiting_for_cookies'):
         try:
-            # Пробуем парсить JSON
             text = update.message.text
             cookies = json.loads(text)
             
@@ -371,50 +367,54 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(f"⏳ Открываю {url}...")
     
     try:
-        from cloakbrowser import launch
+        # Импортируем асинхронный API
+        from cloakbrowser.async_api import async_playwright
         
         # Загружаем куки
         cookies = load_cookies()
         logger.info(f"🍪 Загружено {len(cookies)} кук для {url}")
         
-        # Запускаем браузер
-        logger.info(f"🚀 Запускаю CloakBrowser для {url}")
-        browser = launch(headless=True)
-        page = browser.new_page()
-        
-        # Устанавливаем куки
-        if cookies:
-            try:
-                await page.context.add_cookies(cookies)
-                logger.info(f"✅ Установлено {len(cookies)} кук")
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка установки кук: {e}")
-        
-        # Открываем URL
-        logger.info(f"🌐 Перехожу по адресу: {url}")
-        page.goto(url, timeout=30000)
-        
-        # Получаем заголовки
-        headers = page.evaluate("() => ({ userAgent: navigator.userAgent })")
-        logger.info(f"📱 User-Agent: {headers.get('userAgent', 'unknown')}")
-        
-        # Закрываем браузер
-        browser.close()
-        logger.info(f"✅ Страница открыта: {url}")
-        
-        keyboard = [
-            [InlineKeyboardButton("🔙 В меню", callback_data="back_to_menu")],
-            [InlineKeyboardButton("🌐 Открыть другой", callback_data="browse")],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await msg.edit_text(
-            f"✅ *Страница открыта!*\n\n"
-            f"🌐 URL: {url}\n"
-            f"🍪 Кук использовано: {len(cookies)}",
-            reply_markup=reply_markup,
-            parse_mode="Markdown"
-        )
+        # Используем асинхронный контекстный менеджер
+        async with async_playwright() as p:
+            # Запускаем браузер
+            logger.info(f"🚀 Запускаю CloakBrowser для {url}")
+            browser = await p.chromium.launch(headless=True)
+            context_browser = await browser.new_context()
+            page = await context_browser.new_page()
+            
+            # Устанавливаем куки
+            if cookies:
+                try:
+                    await context_browser.add_cookies(cookies)
+                    logger.info(f"✅ Установлено {len(cookies)} кук")
+                except Exception as e:
+                    logger.warning(f"⚠️ Ошибка установки кук: {e}")
+            
+            # Открываем URL
+            logger.info(f"🌐 Перехожу по адресу: {url}")
+            await page.goto(url, timeout=30000)
+            
+            # Получаем заголовки
+            user_agent = await page.evaluate("() => navigator.userAgent")
+            logger.info(f"📱 User-Agent: {user_agent}")
+            
+            # Закрываем браузер
+            await browser.close()
+            logger.info(f"✅ Страница открыта: {url}")
+            
+            keyboard = [
+                [InlineKeyboardButton("🔙 В меню", callback_data="back_to_menu")],
+                [InlineKeyboardButton("🌐 Открыть другой", callback_data="browse")],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await msg.edit_text(
+                f"✅ *Страница открыта!*\n\n"
+                f"🌐 URL: {url}\n"
+                f"🍪 Кук использовано: {len(cookies)}",
+                reply_markup=reply_markup,
+                parse_mode="Markdown"
+            )
         
     except Exception as e:
         error_msg = str(e)[:200]
@@ -517,5 +517,4 @@ def main():
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
-    from telegram.ext import MessageHandler, filters
     main()
