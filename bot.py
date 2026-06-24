@@ -22,32 +22,37 @@ def install_cloak():
     """Установка CloakBrowser через pip"""
     try:
         logger.info("Устанавливаю CloakBrowser...")
-        subprocess.run(
+        result = subprocess.run(
             ["pip", "install", "cloakbrowser"],
             check=True,
-            capture_output=True
+            capture_output=True,
+            text=True
         )
-        logger.info("✅ CloakBrowser установлен")
+        logger.info(f"✅ CloakBrowser установлен: {result.stdout[:200]}")
         return True
     except Exception as e:
         logger.error(f"❌ Ошибка установки: {e}")
         return False
 
 # Проверяем и устанавливаем
+CLOAK_AVAILABLE = False
+
 try:
     import cloakbrowser
     CLOAK_AVAILABLE = True
     logger.info("✅ CloakBrowser уже установлен")
 except ImportError:
     logger.warning("⚠️ CloakBrowser не найден, устанавливаю...")
-    CLOAK_AVAILABLE = install_cloak()
-    if CLOAK_AVAILABLE:
+    if install_cloak():
         try:
             import cloakbrowser
+            CLOAK_AVAILABLE = True
             logger.info("✅ CloakBrowser успешно импортирован")
         except ImportError:
             CLOAK_AVAILABLE = False
             logger.error("❌ Не удалось импортировать CloakBrowser")
+
+logger.info(f"📊 CloakBrowser статус: {CLOAK_AVAILABLE}")
 
 # ==================== КОМАНДЫ БОТА ====================
 async def set_bot_commands(application):
@@ -121,37 +126,46 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "reinstall":
         await query.edit_message_text("⏳ Переустановка CloakBrowser...")
         
+        # Удаляем старую версию
         try:
             subprocess.run(
                 ["pip", "uninstall", "cloakbrowser", "-y"],
                 check=True,
                 capture_output=True
             )
+            logger.info("🗑️ CloakBrowser удален")
         except:
             pass
         
+        # Устанавливаем заново
         global CLOAK_AVAILABLE
-        CLOAK_AVAILABLE = install_cloak()
-        
-        if CLOAK_AVAILABLE:
-            await query.edit_message_text("✅ CloakBrowser переустановлен!")
+        if install_cloak():
+            try:
+                import cloakbrowser
+                CLOAK_AVAILABLE = True
+                await query.edit_message_text("✅ CloakBrowser переустановлен!")
+            except ImportError:
+                CLOAK_AVAILABLE = False
+                await query.edit_message_text("❌ Ошибка импорта после установки")
         else:
+            CLOAK_AVAILABLE = False
             await query.edit_message_text("❌ Ошибка переустановки")
     
     elif query.data == "info":
-        import pkg_resources
         version = "Неизвестно"
         try:
+            import pkg_resources
             version = pkg_resources.get_distribution("cloakbrowser").version
         except:
             pass
         
         await query.edit_message_text(
             f"ℹ️ *Информация*\n\n"
-            f"🤖 CloakBrowser Bot v4.0\n"
+            f"🤖 CloakBrowser Bot v4.1\n"
             f"📦 Статус: {'✅ Установлен' if CLOAK_AVAILABLE else '❌ Не установлен'}\n"
             f"📌 Версия: {version}\n"
-            f"🌐 Платформа: Railway",
+            f"🌐 Платформа: Railway\n"
+            f"🐍 Python: 3.9+",
             parse_mode="Markdown"
         )
     
@@ -199,14 +213,17 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from cloakbrowser import launch
         
         # Запускаем браузер
+        logger.info(f"🚀 Запускаю CloakBrowser для {url}")
         browser = launch(headless=True)
         page = browser.new_page()
         
         # Открываем URL
+        logger.info(f"🌐 Перехожу по адресу: {url}")
         page.goto(url, timeout=30000)
         
         # Закрываем браузер
         browser.close()
+        logger.info(f"✅ Страница открыта: {url}")
         
         keyboard = [
             [InlineKeyboardButton("🔙 В меню", callback_data="back_to_menu")],
@@ -223,6 +240,7 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         error_msg = str(e)[:200]
+        logger.error(f"❌ Ошибка открытия {url}: {error_msg}")
         await msg.edit_text(
             f"❌ *Ошибка*\n\n```\n{error_msg}\n```",
             parse_mode="Markdown"
@@ -231,28 +249,37 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"📊 *Статус CloakBrowser*\n\n"
-        f"Состояние: {'✅ Доступен' if CLOAK_AVAILABLE else '❌ Недоступен'}",
+        f"Состояние: {'✅ Доступен' if CLOAK_AVAILABLE else '❌ Недоступен'}\n"
+        f"📦 Пакет: {'установлен' if CLOAK_AVAILABLE else 'не установлен'}",
         parse_mode="Markdown"
     )
 
 async def reinstall(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Переустановка CloakBrowser...")
     
+    # Удаляем старую версию
     try:
         subprocess.run(
             ["pip", "uninstall", "cloakbrowser", "-y"],
             check=True,
             capture_output=True
         )
+        logger.info("🗑️ CloakBrowser удален")
     except:
         pass
     
+    # Устанавливаем заново
     global CLOAK_AVAILABLE
-    CLOAK_AVAILABLE = install_cloak()
-    
-    if CLOAK_AVAILABLE:
-        await update.message.reply_text("✅ CloakBrowser переустановлен!")
+    if install_cloak():
+        try:
+            import cloakbrowser
+            CLOAK_AVAILABLE = True
+            await update.message.reply_text("✅ CloakBrowser переустановлен!")
+        except ImportError:
+            CLOAK_AVAILABLE = False
+            await update.message.reply_text("❌ Ошибка импорта после установки")
     else:
+        CLOAK_AVAILABLE = False
         await update.message.reply_text("❌ Ошибка переустановки")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
