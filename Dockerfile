@@ -1,6 +1,6 @@
 FROM mcr.microsoft.com/playwright/python:v1.59.0-noble
 
-# Устанавливаем шрифты для корректного отображения
+# Устанавливаем шрифты
 RUN apt-get update && apt-get install -y \
     fonts-liberation \
     fonts-dejavu-core \
@@ -12,9 +12,12 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Копируем и устанавливаем зависимости
+# Копируем requirements
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+
+# Устанавливаем зависимости с принудительной переустановкой
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir --force-reinstall openai
 
 # Копируем весь проект
 COPY . .
