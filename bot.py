@@ -153,10 +153,9 @@ def get_play_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# === КОМАНДА /start ===
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Главное меню"""
-    logger.info("🔥 /start получен!")  # 👈 Для проверки в логах
+# === ГЛАВНОЕ МЕНЮ (ОБЩЕЕ ДЛЯ /start И /help) ===
+async def send_menu(update: Update):
+    """Отправляет меню в чат"""
     await update.message.reply_text(
         "🕵️ **Бот с CloakBrowser**\n\n"
         "📋 Команды:\n"
@@ -168,11 +167,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/cookies <url> - 🍪 Показать куки\n"
         "/loginx - 🔐 Войти в X\n"
         "/tweet <текст> - 🐦 Опубликовать твит\n"
-        "/status - 📊 Статус браузера\n\n"
+        "/status - 📊 Статус браузера\n"
+        "/help - ❓ Показать это меню\n\n"
         f"📦 CloakBrowser: {'✅ Установлен' if CLOAK_AVAILABLE else '❌ Не установлен'}\n"
         f"🍪 Кук загружено: {len(X_COOKIES)}",
         parse_mode='Markdown'
     )
+
+# === КОМАНДА /start ===
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Главное меню"""
+    logger.info("🔥 /start получен!")
+    await send_menu(update)
+
+# === КОМАНДА /help ===
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Помощь - показывает меню"""
+    logger.info("❓ /help получен!")
+    await send_menu(update)
 
 # === КОМАНДА /browserplay ===
 async def browserplay(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -408,6 +420,8 @@ async def handle_cookies_input(update: Update, context: ContextTypes.DEFAULT_TYP
             ])
         )
 
+# === КОМАНДА WATCH_X ===
+
 async def watch_x_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global browser_started, browser, page
     
@@ -545,6 +559,8 @@ async def watch_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
     fake_query = FakeQuery(update.message)
     update.callback_query = fake_query
     await watch_x_callback(update, context)
+
+# === ОСНОВНЫЕ КОМАНДЫ ===
 
 async def html_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global browser_started, browser, page
@@ -813,8 +829,9 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(TOKEN).build()
     
-    # ⚠️ ВСЕ КОМАНДЫ ЗАРЕГИСТРИРОВАНЫ — ЭТО ГЛАВНОЕ!
+    # Регистрируем ВСЕ команды
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))  # 👈 ДОБАВЛЕНА КОМАНДА /help
     app.add_handler(CommandHandler("browserplay", browserplay))
     app.add_handler(CommandHandler("watch_x", watch_x))
     app.add_handler(CommandHandler("html", html_command))
@@ -824,11 +841,14 @@ def main():
     app.add_handler(CommandHandler("tweet", tweet_command))
     app.add_handler(CommandHandler("status", status_command))
     
+    # Callback для кнопок
     app.add_handler(CallbackQueryHandler(handle_play_callback, pattern="^browser_"))
+    
+    # Обработчик сообщений (для ввода кук)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_cookies_input))
     
-    logger.info("🚀 Бот запущен! Все команды зарегистрированы")
-    logger.info("📋 /start, /browserplay, /watch_x, /html, /shot, /cookies, /loginx, /tweet, /status")
+    logger.info("🚀 Бот запущен! Все команды зарегистрированы:")
+    logger.info("📋 /start, /help, /browserplay, /watch_x, /html, /shot, /cookies, /loginx, /tweet, /status")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
