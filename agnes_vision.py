@@ -19,9 +19,6 @@ client = OpenAI(
 # ============ ОСНОВНЫЕ ФУНКЦИИ ============
 
 async def analyze_screenshot(screenshot_bytes: bytes, question: str) -> str:
-    """
-    Отправляет скриншот в Agnes AI и получает ответ
-    """
     try:
         screenshot_base64 = base64.b64encode(screenshot_bytes).decode('utf-8')
         
@@ -50,7 +47,6 @@ async def analyze_screenshot(screenshot_bytes: bytes, question: str) -> str:
         return f"❌ Ошибка: {e}"
 
 async def describe_page(screenshot_bytes: bytes) -> str:
-    """Описывает страницу"""
     question = """
     Опиши эту страницу максимально подробно:
     
@@ -67,11 +63,6 @@ async def describe_page(screenshot_bytes: bytes) -> str:
     return await analyze_screenshot(screenshot_bytes, question)
 
 async def find_element(screenshot_bytes: bytes, description: str) -> dict:
-    """
-    Ищет элемент на странице по описанию
-    
-    Возвращает: {"found": bool, "x": int, "y": int, "description": str}
-    """
     question = f"""
     Найди на этом скриншоте: {description}
     
@@ -115,55 +106,9 @@ async def find_element(screenshot_bytes: bytes, description: str) -> dict:
     except Exception as e:
         return {"found": False, "error": str(e)}
 
-async def find_text_on_image(screenshot_bytes: bytes) -> str:
-    """Находит и читает текст на изображении"""
-    question = """
-    Прочитай весь текст, который видишь на этом скриншоте.
-    Если есть кнопки, поля ввода, заголовки — тоже прочитай.
-    Верни все тексты в виде списка.
-    """
-    return await analyze_screenshot(screenshot_bytes, question)
-
-async def analyze_meme(screenshot_bytes: bytes) -> str:
-    """Анализирует мем или картинку"""
-    question = """
-    Опиши что изображено на этой картинке.
-    Если это мем — объясни его смысл.
-    Если это пост — опиши о чём он.
-    Если это фото — опиши что на нём.
-    """
-    return await analyze_screenshot(screenshot_bytes, question)
-
-async def find_posts_with_images(screenshot_bytes: bytes) -> str:
-    """Находит посты с изображениями на странице"""
-    question = """
-    Найди на этой странице посты, у которых есть изображения.
-    Для каждого поста укажи:
-    - Автор
-    - Описание
-    - Есть ли изображение
-    
-    Верни список найденных постов.
-    """
-    return await analyze_screenshot(screenshot_bytes, question)
-
-# ============ ИНТЕГРАЦИЯ С PLAYWRIGHT ============
-
 async def vision_analyze_page(page, question: str = None) -> dict:
-    """
-    Анализирует текущую страницу через машинное зрение
-    
-    Args:
-        page: Playwright page
-        question: вопрос к ИИ (если None — просто опишет страницу)
-    
-    Returns:
-        dict: { "description": str, "screenshot": bytes, "elements": list }
-    """
-    # Делаем скриншот
     screenshot = await page.screenshot(full_page=True)
     
-    # Анализируем
     if question:
         answer = await analyze_screenshot(screenshot, question)
     else:
@@ -175,27 +120,17 @@ async def vision_analyze_page(page, question: str = None) -> dict:
     }
 
 async def vision_find_and_click(page, element_description: str) -> dict:
-    """
-    Находит элемент через машинное зрение и кликает по нему
-    
-    Returns:
-        dict: {"success": bool, "message": str, "screenshot": bytes}
-    """
-    # Делаем скриншот
     screenshot = await page.screenshot(full_page=True)
     
-    # Ищем элемент
     result = await find_element(screenshot, element_description)
     
     if result.get("found"):
         x = result.get("x", 0)
         y = result.get("y", 0)
         
-        # Кликаем по координатам
         await page.mouse.click(x, y)
         await page.wait_for_timeout(500)
         
-        # Делаем скриншот результата
         result_screenshot = await page.screenshot(full_page=True)
         
         return {
@@ -211,35 +146,26 @@ async def vision_find_and_click(page, element_description: str) -> dict:
             "screenshot": screenshot
         }
 
-# ============ КОМАНДА ДЛЯ БОТА ============
+# ============ КОМАНДЫ ДЛЯ БОТА ============
 
 async def vision_command(update, context):
-    """
-    Команда /vision — показывает что видит Agnes AI на странице
-    """
-    user_id = update.effective_user.id
+    """/vision — описать страницу"""
+    if 'page' not in context.user_data:
+        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
+        return
+    
+    page = context.user_data['page']
+    
+    await update.message.reply_text("👁️ Анализирую страницу через Agnes AI...")
     
     try:
-        from bot import user_sessions
-        if user_id not in user_sessions:
-            await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
-            return
-        
-        session = user_sessions[user_id]
-        page = session["page"]
-        
-        await update.message.reply_text("👁️ Анализирую страницу через Agnes AI...")
-        
-        # Анализируем
         result = await vision_analyze_page(page)
         
-        # Отправляем описание
         await update.message.reply_text(
             f"📄 **Agnes AI видит:**\n\n{result['description'][:3000]}",
             parse_mode="Markdown"
         )
         
-        # Отправляем скриншот
         await update.message.reply_photo(
             photo=BytesIO(result['screenshot']),
             caption="📸 Скриншот страницы"
@@ -249,10 +175,7 @@ async def vision_command(update, context):
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
 async def vision_click_command(update, context):
-    """
-    Команда /vclick <описание> — кликает по элементу
-    """
-    user_id = update.effective_user.id
+    """/vclick <описание> — кликнуть по элементу"""
     args = context.args
     
     if not args:
@@ -266,26 +189,22 @@ async def vision_click_command(update, context):
     
     description = ' '.join(args)
     
+    if 'page' not in context.user_data:
+        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
+        return
+    
+    page = context.user_data['page']
+    
+    await update.message.reply_text(f"🔍 Ищу: {description}...")
+    
     try:
-        from bot import user_sessions
-        if user_id not in user_sessions:
-            await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
-            return
-        
-        session = user_sessions[user_id]
-        page = session["page"]
-        
-        await update.message.reply_text(f"🔍 Ищу: {description}...")
-        
         result = await vision_find_and_click(page, description)
         
-        # Отправляем результат
         if result["success"]:
             await update.message.reply_text(result["message"])
         else:
             await update.message.reply_text(result["message"])
         
-        # Отправляем скриншот
         await update.message.reply_photo(
             photo=BytesIO(result["screenshot"]),
             caption="📸 Результат"
@@ -295,10 +214,7 @@ async def vision_click_command(update, context):
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
 async def vision_ask_command(update, context):
-    """
-    Команда /vask <вопрос> — задаёт вопрос о странице
-    """
-    user_id = update.effective_user.id
+    """/vask <вопрос> — задать вопрос о странице"""
     args = context.args
     
     if not args:
@@ -311,28 +227,23 @@ async def vision_ask_command(update, context):
     
     question = ' '.join(args)
     
+    if 'page' not in context.user_data:
+        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
+        return
+    
+    page = context.user_data['page']
+    
+    await update.message.reply_text(f"🤔 Думаю над вопросом: {question}...")
+    
     try:
-        from bot import user_sessions
-        if user_id not in user_sessions:
-            await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
-            return
-        
-        session = user_sessions[user_id]
-        page = session["page"]
-        
-        await update.message.reply_text(f"🤔 Думаю над вопросом: {question}...")
-        
-        # Делаем скриншот и анализируем
         screenshot = await page.screenshot(full_page=True)
         answer = await analyze_screenshot(screenshot, question)
         
-        # Отправляем ответ
         await update.message.reply_text(
             f"💬 **Ответ:**\n\n{answer[:3000]}",
             parse_mode="Markdown"
         )
         
-        # Отправляем скриншот
         await update.message.reply_photo(
             photo=BytesIO(screenshot),
             caption="📸 Скриншот страницы"
