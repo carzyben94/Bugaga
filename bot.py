@@ -126,8 +126,6 @@ async def get_browser(user_id: int, status_callback=None):
     
     await send_status("📦 Проверяю наличие CloakBrowser...")
     
-    # Используем стандартный путь Playwright для профилей
-    profile_dir = f"/data/profile_{user_id}" if user_id else None
     proxy = os.getenv("PROXY_URL")
     
     if proxy:
@@ -137,24 +135,22 @@ async def get_browser(user_id: int, status_callback=None):
     await send_status("⏳ Это может занять 1-2 минуты при первом запуске")
     
     try:
-        # Запускаем браузер
+        # Запускаем браузер с правильными параметрами
         def sync_launch():
             return launch(
-                headless="virtual",
-                humanize=True,
-                # Убираем profile_dir, используем стандартный способ
+                headless=True,  # Булево значение, не строка!
+                humanize=True,   # Встроенная эмуляция человека
+                # proxy=proxy,   # Раскомментировать если есть прокси
             )
         
         browser = await asyncio.to_thread(sync_launch)
         await send_status("✅ Браузер запущен!")
         
-        # Создаем контекст с user_data_dir для сохранения сессии
+        # Создаем контекст
         await send_status("🌐 Создаю контекст...")
         
         def create_context():
-            # Используем стандартный способ сохранения сессии
             return browser.new_context(
-                user_data_dir=profile_dir,  # Сохраняем сессию в папку
                 viewport={'width': 1280, 'height': 720},
                 user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             )
