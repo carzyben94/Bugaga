@@ -10,7 +10,7 @@ import requests
 from flask import Flask, jsonify
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from camoufox import AsyncCamoufox  # Замена playwright
+from cloakbrowser import launch  # Заменяем camoufox на cloakbrowser
 
 # ============ НАСТРОЙКИ ============
 logging.basicConfig(level=logging.INFO)
@@ -112,9 +112,9 @@ def escape_markdown(text):
         return ''
     return re.sub(r'([_*\[\]()~>#+=|{}.!-])', r'\\\1', text)
 
-# ============ CAMOUFOX БРАУЗЕР ============
+# ============ CLOAKBROWSER БРАУЗЕР ============
 async def get_browser(user_id: int = None):
-    """Создает браузер Camoufox с уникальным профилем для каждого пользователя"""
+    """Создает браузер CloakBrowser с уникальным профилем для каждого пользователя"""
     
     # Директория для профиля (сохраняет куки/сессию)
     profile_dir = f"/data/profile_{user_id}" if user_id else None
@@ -122,15 +122,15 @@ async def get_browser(user_id: int = None):
     # Прокси из переменных окружения (опционально)
     proxy = os.getenv("PROXY_URL")
     
-    # Запускаем Camoufox
-    browser = await AsyncCamoufox(
+    # Запускаем CloakBrowser
+    browser = await launch(
         headless="virtual",  # Режим для сервера без GUI
         profile_dir=profile_dir,
         proxy=proxy,
-        geoip=bool(proxy),  # Автоподстройка гео под прокси
-    ).__aenter__()
+        humanize=True,  # Встроенная эмуляция человека
+    )
     
-    # Создаем контекст с реалистичным отпечатком (автоматически)
+    # Создаем контекст
     context = await browser.new_context()
     
     # Добавляем ваши куки
@@ -139,9 +139,9 @@ async def get_browser(user_id: int = None):
     
     page = await context.new_page()
     
-    # Дополнительная маскировка (хотя Camoufox уже все маскирует)
+    # Дополнительная маскировка (хотя CloakBrowser уже всё маскирует)
     await page.add_init_script("""
-        console.log('✅ Дополнительная маскировка от бота');
+        console.log('✅ CloakBrowser активен');
         
         // Удаление следов автоматизации (на всякий случай)
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -211,7 +211,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    await update.message.reply_text("🌐 Открываю браузер Camoufox...")
+    await update.message.reply_text("🌐 Открываю браузер CloakBrowser...")
     await get_user_browser(user_id)
     await update.message.reply_text("✅ Браузер готов!")
 
@@ -354,7 +354,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         f"🌐 URL: {url[:80]}\n"
         f"🍪 Куки: {'✅ Есть' if has_cookie else '❌ Нет'}\n"
         f"📱 X.com: {login_status}\n"
-        f"🦊 Браузер: Camoufox"
+        f"🦊 Браузер: CloakBrowser"
     )
     
     await update.message.reply_text(text)
@@ -378,7 +378,7 @@ def main():
     bot_app.add_handler(CommandHandler("status", status_command))
     bot_app.add_handler(CommandHandler("close", close_command))
     
-    print("✅ Бот запущен на Camoufox!")
+    print("✅ Бот запущен на CloakBrowser!")
     bot_app.run_polling()
 
 if __name__ == "__main__":
