@@ -61,7 +61,7 @@ page = None
 browser_started = False
 setup_logs = []
 
-# === КУКИ ПО УМОЛЧАНИЮ (будут заменены пользователем) ===
+# === КУКИ ПО УМОЛЧАНИЮ (пустые, будут заменены пользователем) ===
 X_COOKIES = []
 
 # === ФУНКЦИЯ ДЛЯ ИСПРАВЛЕНИЯ URL ===
@@ -85,10 +85,11 @@ def add_log(message, level="INFO"):
 
 def parse_cookies_from_text(text):
     """
-    Парсит куки из текста в формате:
+    Парсит куки из текста и УДАЛЯЕТ sameSite
+    Поддерживает форматы:
     - JSON: [{"name": "...", "value": "...", ...}]
     - Cookie string: "name1=value1; name2=value2"
-    - Или просто пары: "auth_token=123; ct0=456"
+    - Пары с новой строки
     """
     text = text.strip()
     
@@ -96,31 +97,37 @@ def parse_cookies_from_text(text):
     try:
         cookies = json.loads(text)
         if isinstance(cookies, list):
-            # Проверяем, что это список кук
+            result = []
             for c in cookies:
-                if 'name' in c and 'value' in c:
-                    return cookies
+                # Берём только нужные поля
+                cookie = {
+                    "name": c.get("name"),
+                    "value": c.get("value"),
+                    "domain": c.get("domain", ".x.com"),
+                    "path": c.get("path", "/")
+                }
+                # Если path = "\/" - исправляем
+                if cookie["path"] == "\\/":
+                    cookie["path"] = "/"
+                # Проверяем что есть name и value
+                if cookie["name"] and cookie["value"]:
+                    result.append(cookie)
+            if result:
+                return result
     except:
         pass
     
     # Пробуем как cookie string
     cookies = []
-    # Ищем пары name=value
     pairs = re.findall(r'([a-zA-Z_][a-zA-Z0-9_\-]*)\s*=\s*([^;]+)', text)
     for name, value in pairs:
         cookies.append({
-            "domain": ".x.com",
-            "hostOnly": False,
-            "httpOnly": False,
             "name": name.strip(),
-            "path": "/",
-            "sameSite": "None",
-            "secure": False,
-            "session": True,
-            "value": value.strip()
+            "value": value.strip(),
+            "domain": ".x.com",
+            "path": "/"
         })
     
-    # Если нашли хотя бы 2 куки — считаем успехом
     if len(cookies) >= 2:
         return cookies
     
@@ -130,7 +137,19 @@ def parse_cookies_from_text(text):
         try:
             cookies = json.loads(json_match.group())
             if isinstance(cookies, list) and len(cookies) > 0:
-                return cookies
+                result = []
+                for c in cookies:
+                    cookie = {
+                        "name": c.get("name"),
+                        "value": c.get("value"),
+                        "domain": c.get("domain", ".x.com"),
+                        "path": c.get("path", "/")
+                    }
+                    if cookie["path"] == "\\/":
+                        cookie["path"] = "/"
+                    if cookie["name"] and cookie["value"]:
+                        result.append(cookie)
+                return result
         except:
             pass
     
@@ -206,7 +225,6 @@ async def handle_play_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     
     if action == "browser_watch_x":
-        # Запускаем watch_x
         await watch_x_callback(update, context)
         return
     
@@ -530,7 +548,6 @@ async def watch_x_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def watch_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /watch_x"""
-    # Перенаправляем на callback версию
     class FakeQuery:
         def __init__(self, message):
             self.message = message
