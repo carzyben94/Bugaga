@@ -4,6 +4,7 @@ Telegram-бот для управления CloakBrowser + Playwright + Xvfb
 Автоматически устанавливает все зависимости при первом запуске
 """
 
+
 import os
 import sys
 import subprocess
