@@ -59,18 +59,18 @@ page = None
 browser_started = False
 setup_logs = []
 
-# === КУКИ ДЛЯ X ===
+# === ИСПРАВЛЕННЫЕ КУКИ ДЛЯ X ===
 X_COOKIES = [
-    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "guest_id_marketing", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "v1%3A178224957371538879"},
-    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "guest_id_ads", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "v1%3A178224957371538879"},
-    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "guest_id", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "v1%3A178224957371538879"},
-    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "__cuid", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"},
-    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "twid", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "u%3D2067347503503052800"},
-    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "auth_token", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "09fe982487255e707f7a9b3d380ea429421adae3"},
-    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "lang", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "ru"},
-    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "ct0", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "18f7448391062aaaa323ea38f4fd129f5f682f09ec0989f899ebc4ddaa4d7bf7de0e0c359240145428b7cc1d410adbc5565fa9bbe2c4380b5341327ea3c53f03a89fcb12ee617d0fea848882ae6ff281"},
-    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "personalization_id", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "\"v1_3OVPutEVc/wdAMUgDi42Iw==\""},
-    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "__cf_bm", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "5WvG7tNTa4Y9KfR0koVrrk7t2hZZuC6I88lvx8WhQvs-1782323196.745603-1.0.1.1-hMCaDCXE0djwDTzX26k4Nox7geJtr.NolcKWWGh71U1qRFc4R0UvohFIp_0yKa0hxCTXmmgaVvXrm4r0oBiQKu1ZVcHWA0umHod8Sjt8t_j4OOn5ZTqap.LIF_hhlCz_"}
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "guest_id_marketing", "path": "/", "sameSite": "None", "secure": False, "session": True, "value": "v1%3A178224957371538879"},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "guest_id_ads", "path": "/", "sameSite": "None", "secure": False, "session": True, "value": "v1%3A178224957371538879"},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "guest_id", "path": "/", "sameSite": "None", "secure": False, "session": True, "value": "v1%3A178224957371538879"},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "__cuid", "path": "/", "sameSite": "None", "secure": False, "session": True, "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "twid", "path": "/", "sameSite": "None", "secure": False, "session": True, "value": "u%3D2067347503503052800"},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "auth_token", "path": "/", "sameSite": "None", "secure": False, "session": True, "value": "09fe982487255e707f7a9b3d380ea429421adae3"},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "lang", "path": "/", "sameSite": "None", "secure": False, "session": True, "value": "ru"},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "ct0", "path": "/", "sameSite": "None", "secure": False, "session": True, "value": "18f7448391062aaaa323ea38f4fd129f5f682f09ec0989f899ebc4ddaa4d7bf7de0e0c359240145428b7cc1d410adbc5565fa9bbe2c4380b5341327ea3c53f03a89fcb12ee617d0fea848882ae6ff281"},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "personalization_id", "path": "/", "sameSite": "None", "secure": False, "session": True, "value": "\"v1_3OVPutEVc/wdAMUgDi42Iw==\""},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "__cf_bm", "path": "/", "sameSite": "None", "secure": False, "session": True, "value": "5WvG7tNTa4Y9KfR0koVrrk7t2hZZuC6I88lvx8WhQvs-1782323196.745603-1.0.1.1-hMCaDCXE0djwDTzX26k4Nox7geJtr.NolcKWWGh71U1qRFc4R0UvohFIp_0yKa0hxCTXmmgaVvXrm4r0oBiQKu1ZVcHWA0umHod8Sjt8t_j4OOn5ZTqap.LIF_hhlCz_"}
 ]
 
 # === ФУНКЦИИ ===
@@ -96,7 +96,6 @@ def get_play_keyboard():
 # === КОМАНДЫ ===
 
 async def browserplay(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Панель управления - /browserplay"""
     keyboard = get_play_keyboard()
     status_text = "✅ Запущен" if browser_started else "⏸ Остановлен"
     cloak_status = "✅ Доступен" if CLOAK_AVAILABLE else "❌ Не установлен"
@@ -440,7 +439,6 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(TOKEN).build()
     
-    # Регистрируем ВСЕ команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("browserplay", browserplay))
     app.add_handler(CommandHandler("html", html_command))
@@ -450,12 +448,9 @@ def main():
     app.add_handler(CommandHandler("tweet", tweet_command))
     app.add_handler(CommandHandler("status", status_command))
     
-    # Регистрируем callback для кнопок
     app.add_handler(CallbackQueryHandler(handle_play_callback, pattern="^browser_"))
     
-    logger.info("🚀 Бот запущен! Все команды зарегистрированы:")
-    logger.info("  /start, /browserplay, /html, /shot, /cookies, /loginx, /tweet, /status")
-    
+    logger.info("🚀 Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
