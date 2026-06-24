@@ -17,4 +17,4 @@ COPY *.py .
 
 ENV PYTHONUNBUFFERED=1
 
-CMD ["python", "bot.py"]
+CMD ["python", "bot.py"] 
