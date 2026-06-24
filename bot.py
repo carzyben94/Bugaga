@@ -1,4 +1,4 @@
-# bot.py - с сохранением состояния браузера
+# bot.py - исправленная версия с обновлением статуса
 import os
 import subprocess
 import logging
@@ -23,9 +23,8 @@ if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен!")
 
 COOKIES_FILE = "/app/cookies.json"
-BROWSER_STATUS = {'installed': False, 'installing': False}
 
-# Глобальные переменные для браузера
+# Глобальные переменные
 browser_instance = None
 browser_context = None
 browser_page = None
@@ -33,57 +32,98 @@ last_url = None
 
 # ==================== УСТАНОВКА БРАУЗЕРА ====================
 def install_browser_sync():
+    """Синхронная установка браузера"""
     try:
         logger.info("🔄 Устанавливаю браузер...")
-        subprocess.run(["pip", "install", "playwright"], check=True, capture_output=True)
-        result = subprocess.run(["playwright", "install", "chromium"], capture_output=True, text=True)
+        
+        # Устанавливаем playwright
+        subprocess.run(
+            ["pip", "install", "playwright"],
+            check=True,
+            capture_output=True
+        )
+        logger.info("✅ Playwright установлен")
+        
+        # Устанавливаем браузер
+        result = subprocess.run(
+            ["playwright", "install", "chromium"],
+            capture_output=True,
+            text=True
+        )
         
         if result.returncode == 0:
-            logger.info("✅ Браузер установлен")
-            BROWSER_STATUS['installed'] = True
-            BROWSER_STATUS['installing'] = False
+            logger.info("✅ Браузер Chromium установлен")
             return True
         else:
-            logger.error(f"❌ Ошибка: {result.stderr}")
-            BROWSER_STATUS['installing'] = False
+            logger.error(f"❌ Ошибка установки: {result.stderr}")
             return False
+            
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
-        BROWSER_STATUS['installing'] = False
         return False
 
 async def install_browser_async():
-    if BROWSER_STATUS['installing']:
-        return False
-    
-    BROWSER_STATUS['installing'] = True
+    """Асинхронная установка браузера"""
     loop = asyncio.get_event_loop()
     with concurrent.futures.ThreadPoolExecutor() as executor:
         result = await loop.run_in_executor(executor, install_browser_sync)
+    
+    # Принудительно проверяем после установки
+    if result:
+        check_browser()
+    
     return result
 
 def check_browser():
+    """Проверяет наличие браузера - улучшенная версия"""
     try:
+        # Проверяем через playwright
         from playwright.async_api import async_playwright
         
         async def test_browser():
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True, args=['--no-sandbox'])
-                await browser.close()
-                return True
+            try:
+                async with async_playwright() as p:
+                    browser = await p.chromium.launch(
+                        headless=True,
+                        args=['--no-sandbox', '--disable-setuid-sandbox']
+                    )
+                    await browser.close()
+                    return True
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка запуска: {e}")
+                return False
         
+        # Создаем новый event loop для проверки
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         result = loop.run_until_complete(test_browser())
         loop.close()
         
         if result:
-            BROWSER_STATUS['installed'] = True
+            logger.info("✅ Браузер работает")
             return True
+            
+    except ImportError:
+        logger.warning("⚠️ Playwright не установлен")
     except Exception as e:
-        logger.warning(f"⚠️ Браузер не найден: {e}")
+        logger.warning(f"⚠️ Ошибка проверки: {e}")
     
-    BROWSER_STATUS['installed'] = False
+    # Проверяем наличие файлов браузера
+    try:
+        import glob
+        home_dir = os.path.expanduser("~")
+        browser_paths = [
+            f"{home_dir}/.cache/ms-playwright/chromium-*",
+            f"{home_dir}/.cache/ms-playwright/chromium_headless_shell-*",
+        ]
+        
+        for path in browser_paths:
+            if glob.glob(path):
+                logger.info("✅ Найдены файлы браузера")
+                return True
+    except:
+        pass
+    
     return False
 
 # ==================== УСТАНОВКА CLOAKBROWSER ====================
@@ -104,13 +144,16 @@ def check_cloak():
     except ImportError:
         return False
 
+# Первоначальная проверка
 CLOAK_AVAILABLE = check_cloak()
 if not CLOAK_AVAILABLE:
     if install_cloak():
         CLOAK_AVAILABLE = check_cloak()
 
-check_browser()
-logger.info(f"📊 CloakBrowser: {CLOAK_AVAILABLE}, Браузер: {BROWSER_STATUS['installed']}")
+# Проверяем браузер сразу
+BROWSER_AVAILABLE = check_browser()
+
+logger.info(f"📊 CloakBrowser: {CLOAK_AVAILABLE}, Браузер: {BROWSER_AVAILABLE}")
 
 # ==================== РАБОТА С КУКАМИ ====================
 def load_cookies():
@@ -149,17 +192,15 @@ def cookies_to_string(cookies):
 
 # ==================== УПРАВЛЕНИЕ БРАУЗЕРОМ ====================
 async def init_browser(url=None):
-    """Инициализирует браузер и открывает страницу"""
     global browser_instance, browser_context, browser_page, last_url
     
     try:
         from playwright.async_api import async_playwright
         
         if browser_instance is None:
-            logger.info("🚀 Запускаю новый браузер...")
+            logger.info("🚀 Запускаю браузер...")
             
             cookies = load_cookies()
-            logger.info(f"🍪 Загружено {len(cookies)} кук")
             
             p = await async_playwright().start()
             browser_instance = await p.chromium.launch(
@@ -195,7 +236,6 @@ async def init_browser(url=None):
         raise e
 
 async def close_browser():
-    """Закрывает браузер"""
     global browser_instance, browser_context, browser_page
     
     try:
@@ -210,7 +250,6 @@ async def close_browser():
     browser_page = None
 
 async def take_screenshot_from_page():
-    """Делает скриншот текущей страницы"""
     global browser_page
     
     if not browser_page:
@@ -235,10 +274,12 @@ async def set_bot_commands(application):
         BotCommand("status", "📊 Статус"),
         BotCommand("cookies", "🍪 Куки"),
         BotCommand("help", "❓ Помощь"),
+        BotCommand("check", "🔄 Обновить статус"),
     ]
     await application.bot.set_my_commands(commands)
 
 async def get_main_keyboard():
+    # Принудительно проверяем статус при каждом открытии
     cloak_status = check_cloak()
     browser_status = check_browser()
     cookies_count = len(load_cookies())
@@ -251,6 +292,7 @@ async def get_main_keyboard():
         [InlineKeyboardButton("🐦 X.COM", callback_data="x_com")],
         [InlineKeyboardButton("📸 Скриншот", callback_data="screenshot")],
         [InlineKeyboardButton("🗑️ Закрыть браузер", callback_data="close_browser")],
+        [InlineKeyboardButton("🔄 Обновить статус", callback_data="check_status")],
         [InlineKeyboardButton("📊 Статус", callback_data="status")],
         [InlineKeyboardButton("🍪 Куки (" + str(cookies_count) + ")", callback_data="cookies")],
     ]
@@ -259,9 +301,6 @@ async def get_main_keyboard():
         keyboard.append([InlineKeyboardButton("⬇️ Установить браузер", callback_data="install_browser")])
     
     keyboard.append([InlineKeyboardButton("ℹ️ Помощь", callback_data="help")])
-    
-    if not cloak_status:
-        keyboard.append([InlineKeyboardButton("🔄 Переустановить", callback_data="reinstall")])
     
     return InlineKeyboardMarkup(keyboard), status_line
 
@@ -278,8 +317,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup, status_line = await get_main_keyboard()
     message = update.message if update.message else update.callback_query.message
+    
     await message.reply_text(
-        f"📋 *Главное меню*\n\n{status_line}\n\nВыберите действие:",
+        f"📋 *Главное меню*\n\n"
+        f"{status_line}\n\n"
+        "Выберите действие:",
         reply_markup=reply_markup,
         parse_mode="Markdown"
     )
@@ -312,6 +354,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(1)
         await menu(update, context)
     
+    elif query.data == "check_status":
+        await query.edit_message_text("🔄 Проверяю статус...")
+        # Принудительно проверяем
+        cloak_status = check_cloak()
+        browser_status = check_browser()
+        await query.edit_message_text(
+            f"📊 *Статус обновлен*\n\n"
+            f"📦 CloakBrowser: {'✅' if cloak_status else '❌'}\n"
+            f"🌐 Браузер: {'✅' if browser_status else '❌'}\n\n"
+            "🔙 /menu",
+            parse_mode="Markdown"
+        )
+        await asyncio.sleep(1)
+        await menu(update, context)
+    
     elif query.data == "status":
         cloak_status = check_cloak()
         browser_status = check_browser()
@@ -327,7 +384,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🍪 Всего кук: {len(cookies)} шт.\n"
             f"🐦 Кук X.COM: {len(x_cookies)} шт.\n"
             f"📄 Последний URL: {last_url or 'Нет'}\n\n"
-            "🔙 Вернуться в меню: /menu",
+            "🔄 Обновить: /check\n"
+            "🔙 /menu",
             parse_mode="Markdown"
         )
     
@@ -380,24 +438,48 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Куки не найдены")
     
     elif query.data == "install_browser":
-        await query.edit_message_text("⏳ Установка браузера (2-3 мин)...")
+        await query.edit_message_text(
+            "⏳ *Установка браузера...*\n\n"
+            "Это может занять 2-3 минуты.\n"
+            "Пожалуйста, подождите...",
+            parse_mode="Markdown"
+        )
+        
         success = await install_browser_async()
-        if success:
-            await query.edit_message_text("✅ Браузер установлен!")
+        
+        # Принудительно проверяем после установки
+        browser_status = check_browser()
+        
+        if success and browser_status:
+            await query.edit_message_text(
+                "✅ *Браузер успешно установлен!*\n\n"
+                f"📊 Статус: {'✅ Работает' if browser_status else '❌ Не работает'}\n\n"
+                "🔄 Обновите меню: /menu",
+                parse_mode="Markdown"
+            )
         else:
-            await query.edit_message_text("❌ Ошибка установки")
+            await query.edit_message_text(
+                "❌ *Ошибка установки браузера*\n\n"
+                "Попробуйте:\n"
+                "1. /check - обновить статус\n"
+                "2. /reinstall - переустановить CloakBrowser\n"
+                "3. Попробуйте позже",
+                parse_mode="Markdown"
+            )
+        
+        await asyncio.sleep(2)
         await menu(update, context)
     
     elif query.data == "reinstall":
-        await query.edit_message_text("⏳ Переустановка...")
+        await query.edit_message_text("⏳ Переустановка CloakBrowser...")
         try:
             subprocess.run(["pip", "uninstall", "cloakbrowser", "-y"], capture_output=True)
         except:
             pass
         if install_cloak() and check_cloak():
-            await query.edit_message_text("✅ Переустановлен!")
+            await query.edit_message_text("✅ CloakBrowser переустановлен!")
         else:
-            await query.edit_message_text("❌ Ошибка")
+            await query.edit_message_text("❌ Ошибка переустановки")
         await menu(update, context)
     
     elif query.data == "help":
@@ -408,12 +490,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/x - Открыть X.COM\n"
             "/screenshot - Скриншот\n"
             "/close - Закрыть браузер\n"
-            "/cookies - Управление куками\n\n"
-            "📌 *Как работает:*\n"
-            "1. Браузер запускается один раз\n"
-            "2. Все страницы открываются в нем\n"
-            "3. Скриншоты делаются быстро\n"
-            "4. Куки сохраняются\n\n"
+            "/cookies - Управление куками\n"
+            "/check - Обновить статус\n"
+            "/status - Показать статус\n\n"
+            "📌 *Если браузер не виден:*\n"
+            "1. Нажмите '🔄 Обновить статус'\n"
+            "2. Или /check\n"
+            "3. Статус обновится автоматически\n\n"
             "🔙 /menu",
             parse_mode="Markdown"
         )
@@ -423,7 +506,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==================== X.COM ====================
 async def open_x_com(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Открывает X.COM в уже запущенном браузере"""
     global last_url
     
     if not check_cloak():
@@ -431,28 +513,26 @@ async def open_x_com(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if not check_browser():
-        await update.callback_query.message.reply_text("❌ Браузер не установлен!")
+        await update.callback_query.message.reply_text(
+            "❌ Браузер не установлен!\n"
+            "Нажмите '⬇️ Установить браузер' в меню\n"
+            "Или /install_browser"
+        )
         return
     
     msg = await update.callback_query.message.edit_text("⏳ Открываю X.COM...")
     
     try:
-        # Инициализируем браузер и открываем X.COM
         page = await init_browser("https://x.com")
         last_url = "https://x.com"
         
-        # Проверяем авторизацию
         try:
-            # Ждем загрузку
             await page.wait_for_load_state('domcontentloaded', timeout=10000)
-            
-            # Проверяем URL
             current_url = page.url
             if 'login' in current_url or 'i/flow/login' in current_url:
                 status = "⚠️ Не авторизован"
                 message = "Требуется авторизация на X.COM"
             else:
-                # Проверяем наличие ленты
                 timeline = await page.query_selector('[data-testid="primaryColumn"]')
                 if timeline:
                     status = "✅ Авторизован"
@@ -464,11 +544,9 @@ async def open_x_com(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status = "✅ Страница загружена"
             message = "X.COM открыт"
         
-        # Делаем скриншот
         await msg.edit_text("📸 Делаю скриншот...")
         screenshot = await take_screenshot_from_page()
         
-        # Отправляем
         photo = BytesIO(screenshot)
         photo.name = f"x_{datetime.now().strftime('%H%M%S')}.png"
         await update.callback_query.message.reply_photo(
@@ -482,11 +560,9 @@ async def open_x_com(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==================== СКРИНШОТ ====================
 async def take_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Делает скриншот текущей страницы"""
     global last_url
     
     if not browser_page:
-        # Если браузер не запущен, открываем последний URL или Google
         url = context.user_data.get('last_url', 'https://google.com')
         try:
             await init_browser(url)
@@ -563,7 +639,10 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if not check_browser():
-        await msg_obj.reply_text("❌ Браузер не установлен!")
+        await msg_obj.reply_text(
+            "❌ Браузер не установлен!\n"
+            "Нажмите '⬇️ Установить браузер' в меню"
+        )
         return
     
     msg = await msg_obj.reply_text(f"⏳ Открываю {url}...")
@@ -581,6 +660,23 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}\n\n🔙 /menu")
+
+async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /check - принудительно обновляет статус"""
+    await update.message.reply_text("🔄 Проверяю статус...")
+    
+    # Принудительно перепроверяем
+    cloak_status = check_cloak()
+    browser_status = check_browser()
+    
+    await update.message.reply_text(
+        f"📊 *Статус обновлен*\n\n"
+        f"📦 CloakBrowser: {'✅ Доступен' if cloak_status else '❌ Недоступен'}\n"
+        f"🌐 Браузер: {'✅ Установлен' if browser_status else '❌ Не установлен'}\n\n"
+        "🔄 Если браузер не виден, нажмите '⬇️ Установить браузер'\n"
+        "🔙 /menu",
+        parse_mode="Markdown"
+    )
 
 async def x_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     class FakeQuery:
@@ -619,6 +715,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🍪 Всего кук: {len(cookies)} шт.\n"
         f"🐦 Кук X.COM: {len(x_cookies)} шт.\n"
         f"📄 Последний URL: {last_url or 'Нет'}\n\n"
+        "🔄 /check - обновить статус\n"
         "🔙 /menu",
         parse_mode="Markdown"
     )
@@ -648,11 +745,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/screenshot - Скриншот\n"
         "/close - Закрыть браузер\n"
         "/cookies - Управление куками\n"
-        "/status - Статус\n\n"
-        "📌 *Как работает:*\n"
-        "• Браузер запускается один раз\n"
-        "• Скриншоты делаются мгновенно\n"
-        "• Куки сохраняются\n\n"
+        "/check - Обновить статус\n"
+        "/status - Показать статус\n\n"
+        "📌 *Если браузер не виден:*\n"
+        "1. Нажмите '🔄 Обновить статус'\n"
+        "2. Или /check\n"
+        "3. Статус обновится автоматически\n\n"
         "🔙 /menu",
         parse_mode="Markdown"
     )
@@ -672,6 +770,7 @@ def main():
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("cookies", cookies_command))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("check", check_command))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
