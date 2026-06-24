@@ -5,7 +5,6 @@ import asyncio
 import random
 import re
 import time
-import multiprocessing
 from io import BytesIO
 import requests
 from flask import Flask, jsonify
@@ -14,7 +13,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from cloakbrowser import launch
 
 # ============ НАСТРОЙКИ ============
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not BOT_TOKEN:
@@ -27,12 +26,13 @@ MY_COOKIES = [
 ]
 
 user_sessions = {}
+user_locks = {}
 
 app_flask = Flask(__name__)
 
 @app_flask.route('/')
 def home():
-    return jsonify({"status": "Бот работает!"})
+    return jsonify({"status": "Бот работает!", "sessions": len(user_sessions)})
 
 @app_flask.route('/health')
 def health():
@@ -52,44 +52,6 @@ def keep_alive():
         time.sleep(1200)
 
 # ============ ЭМУЛЯЦИЯ ЧЕЛОВЕКА ============
-async def human_sleep(min_sec=0.3, max_sec=1.5):
-    await asyncio.sleep(random.uniform(min_sec, max_sec))
-
-async def human_move(page, x, y, steps=12):
-    try:
-        current = await page.evaluate("""
-            () => ({
-                x: window.scrollX + window.innerWidth / 2,
-                y: window.scrollY + window.innerHeight / 2
-            })
-        """)
-        for i in range(steps):
-            progress = (i + 1) / steps
-            ease = 1 - (1 - progress) ** 3
-            noise_x = random.randint(-3, 3)
-            noise_y = random.randint(-3, 3)
-            target_x = current["x"] + (x - current["x"]) * ease + noise_x
-            target_y = current["y"] + (y - current["y"]) * ease + noise_y
-            await page.mouse.move(target_x, target_y)
-            await asyncio.sleep(random.uniform(0.02, 0.08))
-        await page.mouse.move(x, y)
-        await asyncio.sleep(random.uniform(0.05, 0.2))
-        return True
-    except:
-        return False
-
-async def human_click(page, x, y, button="left"):
-    try:
-        await human_move(page, x, y, steps=10)
-        await asyncio.sleep(random.uniform(0.05, 0.15))
-        await page.mouse.down(button=button)
-        await asyncio.sleep(random.uniform(0.03, 0.12))
-        await page.mouse.up(button=button)
-        await asyncio.sleep(random.uniform(0.1, 0.3))
-        return True
-    except:
-        return False
-
 async def human_scroll(page, amount, steps=4):
     try:
         for i in range(steps):
@@ -113,187 +75,176 @@ def escape_markdown(text):
         return ''
     return re.sub(r'([_*\[\]()~>#+=|{}.!-])', r'\\\1', text)
 
-# ============ CLOAKBROWSER В ОТДЕЛЬНОМ ПРОЦЕССЕ ============
-def browser_process(user_id, result_queue, status_queue):
-    """Запускает браузер в отдельном процессе"""
+# ============ ЗАПУСК БРАУЗЕРА ============
+def create_browser_sync(user_id, status_queue):
+    """Создает браузер в синхронном режиме"""
     try:
-        status_queue.put("🚀 Запускаю CloakBrowser...")
-        status_queue.put("⏳ Первый запуск: скачивание ~200 МБ (1-2 минуты)")
+        logging.info(f"[{user_id}] Начинаю запуск браузера")
+        status_queue.append("🚀 Запускаю CloakBrowser...")
+        status_queue.append("⏳ Первый запуск: скачивание ~200 МБ (1-2 минуты)")
         
-        # Запускаем браузер
-        browser = launch(
-            headless=True,
-            humanize=True,
-        )
+        browser = launch(headless=True, humanize=True)
+        logging.info(f"[{user_id}] Браузер запущен")
+        status_queue.append("✅ Браузер запущен!")
         
-        status_queue.put("✅ Браузер запущен!")
-        status_queue.put("🌐 Создаю контекст...")
-        
-        # Создаем контекст
         context = browser.new_context(
             viewport={'width': 1280, 'height': 720},
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         )
+        logging.info(f"[{user_id}] Контекст создан")
+        status_queue.append("✅ Контекст создан!")
         
-        status_queue.put("✅ Контекст создан!")
-        
-        # Добавляем куки
         if MY_COOKIES:
-            status_queue.put(f"🍪 Добавляю {len(MY_COOKIES)} куки...")
             context.add_cookies(MY_COOKIES)
-            status_queue.put("✅ Куки добавлены!")
+            logging.info(f"[{user_id}] Добавлено {len(MY_COOKIES)} куки")
+            status_queue.append(f"🍪 Добавлено {len(MY_COOKIES)} куки")
         
-        status_queue.put("📄 Создаю страницу...")
         page = context.new_page()
-        status_queue.put("✅ Страница создана!")
-        
-        # Добавляем скрипт маскировки
-        page.add_init_script("""
-            console.log('✅ CloakBrowser активен');
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            delete Object.getPrototypeOf(navigator).webdriver;
-            
-            if (!window.chrome) {
-                window.chrome = {
-                    runtime: {},
-                    loadTimes: function() {},
-                    csi: function() {},
-                    app: { isInstalled: false }
-                };
-            }
-            
-            if (!navigator.plugins || navigator.plugins.length === 0) {
-                const plugins = [
-                    { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
-                    { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
-                    { name: 'Native Client', filename: 'internal-nacl-plugin' }
-                ];
-                plugins.length = 3;
-                plugins.item = (i) => plugins[i] || null;
-                plugins.namedItem = (name) => plugins.find(p => p.name === name) || null;
-                Object.defineProperty(navigator, 'plugins', { get: () => plugins });
-            }
-        """)
-        
-        status_queue.put("✅ Браузер полностью готов!")
+        logging.info(f"[{user_id}] Страница создана")
+        status_queue.append("✅ Страница создана!")
         
         # Открываем пустую страницу
         page.goto("about:blank")
+        logging.info(f"[{user_id}] Браузер полностью готов")
+        status_queue.append("✅ Браузер полностью готов!")
         
-        # Сохраняем объекты в очередь
-        result_queue.put({
+        return {
             'browser': browser,
             'context': context,
-            'page': page,
-            'pid': os.getpid()
-        })
-        
+            'page': page
+        }
     except Exception as e:
-        status_queue.put(f"❌ Ошибка: {str(e)[:200]}")
-        result_queue.put(None)
+        logging.error(f"[{user_id}] Ошибка: {e}")
+        status_queue.append(f"❌ Ошибка: {str(e)[:200]}")
+        raise
 
-async def get_user_browser(user_id: int, update=None):
+async def get_user_browser(user_id, update=None):
     """Получает или создает браузер для пользователя"""
+    if user_id not in user_locks:
+        user_locks[user_id] = asyncio.Lock()
     
-    if user_id not in user_sessions:
-        # Создаем очереди для обмена данными
-        result_queue = multiprocessing.Queue()
-        status_queue = multiprocessing.Queue()
+    async with user_locks[user_id]:
+        # Проверяем, есть ли уже сессия
+        if user_id in user_sessions:
+            logging.info(f"[{user_id}] Браузер уже существует")
+            if update:
+                await update.message.reply_text("✅ Браузер уже запущен")
+            return user_sessions[user_id]
         
-        # Запускаем процесс
-        process = multiprocessing.Process(
-            target=browser_process,
-            args=(user_id, result_queue, status_queue)
-        )
-        process.start()
+        logging.info(f"[{user_id}] Создаю новый браузер")
+        status_queue = []
         
-        # Отправляем статусы в чат
         if update:
             await update.message.reply_text("🌐 **Открываю браузер CloakBrowser...**")
         
-        # Читаем статусы из очереди
-        while True:
-            try:
-                status = status_queue.get(timeout=0.5)
-                if update and not status.startswith('⏳'):
-                    await update.message.reply_text(f"🔄 {status}")
-                if "✅ Браузер полностью готов!" in status:
-                    break
-                if "❌" in status:
-                    break
-            except:
-                # Проверяем, жив ли процесс
-                if not process.is_alive():
-                    break
-                await asyncio.sleep(0.1)
-        
-        # Получаем результат
-        result = result_queue.get(timeout=10)
-        process.join(timeout=5)
-        
-        if result is None:
-            raise Exception("Не удалось запустить браузер")
-        
-        user_sessions[user_id] = result
-        
-        if update:
-            await update.message.reply_text("✅ **Браузер готов к работе!**")
-    
-    return user_sessions[user_id]
+        try:
+            # Запускаем браузер в потоке
+            result = await asyncio.to_thread(create_browser_sync, user_id, status_queue)
+            
+            # Сохраняем сессию
+            user_sessions[user_id] = result
+            logging.info(f"[{user_id}] Браузер сохранен в сессию. Всего сессий: {len(user_sessions)}")
+            
+            # Отправляем статусы
+            if update:
+                for msg in status_queue:
+                    if not msg.startswith('⏳'):
+                        await update.message.reply_text(f"🔄 {msg}")
+                await update.message.reply_text("✅ **Браузер готов к работе!**")
+            
+            return result
+            
+        except Exception as e:
+            logging.error(f"[{user_id}] Критическая ошибка: {e}")
+            if update:
+                await update.message.reply_text(f"❌ **Ошибка:** {str(e)[:200]}")
+            raise
 
-async def close_user_browser(user_id: int):
-    """Закрывает браузер пользователя"""
+async def close_user_browser(user_id):
     if user_id in user_sessions:
         try:
-            browser = user_sessions[user_id]['browser']
-            await asyncio.to_thread(browser.close)
-        except:
-            pass
+            await asyncio.to_thread(user_sessions[user_id]['browser'].close)
+            logging.info(f"[{user_id}] Браузер закрыт")
+        except Exception as e:
+            logging.error(f"[{user_id}] Ошибка при закрытии: {e}")
         del user_sessions[user_id]
+        logging.info(f"[{user_id}] Сессия удалена. Осталось сессий: {len(user_sessions)}")
 
 # ============ КОМАНДЫ ============
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 **БОТ на CloakBrowser**\n\n"
         "/browser — Открыть браузер\n"
         "/x — Открыть X.com\n"
         "/screenshot — Скриншот\n"
         "/tweets — 3 твита\n"
-        "/status — Статус\n"
-        "/close — Закрыть",
+        "/status — Статус браузера\n"
+        "/close — Закрыть браузер",
         parse_mode="Markdown"
     )
 
-async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /browser - запускает браузер"""
     user_id = update.effective_user.id
+    logging.info(f"[{user_id}] Команда /browser")
     try:
         await get_user_browser(user_id, update)
     except Exception as e:
-        await update.message.reply_text(f"❌ Критическая ошибка: {e}")
+        logging.error(f"[{user_id}] Ошибка в /browser: {e}")
+        await update.message.reply_text(f"❌ Критическая ошибка: {str(e)[:200]}")
 
-async def x_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def x_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /x - открывает X.com"""
     user_id = update.effective_user.id
+    logging.info(f"[{user_id}] Команда /x")
+    
+    # Проверяем, есть ли браузер
     if user_id not in user_sessions:
-        await update.message.reply_text("⚠️ Сначала /browser")
+        logging.warning(f"[{user_id}] Браузер не найден")
+        await update.message.reply_text("⚠️ **Браузер не открыт!**\n\nСначала выполните `/browser`", parse_mode="Markdown")
         return
     
     await update.message.reply_text("🐦 Открываю X.com...")
     page = user_sessions[user_id]['page']
     
     try:
-        await page.goto("https://x.com", timeout=30000)
+        # Пробуем открыть X.com
+        await page.goto("https://x.com", timeout=60000, wait_until="domcontentloaded")
         await asyncio.sleep(3)
+        
+        current_url = page.url
+        logging.info(f"[{user_id}] Текущий URL: {current_url}")
+        
+        if "x.com" not in current_url and "twitter.com" not in current_url:
+            await update.message.reply_text(
+                f"⚠️ Перенаправлено на: {current_url[:50]}\n"
+                "Попробуйте обновить куки или использовать прокси."
+            )
+            return
         
         screenshot = await take_screenshot(page)
         if screenshot and len(screenshot) > 1000:
-            await update.message.reply_photo(photo=BytesIO(screenshot), caption="✅ X.com открыт!")
+            await update.message.reply_photo(
+                photo=BytesIO(screenshot), 
+                caption=f"✅ X.com открыт!"
+            )
         else:
-            await update.message.reply_text("✅ X.com открыт!")
+            await update.message.reply_text(f"✅ X.com открыт!")
             
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
+        error_msg = str(e)[:300]
+        logging.error(f"[{user_id}] Ошибка в /x: {e}")
+        await update.message.reply_text(
+            f"❌ **Ошибка при открытии X.com:**\n\n"
+            f"`{error_msg}`\n\n"
+            "Попробуйте:\n"
+            "1. `/close` — закрыть браузер\n"
+            "2. `/browser` — перезапустить\n"
+            "3. `/x` — попробовать снова",
+            parse_mode="Markdown"
+        )
 
-async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in user_sessions:
         await update.message.reply_text("⚠️ Сначала /browser")
@@ -305,9 +256,9 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if screenshot and len(screenshot) > 1000:
         await update.message.reply_photo(photo=BytesIO(screenshot), caption="📸 Скриншот")
     else:
-        await update.message.reply_text("❌ Не удалось")
+        await update.message.reply_text("❌ Не удалось сделать скриншот")
 
-async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in user_sessions:
         await update.message.reply_text("⚠️ Сначала /browser")
@@ -317,7 +268,7 @@ async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     page = user_sessions[user_id]['page']
     
     try:
-        await page.goto("https://x.com", timeout=30000)
+        await page.goto("https://x.com", timeout=30000, wait_until="domcontentloaded")
         await asyncio.sleep(4)
         
         for _ in range(2):
@@ -373,12 +324,20 @@ async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         else:
             await update.message.reply_text("❌ Посты не найдены")
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /status - показывает статус браузера"""
     user_id = update.effective_user.id
+    logging.info(f"[{user_id}] Команда /status")
+    
     if user_id not in user_sessions:
-        await update.message.reply_text("⚠️ Браузер не открыт")
+        await update.message.reply_text(
+            "⚠️ **Браузер не открыт**\n\n"
+            f"Всего сессий в памяти: {len(user_sessions)}\n"
+            "Выполните `/browser` для запуска",
+            parse_mode="Markdown"
+        )
         return
     
     page = user_sessions[user_id]['page']
@@ -386,32 +345,23 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     cookies = await page.context.cookies()
     has_cookie = any(c['name'] == 'auth_token' for c in cookies)
     
-    if "x.com" in url and has_cookie:
-        login_status = "✅ Вошли"
-    elif "x.com" in url and not has_cookie:
-        login_status = "❌ Не вошли"
-    else:
-        login_status = "⚠️ Не на X.com"
-    
     text = (
+        f"📊 **Статус браузера**\n\n"
         f"🌐 URL: {url[:80]}\n"
         f"🍪 Куки: {'✅ Есть' if has_cookie else '❌ Нет'}\n"
-        f"📱 X.com: {login_status}\n"
-        f"🦊 Браузер: CloakBrowser"
+        f"📱 На X.com: {'✅ Да' if 'x.com' in url else '❌ Нет'}\n"
+        f"🦊 Браузер: CloakBrowser\n"
+        f"📌 Сессий в памяти: {len(user_sessions)}"
     )
-    
-    await update.message.reply_text(text)
+    await update.message.reply_text(text, parse_mode="Markdown")
 
-async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     await close_user_browser(user_id)
     await update.message.reply_text("❌ Браузер закрыт")
 
 # ============ ЗАПУСК ============
 def main():
-    # Инициализируем multiprocessing для работы в Docker
-    multiprocessing.set_start_method('fork', force=True)
-    
     threading.Thread(target=run_flask, daemon=True).start()
     threading.Thread(target=keep_alive, daemon=True).start()
     
@@ -425,6 +375,7 @@ def main():
     bot_app.add_handler(CommandHandler("close", close_command))
     
     print("✅ Бот запущен на CloakBrowser!")
+    print(f"📊 Количество сессий: {len(user_sessions)}")
     bot_app.run_polling()
 
 if __name__ == "__main__":
