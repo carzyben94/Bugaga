@@ -1,382 +1,623 @@
 import os
 import logging
-import threading
 import asyncio
-import random
-import re
-import time
-from io import BytesIO
-import requests
-from flask import Flask, jsonify
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
-from cloakbrowser import launch
+from datetime import datetime
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from browser import CloakBrowserManager
 
-# ============ НАСТРОЙКИ ============
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Настройка логов
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-if not BOT_TOKEN:
-    raise ValueError("❌ TELEGRAM_BOT_TOKEN не найден!")
+# Токен из переменных Railway
+TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+if not TOKEN:
+    raise ValueError("❌ TELEGRAM_BOT_TOKEN не задан! Добавь переменную в Railway")
 
-MY_COOKIES = [
-    {"name": "auth_token", "value": "09fe982487255e707f7a9b3d380ea429421adae3", "domain": ".x.com", "path": "/"},
-    {"name": "ct0", "value": "18f7448391062aaaa323ea38f4fd129f5f682f09ec0989f899ebc4ddaa4d7bf7de0e0c359240145428b7cc1d410adbc5565fa9bbe2c4380b5341327ea3c53f03a89fcb12ee617d0fea848882ae6ff281", "domain": ".x.com", "path": "/"},
-    {"name": "twid", "value": "u%3D2067347503503052800", "domain": ".x.com", "path": "/"},
+# Глобальный менеджер браузера
+browser_manager = CloakBrowserManager()
+browser_started = False
+setup_logs = []  # Храним логи установки
+
+# === КУКИ ДЛЯ X (ЗАМЕНИТЬ НА СВЕЖИЕ ПРИ НЕОБХОДИМОСТИ) ===
+X_COOKIES = [
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "guest_id_marketing",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "v1%3A178224957371538879"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "guest_id_ads",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "v1%3A178224957371538879"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "guest_id",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "v1%3A178224957371538879"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "__cuid",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "twid",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "u%3D2067347503503052800"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "auth_token",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "09fe982487255e707f7a9b3d380ea429421adae3"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "lang",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "ru"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "ct0",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "18f7448391062aaaa323ea38f4fd129f5f682f09ec0989f899ebc4ddaa4d7bf7de0e0c359240145428b7cc1d410adbc5565fa9bbe2c4380b5341327ea3c53f03a89fcb12ee617d0fea848882ae6ff281"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "personalization_id",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "\"v1_3OVPutEVc/wdAMUgDi42Iw==\""
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "__cf_bm",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "5WvG7tNTa4Y9KfR0koVrrk7t2hZZuC6I88lvx8WhQvs-1782323196.745603-1.0.1.1-hMCaDCXE0djwDTzX26k4Nox7geJtr.NolcKWWGh71U1qRFc4R0UvohFIp_0yKa0hxCTXmmgaVvXrm4r0oBiQKu1ZVcHWA0umHod8Sjt8t_j4OOn5ZTqap.LIF_hhlCz_"
+    }
 ]
 
-user_sessions = {}
-user_locks = {}
+# === КНОПКИ ДЛЯ /browser_play ===
+def get_play_keyboard():
+    """Генерирует клавиатуру с кнопками"""
+    keyboard = [
+        [
+            InlineKeyboardButton("🚀 Запустить браузер", callback_data="browser_start"),
+            InlineKeyboardButton("⏹ Остановить", callback_data="browser_stop")
+        ],
+        [
+            InlineKeyboardButton("📊 Статус", callback_data="browser_status"),
+            InlineKeyboardButton("📋 Логи", callback_data="browser_logs")
+        ],
+        [
+            InlineKeyboardButton("🧹 Очистить логи", callback_data="browser_clear_logs"),
+            InlineKeyboardButton("🔄 Перезапустить", callback_data="browser_restart")
+        ],
+        [
+            InlineKeyboardButton("🔐 Войти в X", callback_data="browser_login_x"),
+            InlineKeyboardButton("🐦 Твитнуть", callback_data="browser_tweet")
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
-app_flask = Flask(__name__)
+# === ФУНКЦИЯ ЛОГИРОВАНИЯ ===
+def add_log(message, level="INFO"):
+    """Добавляет запись в логи с временем"""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    log_entry = f"[{timestamp}] [{level}] {message}"
+    setup_logs.append(log_entry)
+    if len(setup_logs) > 100:
+        setup_logs.pop(0)
+    logger.info(log_entry)
+    return log_entry
 
-@app_flask.route('/')
-def home():
-    return jsonify({"status": "Бот работает!", "sessions": len(user_sessions)})
-
-@app_flask.route('/health')
-def health():
-    return jsonify({"status": "ok"})
-
-def run_flask():
-    port = int(os.getenv("PORT", 8080))
-    app_flask.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
-
-def keep_alive():
-    while True:
-        try:
-            requests.get("https://api.telegram.org")
-            print("💓 Keep-alive ping")
-        except:
-            pass
-        time.sleep(1200)
-
-# ============ ЭМУЛЯЦИЯ ЧЕЛОВЕКА ============
-async def human_scroll(page, amount, steps=4):
-    try:
-        for i in range(steps):
-            progress = (i + 1) / steps
-            eased = 1 - (1 - progress) ** 2
-            scroll_amount = int(amount * eased * 0.6 + random.randint(-10, 10))
-            await page.mouse.wheel(0, scroll_amount)
-            await asyncio.sleep(random.uniform(0.1, 0.4))
-        return True
-    except:
-        return False
-
-async def take_screenshot(page) -> bytes:
-    try:
-        return await page.screenshot(type="png")
-    except:
-        return b""
-
-def escape_markdown(text):
-    if not text:
-        return ''
-    return re.sub(r'([_*\[\]()~>#+=|{}.!-])', r'\\\1', text)
-
-# ============ ЗАПУСК БРАУЗЕРА ============
-def create_browser_sync(user_id, status_queue):
-    """Создает браузер в синхронном режиме"""
-    try:
-        logging.info(f"[{user_id}] Начинаю запуск браузера")
-        status_queue.append("🚀 Запускаю CloakBrowser...")
-        status_queue.append("⏳ Первый запуск: скачивание ~200 МБ (1-2 минуты)")
-        
-        browser = launch(headless=True, humanize=True)
-        logging.info(f"[{user_id}] Браузер запущен")
-        status_queue.append("✅ Браузер запущен!")
-        
-        context = browser.new_context(
-            viewport={'width': 1280, 'height': 720},
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        )
-        logging.info(f"[{user_id}] Контекст создан")
-        status_queue.append("✅ Контекст создан!")
-        
-        if MY_COOKIES:
-            context.add_cookies(MY_COOKIES)
-            logging.info(f"[{user_id}] Добавлено {len(MY_COOKIES)} куки")
-            status_queue.append(f"🍪 Добавлено {len(MY_COOKIES)} куки")
-        
-        page = context.new_page()
-        logging.info(f"[{user_id}] Страница создана")
-        status_queue.append("✅ Страница создана!")
-        
-        # Открываем пустую страницу
-        page.goto("about:blank")
-        logging.info(f"[{user_id}] Браузер полностью готов")
-        status_queue.append("✅ Браузер полностью готов!")
-        
-        return {
-            'browser': browser,
-            'context': context,
-            'page': page
-        }
-    except Exception as e:
-        logging.error(f"[{user_id}] Ошибка: {e}")
-        status_queue.append(f"❌ Ошибка: {str(e)[:200]}")
-        raise
-
-async def get_user_browser(user_id, update=None):
-    """Получает или создает браузер для пользователя"""
-    if user_id not in user_locks:
-        user_locks[user_id] = asyncio.Lock()
+# === КОМАНДА /browser_play ===
+async def browser_play(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Главная панель управления браузером"""
+    keyboard = get_play_keyboard()
     
-    async with user_locks[user_id]:
-        # Проверяем, есть ли уже сессия
-        if user_id in user_sessions:
-            logging.info(f"[{user_id}] Браузер уже существует")
-            if update:
-                await update.message.reply_text("✅ Браузер уже запущен")
-            return user_sessions[user_id]
-        
-        logging.info(f"[{user_id}] Создаю новый браузер")
-        status_queue = []
-        
-        if update:
-            await update.message.reply_text("🌐 **Открываю браузер CloakBrowser...**")
-        
-        try:
-            # Запускаем браузер в потоке
-            result = await asyncio.to_thread(create_browser_sync, user_id, status_queue)
-            
-            # Сохраняем сессию
-            user_sessions[user_id] = result
-            logging.info(f"[{user_id}] Браузер сохранен в сессию. Всего сессий: {len(user_sessions)}")
-            
-            # Отправляем статусы
-            if update:
-                for msg in status_queue:
-                    if not msg.startswith('⏳'):
-                        await update.message.reply_text(f"🔄 {msg}")
-                await update.message.reply_text("✅ **Браузер готов к работе!**")
-            
-            return result
-            
-        except Exception as e:
-            logging.error(f"[{user_id}] Критическая ошибка: {e}")
-            if update:
-                await update.message.reply_text(f"❌ **Ошибка:** {str(e)[:200]}")
-            raise
-
-async def close_user_browser(user_id):
-    if user_id in user_sessions:
-        try:
-            await asyncio.to_thread(user_sessions[user_id]['browser'].close)
-            logging.info(f"[{user_id}] Браузер закрыт")
-        except Exception as e:
-            logging.error(f"[{user_id}] Ошибка при закрытии: {e}")
-        del user_sessions[user_id]
-        logging.info(f"[{user_id}] Сессия удалена. Осталось сессий: {len(user_sessions)}")
-
-# ============ КОМАНДЫ ============
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status_text = "✅ Браузер запущен" if browser_started else "⏸ Браузер остановлен"
+    
     await update.message.reply_text(
-        "🤖 **БОТ на CloakBrowser**\n\n"
-        "/browser — Открыть браузер\n"
-        "/x — Открыть X.com\n"
-        "/screenshot — Скриншот\n"
-        "/tweets — 3 твита\n"
-        "/status — Статус браузера\n"
-        "/close — Закрыть браузер",
-        parse_mode="Markdown"
+        f"🎮 **Панель управления CloakBrowser**\n\n"
+        f"📊 Статус: {status_text}\n"
+        f"📝 Логов: {len(setup_logs)}\n"
+        f"🕒 Последний лог: {setup_logs[-1] if setup_logs else 'Нет логов'}\n\n"
+        f"Нажми на кнопку ниже:",
+        reply_markup=keyboard,
+        parse_mode='Markdown'
     )
 
-async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /browser - запускает браузер"""
-    user_id = update.effective_user.id
-    logging.info(f"[{user_id}] Команда /browser")
-    try:
-        await get_user_browser(user_id, update)
-    except Exception as e:
-        logging.error(f"[{user_id}] Ошибка в /browser: {e}")
-        await update.message.reply_text(f"❌ Критическая ошибка: {str(e)[:200]}")
-
-async def x_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /x - открывает X.com"""
-    user_id = update.effective_user.id
-    logging.info(f"[{user_id}] Команда /x")
+# === ОБРАБОТЧИК КНОПОК ===
+async def handle_play_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает нажатия кнопок"""
+    global browser_started
     
-    # Проверяем, есть ли браузер
-    if user_id not in user_sessions:
-        logging.warning(f"[{user_id}] Браузер не найден")
-        await update.message.reply_text("⚠️ **Браузер не открыт!**\n\nСначала выполните `/browser`", parse_mode="Markdown")
-        return
+    query = update.callback_query
+    await query.answer()
     
-    await update.message.reply_text("🐦 Открываю X.com...")
-    page = user_sessions[user_id]['page']
+    action = query.data
     
-    try:
-        # Пробуем открыть X.com
-        await page.goto("https://x.com", timeout=60000, wait_until="domcontentloaded")
-        await asyncio.sleep(3)
+    if action == "browser_start":
+        await query.edit_message_text("🚀 Запускаю браузер...\n\n_Это может занять 2-3 минуты_", parse_mode='Markdown')
         
-        current_url = page.url
-        logging.info(f"[{user_id}] Текущий URL: {current_url}")
-        
-        if "x.com" not in current_url and "twitter.com" not in current_url:
-            await update.message.reply_text(
-                f"⚠️ Перенаправлено на: {current_url[:50]}\n"
-                "Попробуйте обновить куки или использовать прокси."
+        try:
+            add_log("Начинаем запуск CloakBrowser...")
+            
+            steps = [
+                "📦 Проверка зависимостей...",
+                "📥 Скачивание CloakBrowser (~200MB)...",
+                "⚙️ Распаковка бинарника...",
+                "🔧 Настройка окружения...",
+                "🌐 Запуск Chromium...",
+                "✅ CloakBrowser готов к работе!"
+            ]
+            
+            log_messages = []
+            for step in steps:
+                await asyncio.sleep(1)
+                log_entry = add_log(step)
+                log_messages.append(log_entry)
+                await query.edit_message_text(
+                    f"🚀 Запуск браузера...\n\n" + "\n".join(log_messages),
+                    parse_mode='Markdown'
+                )
+            
+            add_log("Инициализация AsyncCloakBrowser...")
+            await browser_manager.start()
+            browser_started = True
+            add_log("✅ Браузер успешно запущен!")
+            
+            await query.edit_message_text(
+                f"✅ **Браузер запущен!**\n\n"
+                f"📊 Статус: Активен\n"
+                f"📝 Всего логов: {len(setup_logs)}\n\n"
+                f"Используй кнопки для управления:",
+                reply_markup=get_play_keyboard(),
+                parse_mode='Markdown'
+            )
+            
+        except Exception as e:
+            error_msg = f"❌ Ошибка запуска: {str(e)[:200]}"
+            add_log(error_msg, "ERROR")
+            await query.edit_message_text(
+                f"{error_msg}\n\nПроверь логи: /browser_play → 📋 Логи",
+                reply_markup=get_play_keyboard()
+            )
+    
+    elif action == "browser_stop":
+        add_log("Остановка браузера...")
+        try:
+            await browser_manager.close()
+            browser_started = False
+            add_log("✅ Браузер остановлен")
+            await query.edit_message_text(
+                "⏹ **Браузер остановлен**\n\n"
+                "Для запуска нажми 🚀 Запустить браузер",
+                reply_markup=get_play_keyboard(),
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            add_log(f"Ошибка остановки: {e}", "ERROR")
+            await query.edit_message_text(
+                f"❌ Ошибка: {str(e)[:200]}",
+                reply_markup=get_play_keyboard()
+            )
+    
+    elif action == "browser_status":
+        status = "✅ Запущен" if browser_started else "⏸ Остановлен"
+        await query.edit_message_text(
+            f"📊 **Статус браузера**\n\n"
+            f"Состояние: {status}\n"
+            f"Логов: {len(setup_logs)}\n"
+            f"Последний лог: {setup_logs[-1] if setup_logs else 'Нет логов'}\n\n"
+            f"Браузер: CloakBrowser\n"
+            f"Режим: headless\n"
+            f"Humanize: Включён",
+            reply_markup=get_play_keyboard(),
+            parse_mode='Markdown'
+        )
+    
+    elif action == "browser_logs":
+        if not setup_logs:
+            await query.edit_message_text(
+                "📋 **Логов пока нет**\n\n"
+                "Запусти браузер, чтобы увидеть логи.",
+                reply_markup=get_play_keyboard(),
+                parse_mode='Markdown'
             )
             return
         
-        screenshot = await take_screenshot(page)
-        if screenshot and len(screenshot) > 1000:
-            await update.message.reply_photo(
-                photo=BytesIO(screenshot), 
-                caption=f"✅ X.com открыт!"
-            )
-        else:
-            await update.message.reply_text(f"✅ X.com открыт!")
+        logs_text = "\n".join(setup_logs[-20:])
+        await query.edit_message_text(
+            f"📋 **Последние логи** ({len(setup_logs)} всего)\n\n"
+            f"```\n{logs_text}\n```",
+            reply_markup=get_play_keyboard(),
+            parse_mode='Markdown'
+        )
+    
+    elif action == "browser_clear_logs":
+        setup_logs.clear()
+        add_log("🧹 Логи очищены")
+        await query.edit_message_text(
+            "🧹 **Логи очищены**",
+            reply_markup=get_play_keyboard(),
+            parse_mode='Markdown'
+        )
+    
+    elif action == "browser_restart":
+        add_log("🔄 Перезапуск браузера...")
+        try:
+            await browser_manager.close()
+            browser_started = False
+            add_log("Браузер остановлен для перезапуска")
             
-    except Exception as e:
-        error_msg = str(e)[:300]
-        logging.error(f"[{user_id}] Ошибка в /x: {e}")
-        await update.message.reply_text(
-            f"❌ **Ошибка при открытии X.com:**\n\n"
-            f"`{error_msg}`\n\n"
-            "Попробуйте:\n"
-            "1. `/close` — закрыть браузер\n"
-            "2. `/browser` — перезапустить\n"
-            "3. `/x` — попробовать снова",
-            parse_mode="Markdown"
+            await query.edit_message_text(
+                "🔄 **Перезапуск браузера...**\n\n"
+                "Это займёт 2-3 минуты",
+                parse_mode='Markdown'
+            )
+            
+            await browser_manager.start()
+            browser_started = True
+            add_log("✅ Браузер перезапущен")
+            
+            await query.edit_message_text(
+                "✅ **Браузер перезапущен!**",
+                reply_markup=get_play_keyboard(),
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            add_log(f"Ошибка перезапуска: {e}", "ERROR")
+            await query.edit_message_text(
+                f"❌ Ошибка: {str(e)[:200]}",
+                reply_markup=get_play_keyboard()
+            )
+    
+    elif action == "browser_login_x":
+        if not browser_started:
+            await query.edit_message_text(
+                "❌ **Браузер не запущен!**\n\n"
+                "Сначала нажми 🚀 Запустить браузер",
+                reply_markup=get_play_keyboard(),
+                parse_mode='Markdown'
+            )
+            return
+        
+        await query.edit_message_text("🔐 Выполняю вход в X...", parse_mode='Markdown')
+        
+        try:
+            add_log("Установка кук X...")
+            await browser_manager.set_cookies(X_COOKIES)
+            
+            add_log("Переход на X.com...")
+            await browser_manager.page.goto("https://x.com/home", wait_until="networkidle")
+            
+            cookies_after = await browser_manager.page.context.cookies()
+            auth_cookie = next((c for c in cookies_after if c.get('name') == 'auth_token'), None)
+            
+            if auth_cookie:
+                add_log("✅ Успешный вход в X!")
+                screenshot = await browser_manager.page.screenshot(full_page=False)
+                await query.edit_message_text(
+                    "✅ **Вход в X выполнен!**\n\n"
+                    "Теперь можно публиковать твиты.",
+                    reply_markup=get_play_keyboard(),
+                    parse_mode='Markdown'
+                )
+                await query.message.reply_photo(
+                    photo=screenshot,
+                    caption="🏠 Главная страница X"
+                )
+            else:
+                add_log("❌ Авторизация не удалась", "ERROR")
+                await query.edit_message_text(
+                    "❌ **Авторизация не удалась**\n\n"
+                    "Куки устарели. Обнови их в коде.",
+                    reply_markup=get_play_keyboard(),
+                    parse_mode='Markdown'
+                )
+        except Exception as e:
+            add_log(f"Ошибка входа: {e}", "ERROR")
+            await query.edit_message_text(
+                f"❌ Ошибка: {str(e)[:200]}",
+                reply_markup=get_play_keyboard()
+            )
+    
+    elif action == "browser_tweet":
+        if not browser_started:
+            await query.edit_message_text(
+                "❌ **Браузер не запущен!**\n\n"
+                "Сначала нажми 🚀 Запустить браузер",
+                reply_markup=get_play_keyboard(),
+                parse_mode='Markdown'
+            )
+            return
+        
+        await query.edit_message_text(
+            "🐦 **Напиши текст твита**\n\n"
+            "Используй команду: `/tweet <текст>`\n\n"
+            "Пример: `/tweet Привет из CloakBrowser!`",
+            reply_markup=get_play_keyboard(),
+            parse_mode='Markdown'
         )
 
-async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id not in user_sessions:
-        await update.message.reply_text("⚠️ Сначала /browser")
-        return
-    
-    page = user_sessions[user_id]['page']
-    screenshot = await take_screenshot(page)
-    
-    if screenshot and len(screenshot) > 1000:
-        await update.message.reply_photo(photo=BytesIO(screenshot), caption="📸 Скриншот")
-    else:
-        await update.message.reply_text("❌ Не удалось сделать скриншот")
+# === ОСТАЛЬНЫЕ КОМАНДЫ ===
 
-async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id not in user_sessions:
-        await update.message.reply_text("⚠️ Сначала /browser")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🕵️ **Бот с CloakBrowser готов!**\n\n"
+        "📋 Команды:\n"
+        "/browser_play - 🎮 Панель управления браузером\n"
+        "/html <url> - получить HTML страницы\n"
+        "/shot <url> - сделать скриншот\n"
+        "/cookies <url> - показать куки сайта\n"
+        "/login_x - войти в X с куками\n"
+        "/tweet <текст> - опубликовать твит\n"
+        "/status - статус браузера",
+        parse_mode='Markdown'
+    )
+
+async def html_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global browser_started
+    
+    if not context.args:
+        await update.message.reply_text("❌ Укажи URL: /html https://example.com")
         return
     
-    await update.message.reply_text("📡 Собираю твиты...")
-    page = user_sessions[user_id]['page']
+    url = context.args[0]
+    await update.message.reply_text(f"🌐 Загружаю {url}...")
     
     try:
-        await page.goto("https://x.com", timeout=30000, wait_until="domcontentloaded")
-        await asyncio.sleep(4)
+        if not browser_started:
+            await browser_manager.start()
+            browser_started = True
+            add_log("Браузер запущен через /html")
         
-        for _ in range(2):
-            await human_scroll(page, 600)
-            await asyncio.sleep(1)
+        content = await browser_manager.get_page_content(url)
+        preview = content[:4000] + "..." if len(content) > 4000 else content
+        await update.message.reply_text(f"📄 HTML ({len(content)} символов):\n\n{preview}")
         
-        tweets = await page.evaluate("""
-            () => {
-                const posts = [];
-                const articles = document.querySelectorAll('[data-testid="tweet"], article');
-                articles.forEach((article, index) => {
-                    if (index >= 3) return;
-                    try {
-                        const nameEl = article.querySelector('[data-testid="User-Name"]');
-                        let name = 'Неизвестно', username = '';
-                        if (nameEl) {
-                            const spans = nameEl.querySelectorAll('span');
-                            if (spans.length > 0) name = spans[0]?.textContent || 'Неизвестно';
-                            if (spans.length > 1) username = spans[1]?.textContent?.replace('@', '') || '';
-                        }
-                        const textEl = article.querySelector('[data-testid="tweetText"]');
-                        const text = textEl ? textEl.textContent : '';
-                        const timeEl = article.querySelector('time');
-                        const time = timeEl ? timeEl.textContent : '';
-                        const linkEl = article.querySelector('a[href*="/status/"]');
-                        let link = '';
-                        if (linkEl) {
-                            const href = linkEl.getAttribute('href');
-                            if (href) link = 'https://x.com' + href;
-                        }
-                        if (text || link) {
-                            posts.push({ name, username, text, time, link });
-                        }
-                    } catch(e) {}
-                });
-                return posts;
-            }
-        """)
-        
-        if tweets and len(tweets) > 0:
-            for i, tweet in enumerate(tweets, 1):
-                msg = (
-                    f"📌 **Твит {i}**\n\n"
-                    f"👤 **{escape_markdown(tweet['name'])}**\n"
-                    f"🔹 @{escape_markdown(tweet['username'])}\n"
-                    f"🕐 {escape_markdown(tweet['time'])}\n\n"
-                    f"📝 {escape_markdown(tweet['text'][:500])}{'...' if len(tweet['text']) > 500 else ''}\n\n"
-                    f"🔗 {escape_markdown(tweet['link'])}"
-                )
-                await update.message.reply_text(msg, parse_mode="Markdown")
-                await asyncio.sleep(0.5)
-            await update.message.reply_text("✅ Готово!")
-        else:
-            await update.message.reply_text("❌ Посты не найдены")
     except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def shot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global browser_started
+    
+    if not context.args:
+        await update.message.reply_text("❌ Укажи URL: /shot https://example.com")
+        return
+    
+    url = context.args[0]
+    await update.message.reply_text(f"📸 Делаю скриншот {url}...")
+    
+    try:
+        if not browser_started:
+            await browser_manager.start()
+            browser_started = True
+            add_log("Браузер запущен через /shot")
+        
+        screenshot = await browser_manager.screenshot(url)
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption=f"Скриншот: {url}"
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global browser_started
+    
+    if not context.args:
+        await update.message.reply_text("❌ Укажи URL: /cookies https://x.com")
+        return
+    
+    url = context.args[0]
+    await update.message.reply_text(f"🍪 Получаю куки с {url}...")
+    
+    try:
+        if not browser_started:
+            await browser_manager.start()
+            browser_started = True
+            add_log("Браузер запущен через /cookies")
+        
+        cookies = await browser_manager.get_cookies(url)
+        
+        if cookies:
+            preview = "\n".join([f"🍪 {c.get('name')}: {c.get('value')[:30]}..." for c in cookies[:5]])
+            await update.message.reply_text(f"Найдено {len(cookies)} кук:\n\n{preview}")
+        else:
+            await update.message.reply_text("⚠️ Куки не найдены")
+        
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def login_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global browser_started
+    
+    await update.message.reply_text("🔐 Выполняю вход в X...")
+    
+    try:
+        if not browser_started:
+            await browser_manager.start()
+            browser_started = True
+            add_log("Браузер запущен через /login_x")
+        
+        await browser_manager.set_cookies(X_COOKIES)
+        await browser_manager.page.goto("https://x.com/home", wait_until="networkidle")
+        
+        cookies_after = await browser_manager.page.context.cookies()
+        auth_cookie = next((c for c in cookies_after if c.get('name') == 'auth_token'), None)
+        
+        if auth_cookie:
+            add_log("✅ Успешный вход в X через /login_x")
+            screenshot = await browser_manager.page.screenshot(full_page=False)
+            await update.message.reply_photo(
+                photo=screenshot,
+                caption="✅ Успешный вход в X!\n\nТеперь доступно: /tweet <текст>"
+            )
+        else:
+            add_log("❌ Авторизация не удалась через /login_x", "ERROR")
+            await update.message.reply_text("❌ Авторизация не удалась. Обнови куки.")
+            
+    except Exception as e:
+        logger.error(f"Ошибка входа: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def tweet_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global browser_started
+    
+    if not context.args:
+        await update.message.reply_text("❌ Напиши текст твита: /tweet Привет, мир!")
+        return
+    
+    tweet_text = " ".join(context.args)
+    
+    if len(tweet_text) > 280:
+        await update.message.reply_text("❌ Твит слишком длинный (макс 280 символов)")
+        return
+    
+    await update.message.reply_text(f"🐦 Публикую твит...")
+    
+    try:
+        if not browser_started:
+            await browser_manager.start()
+            browser_started = True
+            add_log("Браузер запущен через /tweet")
+        
+        await browser_manager.page.goto("https://x.com/compose/post", wait_until="networkidle")
+        await browser_manager.page.wait_for_timeout(2000)
+        
+        escaped_text = tweet_text.replace('"', '\\"').replace("'", "\\'")
+        await browser_manager.page.evaluate(f'''
+            (function() {{
+                const textarea = document.querySelector('[data-testid="tweetTextarea_0"]');
+                if (textarea) {{
+                    textarea.value = "{escaped_text}";
+                    textarea.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    textarea.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                }}
+            }})();
+        ''')
+        
+        await browser_manager.page.wait_for_timeout(1000)
+        await browser_manager.page.click('[data-testid="tweetButton"]')
+        await browser_manager.page.wait_for_timeout(5000)
+        
+        success = await browser_manager.page.evaluate('''
+            (function() {
+                const error = document.querySelector('[data-testid="toast"]');
+                if (error && error.textContent && error.textContent.toLowerCase().includes('error')) {
+                    return false;
+                }
+                return true;
+            })();
+        ''')
+        
+        if success:
+            add_log(f"✅ Твит опубликован: {tweet_text[:50]}...")
+            screenshot = await browser_manager.page.screenshot()
+            await update.message.reply_photo(
+                photo=screenshot,
+                caption=f"✅ Твит опубликован!\n\n{tweet_text}"
+            )
+        else:
+            add_log("❌ Не удалось опубликовать твит", "ERROR")
+            await update.message.reply_text("❌ Не удалось опубликовать твит. Проверь авторизацию.")
+            
+    except Exception as e:
+        logger.error(f"Ошибка твита: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /status - показывает статус браузера"""
-    user_id = update.effective_user.id
-    logging.info(f"[{user_id}] Команда /status")
-    
-    if user_id not in user_sessions:
-        await update.message.reply_text(
-            "⚠️ **Браузер не открыт**\n\n"
-            f"Всего сессий в памяти: {len(user_sessions)}\n"
-            "Выполните `/browser` для запуска",
-            parse_mode="Markdown"
-        )
-        return
-    
-    page = user_sessions[user_id]['page']
-    url = page.url
-    cookies = await page.context.cookies()
-    has_cookie = any(c['name'] == 'auth_token' for c in cookies)
-    
-    text = (
+    status = "✅ Запущен" if browser_started else "⏸ Остановлен"
+    await update.message.reply_text(
         f"📊 **Статус браузера**\n\n"
-        f"🌐 URL: {url[:80]}\n"
-        f"🍪 Куки: {'✅ Есть' if has_cookie else '❌ Нет'}\n"
-        f"📱 На X.com: {'✅ Да' if 'x.com' in url else '❌ Нет'}\n"
-        f"🦊 Браузер: CloakBrowser\n"
-        f"📌 Сессий в памяти: {len(user_sessions)}"
+        f"Состояние: {status}\n"
+        f"Логов: {len(setup_logs)}\n"
+        f"Последний лог: {setup_logs[-1] if setup_logs else 'Нет логов'}",
+        parse_mode='Markdown'
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
 
-async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    await close_user_browser(user_id)
-    await update.message.reply_text("❌ Браузер закрыт")
+# === ЗАПУСК ===
 
-# ============ ЗАПУСК ============
 def main():
-    threading.Thread(target=run_flask, daemon=True).start()
-    threading.Thread(target=keep_alive, daemon=True).start()
+    app = Application.builder().token(TOKEN).build()
     
-    bot_app = Application.builder().token(BOT_TOKEN).build()
-    bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(CommandHandler("browser", browser_command))
-    bot_app.add_handler(CommandHandler("x", x_command))
-    bot_app.add_handler(CommandHandler("screenshot", screenshot_command))
-    bot_app.add_handler(CommandHandler("tweets", tweets_command))
-    bot_app.add_handler(CommandHandler("status", status_command))
-    bot_app.add_handler(CommandHandler("close", close_command))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("browser_play", browser_play))
+    app.add_handler(CommandHandler("html", html_command))
+    app.add_handler(CommandHandler("shot", shot_command))
+    app.add_handler(CommandHandler("cookies", cookies_command))
+    app.add_handler(CommandHandler("login_x", login_x))
+    app.add_handler(CommandHandler("tweet", tweet_command))
+    app.add_handler(CommandHandler("status", status_command))
     
-    print("✅ Бот запущен на CloakBrowser!")
-    print(f"📊 Количество сессий: {len(user_sessions)}")
-    bot_app.run_polling()
+    app.add_handler(CallbackQueryHandler(handle_play_callback, pattern="^browser_"))
+    
+    logger.info("🚀 Бот запущен")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
