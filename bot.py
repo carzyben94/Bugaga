@@ -10,7 +10,7 @@ import requests
 from flask import Flask, jsonify
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from playwright.async_api import async_playwright
+from camoufox import AsyncCamoufox  # Замена playwright
 
 # ============ НАСТРОЙКИ ============
 logging.basicConfig(level=logging.INFO)
@@ -112,163 +112,88 @@ def escape_markdown(text):
         return ''
     return re.sub(r'([_*\[\]()~>#+=|{}.!-])', r'\\\1', text)
 
-# ============ ПОЛНОЦЕННЫЙ БРАУЗЕР ============
-async def get_browser():
-    playwright = await async_playwright().start()
+# ============ CAMOUFOX БРАУЗЕР ============
+async def get_browser(user_id: int = None):
+    """Создает браузер Camoufox с уникальным профилем для каждого пользователя"""
     
-    viewport_width = random.choice([1366, 1440, 1536, 1600, 1920])
-    viewport_height = random.choice([768, 900, 960, 1080])
+    # Директория для профиля (сохраняет куки/сессию)
+    profile_dir = f"/data/profile_{user_id}" if user_id else None
     
-    user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    ]
+    # Прокси из переменных окружения (опционально)
+    proxy = os.getenv("PROXY_URL")
     
-    browser = await playwright.chromium.launch(
-        headless=True,
-        channel="chrome",
-        args=[
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-blink-features=AutomationControlled',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--disable-gpu',
-            '--disable-features=IsolateOrigins,site-per-process',
-            '--disable-features=BlockInsecurePrivateNetworkRequests',
-            '--disable-background-timer-throttling',
-            '--disable-backgrounding-occluded-windows',
-            '--disable-renderer-backgrounding',
-            '--disable-features=TranslateUI',
-            '--disable-ipc-flooding-protection',
-            '--disable-site-isolation-trials',
-            '--disable-software-rasterizer',
-            '--disable-web-security',
-            '--disable-features=OutOfBlinkCors',
-            '--disable-default-apps',
-            '--disable-extensions',
-            '--disable-component-extensions-with-background-pages',
-            '--disable-component-update',
-            '--disable-domain-reliability',
-            '--disable-client-side-phishing-detection',
-            '--disable-crash-reporter',
-            '--disable-breakpad',
-            '--disable-hang-monitor',
-            '--disable-prompt-on-repost',
-            '--disable-sync',
-            '--disable-background-networking',
-        ]
-    )
+    # Запускаем Camoufox
+    browser = await AsyncCamoufox(
+        headless="virtual",  # Режим для сервера без GUI
+        profile_dir=profile_dir,
+        proxy=proxy,
+        geoip=bool(proxy),  # Автоподстройка гео под прокси
+    ).__aenter__()
     
-    context = await browser.new_context(
-        viewport={"width": viewport_width, "height": viewport_height},
-        user_agent=random.choice(user_agents),
-        locale="ru-RU",
-        timezone_id="Europe/Moscow",
-        device_scale_factor=1,
-        is_mobile=False,
-        has_touch=False,
-        color_scheme="light",
-        extra_http_headers={
-            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
-            "Cache-Control": "max-age=0",
-            "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": '"Windows"',
-            "DNT": "1",
-        }
-    )
+    # Создаем контекст с реалистичным отпечатком (автоматически)
+    context = await browser.new_context()
     
-    await context.add_cookies(MY_COOKIES)
+    # Добавляем ваши куки
+    if MY_COOKIES:
+        await context.add_cookies(MY_COOKIES)
     
     page = await context.new_page()
     
-    # ============ МАКСИМАЛЬНАЯ МАСКИРОВКА ============
+    # Дополнительная маскировка (хотя Camoufox уже все маскирует)
     await page.add_init_script("""
-        // Удаление webdriver
+        console.log('✅ Дополнительная маскировка от бота');
+        
+        // Удаление следов автоматизации (на всякий случай)
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
         delete Object.getPrototypeOf(navigator).webdriver;
         
+        // Chrome объект
+        if (!window.chrome) {
+            window.chrome = {
+                runtime: {},
+                loadTimes: function() {},
+                csi: function() {},
+                app: { isInstalled: false }
+            };
+        }
+        
         // Плагины
-        Object.defineProperty(navigator, 'plugins', {
-            get: () => {
-                const plugins = [
-                    { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
-                    { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
-                    { name: 'Native Client', filename: 'internal-nacl-plugin' }
-                ];
-                plugins.length = 3;
-                plugins.item = (i) => plugins[i] || null;
-                plugins.namedItem = (name) => plugins.find(p => p.name === name) || null;
-                return plugins;
-            }
-        });
-        
-        // Языки
-        Object.defineProperty(navigator, 'languages', { get: () => ['ru-RU', 'ru', 'en-US', 'en'] });
-        Object.defineProperty(navigator, 'language', { get: () => 'ru-RU' });
-        
-        // Платформа
-        Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
-        
-        // Железо
-        Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
-        Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
-        
-        // Экран
-        Object.defineProperty(screen, 'availWidth', { get: () => 1920 });
-        Object.defineProperty(screen, 'availHeight', { get: () => 1080 });
-        Object.defineProperty(screen, 'width', { get: () => 1920 });
-        Object.defineProperty(screen, 'height', { get: () => 1080 });
-        
-        // Chrome
-        window.chrome = {
-            runtime: {},
-            loadTimes: function() {},
-            csi: function() {},
-            app: { isInstalled: false }
-        };
-        
-        // WebGL
-        const getParameter = WebGLRenderingContext.prototype.getParameter;
-        WebGLRenderingContext.prototype.getParameter = function(parameter) {
-            if (parameter === 37445) return 'Intel Inc.';
-            if (parameter === 37446) return 'Intel Iris OpenGL Engine';
-            return getParameter(parameter);
-        };
-        
-        // Permissions
-        const originalQuery = window.navigator.permissions.query;
-        window.navigator.permissions.query = (parameters) => (
-            parameters.name === 'notifications' ?
-                Promise.resolve({ state: Notification.permission }) :
-                originalQuery(parameters)
-        );
-        
-        console.log('✅ Маскировка включена');
+        if (!navigator.plugins || navigator.plugins.length === 0) {
+            const plugins = [
+                { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+                { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+                { name: 'Native Client', filename: 'internal-nacl-plugin' }
+            ];
+            plugins.length = 3;
+            plugins.item = (i) => plugins[i] || null;
+            plugins.namedItem = (name) => plugins.find(p => p.name === name) || null;
+            Object.defineProperty(navigator, 'plugins', { get: () => plugins });
+        }
     """)
     
     return page, browser, context
 
 async def get_user_browser(user_id: int):
+    """Получает или создает браузер для пользователя"""
     if user_id not in user_sessions:
-        page, browser, context = await get_browser()
-        user_sessions[user_id] = {"page": page, "browser": browser, "context": context}
+        page, browser, context = await get_browser(user_id)
+        user_sessions[user_id] = {
+            "page": page,
+            "browser": browser,
+            "context": context
+        }
+        # Открываем пустую страницу для инициализации
         await page.goto("about:blank")
     return user_sessions[user_id]
 
 async def close_user_browser(user_id: int):
+    """Закрывает браузер пользователя"""
     if user_id in user_sessions:
-        await user_sessions[user_id]["browser"].close()
+        try:
+            browser = user_sessions[user_id]["browser"]
+            await browser.close()
+        except:
+            pass
         del user_sessions[user_id]
 
 # ============ КОМАНДЫ ============
@@ -286,7 +211,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    await update.message.reply_text("🌐 Открываю браузер...")
+    await update.message.reply_text("🌐 Открываю браузер Camoufox...")
     await get_user_browser(user_id)
     await update.message.reply_text("✅ Браузер готов!")
 
@@ -311,8 +236,8 @@ async def x_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 "Попробуй:\n"
                 "1. /browser — перезапустить браузер\n"
                 "2. /x — ещё раз\n"
-                "3. Обновить куки через /setcookie\n\n"
-                "Если не поможет — X.com блокирует headless-режим."
+                "3. Использовать прокси (PROXY_URL)\n\n"
+                "Если не поможет — попробуй обновить куки."
             )
             return
         
@@ -428,7 +353,8 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     text = (
         f"🌐 URL: {url[:80]}\n"
         f"🍪 Куки: {'✅ Есть' if has_cookie else '❌ Нет'}\n"
-        f"📱 X.com: {login_status}"
+        f"📱 X.com: {login_status}\n"
+        f"🦊 Браузер: Camoufox"
     )
     
     await update.message.reply_text(text)
@@ -436,7 +362,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     await close_user_browser(user_id)
-    await update.message.reply_text("❌ Закрыто")
+    await update.message.reply_text("❌ Браузер закрыт")
 
 # ============ ЗАПУСК ============
 def main():
@@ -452,7 +378,7 @@ def main():
     bot_app.add_handler(CommandHandler("status", status_command))
     bot_app.add_handler(CommandHandler("close", close_command))
     
-    print("✅ Бот запущен")
+    print("✅ Бот запущен на Camoufox!")
     bot_app.run_polling()
 
 if __name__ == "__main__":
