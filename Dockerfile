@@ -1,28 +1,32 @@
-FROM mcr.microsoft.com/playwright/python:v1.59.0-noble
+FROM python:3.11-slim
 
-# Устанавливаем шрифты
+# Системные зависимости для Camoufox
 RUN apt-get update && apt-get install -y \
-    fonts-liberation \
-    fonts-dejavu-core \
-    fonts-noto-cjk \
-    fonts-noto-cjk-extra \
-    fonts-noto-color-emoji \
-    fonts-roboto \
-    wget \
-    gnupg \
-    && rm -rf /var/lib/apt/lists/*
-
-# Устанавливаем Google Chrome
-RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add - \
-    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list \
-    && apt-get update && apt-get install -y google-chrome-stable \
-    && rm -rf /var/lib/apt/lists/*
+    libgtk-3-0 \
+    libx11-xcb1 \
+    libasound2 \
+    libxtst6 \
+    libxss1 \
+    libnss3 \
+    libxcb1 \
+    libxcomposite1 \
+    libxcursor1 \
+    libxdamage1 \
+    libxi6 \
+    libxrandr2 \
+    libxrender1 \
+    libatk1.0-0 \
+    libcups2 \
+    libdrm2 \
+    libgbm1 \
+    libpango-1.0-0 \
+    libatk-bridge2.0-0 \
+    --no-install-recommends
 
 WORKDIR /app
-
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install -U "camoufox[geoip]"
+RUN python3 -m camoufox fetch  # Скачиваем браузер при сборке
 
 COPY . .
-
 CMD ["python", "bot.py"]
