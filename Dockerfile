@@ -10,11 +10,15 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
+# Копируем requirements
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+
+# Устанавливаем с увеличенным таймаутом и без кеша
+RUN pip install --no-cache-dir --default-timeout=1000 -r requirements.txt || \
+    pip install --no-cache-dir --default-timeout=1000 cloakbrowser aiohttp python-telegram-bot
 
 COPY *.py .
 
 ENV PYTHONUNBUFFERED=1
 
-CMD ["python", "bot.py"] 
+CMD ["python", "bot.py"]
