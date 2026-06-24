@@ -153,10 +153,10 @@ def get_play_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# === КОМАНДЫ ===
-
+# === КОМАНДА /start ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Главное меню - /start"""
+    """Главное меню"""
+    logger.info("🔥 /start получен!")  # 👈 Для проверки в логах
     await update.message.reply_text(
         "🕵️ **Бот с CloakBrowser**\n\n"
         "📋 Команды:\n"
@@ -174,6 +174,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
+# === КОМАНДА /browserplay ===
 async def browserplay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = get_play_keyboard()
     status_text = "✅ Запущен" if browser_started else "⏸ Остановлен"
@@ -406,8 +407,6 @@ async def handle_cookies_input(update: Update, context: ContextTypes.DEFAULT_TYP
                 [InlineKeyboardButton("◀️ Назад", callback_data="browser_back")]
             ])
         )
-
-# === КОМАНДА WATCH_X ===
 
 async def watch_x_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global browser_started, browser, page
@@ -814,7 +813,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(TOKEN).build()
     
-    # ⚠️ ВСЕ КОМАНДЫ ЗАРЕГИСТРИРОВАНЫ
+    # ⚠️ ВСЕ КОМАНДЫ ЗАРЕГИСТРИРОВАНЫ — ЭТО ГЛАВНОЕ!
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("browserplay", browserplay))
     app.add_handler(CommandHandler("watch_x", watch_x))
@@ -828,7 +827,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_play_callback, pattern="^browser_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_cookies_input))
     
-    logger.info("🚀 Бот запущен! Все команды зарегистрированы:")
+    logger.info("🚀 Бот запущен! Все команды зарегистрированы")
     logger.info("📋 /start, /browserplay, /watch_x, /html, /shot, /cookies, /loginx, /tweet, /status")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
