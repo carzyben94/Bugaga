@@ -2,6 +2,7 @@
 import os
 import subprocess
 import logging
+import json
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
@@ -16,6 +17,8 @@ logger = logging.getLogger(__name__)
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен!")
+
+COOKIES_FILE = "/app/cookies.json"
 
 # ==================== УСТАНОВКА CLOAKBROWSER ====================
 def install_cloak():
@@ -58,6 +61,47 @@ else:
 
 logger.info(f"📊 CloakBrowser статус: {CLOAK_AVAILABLE}")
 
+# ==================== РАБОТА С КУКАМИ ====================
+def load_cookies():
+    """Загружает куки из файла"""
+    try:
+        if os.path.exists(COOKIES_FILE):
+            with open(COOKIES_FILE, 'r') as f:
+                return json.load(f)
+        return []
+    except Exception as e:
+        logger.error(f"Ошибка загрузки кук: {e}")
+        return []
+
+def save_cookies(cookies):
+    """Сохраняет куки в файл"""
+    try:
+        os.makedirs(os.path.dirname(COOKIES_FILE), exist_ok=True)
+        with open(COOKIES_FILE, 'w') as f:
+            json.dump(cookies, f, indent=2)
+        logger.info(f"✅ Сохранено {len(cookies)} кук")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка сохранения кук: {e}")
+        return False
+
+def cookies_to_string(cookies):
+    """Преобразует куки в строку для отображения"""
+    if not cookies:
+        return "❌ Куки не загружены"
+    
+    lines = []
+    for i, cookie in enumerate(cookies[:20], 1):  # Показываем первые 20
+        name = cookie.get('name', 'unknown')
+        value = cookie.get('value', '')[:30]
+        domain = cookie.get('domain', '')
+        lines.append(f"{i}. {name}: {value}... ({domain})")
+    
+    if len(cookies) > 20:
+        lines.append(f"... и еще {len(cookies) - 20} кук")
+    
+    return "\n".join(lines)
+
 # ==================== КОМАНДЫ БОТА ====================
 async def set_bot_commands(application):
     commands = [
@@ -65,29 +109,32 @@ async def set_bot_commands(application):
         BotCommand("menu", "📋 Открыть меню"),
         BotCommand("browse", "🌐 Открыть URL"),
         BotCommand("status", "📊 Статус"),
+        BotCommand("cookies", "🍪 Управление куками"),
         BotCommand("help", "❓ Помощь"),
         BotCommand("reinstall", "🔄 Переустановить"),
     ]
     await application.bot.set_my_commands(commands)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Получаем актуальный статус
     cloak_status = check_cloak()
     
     keyboard = [
         [InlineKeyboardButton("🌐 Открыть сайт", callback_data="browse")],
         [InlineKeyboardButton("📊 Статус", callback_data="status")],
+        [InlineKeyboardButton("🍪 Куки", callback_data="cookies")],
         [InlineKeyboardButton("❓ Помощь", callback_data="help")],
         [InlineKeyboardButton("🔄 Переустановить", callback_data="reinstall")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     status = "✅ Доступен" if cloak_status else "❌ Недоступен"
+    cookies_count = len(load_cookies())
     
     await update.message.reply_text(
         f"🤖 *CloakBrowser Bot*\n\n"
         f"Бот для безопасного просмотра веб-страниц.\n\n"
-        f"📦 Статус: {status}\n\n"
+        f"📦 Статус: {status}\n"
+        f"🍪 Куки: {cookies_count} шт.\n\n"
         "Выберите действие:",
         reply_markup=reply_markup,
         parse_mode="Markdown"
@@ -97,6 +144,7 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🌐 Открыть сайт", callback_data="browse")],
         [InlineKeyboardButton("📊 Статус", callback_data="status")],
+        [InlineKeyboardButton("🍪 Куки", callback_data="cookies")],
         [InlineKeyboardButton("🔄 Переустановить", callback_data="reinstall")],
         [InlineKeyboardButton("ℹ️ Информация", callback_data="info")],
         [InlineKeyboardButton("❓ Помощь", callback_data="help")],
@@ -125,16 +173,92 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif query.data == "status":
         cloak_status = check_cloak()
+        cookies = load_cookies()
         await query.edit_message_text(
             f"📊 *Статус*\n\n"
-            f"CloakBrowser: {'✅ Доступен' if cloak_status else '❌ Недоступен'}",
+            f"CloakBrowser: {'✅ Доступен' if cloak_status else '❌ Недоступен'}\n"
+            f"🍪 Куки: {len(cookies)} шт.",
             parse_mode="Markdown"
         )
+    
+    elif query.data == "cookies":
+        cookies = load_cookies()
+        cookies_text = cookies_to_string(cookies)
+        
+        keyboard = [
+            [InlineKeyboardButton("📥 Загрузить куки", callback_data="cookies_load")],
+            [InlineKeyboardButton("🗑️ Очистить куки", callback_data="cookies_clear")],
+            [InlineKeyboardButton("📋 Показать все", callback_data="cookies_show")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            f"🍪 *Управление куками*\n\n"
+            f"Всего кук: {len(cookies)}\n\n"
+            f"```\n{cookies_text}\n```",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
+    
+    elif query.data == "cookies_load":
+        await query.edit_message_text(
+            "📥 *Загрузка кук*\n\n"
+            "Отправьте куки в формате JSON одним сообщением.\n\n"
+            "Пример формата:\n"
+            "```json\n"
+            "[\n"
+            "  {\n"
+            "    \"name\": \"cookie_name\",\n"
+            "    \"value\": \"cookie_value\",\n"
+            "    \"domain\": \".example.com\"\n"
+            "  }\n"
+            "]\n"
+            "```\n\n"
+            "Просто отправьте JSON файл или текст с куками.",
+            parse_mode="Markdown"
+        )
+        context.user_data['waiting_for_cookies'] = True
+    
+    elif query.data == "cookies_clear":
+        if save_cookies([]):
+            await query.edit_message_text("✅ Все куки очищены!")
+        else:
+            await query.edit_message_text("❌ Ошибка очистки кук")
+    
+    elif query.data == "cookies_show":
+        cookies = load_cookies()
+        if cookies:
+            # Показываем все куки в формате JSON
+            cookies_json = json.dumps(cookies, indent=2)
+            if len(cookies_json) > 4000:
+                # Если слишком много, отправляем файлом
+                with open("/tmp/cookies_export.json", 'w') as f:
+                    json.dump(cookies, f, indent=2)
+                await query.edit_message_text(
+                    "📋 *Все куки*\n\n"
+                    "Куки сохранены в файл. Скачайте его:",
+                    parse_mode="Markdown"
+                )
+                # Отправляем файл
+                with open("/tmp/cookies_export.json", 'rb') as f:
+                    await query.message.reply_document(
+                        document=f,
+                        filename="cookies.json",
+                        caption="🍪 Все куки в формате JSON"
+                    )
+            else:
+                await query.edit_message_text(
+                    f"📋 *Все куки*\n\n"
+                    f"```json\n{cookies_json}\n```",
+                    parse_mode="Markdown"
+                )
+        else:
+            await query.edit_message_text("❌ Куки не найдены")
     
     elif query.data == "reinstall":
         await query.edit_message_text("⏳ Переустановка CloakBrowser...")
         
-        # Удаляем старую версию
         try:
             subprocess.run(
                 ["pip", "uninstall", "cloakbrowser", "-y"],
@@ -145,7 +269,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
         
-        # Устанавливаем заново
         if install_cloak():
             if check_cloak():
                 await query.edit_message_text("✅ CloakBrowser переустановлен!")
@@ -163,12 +286,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         
         cloak_status = check_cloak()
+        cookies = load_cookies()
         
         await query.edit_message_text(
             f"ℹ️ *Информация*\n\n"
-            f"🤖 CloakBrowser Bot v4.2\n"
+            f"🤖 CloakBrowser Bot v5.0\n"
             f"📦 Статус: {'✅ Установлен' if cloak_status else '❌ Не установлен'}\n"
             f"📌 Версия: {version}\n"
+            f"🍪 Куки: {len(cookies)} шт.\n"
             f"🌐 Платформа: Railway\n"
             f"🐍 Python: 3.9+",
             parse_mode="Markdown"
@@ -182,15 +307,46 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/menu - Открыть меню\n"
             "/browse <URL> - Открыть сайт\n"
             "/status - Статус CloakBrowser\n"
+            "/cookies - Управление куками\n"
             "/reinstall - Переустановить CloakBrowser\n"
             "/help - Эта справка\n\n"
-            "📌 *Пример:*\n"
-            "`/browse https://github.com`",
+            "📌 *Примеры:*\n"
+            "`/browse https://github.com`\n"
+            "`/cookies` - управление куками",
             parse_mode="Markdown"
         )
     
     elif query.data == "back_to_menu":
         await menu(update, context)
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик текстовых сообщений для загрузки кук"""
+    if context.user_data.get('waiting_for_cookies'):
+        try:
+            # Пробуем парсить JSON
+            text = update.message.text
+            cookies = json.loads(text)
+            
+            if isinstance(cookies, list) and len(cookies) > 0:
+                if save_cookies(cookies):
+                    await update.message.reply_text(
+                        f"✅ Загружено {len(cookies)} кук!\n\n"
+                        f"Первая кука: {cookies[0].get('name', 'unknown')}"
+                    )
+                else:
+                    await update.message.reply_text("❌ Ошибка сохранения кук")
+            else:
+                await update.message.reply_text("❌ Неверный формат: ожидается массив кук")
+            
+            context.user_data['waiting_for_cookies'] = False
+            
+        except json.JSONDecodeError as e:
+            await update.message.reply_text(
+                f"❌ Ошибка парсинга JSON: {str(e)}\n\n"
+                "Проверьте формат и попробуйте снова."
+            )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -201,7 +357,6 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Проверяем статус перед использованием
     if not check_cloak():
         await update.message.reply_text(
             "❌ CloakBrowser не установлен!\n"
@@ -218,14 +373,30 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         from cloakbrowser import launch
         
+        # Загружаем куки
+        cookies = load_cookies()
+        logger.info(f"🍪 Загружено {len(cookies)} кук для {url}")
+        
         # Запускаем браузер
         logger.info(f"🚀 Запускаю CloakBrowser для {url}")
         browser = launch(headless=True)
         page = browser.new_page()
         
+        # Устанавливаем куки
+        if cookies:
+            try:
+                await page.context.add_cookies(cookies)
+                logger.info(f"✅ Установлено {len(cookies)} кук")
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка установки кук: {e}")
+        
         # Открываем URL
         logger.info(f"🌐 Перехожу по адресу: {url}")
         page.goto(url, timeout=30000)
+        
+        # Получаем заголовки
+        headers = page.evaluate("() => ({ userAgent: navigator.userAgent })")
+        logger.info(f"📱 User-Agent: {headers.get('userAgent', 'unknown')}")
         
         # Закрываем браузер
         browser.close()
@@ -239,7 +410,8 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await msg.edit_text(
             f"✅ *Страница открыта!*\n\n"
-            f"🌐 URL: {url}",
+            f"🌐 URL: {url}\n"
+            f"🍪 Кук использовано: {len(cookies)}",
             reply_markup=reply_markup,
             parse_mode="Markdown"
         )
@@ -252,19 +424,40 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
 
+async def cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /cookies"""
+    cookies = load_cookies()
+    cookies_text = cookies_to_string(cookies)
+    
+    keyboard = [
+        [InlineKeyboardButton("📥 Загрузить куки", callback_data="cookies_load")],
+        [InlineKeyboardButton("🗑️ Очистить куки", callback_data="cookies_clear")],
+        [InlineKeyboardButton("📋 Показать все", callback_data="cookies_show")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        f"🍪 *Управление куками*\n\n"
+        f"Всего кук: {len(cookies)}\n\n"
+        f"```\n{cookies_text}\n```",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
+
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cloak_status = check_cloak()
+    cookies = load_cookies()
     await update.message.reply_text(
         f"📊 *Статус CloakBrowser*\n\n"
         f"Состояние: {'✅ Доступен' if cloak_status else '❌ Недоступен'}\n"
-        f"📦 Пакет: {'установлен' if cloak_status else 'не установлен'}",
+        f"📦 Пакет: {'установлен' if cloak_status else 'не установлен'}\n"
+        f"🍪 Куки: {len(cookies)} шт.",
         parse_mode="Markdown"
     )
 
 async def reinstall(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Переустановка CloakBrowser...")
     
-    # Удаляем старую версию
     try:
         subprocess.run(
             ["pip", "uninstall", "cloakbrowser", "-y"],
@@ -275,7 +468,6 @@ async def reinstall(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         pass
     
-    # Устанавливаем заново
     if install_cloak():
         if check_cloak():
             await update.message.reply_text("✅ CloakBrowser переустановлен!")
@@ -292,10 +484,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/menu - Открыть меню\n"
         "/browse <URL> - Открыть сайт\n"
         "/status - Статус CloakBrowser\n"
+        "/cookies - Управление куками\n"
         "/reinstall - Переустановить CloakBrowser\n"
         "/help - Показать справку\n\n"
-        "📌 *Пример:*\n"
-        "`/browse https://example.com`",
+        "📌 *Примеры:*\n"
+        "`/browse https://github.com`\n"
+        "`/cookies` - управление куками\n\n"
+        "📌 *Как загрузить куки:*\n"
+        "1. Нажмите '🍪 Куки' в меню\n"
+        "2. Выберите '📥 Загрузить куки'\n"
+        "3. Отправьте JSON с куками",
         parse_mode="Markdown"
     )
 
@@ -309,12 +507,15 @@ def main():
     app.add_handler(CommandHandler("menu", menu))
     app.add_handler(CommandHandler("browse", browse))
     app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("cookies", cookies_command))
     app.add_handler(CommandHandler("reinstall", reinstall))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     logger.info("🚀 Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
+    from telegram.ext import MessageHandler, filters
     main()
