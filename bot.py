@@ -14,27 +14,7 @@ from flask import Flask, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from playwright.async_api import async_playwright
-
-# ============ ПРИНУДИТЕЛЬНАЯ УСТАНОВКА OPENAI ============
-try:
-    import openai
-except ImportError:
-    print("📦 Устанавливаю openai...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "openai>=1.0.0"])
-    import openai
-    print("✅ openai установлен!")
-
-# ============ ИМПОРТ AGNES VISION ============
-try:
-    from agnes_vision import vision_command, vision_click_command, vision_ask_command
-except ImportError:
-    print("⚠️ agnes_vision.py не найден. Создаю заглушки...")
-    async def vision_command(update, context):
-        await update.message.reply_text("⚠️ Модуль agnes_vision.py не загружен!")
-    async def vision_click_command(update, context):
-        await update.message.reply_text("⚠️ Модуль agnes_vision.py не загружен!")
-    async def vision_ask_command(update, context):
-        await update.message.reply_text("⚠️ Модуль agnes_vision.py не загружен!")
+from agnes_vision import vision_command, vision_click_command, vision_ask_command
 
 # ============ НАСТРОЙКИ ============
 logging.basicConfig(level=logging.INFO)
@@ -409,6 +389,11 @@ async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text("🌐 Открываю браузер...")
     try:
         await get_user_browser(user_id)
+        session = user_sessions[user_id]
+        
+        # Сохраняем page в context для команд машинного зрения
+        context.user_data['page'] = session["page"]
+        
         await update.message.reply_text("✅ Браузер готов!")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
@@ -417,6 +402,8 @@ async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     await close_user_browser(user_id)
+    if 'page' in context.user_data:
+        del context.user_data['page']
     await update.message.reply_text("❌ Браузер закрыт")
 
 # ============ КОМАНДА /GO ============
@@ -613,6 +600,9 @@ async def start_x_com(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text("🚀 Запускаю X.com с куками...")
     try:
         await get_user_browser(user_id)
+        session = user_sessions[user_id]
+        context.user_data['page'] = session["page"]
+        
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка открытия браузера: {e}")
         return
