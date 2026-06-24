@@ -10,7 +10,7 @@ import requests
 from flask import Flask, jsonify
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from cloakbrowser import launch  # Только это!
+from cloakbrowser import async_launch  # Асинхронная версия!
 
 # ============ НАСТРОЙКИ ============
 logging.basicConfig(level=logging.INFO)
@@ -26,7 +26,6 @@ MY_COOKIES = [
 ]
 
 user_sessions = {}
-user_locks = {}
 
 app_flask = Flask(__name__)
 
@@ -113,47 +112,51 @@ def escape_markdown(text):
         return ''
     return re.sub(r'([_*\[\]()~>#+=|{}.!-])', r'\\\1', text)
 
-# ============ CLOAKBROWSER (СИНХРОННЫЙ) ============
-def create_browser_sync(user_id: int, status_queue):
-    """Создает браузер в синхронном режиме"""
+# ============ АСИНХРОННЫЙ CLOAKBROWSER ============
+async def get_browser(user_id: int, status_callback=None):
+    """Создает браузер CloakBrowser асинхронно"""
     
-    def send_status(message):
-        status_queue.append(message)
+    async def send_status(message):
         print(f"🔄 [{user_id}] {message}")
+        if status_callback:
+            try:
+                await status_callback(message)
+            except:
+                pass
+    
+    await send_status("🚀 Запускаю CloakBrowser...")
+    await send_status("⏳ Первый запуск: скачивание ~200 МБ (1-2 минуты)")
     
     try:
-        send_status("🚀 Запускаю CloakBrowser...")
-        send_status("⏳ Первый запуск: скачивание ~200 МБ (1-2 минуты)")
-        
-        # Просто запускаем CloakBrowser
-        browser = launch(
+        # Асинхронный запуск
+        browser = await async_launch(
             headless=True,
             humanize=True,
         )
         
-        send_status("✅ Браузер запущен!")
-        send_status("🌐 Создаю контекст...")
+        await send_status("✅ Браузер запущен!")
+        await send_status("🌐 Создаю контекст...")
         
         # Создаем контекст
-        context = browser.new_context(
+        context = await browser.new_context(
             viewport={'width': 1280, 'height': 720},
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         )
         
-        send_status("✅ Контекст создан!")
+        await send_status("✅ Контекст создан!")
         
         # Добавляем куки
         if MY_COOKIES:
-            send_status(f"🍪 Добавляю {len(MY_COOKIES)} куки...")
-            context.add_cookies(MY_COOKIES)
-            send_status("✅ Куки добавлены!")
+            await send_status(f"🍪 Добавляю {len(MY_COOKIES)} куки...")
+            await context.add_cookies(MY_COOKIES)
+            await send_status("✅ Куки добавлены!")
         
-        send_status("📄 Создаю страницу...")
-        page = context.new_page()
-        send_status("✅ Страница создана!")
+        await send_status("📄 Создаю страницу...")
+        page = await context.new_page()
+        await send_status("✅ Страница создана!")
         
         # Добавляем скрипт маскировки
-        page.add_init_script("""
+        await page.add_init_script("""
             console.log('✅ CloakBrowser активен');
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             delete Object.getPrototypeOf(navigator).webdriver;
@@ -180,61 +183,44 @@ def create_browser_sync(user_id: int, status_queue):
             }
         """)
         
-        send_status("✅ Браузер полностью готов!")
-        
-        return {
-            'browser': browser,
-            'context': context,
-            'page': page
-        }
+        await send_status("✅ Браузер полностью готов!")
+        return page, browser, context
         
     except Exception as e:
-        send_status(f"❌ Ошибка: {str(e)[:200]}")
+        await send_status(f"❌ Ошибка: {str(e)[:200]}")
         raise
 
 async def get_user_browser(user_id: int, update=None):
     """Получает или создает браузер для пользователя"""
     
-    if user_id not in user_locks:
-        user_locks[user_id] = asyncio.Lock()
-    
-    async with user_locks[user_id]:
-        if user_id not in user_sessions:
-            status_queue = []
-            
+    if user_id not in user_sessions:
+        async def send_status(message):
             if update:
-                await update.message.reply_text("🌐 **Открываю браузер CloakBrowser...**")
-            
-            try:
-                # Запускаем синхронную функцию в потоке
-                result = await asyncio.to_thread(
-                    create_browser_sync, 
-                    user_id, 
-                    status_queue
-                )
-                
-                # Отправляем статусы
-                if update:
-                    for msg in status_queue:
-                        if not msg.startswith('⏳'):
-                            await update.message.reply_text(f"🔄 {msg}")
-                
-                user_sessions[user_id] = result
-                
-                # Открываем пустую страницу
-                page = result['page']
-                await page.goto("about:blank")
-                
-                if update:
-                    await update.message.reply_text("✅ **Браузер готов к работе!**")
-                
-            except Exception as e:
-                if update:
-                    await update.message.reply_text(f"❌ **Ошибка:** {str(e)[:200]}")
-                raise
-        else:
+                try:
+                    await update.message.reply_text(message)
+                except:
+                    pass
+        
+        if update:
+            await update.message.reply_text("🌐 **Открываю браузер CloakBrowser...**")
+        
+        try:
+            page, browser, context = await get_browser(user_id, send_status)
+            user_sessions[user_id] = {
+                "page": page,
+                "browser": browser,
+                "context": context
+            }
+            await page.goto("about:blank")
             if update:
-                await update.message.reply_text("✅ Браузер уже запущен")
+                await update.message.reply_text("✅ **Браузер готов к работе!**")
+        except Exception as e:
+            if update:
+                await update.message.reply_text(f"❌ **Ошибка:** {str(e)[:200]}")
+            raise
+    else:
+        if update:
+            await update.message.reply_text("✅ Браузер уже запущен")
     
     return user_sessions[user_id]
 
@@ -242,8 +228,8 @@ async def close_user_browser(user_id: int):
     """Закрывает браузер пользователя"""
     if user_id in user_sessions:
         try:
-            browser = user_sessions[user_id]['browser']
-            await asyncio.to_thread(browser.close)
+            browser = user_sessions[user_id]["browser"]
+            await browser.close()
         except:
             pass
         del user_sessions[user_id]
@@ -275,20 +261,20 @@ async def x_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     
     await update.message.reply_text("🐦 Открываю X.com...")
-    page = user_sessions[user_id]['page']
+    page = user_sessions[user_id]["page"]
     
     try:
         await page.goto("https://x.com", timeout=30000)
         await asyncio.sleep(3)
         
-        error_text = await page.text_content("body")
-        if error_text and "Something went wrong" in error_text:
+        # Проверяем, не заблокировали ли
+        title = await page.title()
+        if "x.com" not in title.lower() and "twitter" not in title.lower():
             await update.message.reply_text(
-                "⚠️ **X.com видит бота!**\n\n"
+                "⚠️ **X.com не загрузился!**\n\n"
                 "Попробуй:\n"
                 "1. /browser — перезапустить браузер\n"
-                "2. /x — ещё раз\n"
-                "3. Использовать прокси (PROXY_URL)"
+                "2. /x — ещё раз"
             )
             return
         
@@ -307,13 +293,13 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("⚠️ Сначала /browser")
         return
     
-    page = user_sessions[user_id]['page']
+    page = user_sessions[user_id]["page"]
     screenshot = await take_screenshot(page)
     
     if screenshot and len(screenshot) > 1000:
         await update.message.reply_photo(photo=BytesIO(screenshot), caption="📸 Скриншот")
     else:
-        await update.message.reply_text("❌ Не удалось")
+        await update.message.reply_text("❌ Не удалось сделать скриншот")
 
 async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
@@ -322,7 +308,7 @@ async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     
     await update.message.reply_text("📡 Собираю твиты...")
-    page = user_sessions[user_id]['page']
+    page = user_sessions[user_id]["page"]
     
     try:
         await page.goto("https://x.com", timeout=30000)
@@ -389,7 +375,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("⚠️ Браузер не открыт")
         return
     
-    page = user_sessions[user_id]['page']
+    page = user_sessions[user_id]["page"]
     url = page.url
     cookies = await page.context.cookies()
     has_cookie = any(c['name'] == 'auth_token' for c in cookies)
