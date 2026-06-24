@@ -112,11 +112,10 @@ def escape_markdown(text):
         return ''
     return re.sub(r'([_*\[\]()~>#+=|{}.!-])', r'\\\1', text)
 
-# ============ ПОЛНОЦЕННЫЙ БРАУЗЕР С CHROME ============
+# ============ ПОЛНОЦЕННЫЙ БРАУЗЕР ============
 async def get_browser():
     playwright = await async_playwright().start()
     
-    # Случайные параметры
     viewport_width = random.choice([1366, 1440, 1536, 1600, 1920])
     viewport_height = random.choice([768, 900, 960, 1080])
     
@@ -124,15 +123,11 @@ async def get_browser():
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     ]
     
-    timezones = ["Europe/Moscow", "Europe/London", "America/New_York", "Asia/Tokyo"]
-    
-    # ============ ПОЛНОЦЕННЫЙ CHROME ============
     browser = await playwright.chromium.launch(
         headless=True,
-        channel="chrome",  # <-- Полноценный Chrome вместо Chromium
+        channel="chrome",
         args=[
             '--no-sandbox',
             '--disable-setuid-sandbox',
@@ -151,8 +146,6 @@ async def get_browser():
             '--disable-software-rasterizer',
             '--disable-web-security',
             '--disable-features=OutOfBlinkCors',
-            '--disable-features=SharedArrayBuffer',
-            '--disable-features=CrossOriginIsolation',
             '--disable-default-apps',
             '--disable-extensions',
             '--disable-component-extensions-with-background-pages',
@@ -165,7 +158,6 @@ async def get_browser():
             '--disable-prompt-on-repost',
             '--disable-sync',
             '--disable-background-networking',
-            '--disable-features=BlockInsecurePrivateNetworkRequests',
         ]
     )
     
@@ -173,7 +165,7 @@ async def get_browser():
         viewport={"width": viewport_width, "height": viewport_height},
         user_agent=random.choice(user_agents),
         locale="ru-RU",
-        timezone_id=random.choice(timezones),
+        timezone_id="Europe/Moscow",
         device_scale_factor=1,
         is_mobile=False,
         has_touch=False,
@@ -192,17 +184,9 @@ async def get_browser():
             "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": '"Windows"',
-            "sec-ch-ua-arch": '"x86"',
-            "sec-ch-ua-full-version": '"120.0.6099.109"',
-            "sec-ch-ua-platform-version": '"10.0.0"',
             "DNT": "1",
         }
     )
-    
-    await context.add_cookies([
-        {"name": "_ga", "value": f"GA1.2.{random.randint(100000, 999999)}.{int(time.time())}", "domain": ".x.com", "path": "/"},
-        {"name": "_gid", "value": f"GA1.2.{random.randint(100000, 999999)}.{int(time.time())}", "domain": ".x.com", "path": "/"},
-    ])
     
     await context.add_cookies(MY_COOKIES)
     
@@ -210,11 +194,11 @@ async def get_browser():
     
     # ============ МАКСИМАЛЬНАЯ МАСКИРОВКА ============
     await page.add_init_script("""
-        // Полное удаление webdriver
+        // Удаление webdriver
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
         delete Object.getPrototypeOf(navigator).webdriver;
         
-        // Полная эмуляция плагинов
+        // Плагины
         Object.defineProperty(navigator, 'plugins', {
             get: () => {
                 const plugins = [
@@ -245,30 +229,13 @@ async def get_browser():
         Object.defineProperty(screen, 'availHeight', { get: () => 1080 });
         Object.defineProperty(screen, 'width', { get: () => 1920 });
         Object.defineProperty(screen, 'height', { get: () => 1080 });
-        Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
-        Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
         
         // Chrome
         window.chrome = {
             runtime: {},
-            loadTimes: function() {
-                return {
-                    navigationType: 'Other',
-                    wasFetchedViaSpdy: false,
-                    wasNpnNegotiated: false,
-                    connectionInfo: 'http/1.1'
-                };
-            },
-            csi: function() {
-                return {
-                    startE: 0,
-                    onloadT: 0,
-                    pageT: 0
-                };
-            },
-            app: {
-                isInstalled: false
-            }
+            loadTimes: function() {},
+            csi: function() {},
+            app: { isInstalled: false }
         };
         
         // WebGL
@@ -279,15 +246,6 @@ async def get_browser():
             return getParameter(parameter);
         };
         
-        // Canvas
-        const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
-        HTMLCanvasElement.prototype.toDataURL = function(type) {
-            if (type === 'image/png') {
-                return originalToDataURL.apply(this, arguments);
-            }
-            return originalToDataURL.apply(this, arguments);
-        };
-        
         // Permissions
         const originalQuery = window.navigator.permissions.query;
         window.navigator.permissions.query = (parameters) => (
@@ -296,16 +254,7 @@ async def get_browser():
                 originalQuery(parameters)
         );
         
-        // Connection
-        Object.defineProperty(navigator, 'connection', {
-            get: () => ({
-                effectiveType: ['4g', '4g', '3g'][Math.floor(Math.random() * 3)],
-                rtt: Math.floor(Math.random() * 100) + 50,
-                downlink: Math.floor(Math.random() * 10) + 1
-            })
-        });
-        
-        console.log('✅ Полноценный Chrome с маскировкой включён');
+        console.log('✅ Маскировка включена');
     """)
     
     return page, browser, context
@@ -325,7 +274,7 @@ async def close_user_browser(user_id: int):
 # ============ КОМАНДЫ ============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "🤖 **ПОЛНОЦЕННЫЙ CHROME**\n\n"
+        "🤖 **БОТ**\n\n"
         "/browser — Открыть браузер\n"
         "/x — Открыть X.com\n"
         "/screenshot — Скриншот\n"
@@ -337,9 +286,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    await update.message.reply_text("🌐 Открываю полноценный Chrome...")
+    await update.message.reply_text("🌐 Открываю браузер...")
     await get_user_browser(user_id)
-    await update.message.reply_text("✅ Chrome готов! Полная эмуляция включена.")
+    await update.message.reply_text("✅ Браузер готов!")
 
 async def x_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
@@ -354,11 +303,25 @@ async def x_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await page.goto("https://x.com", timeout=30000)
         await asyncio.sleep(3)
         
+        # Проверяем ошибку
+        error_text = await page.text_content("body")
+        if error_text and "Something went wrong" in error_text:
+            await update.message.reply_text(
+                "⚠️ **X.com видит бота!**\n\n"
+                "Попробуй:\n"
+                "1. /browser — перезапустить браузер\n"
+                "2. /x — ещё раз\n"
+                "3. Обновить куки через /setcookie\n\n"
+                "Если не поможет — X.com блокирует headless-режим."
+            )
+            return
+        
         screenshot = await take_screenshot(page)
         if screenshot and len(screenshot) > 1000:
             await update.message.reply_photo(photo=BytesIO(screenshot), caption="✅ X.com открыт!")
         else:
             await update.message.reply_text("✅ X.com открыт!")
+            
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
@@ -368,7 +331,6 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("⚠️ Сначала /browser")
         return
     
-    await update.message.reply_text("📸 Делаю скриншот...")
     page = user_sessions[user_id]["page"]
     screenshot = await take_screenshot(page)
     
@@ -383,7 +345,7 @@ async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("⚠️ Сначала /browser")
         return
     
-    await update.message.reply_text("📡 Собираю 3 твита...")
+    await update.message.reply_text("📡 Собираю твиты...")
     page = user_sessions[user_id]["page"]
     
     try:
