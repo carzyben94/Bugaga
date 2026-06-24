@@ -51,17 +51,10 @@ def keep_alive():
         time.sleep(1200)
 
 # ============ ЭМУЛЯЦИЯ ЧЕЛОВЕКА ============
-
-def random_delay(min_sec=0.3, max_sec=1.5):
-    """Случайная задержка как у человека"""
-    return random.uniform(min_sec, max_sec)
-
 async def human_sleep(min_sec=0.3, max_sec=1.5):
-    """Сон с случайной задержкой"""
-    await asyncio.sleep(random_delay(min_sec, max_sec))
+    await asyncio.sleep(random.uniform(min_sec, max_sec))
 
 async def human_move(page, x, y, steps=12):
-    """Плавное движение мыши с кривой Безье"""
     try:
         current = await page.evaluate("""
             () => ({
@@ -69,8 +62,6 @@ async def human_move(page, x, y, steps=12):
                 y: window.scrollY + window.innerHeight / 2
             })
         """)
-        
-        # Добавляем случайное дрожание
         for i in range(steps):
             progress = (i + 1) / steps
             ease = 1 - (1 - progress) ** 3
@@ -80,7 +71,6 @@ async def human_move(page, x, y, steps=12):
             target_y = current["y"] + (y - current["y"]) * ease + noise_y
             await page.mouse.move(target_x, target_y)
             await asyncio.sleep(random.uniform(0.02, 0.08))
-        
         await page.mouse.move(x, y)
         await asyncio.sleep(random.uniform(0.05, 0.2))
         return True
@@ -88,7 +78,6 @@ async def human_move(page, x, y, steps=12):
         return False
 
 async def human_click(page, x, y, button="left"):
-    """Реалистичный клик с задержками"""
     try:
         await human_move(page, x, y, steps=10)
         await asyncio.sleep(random.uniform(0.05, 0.15))
@@ -101,7 +90,6 @@ async def human_click(page, x, y, button="left"):
         return False
 
 async def human_scroll(page, amount, steps=4):
-    """Плавная прокрутка с ускорением"""
     try:
         for i in range(steps):
             progress = (i + 1) / steps
@@ -112,155 +100,6 @@ async def human_scroll(page, amount, steps=4):
         return True
     except:
         return False
-
-async def human_type(page, text, delay=40):
-    """Ввод текста с задержками как у человека"""
-    try:
-        # Клик для фокуса
-        await page.mouse.click(100, 100)
-        await asyncio.sleep(0.2)
-        
-        for char in text:
-            wait_time = delay + random.randint(-10, 25)
-            if char.isupper() or char in '!@#$%^&*()_+':
-                wait_time += random.randint(15, 40)
-            await page.keyboard.type(char, delay=wait_time)
-            
-            # Иногда "ошибаемся" (реалистичность)
-            if random.random() < 0.005 and len(text) > 3:
-                await page.keyboard.press("Backspace")
-                await asyncio.sleep(random.uniform(0.05, 0.15))
-                await page.keyboard.type(char, delay=wait_time)
-        
-        await asyncio.sleep(random.uniform(0.2, 0.6))
-        return True
-    except:
-        return False
-
-async def human_wait_for_page(page, min_wait=2, max_wait=5):
-    """Ждём как человек — смотрим на страницу"""
-    await asyncio.sleep(random.uniform(min_wait, max_wait))
-    
-    # Иногда делаем случайное движение мыши
-    if random.random() < 0.3:
-        viewport = page.viewport_size
-        await page.mouse.move(
-            random.randint(100, viewport['width'] - 100),
-            random.randint(100, viewport['height'] - 100)
-        )
-        await asyncio.sleep(random.uniform(0.1, 0.3))
-
-# ============ ПАРСИНГ С ЭМУЛЯЦИЕЙ ============
-async def human_get_tweets(page, limit=3):
-    """Собирает твиты с полной эмуляцией человека"""
-    try:
-        # Ждём как человек
-        await human_wait_for_page(page, 1.5, 3)
-        
-        # Прокручиваем как человек
-        for _ in range(random.randint(2, 4)):
-            scroll_amount = random.randint(300, 700)
-            await human_scroll(page, scroll_amount)
-            await asyncio.sleep(random.uniform(0.5, 1.5))
-        
-        # Случайная пауза перед сбором
-        await asyncio.sleep(random.uniform(0.5, 1.0))
-        
-        # Собираем посты
-        tweets = await page.evaluate(f"""
-            () => {{
-                const posts = [];
-                const selectors = [
-                    '[data-testid="tweet"]',
-                    'article[data-testid="tweet"]',
-                    'article',
-                    '[role="article"]',
-                    '[data-testid="cellInnerDiv"]',
-                    'div[data-testid="tweet"]'
-                ];
-                
-                let articles = [];
-                for (const selector of selectors) {{
-                    const found = document.querySelectorAll(selector);
-                    if (found.length > 0) {{
-                        articles = found;
-                        break;
-                    }}
-                }}
-                
-                if (articles.length === 0) {{
-                    articles = document.querySelectorAll('div[lang]');
-                }}
-                
-                articles.forEach((article, index) => {{
-                    if (index >= {limit}) return;
-                    
-                    try {{
-                        // Имя
-                        let name = 'Неизвестно';
-                        const nameEls = article.querySelectorAll('[data-testid="User-Name"] span, [dir="ltr"] span');
-                        for (const el of nameEls) {{
-                            const text = el.textContent?.trim() || '';
-                            if (text && text.length > 0 && !text.includes('·') && !text.startsWith('@')) {{
-                                name = text;
-                                break;
-                            }}
-                        }}
-                        
-                        // Username
-                        let username = '';
-                        const userEls = article.querySelectorAll('[data-testid="User-Name"] span:last-child, [dir="ltr"] span:last-child');
-                        for (const el of userEls) {{
-                            const text = el.textContent?.trim() || '';
-                            if (text && text.startsWith('@')) {{
-                                username = text.replace('@', '');
-                                break;
-                            }}
-                        }}
-                        
-                        // Текст
-                        let text = '';
-                        const textEls = article.querySelectorAll('[data-testid="tweetText"], [data-testid="tweetText"] span, div[lang]');
-                        for (const el of textEls) {{
-                            const t = el.textContent?.trim() || '';
-                            if (t && t.length > 0) {{
-                                text = t;
-                                break;
-                            }}
-                        }}
-                        
-                        // Время
-                        let time = '';
-                        const timeEl = article.querySelector('time');
-                        if (timeEl) time = timeEl.textContent?.trim() || '';
-                        
-                        // Ссылка
-                        let link = '';
-                        const linkEl = article.querySelector('a[href*="/status/"]');
-                        if (linkEl) link = linkEl.href || '';
-                        
-                        if (text || link) {{
-                            posts.push({{
-                                name: name || 'Неизвестно',
-                                username: username || '',
-                                text: text || '',
-                                time: time || '',
-                                link: link || ''
-                            }});
-                        }}
-                    }} catch(e) {{
-                        // Пропускаем
-                    }}
-                }});
-                
-                return posts;
-            }}
-        """)
-        
-        return tweets[:limit]
-    except Exception as e:
-        print(f"Ошибка сбора: {e}")
-        return []
 
 async def take_screenshot(page) -> bytes:
     try:
@@ -273,28 +112,27 @@ def escape_markdown(text):
         return ''
     return re.sub(r'([_*\[\]()~>#+=|{}.!-])', r'\\\1', text)
 
-# ============ БРАУЗЕР (МАКСИМАЛЬНАЯ ЭМУЛЯЦИЯ) ============
+# ============ ПОЛНОЦЕННЫЙ БРАУЗЕР С CHROME ============
 async def get_browser():
     playwright = await async_playwright().start()
     
-    # Случайные параметры как у реального пользователя
+    # Случайные параметры
     viewport_width = random.choice([1366, 1440, 1536, 1600, 1920])
     viewport_height = random.choice([768, 900, 960, 1080])
     
-    # Случайный User-Agent
     user_agents = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     ]
     
-    # Случайный часовой пояс
-    timezones = ["Europe/Moscow", "Europe/London", "America/New_York", "Asia/Tokyo", "Europe/Berlin"]
+    timezones = ["Europe/Moscow", "Europe/London", "America/New_York", "Asia/Tokyo"]
     
+    # ============ ПОЛНОЦЕННЫЙ CHROME ============
     browser = await playwright.chromium.launch(
         headless=True,
+        channel="chrome",  # <-- Полноценный Chrome вместо Chromium
         args=[
             '--no-sandbox',
             '--disable-setuid-sandbox',
@@ -315,6 +153,19 @@ async def get_browser():
             '--disable-features=OutOfBlinkCors',
             '--disable-features=SharedArrayBuffer',
             '--disable-features=CrossOriginIsolation',
+            '--disable-default-apps',
+            '--disable-extensions',
+            '--disable-component-extensions-with-background-pages',
+            '--disable-component-update',
+            '--disable-domain-reliability',
+            '--disable-client-side-phishing-detection',
+            '--disable-crash-reporter',
+            '--disable-breakpad',
+            '--disable-hang-monitor',
+            '--disable-prompt-on-repost',
+            '--disable-sync',
+            '--disable-background-networking',
+            '--disable-features=BlockInsecurePrivateNetworkRequests',
         ]
     )
     
@@ -344,17 +195,13 @@ async def get_browser():
             "sec-ch-ua-arch": '"x86"',
             "sec-ch-ua-full-version": '"120.0.6099.109"',
             "sec-ch-ua-platform-version": '"10.0.0"',
-            "sec-ch-ua-model": '""',
-            "sec-ch-ua-bitness": '"64"',
             "DNT": "1",
         }
     )
     
-    # Добавляем реалистичные куки
     await context.add_cookies([
         {"name": "_ga", "value": f"GA1.2.{random.randint(100000, 999999)}.{int(time.time())}", "domain": ".x.com", "path": "/"},
         {"name": "_gid", "value": f"GA1.2.{random.randint(100000, 999999)}.{int(time.time())}", "domain": ".x.com", "path": "/"},
-        {"name": "personalization_id", "value": f"v1_{random.randint(1000000000, 9999999999)}", "domain": ".x.com", "path": "/"},
     ])
     
     await context.add_cookies(MY_COOKIES)
@@ -371,28 +218,14 @@ async def get_browser():
         Object.defineProperty(navigator, 'plugins', {
             get: () => {
                 const plugins = [
-                    { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-                    { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
-                    { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' }
+                    { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+                    { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+                    { name: 'Native Client', filename: 'internal-nacl-plugin' }
                 ];
                 plugins.length = 3;
                 plugins.item = (i) => plugins[i] || null;
                 plugins.namedItem = (name) => plugins.find(p => p.name === name) || null;
                 return plugins;
-            }
-        });
-        
-        // Эмуляция mimeTypes
-        Object.defineProperty(navigator, 'mimeTypes', {
-            get: () => {
-                const mimes = [
-                    { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' },
-                    { type: 'text/pdf', suffixes: 'pdf', description: 'Portable Document Format' }
-                ];
-                mimes.length = 2;
-                mimes.item = (i) => mimes[i] || null;
-                mimes.namedItem = (type) => mimes.find(m => m.type === type) || null;
-                return mimes;
             }
         });
         
@@ -434,17 +267,7 @@ async def get_browser():
                 };
             },
             app: {
-                isInstalled: false,
-                InstallState: {
-                    DISABLED: 'disabled',
-                    INSTALLED: 'installed',
-                    NOT_INSTALLED: 'not_installed'
-                },
-                RunningState: {
-                    CANNOT_RUN: 'cannot_run',
-                    READY_TO_RUN: 'ready_to_run',
-                    RUNNING: 'running'
-                }
+                isInstalled: false
             }
         };
         
@@ -473,16 +296,16 @@ async def get_browser():
                 originalQuery(parameters)
         );
         
-        // Добавляем случайные шумы для fingerprint
+        // Connection
         Object.defineProperty(navigator, 'connection', {
             get: () => ({
-                effectiveType: ['4g', '4g', '3g', '3g', '2g'][Math.floor(Math.random() * 3)],
+                effectiveType: ['4g', '4g', '3g'][Math.floor(Math.random() * 3)],
                 rtt: Math.floor(Math.random() * 100) + 50,
                 downlink: Math.floor(Math.random() * 10) + 1
             })
         });
         
-        console.log('✅ Максимальная эмуляция включена');
+        console.log('✅ Полноценный Chrome с маскировкой включён');
     """)
     
     return page, browser, context
@@ -502,7 +325,7 @@ async def close_user_browser(user_id: int):
 # ============ КОМАНДЫ ============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "🤖 **МАКСИМАЛЬНАЯ ЭМУЛЯЦИЯ**\n\n"
+        "🤖 **ПОЛНОЦЕННЫЙ CHROME**\n\n"
         "/browser — Открыть браузер\n"
         "/x — Открыть X.com\n"
         "/screenshot — Скриншот\n"
@@ -514,9 +337,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    await update.message.reply_text("🌐 Открываю браузер с максимальной эмуляцией...")
+    await update.message.reply_text("🌐 Открываю полноценный Chrome...")
     await get_user_browser(user_id)
-    await update.message.reply_text("✅ Браузер готов! Полная эмуляция человека включена.")
+    await update.message.reply_text("✅ Chrome готов! Полная эмуляция включена.")
 
 async def x_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
@@ -529,8 +352,13 @@ async def x_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     
     try:
         await page.goto("https://x.com", timeout=30000)
-        await human_wait_for_page(page, 2, 4)
-        await update.message.reply_text("✅ X.com открыт!")
+        await asyncio.sleep(3)
+        
+        screenshot = await take_screenshot(page)
+        if screenshot and len(screenshot) > 1000:
+            await update.message.reply_photo(photo=BytesIO(screenshot), caption="✅ X.com открыт!")
+        else:
+            await update.message.reply_text("✅ X.com открыт!")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
@@ -542,15 +370,12 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     await update.message.reply_text("📸 Делаю скриншот...")
     page = user_sessions[user_id]["page"]
+    screenshot = await take_screenshot(page)
     
-    try:
-        screenshot = await take_screenshot(page)
-        if screenshot and len(screenshot) > 1000:
-            await update.message.reply_photo(photo=BytesIO(screenshot), caption="📸 Скриншот")
-        else:
-            await update.message.reply_text("❌ Не удалось")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
+    if screenshot and len(screenshot) > 1000:
+        await update.message.reply_photo(photo=BytesIO(screenshot), caption="📸 Скриншот")
+    else:
+        await update.message.reply_text("❌ Не удалось")
 
 async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
@@ -558,14 +383,49 @@ async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("⚠️ Сначала /browser")
         return
     
-    await update.message.reply_text("📡 Собираю 3 твита (человеческий парсинг)...")
+    await update.message.reply_text("📡 Собираю 3 твита...")
     page = user_sessions[user_id]["page"]
     
     try:
         await page.goto("https://x.com", timeout=30000)
-        await human_wait_for_page(page, 2, 4)
+        await asyncio.sleep(4)
         
-        tweets = await human_get_tweets(page, limit=3)
+        for _ in range(2):
+            await human_scroll(page, 600)
+            await asyncio.sleep(1)
+        
+        tweets = await page.evaluate("""
+            () => {
+                const posts = [];
+                const articles = document.querySelectorAll('[data-testid="tweet"], article');
+                articles.forEach((article, index) => {
+                    if (index >= 3) return;
+                    try {
+                        const nameEl = article.querySelector('[data-testid="User-Name"]');
+                        let name = 'Неизвестно', username = '';
+                        if (nameEl) {
+                            const spans = nameEl.querySelectorAll('span');
+                            if (spans.length > 0) name = spans[0]?.textContent || 'Неизвестно';
+                            if (spans.length > 1) username = spans[1]?.textContent?.replace('@', '') || '';
+                        }
+                        const textEl = article.querySelector('[data-testid="tweetText"]');
+                        const text = textEl ? textEl.textContent : '';
+                        const timeEl = article.querySelector('time');
+                        const time = timeEl ? timeEl.textContent : '';
+                        const linkEl = article.querySelector('a[href*="/status/"]');
+                        let link = '';
+                        if (linkEl) {
+                            const href = linkEl.getAttribute('href');
+                            if (href) link = 'https://x.com' + href;
+                        }
+                        if (text || link) {
+                            posts.push({ name, username, text, time, link });
+                        }
+                    } catch(e) {}
+                });
+                return posts;
+            }
+        """)
         
         if tweets and len(tweets) > 0:
             for i, tweet in enumerate(tweets, 1):
