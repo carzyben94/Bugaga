@@ -28,29 +28,33 @@ def install_cloak():
             capture_output=True,
             text=True
         )
-        logger.info(f"✅ CloakBrowser установлен: {result.stdout[:200]}")
+        logger.info(f"✅ CloakBrowser установлен")
         return True
     except Exception as e:
         logger.error(f"❌ Ошибка установки: {e}")
         return False
 
-# Проверяем и устанавливаем
-CLOAK_AVAILABLE = False
+def check_cloak():
+    """Проверяет доступность CloakBrowser"""
+    try:
+        import cloakbrowser
+        return True
+    except ImportError:
+        return False
 
-try:
-    import cloakbrowser
-    CLOAK_AVAILABLE = True
-    logger.info("✅ CloakBrowser уже установлен")
-except ImportError:
+# Проверяем и устанавливаем
+CLOAK_AVAILABLE = check_cloak()
+
+if not CLOAK_AVAILABLE:
     logger.warning("⚠️ CloakBrowser не найден, устанавливаю...")
     if install_cloak():
-        try:
-            import cloakbrowser
-            CLOAK_AVAILABLE = True
-            logger.info("✅ CloakBrowser успешно импортирован")
-        except ImportError:
-            CLOAK_AVAILABLE = False
-            logger.error("❌ Не удалось импортировать CloakBrowser")
+        CLOAK_AVAILABLE = check_cloak()
+        if CLOAK_AVAILABLE:
+            logger.info("✅ CloakBrowser успешно установлен")
+        else:
+            logger.error("❌ Не удалось импортировать CloakBrowser после установки")
+else:
+    logger.info("✅ CloakBrowser уже установлен")
 
 logger.info(f"📊 CloakBrowser статус: {CLOAK_AVAILABLE}")
 
@@ -67,6 +71,9 @@ async def set_bot_commands(application):
     await application.bot.set_my_commands(commands)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Получаем актуальный статус
+    cloak_status = check_cloak()
+    
     keyboard = [
         [InlineKeyboardButton("🌐 Открыть сайт", callback_data="browse")],
         [InlineKeyboardButton("📊 Статус", callback_data="status")],
@@ -75,7 +82,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    status = "✅ Доступен" if CLOAK_AVAILABLE else "❌ Недоступен"
+    status = "✅ Доступен" if cloak_status else "❌ Недоступен"
     
     await update.message.reply_text(
         f"🤖 *CloakBrowser Bot*\n\n"
@@ -117,9 +124,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     
     elif query.data == "status":
+        cloak_status = check_cloak()
         await query.edit_message_text(
             f"📊 *Статус*\n\n"
-            f"CloakBrowser: {'✅ Доступен' if CLOAK_AVAILABLE else '❌ Недоступен'}",
+            f"CloakBrowser: {'✅ Доступен' if cloak_status else '❌ Недоступен'}",
             parse_mode="Markdown"
         )
     
@@ -138,17 +146,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         
         # Устанавливаем заново
-        global CLOAK_AVAILABLE
         if install_cloak():
-            try:
-                import cloakbrowser
-                CLOAK_AVAILABLE = True
+            if check_cloak():
                 await query.edit_message_text("✅ CloakBrowser переустановлен!")
-            except ImportError:
-                CLOAK_AVAILABLE = False
+            else:
                 await query.edit_message_text("❌ Ошибка импорта после установки")
         else:
-            CLOAK_AVAILABLE = False
             await query.edit_message_text("❌ Ошибка переустановки")
     
     elif query.data == "info":
@@ -159,10 +162,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
         
+        cloak_status = check_cloak()
+        
         await query.edit_message_text(
             f"ℹ️ *Информация*\n\n"
-            f"🤖 CloakBrowser Bot v4.1\n"
-            f"📦 Статус: {'✅ Установлен' if CLOAK_AVAILABLE else '❌ Не установлен'}\n"
+            f"🤖 CloakBrowser Bot v4.2\n"
+            f"📦 Статус: {'✅ Установлен' if cloak_status else '❌ Не установлен'}\n"
             f"📌 Версия: {version}\n"
             f"🌐 Платформа: Railway\n"
             f"🐍 Python: 3.9+",
@@ -196,7 +201,8 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    if not CLOAK_AVAILABLE:
+    # Проверяем статус перед использованием
+    if not check_cloak():
         await update.message.reply_text(
             "❌ CloakBrowser не установлен!\n"
             "Используйте /reinstall для установки"
@@ -247,10 +253,11 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cloak_status = check_cloak()
     await update.message.reply_text(
         f"📊 *Статус CloakBrowser*\n\n"
-        f"Состояние: {'✅ Доступен' if CLOAK_AVAILABLE else '❌ Недоступен'}\n"
-        f"📦 Пакет: {'установлен' if CLOAK_AVAILABLE else 'не установлен'}",
+        f"Состояние: {'✅ Доступен' if cloak_status else '❌ Недоступен'}\n"
+        f"📦 Пакет: {'установлен' if cloak_status else 'не установлен'}",
         parse_mode="Markdown"
     )
 
@@ -269,17 +276,12 @@ async def reinstall(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
     
     # Устанавливаем заново
-    global CLOAK_AVAILABLE
     if install_cloak():
-        try:
-            import cloakbrowser
-            CLOAK_AVAILABLE = True
+        if check_cloak():
             await update.message.reply_text("✅ CloakBrowser переустановлен!")
-        except ImportError:
-            CLOAK_AVAILABLE = False
+        else:
             await update.message.reply_text("❌ Ошибка импорта после установки")
     else:
-        CLOAK_AVAILABLE = False
         await update.message.reply_text("❌ Ошибка переустановки")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
