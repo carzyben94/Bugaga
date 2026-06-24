@@ -343,7 +343,11 @@ async def handle_play_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             
             if auth_cookie:
                 add_log("✅ Успешный вход в X!")
-                screenshot = await page.screenshot(full_page=False, timeout=SCREENSHOT_TIMEOUT)
+                screenshot = await page.screenshot(
+                    full_page=False,
+                    clip={'x': 0, 'y': 0, 'width': 1200, 'height': 800},
+                    timeout=SCREENSHOT_TIMEOUT
+                )
                 await query.edit_message_text("✅ **Вход в X выполнен!**", reply_markup=get_play_keyboard(), parse_mode='Markdown')
                 await query.message.reply_photo(photo=screenshot, caption="🏠 Главная X")
             else:
@@ -856,7 +860,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(TOKEN).build()
     
-    # Команды
+    # Регистрируем ВСЕ команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("browserplay", browserplay))
     app.add_handler(CommandHandler("watch_x", watch_x))
