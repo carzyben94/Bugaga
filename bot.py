@@ -570,12 +570,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📋 Команды:\n"
         "/browserplay - 🎮 Панель управления\n"
         "/watch_x - 🎬 Показать процесс входа в X\n"
-        "/html <url> - Получить HTML\n"
-        "/shot <url> - Скриншот\n"
-        "/cookies <url> - Показать куки\n"
-        "/loginx - Войти в X\n"
-        "/tweet <текст> - Опубликовать твит\n"
-        "/status - Статус браузера\n\n"
+        "/shot - 📸 Скриншот текущей страницы\n"
+        "/shot <url> - 📸 Скриншот указанного URL\n"
+        "/html <url> - 📄 Получить HTML\n"
+        "/cookies <url> - 🍪 Показать куки\n"
+        "/loginx - 🔐 Войти в X\n"
+        "/tweet <текст> - 🐦 Опубликовать твит\n"
+        "/status - 📊 Статус браузера\n\n"
         f"📦 CloakBrowser: {'✅ Установлен' if CLOAK_AVAILABLE else '❌ Не установлен'}\n"
         f"🍪 Кук загружено: {len(X_COOKIES)}",
         parse_mode='Markdown'
@@ -609,22 +610,45 @@ async def html_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def shot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global browser_started, browser, page
     
-    if not context.args:
-        await update.message.reply_text("❌ Укажи URL: /shot https://example.com")
+    # Если есть URL - переходим по нему
+    if context.args:
+        url = context.args[0]
+        await update.message.reply_text(f"📸 Перехожу на {url} и делаю скриншот...")
+        
+        try:
+            if not browser_started:
+                browser = await launch_async(headless=True, humanize=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
+                page = await browser.new_page()
+                browser_started = True
+            
+            await page.goto(fix_url(url), wait_until="domcontentloaded", timeout=PAGE_TIMEOUT)
+            screenshot = await page.screenshot(full_page=True, timeout=SCREENSHOT_TIMEOUT)
+            await update.message.reply_photo(photo=screenshot, caption=f"📸 Скриншот: {url}")
+            return
+            
+        except Exception as e:
+            logger.error(f"Ошибка: {e}")
+            await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+            return
+    
+    # Если URL не указан - скриншот текущей страницы
+    if not browser_started:
+        await update.message.reply_text("❌ Браузер не запущен! Сначала запусти: /browserplay")
         return
     
-    url = context.args[0]
-    await update.message.reply_text(f"📸 Делаю скриншот {url}...")
+    if not page:
+        await update.message.reply_text("❌ Страница не открыта! Открой страницу через /html или /shot <url>")
+        return
+    
+    await update.message.reply_text("📸 Делаю скриншот текущей страницы...")
     
     try:
-        if not browser_started:
-            browser = await launch_async(headless=True, humanize=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
-            page = await browser.new_page()
-            browser_started = True
-        
-        await page.goto(fix_url(url), wait_until="domcontentloaded", timeout=PAGE_TIMEOUT)
+        current_url = page.url
         screenshot = await page.screenshot(full_page=True, timeout=SCREENSHOT_TIMEOUT)
-        await update.message.reply_photo(photo=screenshot, caption=f"Скриншот: {url}")
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption=f"📸 Текущая страница: {current_url}"
+        )
         
     except Exception as e:
         logger.error(f"Ошибка: {e}")
