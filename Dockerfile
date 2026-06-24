@@ -10,11 +10,9 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Копируем requirements и устанавливаем
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копируем ВСЕ .py файлы
 COPY *.py .
 
 ENV PYTHONUNBUFFERED=1
