@@ -14,6 +14,7 @@ from flask import Flask, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from playwright.async_api import async_playwright
+from agnes_vision import vision_command, vision_click_command, vision_ask_command
 
 # ============ НАСТРОЙКИ ============
 logging.basicConfig(level=logging.INFO)
@@ -374,7 +375,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "🐦 **X**\n"
         "/startxspeed — Быстрый старт (всё сразу)\n"
         "/xprofile — Инфо профиля\n"
-        "/twittermenu — Открыть меню Twitter",
+        "/twittermenu — Открыть меню Twitter\n\n"
+        "👁️ **МАШИННОЕ ЗРЕНИЕ**\n"
+        "/vision — Описать страницу\n"
+        "/vclick <описание> — Кликнуть по элементу\n"
+        "/vask <вопрос> — Задать вопрос о странице",
         parse_mode="Markdown"
     )
 
@@ -979,39 +984,12 @@ async def get_posts_from_page(page, limit=10):
                         const timeEl = article.querySelector('time');
                         const time = timeEl ? timeEl.textContent : '';
                         
-                        const linkEl = article.querySelector('a[href*="/status/"]');
-                        let link = '';
-                        if (linkEl) {{
-                            const href = linkEl.getAttribute('href');
-                            if (href) link = 'https://x.com' + href;
-                        }}
-                        
-                        let likes = 0;
-                        let retweets = 0;
-                        
-                        const likeBtn = article.querySelector('[data-testid="like"]');
-                        if (likeBtn) {{
-                            const text = likeBtn.textContent || '';
-                            const num = text.replace(/[^0-9]/g, '');
-                            if (num) likes = parseInt(num);
-                        }}
-                        
-                        const retweetBtn = article.querySelector('[data-testid="retweet"]');
-                        if (retweetBtn) {{
-                            const text = retweetBtn.textContent || '';
-                            const num = text.replace(/[^0-9]/g, '');
-                            if (num) retweets = parseInt(num);
-                        }}
-                        
-                        if (text || link) {{
+                        if (text) {{
                             posts.push({{
                                 author: author,
                                 username: username,
                                 text: text,
-                                time: time,
-                                link: link,
-                                likes: likes,
-                                retweets: retweets
+                                time: time
                             }});
                         }}
                     }} catch(e) {{}}
@@ -1064,9 +1042,7 @@ async def send_post(message, post):
         f"👤 **{post['author']}**\n"
         f"🔹 @{post['username']}\n"
         f"🕐 {post['time']}\n\n"
-        f"📝 {post['text'][:300]}{'...' if len(post['text']) > 300 else ''}\n\n"
-        f"❤️ {post['likes']}  🔁 {post['retweets']}\n"
-        f"🔗 {post['link']}"
+        f"📝 {post['text'][:300]}{'...' if len(post['text']) > 300 else ''}"
     )
     await message.reply_text(text, parse_mode="Markdown")
     await asyncio.sleep(0.3)
@@ -1095,6 +1071,9 @@ def main():
     bot_app.add_handler(CommandHandler("startxspeed", start_x_com))
     bot_app.add_handler(CommandHandler("xprofile", x_profile_info))
     bot_app.add_handler(CommandHandler("twittermenu", twitter_menu))
+    bot_app.add_handler(CommandHandler("vision", vision_command))
+    bot_app.add_handler(CommandHandler("vclick", vision_click_command))
+    bot_app.add_handler(CommandHandler("vask", vision_ask_command))
     
     bot_app.add_handler(CallbackQueryHandler(twitter_callback, pattern="^twitter_"))
     
