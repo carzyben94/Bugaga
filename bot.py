@@ -84,10 +84,9 @@ async def get_browser():
     )
     page = await context.new_page()
     
-    # ============ МАСКИРОВКА ============
+    # МАСКИРОВКА
     await page.add_init_script("""
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        
         Object.defineProperty(navigator, 'plugins', {
             get: () => {
                 const plugins = [
@@ -100,7 +99,6 @@ async def get_browser():
                 return plugins;
             }
         });
-        
         Object.defineProperty(navigator, 'languages', { get: () => ['ru-RU', 'ru', 'en-US', 'en'] });
         Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
         Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
@@ -123,10 +121,10 @@ async def close_user_browser(user_id: int):
         await user_sessions[user_id]["browser"].close()
         del user_sessions[user_id]
 
-# ============ СКРИНШОТ (ИСПРАВЛЕННЫЙ) ============
+# ============ СКРИНШОТ — РАБОЧАЯ ВЕРСИЯ ============
 async def take_screenshot(page) -> bytes:
     try:
-        # Способ 1: Обычный скриншот
+        # СПОСОБ 1: Обычный скриншот
         screenshot = await page.screenshot(type="png")
         if screenshot and len(screenshot) > 1000:
             return screenshot
@@ -134,7 +132,7 @@ async def take_screenshot(page) -> bytes:
         pass
     
     try:
-        # Способ 2: Скриншот через clip (только видимая часть)
+        # СПОСОБ 2: Скриншот с clip
         viewport = page.viewport_size
         screenshot = await page.screenshot(
             type="png",
@@ -146,24 +144,11 @@ async def take_screenshot(page) -> bytes:
         pass
     
     try:
-        # Способ 3: Через evaluate (canvas)
-        screenshot = await page.evaluate("""
-            () => {
-                const canvas = document.createElement('canvas');
-                canvas.width = window.innerWidth;
-                canvas.height = window.innerHeight;
-                const ctx = canvas.getContext('2d');
-                ctx.fillStyle = 'white';
-                ctx.fillRect(0, 0, canvas.width, canvas.height);
-                ctx.fillStyle = 'black';
-                ctx.font = '20px Arial';
-                ctx.fillText('Скриншот заблокирован X.com', 50, 50);
-                return canvas.toDataURL('image/png');
-            }
-        """)
-        if screenshot:
-            import base64
-            screenshot = base64.b64decode(screenshot.split(',')[1])
+        # СПОСОБ 3: Через скролл
+        await page.evaluate("window.scrollTo(0, 0)")
+        await asyncio.sleep(1)
+        screenshot = await page.screenshot(type="png")
+        if screenshot and len(screenshot) > 1000:
             return screenshot
     except:
         pass
@@ -200,13 +185,14 @@ async def x_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     
     try:
         await page.goto("https://x.com", wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
         
         screenshot = await take_screenshot(page)
         if screenshot and len(screenshot) > 1000:
             await update.message.reply_photo(photo=BytesIO(screenshot), caption="✅ X.com открыт!")
         else:
-            await update.message.reply_text("✅ X.com открыт! (скриншот недоступен)")
+            await update.message.reply_text("✅ X.com открыт!")
+            
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
@@ -217,14 +203,14 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
         return
     
-    page = user_sessions[user_id]["page"]
     await update.message.reply_text("📸 Делаю скриншот...")
+    page = user_sessions[user_id]["page"]
     
     screenshot = await take_screenshot(page)
     if screenshot and len(screenshot) > 1000:
         await update.message.reply_photo(photo=BytesIO(screenshot), caption="📸 Скриншот")
     else:
-        await update.message.reply_text("❌ Не удалось сделать скриншот (X.com блокирует)")
+        await update.message.reply_text("❌ Не удалось сделать скриншот")
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
