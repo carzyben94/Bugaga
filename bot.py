@@ -19,9 +19,20 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("❌ TELEGRAM_BOT_TOKEN не найден!")
 
+# ============ ТВОИ КУКИ (ВСТАВЬ СЮДА) ============
+MY_COOKIES = [
+    {"name": "auth_token", "value": "09fe982487255e707f7a9b3d380ea429421adae3", "domain": ".x.com", "path": "/"},
+    {"name": "ct0", "value": "18f7448391062aaaa323ea38f4fd129f5f682f09ec0989f899ebc4ddaa4d7bf7de0e0c359240145428b7cc1d410adbc5565fa9bbe2c4380b5341327ea3c53f03a89fcb12ee617d0fea848882ae6ff281", "domain": ".x.com", "path": "/"},
+    {"name": "twid", "value": "u%3D2067347503503052800", "domain": ".x.com", "path": "/"},
+    {"name": "guest_id", "value": "v1%3A178224957371538879", "domain": ".x.com", "path": "/"},
+    {"name": "guest_id_ads", "value": "v1%3A178224957371538879", "domain": ".x.com", "path": "/"},
+    {"name": "guest_id_marketing", "value": "v1%3A178224957371538879", "domain": ".x.com", "path": "/"},
+    {"name": "lang", "value": "ru", "domain": ".x.com", "path": "/"},
+]
+# ==================================================
+
 # Хранилища
 user_sessions = {}
-cursor_positions = {}
 
 # ============ FLASK ============
 app_flask = Flask(__name__)
@@ -89,8 +100,11 @@ async def get_user_browser(user_id: int):
             "context": context,
             "current_url": "about:blank"
         }
+        # Устанавливаем куки при первом открытии
+        await context.clear_cookies()
+        await context.add_cookies(MY_COOKIES)
+        print(f"✅ Установлено {len(MY_COOKIES)} кук для пользователя {user_id}")
         await page.goto("about:blank")
-        cursor_positions[user_id] = {"x": VIEWPORT["width"] // 2, "y": VIEWPORT["height"] // 2}
         return user_sessions[user_id]
     return user_sessions[user_id]
 
@@ -98,8 +112,6 @@ async def close_user_browser(user_id: int):
     if user_id in user_sessions:
         await user_sessions[user_id]["browser"].close()
         del user_sessions[user_id]
-        if user_id in cursor_positions:
-            del cursor_positions[user_id]
 
 async def goto_url(page, url: str):
     try:
@@ -119,27 +131,30 @@ async def human_screenshot(page, x: int, y: int) -> bytes:
         print(f"Ошибка скриншота: {e}")
         return b""
 
-# ============ КОМАНДА /START ============
+# ============ КОМАНДЫ ============
+
+# /START
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "🤖 **КОМАНДЫ БОТА**\n\n"
+        "🚀 **БЫСТРЫЙ СТАРТ**\n"
+        "/xlogin — Открыть X.com с куками\n\n"
         "🌐 **БРАУЗЕР**\n"
         "/browser — Открыть браузер\n"
         "/close — Закрыть браузер\n"
         "/go url — Перейти на сайт\n"
-        "/status — Статус\n"
-        "/screenshot — Скриншот\n\n"
+        "/screenshot — Скриншот\n"
+        "/status — Статус\n\n"
         "🐦 **X**\n"
         "/xlogin — Войти в X.com\n"
-        "/xhome — Главная X.com\n"
+        "/xhome — Главная\n"
         "/xprofile — Профиль\n"
-        "/xtrends — Тренды\n\n"
-        "📸 **ИНФО**\n"
-        "/status — Статус браузера",
+        "/xtrends — Тренды\n"
+        "/xbookmarks — Закладки",
         parse_mode="Markdown"
     )
 
-# ============ /BROWSER ============
+# /BROWSER
 async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     await update.message.reply_text("🌐 Открываю браузер...")
@@ -147,11 +162,11 @@ async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await get_user_browser(user_id)
         session = user_sessions[user_id]
         context.user_data['page'] = session["page"]
-        await update.message.reply_text("✅ Браузер готов!")
+        await update.message.reply_text("✅ Браузер готов! Куки уже установлены.")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-# ============ /CLOSE ============
+# /CLOSE
 async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     await close_user_browser(user_id)
@@ -159,7 +174,7 @@ async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         del context.user_data['page']
     await update.message.reply_text("❌ Браузер закрыт")
 
-# ============ /GO ============
+# /GO
 async def go_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     args = context.args
@@ -180,7 +195,7 @@ async def go_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-# ============ /STATUS ============
+# /STATUS
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     if user_id not in user_sessions:
@@ -199,7 +214,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     screenshot = await human_screenshot(page, 100, 100)
     await update.message.reply_photo(photo=screenshot, caption=status_text)
 
-# ============ /SCREENSHOT ============
+# /SCREENSHOT
 async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     if user_id not in user_sessions:
@@ -213,13 +228,12 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-# ============ /XLOGIN ============
+# /XLOGIN — ОТКРЫТЬ X.COM С КУКАМИ
 async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    await update.message.reply_text("🐦 Открываю X.com...")
+    await update.message.reply_text("🐦 Открываю X.com с куками...")
     try:
-        await get_user_browser(user_id)
-        session = user_sessions[user_id]
+        session = await get_user_browser(user_id)
         page = session["page"]
         context.user_data['page'] = page
         
@@ -227,15 +241,19 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         session["current_url"] = "https://x.com"
         await page.wait_for_timeout(3000)
         
+        # Проверяем, вошли ли
+        cookies = await page.context.cookies()
+        has_session = any(c['name'] in ['auth_token', 'ct0', 'twid'] for c in cookies)
+        
         screenshot = await human_screenshot(page, 100, 100)
         await update.message.reply_photo(
             photo=screenshot,
-            caption="✅ X.com открыт! Используй /status для проверки входа"
+            caption=f"✅ X.com открыт!\n{'✅ ВОШЁЛ' if has_session else '⚠️ НЕ ВОШЁЛ'}\nПроверь статус: /status"
         )
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-# ============ /XHOME ============
+# /XHOME
 async def xhome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     if user_id not in user_sessions:
@@ -251,7 +269,7 @@ async def xhome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-# ============ /XPROFILE ============
+# /XPROFILE
 async def xprofile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     if user_id not in user_sessions:
@@ -286,7 +304,7 @@ async def xprofile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-# ============ /XTRENDS ============
+# /XTRENDS
 async def xtrends(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     if user_id not in user_sessions:
@@ -324,6 +342,22 @@ async def xtrends(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
+# /XBOOKMARKS
+async def xbookmarks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if user_id not in user_sessions:
+        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
+        return
+    try:
+        session = user_sessions[user_id]
+        page = session["page"]
+        await goto_url(page, "https://x.com/i/bookmarks")
+        await page.wait_for_timeout(3000)
+        screenshot = await human_screenshot(page, 100, 100)
+        await update.message.reply_photo(photo=screenshot, caption="📥 Закладки X.com")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
 # ============ ЗАПУСК ============
 def run_flask():
     port = int(os.getenv("PORT", 8080))
@@ -345,6 +379,7 @@ def main():
     bot_app.add_handler(CommandHandler("xhome", xhome))
     bot_app.add_handler(CommandHandler("xprofile", xprofile))
     bot_app.add_handler(CommandHandler("xtrends", xtrends))
+    bot_app.add_handler(CommandHandler("xbookmarks", xbookmarks))
     
     print("✅ Бот запущен")
     bot_app.run_polling()
