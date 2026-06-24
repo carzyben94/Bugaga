@@ -622,7 +622,20 @@ async def shot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 browser_started = True
             
             await page.goto(fix_url(url), wait_until="domcontentloaded", timeout=PAGE_TIMEOUT)
-            screenshot = await page.screenshot(full_page=True, timeout=SCREENSHOT_TIMEOUT)
+            await asyncio.sleep(2)
+            
+            # Делаем скриншот viewport с фиксированными размерами
+            screenshot = await page.screenshot(
+                full_page=False,
+                clip={'x': 0, 'y': 0, 'width': 1200, 'height': 800},
+                timeout=SCREENSHOT_TIMEOUT
+            )
+            
+            # Проверяем размер
+            if len(screenshot) < 1000:
+                await update.message.reply_text("⚠️ Страница пустая или не загрузилась. Попробуй другой URL.")
+                return
+            
             await update.message.reply_photo(photo=screenshot, caption=f"📸 Скриншот: {url}")
             return
             
@@ -644,15 +657,44 @@ async def shot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         current_url = page.url
-        screenshot = await page.screenshot(full_page=True, timeout=SCREENSHOT_TIMEOUT)
+        
+        # Пробуем сделать скриншот viewport с фиксированными размерами
+        screenshot = await page.screenshot(
+            full_page=False,
+            clip={'x': 0, 'y': 0, 'width': 1200, 'height': 800},
+            timeout=SCREENSHOT_TIMEOUT
+        )
+        
+        # Проверяем размер
+        if len(screenshot) < 1000:
+            await update.message.reply_text("⚠️ Страница пустая или не загрузилась. Попробуй перезагрузить страницу.")
+            return
+        
         await update.message.reply_photo(
             photo=screenshot,
-            caption=f"📸 Текущая страница: {current_url}"
+            caption=f"📸 Текущая страница: {current_url[:50]}..."
         )
         
     except Exception as e:
         logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        
+        # Пробуем альтернативный способ - ещё меньше
+        try:
+            await update.message.reply_text("🔄 Пробую альтернативный способ...")
+            screenshot = await page.screenshot(
+                full_page=False,
+                clip={'x': 0, 'y': 0, 'width': 800, 'height': 600},
+                timeout=SCREENSHOT_TIMEOUT
+            )
+            if len(screenshot) > 1000:
+                await update.message.reply_photo(
+                    photo=screenshot,
+                    caption="📸 Скриншот (обрезанный)"
+                )
+            else:
+                await update.message.reply_text("❌ Не удалось сделать скриншот. Страница пустая.")
+        except Exception as e2:
+            await update.message.reply_text(f"❌ Не удалось сделать скриншот: {str(e2)[:200]}")
 
 async def cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global browser_started, browser, page
@@ -709,7 +751,11 @@ async def loginx(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if auth_cookie:
             add_log("✅ Успешный вход в X через /loginx")
-            screenshot = await page.screenshot(full_page=False, timeout=SCREENSHOT_TIMEOUT)
+            screenshot = await page.screenshot(
+                full_page=False,
+                clip={'x': 0, 'y': 0, 'width': 1200, 'height': 800},
+                timeout=SCREENSHOT_TIMEOUT
+            )
             await update.message.reply_photo(
                 photo=screenshot,
                 caption="✅ Успешный вход в X!\n\nТеперь доступно: /tweet <текст>"
@@ -776,7 +822,11 @@ async def tweet_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if success:
             add_log(f"✅ Твит опубликован: {tweet_text[:50]}...")
-            screenshot = await page.screenshot(timeout=SCREENSHOT_TIMEOUT)
+            screenshot = await page.screenshot(
+                full_page=False,
+                clip={'x': 0, 'y': 0, 'width': 1200, 'height': 800},
+                timeout=SCREENSHOT_TIMEOUT
+            )
             await update.message.reply_photo(
                 photo=screenshot,
                 caption=f"✅ Твит опубликован!\n\n{tweet_text}"
