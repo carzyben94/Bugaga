@@ -18,7 +18,6 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("❌ TELEGRAM_BOT_TOKEN не найден!")
 
-# ============ КУКИ ============
 MY_COOKIES = [
     {"name": "auth_token", "value": "09fe982487255e707f7a9b3d380ea429421adae3", "domain": ".x.com", "path": "/"},
     {"name": "ct0", "value": "18f7448391062aaaa323ea38f4fd129f5f682f09ec0989f899ebc4ddaa4d7bf7de0e0c359240145428b7cc1d410adbc5565fa9bbe2c4380b5341327ea3c53f03a89fcb12ee617d0fea848882ae6ff281", "domain": ".x.com", "path": "/"},
@@ -27,7 +26,6 @@ MY_COOKIES = [
 
 user_sessions = {}
 
-# ============ FLASK ============
 app_flask = Flask(__name__)
 
 @app_flask.route('/')
@@ -51,11 +49,161 @@ def keep_alive():
             pass
         time.sleep(1200)
 
-# ============ МАКСИМАЛЬНАЯ ЭМУЛЯЦИЯ ============
+# ============ ЭМУЛЯЦИЯ КУРСОРА ============
+async def human_move(page, x, y, steps=10):
+    """Плавное движение мыши как у человека"""
+    try:
+        # Получаем текущую позицию
+        current = await page.evaluate("""
+            () => ({
+                x: window.scrollX + window.innerWidth / 2,
+                y: window.scrollY + window.innerHeight / 2
+            })
+        """)
+        
+        for i in range(steps):
+            progress = (i + 1) / steps
+            # Кривая Безье для плавности
+            ease = 1 - (1 - progress) ** 3
+            target_x = current["x"] + (x - current["x"]) * ease + random.randint(-3, 3)
+            target_y = current["y"] + (y - current["y"]) * ease + random.randint(-3, 3)
+            await page.mouse.move(target_x, target_y)
+            await asyncio.sleep(random.uniform(0.02, 0.06))
+        
+        await page.mouse.move(x, y)
+        await asyncio.sleep(random.uniform(0.05, 0.15))
+        return True
+    except:
+        return False
+
+async def human_click(page, x, y, button="left"):
+    """Клик с задержкой как у человека"""
+    try:
+        await human_move(page, x, y, steps=8)
+        await asyncio.sleep(random.uniform(0.1, 0.3))
+        await page.mouse.down(button=button)
+        await asyncio.sleep(random.uniform(0.05, 0.15))
+        await page.mouse.up(button=button)
+        await asyncio.sleep(random.uniform(0.1, 0.2))
+        return True
+    except:
+        return False
+
+async def human_scroll(page, amount, steps=3):
+    """Плавная прокрутка"""
+    try:
+        for i in range(steps):
+            scroll_amount = amount // steps + random.randint(-20, 20)
+            await page.mouse.wheel(0, scroll_amount)
+            await asyncio.sleep(random.uniform(0.1, 0.3))
+        return True
+    except:
+        return False
+
+# ============ ЭМУЛЯЦИЯ КЛАВИАТУРЫ ============
+async def human_type(page, text, delay=50):
+    """Ввод текста с случайными задержками между символами"""
+    try:
+        # Клик на поле ввода (фокус)
+        await page.mouse.click(100, 100)
+        await asyncio.sleep(0.2)
+        
+        for char in text:
+            # Случайная задержка между символами
+            wait_time = delay + random.randint(-15, 30)
+            if char.isupper() or char in '!@#$%^&*()_+':
+                wait_time += random.randint(20, 50)
+            await page.keyboard.type(char, delay=wait_time)
+            
+            # Иногда "ошибаемся" и исправляем (реалистичность)
+            if random.random() < 0.01 and len(text) > 3:
+                await page.keyboard.press("Backspace")
+                await asyncio.sleep(random.uniform(0.05, 0.15))
+                await page.keyboard.type(char, delay=wait_time)
+        
+        await asyncio.sleep(random.uniform(0.2, 0.5))
+        return True
+    except:
+        return False
+
+async def human_press_key(page, key):
+    """Нажатие клавиши с задержкой"""
+    try:
+        await asyncio.sleep(random.uniform(0.1, 0.3))
+        await page.keyboard.press(key)
+        await asyncio.sleep(random.uniform(0.1, 0.2))
+        return True
+    except:
+        return False
+
+# ============ ЭМУЛЯЦИЯ ПАРСИНГА (ЧЕЛОВЕЧНЫЙ) ============
+async def human_get_tweets(page, limit=3):
+    """Собирает твиты с имитацией человеческого поведения"""
+    try:
+        # Ждём как человек
+        await asyncio.sleep(random.uniform(1, 2))
+        
+        # Прокручиваем как человек
+        for _ in range(random.randint(1, 3)):
+            scroll_amount = random.randint(300, 700)
+            await human_scroll(page, scroll_amount)
+            await asyncio.sleep(random.uniform(0.5, 1.5))
+        
+        # Собираем посты
+        tweets = await page.evaluate(f"""
+            () => {{
+                const posts = [];
+                const articles = document.querySelectorAll('[data-testid="tweet"], article');
+                
+                articles.forEach((article, index) => {{
+                    if (index >= {limit}) return;
+                    
+                    try {{
+                        const nameEl = article.querySelector('[data-testid="User-Name"]');
+                        let name = 'Неизвестно', username = '';
+                        if (nameEl) {{
+                            const spans = nameEl.querySelectorAll('span');
+                            if (spans.length > 0) name = spans[0]?.textContent || 'Неизвестно';
+                            if (spans.length > 1) username = spans[1]?.textContent?.replace('@', '') || '';
+                        }}
+                        
+                        const textEl = article.querySelector('[data-testid="tweetText"]');
+                        const text = textEl ? textEl.textContent : '';
+                        
+                        const timeEl = article.querySelector('time');
+                        const time = timeEl ? timeEl.textContent : '';
+                        
+                        const linkEl = article.querySelector('a[href*="/status/"]');
+                        let link = '';
+                        if (linkEl) {{
+                            const href = linkEl.getAttribute('href');
+                            if (href) link = 'https://x.com' + href;
+                        }}
+                        
+                        if (text || link) {{
+                            posts.push({{
+                                name: name,
+                                username: username,
+                                text: text,
+                                time: time,
+                                link: link
+                            }});
+                        }}
+                    }} catch(e) {{}}
+                }});
+                
+                return posts;
+            }}
+        """)
+        
+        return tweets
+    except:
+        return []
+
+# ============ БРАУЗЕР ============
 async def get_browser():
     playwright = await async_playwright().start()
     
-    # Случайные параметры
     viewport_width = random.choice([1366, 1440, 1536, 1600, 1920])
     viewport_height = random.choice([768, 900, 960, 1080])
     
@@ -78,18 +226,13 @@ async def get_browser():
             '--disable-site-isolation-trials',
             '--disable-software-rasterizer',
             '--disable-web-security',
-            '--disable-features=IsolateOrigins,site-per-process',
-            '--disable-features=BlockInsecurePrivateNetworkRequests',
-            '--disable-features=OutOfBlinkCors',
         ]
     )
     
     user_agents = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     ]
     
     context = await browser.new_context(
@@ -117,24 +260,13 @@ async def get_browser():
         }
     )
     
-    # Добавляем случайные куки для реалистичности
-    await context.add_cookies([
-        {"name": "_ga", "value": f"GA1.2.{random.randint(100000, 999999)}.{random.randint(1000000000, 9999999999)}", "domain": ".x.com", "path": "/"},
-        {"name": "_gid", "value": f"GA1.2.{random.randint(100000, 999999)}.{random.randint(1000000000, 9999999999)}", "domain": ".x.com", "path": "/"},
-    ])
-    
-    # Добавляем твои куки
     await context.add_cookies(MY_COOKIES)
     
     page = await context.new_page()
     
-    # ============ МАКСИМАЛЬНАЯ МАСКИРОВКА ============
     await page.add_init_script("""
-        // Удаляем webdriver
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
         delete Object.getPrototypeOf(navigator).webdriver;
-        
-        // Полная эмуляция плагинов
         Object.defineProperty(navigator, 'plugins', {
             get: () => {
                 const plugins = [
@@ -148,54 +280,21 @@ async def get_browser():
                 return plugins;
             }
         });
-        
-        // Эмуляция languages
         Object.defineProperty(navigator, 'languages', { get: () => ['ru-RU', 'ru', 'en-US', 'en'] });
-        
-        // Эмуляция platform
         Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
-        
-        // Эмуляция hardwareConcurrency
         Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
-        
-        // Эмуляция deviceMemory
         Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
-        
-        // Эмуляция screen
         Object.defineProperty(screen, 'availWidth', { get: () => 1920 });
         Object.defineProperty(screen, 'availHeight', { get: () => 1080 });
         Object.defineProperty(screen, 'width', { get: () => 1920 });
         Object.defineProperty(screen, 'height', { get: () => 1080 });
-        
-        // Полная эмуляция chrome
-        window.chrome = {
-            runtime: {},
-            loadTimes: function() {},
-            csi: function() {},
-            app: {
-                isInstalled: false,
-                InstallState: {
-                    DISABLED: 'disabled',
-                    INSTALLED: 'installed',
-                    NOT_INSTALLED: 'not_installed'
-                },
-                RunningState: {
-                    CANNOT_RUN: 'cannot_run',
-                    READY_TO_RUN: 'ready_to_run',
-                    RUNNING: 'running'
-                }
-            }
-        };
-        
-        // Эмуляция WebGL
+        window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {}, app: { isInstalled: false } };
         const getParameter = WebGLRenderingContext.prototype.getParameter;
         WebGLRenderingContext.prototype.getParameter = function(parameter) {
             if (parameter === 37445) return 'Intel Inc.';
             if (parameter === 37446) return 'Intel Iris OpenGL Engine';
             return getParameter(parameter);
         };
-        
-        // Эмуляция canvas
         const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
         HTMLCanvasElement.prototype.toDataURL = function(type) {
             if (type === 'image/png') {
@@ -203,16 +302,13 @@ async def get_browser():
             }
             return originalToDataURL.apply(this, arguments);
         };
-        
-        // Добавляем permissions
         const originalQuery = window.navigator.permissions.query;
         window.navigator.permissions.query = (parameters) => (
             parameters.name === 'notifications' ?
                 Promise.resolve({ state: Notification.permission }) :
                 originalQuery(parameters)
         );
-        
-        console.log('✅ Полная эмуляция браузера включена');
+        console.log('✅ Полная эмуляция включена');
     """)
     
     return page, browser, context
@@ -238,13 +334,12 @@ async def take_screenshot(page) -> bytes:
 def escape_markdown(text):
     if not text:
         return ''
-    escape_chars = r'[_*\[\]()~>#+=|{}.!-]'
-    return re.sub(r'([%s])' % escape_chars, r'\\\1', text)
+    return re.sub(r'([_*\[\]()~>#+=|{}.!-])', r'\\\1', text)
 
 # ============ КОМАНДЫ ============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "🤖 **КОМАНДЫ**\n\n"
+        "🤖 **ЭМУЛЯЦИЯ ЧЕЛОВЕКА**\n\n"
         "/browser — Открыть браузер\n"
         "/x — Открыть X.com\n"
         "/screenshot — Скриншот\n"
@@ -258,7 +353,7 @@ async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user_id = update.effective_user.id
     await update.message.reply_text("🌐 Открываю браузер с полной эмуляцией...")
     await get_user_browser(user_id)
-    await update.message.reply_text("✅ Браузер готов! Эмуляция включена.")
+    await update.message.reply_text("✅ Браузер готов!")
 
 async def x_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
@@ -270,9 +365,8 @@ async def x_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     page = user_sessions[user_id]["page"]
     
     try:
-        # НЕ ЖДЁМ ЗАГРУЗКИ — НЕ ПАДАЕТ
         await page.goto("https://x.com", timeout=30000)
-        await asyncio.sleep(3)
+        await asyncio.sleep(random.uniform(2, 4))
         
         screenshot = await take_screenshot(page)
         if screenshot and len(screenshot) > 1000:
@@ -303,51 +397,15 @@ async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("⚠️ Сначала /browser")
         return
     
-    await update.message.reply_text("📡 Собираю 3 твита...")
+    await update.message.reply_text("📡 Собираю 3 твита (человеческий парсинг)...")
     page = user_sessions[user_id]["page"]
     
     try:
         await page.goto("https://x.com", timeout=30000)
-        await asyncio.sleep(4)
+        await asyncio.sleep(random.uniform(2, 4))
         
-        # Простая прокрутка
-        await page.mouse.wheel(0, 800)
-        await asyncio.sleep(1)
-        await page.mouse.wheel(0, 800)
-        await asyncio.sleep(1)
-        
-        tweets = await page.evaluate("""
-            () => {
-                const posts = [];
-                const articles = document.querySelectorAll('[data-testid="tweet"], article');
-                articles.forEach((article, index) => {
-                    if (index >= 3) return;
-                    try {
-                        const nameEl = article.querySelector('[data-testid="User-Name"]');
-                        let name = 'Неизвестно', username = '';
-                        if (nameEl) {
-                            const spans = nameEl.querySelectorAll('span');
-                            if (spans.length > 0) name = spans[0]?.textContent || 'Неизвестно';
-                            if (spans.length > 1) username = spans[1]?.textContent?.replace('@', '') || '';
-                        }
-                        const textEl = article.querySelector('[data-testid="tweetText"]');
-                        const text = textEl ? textEl.textContent : '';
-                        const timeEl = article.querySelector('time');
-                        const time = timeEl ? timeEl.textContent : '';
-                        const linkEl = article.querySelector('a[href*="/status/"]');
-                        let link = '';
-                        if (linkEl) {
-                            const href = linkEl.getAttribute('href');
-                            if (href) link = 'https://x.com' + href;
-                        }
-                        if (text || link) {
-                            posts.push({ name, username, text, time, link });
-                        }
-                    } catch(e) {}
-                });
-                return posts;
-            }
-        """)
+        # Человеческий парсинг
+        tweets = await human_get_tweets(page, limit=3)
         
         if tweets and len(tweets) > 0:
             for i, tweet in enumerate(tweets, 1):
