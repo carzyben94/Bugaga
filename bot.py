@@ -121,10 +121,9 @@ async def close_user_browser(user_id: int):
         await user_sessions[user_id]["browser"].close()
         del user_sessions[user_id]
 
-# ============ СКРИНШОТ — РАБОЧАЯ ВЕРСИЯ ============
+# ============ СКРИНШОТ ============
 async def take_screenshot(page) -> bytes:
     try:
-        # СПОСОБ 1: Обычный скриншот
         screenshot = await page.screenshot(type="png")
         if screenshot and len(screenshot) > 1000:
             return screenshot
@@ -132,7 +131,6 @@ async def take_screenshot(page) -> bytes:
         pass
     
     try:
-        # СПОСОБ 2: Скриншот с clip
         viewport = page.viewport_size
         screenshot = await page.screenshot(
             type="png",
@@ -144,7 +142,6 @@ async def take_screenshot(page) -> bytes:
         pass
     
     try:
-        # СПОСОБ 3: Через скролл
         await page.evaluate("window.scrollTo(0, 0)")
         await asyncio.sleep(1)
         screenshot = await page.screenshot(type="png")
@@ -162,6 +159,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/browser — Открыть браузер\n"
         "/x — Открыть X.com\n"
         "/screenshot — Скриншот\n"
+        "/tweets — 3 твита из ленты\n"
         "/status — Статус\n"
         "/close — Закрыть браузер",
         parse_mode="Markdown"
@@ -212,6 +210,95 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     else:
         await update.message.reply_text("❌ Не удалось сделать скриншот")
 
+# ============ /TWEETS — 3 ТВИТА ============
+async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    
+    if user_id not in user_sessions:
+        await update.message.reply_text("⚠️ Сначала открой браузер: /browser")
+        return
+    
+    await update.message.reply_text("📡 Собираю 3 твита из вкладки 'Для вас'...")
+    page = user_sessions[user_id]["page"]
+    
+    try:
+        await page.goto("https://x.com", wait_until="domcontentloaded", timeout=30000)
+        await asyncio.sleep(3)
+        
+        # Прокручиваем для загрузки постов
+        await page.evaluate("window.scrollBy(0, 500)")
+        await asyncio.sleep(1)
+        await page.evaluate("window.scrollBy(0, 500)")
+        await asyncio.sleep(1)
+        
+        tweets = await page.evaluate("""
+            () => {
+                const posts = [];
+                const articles = document.querySelectorAll('[data-testid="tweet"], article');
+                
+                articles.forEach((article, index) => {
+                    if (index >= 3) return;
+                    
+                    try {
+                        const nameEl = article.querySelector('[data-testid="User-Name"]');
+                        let name = 'Неизвестно';
+                        let username = '';
+                        if (nameEl) {
+                            const spans = nameEl.querySelectorAll('span');
+                            if (spans.length > 0) name = spans[0]?.textContent || 'Неизвестно';
+                            if (spans.length > 1) username = spans[1]?.textContent?.replace('@', '') || '';
+                        }
+                        
+                        const textEl = article.querySelector('[data-testid="tweetText"]');
+                        const text = textEl ? textEl.textContent : '';
+                        
+                        const timeEl = article.querySelector('time');
+                        const time = timeEl ? timeEl.textContent : '';
+                        
+                        const linkEl = article.querySelector('a[href*="/status/"]');
+                        let link = '';
+                        if (linkEl) {
+                            const href = linkEl.getAttribute('href');
+                            if (href) link = 'https://x.com' + href;
+                        }
+                        
+                        if (text || link) {
+                            posts.push({
+                                name: name,
+                                username: username,
+                                text: text,
+                                time: time,
+                                link: link
+                            });
+                        }
+                    } catch(e) {}
+                });
+                
+                return posts;
+            }
+        """)
+        
+        if tweets and len(tweets) > 0:
+            for i, tweet in enumerate(tweets, 1):
+                text = (
+                    f"📌 **Твит {i}**\n\n"
+                    f"👤 **{tweet['name']}**\n"
+                    f"🔹 @{tweet['username']}\n"
+                    f"🕐 {tweet['time']}\n\n"
+                    f"📝 {tweet['text'][:500]}{'...' if len(tweet['text']) > 500 else ''}\n\n"
+                    f"🔗 {tweet['link']}"
+                )
+                await update.message.reply_text(text, parse_mode="Markdown")
+                await asyncio.sleep(0.5)
+            
+            await update.message.reply_text("✅ Готово!")
+        else:
+            await update.message.reply_text("❌ Посты не найдены. Попробуй обновить страницу.")
+            
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+# ============ /STATUS ============
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     
@@ -232,6 +319,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     await update.message.reply_text(status_text)
 
+# ============ /CLOSE ============
 async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     await close_user_browser(user_id)
@@ -247,6 +335,7 @@ def main():
     bot_app.add_handler(CommandHandler("browser", browser_command))
     bot_app.add_handler(CommandHandler("x", x_command))
     bot_app.add_handler(CommandHandler("screenshot", screenshot_command))
+    bot_app.add_handler(CommandHandler("tweets", tweets_command))
     bot_app.add_handler(CommandHandler("status", status_command))
     bot_app.add_handler(CommandHandler("close", close_command))
     
