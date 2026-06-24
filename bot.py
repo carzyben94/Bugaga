@@ -14,8 +14,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # === ГЛОБАЛЬНЫЕ НАСТРОЙКИ ===
-SCREENSHOT_TIMEOUT = 60000  # 60 секунд на скриншот
-PAGE_TIMEOUT = 60000        # 60 секунд на загрузку страницы
+SCREENSHOT_TIMEOUT = 60000
+PAGE_TIMEOUT = 60000
 
 # === АВТОУСТАНОВКА CLOAKBROWSER ===
 def install_cloakbrowser():
@@ -64,20 +64,16 @@ browser = None
 page = None
 browser_started = False
 setup_logs = []
-
-# === КУКИ ПО УМОЛЧАНИЮ (пустые, будут заменены пользователем) ===
 X_COOKIES = []
 
-# === ФУНКЦИЯ ДЛЯ ИСПРАВЛЕНИЯ URL ===
+# === ФУНКЦИИ ===
 def fix_url(url):
-    """Добавляет https:// если отсутствует"""
     if not url:
         return url
     if not url.startswith(('http://', 'https://')):
         return f'https://{url}'
     return url
 
-# === ФУНКЦИИ ===
 def add_log(message, level="INFO"):
     timestamp = datetime.now().strftime("%H:%M:%S")
     log_entry = f"[{timestamp}] [{level}] {message}"
@@ -88,32 +84,20 @@ def add_log(message, level="INFO"):
     return log_entry
 
 def parse_cookies_from_text(text):
-    """
-    Парсит куки из текста и УДАЛЯЕТ sameSite
-    Поддерживает форматы:
-    - JSON: [{"name": "...", "value": "...", ...}]
-    - Cookie string: "name1=value1; name2=value2"
-    - Пары с новой строки
-    """
     text = text.strip()
-    
-    # Пробуем как JSON
     try:
         cookies = json.loads(text)
         if isinstance(cookies, list):
             result = []
             for c in cookies:
-                # Берём только нужные поля
                 cookie = {
                     "name": c.get("name"),
                     "value": c.get("value"),
                     "domain": c.get("domain", ".x.com"),
                     "path": c.get("path", "/")
                 }
-                # Если path = "\/" - исправляем
                 if cookie["path"] == "\\/":
                     cookie["path"] = "/"
-                # Проверяем что есть name и value
                 if cookie["name"] and cookie["value"]:
                     result.append(cookie)
             if result:
@@ -121,7 +105,6 @@ def parse_cookies_from_text(text):
     except:
         pass
     
-    # Пробуем как cookie string
     cookies = []
     pairs = re.findall(r'([a-zA-Z_][a-zA-Z0-9_\-]*)\s*=\s*([^;]+)', text)
     for name, value in pairs:
@@ -135,7 +118,6 @@ def parse_cookies_from_text(text):
     if len(cookies) >= 2:
         return cookies
     
-    # Пробуем найти JSON в тексте
     json_match = re.search(r'\[\s*\{.*\}\s*\]', text, re.DOTALL)
     if json_match:
         try:
@@ -172,6 +154,25 @@ def get_play_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 # === КОМАНДЫ ===
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Главное меню - /start"""
+    await update.message.reply_text(
+        "🕵️ **Бот с CloakBrowser**\n\n"
+        "📋 Команды:\n"
+        "/browserplay - 🎮 Панель управления\n"
+        "/watch_x - 🎬 Показать процесс входа в X\n"
+        "/shot - 📸 Скриншот текущей страницы\n"
+        "/shot <url> - 📸 Скриншот указанного URL\n"
+        "/html <url> - 📄 Получить HTML\n"
+        "/cookies <url> - 🍪 Показать куки\n"
+        "/loginx - 🔐 Войти в X\n"
+        "/tweet <текст> - 🐦 Опубликовать твит\n"
+        "/status - 📊 Статус браузера\n\n"
+        f"📦 CloakBrowser: {'✅ Установлен' if CLOAK_AVAILABLE else '❌ Не установлен'}\n"
+        f"🍪 Кук загружено: {len(X_COOKIES)}",
+        parse_mode='Markdown'
+    )
 
 async def browserplay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = get_play_keyboard()
@@ -215,7 +216,6 @@ async def handle_play_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             ]),
             parse_mode='Markdown'
         )
-        # Сохраняем состояние, что ждём куки
         context.user_data['waiting_for_cookies'] = True
         return
     
@@ -361,25 +361,20 @@ async def handle_play_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 # === ОБРАБОТЧИК СООБЩЕНИЙ ДЛЯ КУК ===
 
 async def handle_cookies_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает текстовые сообщения с куками"""
     global X_COOKIES
     
-    # Проверяем, ждём ли мы куки
     if not context.user_data.get('waiting_for_cookies', False):
         return
     
     text = update.message.text
     user_id = update.message.from_user.id
     
-    # Парсим куки
     cookies = parse_cookies_from_text(text)
     
     if cookies and len(cookies) > 0:
-        # Сохраняем куки
         X_COOKIES = cookies
         context.user_data['waiting_for_cookies'] = False
         
-        # Показываем сколько кук загружено
         auth_token = next((c for c in cookies if c.get('name') == 'auth_token'), None)
         ct0 = next((c for c in cookies if c.get('name') == 'ct0'), None)
         twid = next((c for c in cookies if c.get('name') == 'twid'), None)
@@ -412,10 +407,9 @@ async def handle_cookies_input(update: Update, context: ContextTypes.DEFAULT_TYP
             ])
         )
 
-# === КОМАНДА WATCH_X (для кнопки) ===
+# === КОМАНДА WATCH_X ===
 
 async def watch_x_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Версия watch_x для callback"""
     global browser_started, browser, page
     
     query = update.callback_query
@@ -435,7 +429,6 @@ async def watch_x_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     try:
-        # Запускаем браузер, если не запущен
         if not browser_started:
             await query.edit_message_text("🚀 Запускаю браузер...")
             browser = await launch_async(
@@ -447,19 +440,14 @@ async def watch_x_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             browser_started = True
             await asyncio.sleep(2)
         
-        # ШАГ 1: Открываем X.com
         await query.edit_message_text("1️⃣ Открываю X.com...")
         await page.goto(fix_url("x.com"), wait_until="domcontentloaded", timeout=PAGE_TIMEOUT)
         await asyncio.sleep(2)
         
         screenshot1 = await page.screenshot(full_page=False, timeout=SCREENSHOT_TIMEOUT)
-        await query.message.reply_photo(
-            photo=screenshot1,
-            caption="📸 ШАГ 1: Главная страница X (без входа)"
-        )
+        await query.message.reply_photo(photo=screenshot1, caption="📸 ШАГ 1: Главная страница X (без входа)")
         await asyncio.sleep(1)
         
-        # ШАГ 2: Устанавливаем куки
         await query.edit_message_text("2️⃣ Устанавливаю куки для входа...")
         await page.context.add_cookies(X_COOKIES)
         await asyncio.sleep(2)
@@ -473,19 +461,14 @@ async def watch_x_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ auth_token НЕ установлен!")
             return
         
-        # ШАГ 3: Обновляем страницу
         await query.edit_message_text("3️⃣ Обновляю страницу с куками...")
         await page.reload(wait_until="domcontentloaded", timeout=PAGE_TIMEOUT)
         await asyncio.sleep(3)
         
         screenshot2 = await page.screenshot(full_page=False, timeout=SCREENSHOT_TIMEOUT)
-        await query.message.reply_photo(
-            photo=screenshot2,
-            caption="📸 ШАГ 2: После установки кук"
-        )
+        await query.message.reply_photo(photo=screenshot2, caption="📸 ШАГ 2: После установки кук")
         await asyncio.sleep(1)
         
-        # ШАГ 4: Переходим на главную
         await query.edit_message_text("4️⃣ Перехожу на главную страницу X...")
         await page.goto(fix_url("x.com/home"), wait_until="domcontentloaded", timeout=PAGE_TIMEOUT)
         await asyncio.sleep(3)
@@ -503,7 +486,6 @@ async def watch_x_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await asyncio.sleep(1)
         
-        # ШАГ 5: Проверка
         await query.edit_message_text("5️⃣ Проверяю содержимое страницы...")
         
         has_tweets = await page.evaluate('''
@@ -552,10 +534,7 @@ async def watch_x_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка в watch_x: {e}")
         await query.edit_message_text(f"❌ Ошибка: {str(e)[:300]}", reply_markup=get_play_keyboard())
 
-# === ОБЫЧНЫЕ КОМАНДЫ ===
-
 async def watch_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /watch_x"""
     class FakeQuery:
         def __init__(self, message):
             self.message = message
@@ -567,24 +546,6 @@ async def watch_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
     fake_query = FakeQuery(update.message)
     update.callback_query = fake_query
     await watch_x_callback(update, context)
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🕵️ **Бот с CloakBrowser**\n\n"
-        "📋 Команды:\n"
-        "/browserplay - 🎮 Панель управления\n"
-        "/watch_x - 🎬 Показать процесс входа в X\n"
-        "/shot - 📸 Скриншот текущей страницы\n"
-        "/shot <url> - 📸 Скриншот указанного URL\n"
-        "/html <url> - 📄 Получить HTML\n"
-        "/cookies <url> - 🍪 Показать куки\n"
-        "/loginx - 🔐 Войти в X\n"
-        "/tweet <текст> - 🐦 Опубликовать твит\n"
-        "/status - 📊 Статус браузера\n\n"
-        f"📦 CloakBrowser: {'✅ Установлен' if CLOAK_AVAILABLE else '❌ Не установлен'}\n"
-        f"🍪 Кук загружено: {len(X_COOKIES)}",
-        parse_mode='Markdown'
-    )
 
 async def html_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global browser_started, browser, page
@@ -614,7 +575,6 @@ async def html_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def shot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global browser_started, browser, page
     
-    # Если есть URL - переходим по нему
     if context.args:
         url = context.args[0]
         await update.message.reply_text(f"📸 Перехожу на {url} и делаю скриншот...")
@@ -628,14 +588,12 @@ async def shot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await page.goto(fix_url(url), wait_until="domcontentloaded", timeout=PAGE_TIMEOUT)
             await asyncio.sleep(2)
             
-            # Делаем скриншот viewport с фиксированными размерами
             screenshot = await page.screenshot(
                 full_page=False,
                 clip={'x': 0, 'y': 0, 'width': 1200, 'height': 800},
                 timeout=SCREENSHOT_TIMEOUT
             )
             
-            # Проверяем размер
             if len(screenshot) < 1000:
                 await update.message.reply_text("⚠️ Страница пустая или не загрузилась. Попробуй другой URL.")
                 return
@@ -648,7 +606,6 @@ async def shot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
             return
     
-    # Если URL не указан - скриншот текущей страницы
     if not browser_started:
         await update.message.reply_text("❌ Браузер не запущен! Сначала запусти: /browserplay")
         return
@@ -662,14 +619,12 @@ async def shot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         current_url = page.url
         
-        # Пробуем сделать скриншот viewport с фиксированными размерами
         screenshot = await page.screenshot(
             full_page=False,
             clip={'x': 0, 'y': 0, 'width': 1200, 'height': 800},
             timeout=SCREENSHOT_TIMEOUT
         )
         
-        # Проверяем размер
         if len(screenshot) < 1000:
             await update.message.reply_text("⚠️ Страница пустая или не загрузилась. Попробуй перезагрузить страницу.")
             return
@@ -682,7 +637,6 @@ async def shot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка: {e}")
         
-        # Пробуем альтернативный способ - ещё меньше
         try:
             await update.message.reply_text("🔄 Пробую альтернативный способ...")
             screenshot = await page.screenshot(
@@ -860,7 +814,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(TOKEN).build()
     
-    # Регистрируем ВСЕ команды
+    # ⚠️ ВСЕ КОМАНДЫ ЗАРЕГИСТРИРОВАНЫ
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("browserplay", browserplay))
     app.add_handler(CommandHandler("watch_x", watch_x))
@@ -871,13 +825,11 @@ def main():
     app.add_handler(CommandHandler("tweet", tweet_command))
     app.add_handler(CommandHandler("status", status_command))
     
-    # Callback для кнопок
     app.add_handler(CallbackQueryHandler(handle_play_callback, pattern="^browser_"))
-    
-    # Обработчик сообщений (для ввода кук)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_cookies_input))
     
-    logger.info("🚀 Бот запущен!")
+    logger.info("🚀 Бот запущен! Все команды зарегистрированы:")
+    logger.info("📋 /start, /browserplay, /watch_x, /html, /shot, /cookies, /loginx, /tweet, /status")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
