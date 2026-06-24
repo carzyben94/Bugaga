@@ -51,7 +51,7 @@ def keep_alive():
             pass
         time.sleep(1200)
 
-# ============ ПОЛНАЯ ЭМУЛЯЦИЯ БРАУЗЕРА ============
+# ============ БРАУЗЕР ============
 async def get_browser():
     playwright = await async_playwright().start()
     
@@ -69,22 +69,13 @@ async def get_browser():
             '--disable-gpu',
             '--disable-features=IsolateOrigins,site-per-process',
             '--disable-features=BlockInsecurePrivateNetworkRequests',
-            '--disable-background-timer-throttling',
-            '--disable-backgrounding-occluded-windows',
-            '--disable-renderer-backgrounding',
-            '--disable-features=TranslateUI',
-            '--disable-ipc-flooding-protection',
-            '--disable-site-isolation-trials',
-            '--disable-software-rasterizer',
         ]
     )
     
     user_agents = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     ]
     
     context = await browser.new_context(
@@ -92,31 +83,17 @@ async def get_browser():
         user_agent=random.choice(user_agents),
         locale="ru-RU",
         timezone_id="Europe/Moscow",
-        device_scale_factor=1,
-        is_mobile=False,
-        has_touch=False,
         extra_http_headers={
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
             "Accept-Encoding": "gzip, deflate, br",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
             "Connection": "keep-alive",
             "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
-            "Cache-Control": "max-age=0",
             "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": '"Windows"',
         }
     )
-    
-    await context.add_cookies([
-        {"name": "_ga", "value": f"GA1.2.{random.randint(100000, 999999)}.{random.randint(1000000000, 9999999999)}", "domain": ".x.com", "path": "/"},
-        {"name": "_gid", "value": f"GA1.2.{random.randint(100000, 999999)}.{random.randint(1000000000, 9999999999)}", "domain": ".x.com", "path": "/"},
-        {"name": "_gat", "value": "1", "domain": ".x.com", "path": "/"},
-    ])
     
     await context.add_cookies(MY_COOKIES)
     
@@ -125,73 +102,10 @@ async def get_browser():
     await page.add_init_script("""
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
         delete Object.getPrototypeOf(navigator).webdriver;
-        
-        Object.defineProperty(navigator, 'plugins', {
-            get: () => {
-                const plugins = [
-                    { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-                    { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
-                    { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' }
-                ];
-                plugins.length = 3;
-                plugins.item = (i) => plugins[i] || null;
-                plugins.namedItem = (name) => plugins.find(p => p.name === name) || null;
-                return plugins;
-            }
-        });
-        
         Object.defineProperty(navigator, 'languages', { get: () => ['ru-RU', 'ru', 'en-US', 'en'] });
         Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
         Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
-        Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
-        
-        Object.defineProperty(screen, 'availWidth', { get: () => 1920 });
-        Object.defineProperty(screen, 'availHeight', { get: () => 1080 });
-        Object.defineProperty(screen, 'width', { get: () => 1920 });
-        Object.defineProperty(screen, 'height', { get: () => 1080 });
-        
-        window.chrome = {
-            runtime: {},
-            loadTimes: function() {},
-            csi: function() {},
-            app: {
-                isInstalled: false,
-                InstallState: {
-                    DISABLED: 'disabled',
-                    INSTALLED: 'installed',
-                    NOT_INSTALLED: 'not_installed'
-                },
-                RunningState: {
-                    CANNOT_RUN: 'cannot_run',
-                    READY_TO_RUN: 'ready_to_run',
-                    RUNNING: 'running'
-                }
-            }
-        };
-        
-        const getParameter = WebGLRenderingContext.prototype.getParameter;
-        WebGLRenderingContext.prototype.getParameter = function(parameter) {
-            if (parameter === 37445) return 'Intel Inc.';
-            if (parameter === 37446) return 'Intel Iris OpenGL Engine';
-            return getParameter(parameter);
-        };
-        
-        const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
-        HTMLCanvasElement.prototype.toDataURL = function(type) {
-            if (type === 'image/png') {
-                return originalToDataURL.apply(this, arguments);
-            }
-            return originalToDataURL.apply(this, arguments);
-        };
-        
-        const originalQuery = window.navigator.permissions.query;
-        window.navigator.permissions.query = (parameters) => (
-            parameters.name === 'notifications' ?
-                Promise.resolve({ state: Notification.permission }) :
-                originalQuery(parameters)
-        );
-        
-        console.log('✅ Полная эмуляция браузера включена');
+        window.chrome = { runtime: {} };
     """)
     
     return page, browser, context
@@ -214,12 +128,6 @@ async def take_screenshot(page) -> bytes:
     except:
         return b""
 
-def escape_markdown(text):
-    if not text:
-        return ''
-    escape_chars = r'[_*\[\]()~>#+=|{}.!-]'
-    return re.sub(r'([%s])' % escape_chars, r'\\\1', text)
-
 # ============ КОМАНДЫ ============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
@@ -235,10 +143,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    await update.message.reply_text("🌐 Открываю браузер с полной эмуляцией...")
+    await update.message.reply_text("🌐 Открываю браузер...")
     await get_user_browser(user_id)
-    await update.message.reply_text("✅ Браузер готов! Эмуляция включена.")
+    await update.message.reply_text("✅ Браузер готов!")
 
+# ============ /X — БЕЗ ОЖИДАНИЯ (НЕ ПАДАЕТ) ============
 async def x_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     if user_id not in user_sessions:
@@ -249,6 +158,7 @@ async def x_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     page = user_sessions[user_id]["page"]
     
     try:
+        # ⚡ НЕ ЖДЁМ ЗАГРУЗКИ — СТРАНИЦА НЕ ПАДАЕТ
         await page.goto("https://x.com", timeout=30000)
         await asyncio.sleep(3)
         
@@ -260,21 +170,7 @@ async def x_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    if user_id not in user_sessions:
-        await update.message.reply_text("⚠️ Сначала /browser")
-        return
-    
-    await update.message.reply_text("📸 Делаю скриншот...")
-    page = user_sessions[user_id]["page"]
-    screenshot = await take_screenshot(page)
-    
-    if screenshot and len(screenshot) > 1000:
-        await update.message.reply_photo(photo=BytesIO(screenshot), caption="📸 Скриншот")
-    else:
-        await update.message.reply_text("❌ Не удалось")
-
+# ============ /TWEETS — БЕЗ ОЖИДАНИЯ ============
 async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     if user_id not in user_sessions:
@@ -285,6 +181,7 @@ async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     page = user_sessions[user_id]["page"]
     
     try:
+        # ⚡ НЕ ЖДЁМ — НЕ ПАДАЕТ
         await page.goto("https://x.com", timeout=30000)
         await asyncio.sleep(4)
         
@@ -327,19 +224,19 @@ async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         
         if tweets and len(tweets) > 0:
             for i, tweet in enumerate(tweets, 1):
-                name = escape_markdown(tweet['name'])
-                username = escape_markdown(tweet['username'])
-                text = escape_markdown(tweet['text'][:500])
-                time = escape_markdown(tweet['time'])
-                link = escape_markdown(tweet['link'])
+                # Экранируем спецсимволы для Markdown
+                def escape(t):
+                    if not t:
+                        return ''
+                    return re.sub(r'([_*\[\]()~>#+=|{}.!-])', r'\\\1', t)
                 
                 msg = (
                     f"📌 **Твит {i}**\n\n"
-                    f"👤 **{name}**\n"
-                    f"🔹 @{username}\n"
-                    f"🕐 {time}\n\n"
-                    f"📝 {text}{'...' if len(tweet['text']) > 500 else ''}\n\n"
-                    f"🔗 {link}"
+                    f"👤 **{escape(tweet['name'])}**\n"
+                    f"🔹 @{escape(tweet['username'])}\n"
+                    f"🕐 {escape(tweet['time'])}\n\n"
+                    f"📝 {escape(tweet['text'][:500])}{'...' if len(tweet['text']) > 500 else ''}\n\n"
+                    f"🔗 {escape(tweet['link'])}"
                 )
                 await update.message.reply_text(msg, parse_mode="Markdown")
                 await asyncio.sleep(0.5)
@@ -349,6 +246,23 @@ async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
+# ============ /SCREENSHOT ============
+async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if user_id not in user_sessions:
+        await update.message.reply_text("⚠️ Сначала /browser")
+        return
+    
+    await update.message.reply_text("📸 Делаю скриншот...")
+    page = user_sessions[user_id]["page"]
+    screenshot = await take_screenshot(page)
+    
+    if screenshot and len(screenshot) > 1000:
+        await update.message.reply_photo(photo=BytesIO(screenshot), caption="📸 Скриншот")
+    else:
+        await update.message.reply_text("❌ Не удалось")
+
+# ============ /STATUS ============
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     if user_id not in user_sessions:
@@ -365,6 +279,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         text += f"📱 X.com - {'✅ Вошли' if has_cookie else '❌ Не вошли'}"
     await update.message.reply_text(text)
 
+# ============ /CLOSE ============
 async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     await close_user_browser(user_id)
