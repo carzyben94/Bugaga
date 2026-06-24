@@ -1,11 +1,10 @@
-# bot.py - полная версия с X.COM и скриншотами
+# bot.py - с сохранением состояния браузера
 import os
 import subprocess
 import logging
 import json
 import asyncio
 import concurrent.futures
-import base64
 from io import BytesIO
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
@@ -24,113 +23,74 @@ if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен!")
 
 COOKIES_FILE = "/app/cookies.json"
-BROWSER_STATUS = {
-    'installed': False,
-    'installing': False
-}
+BROWSER_STATUS = {'installed': False, 'installing': False}
+
+# Глобальные переменные для браузера
+browser_instance = None
+browser_context = None
+browser_page = None
+last_url = None
 
 # ==================== УСТАНОВКА БРАУЗЕРА ====================
 def install_browser_sync():
-    """Синхронная установка браузера (для запуска в отдельном потоке)"""
     try:
-        logger.info("🔄 Устанавливаю браузер для CloakBrowser...")
-        
-        subprocess.run(
-            ["pip", "install", "playwright"],
-            check=True,
-            capture_output=True
-        )
-        logger.info("✅ Playwright установлен")
-        
-        result = subprocess.run(
-            ["playwright", "install", "chromium"],
-            capture_output=True,
-            text=True
-        )
+        logger.info("🔄 Устанавливаю браузер...")
+        subprocess.run(["pip", "install", "playwright"], check=True, capture_output=True)
+        result = subprocess.run(["playwright", "install", "chromium"], capture_output=True, text=True)
         
         if result.returncode == 0:
-            logger.info("✅ Браузер Chromium установлен")
+            logger.info("✅ Браузер установлен")
             BROWSER_STATUS['installed'] = True
             BROWSER_STATUS['installing'] = False
             return True
         else:
-            logger.error(f"❌ Ошибка установки браузера: {result.stderr}")
+            logger.error(f"❌ Ошибка: {result.stderr}")
             BROWSER_STATUS['installing'] = False
             return False
-            
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
         BROWSER_STATUS['installing'] = False
         return False
 
 async def install_browser_async():
-    """Асинхронная обертка для установки браузера"""
     if BROWSER_STATUS['installing']:
         return False
     
     BROWSER_STATUS['installing'] = True
-    
     loop = asyncio.get_event_loop()
     with concurrent.futures.ThreadPoolExecutor() as executor:
         result = await loop.run_in_executor(executor, install_browser_sync)
-    
     return result
 
 def check_browser():
-    """Проверяет наличие браузера"""
     try:
-        home_dir = os.path.expanduser("~")
-        import glob
-        browser_paths = [
-            f"{home_dir}/.cache/ms-playwright/chromium-*",
-            f"{home_dir}/.cache/ms-playwright/chromium_headless_shell-*",
-        ]
+        from playwright.async_api import async_playwright
         
-        for path in browser_paths:
-            if glob.glob(path):
-                BROWSER_STATUS['installed'] = True
+        async def test_browser():
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True, args=['--no-sandbox'])
+                await browser.close()
                 return True
         
-        try:
-            from playwright.async_api import async_playwright
-            
-            async def test_browser():
-                async with async_playwright() as p:
-                    browser = await p.chromium.launch(headless=True, args=['--no-sandbox'])
-                    await browser.close()
-                    return True
-            
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            result = loop.run_until_complete(test_browser())
-            loop.close()
-            
-            if result:
-                BROWSER_STATUS['installed'] = True
-                return True
-                
-        except Exception as e:
-            logger.warning(f"⚠️ Ошибка проверки браузера: {e}")
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(test_browser())
+        loop.close()
         
-        BROWSER_STATUS['installed'] = False
-        return False
-            
+        if result:
+            BROWSER_STATUS['installed'] = True
+            return True
     except Exception as e:
         logger.warning(f"⚠️ Браузер не найден: {e}")
-        BROWSER_STATUS['installed'] = False
-        return False
+    
+    BROWSER_STATUS['installed'] = False
+    return False
 
 # ==================== УСТАНОВКА CLOAKBROWSER ====================
 def install_cloak():
-    """Установка CloakBrowser через pip"""
     try:
         logger.info("Устанавливаю CloakBrowser...")
-        subprocess.run(
-            ["pip", "install", "cloakbrowser"],
-            check=True,
-            capture_output=True,
-            text=True
-        )
+        subprocess.run(["pip", "install", "cloakbrowser"], check=True, capture_output=True, text=True)
         logger.info("✅ CloakBrowser установлен")
         return True
     except Exception as e:
@@ -138,32 +98,19 @@ def install_cloak():
         return False
 
 def check_cloak():
-    """Проверяет доступность CloakBrowser"""
     try:
         import cloakbrowser
         return True
     except ImportError:
         return False
 
-# Проверяем и устанавливаем CloakBrowser
 CLOAK_AVAILABLE = check_cloak()
-
 if not CLOAK_AVAILABLE:
-    logger.warning("⚠️ CloakBrowser не найден, устанавливаю...")
     if install_cloak():
         CLOAK_AVAILABLE = check_cloak()
-        if CLOAK_AVAILABLE:
-            logger.info("✅ CloakBrowser успешно установлен")
-        else:
-            logger.error("❌ Не удалось импортировать CloakBrowser после установки")
-else:
-    logger.info("✅ CloakBrowser уже установлен")
 
-# Проверяем браузер
 check_browser()
-
-logger.info(f"📊 CloakBrowser статус: {CLOAK_AVAILABLE}")
-logger.info(f"📊 Браузер статус: {BROWSER_STATUS['installed']}")
+logger.info(f"📊 CloakBrowser: {CLOAK_AVAILABLE}, Браузер: {BROWSER_STATUS['installed']}")
 
 # ==================== РАБОТА С КУКАМИ ====================
 def load_cookies():
@@ -190,18 +137,91 @@ def save_cookies(cookies):
 def cookies_to_string(cookies):
     if not cookies:
         return "❌ Куки не загружены"
-    
     lines = []
     for i, cookie in enumerate(cookies[:20], 1):
         name = cookie.get('name', 'unknown')
         value = cookie.get('value', '')[:30]
         domain = cookie.get('domain', '')
         lines.append(f"{i}. {name}: {value}... ({domain})")
-    
     if len(cookies) > 20:
         lines.append(f"... и еще {len(cookies) - 20} кук")
-    
     return "\n".join(lines)
+
+# ==================== УПРАВЛЕНИЕ БРАУЗЕРОМ ====================
+async def init_browser(url=None):
+    """Инициализирует браузер и открывает страницу"""
+    global browser_instance, browser_context, browser_page, last_url
+    
+    try:
+        from playwright.async_api import async_playwright
+        
+        if browser_instance is None:
+            logger.info("🚀 Запускаю новый браузер...")
+            
+            cookies = load_cookies()
+            logger.info(f"🍪 Загружено {len(cookies)} кук")
+            
+            p = await async_playwright().start()
+            browser_instance = await p.chromium.launch(
+                headless=True,
+                args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+            )
+            browser_context = await browser_instance.new_context(
+                viewport={'width': 1280, 'height': 720},
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            )
+            
+            if cookies:
+                try:
+                    await browser_context.add_cookies(cookies)
+                    logger.info(f"✅ Установлено {len(cookies)} кук")
+                except Exception as e:
+                    logger.warning(f"⚠️ Ошибка установки кук: {e}")
+            
+            browser_page = await browser_context.new_page()
+            logger.info("✅ Браузер запущен")
+        
+        if url and url != last_url:
+            logger.info(f"🌐 Перехожу на {url}")
+            await browser_page.goto(url, timeout=30000)
+            await browser_page.wait_for_load_state('networkidle', timeout=10000)
+            last_url = url
+        
+        return browser_page
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка инициализации браузера: {e}")
+        await close_browser()
+        raise e
+
+async def close_browser():
+    """Закрывает браузер"""
+    global browser_instance, browser_context, browser_page
+    
+    try:
+        if browser_instance:
+            await browser_instance.close()
+            logger.info("🗑️ Браузер закрыт")
+    except:
+        pass
+    
+    browser_instance = None
+    browser_context = None
+    browser_page = None
+
+async def take_screenshot_from_page():
+    """Делает скриншот текущей страницы"""
+    global browser_page
+    
+    if not browser_page:
+        raise Exception("Браузер не запущен")
+    
+    try:
+        screenshot = await browser_page.screenshot(full_page=True, timeout=10000)
+        return screenshot
+    except:
+        screenshot = await browser_page.screenshot(timeout=5000)
+        return screenshot
 
 # ==================== КОМАНДЫ БОТА ====================
 async def set_bot_commands(application):
@@ -211,47 +231,44 @@ async def set_bot_commands(application):
         BotCommand("browse", "🌐 Открыть URL"),
         BotCommand("x", "🐦 Открыть X.COM"),
         BotCommand("screenshot", "📸 Сделать скриншот"),
+        BotCommand("close", "🗑️ Закрыть браузер"),
         BotCommand("status", "📊 Статус"),
-        BotCommand("cookies", "🍪 Управление куками"),
+        BotCommand("cookies", "🍪 Куки"),
         BotCommand("help", "❓ Помощь"),
     ]
     await application.bot.set_my_commands(commands)
 
 async def get_main_keyboard():
-    """Создает главную клавиатуру"""
     cloak_status = check_cloak()
     browser_status = check_browser()
     cookies_count = len(load_cookies())
+    browser_active = "🟢" if browser_instance else "⚫"
     
-    # Статусная строка
-    status_line = f"📦 CloakBrowser: {'✅' if cloak_status else '❌'} | 🌐 Браузер: {'✅' if browser_status else '❌'} | 🍪 {cookies_count}"
+    status_line = f"📦 Cloak: {'✅' if cloak_status else '❌'} | 🌐 Браузер: {'✅' if browser_status else '❌'} | {browser_active} | 🍪 {cookies_count}"
     
     keyboard = [
         [InlineKeyboardButton("🌐 Открыть сайт", callback_data="browse")],
-        [InlineKeyboardButton("🐦 X.COM (Твиттер)", callback_data="x_com")],
+        [InlineKeyboardButton("🐦 X.COM", callback_data="x_com")],
         [InlineKeyboardButton("📸 Скриншот", callback_data="screenshot")],
+        [InlineKeyboardButton("🗑️ Закрыть браузер", callback_data="close_browser")],
         [InlineKeyboardButton("📊 Статус", callback_data="status")],
         [InlineKeyboardButton("🍪 Куки (" + str(cookies_count) + ")", callback_data="cookies")],
     ]
     
-    # Кнопка установки браузера если он не установлен
     if not browser_status:
         keyboard.append([InlineKeyboardButton("⬇️ Установить браузер", callback_data="install_browser")])
     
     keyboard.append([InlineKeyboardButton("ℹ️ Помощь", callback_data="help")])
     
-    # Добавляем кнопку переустановки только если что-то не работает
     if not cloak_status:
-        keyboard.append([InlineKeyboardButton("🔄 Переустановить CloakBrowser", callback_data="reinstall")])
+        keyboard.append([InlineKeyboardButton("🔄 Переустановить", callback_data="reinstall")])
     
     return InlineKeyboardMarkup(keyboard), status_line
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup, status_line = await get_main_keyboard()
-    
     await update.message.reply_text(
         f"🤖 *CloakBrowser Bot*\n\n"
-        f"Бот для безопасного просмотра веб-страниц.\n\n"
         f"{status_line}\n\n"
         "Выберите действие:",
         reply_markup=reply_markup,
@@ -260,66 +277,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup, status_line = await get_main_keyboard()
-    
     message = update.message if update.message else update.callback_query.message
-    
     await message.reply_text(
-        f"📋 *Главное меню*\n\n"
-        f"{status_line}\n\n"
-        "Выберите действие:",
+        f"📋 *Главное меню*\n\n{status_line}\n\nВыберите действие:",
         reply_markup=reply_markup,
         parse_mode="Markdown"
     )
 
-# ==================== ФУНКЦИЯ ОТКРЫТИЯ БРАУЗЕРА ====================
-async def open_browser_page(url, page_function=None):
-    """Открывает страницу в браузере и выполняет функцию"""
-    try:
-        from playwright.async_api import async_playwright
-        
-        cookies = load_cookies()
-        logger.info(f"🍪 Загружено {len(cookies)} кук для {url}")
-        
-        async with async_playwright() as p:
-            logger.info(f"🚀 Запускаю браузер для {url}")
-            browser = await p.chromium.launch(
-                headless=True,
-                args=['--no-sandbox', '--disable-setuid-sandbox']
-            )
-            context_browser = await browser.new_context(
-                viewport={'width': 1280, 'height': 720}
-            )
-            page = await context_browser.new_page()
-            
-            if cookies:
-                try:
-                    await context_browser.add_cookies(cookies)
-                    logger.info(f"✅ Установлено {len(cookies)} кук")
-                except Exception as e:
-                    logger.warning(f"⚠️ Ошибка установки кук: {e}")
-            
-            logger.info(f"🌐 Перехожу по адресу: {url}")
-            await page.goto(url, timeout=30000)
-            await page.wait_for_load_state('networkidle', timeout=10000)
-            
-            # Выполняем дополнительную функцию если передана
-            result = None
-            if page_function:
-                result = await page_function(page)
-            
-            # Делаем скриншот
-            screenshot = await page.screenshot(full_page=True)
-            
-            await browser.close()
-            logger.info(f"✅ Страница открыта: {url}")
-            
-            return screenshot, result
-            
-    except Exception as e:
-        logger.error(f"❌ Ошибка: {e}")
-        raise e
-
-# ==================== ОБРАБОТЧИКИ КОМАНД ====================
+# ==================== ОБРАБОТЧИКИ ====================
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -328,8 +293,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             "🌐 *Введите URL*\n\n"
             "Используйте команду:\n"
-            "`/browse https://example.com`\n\n"
-            "Или просто отправьте ссылку в чат.",
+            "`/browse https://example.com`",
             parse_mode="Markdown"
         )
         context.user_data['waiting_for_url'] = True
@@ -339,30 +303,30 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await open_x_com(update, context)
     
     elif query.data == "screenshot":
-        await query.edit_message_text("⏳ Делаю скриншот...")
+        await query.edit_message_text("📸 Делаю скриншот...")
         await take_screenshot(update, context)
+    
+    elif query.data == "close_browser":
+        await close_browser()
+        await query.edit_message_text("🗑️ Браузер закрыт!")
+        await asyncio.sleep(1)
+        await menu(update, context)
     
     elif query.data == "status":
         cloak_status = check_cloak()
         browser_status = check_browser()
         cookies = load_cookies()
-        
-        status_text = f"""📊 *Статус*
-
-📦 CloakBrowser: {'✅ Доступен' if cloak_status else '❌ Недоступен'}
-🌐 Браузер: {'✅ Установлен' if browser_status else '❌ Не установлен'}
-🍪 Куки: {len(cookies)} шт.
-
-🐦 X.COM куки: {len([c for c in cookies if '.x.com' in c.get('domain', '') or 'twitter.com' in c.get('domain', '')])}
-
-⬇️ Установка браузера: /install_browser
-🔄 Переустановка: /reinstall"""
+        x_cookies = [c for c in cookies if '.x.com' in c.get('domain', '') or 'twitter.com' in c.get('domain', '')]
+        browser_active = "🟢 Активен" if browser_instance else "⚫ Не активен"
         
         await query.edit_message_text(
-            status_text,
-            parse_mode="Markdown"
-        )
-        await query.message.reply_text(
+            f"📊 *Статус*\n\n"
+            f"📦 CloakBrowser: {'✅ Доступен' if cloak_status else '❌ Недоступен'}\n"
+            f"🌐 Браузер: {'✅ Установлен' if browser_status else '❌ Не установлен'}\n"
+            f"🔄 Состояние: {browser_active}\n"
+            f"🍪 Всего кук: {len(cookies)} шт.\n"
+            f"🐦 Кук X.COM: {len(x_cookies)} шт.\n"
+            f"📄 Последний URL: {last_url or 'Нет'}\n\n"
             "🔙 Вернуться в меню: /menu",
             parse_mode="Markdown"
         )
@@ -370,6 +334,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "cookies":
         cookies = load_cookies()
         cookies_text = cookies_to_string(cookies)
+        x_cookies = [c for c in cookies if '.x.com' in c.get('domain', '') or 'twitter.com' in c.get('domain', '')]
         
         keyboard = [
             [InlineKeyboardButton("📥 Загрузить куки", callback_data="cookies_load")],
@@ -377,147 +342,79 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📋 Показать все", callback_data="cookies_show")],
             [InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")],
         ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
         await query.edit_message_text(
-            f"🍪 *Управление куками*\n\n"
-            f"Всего кук: {len(cookies)}\n\n"
-            f"```\n{cookies_text}\n```",
-            reply_markup=reply_markup,
+            f"🍪 *Куки*\n\nВсего: {len(cookies)}\n🐦 X.COM: {len(x_cookies)}\n\n```\n{cookies_text}\n```",
+            reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown"
         )
     
     elif query.data == "cookies_load":
         await query.edit_message_text(
             "📥 *Загрузка кук*\n\n"
-            "Отправьте куки в формате JSON.\n\n"
+            "Отправьте JSON с куками.\n\n"
             "Пример:\n"
             "```json\n"
-            "[\n"
-            "  {\n"
-            "    \"name\": \"auth_token\",\n"
-            "    \"value\": \"your_token\",\n"
-            "    \"domain\": \".x.com\"\n"
-            "  }\n"
-            "]\n"
-            "```\n\n"
-            "Просто отправьте JSON текст или файл.",
+            "[{\"name\":\"auth_token\",\"value\":\"token\",\"domain\":\".x.com\"}]\n"
+            "```",
             parse_mode="Markdown"
         )
         context.user_data['waiting_for_cookies'] = True
     
     elif query.data == "cookies_clear":
         if save_cookies([]):
-            await query.edit_message_text("✅ Все куки очищены!")
-            await asyncio.sleep(1)
+            await query.edit_message_text("✅ Куки очищены!")
             await menu(update, context)
-        else:
-            await query.edit_message_text("❌ Ошибка очистки кук")
     
     elif query.data == "cookies_show":
         cookies = load_cookies()
         if cookies:
             cookies_json = json.dumps(cookies, indent=2)
             if len(cookies_json) > 4000:
-                with open("/tmp/cookies_export.json", 'w') as f:
+                with open("/tmp/cookies.json", 'w') as f:
                     json.dump(cookies, f, indent=2)
-                await query.edit_message_text(
-                    "📋 *Все куки*\n\n"
-                    "Куки сохранены в файл:",
-                    parse_mode="Markdown"
-                )
-                with open("/tmp/cookies_export.json", 'rb') as f:
-                    await query.message.reply_document(
-                        document=f,
-                        filename="cookies.json",
-                        caption="🍪 Все куки в формате JSON"
-                    )
-                await query.message.reply_text("🔙 Вернуться в меню: /menu")
+                with open("/tmp/cookies.json", 'rb') as f:
+                    await query.message.reply_document(f, filename="cookies.json")
             else:
-                await query.edit_message_text(
-                    f"📋 *Все куки*\n\n"
-                    f"```json\n{cookies_json}\n```",
-                    parse_mode="Markdown"
-                )
-                await query.message.reply_text("🔙 Вернуться в меню: /menu")
+                await query.edit_message_text(f"```json\n{cookies_json}\n```", parse_mode="Markdown")
         else:
             await query.edit_message_text("❌ Куки не найдены")
     
     elif query.data == "install_browser":
-        await query.edit_message_text(
-            "⏳ *Установка браузера...*\n\n"
-            "Это может занять 2-3 минуты.\n"
-            "Пожалуйста, подождите...",
-            parse_mode="Markdown"
-        )
-        
+        await query.edit_message_text("⏳ Установка браузера (2-3 мин)...")
         success = await install_browser_async()
-        
         if success:
-            await query.edit_message_text(
-                "✅ *Браузер успешно установлен!*\n\n"
-                "Теперь можно открывать сайты:\n"
-                "`/browse https://example.com`",
-                parse_mode="Markdown"
-            )
+            await query.edit_message_text("✅ Браузер установлен!")
         else:
-            await query.edit_message_text(
-                "❌ *Ошибка установки браузера*\n\n"
-                "Попробуйте позже или вручную:\n"
-                "`playwright install chromium`",
-                parse_mode="Markdown"
-            )
-        
-        await asyncio.sleep(1)
+            await query.edit_message_text("❌ Ошибка установки")
         await menu(update, context)
     
     elif query.data == "reinstall":
-        await query.edit_message_text("⏳ Переустановка CloakBrowser...")
-        
+        await query.edit_message_text("⏳ Переустановка...")
         try:
-            subprocess.run(
-                ["pip", "uninstall", "cloakbrowser", "-y"],
-                check=True,
-                capture_output=True
-            )
-            logger.info("🗑️ CloakBrowser удален")
+            subprocess.run(["pip", "uninstall", "cloakbrowser", "-y"], capture_output=True)
         except:
             pass
-        
-        if install_cloak():
-            if check_cloak():
-                await query.edit_message_text("✅ CloakBrowser переустановлен!")
-            else:
-                await query.edit_message_text("❌ Ошибка импорта после установки")
+        if install_cloak() and check_cloak():
+            await query.edit_message_text("✅ Переустановлен!")
         else:
-            await query.edit_message_text("❌ Ошибка переустановки")
-        
-        await asyncio.sleep(1)
+            await query.edit_message_text("❌ Ошибка")
         await menu(update, context)
     
     elif query.data == "help":
         await query.edit_message_text(
             "❓ *Помощь*\n\n"
-            "📌 *Основные команды:*\n"
-            "/start - Запустить бота\n"
-            "/menu - Открыть меню\n"
+            "📌 *Команды:*\n"
             "/browse <URL> - Открыть сайт\n"
             "/x - Открыть X.COM\n"
-            "/screenshot - Сделать скриншот\n"
-            "/status - Статус\n"
+            "/screenshot - Скриншот\n"
+            "/close - Закрыть браузер\n"
             "/cookies - Управление куками\n\n"
-            "📌 *Как авторизоваться в X.COM:*\n"
-            "1. Загрузите куки от X.COM через '🍪 Куки'\n"
-            "2. Нажмите '🐦 X.COM' или `/x`\n"
-            "3. Бот откроет страницу с вашими куками\n\n"
-            "📌 *Как сделать скриншот:*\n"
-            "1. Откройте сайт через `/browse` или `/x`\n"
-            "2. Нажмите '📸 Скриншот' или `/screenshot`\n"
-            "3. Бот отправит скриншот в чат\n\n"
-            "📌 *Советы:*\n"
-            "• Если браузер не установлен - нажмите '⬇️ Установить браузер'\n"
-            "• Если что-то не работает - нажмите '🔄 Переустановить'\n"
-            "• Статус обновляется автоматически",
+            "📌 *Как работает:*\n"
+            "1. Браузер запускается один раз\n"
+            "2. Все страницы открываются в нем\n"
+            "3. Скриншоты делаются быстро\n"
+            "4. Куки сохраняются\n\n"
+            "🔙 /menu",
             parse_mode="Markdown"
         )
     
@@ -526,153 +423,110 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==================== X.COM ====================
 async def open_x_com(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Открывает X.COM с куками"""
-    # Проверяем наличие кук для X
-    cookies = load_cookies()
-    x_cookies = [c for c in cookies if '.x.com' in c.get('domain', '') or 'twitter.com' in c.get('domain', '')]
+    """Открывает X.COM в уже запущенном браузере"""
+    global last_url
+    
+    if not check_cloak():
+        await update.callback_query.message.reply_text("❌ CloakBrowser не установлен!")
+        return
+    
+    if not check_browser():
+        await update.callback_query.message.reply_text("❌ Браузер не установлен!")
+        return
     
     msg = await update.callback_query.message.edit_text("⏳ Открываю X.COM...")
     
     try:
-        # Определяем функцию для проверки авторизации
-        async def check_auth(page):
-            # Проверяем наличие элемента подтверждающего авторизацию
-            try:
-                # Ждем загрузку
-                await page.wait_for_load_state('networkidle', timeout=5000)
-                
-                # Проверяем URL
-                current_url = page.url
-                if 'login' in current_url:
-                    return {"status": "⚠️ Не авторизован", "message": "Требуется авторизация"}
-                
-                # Проверяем наличие профиля
-                profile_element = await page.query_selector('[data-testid="UserCell"]')
-                if profile_element:
-                    return {"status": "✅ Авторизован", "message": "Вы успешно авторизованы!"}
-                
+        # Инициализируем браузер и открываем X.COM
+        page = await init_browser("https://x.com")
+        last_url = "https://x.com"
+        
+        # Проверяем авторизацию
+        try:
+            # Ждем загрузку
+            await page.wait_for_load_state('domcontentloaded', timeout=10000)
+            
+            # Проверяем URL
+            current_url = page.url
+            if 'login' in current_url or 'i/flow/login' in current_url:
+                status = "⚠️ Не авторизован"
+                message = "Требуется авторизация на X.COM"
+            else:
                 # Проверяем наличие ленты
                 timeline = await page.query_selector('[data-testid="primaryColumn"]')
                 if timeline:
-                    return {"status": "✅ Авторизован", "message": "Лента загружена"}
-                
-                return {"status": "✅ Страница загружена", "message": "Страница X.COM открыта"}
-                
-            except Exception as e:
-                logger.warning(f"Ошибка проверки авторизации: {e}")
-                return {"status": "⚠️ Неизвестно", "message": "Не удалось проверить статус"}
+                    status = "✅ Авторизован"
+                    message = "Лента X.COM загружена!"
+                else:
+                    status = "✅ Страница загружена"
+                    message = "X.COM открыт"
+        except:
+            status = "✅ Страница загружена"
+            message = "X.COM открыт"
         
-        # Открываем страницу
-        screenshot, result = await open_browser_page("https://x.com", check_auth)
+        # Делаем скриншот
+        await msg.edit_text("📸 Делаю скриншот...")
+        screenshot = await take_screenshot_from_page()
         
-        # Отправляем скриншот
-        await msg.edit_text("📸 *Скриншот X.COM*")
-        
-        # Отправляем фото
+        # Отправляем
         photo = BytesIO(screenshot)
-        photo.name = f"x_com_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        photo.name = f"x_{datetime.now().strftime('%H%M%S')}.png"
         await update.callback_query.message.reply_photo(
             photo=photo,
-            caption=f"🐦 *X.COM*\n\n"
-                   f"Статус: {result.get('status', '❓ Неизвестно')}\n"
-                   f"{result.get('message', '')}\n"
-                   f"🍪 Кук X: {len(x_cookies)}"
+            caption=f"🐦 *X.COM*\n\n{status}\n{message}"
         )
-        
-        await update.callback_query.message.reply_text("🔙 Вернуться в меню: /menu")
+        await update.callback_query.message.reply_text("🔙 /menu")
         
     except Exception as e:
-        error_msg = str(e)[:200]
-        await msg.edit_text(
-            f"❌ *Ошибка*\n\n"
-            f"```\n{error_msg}\n```\n\n"
-            "🔙 Вернуться в меню: /menu",
-            parse_mode="Markdown"
-        )
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}\n\n🔙 /menu")
 
 # ==================== СКРИНШОТ ====================
 async def take_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Делает скриншот текущей страницы"""
-    if not check_cloak():
-        await update.callback_query.message.reply_text(
-            "❌ CloakBrowser не установлен!\n"
-            "Используйте /reinstall для установки"
-        )
-        return
+    global last_url
     
-    if not check_browser():
-        await update.callback_query.message.reply_text(
-            "❌ Браузер не установлен!\n"
-            "Нажмите '⬇️ Установить браузер' в меню"
-        )
-        return
-    
-    msg = await update.callback_query.message.edit_text("⏳ Делаю скриншот...")
+    if not browser_page:
+        # Если браузер не запущен, открываем последний URL или Google
+        url = context.user_data.get('last_url', 'https://google.com')
+        try:
+            await init_browser(url)
+            last_url = url
+        except Exception as e:
+            await update.callback_query.message.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+            return
     
     try:
-        # Открываем последний URL если есть, или просто Google
-        url = context.user_data.get('last_url', 'https://google.com')
-        
-        # Открываем страницу и делаем скриншот
-        screenshot, _ = await open_browser_page(url)
-        
-        # Отправляем скриншот
-        await msg.edit_text("📸 *Скриншот готов*")
+        screenshot = await take_screenshot_from_page()
         
         photo = BytesIO(screenshot)
-        photo.name = f"screenshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        photo.name = f"screenshot_{datetime.now().strftime('%H%M%S')}.png"
+        await update.callback_query.message.edit_text("📸 *Скриншот*")
         await update.callback_query.message.reply_photo(
             photo=photo,
-            caption=f"📸 *Скриншот*\n"
-                   f"🌐 URL: {url}\n"
-                   f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            caption=f"🌐 {last_url or 'Текущая страница'}\n🕐 {datetime.now().strftime('%H:%M:%S')}"
         )
-        
-        await update.callback_query.message.reply_text("🔙 Вернуться в меню: /menu")
+        await update.callback_query.message.reply_text("🔙 /menu")
         
     except Exception as e:
-        error_msg = str(e)[:200]
-        await msg.edit_text(
-            f"❌ *Ошибка*\n\n"
-            f"```\n{error_msg}\n```\n\n"
-            "🔙 Вернуться в меню: /menu",
-            parse_mode="Markdown"
-        )
+        await update.callback_query.message.edit_text(f"❌ Ошибка: {str(e)[:200]}\n\n🔙 /menu")
 
 # ==================== ОБРАБОТЧИКИ КОМАНД ====================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Обработка загрузки кук
     if context.user_data.get('waiting_for_cookies'):
         try:
-            text = update.message.text
-            cookies = json.loads(text)
-            
+            cookies = json.loads(update.message.text)
             if isinstance(cookies, list) and len(cookies) > 0:
                 if save_cookies(cookies):
-                    x_cookies = [c for c in cookies if '.x.com' in c.get('domain', '') or 'twitter.com' in c.get('domain', '')]
-                    await update.message.reply_text(
-                        f"✅ Загружено {len(cookies)} кук!\n"
-                        f"🍪 Для X.COM: {len(x_cookies)}\n"
-                        f"Первая кука: {cookies[0].get('name', 'unknown')}\n\n"
-                        "🔙 Вернуться в меню: /menu"
-                    )
+                    x_count = len([c for c in cookies if '.x.com' in c.get('domain', '')])
+                    await update.message.reply_text(f"✅ Загружено {len(cookies)} кук!\n🐦 X.COM: {x_count}")
                 else:
-                    await update.message.reply_text("❌ Ошибка сохранения кук")
+                    await update.message.reply_text("❌ Ошибка сохранения")
             else:
-                await update.message.reply_text("❌ Неверный формат: ожидается массив кук")
-            
+                await update.message.reply_text("❌ Неверный формат")
             context.user_data['waiting_for_cookies'] = False
-            
-        except json.JSONDecodeError as e:
-            await update.message.reply_text(
-                f"❌ Ошибка парсинга JSON: {str(e)}\n\n"
-                "Проверьте формат и попробуйте снова.\n"
-                "Или отправьте файл .json"
-            )
         except Exception as e:
             await update.message.reply_text(f"❌ Ошибка: {str(e)}")
     
-    # Обработка открытия URL
     elif context.user_data.get('waiting_for_url'):
         url = update.message.text
         if url.startswith(("http://", "https://")):
@@ -680,49 +534,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['last_url'] = url
             await browse(update, context)
         else:
-            await update.message.reply_text(
-                "❌ Неверный формат URL\n"
-                "Пример: https://example.com"
-            )
-    
-    # Обработка файлов с куками
-    elif update.message.document:
-        try:
-            file = await update.message.document.get_file()
-            file_path = f"/tmp/{update.message.document.file_name}"
-            await file.download_to_drive(file_path)
-            
-            with open(file_path, 'r') as f:
-                cookies = json.load(f)
-            
-            if isinstance(cookies, list) and len(cookies) > 0:
-                if save_cookies(cookies):
-                    x_cookies = [c for c in cookies if '.x.com' in c.get('domain', '') or 'twitter.com' in c.get('domain', '')]
-                    await update.message.reply_text(
-                        f"✅ Загружено {len(cookies)} кук из файла!\n"
-                        f"🍪 Для X.COM: {len(x_cookies)}\n\n"
-                        "🔙 Вернуться в меню: /menu"
-                    )
-                else:
-                    await update.message.reply_text("❌ Ошибка сохранения кук")
-            else:
-                await update.message.reply_text("❌ Неверный формат: ожидается массив кук")
-                
-        except Exception as e:
-            await update.message.reply_text(f"❌ Ошибка загрузки файла: {str(e)}")
+            await update.message.reply_text("❌ Неверный URL")
 
-# ==================== КОМАНДЫ БОТА ====================
+# ==================== КОМАНДЫ ====================
 async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Открывает URL"""
+    global last_url
+    
     if hasattr(update, 'message') and update.message:
         if not context.args:
-            await update.message.reply_text(
-                "❌ *Укажите URL*\n\n"
-                "Пример: `/browse https://example.com`",
-                parse_mode="Markdown"
-            )
+            await update.message.reply_text("❌ Укажите URL: /browse https://example.com")
             return
-        
         url = context.args[0]
         msg_obj = update.message
     else:
@@ -735,197 +556,108 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         url = "https://" + url
     
     context.user_data['last_url'] = url
+    last_url = url
     
     if not check_cloak():
-        await msg_obj.reply_text(
-            "❌ CloakBrowser не установлен!\n"
-            "Используйте /reinstall для установки"
-        )
+        await msg_obj.reply_text("❌ CloakBrowser не установлен!")
         return
     
     if not check_browser():
-        await msg_obj.reply_text(
-            "❌ Браузер не установлен!\n"
-            "Нажмите '⬇️ Установить браузер' в меню"
-        )
+        await msg_obj.reply_text("❌ Браузер не установлен!")
         return
     
     msg = await msg_obj.reply_text(f"⏳ Открываю {url}...")
     
     try:
-        screenshot, _ = await open_browser_page(url)
+        await init_browser(url)
         
-        # Отправляем скриншот
-        await msg.edit_text("📸 *Страница открыта*")
+        await msg.edit_text("📸 Делаю скриншот...")
+        screenshot = await take_screenshot_from_page()
         
         photo = BytesIO(screenshot)
-        photo.name = f"browse_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-        await msg_obj.reply_photo(
-            photo=photo,
-            caption=f"✅ *Страница открыта!*\n\n"
-                   f"🌐 URL: {url}"
-        )
-        
-        await msg_obj.reply_text("🔙 Вернуться в меню: /menu")
+        photo.name = f"browse_{datetime.now().strftime('%H%M%S')}.png"
+        await msg_obj.reply_photo(photo=photo, caption=f"✅ {url}")
+        await msg_obj.reply_text("🔙 /menu")
         
     except Exception as e:
-        error_msg = str(e)[:200]
-        await msg.edit_text(
-            f"❌ *Ошибка*\n\n"
-            f"```\n{error_msg}\n```\n\n"
-            "🔙 Вернуться в меню: /menu",
-            parse_mode="Markdown"
-        )
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}\n\n🔙 /menu")
 
 async def x_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /x - открывает X.COM"""
-    await update.message.reply_text("⏳ Открываю X.COM...")
-    
-    # Создаем callback запрос
-    query = update.callback_query
-    if not query:
-        # Имитируем callback
-        class FakeQuery:
-            def __init__(self, msg):
-                self.message = msg
-            async def answer(self):
-                pass
-        query = FakeQuery(update.message)
-        await open_x_com(update, context)
-    else:
-        await open_x_com(update, context)
-
-async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /screenshot - делает скриншот"""
-    await update.message.reply_text("⏳ Делаю скриншот...")
-    
-    # Создаем callback запрос
     class FakeQuery:
         def __init__(self, msg):
             self.message = msg
         async def answer(self):
             pass
-    
-    query = FakeQuery(update.message)
-    update.callback_query = query
+    update.callback_query = FakeQuery(update.message)
+    await open_x_com(update, context)
+
+async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    class FakeQuery:
+        def __init__(self, msg):
+            self.message = msg
+        async def answer(self):
+            pass
+    update.callback_query = FakeQuery(update.message)
     await take_screenshot(update, context)
+
+async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await close_browser()
+    await update.message.reply_text("🗑️ Браузер закрыт!\n\n🔙 /menu")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cloak_status = check_cloak()
     browser_status = check_browser()
     cookies = load_cookies()
     x_cookies = [c for c in cookies if '.x.com' in c.get('domain', '') or 'twitter.com' in c.get('domain', '')]
+    browser_active = "🟢 Активен" if browser_instance else "⚫ Не активен"
     
     await update.message.reply_text(
         f"📊 *Статус*\n\n"
         f"📦 CloakBrowser: {'✅ Доступен' if cloak_status else '❌ Недоступен'}\n"
         f"🌐 Браузер: {'✅ Установлен' if browser_status else '❌ Не установлен'}\n"
+        f"🔄 Состояние: {browser_active}\n"
         f"🍪 Всего кук: {len(cookies)} шт.\n"
-        f"🐦 Кук X.COM: {len(x_cookies)} шт.\n\n"
-        "🔙 Вернуться в меню: /menu",
+        f"🐦 Кук X.COM: {len(x_cookies)} шт.\n"
+        f"📄 Последний URL: {last_url or 'Нет'}\n\n"
+        "🔙 /menu",
         parse_mode="Markdown"
     )
 
 async def cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cookies = load_cookies()
-    cookies_text = cookies_to_string(cookies)
     x_cookies = [c for c in cookies if '.x.com' in c.get('domain', '') or 'twitter.com' in c.get('domain', '')]
     
     keyboard = [
-        [InlineKeyboardButton("📥 Загрузить куки", callback_data="cookies_load")],
-        [InlineKeyboardButton("🗑️ Очистить куки", callback_data="cookies_clear")],
+        [InlineKeyboardButton("📥 Загрузить", callback_data="cookies_load")],
+        [InlineKeyboardButton("🗑️ Очистить", callback_data="cookies_clear")],
         [InlineKeyboardButton("📋 Показать все", callback_data="cookies_show")],
         [InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")],
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
     await update.message.reply_text(
-        f"🍪 *Управление куками*\n\n"
-        f"Всего кук: {len(cookies)}\n"
-        f"🐦 Для X.COM: {len(x_cookies)}\n\n"
-        f"```\n{cookies_text}\n```",
-        reply_markup=reply_markup,
+        f"🍪 *Куки*\n\nВсего: {len(cookies)}\n🐦 X.COM: {len(x_cookies)}",
+        reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "❓ *Помощь*\n\n"
-        "📌 *Основные команды:*\n"
-        "/start - Запустить бота\n"
-        "/menu - Открыть меню\n"
+        "📌 *Команды:*\n"
         "/browse <URL> - Открыть сайт\n"
         "/x - Открыть X.COM\n"
-        "/screenshot - Сделать скриншот\n"
-        "/status - Статус\n"
-        "/cookies - Управление куками\n\n"
-        "📌 *Как авторизоваться в X.COM:*\n"
-        "1. Загрузите куки от X.COM через '🍪 Куки'\n"
-        "2. Нажмите '🐦 X.COM' или `/x`\n"
-        "3. Бот проверит авторизацию и покажет скриншот\n\n"
-        "📌 *Как сделать скриншот:*\n"
-        "1. Откройте сайт через `/browse` или `/x`\n"
-        "2. Нажмите '📸 Скриншот' или `/screenshot`\n"
-        "3. Бот отправит скриншот в чат\n\n"
-        "📌 *Советы:*\n"
-        "• Если браузер не установлен - нажмите '⬇️ Установить браузер'\n"
-        "• Если что-то не работает - нажмите '🔄 Переустановить'\n"
-        "• Статус обновляется автоматически\n\n"
-        "🔙 Вернуться в меню: /menu",
+        "/screenshot - Скриншот\n"
+        "/close - Закрыть браузер\n"
+        "/cookies - Управление куками\n"
+        "/status - Статус\n\n"
+        "📌 *Как работает:*\n"
+        "• Браузер запускается один раз\n"
+        "• Скриншоты делаются мгновенно\n"
+        "• Куки сохраняются\n\n"
+        "🔙 /menu",
         parse_mode="Markdown"
     )
 
-async def install_browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "⏳ *Установка браузера...*\n\n"
-        "Это может занять 2-3 минуты.\n"
-        "Пожалуйста, подождите...",
-        parse_mode="Markdown"
-    )
-    
-    success = await install_browser_async()
-    
-    if success:
-        await update.message.reply_text(
-            "✅ *Браузер успешно установлен!*\n\n"
-            "Теперь можно открывать сайты:\n"
-            "`/browse https://example.com`",
-            parse_mode="Markdown"
-        )
-    else:
-        await update.message.reply_text(
-            "❌ *Ошибка установки браузера*\n\n"
-            "Попробуйте позже или вручную:\n"
-            "`playwright install chromium`",
-            parse_mode="Markdown"
-        )
-    
-    await menu(update, context)
-
-async def reinstall(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Переустановка CloakBrowser...")
-    
-    try:
-        subprocess.run(
-            ["pip", "uninstall", "cloakbrowser", "-y"],
-            check=True,
-            capture_output=True
-        )
-        logger.info("🗑️ CloakBrowser удален")
-    except:
-        pass
-    
-    if install_cloak():
-        if check_cloak():
-            await update.message.reply_text("✅ CloakBrowser переустановлен!")
-        else:
-            await update.message.reply_text("❌ Ошибка импорта после установки")
-    else:
-        await update.message.reply_text("❌ Ошибка переустановки")
-    
-    await menu(update, context)
-
-# ==================== ЗАПУСК БОТА ====================
+# ==================== ЗАПУСК ====================
 def main():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
@@ -936,14 +668,12 @@ def main():
     app.add_handler(CommandHandler("browse", browse))
     app.add_handler(CommandHandler("x", x_command))
     app.add_handler(CommandHandler("screenshot", screenshot_command))
+    app.add_handler(CommandHandler("close", close_command))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("cookies", cookies_command))
-    app.add_handler(CommandHandler("install_browser", install_browser_command))
-    app.add_handler(CommandHandler("reinstall", reinstall))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_message))
     
     logger.info("🚀 Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
