@@ -3,9 +3,11 @@ import sys
 import subprocess
 import logging
 import asyncio
+import json
+import re
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
 # Настройка логов
 logging.basicConfig(level=logging.INFO)
@@ -59,141 +61,17 @@ page = None
 browser_started = False
 setup_logs = []
 
-# === НОВЫЕ КУКИ ДЛЯ X ===
-X_COOKIES = [
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "__cuid",
-        "path": "/",
-        "sameSite": "None",
-        "secure": False,
-        "session": True,
-        "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "lang",
-        "path": "/",
-        "sameSite": "None",
-        "secure": False,
-        "session": True,
-        "value": "ru"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "__cf_bm",
-        "path": "/",
-        "sameSite": "None",
-        "secure": False,
-        "session": True,
-        "value": "66HwWBE7ARw4zHfM3LKTzQ53lbNeZx6P849spGsz47c-1782325511.5695279-1.0.1.1-Zf5fw2.4R8Iw1J7B83inu2l4MPvKm_pwrRGDlbV25kVIE1JBc_y43rnSVDzj6yZ36m9Z2oBENu0klLOSikjdykvpzW8Mc5cDGi54TvrVy5Lo3TZ4PFc1Y1Y4P1qPF0Lo"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "dnt",
-        "path": "/",
-        "sameSite": "None",
-        "secure": False,
-        "session": True,
-        "value": "1"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "guest_id",
-        "path": "/",
-        "sameSite": "None",
-        "secure": False,
-        "session": True,
-        "value": "v1%3A178232552081152335"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "guest_id_marketing",
-        "path": "/",
-        "sameSite": "None",
-        "secure": False,
-        "session": True,
-        "value": "v1%3A178232552081152335"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "guest_id_ads",
-        "path": "/",
-        "sameSite": "None",
-        "secure": False,
-        "session": True,
-        "value": "v1%3A178232552081152335"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "personalization_id",
-        "path": "/",
-        "sameSite": "None",
-        "secure": False,
-        "session": True,
-        "value": "\"v1_WrN9cfSG2zvM3RbiT1ZEkw==\""
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "gt",
-        "path": "/",
-        "sameSite": "None",
-        "secure": False,
-        "session": True,
-        "value": "2069849371814887470"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "twid",
-        "path": "/",
-        "sameSite": "None",
-        "secure": False,
-        "session": True,
-        "value": "u%3D2067347503503052800"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "auth_token",
-        "path": "/",
-        "sameSite": "None",
-        "secure": False,
-        "session": True,
-        "value": "9437c2dd7e6dd3b655cd4166f1fe303365f56d91"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "ct0",
-        "path": "/",
-        "sameSite": "None",
-        "secure": False,
-        "session": True,
-        "value": "6348cd308326bbc75e48654d2a7488c58d9d34f10712b0f1b3d7bde9e67a028c46de54fbbbace15ab6a518f71b27945510c1dc91b2ef7c9360aaf009883b0c5e326f4196c02e32c930a7c2222c4af9ff"
-    }
-]
+# === КУКИ ПО УМОЛЧАНИЮ (будут заменены пользователем) ===
+X_COOKIES = []
+
+# === ФУНКЦИЯ ДЛЯ ИСПРАВЛЕНИЯ URL ===
+def fix_url(url):
+    """Добавляет https:// если отсутствует"""
+    if not url:
+        return url
+    if not url.startswith(('http://', 'https://')):
+        return f'https://{url}'
+    return url
 
 # === ФУНКЦИИ ===
 def add_log(message, level="INFO"):
@@ -205,13 +83,68 @@ def add_log(message, level="INFO"):
     logger.info(log_entry)
     return log_entry
 
+def parse_cookies_from_text(text):
+    """
+    Парсит куки из текста в формате:
+    - JSON: [{"name": "...", "value": "...", ...}]
+    - Cookie string: "name1=value1; name2=value2"
+    - Или просто пары: "auth_token=123; ct0=456"
+    """
+    text = text.strip()
+    
+    # Пробуем как JSON
+    try:
+        cookies = json.loads(text)
+        if isinstance(cookies, list):
+            # Проверяем, что это список кук
+            for c in cookies:
+                if 'name' in c and 'value' in c:
+                    return cookies
+    except:
+        pass
+    
+    # Пробуем как cookie string
+    cookies = []
+    # Ищем пары name=value
+    pairs = re.findall(r'([a-zA-Z_][a-zA-Z0-9_\-]*)\s*=\s*([^;]+)', text)
+    for name, value in pairs:
+        cookies.append({
+            "domain": ".x.com",
+            "hostOnly": False,
+            "httpOnly": False,
+            "name": name.strip(),
+            "path": "/",
+            "sameSite": "None",
+            "secure": False,
+            "session": True,
+            "value": value.strip()
+        })
+    
+    # Если нашли хотя бы 2 куки — считаем успехом
+    if len(cookies) >= 2:
+        return cookies
+    
+    # Пробуем найти JSON в тексте
+    json_match = re.search(r'\[\s*\{.*\}\s*\]', text, re.DOTALL)
+    if json_match:
+        try:
+            cookies = json.loads(json_match.group())
+            if isinstance(cookies, list) and len(cookies) > 0:
+                return cookies
+        except:
+            pass
+    
+    return None
+
 def get_play_keyboard():
     keyboard = [
         [InlineKeyboardButton("🚀 Запустить браузер", callback_data="browser_start")],
         [InlineKeyboardButton("⏹ Остановить", callback_data="browser_stop")],
         [InlineKeyboardButton("📊 Статус", callback_data="browser_status"), InlineKeyboardButton("📋 Логи", callback_data="browser_logs")],
         [InlineKeyboardButton("🔄 Перезапустить", callback_data="browser_restart"), InlineKeyboardButton("🧹 Очистить логи", callback_data="browser_clear_logs")],
-        [InlineKeyboardButton("🔐 Войти в X", callback_data="browser_login_x"), InlineKeyboardButton("🐦 Твитнуть", callback_data="browser_tweet")]
+        [InlineKeyboardButton("🔐 Войти в X", callback_data="browser_login_x"), InlineKeyboardButton("🐦 Твитнуть", callback_data="browser_tweet")],
+        [InlineKeyboardButton("🎬 Watch X", callback_data="browser_watch_x")],
+        [InlineKeyboardButton("🍪 Вставить куки", callback_data="browser_input_cookies")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -221,11 +154,13 @@ async def browserplay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = get_play_keyboard()
     status_text = "✅ Запущен" if browser_started else "⏸ Остановлен"
     cloak_status = "✅ Доступен" if CLOAK_AVAILABLE else "❌ Не установлен"
+    cookies_count = len(X_COOKIES)
     
     await update.message.reply_text(
         f"🎮 **Панель управления CloakBrowser**\n\n"
         f"📊 Статус: {status_text}\n"
         f"📦 CloakBrowser: {cloak_status}\n"
+        f"🍪 Кук загружено: {cookies_count}\n"
         f"📝 Логов: {len(setup_logs)}\n"
         f"🕒 Последний лог: {setup_logs[-1] if setup_logs else 'Нет логов'}\n\n"
         f"Нажми на кнопку ниже:",
@@ -234,11 +169,46 @@ async def browserplay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_play_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global browser_started, page, browser
+    global browser_started, page, browser, X_COOKIES
     
     query = update.callback_query
     await query.answer()
     action = query.data
+    
+    if action == "browser_input_cookies":
+        await query.edit_message_text(
+            "🍪 **Вставь куки в чат**\n\n"
+            "Отправь куки в одном из форматов:\n\n"
+            "1️⃣ **JSON** (из расширения Cookie-Editor):\n"
+            "```json\n[{\"name\":\"auth_token\",\"value\":\"...\"}, ...]\n```\n\n"
+            "2️⃣ **Строка кук** (из браузера):\n"
+            "```\nauth_token=12345; ct0=67890; twid=u%3D123\n```\n\n"
+            "3️⃣ **Просто пары** (каждая с новой строки):\n"
+            "```\nauth_token=12345\nct0=67890\ntwid=u%3D123\n```\n\n"
+            "⚠️ **Важно:** куки должны быть с сайта `.x.com`\n\n"
+            "Просто отправь текст с куками в этот чат!",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀️ Назад", callback_data="browser_back")]
+            ]),
+            parse_mode='Markdown'
+        )
+        # Сохраняем состояние, что ждём куки
+        context.user_data['waiting_for_cookies'] = True
+        return
+    
+    if action == "browser_back":
+        await query.edit_message_text(
+            "🎮 **Панель управления CloakBrowser**\n\n"
+            "Нажми на кнопку ниже:",
+            reply_markup=get_play_keyboard(),
+            parse_mode='Markdown'
+        )
+        return
+    
+    if action == "browser_watch_x":
+        # Запускаем watch_x
+        await watch_x_callback(update, context)
+        return
     
     if action == "browser_start":
         if not CLOAK_AVAILABLE:
@@ -295,7 +265,7 @@ async def handle_play_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         status = "✅ Запущен" if browser_started else "⏸ Остановлен"
         cloak = "✅ Доступен" if CLOAK_AVAILABLE else "❌ Не установлен"
         await query.edit_message_text(
-            f"📊 **Статус**\n\nБраузер: {status}\nCloakBrowser: {cloak}\nЛогов: {len(setup_logs)}",
+            f"📊 **Статус**\n\nБраузер: {status}\nCloakBrowser: {cloak}\nКук загружено: {len(X_COOKIES)}\nЛогов: {len(setup_logs)}",
             reply_markup=get_play_keyboard(),
             parse_mode='Markdown'
         )
@@ -333,10 +303,18 @@ async def handle_play_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             await query.edit_message_text("❌ Сначала запусти браузер!", reply_markup=get_play_keyboard())
             return
         
+        if not X_COOKIES:
+            await query.edit_message_text(
+                "❌ **Нет кук!**\n\n"
+                "Сначала вставь куки через кнопку 🍪 Вставить куки",
+                reply_markup=get_play_keyboard()
+            )
+            return
+        
         await query.edit_message_text("🔐 Вход в X...", parse_mode='Markdown')
         try:
             await page.context.add_cookies(X_COOKIES)
-            await page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=60000)
+            await page.goto(fix_url("x.com/home"), wait_until="domcontentloaded", timeout=60000)
             
             cookies_after = await page.context.cookies()
             auth_cookie = next((c for c in cookies_after if c.get('name') == 'auth_token'), None)
@@ -354,20 +332,231 @@ async def handle_play_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     elif action == "browser_tweet":
         await query.edit_message_text("🐦 Используй команду: `/tweet <текст>`", reply_markup=get_play_keyboard(), parse_mode='Markdown')
 
+# === ОБРАБОТЧИК СООБЩЕНИЙ ДЛЯ КУК ===
+
+async def handle_cookies_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает текстовые сообщения с куками"""
+    global X_COOKIES
+    
+    # Проверяем, ждём ли мы куки
+    if not context.user_data.get('waiting_for_cookies', False):
+        return
+    
+    text = update.message.text
+    user_id = update.message.from_user.id
+    
+    # Парсим куки
+    cookies = parse_cookies_from_text(text)
+    
+    if cookies and len(cookies) > 0:
+        # Сохраняем куки
+        X_COOKIES = cookies
+        context.user_data['waiting_for_cookies'] = False
+        
+        # Показываем сколько кук загружено
+        auth_token = next((c for c in cookies if c.get('name') == 'auth_token'), None)
+        ct0 = next((c for c in cookies if c.get('name') == 'ct0'), None)
+        twid = next((c for c in cookies if c.get('name') == 'twid'), None)
+        
+        add_log(f"✅ Загружено {len(cookies)} кук от пользователя {user_id}")
+        
+        await update.message.reply_text(
+            f"✅ **Куки загружены!**\n\n"
+            f"🍪 Всего кук: {len(cookies)}\n"
+            f"🔑 auth_token: {'✅' if auth_token else '❌'}\n"
+            f"🔐 ct0: {'✅' if ct0 else '❌'}\n"
+            f"👤 twid: {'✅' if twid else '❌'}\n\n"
+            f"Теперь можно:\n"
+            f"1️⃣ Запустить браузер: /browserplay\n"
+            f"2️⃣ Войти в X: /loginx\n"
+            f"3️⃣ Посмотреть процесс: /watch_x",
+            reply_markup=get_play_keyboard(),
+            parse_mode='Markdown'
+        )
+    else:
+        await update.message.reply_text(
+            "❌ **Не удалось распознать куки**\n\n"
+            "Проверь формат. Должно быть:\n"
+            "1️⃣ JSON массив: `[{\"name\":\"...\",\"value\":\"...\"}]`\n"
+            "2️⃣ Строка: `name1=value1; name2=value2`\n"
+            "3️⃣ Пары с новой строки\n\n"
+            "Попробуй ещё раз или нажми ◀️ Назад",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀️ Назад", callback_data="browser_back")]
+            ])
+        )
+
+# === КОМАНДА WATCH_X (для кнопки) ===
+
+async def watch_x_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Версия watch_x для callback"""
+    global browser_started, browser, page
+    
+    query = update.callback_query
+    
+    if not X_COOKIES:
+        await query.edit_message_text(
+            "❌ **Нет кук!**\n\n"
+            "Сначала вставь куки через кнопку 🍪 Вставить куки",
+            reply_markup=get_play_keyboard()
+        )
+        return
+    
+    await query.edit_message_text(
+        "🎬 **Начинаю демонстрацию входа на X**\n\n"
+        "Бот покажет все шаги со скриншотами...",
+        parse_mode='Markdown'
+    )
+    
+    try:
+        # Запускаем браузер, если не запущен
+        if not browser_started:
+            await query.edit_message_text("🚀 Запускаю браузер...")
+            browser = await launch_async(
+                headless=True,
+                humanize=True,
+                args=['--no-sandbox', '--disable-dev-shm-usage']
+            )
+            page = await browser.new_page()
+            browser_started = True
+            await asyncio.sleep(2)
+        
+        # ШАГ 1: Открываем X.com
+        await query.edit_message_text("1️⃣ Открываю X.com...")
+        await page.goto(fix_url("x.com"), wait_until="domcontentloaded", timeout=60000)
+        await asyncio.sleep(2)
+        
+        screenshot1 = await page.screenshot(full_page=False)
+        await query.message.reply_photo(
+            photo=screenshot1,
+            caption="📸 ШАГ 1: Главная страница X (без входа)"
+        )
+        await asyncio.sleep(1)
+        
+        # ШАГ 2: Устанавливаем куки
+        await query.edit_message_text("2️⃣ Устанавливаю куки для входа...")
+        await page.context.add_cookies(X_COOKIES)
+        await asyncio.sleep(2)
+        
+        cookies_after_set = await page.context.cookies()
+        auth_token_set = next((c for c in cookies_after_set if c.get('name') == 'auth_token'), None)
+        
+        if auth_token_set:
+            await query.edit_message_text("✅ auth_token установлен успешно!")
+        else:
+            await query.edit_message_text("❌ auth_token НЕ установлен!")
+            return
+        
+        # ШАГ 3: Обновляем страницу
+        await query.edit_message_text("3️⃣ Обновляю страницу с куками...")
+        await page.reload(wait_until="domcontentloaded", timeout=60000)
+        await asyncio.sleep(3)
+        
+        screenshot2 = await page.screenshot(full_page=False)
+        await query.message.reply_photo(
+            photo=screenshot2,
+            caption="📸 ШАГ 2: После установки кук"
+        )
+        await asyncio.sleep(1)
+        
+        # ШАГ 4: Переходим на главную
+        await query.edit_message_text("4️⃣ Перехожу на главную страницу X...")
+        await page.goto(fix_url("x.com/home"), wait_until="domcontentloaded", timeout=60000)
+        await asyncio.sleep(3)
+        
+        screenshot3 = await page.screenshot(full_page=False)
+        
+        cookies_after = await page.context.cookies()
+        auth_token_after = next((c for c in cookies_after if c.get('name') == 'auth_token'), None)
+        
+        status_msg = "✅ ВХОД ВЫПОЛНЕН!" if auth_token_after else "❌ ВХОД НЕ УДАЛСЯ"
+        
+        await query.message.reply_photo(
+            photo=screenshot3,
+            caption=f"📸 ШАГ 3: Главная страница X\n\nСтатус: {status_msg}"
+        )
+        await asyncio.sleep(1)
+        
+        # ШАГ 5: Проверка
+        await query.edit_message_text("5️⃣ Проверяю содержимое страницы...")
+        
+        has_tweets = await page.evaluate('''
+            (function() {
+                const tweets = document.querySelectorAll('[data-testid="tweet"]');
+                return tweets.length > 0;
+            })();
+        ''')
+        
+        has_login = await page.evaluate('''
+            (function() {
+                const login = document.querySelector('[data-testid="login"]');
+                const signup = document.querySelector('[data-testid="signup"]');
+                return !!(login || signup);
+            })();
+        ''')
+        
+        await page.evaluate('window.scrollTo(0, 500)')
+        await asyncio.sleep(1)
+        screenshot4 = await page.screenshot(full_page=False)
+        
+        await query.message.reply_photo(
+            photo=screenshot4,
+            caption=f"📸 ШАГ 4: Содержимое страницы\n\n"
+                   f"📊 Твиты: {'Есть ✅' if has_tweets else 'Нет ❌'}\n"
+                   f"🔐 Форма входа: {'Видна ❌' if has_login else 'Не видна ✅'}\n\n"
+                   f"{'✅ Бот успешно вошёл в X!' if auth_token_after and has_tweets else '❌ Вход не удался. Обнови куки.'}"
+        )
+        
+        if auth_token_after and has_tweets:
+            await query.edit_message_text(
+                "✅ **ВХОД В X УСПЕШЕН!**\n\n"
+                "Теперь доступно: /tweet <текст>",
+                reply_markup=get_play_keyboard(),
+                parse_mode='Markdown'
+            )
+        else:
+            await query.edit_message_text(
+                "❌ **ВХОД НЕ УДАЛСЯ**\n\n"
+                "Обнови куки через 🍪 Вставить куки",
+                reply_markup=get_play_keyboard(),
+                parse_mode='Markdown'
+            )
+        
+    except Exception as e:
+        logger.error(f"Ошибка в watch_x: {e}")
+        await query.edit_message_text(f"❌ Ошибка: {str(e)[:300]}", reply_markup=get_play_keyboard())
+
 # === ОБЫЧНЫЕ КОМАНДЫ ===
+
+async def watch_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /watch_x"""
+    # Перенаправляем на callback версию
+    class FakeQuery:
+        def __init__(self, message):
+            self.message = message
+        async def answer(self):
+            pass
+        async def edit_message_text(self, text, *args, **kwargs):
+            return await self.message.reply_text(text, *args, **kwargs)
+    
+    fake_query = FakeQuery(update.message)
+    update.callback_query = fake_query
+    await watch_x_callback(update, context)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🕵️ **Бот с CloakBrowser**\n\n"
         "📋 Команды:\n"
         "/browserplay - 🎮 Панель управления\n"
+        "/watch_x - 🎬 Показать процесс входа в X\n"
         "/html <url> - Получить HTML\n"
         "/shot <url> - Скриншот\n"
         "/cookies <url> - Показать куки\n"
         "/loginx - Войти в X\n"
         "/tweet <текст> - Опубликовать твит\n"
         "/status - Статус браузера\n\n"
-        f"📦 CloakBrowser: {'✅ Установлен' if CLOAK_AVAILABLE else '❌ Не установлен'}",
+        f"📦 CloakBrowser: {'✅ Установлен' if CLOAK_AVAILABLE else '❌ Не установлен'}\n"
+        f"🍪 Кук загружено: {len(X_COOKIES)}",
         parse_mode='Markdown'
     )
 
@@ -387,7 +576,7 @@ async def html_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             page = await browser.new_page()
             browser_started = True
         
-        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        await page.goto(fix_url(url), wait_until="domcontentloaded", timeout=60000)
         content = await page.content()
         preview = content[:4000] + "..." if len(content) > 4000 else content
         await update.message.reply_text(f"📄 HTML ({len(content)} символов):\n\n{preview}")
@@ -412,7 +601,7 @@ async def shot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             page = await browser.new_page()
             browser_started = True
         
-        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        await page.goto(fix_url(url), wait_until="domcontentloaded", timeout=60000)
         screenshot = await page.screenshot(full_page=True)
         await update.message.reply_photo(photo=screenshot, caption=f"Скриншот: {url}")
         
@@ -436,7 +625,7 @@ async def cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             page = await browser.new_page()
             browser_started = True
         
-        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        await page.goto(fix_url(url), wait_until="domcontentloaded", timeout=60000)
         cookies = await page.context.cookies()
         
         if cookies:
@@ -452,6 +641,13 @@ async def cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def loginx(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global browser_started, browser, page
     
+    if not X_COOKIES:
+        await update.message.reply_text(
+            "❌ **Нет кук!**\n\n"
+            "Сначала вставь куки через /browserplay → 🍪 Вставить куки"
+        )
+        return
+    
     await update.message.reply_text("🔐 Выполняю вход в X...")
     
     try:
@@ -461,7 +657,7 @@ async def loginx(update: Update, context: ContextTypes.DEFAULT_TYPE):
             browser_started = True
         
         await page.context.add_cookies(X_COOKIES)
-        await page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=60000)
+        await page.goto(fix_url("x.com/home"), wait_until="domcontentloaded", timeout=60000)
         
         cookies_after = await page.context.cookies()
         auth_cookie = next((c for c in cookies_after if c.get('name') == 'auth_token'), None)
@@ -476,10 +672,7 @@ async def loginx(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text(
                 "❌ Авторизация не удалась. Обнови куки.\n\n"
-                "Проверь:\n"
-                "1. Куки устарели — обнови\n"
-                "2. Не все куки скопированы\n"
-                "3. Попробуй войти в X в обычном браузере и повтори"
+                "Используй /browserplay → 🍪 Вставить куки"
             )
             
     except Exception as e:
@@ -507,7 +700,7 @@ async def tweet_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             page = await browser.new_page()
             browser_started = True
         
-        await page.goto("https://x.com/compose/post", wait_until="domcontentloaded", timeout=60000)
+        await page.goto(fix_url("x.com/compose/post"), wait_until="domcontentloaded", timeout=60000)
         await page.wait_for_timeout(2000)
         
         escaped_text = tweet_text.replace('"', '\\"').replace("'", "\\'")
@@ -557,6 +750,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📊 **Статус бота**\n\n"
         f"🖥 Браузер: {status}\n"
         f"📦 CloakBrowser: {cloak}\n"
+        f"🍪 Кук загружено: {len(X_COOKIES)}\n"
         f"📝 Логов: {len(setup_logs)}\n"
         f"🕒 Последний лог: {setup_logs[-1] if setup_logs else 'Нет'}",
         parse_mode='Markdown'
@@ -567,8 +761,10 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(TOKEN).build()
     
+    # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("browserplay", browserplay))
+    app.add_handler(CommandHandler("watch_x", watch_x))
     app.add_handler(CommandHandler("html", html_command))
     app.add_handler(CommandHandler("shot", shot_command))
     app.add_handler(CommandHandler("cookies", cookies_command))
@@ -576,7 +772,11 @@ def main():
     app.add_handler(CommandHandler("tweet", tweet_command))
     app.add_handler(CommandHandler("status", status_command))
     
+    # Callback для кнопок
     app.add_handler(CallbackQueryHandler(handle_play_callback, pattern="^browser_"))
+    
+    # Обработчик сообщений (для ввода кук)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_cookies_input))
     
     logger.info("🚀 Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
