@@ -10,7 +10,7 @@ import requests
 from flask import Flask, jsonify
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from cloakbrowser import launch  # Это синхронная функция!
+from cloakbrowser import launch
 
 # ============ НАСТРОЙКИ ============
 logging.basicConfig(level=logging.INFO)
@@ -126,6 +126,7 @@ async def get_browser(user_id: int, status_callback=None):
     
     await send_status("📦 Проверяю наличие CloakBrowser...")
     
+    # Используем стандартный путь Playwright для профилей
     profile_dir = f"/data/profile_{user_id}" if user_id else None
     proxy = os.getenv("PROXY_URL")
     
@@ -136,32 +137,43 @@ async def get_browser(user_id: int, status_callback=None):
     await send_status("⏳ Это может занять 1-2 минуты при первом запуске")
     
     try:
-        # ЗАПУСКАЕМ В ОТДЕЛЬНОМ ПОТОКЕ (синхронный launch)
+        # Запускаем браузер
         def sync_launch():
             return launch(
                 headless="virtual",
-                profile_dir=profile_dir,
-                proxy=proxy,
                 humanize=True,
+                # Убираем profile_dir, используем стандартный способ
             )
         
-        # Запускаем синхронную функцию в потоке
         browser = await asyncio.to_thread(sync_launch)
-        
         await send_status("✅ Браузер запущен!")
+        
+        # Создаем контекст с user_data_dir для сохранения сессии
         await send_status("🌐 Создаю контекст...")
         
-        # Контекст и страница создаются синхронно
-        context = await asyncio.to_thread(browser.new_context)
+        def create_context():
+            # Используем стандартный способ сохранения сессии
+            return browser.new_context(
+                user_data_dir=profile_dir,  # Сохраняем сессию в папку
+                viewport={'width': 1280, 'height': 720},
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            )
+        
+        context = await asyncio.to_thread(create_context)
         await send_status("✅ Контекст создан!")
         
+        # Добавляем куки
         if MY_COOKIES:
             await send_status(f"🍪 Добавляю {len(MY_COOKIES)} куки...")
             await asyncio.to_thread(context.add_cookies, MY_COOKIES)
             await send_status("✅ Куки добавлены!")
         
         await send_status("📄 Создаю страницу...")
-        page = await asyncio.to_thread(context.new_page)
+        
+        def create_page():
+            return context.new_page()
+        
+        page = await asyncio.to_thread(create_page)
         await send_status("✅ Страница создана!")
         
         # Добавляем скрипт маскировки
