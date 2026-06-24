@@ -1,4 +1,4 @@
-# bot.py - исправленная версия с обновлением статуса
+# bot.py - исправленная версия с правильным запуском
 import os
 import subprocess
 import logging
@@ -29,6 +29,7 @@ browser_instance = None
 browser_context = None
 browser_page = None
 last_url = None
+_playwright = None
 
 # ==================== УСТАНОВКА БРАУЗЕРА ====================
 def install_browser_sync():
@@ -36,7 +37,6 @@ def install_browser_sync():
     try:
         logger.info("🔄 Устанавливаю браузер...")
         
-        # Устанавливаем playwright
         subprocess.run(
             ["pip", "install", "playwright"],
             check=True,
@@ -44,7 +44,6 @@ def install_browser_sync():
         )
         logger.info("✅ Playwright установлен")
         
-        # Устанавливаем браузер
         result = subprocess.run(
             ["playwright", "install", "chromium"],
             capture_output=True,
@@ -68,48 +67,19 @@ async def install_browser_async():
     with concurrent.futures.ThreadPoolExecutor() as executor:
         result = await loop.run_in_executor(executor, install_browser_sync)
     
-    # Принудительно проверяем после установки
     if result:
         check_browser()
     
     return result
 
 def check_browser():
-    """Проверяет наличие браузера - улучшенная версия"""
+    """Проверяет наличие браузера - синхронная версия"""
     try:
-        # Проверяем через playwright
-        from playwright.async_api import async_playwright
+        # Пробуем импортировать playwright
+        import playwright
+        logger.info("✅ Playwright найден")
         
-        async def test_browser():
-            try:
-                async with async_playwright() as p:
-                    browser = await p.chromium.launch(
-                        headless=True,
-                        args=['--no-sandbox', '--disable-setuid-sandbox']
-                    )
-                    await browser.close()
-                    return True
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка запуска: {e}")
-                return False
-        
-        # Создаем новый event loop для проверки
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(test_browser())
-        loop.close()
-        
-        if result:
-            logger.info("✅ Браузер работает")
-            return True
-            
-    except ImportError:
-        logger.warning("⚠️ Playwright не установлен")
-    except Exception as e:
-        logger.warning(f"⚠️ Ошибка проверки: {e}")
-    
-    # Проверяем наличие файлов браузера
-    try:
+        # Проверяем наличие файлов браузера
         import glob
         home_dir = os.path.expanduser("~")
         browser_paths = [
@@ -118,13 +88,19 @@ def check_browser():
         ]
         
         for path in browser_paths:
-            if glob.glob(path):
-                logger.info("✅ Найдены файлы браузера")
+            found = glob.glob(path)
+            if found:
+                logger.info(f"✅ Найдены файлы браузера: {found[0]}")
                 return True
-    except:
-        pass
-    
-    return False
+        
+        return False
+        
+    except ImportError:
+        logger.warning("⚠️ Playwright не установлен")
+        return False
+    except Exception as e:
+        logger.warning(f"⚠️ Ошибка проверки: {e}")
+        return False
 
 # ==================== УСТАНОВКА CLOAKBROWSER ====================
 def install_cloak():
@@ -150,7 +126,6 @@ if not CLOAK_AVAILABLE:
     if install_cloak():
         CLOAK_AVAILABLE = check_cloak()
 
-# Проверяем браузер сразу
 BROWSER_AVAILABLE = check_browser()
 
 logger.info(f"📊 CloakBrowser: {CLOAK_AVAILABLE}, Браузер: {BROWSER_AVAILABLE}")
@@ -192,7 +167,7 @@ def cookies_to_string(cookies):
 
 # ==================== УПРАВЛЕНИЕ БРАУЗЕРОМ ====================
 async def init_browser(url=None):
-    global browser_instance, browser_context, browser_page, last_url
+    global browser_instance, browser_context, browser_page, last_url, _playwright
     
     try:
         from playwright.async_api import async_playwright
@@ -202,8 +177,8 @@ async def init_browser(url=None):
             
             cookies = load_cookies()
             
-            p = await async_playwright().start()
-            browser_instance = await p.chromium.launch(
+            _playwright = await async_playwright().start()
+            browser_instance = await _playwright.chromium.launch(
                 headless=True,
                 args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
             )
@@ -225,7 +200,10 @@ async def init_browser(url=None):
         if url and url != last_url:
             logger.info(f"🌐 Перехожу на {url}")
             await browser_page.goto(url, timeout=30000)
-            await browser_page.wait_for_load_state('networkidle', timeout=10000)
+            try:
+                await browser_page.wait_for_load_state('networkidle', timeout=10000)
+            except:
+                pass
             last_url = url
         
         return browser_page
@@ -236,7 +214,7 @@ async def init_browser(url=None):
         raise e
 
 async def close_browser():
-    global browser_instance, browser_context, browser_page
+    global browser_instance, browser_context, browser_page, _playwright
     
     try:
         if browser_instance:
@@ -245,9 +223,16 @@ async def close_browser():
     except:
         pass
     
+    try:
+        if _playwright:
+            await _playwright.stop()
+    except:
+        pass
+    
     browser_instance = None
     browser_context = None
     browser_page = None
+    _playwright = None
 
 async def take_screenshot_from_page():
     global browser_page
@@ -279,7 +264,6 @@ async def set_bot_commands(application):
     await application.bot.set_my_commands(commands)
 
 async def get_main_keyboard():
-    # Принудительно проверяем статус при каждом открытии
     cloak_status = check_cloak()
     browser_status = check_browser()
     cookies_count = len(load_cookies())
@@ -356,7 +340,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif query.data == "check_status":
         await query.edit_message_text("🔄 Проверяю статус...")
-        # Принудительно проверяем
         cloak_status = check_cloak()
         browser_status = check_browser()
         await query.edit_message_text(
@@ -384,7 +367,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🍪 Всего кук: {len(cookies)} шт.\n"
             f"🐦 Кук X.COM: {len(x_cookies)} шт.\n"
             f"📄 Последний URL: {last_url or 'Нет'}\n\n"
-            "🔄 Обновить: /check\n"
+            "🔄 /check - обновить статус\n"
             "🔙 /menu",
             parse_mode="Markdown"
         )
@@ -446,8 +429,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         success = await install_browser_async()
-        
-        # Принудительно проверяем после установки
         browser_status = check_browser()
         
         if success and browser_status:
@@ -462,7 +443,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "❌ *Ошибка установки браузера*\n\n"
                 "Попробуйте:\n"
                 "1. /check - обновить статус\n"
-                "2. /reinstall - переустановить CloakBrowser\n"
+                "2. Перезапустите бота\n"
                 "3. Попробуйте позже",
                 parse_mode="Markdown"
             )
@@ -515,8 +496,7 @@ async def open_x_com(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_browser():
         await update.callback_query.message.reply_text(
             "❌ Браузер не установлен!\n"
-            "Нажмите '⬇️ Установить браузер' в меню\n"
-            "Или /install_browser"
+            "Нажмите '⬇️ Установить браузер' в меню"
         )
         return
     
@@ -662,10 +642,8 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}\n\n🔙 /menu")
 
 async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /check - принудительно обновляет статус"""
     await update.message.reply_text("🔄 Проверяю статус...")
     
-    # Принудительно перепроверяем
     cloak_status = check_cloak()
     browser_status = check_browser()
     
@@ -757,25 +735,36 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==================== ЗАПУСК ====================
 def main():
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    
-    app.post_init = set_bot_commands
-    
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("menu", menu))
-    app.add_handler(CommandHandler("browse", browse))
-    app.add_handler(CommandHandler("x", x_command))
-    app.add_handler(CommandHandler("screenshot", screenshot_command))
-    app.add_handler(CommandHandler("close", close_command))
-    app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("cookies", cookies_command))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("check", check_command))
-    app.add_handler(CallbackQueryHandler(handle_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    logger.info("🚀 Бот запущен!")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    """Главная функция запуска бота"""
+    try:
+        # Создаем приложение
+        application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+        
+        # Устанавливаем команды
+        application.post_init = set_bot_commands
+        
+        # Регистрируем обработчики
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("menu", menu))
+        application.add_handler(CommandHandler("browse", browse))
+        application.add_handler(CommandHandler("x", x_command))
+        application.add_handler(CommandHandler("screenshot", screenshot_command))
+        application.add_handler(CommandHandler("close", close_command))
+        application.add_handler(CommandHandler("status", status))
+        application.add_handler(CommandHandler("cookies", cookies_command))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("check", check_command))
+        application.add_handler(CallbackQueryHandler(handle_callback))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        
+        logger.info("🚀 Бот запущен!")
+        
+        # Запускаем бота (синхронно)
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка: {e}")
+        raise
 
 if __name__ == "__main__":
     main()
