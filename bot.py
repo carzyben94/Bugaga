@@ -14,7 +14,27 @@ from flask import Flask, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from playwright.async_api import async_playwright
-from agnes_vision import vision_command, vision_click_command, vision_ask_command
+
+# ============ ПРИНУДИТЕЛЬНАЯ УСТАНОВКА OPENAI ============
+try:
+    import openai
+except ImportError:
+    print("📦 Устанавливаю openai...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "openai>=1.0.0"])
+    import openai
+    print("✅ openai установлен!")
+
+# ============ ИМПОРТ AGNES VISION ============
+try:
+    from agnes_vision import vision_command, vision_click_command, vision_ask_command
+except ImportError:
+    print("⚠️ agnes_vision.py не найден. Создаю заглушки...")
+    async def vision_command(update, context):
+        await update.message.reply_text("⚠️ Модуль agnes_vision.py не загружен!")
+    async def vision_click_command(update, context):
+        await update.message.reply_text("⚠️ Модуль agnes_vision.py не загружен!")
+    async def vision_ask_command(update, context):
+        await update.message.reply_text("⚠️ Модуль agnes_vision.py не загружен!")
 
 # ============ НАСТРОЙКИ ============
 logging.basicConfig(level=logging.INFO)
