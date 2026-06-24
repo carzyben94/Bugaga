@@ -5,13 +5,12 @@ import asyncio
 import random
 import re
 import time
-import sys
 from io import BytesIO
 import requests
 from flask import Flask, jsonify
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from cloakbrowser import launch
+from cloakbrowser import launch  # Это синхронная функция!
 
 # ============ НАСТРОЙКИ ============
 logging.basicConfig(level=logging.INFO)
@@ -27,7 +26,6 @@ MY_COOKIES = [
 ]
 
 user_sessions = {}
-installation_status = {}  # Храним статус установки для каждого пользователя
 
 app_flask = Flask(__name__)
 
@@ -114,57 +112,59 @@ def escape_markdown(text):
         return ''
     return re.sub(r'([_*\[\]()~>#+=|{}.!-])', r'\\\1', text)
 
-# ============ CLOAKBROWSER БРАУЗЕР С ЛОГАМИ ============
+# ============ CLOAKBROWSER БРАУЗЕР ============
 async def get_browser(user_id: int, status_callback=None):
     """Создает браузер CloakBrowser с отправкой статусов в чат"""
     
-    def log_status(message):
-        """Отправляет статус в чат через callback"""
+    async def send_status(message):
         print(f"🔄 [{user_id}] {message}")
         if status_callback:
-            # Используем asyncio.create_task для отправки из синхронного контекста
-            asyncio.create_task(status_callback(f"🔄 {message}"))
+            try:
+                await status_callback(message)
+            except:
+                pass
     
-    log_status("📦 Проверяю наличие CloakBrowser...")
+    await send_status("📦 Проверяю наличие CloakBrowser...")
     
-    # Директория для профиля
     profile_dir = f"/data/profile_{user_id}" if user_id else None
-    
-    # Прокси из переменных окружения
     proxy = os.getenv("PROXY_URL")
     
     if proxy:
-        log_status(f"🌐 Использую прокси: {proxy[:20]}...")
+        await send_status(f"🌐 Использую прокси: {proxy[:20]}...")
     
-    log_status("🚀 Запускаю CloakBrowser...")
-    log_status("⏳ Это может занять 1-2 минуты при первом запуске (скачивание ~200 МБ)")
+    await send_status("🚀 Запускаю CloakBrowser...")
+    await send_status("⏳ Это может занять 1-2 минуты при первом запуске")
     
     try:
-        # Запускаем браузер с логированием
-        browser = await launch(
-            headless="virtual",
-            profile_dir=profile_dir,
-            proxy=proxy,
-            humanize=True,
-        )
+        # ЗАПУСКАЕМ В ОТДЕЛЬНОМ ПОТОКЕ (синхронный launch)
+        def sync_launch():
+            return launch(
+                headless="virtual",
+                profile_dir=profile_dir,
+                proxy=proxy,
+                humanize=True,
+            )
         
-        log_status("✅ Браузер запущен!")
-        log_status("🌐 Создаю контекст...")
+        # Запускаем синхронную функцию в потоке
+        browser = await asyncio.to_thread(sync_launch)
         
-        context = await browser.new_context()
-        log_status("✅ Контекст создан!")
+        await send_status("✅ Браузер запущен!")
+        await send_status("🌐 Создаю контекст...")
         
-        # Добавляем куки
+        # Контекст и страница создаются синхронно
+        context = await asyncio.to_thread(browser.new_context)
+        await send_status("✅ Контекст создан!")
+        
         if MY_COOKIES:
-            log_status(f"🍪 Добавляю {len(MY_COOKIES)} куки...")
-            await context.add_cookies(MY_COOKIES)
-            log_status("✅ Куки добавлены!")
+            await send_status(f"🍪 Добавляю {len(MY_COOKIES)} куки...")
+            await asyncio.to_thread(context.add_cookies, MY_COOKIES)
+            await send_status("✅ Куки добавлены!")
         
-        log_status("📄 Создаю страницу...")
-        page = await context.new_page()
-        log_status("✅ Страница создана!")
+        await send_status("📄 Создаю страницу...")
+        page = await asyncio.to_thread(context.new_page)
+        await send_status("✅ Страница создана!")
         
-        # Дополнительная маскировка
+        # Добавляем скрипт маскировки
         await page.add_init_script("""
             console.log('✅ CloakBrowser активен');
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -192,18 +192,17 @@ async def get_browser(user_id: int, status_callback=None):
             }
         """)
         
-        log_status("✅ Браузер полностью готов!")
+        await send_status("✅ Браузер полностью готов!")
         return page, browser, context
         
     except Exception as e:
-        log_status(f"❌ Ошибка: {str(e)[:100]}")
+        await send_status(f"❌ Ошибка: {str(e)[:200]}")
         raise
 
 async def get_user_browser(user_id: int, update=None):
-    """Получает или создает браузер для пользователя с отправкой статусов"""
+    """Получает или создает браузер для пользователя"""
     
     if user_id not in user_sessions:
-        # Создаем callback для отправки сообщений
         async def send_status(message):
             if update:
                 try:
@@ -211,9 +210,7 @@ async def get_user_browser(user_id: int, update=None):
                 except:
                     pass
         
-        # Добавляем начальный статус
         await send_status("🌐 **Открываю браузер CloakBrowser...**")
-        await send_status("⏳ **Первый запуск может занять 1-2 минуты**")
         
         try:
             page, browser, context = await get_browser(user_id, send_status)
@@ -225,10 +222,9 @@ async def get_user_browser(user_id: int, update=None):
             await page.goto("about:blank")
             await send_status("✅ **Браузер готов к работе!**")
         except Exception as e:
-            await send_status(f"❌ **Ошибка запуска:** {str(e)[:200]}")
+            await send_status(f"❌ **Ошибка:** {str(e)[:200]}")
             raise
     else:
-        # Браузер уже существует
         if update:
             await update.message.reply_text("✅ Браузер уже запущен")
     
@@ -239,7 +235,7 @@ async def close_user_browser(user_id: int):
     if user_id in user_sessions:
         try:
             browser = user_sessions[user_id]["browser"]
-            await browser.close()
+            await asyncio.to_thread(browser.close)
         except:
             pass
         del user_sessions[user_id]
@@ -248,7 +244,7 @@ async def close_user_browser(user_id: int):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "🤖 **БОТ на CloakBrowser**\n\n"
-        "/browser — Открыть браузер (с логами)\n"
+        "/browser — Открыть браузер\n"
         "/x — Открыть X.com\n"
         "/screenshot — Скриншот\n"
         "/tweets — 3 твита\n"
@@ -258,13 +254,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /browser с подробными логами"""
     user_id = update.effective_user.id
-    
-    # Очищаем старый статус
-    installation_status[user_id] = []
-    
-    # Запускаем браузер (логи будут отправляться автоматически)
     try:
         await get_user_browser(user_id, update)
     except Exception as e:
