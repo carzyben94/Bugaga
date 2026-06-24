@@ -1,10 +1,10 @@
-# bot.py
+# bot.py - полная асинхронная версия
 import os
 import subprocess
 import logging
 import json
-import time
 import asyncio
+import concurrent.futures
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
@@ -27,15 +27,8 @@ BROWSER_STATUS = {
 }
 
 # ==================== УСТАНОВКА БРАУЗЕРА ====================
-def install_browser():
-    """Устанавливает браузер для Playwright/CloakBrowser"""
-    global BROWSER_STATUS
-    
-    if BROWSER_STATUS['installing']:
-        return False
-    
-    BROWSER_STATUS['installing'] = True
-    
+def install_browser_sync():
+    """Синхронная установка браузера (для запуска в отдельном потоке)"""
     try:
         logger.info("🔄 Устанавливаю браузер для CloakBrowser...")
         
@@ -69,30 +62,62 @@ def install_browser():
         BROWSER_STATUS['installing'] = False
         return False
 
+async def install_browser_async():
+    """Асинхронная обертка для установки браузера"""
+    if BROWSER_STATUS['installing']:
+        return False
+    
+    BROWSER_STATUS['installing'] = True
+    
+    # Запускаем в отдельном потоке
+    loop = asyncio.get_event_loop()
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        result = await loop.run_in_executor(executor, install_browser_sync)
+    
+    return result
+
 def check_browser():
     """Проверяет наличие браузера"""
     try:
         # Проверяем наличие папки с браузером
         home_dir = os.path.expanduser("~")
+        import glob
         browser_paths = [
             f"{home_dir}/.cache/ms-playwright/chromium-*",
             f"{home_dir}/.cache/ms-playwright/chromium_headless_shell-*",
-            f"{home_dir}/.cache/ms-playwright/chromium-*",
         ]
         
-        import glob
         for path in browser_paths:
             if glob.glob(path):
                 BROWSER_STATUS['installed'] = True
                 return True
         
-        # Пробуем запустить браузер
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            browser.close()
-            BROWSER_STATUS['installed'] = True
-            return True
+        # Пробуем запустить через асинхронный API
+        try:
+            import asyncio
+            from playwright.async_api import async_playwright
+            
+            async def test_browser():
+                async with async_playwright() as p:
+                    browser = await p.chromium.launch(headless=True)
+                    await browser.close()
+                    return True
+            
+            # Запускаем тест
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            result = loop.run_until_complete(test_browser())
+            loop.close()
+            
+            if result:
+                BROWSER_STATUS['installed'] = True
+                return True
+                
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка проверки браузера: {e}")
+        
+        BROWSER_STATUS['installed'] = False
+        return False
             
     except Exception as e:
         logger.warning(f"⚠️ Браузер не найден: {e}")
@@ -207,12 +232,16 @@ async def get_main_keyboard():
         [InlineKeyboardButton("🌐 Открыть сайт", callback_data="browse")],
         [InlineKeyboardButton("📊 Статус", callback_data="status")],
         [InlineKeyboardButton("🍪 Куки (" + str(cookies_count) + ")", callback_data="cookies")],
-        [InlineKeyboardButton("⬇️ Установить браузер", callback_data="install_browser")],
-        [InlineKeyboardButton("ℹ️ Помощь", callback_data="help")],
     ]
     
+    # Кнопка установки браузера если он не установлен
+    if not browser_status:
+        keyboard.append([InlineKeyboardButton("⬇️ Установить браузер", callback_data="install_browser")])
+    
+    keyboard.append([InlineKeyboardButton("ℹ️ Помощь", callback_data="help")])
+    
     # Добавляем кнопку переустановки только если что-то не работает
-    if not cloak_status or not browser_status:
+    if not cloak_status:
         keyboard.append([InlineKeyboardButton("🔄 Переустановить CloakBrowser", callback_data="reinstall")])
     
     return InlineKeyboardMarkup(keyboard), status_line
@@ -267,8 +296,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🌐 Браузер: {'✅ Установлен' if browser_status else '❌ Не установлен'}
 🍪 Куки: {len(cookies)} шт.
 
-🔄 Переустановка: /reinstall
-📥 Установка браузера: /install_browser"""
+⬇️ Установка браузера: /install_browser
+🔄 Переустановка: /reinstall"""
         
         await query.edit_message_text(
             status_text,
@@ -363,17 +392,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
         
-        # Запускаем установку в отдельном процессе
-        def install():
-            return install_browser()
-        
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future = executor.submit(install)
-            try:
-                success = future.result(timeout=300)  # 5 минут
-            except concurrent.futures.TimeoutError:
-                success = False
+        # Устанавливаем браузер
+        success = await install_browser_async()
         
         if success:
             await query.edit_message_text(
@@ -436,7 +456,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "3. Отправьте JSON с куками\n\n"
             "📌 *Советы:*\n"
             "• Если браузер не установлен - нажмите '⬇️ Установить браузер'\n"
-            "• Если что-то не работает - нажмите '🔄 Переустановить'",
+            "• Если что-то не работает - нажмите '🔄 Переустановить'\n"
+            "• Статус обновляется автоматически",
             parse_mode="Markdown"
         )
     
@@ -511,12 +532,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Ошибка загрузки файла: {str(e)}")
 
 async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Если вызвано из handle_message
-    if isinstance(update, str):
-        url = update
-        user_message = None
-        chat_id = context.user_data.get('chat_id')
-    else:
+    # Определяем источник вызова
+    if hasattr(update, 'message') and update.message:
         if not context.args:
             await update.message.reply_text(
                 "❌ *Укажите URL*\n\n"
@@ -526,15 +543,20 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         url = context.args[0]
-        user_message = update.message
-        chat_id = update.message.chat_id
+        msg_obj = update.message
+    else:
+        # Вызвано из handle_message
+        url = update
+        msg_obj = context.user_data.get('message_obj')
+        if not msg_obj:
+            return
     
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
     
     # Проверяем CloakBrowser
     if not check_cloak():
-        await update.message.reply_text(
+        await msg_obj.reply_text(
             "❌ CloakBrowser не установлен!\n"
             "Используйте /reinstall для установки"
         )
@@ -542,43 +564,43 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Проверяем браузер
     if not check_browser():
-        await update.message.reply_text(
+        await msg_obj.reply_text(
             "❌ Браузер не установлен!\n"
             "Нажмите '⬇️ Установить браузер' в меню"
         )
         return
     
-    msg = await update.message.reply_text(f"⏳ Открываю {url}...")
+    msg = await msg_obj.reply_text(f"⏳ Открываю {url}...")
     
     try:
-        from playwright.sync_api import sync_playwright
+        from playwright.async_api import async_playwright
         
         cookies = load_cookies()
         logger.info(f"🍪 Загружено {len(cookies)} кук для {url}")
         
-        with sync_playwright() as p:
+        async with async_playwright() as p:
             logger.info(f"🚀 Запускаю браузер для {url}")
-            browser = p.chromium.launch(headless=True)
-            context_browser = browser.new_context()
-            page = context_browser.new_page()
+            browser = await p.chromium.launch(headless=True)
+            context_browser = await browser.new_context()
+            page = await context_browser.new_page()
             
             if cookies:
                 try:
-                    context_browser.add_cookies(cookies)
+                    await context_browser.add_cookies(cookies)
                     logger.info(f"✅ Установлено {len(cookies)} кук")
                 except Exception as e:
                     logger.warning(f"⚠️ Ошибка установки кук: {e}")
             
             logger.info(f"🌐 Перехожу по адресу: {url}")
-            page.goto(url, timeout=30000)
+            await page.goto(url, timeout=30000)
             
             # Получаем заголовки
-            user_agent = page.evaluate("() => navigator.userAgent")
-            title = page.evaluate("() => document.title")
+            user_agent = await page.evaluate("() => navigator.userAgent")
+            title = await page.evaluate("() => document.title")
             logger.info(f"📱 User-Agent: {user_agent}")
             logger.info(f"📄 Title: {title}")
             
-            browser.close()
+            await browser.close()
             logger.info(f"✅ Страница открыта: {url}")
             
             await msg.edit_text(
@@ -588,7 +610,7 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🍪 Кук использовано: {len(cookies)}",
                 parse_mode="Markdown"
             )
-            await update.message.reply_text(
+            await msg_obj.reply_text(
                 "🔙 Вернуться в меню: /menu",
                 parse_mode="Markdown"
             )
@@ -602,6 +624,34 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔙 Вернуться в меню: /menu",
             parse_mode="Markdown"
         )
+
+async def install_browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /install_browser"""
+    await update.message.reply_text(
+        "⏳ *Установка браузера...*\n\n"
+        "Это может занять 2-3 минуты.\n"
+        "Пожалуйста, подождите...",
+        parse_mode="Markdown"
+    )
+    
+    success = await install_browser_async()
+    
+    if success:
+        await update.message.reply_text(
+            "✅ *Браузер успешно установлен!*\n\n"
+            "Теперь можно открывать сайты:\n"
+            "`/browse https://example.com`",
+            parse_mode="Markdown"
+        )
+    else:
+        await update.message.reply_text(
+            "❌ *Ошибка установки браузера*\n\n"
+            "Попробуйте позже или вручную:\n"
+            "`playwright install chromium`",
+            parse_mode="Markdown"
+        )
+    
+    await menu(update, context)
 
 async def cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cookies = load_cookies()
@@ -672,6 +722,7 @@ def main():
     app.add_handler(CommandHandler("browse", browse))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("cookies", cookies_command))
+    app.add_handler(CommandHandler("install_browser", install_browser_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
