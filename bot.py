@@ -5,12 +5,13 @@ import asyncio
 import random
 import re
 import time
+import multiprocessing
 from io import BytesIO
 import requests
 from flask import Flask, jsonify
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from cloakbrowser import async_launch  # Асинхронная версия!
+from cloakbrowser import launch
 
 # ============ НАСТРОЙКИ ============
 logging.basicConfig(level=logging.INFO)
@@ -112,51 +113,42 @@ def escape_markdown(text):
         return ''
     return re.sub(r'([_*\[\]()~>#+=|{}.!-])', r'\\\1', text)
 
-# ============ АСИНХРОННЫЙ CLOAKBROWSER ============
-async def get_browser(user_id: int, status_callback=None):
-    """Создает браузер CloakBrowser асинхронно"""
-    
-    async def send_status(message):
-        print(f"🔄 [{user_id}] {message}")
-        if status_callback:
-            try:
-                await status_callback(message)
-            except:
-                pass
-    
-    await send_status("🚀 Запускаю CloakBrowser...")
-    await send_status("⏳ Первый запуск: скачивание ~200 МБ (1-2 минуты)")
-    
+# ============ CLOAKBROWSER В ОТДЕЛЬНОМ ПРОЦЕССЕ ============
+def browser_process(user_id, result_queue, status_queue):
+    """Запускает браузер в отдельном процессе"""
     try:
-        # Асинхронный запуск
-        browser = await async_launch(
+        status_queue.put("🚀 Запускаю CloakBrowser...")
+        status_queue.put("⏳ Первый запуск: скачивание ~200 МБ (1-2 минуты)")
+        
+        # Запускаем браузер
+        browser = launch(
             headless=True,
             humanize=True,
         )
         
-        await send_status("✅ Браузер запущен!")
-        await send_status("🌐 Создаю контекст...")
+        status_queue.put("✅ Браузер запущен!")
+        status_queue.put("🌐 Создаю контекст...")
         
         # Создаем контекст
-        context = await browser.new_context(
+        context = browser.new_context(
             viewport={'width': 1280, 'height': 720},
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         )
         
-        await send_status("✅ Контекст создан!")
+        status_queue.put("✅ Контекст создан!")
         
         # Добавляем куки
         if MY_COOKIES:
-            await send_status(f"🍪 Добавляю {len(MY_COOKIES)} куки...")
-            await context.add_cookies(MY_COOKIES)
-            await send_status("✅ Куки добавлены!")
+            status_queue.put(f"🍪 Добавляю {len(MY_COOKIES)} куки...")
+            context.add_cookies(MY_COOKIES)
+            status_queue.put("✅ Куки добавлены!")
         
-        await send_status("📄 Создаю страницу...")
-        page = await context.new_page()
-        await send_status("✅ Страница создана!")
+        status_queue.put("📄 Создаю страницу...")
+        page = context.new_page()
+        status_queue.put("✅ Страница создана!")
         
         # Добавляем скрипт маскировки
-        await page.add_init_script("""
+        page.add_init_script("""
             console.log('✅ CloakBrowser активен');
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             delete Object.getPrototypeOf(navigator).webdriver;
@@ -183,44 +175,69 @@ async def get_browser(user_id: int, status_callback=None):
             }
         """)
         
-        await send_status("✅ Браузер полностью готов!")
-        return page, browser, context
+        status_queue.put("✅ Браузер полностью готов!")
+        
+        # Открываем пустую страницу
+        page.goto("about:blank")
+        
+        # Сохраняем объекты в очередь
+        result_queue.put({
+            'browser': browser,
+            'context': context,
+            'page': page,
+            'pid': os.getpid()
+        })
         
     except Exception as e:
-        await send_status(f"❌ Ошибка: {str(e)[:200]}")
-        raise
+        status_queue.put(f"❌ Ошибка: {str(e)[:200]}")
+        result_queue.put(None)
 
 async def get_user_browser(user_id: int, update=None):
     """Получает или создает браузер для пользователя"""
     
     if user_id not in user_sessions:
-        async def send_status(message):
-            if update:
-                try:
-                    await update.message.reply_text(message)
-                except:
-                    pass
+        # Создаем очереди для обмена данными
+        result_queue = multiprocessing.Queue()
+        status_queue = multiprocessing.Queue()
         
+        # Запускаем процесс
+        process = multiprocessing.Process(
+            target=browser_process,
+            args=(user_id, result_queue, status_queue)
+        )
+        process.start()
+        
+        # Отправляем статусы в чат
         if update:
             await update.message.reply_text("🌐 **Открываю браузер CloakBrowser...**")
         
-        try:
-            page, browser, context = await get_browser(user_id, send_status)
-            user_sessions[user_id] = {
-                "page": page,
-                "browser": browser,
-                "context": context
-            }
-            await page.goto("about:blank")
-            if update:
-                await update.message.reply_text("✅ **Браузер готов к работе!**")
-        except Exception as e:
-            if update:
-                await update.message.reply_text(f"❌ **Ошибка:** {str(e)[:200]}")
-            raise
-    else:
+        # Читаем статусы из очереди
+        while True:
+            try:
+                status = status_queue.get(timeout=0.5)
+                if update and not status.startswith('⏳'):
+                    await update.message.reply_text(f"🔄 {status}")
+                if "✅ Браузер полностью готов!" in status:
+                    break
+                if "❌" in status:
+                    break
+            except:
+                # Проверяем, жив ли процесс
+                if not process.is_alive():
+                    break
+                await asyncio.sleep(0.1)
+        
+        # Получаем результат
+        result = result_queue.get(timeout=10)
+        process.join(timeout=5)
+        
+        if result is None:
+            raise Exception("Не удалось запустить браузер")
+        
+        user_sessions[user_id] = result
+        
         if update:
-            await update.message.reply_text("✅ Браузер уже запущен")
+            await update.message.reply_text("✅ **Браузер готов к работе!**")
     
     return user_sessions[user_id]
 
@@ -228,8 +245,8 @@ async def close_user_browser(user_id: int):
     """Закрывает браузер пользователя"""
     if user_id in user_sessions:
         try:
-            browser = user_sessions[user_id]["browser"]
-            await browser.close()
+            browser = user_sessions[user_id]['browser']
+            await asyncio.to_thread(browser.close)
         except:
             pass
         del user_sessions[user_id]
@@ -261,22 +278,11 @@ async def x_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     
     await update.message.reply_text("🐦 Открываю X.com...")
-    page = user_sessions[user_id]["page"]
+    page = user_sessions[user_id]['page']
     
     try:
         await page.goto("https://x.com", timeout=30000)
         await asyncio.sleep(3)
-        
-        # Проверяем, не заблокировали ли
-        title = await page.title()
-        if "x.com" not in title.lower() and "twitter" not in title.lower():
-            await update.message.reply_text(
-                "⚠️ **X.com не загрузился!**\n\n"
-                "Попробуй:\n"
-                "1. /browser — перезапустить браузер\n"
-                "2. /x — ещё раз"
-            )
-            return
         
         screenshot = await take_screenshot(page)
         if screenshot and len(screenshot) > 1000:
@@ -293,13 +299,13 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("⚠️ Сначала /browser")
         return
     
-    page = user_sessions[user_id]["page"]
+    page = user_sessions[user_id]['page']
     screenshot = await take_screenshot(page)
     
     if screenshot and len(screenshot) > 1000:
         await update.message.reply_photo(photo=BytesIO(screenshot), caption="📸 Скриншот")
     else:
-        await update.message.reply_text("❌ Не удалось сделать скриншот")
+        await update.message.reply_text("❌ Не удалось")
 
 async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
@@ -308,7 +314,7 @@ async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     
     await update.message.reply_text("📡 Собираю твиты...")
-    page = user_sessions[user_id]["page"]
+    page = user_sessions[user_id]['page']
     
     try:
         await page.goto("https://x.com", timeout=30000)
@@ -375,7 +381,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("⚠️ Браузер не открыт")
         return
     
-    page = user_sessions[user_id]["page"]
+    page = user_sessions[user_id]['page']
     url = page.url
     cookies = await page.context.cookies()
     has_cookie = any(c['name'] == 'auth_token' for c in cookies)
@@ -403,6 +409,9 @@ async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 # ============ ЗАПУСК ============
 def main():
+    # Инициализируем multiprocessing для работы в Docker
+    multiprocessing.set_start_method('fork', force=True)
+    
     threading.Thread(target=run_flask, daemon=True).start()
     threading.Thread(target=keep_alive, daemon=True).start()
     
