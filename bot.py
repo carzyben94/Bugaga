@@ -13,6 +13,10 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# === ГЛОБАЛЬНЫЕ НАСТРОЙКИ ===
+SCREENSHOT_TIMEOUT = 60000  # 60 секунд на скриншот
+PAGE_TIMEOUT = 60000        # 60 секунд на загрузку страницы
+
 # === АВТОУСТАНОВКА CLOAKBROWSER ===
 def install_cloakbrowser():
     try:
@@ -332,14 +336,14 @@ async def handle_play_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text("🔐 Вход в X...", parse_mode='Markdown')
         try:
             await page.context.add_cookies(X_COOKIES)
-            await page.goto(fix_url("x.com/home"), wait_until="domcontentloaded", timeout=60000)
+            await page.goto(fix_url("x.com/home"), wait_until="domcontentloaded", timeout=PAGE_TIMEOUT)
             
             cookies_after = await page.context.cookies()
             auth_cookie = next((c for c in cookies_after if c.get('name') == 'auth_token'), None)
             
             if auth_cookie:
                 add_log("✅ Успешный вход в X!")
-                screenshot = await page.screenshot(full_page=False)
+                screenshot = await page.screenshot(full_page=False, timeout=SCREENSHOT_TIMEOUT)
                 await query.edit_message_text("✅ **Вход в X выполнен!**", reply_markup=get_play_keyboard(), parse_mode='Markdown')
                 await query.message.reply_photo(photo=screenshot, caption="🏠 Главная X")
             else:
@@ -441,10 +445,10 @@ async def watch_x_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # ШАГ 1: Открываем X.com
         await query.edit_message_text("1️⃣ Открываю X.com...")
-        await page.goto(fix_url("x.com"), wait_until="domcontentloaded", timeout=60000)
+        await page.goto(fix_url("x.com"), wait_until="domcontentloaded", timeout=PAGE_TIMEOUT)
         await asyncio.sleep(2)
         
-        screenshot1 = await page.screenshot(full_page=False)
+        screenshot1 = await page.screenshot(full_page=False, timeout=SCREENSHOT_TIMEOUT)
         await query.message.reply_photo(
             photo=screenshot1,
             caption="📸 ШАГ 1: Главная страница X (без входа)"
@@ -467,10 +471,10 @@ async def watch_x_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # ШАГ 3: Обновляем страницу
         await query.edit_message_text("3️⃣ Обновляю страницу с куками...")
-        await page.reload(wait_until="domcontentloaded", timeout=60000)
+        await page.reload(wait_until="domcontentloaded", timeout=PAGE_TIMEOUT)
         await asyncio.sleep(3)
         
-        screenshot2 = await page.screenshot(full_page=False)
+        screenshot2 = await page.screenshot(full_page=False, timeout=SCREENSHOT_TIMEOUT)
         await query.message.reply_photo(
             photo=screenshot2,
             caption="📸 ШАГ 2: После установки кук"
@@ -479,10 +483,10 @@ async def watch_x_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # ШАГ 4: Переходим на главную
         await query.edit_message_text("4️⃣ Перехожу на главную страницу X...")
-        await page.goto(fix_url("x.com/home"), wait_until="domcontentloaded", timeout=60000)
+        await page.goto(fix_url("x.com/home"), wait_until="domcontentloaded", timeout=PAGE_TIMEOUT)
         await asyncio.sleep(3)
         
-        screenshot3 = await page.screenshot(full_page=False)
+        screenshot3 = await page.screenshot(full_page=False, timeout=SCREENSHOT_TIMEOUT)
         
         cookies_after = await page.context.cookies()
         auth_token_after = next((c for c in cookies_after if c.get('name') == 'auth_token'), None)
@@ -515,7 +519,7 @@ async def watch_x_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await page.evaluate('window.scrollTo(0, 500)')
         await asyncio.sleep(1)
-        screenshot4 = await page.screenshot(full_page=False)
+        screenshot4 = await page.screenshot(full_page=False, timeout=SCREENSHOT_TIMEOUT)
         
         await query.message.reply_photo(
             photo=screenshot4,
@@ -593,7 +597,7 @@ async def html_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             page = await browser.new_page()
             browser_started = True
         
-        await page.goto(fix_url(url), wait_until="domcontentloaded", timeout=60000)
+        await page.goto(fix_url(url), wait_until="domcontentloaded", timeout=PAGE_TIMEOUT)
         content = await page.content()
         preview = content[:4000] + "..." if len(content) > 4000 else content
         await update.message.reply_text(f"📄 HTML ({len(content)} символов):\n\n{preview}")
@@ -618,8 +622,8 @@ async def shot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             page = await browser.new_page()
             browser_started = True
         
-        await page.goto(fix_url(url), wait_until="domcontentloaded", timeout=60000)
-        screenshot = await page.screenshot(full_page=True)
+        await page.goto(fix_url(url), wait_until="domcontentloaded", timeout=PAGE_TIMEOUT)
+        screenshot = await page.screenshot(full_page=True, timeout=SCREENSHOT_TIMEOUT)
         await update.message.reply_photo(photo=screenshot, caption=f"Скриншот: {url}")
         
     except Exception as e:
@@ -642,7 +646,7 @@ async def cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             page = await browser.new_page()
             browser_started = True
         
-        await page.goto(fix_url(url), wait_until="domcontentloaded", timeout=60000)
+        await page.goto(fix_url(url), wait_until="domcontentloaded", timeout=PAGE_TIMEOUT)
         cookies = await page.context.cookies()
         
         if cookies:
@@ -674,14 +678,14 @@ async def loginx(update: Update, context: ContextTypes.DEFAULT_TYPE):
             browser_started = True
         
         await page.context.add_cookies(X_COOKIES)
-        await page.goto(fix_url("x.com/home"), wait_until="domcontentloaded", timeout=60000)
+        await page.goto(fix_url("x.com/home"), wait_until="domcontentloaded", timeout=PAGE_TIMEOUT)
         
         cookies_after = await page.context.cookies()
         auth_cookie = next((c for c in cookies_after if c.get('name') == 'auth_token'), None)
         
         if auth_cookie:
             add_log("✅ Успешный вход в X через /loginx")
-            screenshot = await page.screenshot(full_page=False)
+            screenshot = await page.screenshot(full_page=False, timeout=SCREENSHOT_TIMEOUT)
             await update.message.reply_photo(
                 photo=screenshot,
                 caption="✅ Успешный вход в X!\n\nТеперь доступно: /tweet <текст>"
@@ -717,7 +721,7 @@ async def tweet_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             page = await browser.new_page()
             browser_started = True
         
-        await page.goto(fix_url("x.com/compose/post"), wait_until="domcontentloaded", timeout=60000)
+        await page.goto(fix_url("x.com/compose/post"), wait_until="domcontentloaded", timeout=PAGE_TIMEOUT)
         await page.wait_for_timeout(2000)
         
         escaped_text = tweet_text.replace('"', '\\"').replace("'", "\\'")
@@ -748,7 +752,7 @@ async def tweet_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if success:
             add_log(f"✅ Твит опубликован: {tweet_text[:50]}...")
-            screenshot = await page.screenshot()
+            screenshot = await page.screenshot(timeout=SCREENSHOT_TIMEOUT)
             await update.message.reply_photo(
                 photo=screenshot,
                 caption=f"✅ Твит опубликован!\n\n{tweet_text}"
