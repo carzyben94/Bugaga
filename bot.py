@@ -3,6 +3,7 @@ import logging
 import threading
 import asyncio
 import random
+import re
 from io import BytesIO
 import requests
 from flask import Flask, jsonify
@@ -54,7 +55,6 @@ def keep_alive():
 async def get_browser():
     playwright = await async_playwright().start()
     
-    # Случайные параметры как у реального пользователя
     viewport_width = random.choice([1366, 1440, 1536, 1600, 1920])
     viewport_height = random.choice([768, 900, 960, 1080])
     
@@ -79,7 +79,6 @@ async def get_browser():
         ]
     )
     
-    # Полный список User-Agent (случайный)
     user_agents = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
@@ -113,25 +112,20 @@ async def get_browser():
         }
     )
     
-    # Добавляем случайные куки для реалистичности
     await context.add_cookies([
         {"name": "_ga", "value": f"GA1.2.{random.randint(100000, 999999)}.{random.randint(1000000000, 9999999999)}", "domain": ".x.com", "path": "/"},
         {"name": "_gid", "value": f"GA1.2.{random.randint(100000, 999999)}.{random.randint(1000000000, 9999999999)}", "domain": ".x.com", "path": "/"},
         {"name": "_gat", "value": "1", "domain": ".x.com", "path": "/"},
     ])
     
-    # Добавляем твои куки
     await context.add_cookies(MY_COOKIES)
     
     page = await context.new_page()
     
-    # ============ ПОЛНАЯ МАСКИРОВКА ============
     await page.add_init_script("""
-        // Удаляем webdriver
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
         delete Object.getPrototypeOf(navigator).webdriver;
         
-        // Полная эмуляция плагинов
         Object.defineProperty(navigator, 'plugins', {
             get: () => {
                 const plugins = [
@@ -146,25 +140,16 @@ async def get_browser():
             }
         });
         
-        // Эмуляция languages
         Object.defineProperty(navigator, 'languages', { get: () => ['ru-RU', 'ru', 'en-US', 'en'] });
-        
-        // Эмуляция platform
         Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
-        
-        // Эмуляция hardwareConcurrency
         Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
-        
-        // Эмуляция deviceMemory
         Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
         
-        // Эмуляция screen
         Object.defineProperty(screen, 'availWidth', { get: () => 1920 });
         Object.defineProperty(screen, 'availHeight', { get: () => 1080 });
         Object.defineProperty(screen, 'width', { get: () => 1920 });
         Object.defineProperty(screen, 'height', { get: () => 1080 });
         
-        // Полная эмуляция chrome
         window.chrome = {
             runtime: {},
             loadTimes: function() {},
@@ -184,7 +169,6 @@ async def get_browser():
             }
         };
         
-        // Эмуляция WebGL
         const getParameter = WebGLRenderingContext.prototype.getParameter;
         WebGLRenderingContext.prototype.getParameter = function(parameter) {
             if (parameter === 37445) return 'Intel Inc.';
@@ -192,7 +176,6 @@ async def get_browser():
             return getParameter(parameter);
         };
         
-        // Эмуляция canvas
         const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
         HTMLCanvasElement.prototype.toDataURL = function(type) {
             if (type === 'image/png') {
@@ -201,7 +184,6 @@ async def get_browser():
             return originalToDataURL.apply(this, arguments);
         };
         
-        // Добавляем permissions
         const originalQuery = window.navigator.permissions.query;
         window.navigator.permissions.query = (parameters) => (
             parameters.name === 'notifications' ?
@@ -226,17 +208,22 @@ async def close_user_browser(user_id: int):
         await user_sessions[user_id]["browser"].close()
         del user_sessions[user_id]
 
-# ============ СКРИНШОТ ============
 async def take_screenshot(page) -> bytes:
     try:
         return await page.screenshot(type="png")
     except:
         return b""
 
+def escape_markdown(text):
+    if not text:
+        return ''
+    escape_chars = r'[_*\[\]()~>#+=|{}.!-]'
+    return re.sub(r'([%s])' % escape_chars, r'\\\1', text)
+
 # ============ КОМАНДЫ ============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "🤖 **БОТ X.COM**\n\n"
+        "🤖 **КОМАНДЫ**\n\n"
         "/browser — Открыть браузер\n"
         "/x — Открыть X.com\n"
         "/screenshot — Скриншот\n"
@@ -340,8 +327,21 @@ async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         
         if tweets and len(tweets) > 0:
             for i, tweet in enumerate(tweets, 1):
-                text = f"📌 **Твит {i}**\n\n👤 **{tweet['name']}**\n🔹 @{tweet['username']}\n🕐 {tweet['time']}\n\n📝 {tweet['text'][:500]}{'...' if len(tweet['text']) > 500 else ''}\n\n🔗 {tweet['link']}"
-                await update.message.reply_text(text, parse_mode="Markdown")
+                name = escape_markdown(tweet['name'])
+                username = escape_markdown(tweet['username'])
+                text = escape_markdown(tweet['text'][:500])
+                time = escape_markdown(tweet['time'])
+                link = escape_markdown(tweet['link'])
+                
+                msg = (
+                    f"📌 **Твит {i}**\n\n"
+                    f"👤 **{name}**\n"
+                    f"🔹 @{username}\n"
+                    f"🕐 {time}\n\n"
+                    f"📝 {text}{'...' if len(tweet['text']) > 500 else ''}\n\n"
+                    f"🔗 {link}"
+                )
+                await update.message.reply_text(msg, parse_mode="Markdown")
                 await asyncio.sleep(0.5)
             await update.message.reply_text("✅ Готово!")
         else:
