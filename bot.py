@@ -2,6 +2,7 @@ import os
 import logging
 import threading
 import asyncio
+import random
 from io import BytesIO
 import requests
 from flask import Flask, jsonify
@@ -49,9 +50,14 @@ def keep_alive():
             pass
         time.sleep(1200)
 
-# ============ БРАУЗЕР ============
+# ============ ПОЛНАЯ ЭМУЛЯЦИЯ БРАУЗЕРА ============
 async def get_browser():
     playwright = await async_playwright().start()
+    
+    # Случайные параметры как у реального пользователя
+    viewport_width = random.choice([1366, 1440, 1536, 1600, 1920])
+    viewport_height = random.choice([768, 900, 960, 1080])
+    
     browser = await playwright.chromium.launch(
         headless=True,
         args=[
@@ -59,13 +65,37 @@ async def get_browser():
             '--disable-setuid-sandbox',
             '--disable-blink-features=AutomationControlled',
             '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--disable-gpu',
+            '--disable-features=IsolateOrigins,site-per-process',
+            '--disable-features=BlockInsecurePrivateNetworkRequests',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-renderer-backgrounding',
+            '--disable-features=TranslateUI',
+            '--disable-ipc-flooding-protection',
+            '--disable-site-isolation-trials',
+            '--disable-software-rasterizer',
         ]
     )
+    
+    # Полный список User-Agent (случайный)
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    ]
+    
     context = await browser.new_context(
-        viewport={"width": 1920, "height": 1080},
-        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        viewport={"width": viewport_width, "height": viewport_height},
+        user_agent=random.choice(user_agents),
         locale="ru-RU",
         timezone_id="Europe/Moscow",
+        device_scale_factor=1,
+        is_mobile=False,
+        has_touch=False,
         extra_http_headers={
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
             "Accept-Encoding": "gzip, deflate, br",
@@ -82,28 +112,104 @@ async def get_browser():
             "sec-ch-ua-platform": '"Windows"',
         }
     )
+    
+    # Добавляем случайные куки для реалистичности
+    await context.add_cookies([
+        {"name": "_ga", "value": f"GA1.2.{random.randint(100000, 999999)}.{random.randint(1000000000, 9999999999)}", "domain": ".x.com", "path": "/"},
+        {"name": "_gid", "value": f"GA1.2.{random.randint(100000, 999999)}.{random.randint(1000000000, 9999999999)}", "domain": ".x.com", "path": "/"},
+        {"name": "_gat", "value": "1", "domain": ".x.com", "path": "/"},
+    ])
+    
+    # Добавляем твои куки
+    await context.add_cookies(MY_COOKIES)
+    
     page = await context.new_page()
     
-    # МАСКИРОВКА
+    # ============ ПОЛНАЯ МАСКИРОВКА ============
     await page.add_init_script("""
+        // Удаляем webdriver
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        delete Object.getPrototypeOf(navigator).webdriver;
+        
+        // Полная эмуляция плагинов
         Object.defineProperty(navigator, 'plugins', {
             get: () => {
                 const plugins = [
-                    { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
-                    { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
-                    { name: 'Native Client', filename: 'internal-nacl-plugin' }
+                    { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+                    { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+                    { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' }
                 ];
-                plugins.item = (i) => plugins[i];
-                plugins.namedItem = (name) => plugins.find(p => p.name === name);
+                plugins.length = 3;
+                plugins.item = (i) => plugins[i] || null;
+                plugins.namedItem = (name) => plugins.find(p => p.name === name) || null;
                 return plugins;
             }
         });
+        
+        // Эмуляция languages
         Object.defineProperty(navigator, 'languages', { get: () => ['ru-RU', 'ru', 'en-US', 'en'] });
+        
+        // Эмуляция platform
         Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+        
+        // Эмуляция hardwareConcurrency
         Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
-        window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {}, app: { isInstalled: false } };
-        delete Object.getPrototypeOf(navigator).webdriver;
+        
+        // Эмуляция deviceMemory
+        Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+        
+        // Эмуляция screen
+        Object.defineProperty(screen, 'availWidth', { get: () => 1920 });
+        Object.defineProperty(screen, 'availHeight', { get: () => 1080 });
+        Object.defineProperty(screen, 'width', { get: () => 1920 });
+        Object.defineProperty(screen, 'height', { get: () => 1080 });
+        
+        // Полная эмуляция chrome
+        window.chrome = {
+            runtime: {},
+            loadTimes: function() {},
+            csi: function() {},
+            app: {
+                isInstalled: false,
+                InstallState: {
+                    DISABLED: 'disabled',
+                    INSTALLED: 'installed',
+                    NOT_INSTALLED: 'not_installed'
+                },
+                RunningState: {
+                    CANNOT_RUN: 'cannot_run',
+                    READY_TO_RUN: 'ready_to_run',
+                    RUNNING: 'running'
+                }
+            }
+        };
+        
+        // Эмуляция WebGL
+        const getParameter = WebGLRenderingContext.prototype.getParameter;
+        WebGLRenderingContext.prototype.getParameter = function(parameter) {
+            if (parameter === 37445) return 'Intel Inc.';
+            if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+            return getParameter(parameter);
+        };
+        
+        // Эмуляция canvas
+        const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
+        HTMLCanvasElement.prototype.toDataURL = function(type) {
+            if (type === 'image/png') {
+                return originalToDataURL.apply(this, arguments);
+            }
+            return originalToDataURL.apply(this, arguments);
+        };
+        
+        // Добавляем permissions
+        const originalQuery = window.navigator.permissions.query;
+        window.navigator.permissions.query = (parameters) => (
+            parameters.name === 'notifications' ?
+                Promise.resolve({ state: Notification.permission }) :
+                originalQuery(parameters)
+        );
+        
+        console.log('✅ Полная эмуляция браузера включена');
     """)
     
     return page, browser, context
@@ -111,7 +217,6 @@ async def get_browser():
 async def get_user_browser(user_id: int):
     if user_id not in user_sessions:
         page, browser, context = await get_browser()
-        await context.add_cookies(MY_COOKIES)
         user_sessions[user_id] = {"page": page, "browser": browser, "context": context}
         await page.goto("about:blank")
     return user_sessions[user_id]
@@ -131,7 +236,7 @@ async def take_screenshot(page) -> bytes:
 # ============ КОМАНДЫ ============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "🤖 **КОМАНДЫ**\n\n"
+        "🤖 **БОТ X.COM**\n\n"
         "/browser — Открыть браузер\n"
         "/x — Открыть X.com\n"
         "/screenshot — Скриншот\n"
@@ -143,9 +248,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    await update.message.reply_text("🌐 Открываю браузер...")
+    await update.message.reply_text("🌐 Открываю браузер с полной эмуляцией...")
     await get_user_browser(user_id)
-    await update.message.reply_text("✅ Браузер открыт, куки установлены!")
+    await update.message.reply_text("✅ Браузер готов! Эмуляция включена.")
 
 async def x_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
@@ -157,7 +262,6 @@ async def x_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     page = user_sessions[user_id]["page"]
     
     try:
-        # ⚡ ГЛАВНОЕ: НЕ ЖДЁМ ЗАГРУЗКИ!
         await page.goto("https://x.com", timeout=30000)
         await asyncio.sleep(3)
         
@@ -194,11 +298,9 @@ async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     page = user_sessions[user_id]["page"]
     
     try:
-        # ⚡ НЕ ЖДЁМ!
         await page.goto("https://x.com", timeout=30000)
         await asyncio.sleep(4)
         
-        # Прокручиваем
         for _ in range(2):
             await page.evaluate("window.scrollBy(0, 600)")
             await asyncio.sleep(1)
