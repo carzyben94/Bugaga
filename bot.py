@@ -59,7 +59,7 @@ page = None
 browser_started = False
 setup_logs = []
 
-# === ИСПРАВЛЕННЫЕ КУКИ ДЛЯ X ===
+# === КУКИ ДЛЯ X ===
 X_COOKIES = [
     {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "guest_id_marketing", "path": "/", "sameSite": "None", "secure": False, "session": True, "value": "v1%3A178224957371538879"},
     {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "guest_id_ads", "path": "/", "sameSite": "None", "secure": False, "session": True, "value": "v1%3A178224957371538879"},
@@ -214,7 +214,8 @@ async def handle_play_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text("🔐 Вход в X...", parse_mode='Markdown')
         try:
             await page.context.add_cookies(X_COOKIES)
-            await page.goto("https://x.com/home", wait_until="networkidle")
+            # ✅ ИСПРАВЛЕНО: увеличен таймаут, изменено ожидание
+            await page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=60000)
             
             cookies_after = await page.context.cookies()
             auth_cookie = next((c for c in cookies_after if c.get('name') == 'auth_token'), None)
@@ -265,7 +266,7 @@ async def html_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             page = await browser.new_page()
             browser_started = True
         
-        await page.goto(url, wait_until='networkidle', timeout=30000)
+        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
         content = await page.content()
         preview = content[:4000] + "..." if len(content) > 4000 else content
         await update.message.reply_text(f"📄 HTML ({len(content)} символов):\n\n{preview}")
@@ -290,7 +291,7 @@ async def shot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             page = await browser.new_page()
             browser_started = True
         
-        await page.goto(url, wait_until='networkidle', timeout=30000)
+        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
         screenshot = await page.screenshot(full_page=True)
         await update.message.reply_photo(photo=screenshot, caption=f"Скриншот: {url}")
         
@@ -314,7 +315,7 @@ async def cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             page = await browser.new_page()
             browser_started = True
         
-        await page.goto(url, wait_until='networkidle', timeout=30000)
+        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
         cookies = await page.context.cookies()
         
         if cookies:
@@ -339,7 +340,8 @@ async def loginx(update: Update, context: ContextTypes.DEFAULT_TYPE):
             browser_started = True
         
         await page.context.add_cookies(X_COOKIES)
-        await page.goto("https://x.com/home", wait_until="networkidle", timeout=30000)
+        # ✅ ИСПРАВЛЕНО: увеличен таймаут, изменено ожидание
+        await page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=60000)
         
         cookies_after = await page.context.cookies()
         auth_cookie = next((c for c in cookies_after if c.get('name') == 'auth_token'), None)
@@ -379,7 +381,7 @@ async def tweet_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             page = await browser.new_page()
             browser_started = True
         
-        await page.goto("https://x.com/compose/post", wait_until="networkidle", timeout=30000)
+        await page.goto("https://x.com/compose/post", wait_until="domcontentloaded", timeout=60000)
         await page.wait_for_timeout(2000)
         
         escaped_text = tweet_text.replace('"', '\\"').replace("'", "\\'")
