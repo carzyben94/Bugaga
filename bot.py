@@ -1,4 +1,4 @@
-# bot.py
+# bot.py - исправленная версия с правильным импортом
 import os
 import subprocess
 import logging
@@ -367,8 +367,8 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(f"⏳ Открываю {url}...")
     
     try:
-        # Импортируем асинхронный API
-        from cloakbrowser.async_api import async_playwright
+        # Импортируем через playwright.async_api (CloakBrowser использует тот же API)
+        from playwright.async_api import async_playwright
         
         # Загружаем куки
         cookies = load_cookies()
@@ -376,7 +376,7 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Используем асинхронный контекстный менеджер
         async with async_playwright() as p:
-            # Запускаем браузер
+            # Запускаем браузер (CloakBrowser подменяет стандартный playwright)
             logger.info(f"🚀 Запускаю CloakBrowser для {url}")
             browser = await p.chromium.launch(headless=True)
             context_browser = await browser.new_context()
@@ -415,6 +415,18 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=reply_markup,
                 parse_mode="Markdown"
             )
+        
+    except ImportError as e:
+        logger.error(f"❌ Ошибка импорта playwright: {e}")
+        await msg.edit_text(
+            "❌ *Ошибка*\n\n"
+            "Playwright не установлен. Устанавливаю...\n"
+            "Попробуйте снова через минуту.",
+            parse_mode="Markdown"
+        )
+        # Устанавливаем playwright если его нет
+        subprocess.run(["pip", "install", "playwright"], check=False)
+        subprocess.run(["playwright", "install", "chromium"], check=False)
         
     except Exception as e:
         error_msg = str(e)[:200]
