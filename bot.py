@@ -59,18 +59,140 @@ page = None
 browser_started = False
 setup_logs = []
 
-# === КУКИ ДЛЯ X ===
+# === НОВЫЕ КУКИ ДЛЯ X ===
 X_COOKIES = [
-    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "guest_id_marketing", "path": "/", "sameSite": "None", "secure": False, "session": True, "value": "v1%3A178224957371538879"},
-    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "guest_id_ads", "path": "/", "sameSite": "None", "secure": False, "session": True, "value": "v1%3A178224957371538879"},
-    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "guest_id", "path": "/", "sameSite": "None", "secure": False, "session": True, "value": "v1%3A178224957371538879"},
-    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "__cuid", "path": "/", "sameSite": "None", "secure": False, "session": True, "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"},
-    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "twid", "path": "/", "sameSite": "None", "secure": False, "session": True, "value": "u%3D2067347503503052800"},
-    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "auth_token", "path": "/", "sameSite": "None", "secure": False, "session": True, "value": "09fe982487255e707f7a9b3d380ea429421adae3"},
-    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "lang", "path": "/", "sameSite": "None", "secure": False, "session": True, "value": "ru"},
-    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "ct0", "path": "/", "sameSite": "None", "secure": False, "session": True, "value": "18f7448391062aaaa323ea38f4fd129f5f682f09ec0989f899ebc4ddaa4d7bf7de0e0c359240145428b7cc1d410adbc5565fa9bbe2c4380b5341327ea3c53f03a89fcb12ee617d0fea848882ae6ff281"},
-    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "personalization_id", "path": "/", "sameSite": "None", "secure": False, "session": True, "value": "\"v1_3OVPutEVc/wdAMUgDi42Iw==\""},
-    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "__cf_bm", "path": "/", "sameSite": "None", "secure": False, "session": True, "value": "5WvG7tNTa4Y9KfR0koVrrk7t2hZZuC6I88lvx8WhQvs-1782323196.745603-1.0.1.1-hMCaDCXE0djwDTzX26k4Nox7geJtr.NolcKWWGh71U1qRFc4R0UvohFIp_0yKa0hxCTXmmgaVvXrm4r0oBiQKu1ZVcHWA0umHod8Sjt8t_j4OOn5ZTqap.LIF_hhlCz_"}
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "__cuid",
+        "path": "/",
+        "sameSite": "None",
+        "secure": False,
+        "session": True,
+        "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "lang",
+        "path": "/",
+        "sameSite": "None",
+        "secure": False,
+        "session": True,
+        "value": "ru"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "__cf_bm",
+        "path": "/",
+        "sameSite": "None",
+        "secure": False,
+        "session": True,
+        "value": "66HwWBE7ARw4zHfM3LKTzQ53lbNeZx6P849spGsz47c-1782325511.5695279-1.0.1.1-Zf5fw2.4R8Iw1J7B83inu2l4MPvKm_pwrRGDlbV25kVIE1JBc_y43rnSVDzj6yZ36m9Z2oBENu0klLOSikjdykvpzW8Mc5cDGi54TvrVy5Lo3TZ4PFc1Y1Y4P1qPF0Lo"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "dnt",
+        "path": "/",
+        "sameSite": "None",
+        "secure": False,
+        "session": True,
+        "value": "1"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "guest_id",
+        "path": "/",
+        "sameSite": "None",
+        "secure": False,
+        "session": True,
+        "value": "v1%3A178232552081152335"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "guest_id_marketing",
+        "path": "/",
+        "sameSite": "None",
+        "secure": False,
+        "session": True,
+        "value": "v1%3A178232552081152335"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "guest_id_ads",
+        "path": "/",
+        "sameSite": "None",
+        "secure": False,
+        "session": True,
+        "value": "v1%3A178232552081152335"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "personalization_id",
+        "path": "/",
+        "sameSite": "None",
+        "secure": False,
+        "session": True,
+        "value": "\"v1_WrN9cfSG2zvM3RbiT1ZEkw==\""
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "gt",
+        "path": "/",
+        "sameSite": "None",
+        "secure": False,
+        "session": True,
+        "value": "2069849371814887470"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "twid",
+        "path": "/",
+        "sameSite": "None",
+        "secure": False,
+        "session": True,
+        "value": "u%3D2067347503503052800"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "auth_token",
+        "path": "/",
+        "sameSite": "None",
+        "secure": False,
+        "session": True,
+        "value": "9437c2dd7e6dd3b655cd4166f1fe303365f56d91"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "ct0",
+        "path": "/",
+        "sameSite": "None",
+        "secure": False,
+        "session": True,
+        "value": "6348cd308326bbc75e48654d2a7488c58d9d34f10712b0f1b3d7bde9e67a028c46de54fbbbace15ab6a518f71b27945510c1dc91b2ef7c9360aaf009883b0c5e326f4196c02e32c930a7c2222c4af9ff"
+    }
 ]
 
 # === ФУНКЦИИ ===
@@ -214,7 +336,6 @@ async def handle_play_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text("🔐 Вход в X...", parse_mode='Markdown')
         try:
             await page.context.add_cookies(X_COOKIES)
-            # ✅ ИСПРАВЛЕНО: увеличен таймаут, изменено ожидание
             await page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=60000)
             
             cookies_after = await page.context.cookies()
@@ -340,7 +461,6 @@ async def loginx(update: Update, context: ContextTypes.DEFAULT_TYPE):
             browser_started = True
         
         await page.context.add_cookies(X_COOKIES)
-        # ✅ ИСПРАВЛЕНО: увеличен таймаут, изменено ожидание
         await page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=60000)
         
         cookies_after = await page.context.cookies()
@@ -354,7 +474,13 @@ async def loginx(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption="✅ Успешный вход в X!\n\nТеперь доступно: /tweet <текст>"
             )
         else:
-            await update.message.reply_text("❌ Авторизация не удалась. Обнови куки.")
+            await update.message.reply_text(
+                "❌ Авторизация не удалась. Обнови куки.\n\n"
+                "Проверь:\n"
+                "1. Куки устарели — обнови\n"
+                "2. Не все куки скопированы\n"
+                "3. Попробуй войти в X в обычном браузере и повтори"
+            )
             
     except Exception as e:
         logger.error(f"Ошибка входа: {e}")
