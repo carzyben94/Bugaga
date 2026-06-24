@@ -10,7 +10,7 @@ import requests
 from flask import Flask, jsonify
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from cloakbrowser import launch
+from cloakbrowser import launch, sync_playwright
 
 # ============ НАСТРОЙКИ ============
 logging.basicConfig(level=logging.INFO)
@@ -26,6 +26,7 @@ MY_COOKIES = [
 ]
 
 user_sessions = {}
+user_locks = {}  # Блокировки для каждого пользователя
 
 app_flask = Flask(__name__)
 
@@ -112,129 +113,140 @@ def escape_markdown(text):
         return ''
     return re.sub(r'([_*\[\]()~>#+=|{}.!-])', r'\\\1', text)
 
-# ============ CLOAKBROWSER БРАУЗЕР ============
-async def get_browser(user_id: int, status_callback=None):
-    """Создает браузер CloakBrowser с отправкой статусов в чат"""
+# ============ СИНХРОННЫЙ БРАУЗЕР В ПОТОКЕ ============
+def create_browser_sync(user_id: int, status_queue):
+    """Создает браузер в синхронном режиме (запускается в отдельном потоке)"""
     
-    async def send_status(message):
+    def send_status(message):
+        status_queue.append(message)
         print(f"🔄 [{user_id}] {message}")
-        if status_callback:
-            try:
-                await status_callback(message)
-            except:
-                pass
-    
-    await send_status("📦 Проверяю наличие CloakBrowser...")
-    
-    proxy = os.getenv("PROXY_URL")
-    
-    if proxy:
-        await send_status(f"🌐 Использую прокси: {proxy[:20]}...")
-    
-    await send_status("🚀 Запускаю CloakBrowser...")
-    await send_status("⏳ Это может занять 1-2 минуты при первом запуске")
     
     try:
-        # Запускаем браузер с правильными параметрами
-        def sync_launch():
-            return launch(
-                headless=True,  # Булево значение, не строка!
-                humanize=True,   # Встроенная эмуляция человека
-                # proxy=proxy,   # Раскомментировать если есть прокси
+        send_status("📦 Запускаю CloakBrowser...")
+        send_status("⏳ Это может занять 1-2 минуты при первом запуске")
+        
+        # Запускаем синхронный Playwright
+        with sync_playwright() as p:
+            send_status("🚀 Запускаю браузер...")
+            
+            # Запускаем CloakBrowser
+            browser = launch(
+                headless=True,
+                humanize=True,
             )
-        
-        browser = await asyncio.to_thread(sync_launch)
-        await send_status("✅ Браузер запущен!")
-        
-        # Создаем контекст
-        await send_status("🌐 Создаю контекст...")
-        
-        def create_context():
-            return browser.new_context(
+            
+            send_status("✅ Браузер запущен!")
+            send_status("🌐 Создаю контекст...")
+            
+            # Создаем контекст
+            context = browser.new_context(
                 viewport={'width': 1280, 'height': 720},
                 user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             )
-        
-        context = await asyncio.to_thread(create_context)
-        await send_status("✅ Контекст создан!")
-        
-        # Добавляем куки
-        if MY_COOKIES:
-            await send_status(f"🍪 Добавляю {len(MY_COOKIES)} куки...")
-            await asyncio.to_thread(context.add_cookies, MY_COOKIES)
-            await send_status("✅ Куки добавлены!")
-        
-        await send_status("📄 Создаю страницу...")
-        
-        def create_page():
-            return context.new_page()
-        
-        page = await asyncio.to_thread(create_page)
-        await send_status("✅ Страница создана!")
-        
-        # Добавляем скрипт маскировки
-        await page.add_init_script("""
-            console.log('✅ CloakBrowser активен');
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            delete Object.getPrototypeOf(navigator).webdriver;
             
-            if (!window.chrome) {
-                window.chrome = {
-                    runtime: {},
-                    loadTimes: function() {},
-                    csi: function() {},
-                    app: { isInstalled: false }
-                };
+            send_status("✅ Контекст создан!")
+            
+            # Добавляем куки
+            if MY_COOKIES:
+                send_status(f"🍪 Добавляю {len(MY_COOKIES)} куки...")
+                context.add_cookies(MY_COOKIES)
+                send_status("✅ Куки добавлены!")
+            
+            send_status("📄 Создаю страницу...")
+            page = context.new_page()
+            send_status("✅ Страница создана!")
+            
+            # Добавляем скрипт маскировки
+            page.add_init_script("""
+                console.log('✅ CloakBrowser активен');
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                delete Object.getPrototypeOf(navigator).webdriver;
+                
+                if (!window.chrome) {
+                    window.chrome = {
+                        runtime: {},
+                        loadTimes: function() {},
+                        csi: function() {},
+                        app: { isInstalled: false }
+                    };
+                }
+                
+                if (!navigator.plugins || navigator.plugins.length === 0) {
+                    const plugins = [
+                        { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+                        { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+                        { name: 'Native Client', filename: 'internal-nacl-plugin' }
+                    ];
+                    plugins.length = 3;
+                    plugins.item = (i) => plugins[i] || null;
+                    plugins.namedItem = (name) => plugins.find(p => p.name === name) || null;
+                    Object.defineProperty(navigator, 'plugins', { get: () => plugins });
+                }
+            """)
+            
+            send_status("✅ Браузер полностью готов!")
+            
+            # Возвращаем объекты
+            return {
+                'browser': browser,
+                'context': context,
+                'page': page,
+                'p': p  # Сохраняем Playwright объект
             }
             
-            if (!navigator.plugins || navigator.plugins.length === 0) {
-                const plugins = [
-                    { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
-                    { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
-                    { name: 'Native Client', filename: 'internal-nacl-plugin' }
-                ];
-                plugins.length = 3;
-                plugins.item = (i) => plugins[i] || null;
-                plugins.namedItem = (name) => plugins.find(p => p.name === name) || null;
-                Object.defineProperty(navigator, 'plugins', { get: () => plugins });
-            }
-        """)
-        
-        await send_status("✅ Браузер полностью готов!")
-        return page, browser, context
-        
     except Exception as e:
-        await send_status(f"❌ Ошибка: {str(e)[:200]}")
+        send_status(f"❌ Ошибка: {str(e)[:200]}")
         raise
 
 async def get_user_browser(user_id: int, update=None):
     """Получает или создает браузер для пользователя"""
     
-    if user_id not in user_sessions:
-        async def send_status(message):
+    # Создаем блокировку для пользователя
+    if user_id not in user_locks:
+        user_locks[user_id] = asyncio.Lock()
+    
+    async with user_locks[user_id]:
+        if user_id not in user_sessions:
+            status_messages = []
+            
+            # Отправляем начальное сообщение
             if update:
-                try:
-                    await update.message.reply_text(message)
-                except:
-                    pass
-        
-        await send_status("🌐 **Открываю браузер CloakBrowser...**")
-        
-        try:
-            page, browser, context = await get_browser(user_id, send_status)
-            user_sessions[user_id] = {
-                "page": page,
-                "browser": browser,
-                "context": context
-            }
-            await page.goto("about:blank")
-            await send_status("✅ **Браузер готов к работе!**")
-        except Exception as e:
-            await send_status(f"❌ **Ошибка:** {str(e)[:200]}")
-            raise
-    else:
-        if update:
-            await update.message.reply_text("✅ Браузер уже запущен")
+                await update.message.reply_text("🌐 **Открываю браузер CloakBrowser...**")
+            
+            # Запускаем браузер в отдельном потоке
+            try:
+                # Создаем очередь для статусов
+                status_queue = []
+                
+                # Запускаем синхронную функцию в потоке
+                result = await asyncio.to_thread(
+                    create_browser_sync, 
+                    user_id, 
+                    status_queue
+                )
+                
+                # Отправляем все статусы из очереди
+                if update:
+                    for msg in status_queue:
+                        if not msg.startswith('📦') and not msg.startswith('⏳'):
+                            await update.message.reply_text(f"🔄 {msg}")
+                
+                user_sessions[user_id] = result
+                
+                # Открываем пустую страницу
+                page = result['page']
+                await page.goto("about:blank")
+                
+                if update:
+                    await update.message.reply_text("✅ **Браузер готов к работе!**")
+                
+            except Exception as e:
+                if update:
+                    await update.message.reply_text(f"❌ **Ошибка:** {str(e)[:200]}")
+                raise
+        else:
+            if update:
+                await update.message.reply_text("✅ Браузер уже запущен")
     
     return user_sessions[user_id]
 
@@ -242,7 +254,7 @@ async def close_user_browser(user_id: int):
     """Закрывает браузер пользователя"""
     if user_id in user_sessions:
         try:
-            browser = user_sessions[user_id]["browser"]
+            browser = user_sessions[user_id]['browser']
             await asyncio.to_thread(browser.close)
         except:
             pass
@@ -275,7 +287,7 @@ async def x_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     
     await update.message.reply_text("🐦 Открываю X.com...")
-    page = user_sessions[user_id]["page"]
+    page = user_sessions[user_id]['page']
     
     try:
         await page.goto("https://x.com", timeout=30000)
@@ -307,7 +319,7 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("⚠️ Сначала /browser")
         return
     
-    page = user_sessions[user_id]["page"]
+    page = user_sessions[user_id]['page']
     screenshot = await take_screenshot(page)
     
     if screenshot and len(screenshot) > 1000:
@@ -322,7 +334,7 @@ async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     
     await update.message.reply_text("📡 Собираю твиты...")
-    page = user_sessions[user_id]["page"]
+    page = user_sessions[user_id]['page']
     
     try:
         await page.goto("https://x.com", timeout=30000)
@@ -389,7 +401,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("⚠️ Браузер не открыт")
         return
     
-    page = user_sessions[user_id]["page"]
+    page = user_sessions[user_id]['page']
     url = page.url
     cookies = await page.context.cookies()
     has_cookie = any(c['name'] == 'auth_token' for c in cookies)
