@@ -125,7 +125,6 @@ log_storage = LogStorage()
 @log_command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 <b>Log Bot</b>\n\n"
         "📋 /logs  – показать логи\n"
         "🗑️ /clear – очистить логи",
         parse_mode="HTML"
