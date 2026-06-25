@@ -65,18 +65,15 @@ def get_browser_sync():
     return browser_instance
 
 def create_page_sync():
-    """Создать новую страницу"""
+    """Создать новую страницу (ПРАВИЛЬНЫЙ СПОСОБ)"""
     browser = get_browser_sync()
     if browser is None:
+        logging.error("❌ Браузер не инициализирован")
         return None
     try:
-        context = browser.new_context(
-            viewport={"width": 1024, "height": 768},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0",
-            locale="ru-RU",
-            timezone_id="Europe/Moscow"
-        )
-        page = context.new_page()
+        # В Camoufox 0.4.11 страницы создаются через new_page()
+        page = browser.new_page()
+        logging.info("✅ Страница создана!")
         return page
     except Exception as e:
         logging.error(f"❌ Ошибка создания страницы: {e}")
@@ -174,7 +171,6 @@ def format_logs_clean(logs, limit=30):
 # ============= КЛАВИАТУРЫ =============
 
 def get_logs_keyboard():
-    """Клавиатура для логов — БЕЗ кнопки 'Открыть сайт'"""
     keyboard = [
         [InlineKeyboardButton("📋 Копировать логи", callback_data="copy_logs")],
         [InlineKeyboardButton("🗑️ Очистить логи", callback_data="clear_logs")]
@@ -182,7 +178,6 @@ def get_logs_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 def get_browser_keyboard():
-    """Клавиатура для управления браузером"""
     keyboard = [
         [InlineKeyboardButton("🌐 Открыть сайт", callback_data="open_site")],
         [InlineKeyboardButton("✅ Проверить статус", callback_data="browser_status")],
@@ -270,7 +265,7 @@ async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=get_browser_keyboard()
     )
 
-# ============= ОБРАБОТЧИКИ КНОПОК =============
+# ============= ОБРАБОТЧИКИ =============
 
 async def copy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -368,14 +363,11 @@ async def browser_screenshot_callback(update: Update, context: ContextTypes.DEFA
         await query.message.reply_text(f"❌ Ошибка: {str(e)}", parse_mode="HTML")
         log_storage.add_log(f"Ошибка скриншота: {str(e)}", "ERROR")
 
-# ============= НОВЫЙ ОБРАБОТЧИК ДЛЯ ОТКРЫТИЯ САЙТА =============
-
 async def open_site_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Запрашивает URL у пользователя"""
     query = update.callback_query
     await query.answer()
     
-    # Сохраняем состояние, что пользователь в режиме ввода URL
     context.user_data['waiting_for_url'] = True
     
     await query.message.reply_text(
@@ -390,13 +382,11 @@ async def open_site_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def handle_url_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает введенный URL"""
-    # Проверяем, ждем ли мы URL
     if not context.user_data.get('waiting_for_url'):
         return
     
     url = update.message.text.strip()
     
-    # Проверяем, что URL начинается с http:// или https://
     if not url.startswith(('http://', 'https://')):
         await update.message.reply_text(
             "❌ <b>Неверный формат URL</b>\n\n"
@@ -406,26 +396,21 @@ async def handle_url_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Сбрасываем состояние
     context.user_data['waiting_for_url'] = False
     
-    # Отправляем сообщение о начале загрузки
     status_msg = await update.message.reply_text(f"⏳ Открываю {url}...", parse_mode="HTML")
     
     loop = asyncio.get_event_loop()
     
     try:
-        # Создаем страницу
         page = await loop.run_in_executor(None, create_page_sync)
         if page is None:
             await status_msg.edit_text("❌ Не удалось создать страницу!", parse_mode="HTML")
             return
         
-        # Открываем URL
         success = await loop.run_in_executor(None, do_browser_action_sync, page, "goto", url)
         
         if success:
-            # Делаем скриншот
             screenshot = await loop.run_in_executor(None, do_browser_action_sync, page, "screenshot", None)
             await loop.run_in_executor(None, do_browser_action_sync, page, "close", None)
             
@@ -466,7 +451,6 @@ def start_browser_thread():
 def main():
     start_browser_thread()
     
-    # Сброс webhook перед запуском
     async def reset_webhook():
         app = Application.builder().token(TOKEN).build()
         await app.bot.delete_webhook(drop_pending_updates=True)
@@ -479,13 +463,11 @@ def main():
     app = Application.builder().token(TOKEN).build()
     app.bot_data['log_storage'] = log_storage
     
-    # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("logs", logs_command))
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(CommandHandler("browser", browser_command))
     
-    # Callback-кнопки
     app.add_handler(CallbackQueryHandler(copy_callback, pattern="copy_logs"))
     app.add_handler(CallbackQueryHandler(clear_callback, pattern="clear_logs"))
     app.add_handler(CallbackQueryHandler(browser_status_callback, pattern="browser_status"))
@@ -493,7 +475,6 @@ def main():
     app.add_handler(CallbackQueryHandler(browser_screenshot_callback, pattern="browser_screenshot"))
     app.add_handler(CallbackQueryHandler(open_site_callback, pattern="open_site"))
     
-    # Обработчик текстовых сообщений (для ввода URL)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url_input))
     
     log_storage.add_log("Бот запущен с Camoufox", "SYSTEM")
