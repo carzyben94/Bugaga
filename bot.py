@@ -28,8 +28,6 @@ def init_browser():
         if browser_instance is None:
             logging.info("🔄 Запуск Camoufox...")
             try:
-                # Camoufox использует контекстный менеджер
-                # Мы открываем браузер и сохраняем его
                 browser_instance = Camoufox(
                     headless=False,
                     display=":99",
@@ -40,8 +38,9 @@ def init_browser():
                         "media.webspeech.enabled": False,
                     }
                 )
-                # Инициализация через создание контекста
-                browser_instance._context  # Принудительная инициализация
+                # Принудительная инициализация через создание страницы
+                test_page = browser_instance.new_page()
+                test_page.close()
                 logging.info("✅ Camoufox запущен!")
                 return True
             except Exception as e:
@@ -64,9 +63,7 @@ def create_page():
         return None
     
     try:
-        # В Camoufox страницы создаются через контекст
-        context = browser._context
-        page = context.new_page()
+        page = browser.new_page()
         return page
     except Exception as e:
         logging.error(f"❌ Ошибка создания страницы: {e}")
