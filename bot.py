@@ -17,7 +17,7 @@ if not TOKEN:
     logging.error("❌ TELEGRAM_TOKEN_BOT не найден!")
     raise ValueError("Добавьте TELEGRAM_TOKEN_BOT в переменные Railway")
 
-# ============= ГЛОБАЛЬНЫЙ БРАУЗЕР (ПО ДОКУМЕНТАЦИИ) =============
+# ============= ГЛОБАЛЬНЫЙ БРАУЗЕР =============
 browser_instance = None
 browser_lock = threading.Lock()
 browser_initialized = False
@@ -31,23 +31,21 @@ def init_browser_sync():
             try:
                 from camoufox.sync_api import Camoufox
                 
-                # ПРАВИЛЬНЫЕ ПАРАМЕТРЫ ПО ДОКУМЕНТАЦИИ
                 browser_instance = Camoufox(
-                    headless="virtual",          # Для Linux с Xvfb
-                    window=(1024, 768),          # Размер окна
-                    humanize=True,               # Эмуляция движений мыши
-                    firefox_user_prefs={         # Настройки Firefox
+                    headless="virtual",
+                    window=(1024, 768),
+                    humanize=True,
+                    firefox_user_prefs={
                         "dom.ipc.processCount": 1,
                         "extensions.enabledScopes": 0,
                         "media.webspeech.enabled": False,
                     },
-                    config={                     # Дополнительная маскировка
+                    config={
                         "navigator.language": "ru-RU",
                         "navigator.languages": ["ru-RU", "ru", "en-US", "en"],
                         "headers.Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
                     }
                 )
-                # Вход в контекст
                 browser_instance.__enter__()
                 browser_initialized = True
                 logging.info("✅ Camoufox запущен!")
@@ -72,7 +70,13 @@ def create_page_sync():
     if browser is None:
         return None
     try:
-        page = browser.new_page()
+        context = browser.new_context(
+            viewport={"width": 1024, "height": 768},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0",
+            locale="ru-RU",
+            timezone_id="Europe/Moscow"
+        )
+        page = context.new_page()
         return page
     except Exception as e:
         logging.error(f"❌ Ошибка создания страницы: {e}")
@@ -167,11 +171,23 @@ def format_logs_clean(logs, limit=30):
     
     return "\n".join(lines)
 
+# ============= КЛАВИАТУРЫ =============
+
 def get_logs_keyboard():
+    """Клавиатура для логов — БЕЗ кнопки 'Открыть сайт'"""
     keyboard = [
         [InlineKeyboardButton("📋 Копировать логи", callback_data="copy_logs")],
-        [InlineKeyboardButton("🗑️ Очистить логи", callback_data="clear_logs")],
-        [InlineKeyboardButton("🌐 Открыть сайт", callback_data="open_site")]
+        [InlineKeyboardButton("🗑️ Очистить логи", callback_data="clear_logs")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_browser_keyboard():
+    """Клавиатура для управления браузером — С кнопкой 'Открыть сайт' ВВЕРХУ"""
+    keyboard = [
+        [InlineKeyboardButton("🌐 Открыть сайт", callback_data="open_site")],  # <-- САМАЯ ВЕРХНЯЯ
+        [InlineKeyboardButton("✅ Проверить статус", callback_data="browser_status")],
+        [InlineKeyboardButton("🔄 Перезапустить", callback_data="browser_restart")],
+        [InlineKeyboardButton("📸 Сделать скриншот", callback_data="browser_screenshot")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -197,6 +213,8 @@ def log_command(func):
 # ===================================
 
 log_storage = LogStorage()
+
+# ============= КОМАНДЫ =============
 
 @log_command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -249,12 +267,10 @@ async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🌐 <b>Управление браузером</b>\n\n"
         "Используйте кнопки для управления:",
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Проверить статус", callback_data="browser_status")],
-            [InlineKeyboardButton("🔄 Перезапустить", callback_data="browser_restart")],
-            [InlineKeyboardButton("📸 Сделать скриншот", callback_data="browser_screenshot")]
-        ])
+        reply_markup=get_browser_keyboard()
     )
+
+# ============= ОБРАБОТЧИКИ КНОПОК =============
 
 async def copy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -279,39 +295,6 @@ async def clear_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_storage.clear_logs()
     await query.message.edit_text("🗑️ Логи очищены ✅", parse_mode="HTML")
     await query.answer("✅ Очищено!")
-
-async def open_site_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    loop = asyncio.get_event_loop()
-    
-    try:
-        page = await loop.run_in_executor(None, create_page_sync)
-        if page is None:
-            await query.message.reply_text("❌ Не удалось создать страницу!", parse_mode="HTML")
-            return
-        
-        success = await loop.run_in_executor(None, do_browser_action_sync, page, "goto", "https://example.com")
-        
-        if success:
-            screenshot = await loop.run_in_executor(None, do_browser_action_sync, page, "screenshot", None)
-            await loop.run_in_executor(None, do_browser_action_sync, page, "close", None)
-            
-            if screenshot:
-                from io import BytesIO
-                photo = BytesIO(screenshot)
-                photo.name = "screenshot.png"
-                await query.message.reply_photo(photo=photo, caption="📸 Скриншот example.com")
-            
-            log_storage.add_log("Открыт сайт example.com", "BROWSER")
-            await query.message.reply_text("✅ Сайт открыт!", parse_mode="HTML")
-        else:
-            await query.message.reply_text("❌ Ошибка открытия сайта!", parse_mode="HTML")
-        
-    except Exception as e:
-        await query.message.reply_text(f"❌ Ошибка: {str(e)}", parse_mode="HTML")
-        log_storage.add_log(f"Ошибка открытия сайта: {str(e)}", "ERROR")
 
 async def browser_status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -385,6 +368,40 @@ async def browser_screenshot_callback(update: Update, context: ContextTypes.DEFA
         await query.message.reply_text(f"❌ Ошибка: {str(e)}", parse_mode="HTML")
         log_storage.add_log(f"Ошибка скриншота: {str(e)}", "ERROR")
 
+async def open_site_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Открыть сайт в браузере"""
+    query = update.callback_query
+    await query.answer()
+    
+    loop = asyncio.get_event_loop()
+    
+    try:
+        page = await loop.run_in_executor(None, create_page_sync)
+        if page is None:
+            await query.message.reply_text("❌ Не удалось создать страницу!", parse_mode="HTML")
+            return
+        
+        success = await loop.run_in_executor(None, do_browser_action_sync, page, "goto", "https://example.com")
+        
+        if success:
+            screenshot = await loop.run_in_executor(None, do_browser_action_sync, page, "screenshot", None)
+            await loop.run_in_executor(None, do_browser_action_sync, page, "close", None)
+            
+            if screenshot:
+                from io import BytesIO
+                photo = BytesIO(screenshot)
+                photo.name = "screenshot.png"
+                await query.message.reply_photo(photo=photo, caption="📸 Скриншот example.com")
+            
+            log_storage.add_log("Открыт сайт example.com", "BROWSER")
+            await query.message.reply_text("✅ Сайт открыт!", parse_mode="HTML")
+        else:
+            await query.message.reply_text("❌ Ошибка открытия сайта!", parse_mode="HTML")
+        
+    except Exception as e:
+        await query.message.reply_text(f"❌ Ошибка: {str(e)}", parse_mode="HTML")
+        log_storage.add_log(f"Ошибка открытия сайта: {str(e)}", "ERROR")
+
 def start_browser_thread():
     def run_browser():
         logging.info("🔄 Фоновый поток браузера запущен")
@@ -399,6 +416,16 @@ def start_browser_thread():
 def main():
     start_browser_thread()
     
+    # Сброс webhook перед запуском
+    async def reset_webhook():
+        app = Application.builder().token(TOKEN).build()
+        await app.bot.delete_webhook(drop_pending_updates=True)
+        await app.initialize()
+        await app.shutdown()
+    
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(reset_webhook())
+    
     app = Application.builder().token(TOKEN).build()
     app.bot_data['log_storage'] = log_storage
     
@@ -409,10 +436,10 @@ def main():
     
     app.add_handler(CallbackQueryHandler(copy_callback, pattern="copy_logs"))
     app.add_handler(CallbackQueryHandler(clear_callback, pattern="clear_logs"))
-    app.add_handler(CallbackQueryHandler(open_site_callback, pattern="open_site"))
     app.add_handler(CallbackQueryHandler(browser_status_callback, pattern="browser_status"))
     app.add_handler(CallbackQueryHandler(browser_restart_callback, pattern="browser_restart"))
     app.add_handler(CallbackQueryHandler(browser_screenshot_callback, pattern="browser_screenshot"))
+    app.add_handler(CallbackQueryHandler(open_site_callback, pattern="open_site"))
     
     log_storage.add_log("Бот запущен с Camoufox", "SYSTEM")
     logging.info("🚀 Бот запускается в режиме polling...")
