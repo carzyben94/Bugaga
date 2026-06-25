@@ -1,36 +1,14 @@
 FROM python:3.11-slim
 
-# Устанавливаем системные зависимости для Playwright
+WORKDIR /app
+
+# Устанавливаем системные зависимости для Chrome и Nodriver
 RUN apt-get update && apt-get install -y \
     wget \
     curl \
     gnupg \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-
-# Копируем и устанавливаем Python зависимости
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Устанавливаем Playwright с браузером, но БЕЗ install-deps
-RUN playwright install chromium
-
-# Устанавливаем зависимости вручную для новых версий Debian
-RUN apt-get update && apt-get install -y \
-    libnss3 \
-    libatk-bridge2.0-0 \
-    libdrm2 \
-    libxkbcommon0 \
-    libgbm1 \
-    libasound2 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxrandr2 \
-    libgbm-dev \
-    libpango-1.0-0 \
-    libcairo2 \
-    libatspi2.0-0 \
+    unzip \
+    xvfb \
     libx11-xcb1 \
     libxcb1 \
     libxcomposite1 \
@@ -42,28 +20,34 @@ RUN apt-get update && apt-get install -y \
     libcups2 \
     libxss1 \
     libxrandr2 \
-    libgdk-pixbuf-2.0-0 \
+    libasound2 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
     libgtk-3-0 \
-    libglib2.0-0 \
-    libdbus-1-3 \
+    libgbm1 \
+    libpangocairo-1.0-0 \
+    libx11-xcb-dev \
+    libxcb-dri3-0 \
+    libdrm2 \
+    libxshmfence1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Дополнительно: устанавливаем отсутствующие пакеты (новые имена)
-RUN apt-get update && apt-get install -y \
-    fonts-unifont \
-    fonts-ubuntu \
-    libjpeg62-turbo \
-    libwebp7 \
-    libvpx9 \
-    libenchant-2-2 \
-    libicu72 \
-    libx264-164 \
-    libx265-209 \
+# Устанавливаем Chrome (Nodriver использует его)
+RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add - \
+    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
+    && apt-get update \
+    && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
-COPY bot.py .
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-ENV TELEGRAM_TOKEN_BOT=""
+# Добавляем Xvfb для виртуального экрана (важно для сервера)
+ENV DISPLAY=:99
 ENV PYTHONUNBUFFERED=1
 
-CMD ["python", "bot.py"]
+COPY bot.py .
+COPY xvfb_start.sh .
+RUN chmod +x xvfb_start.sh
+
+CMD ["./xvfb_start.sh"]
