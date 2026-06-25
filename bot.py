@@ -5,7 +5,7 @@ import threading
 import time
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -182,9 +182,9 @@ def get_logs_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 def get_browser_keyboard():
-    """Клавиатура для управления браузером — С кнопкой 'Открыть сайт' ВВЕРХУ"""
+    """Клавиатура для управления браузером"""
     keyboard = [
-        [InlineKeyboardButton("🌐 Открыть сайт", callback_data="open_site")],  # <-- САМАЯ ВЕРХНЯЯ
+        [InlineKeyboardButton("🌐 Открыть сайт", callback_data="open_site")],
         [InlineKeyboardButton("✅ Проверить статус", callback_data="browser_status")],
         [InlineKeyboardButton("🔄 Перезапустить", callback_data="browser_restart")],
         [InlineKeyboardButton("📸 Сделать скриншот", callback_data="browser_screenshot")]
@@ -368,22 +368,64 @@ async def browser_screenshot_callback(update: Update, context: ContextTypes.DEFA
         await query.message.reply_text(f"❌ Ошибка: {str(e)}", parse_mode="HTML")
         log_storage.add_log(f"Ошибка скриншота: {str(e)}", "ERROR")
 
+# ============= НОВЫЙ ОБРАБОТЧИК ДЛЯ ОТКРЫТИЯ САЙТА =============
+
 async def open_site_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Открыть сайт в браузере"""
+    """Запрашивает URL у пользователя"""
     query = update.callback_query
     await query.answer()
+    
+    # Сохраняем состояние, что пользователь в режиме ввода URL
+    context.user_data['waiting_for_url'] = True
+    
+    await query.message.reply_text(
+        "🌐 <b>Введите URL сайта</b>\n\n"
+        "Примеры:\n"
+        "• https://x.com\n"
+        "• https://github.com\n"
+        "• https://example.com\n\n"
+        "❗ Введите полный адрес с https://",
+        parse_mode="HTML"
+    )
+
+async def handle_url_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает введенный URL"""
+    # Проверяем, ждем ли мы URL
+    if not context.user_data.get('waiting_for_url'):
+        return
+    
+    url = update.message.text.strip()
+    
+    # Проверяем, что URL начинается с http:// или https://
+    if not url.startswith(('http://', 'https://')):
+        await update.message.reply_text(
+            "❌ <b>Неверный формат URL</b>\n\n"
+            "URL должен начинаться с http:// или https://\n\n"
+            "Пример: https://x.com",
+            parse_mode="HTML"
+        )
+        return
+    
+    # Сбрасываем состояние
+    context.user_data['waiting_for_url'] = False
+    
+    # Отправляем сообщение о начале загрузки
+    status_msg = await update.message.reply_text(f"⏳ Открываю {url}...", parse_mode="HTML")
     
     loop = asyncio.get_event_loop()
     
     try:
+        # Создаем страницу
         page = await loop.run_in_executor(None, create_page_sync)
         if page is None:
-            await query.message.reply_text("❌ Не удалось создать страницу!", parse_mode="HTML")
+            await status_msg.edit_text("❌ Не удалось создать страницу!", parse_mode="HTML")
             return
         
-        success = await loop.run_in_executor(None, do_browser_action_sync, page, "goto", "https://example.com")
+        # Открываем URL
+        success = await loop.run_in_executor(None, do_browser_action_sync, page, "goto", url)
         
         if success:
+            # Делаем скриншот
             screenshot = await loop.run_in_executor(None, do_browser_action_sync, page, "screenshot", None)
             await loop.run_in_executor(None, do_browser_action_sync, page, "close", None)
             
@@ -391,16 +433,24 @@ async def open_site_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 from io import BytesIO
                 photo = BytesIO(screenshot)
                 photo.name = "screenshot.png"
-                await query.message.reply_photo(photo=photo, caption="📸 Скриншот example.com")
-            
-            log_storage.add_log("Открыт сайт example.com", "BROWSER")
-            await query.message.reply_text("✅ Сайт открыт!", parse_mode="HTML")
+                
+                await status_msg.delete()
+                await update.message.reply_photo(
+                    photo=photo,
+                    caption=f"✅ <b>Сайт открыт:</b>\n{url}",
+                    parse_mode="HTML"
+                )
+                log_storage.add_log(f"Открыт сайт: {url}", "BROWSER")
+            else:
+                await status_msg.edit_text(f"✅ Сайт открыт, но скриншот не сохранился:\n{url}", parse_mode="HTML")
         else:
-            await query.message.reply_text("❌ Ошибка открытия сайта!", parse_mode="HTML")
+            await status_msg.edit_text(f"❌ Ошибка открытия:\n{url}", parse_mode="HTML")
         
     except Exception as e:
-        await query.message.reply_text(f"❌ Ошибка: {str(e)}", parse_mode="HTML")
-        log_storage.add_log(f"Ошибка открытия сайта: {str(e)}", "ERROR")
+        await status_msg.edit_text(f"❌ Ошибка: {str(e)}", parse_mode="HTML")
+        log_storage.add_log(f"Ошибка открытия {url}: {str(e)}", "ERROR")
+
+# ============= ЗАПУСК =============
 
 def start_browser_thread():
     def run_browser():
@@ -429,17 +479,22 @@ def main():
     app = Application.builder().token(TOKEN).build()
     app.bot_data['log_storage'] = log_storage
     
+    # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("logs", logs_command))
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(CommandHandler("browser", browser_command))
     
+    # Callback-кнопки
     app.add_handler(CallbackQueryHandler(copy_callback, pattern="copy_logs"))
     app.add_handler(CallbackQueryHandler(clear_callback, pattern="clear_logs"))
     app.add_handler(CallbackQueryHandler(browser_status_callback, pattern="browser_status"))
     app.add_handler(CallbackQueryHandler(browser_restart_callback, pattern="browser_restart"))
     app.add_handler(CallbackQueryHandler(browser_screenshot_callback, pattern="browser_screenshot"))
     app.add_handler(CallbackQueryHandler(open_site_callback, pattern="open_site"))
+    
+    # Обработчик текстовых сообщений (для ввода URL)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url_input))
     
     log_storage.add_log("Бот запущен с Camoufox", "SYSTEM")
     logging.info("🚀 Бот запускается в режиме polling...")
