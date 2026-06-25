@@ -7,6 +7,7 @@ from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from camoufox.sync_api import Camoufox
+import json
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -30,7 +31,7 @@ def init_browser():
             logging.info("🔄 Запуск Camoufox...")
             try:
                 browser_instance = Camoufox(
-                    headless=False,  # Важно: False для обхода детекции
+                    headless=False,
                     display=":99",
                     window_size=(1024, 768),
                     preferences={
@@ -39,12 +40,16 @@ def init_browser():
                         "media.webspeech.enabled": False,
                     }
                 )
-                # Открываем браузер, но не закрываем
-                browser_instance.contexts  # Инициализация
+                # Просто создаем страницу для инициализации
+                page = browser_instance.new_page()
+                page.close()
                 logging.info("✅ Camoufox запущен!")
+                return True
             except Exception as e:
                 logging.error(f"❌ Ошибка запуска Camoufox: {e}")
                 browser_instance = None
+                return False
+    return False
 
 def get_browser():
     """Получить экземпляр браузера (создать если нет)"""
@@ -265,6 +270,7 @@ async def open_site_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         page = browser.new_page()
         page.goto("https://example.com")
         page.screenshot(path="screenshot.png")
+        page.close()
         
         log_storage.add_log("Открыт сайт example.com", "BROWSER")
         await query.message.reply_text("✅ Сайт открыт! Скриншот сохранен.", parse_mode="HTML")
@@ -283,9 +289,11 @@ async def browser_status_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.message.reply_text("✅ Браузер запущен и работает", parse_mode="HTML")
     else:
         await query.message.reply_text("❌ Браузер не запущен. Инициализация...", parse_mode="HTML")
-        init_browser()
-        if browser_instance is not None:
+        success = init_browser()
+        if success:
             await query.message.reply_text("✅ Браузер успешно запущен!", parse_mode="HTML")
+        else:
+            await query.message.reply_text("❌ Ошибка запуска браузера!", parse_mode="HTML")
 
 async def browser_restart_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Перезапуск браузера"""
@@ -302,9 +310,9 @@ async def browser_restart_callback(update: Update, context: ContextTypes.DEFAULT
             pass
         browser_instance = None
     
-    init_browser()
+    success = init_browser()
     
-    if browser_instance is not None:
+    if success:
         await query.message.reply_text("✅ Браузер перезапущен!", parse_mode="HTML")
         log_storage.add_log("Браузер перезапущен", "SYSTEM")
     else:
@@ -324,6 +332,7 @@ async def browser_screenshot_callback(update: Update, context: ContextTypes.DEFA
         page = browser.new_page()
         page.goto("https://example.com")
         screenshot = page.screenshot(full_page=True)
+        page.close()
         
         # Отправляем скриншот в Telegram
         from io import BytesIO
@@ -345,9 +354,8 @@ def start_browser_thread():
     """Запуск браузера в фоновом потоке"""
     def run_browser():
         logging.info("🔄 Фоновый поток браузера запущен")
-        browser = get_browser()
-        if browser:
-            logging.info("✅ Браузер инициализирован в фоне")
+        # Пробуем инициализировать браузер
+        init_browser()
         while True:
             time.sleep(60)  # Держим поток живым
     
