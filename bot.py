@@ -19,113 +19,87 @@ if not TOKEN:
     logging.error("❌ TELEGRAM_TOKEN_BOT не найден!")
     raise ValueError("Добавьте TELEGRAM_TOKEN_BOT в переменные Railway")
 
-# ============= УСТАНОВКА БРАУЗЕРА =============
+# ============= УСТАНОВКА PLAYWRIGHT =============
 BROWSER_INSTALLED = False
 BROWSER_INSTALLATION_IN_PROGRESS = False
 
 def download_browser():
-    """Скачивает браузер Camoufox через командную строку"""
+    """Устанавливает Playwright и браузеры"""
     global BROWSER_INSTALLATION_IN_PROGRESS
     
     if BROWSER_INSTALLATION_IN_PROGRESS:
-        logging.warning("⚠️ Установка браузера уже выполняется!")
+        logging.warning("⚠️ Установка уже выполняется!")
         return False
     
     BROWSER_INSTALLATION_IN_PROGRESS = True
-    logging.info("🔄 Запуск скачивания браузера Camoufox...")
+    logging.info("🔄 Установка Playwright и браузеров...")
     
     try:
-        # Попытка 1: через camoufox fetch
+        # Установка playwright
         result = subprocess.run(
-            [sys.executable, "-m", "camoufox", "fetch"],
-            capture_output=True,
-            text=True,
-            timeout=300  # 5 минут на скачивание
-        )
-        
-        if result.returncode == 0:
-            logging.info("✅ Браузер успешно скачан через camoufox fetch!")
-            BROWSER_INSTALLATION_IN_PROGRESS = False
-            return True
-        
-        # Попытка 2: через python -c
-        logging.warning("⚠️ Первый способ не сработал, пробуем второй...")
-        result2 = subprocess.run(
-            [sys.executable, "-c", "from camoufox.sync_api import Camoufox; Camoufox()._setup()"],
-            capture_output=True,
-            text=True,
-            timeout=300
-        )
-        
-        if result2.returncode == 0:
-            logging.info("✅ Браузер успешно скачан через _setup()!")
-            BROWSER_INSTALLATION_IN_PROGRESS = False
-            return True
-        
-        # Попытка 3: через pip install с переустановкой
-        logging.warning("⚠️ Второй способ не сработал, пробуем переустановить...")
-        result3 = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--upgrade", "camoufox[geoip]"],
+            [sys.executable, "-m", "pip", "install", "playwright", "playwright-stealth"],
             capture_output=True,
             text=True,
             timeout=120
         )
         
-        if result3.returncode == 0:
-            logging.info("✅ Camoufox переустановлен!")
-            # Пробуем скачать браузер после переустановки
-            result4 = subprocess.run(
-                [sys.executable, "-m", "camoufox", "fetch"],
-                capture_output=True,
-                text=True,
-                timeout=300
-            )
-            if result4.returncode == 0:
-                logging.info("✅ Браузер скачан после переустановки!")
-                BROWSER_INSTALLATION_IN_PROGRESS = False
-                return True
+        if result.returncode != 0:
+            logging.error(f"❌ Ошибка установки playwright: {result.stderr}")
+            BROWSER_INSTALLATION_IN_PROGRESS = False
+            return False
         
-        logging.error(f"❌ Все способы скачивания не сработали!")
-        logging.error(f"   Попытка 1 (fetch): {result.stderr[:200] if result.stderr else 'OK'}")
-        logging.error(f"   Попытка 2 (_setup): {result2.stderr[:200] if result2.stderr else 'OK'}")
-        BROWSER_INSTALLATION_IN_PROGRESS = False
-        return False
+        # Установка браузеров
+        logging.info("📥 Скачивание браузера Chromium...")
+        result2 = subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            capture_output=True,
+            text=True,
+            timeout=300  # 5 минут
+        )
         
+        if result2.returncode == 0:
+            logging.info("✅ Playwright и Chromium успешно установлены!")
+            BROWSER_INSTALLATION_IN_PROGRESS = False
+            return True
+        else:
+            logging.error(f"❌ Ошибка установки Chromium: {result2.stderr}")
+            BROWSER_INSTALLATION_IN_PROGRESS = False
+            return False
+            
     except subprocess.TimeoutExpired:
-        logging.error("❌ Таймаут скачивания браузера (5 минут)!")
+        logging.error("❌ Таймаут установки (5 минут)!")
         BROWSER_INSTALLATION_IN_PROGRESS = False
         return False
     except Exception as e:
-        logging.error(f"❌ Ошибка скачивания браузера: {e}")
+        logging.error(f"❌ Ошибка установки: {e}")
         BROWSER_INSTALLATION_IN_PROGRESS = False
         return False
 
 def check_browser_installed():
-    """Проверяет, установлен ли браузер"""
+    """Проверяет, установлен ли Playwright"""
     try:
-        from camoufox.sync_api import Camoufox
+        from playwright.sync_api import sync_playwright
         
-        # Пробуем создать тестовую страницу
-        with Camoufox(headless=True) as test_browser:
-            test_page = test_browser.new_page()
-            test_page.close()
-        logging.info("✅ Браузер работает!")
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            browser.close()
+        logging.info("✅ Playwright работает!")
         return True
     except Exception as e:
-        logging.warning(f"⚠️ Браузер не работает: {e}")
+        logging.warning(f"⚠️ Playwright не работает: {e}")
         return False
 
-# Проверяем браузер при запуске
-logging.info("🔄 Проверка браузера...")
+# Проверяем при запуске
+logging.info("🔄 Проверка Playwright...")
 BROWSER_INSTALLED = check_browser_installed()
 
 if not BROWSER_INSTALLED:
-    logging.info("🔄 Браузер не установлен. Попытка автоматической установки...")
+    logging.info("🔄 Playwright не установлен. Попытка автоматической установки...")
     BROWSER_INSTALLED = download_browser()
     if BROWSER_INSTALLED:
-        logging.info("✅ Браузер успешно установлен при запуске!")
+        logging.info("✅ Playwright успешно установлен при запуске!")
     else:
-        logging.warning("⚠️ Не удалось установить браузер. Используйте /download_browser")
+        logging.warning("⚠️ Не удалось установить Playwright. Используйте /download_browser")
 
 # ============= ГЛОБАЛЬНЫЙ БРАУЗЕР =============
 browser_instance = None
@@ -133,43 +107,116 @@ browser_lock = threading.Lock()
 browser_initialized = False
 
 def init_browser_sync():
-    """Инициализация браузера"""
+    """Инициализация браузера Playwright с stealth"""
     global browser_instance, browser_initialized
     
     if not BROWSER_INSTALLED:
-        logging.error("❌ Браузер не установлен! Запустите /download_browser")
+        logging.error("❌ Playwright не установлен! Запустите /download_browser")
         return False
     
     with browser_lock:
         if browser_instance is None and not browser_initialized:
-            logging.info("🔄 Запуск Camoufox...")
+            logging.info("🔄 Запуск Playwright с stealth...")
             try:
-                from camoufox.sync_api import Camoufox
+                from playwright.sync_api import sync_playwright
+                from playwright_stealth import stealth_sync
                 
-                browser_instance = Camoufox(
-                    headless="virtual",
-                    window=(1024, 768),
-                    humanize=True,
-                    firefox_user_prefs={
-                        "dom.ipc.processCount": 1,
-                        "extensions.enabledScopes": 0,
-                        "media.webspeech.enabled": False,
-                    },
-                    config={
-                        "navigator.language": "ru-RU",
-                        "navigator.languages": ["ru-RU", "ru", "en-US", "en"],
-                        "headers.Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
+                # Создаем контекст с настройками антидетекта
+                playwright = sync_playwright().start()
+                
+                # Маскируем браузер под реальный
+                browser = playwright.chromium.launch(
+                    headless=False,  # Для лучшей маскировки используем False
+                    args=[
+                        '--disable-blink-features=AutomationControlled',
+                        '--disable-features=IsolateOrigins,site-per-process',
+                        '--disable-site-isolation-trials',
+                        '--disable-web-security',
+                        '--disable-features=BlockInsecurePrivateNetworkRequests',
+                        '--disable-features=OutOfBlinkCors',
+                        '--window-size=1024,768',
+                    ]
+                )
+                
+                # Создаем контекст с реальными параметрами
+                context = browser.new_context(
+                    viewport={'width': 1024, 'height': 768},
+                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    locale='ru-RU',
+                    timezone_id='Europe/Moscow',
+                    permissions=['geolocation'],
+                    extra_http_headers={
+                        'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+                        'Accept-Encoding': 'gzip, deflate, br',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                        'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                        'Sec-Ch-Ua-Mobile': '?0',
+                        'Sec-Ch-Ua-Platform': '"Windows"',
+                        'Sec-Fetch-Dest': 'document',
+                        'Sec-Fetch-Mode': 'navigate',
+                        'Sec-Fetch-Site': 'none',
+                        'Sec-Fetch-User': '?1',
+                        'Upgrade-Insecure-Requests': '1',
                     }
                 )
-                browser_instance.__enter__()
+                
+                # Создаем страницу и применяем stealth
+                page = context.new_page()
+                
+                # Применяем stealth-маскировку
+                stealth_sync(page)
+                
+                # Дополнительная маскировка через CDP
+                page.add_init_script("""
+                    // Переопределяем navigator.webdriver
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined
+                    });
+                    
+                    // Маскируем chrome
+                    Object.defineProperty(navigator, 'chrome', {
+                        get: () => ({
+                            runtime: {},
+                            loadTimes: function() {},
+                            csi: function() {},
+                            app: {}
+                        })
+                    });
+                    
+                    // Подменяем plugins
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => [1, 2, 3, 4, 5]
+                    });
+                    
+                    // Маскируем languages
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['ru-RU', 'ru', 'en-US', 'en']
+                    });
+                    
+                    // Убираем следы автоматизации
+                    delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+                    delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+                    delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+                """)
+                
+                # Сохраняем все в глобальную переменную
+                browser_instance = {
+                    'playwright': playwright,
+                    'browser': browser,
+                    'context': context,
+                    'page': page
+                }
+                
                 browser_initialized = True
-                logging.info("✅ Camoufox запущен!")
+                logging.info("✅ Playwright с stealth запущен!")
                 return True
+                
             except Exception as e:
-                logging.error(f"❌ Ошибка запуска Camoufox: {e}")
+                logging.error(f"❌ Ошибка запуска Playwright: {e}")
                 browser_instance = None
                 browser_initialized = True
                 return False
+                
     return browser_instance is not None
 
 def get_browser_sync():
@@ -180,29 +227,30 @@ def get_browser_sync():
     return browser_instance
 
 def create_page_sync():
-    """Создать новую страницу"""
+    """Создать новую страницу (используем существующую)"""
     browser = get_browser_sync()
     if browser is None:
         logging.error("❌ Браузер не инициализирован")
         return None
+    
     try:
-        page = browser.new_page()
-        logging.info("✅ Страница создана!")
-        return page
+        # Возвращаем существующую страницу
+        return browser['page']
     except Exception as e:
-        logging.error(f"❌ Ошибка создания страницы: {e}")
+        logging.error(f"❌ Ошибка получения страницы: {e}")
         return None
 
 def do_browser_action_sync(page, action, url=None):
     """Выполнить действие с браузером"""
     try:
         if action == "goto" and url:
-            page.goto(url)
+            page.goto(url, wait_until='domcontentloaded', timeout=30000)
             return True
         elif action == "screenshot":
+            # Делаем скриншот с высоким качеством
             return page.screenshot(full_page=True)
         elif action == "close":
-            page.close()
+            # В playwright не закрываем страницу, чтобы не терять сессию
             return True
         return False
     except Exception as e:
@@ -330,12 +378,13 @@ log_storage = LogStorage()
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = "✅" if BROWSER_INSTALLED else "❌"
     await update.message.reply_text(
-        f"🖥️ <b>Stealth Browser Bot</b>\n\n"
+        f"🖥️ <b>Stealth Browser Bot (Playwright)</b>\n\n"
         f"📋 /logs  – показать логи\n"
         f"🗑️ /clear – очистить логи\n"
         f"🌐 /browser – управление браузером\n"
         f"📥 /download_browser – скачать браузер\n\n"
-        f"⚡ Браузер: {status}\n\n"
+        f"⚡ Браузер: {status}\n"
+        f"🛡️ Защита: playwright-stealth\n\n"
         f"<i>Если браузер не работает, нажмите /download_browser</i>",
         parse_mode="HTML"
     )
@@ -346,21 +395,20 @@ async def download_browser_command(update: Update, context: ContextTypes.DEFAULT
     global BROWSER_INSTALLED, BROWSER_INSTALLATION_IN_PROGRESS
     
     if BROWSER_INSTALLATION_IN_PROGRESS:
-        await update.message.reply_text("⏳ Скачивание уже выполняется...", parse_mode="HTML")
+        await update.message.reply_text("⏳ Установка уже выполняется...", parse_mode="HTML")
         return
     
-    status_msg = await update.message.reply_text("⏳ Скачивание браузера... Это может занять 2-3 минуты.", parse_mode="HTML")
+    status_msg = await update.message.reply_text("⏳ Установка Playwright... Это может занять 2-3 минуты.", parse_mode="HTML")
     
-    # Запускаем скачивание в отдельном потоке
     loop = asyncio.get_event_loop()
     success = await loop.run_in_executor(None, download_browser)
     
     if success:
         BROWSER_INSTALLED = True
-        await status_msg.edit_text("✅ Браузер успешно скачан!", parse_mode="HTML")
-        log_storage.add_log("Браузер скачан по команде /download_browser", "SYSTEM")
+        await status_msg.edit_text("✅ Playwright и браузер успешно установлены!", parse_mode="HTML")
+        log_storage.add_log("Playwright установлен по команде /download_browser", "SYSTEM")
     else:
-        await status_msg.edit_text("❌ Ошибка скачивания! Проверьте логи.", parse_mode="HTML")
+        await status_msg.edit_text("❌ Ошибка установки! Проверьте логи.", parse_mode="HTML")
 
 @log_command
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -399,7 +447,8 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @log_command
 async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🌐 <b>Управление браузером</b>\n\n"
+        "🌐 <b>Управление браузером Playwright</b>\n\n"
+        "🛡️ Stealth-режим активен\n"
         "Используйте кнопки для управления:",
         parse_mode="HTML",
         reply_markup=get_browser_keyboard()
@@ -408,27 +457,26 @@ async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============= ОБРАБОТЧИКИ КНОПОК =============
 
 async def download_browser_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback для скачивания браузера"""
     global BROWSER_INSTALLED, BROWSER_INSTALLATION_IN_PROGRESS
     
     query = update.callback_query
     await query.answer()
     
     if BROWSER_INSTALLATION_IN_PROGRESS:
-        await query.message.reply_text("⏳ Скачивание уже выполняется...", parse_mode="HTML")
+        await query.message.reply_text("⏳ Установка уже выполняется...", parse_mode="HTML")
         return
     
-    status_msg = await query.message.reply_text("⏳ Скачивание браузера... Это может занять 2-3 минуты.", parse_mode="HTML")
+    status_msg = await query.message.reply_text("⏳ Установка Playwright... Это может занять 2-3 минуты.", parse_mode="HTML")
     
     loop = asyncio.get_event_loop()
     success = await loop.run_in_executor(None, download_browser)
     
     if success:
         BROWSER_INSTALLED = True
-        await status_msg.edit_text("✅ Браузер успешно скачан!", parse_mode="HTML")
-        log_storage.add_log("Браузер скачан по кнопке", "SYSTEM")
+        await status_msg.edit_text("✅ Playwright и браузер успешно установлены!", parse_mode="HTML")
+        log_storage.add_log("Playwright установлен по кнопке", "SYSTEM")
     else:
-        await status_msg.edit_text("❌ Ошибка скачивания! Проверьте логи.", parse_mode="HTML")
+        await status_msg.edit_text("❌ Ошибка установки! Проверьте логи.", parse_mode="HTML")
 
 async def copy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -461,11 +509,14 @@ async def browser_status_callback(update: Update, context: ContextTypes.DEFAULT_
     global browser_instance
     
     if not BROWSER_INSTALLED:
-        await query.message.reply_text("❌ Браузер не скачан! Нажмите '📥 Скачать браузер'", parse_mode="HTML")
+        await query.message.reply_text("❌ Playwright не установлен! Нажмите '📥 Скачать браузер'", parse_mode="HTML")
         return
     
     if browser_instance is not None:
-        await query.message.reply_text("✅ Браузер запущен и работает", parse_mode="HTML")
+        await query.message.reply_text(
+            "✅ Браузер запущен и работает\n🛡️ Stealth-защита активна",
+            parse_mode="HTML"
+        )
     else:
         await query.message.reply_text("❌ Браузер не запущен. Инициализация...", parse_mode="HTML")
         loop = asyncio.get_event_loop()
@@ -482,7 +533,7 @@ async def browser_restart_callback(update: Update, context: ContextTypes.DEFAULT
     global browser_instance, browser_initialized
     
     if not BROWSER_INSTALLED:
-        await query.message.reply_text("❌ Браузер не скачан! Нажмите '📥 Скачать браузер'", parse_mode="HTML")
+        await query.message.reply_text("❌ Playwright не установлен! Нажмите '📥 Скачать браузер'", parse_mode="HTML")
         return
     
     await query.message.reply_text("🔄 Перезапуск браузера...", parse_mode="HTML")
@@ -492,7 +543,9 @@ async def browser_restart_callback(update: Update, context: ContextTypes.DEFAULT
     if browser_instance:
         try:
             def close_browser():
-                browser_instance.__exit__(None, None, None)
+                if browser_instance:
+                    browser_instance['browser'].close()
+                    browser_instance['playwright'].stop()
             await loop.run_in_executor(None, close_browser)
         except:
             pass
@@ -512,7 +565,7 @@ async def browser_screenshot_callback(update: Update, context: ContextTypes.DEFA
     await query.answer()
     
     if not BROWSER_INSTALLED:
-        await query.message.reply_text("❌ Браузер не скачан! Нажмите '📥 Скачать браузер'", parse_mode="HTML")
+        await query.message.reply_text("❌ Playwright не установлен! Нажмите '📥 Скачать браузер'", parse_mode="HTML")
         return
     
     loop = asyncio.get_event_loop()
@@ -520,19 +573,21 @@ async def browser_screenshot_callback(update: Update, context: ContextTypes.DEFA
     try:
         page = await loop.run_in_executor(None, create_page_sync)
         if page is None:
-            await query.message.reply_text("❌ Не удалось создать страницу!", parse_mode="HTML")
+            await query.message.reply_text("❌ Не удалось получить страницу!", parse_mode="HTML")
             return
         
         await loop.run_in_executor(None, do_browser_action_sync, page, "goto", "https://example.com")
         screenshot = await loop.run_in_executor(None, do_browser_action_sync, page, "screenshot", None)
-        await loop.run_in_executor(None, do_browser_action_sync, page, "close", None)
         
         if screenshot:
             from io import BytesIO
             photo = BytesIO(screenshot)
             photo.name = "screenshot.png"
-            await query.message.reply_photo(photo=photo, caption="📸 Скриншот example.com")
-            log_storage.add_log("Сделан скриншот", "BROWSER")
+            await query.message.reply_photo(
+                photo=photo, 
+                caption="📸 Скриншот example.com\n🛡️ Сделан через playwright-stealth"
+            )
+            log_storage.add_log("Сделан скриншот через Playwright", "BROWSER")
         else:
             await query.message.reply_text("❌ Ошибка создания скриншота!", parse_mode="HTML")
         
@@ -541,12 +596,11 @@ async def browser_screenshot_callback(update: Update, context: ContextTypes.DEFA
         log_storage.add_log(f"Ошибка скриншота: {str(e)}", "ERROR")
 
 async def open_site_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Запрашивает URL у пользователя"""
     query = update.callback_query
     await query.answer()
     
     if not BROWSER_INSTALLED:
-        await query.message.reply_text("❌ Браузер не скачан! Нажмите '📥 Скачать браузер'", parse_mode="HTML")
+        await query.message.reply_text("❌ Playwright не установлен! Нажмите '📥 Скачать браузер'", parse_mode="HTML")
         return
     
     context.user_data['waiting_for_url'] = True
@@ -557,17 +611,17 @@ async def open_site_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "• https://x.com\n"
         "• https://github.com\n"
         "• https://example.com\n\n"
-        "❗ Введите полный адрес с https://",
+        "❗ Введите полный адрес с https://\n"
+        "🛡️ Будет использован stealth-режим",
         parse_mode="HTML"
     )
 
 async def handle_url_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает введенный URL"""
     if not context.user_data.get('waiting_for_url'):
         return
     
     if not BROWSER_INSTALLED:
-        await update.message.reply_text("❌ Браузер не скачан! Нажмите /download_browser", parse_mode="HTML")
+        await update.message.reply_text("❌ Playwright не установлен! Нажмите /download_browser", parse_mode="HTML")
         context.user_data['waiting_for_url'] = False
         return
     
@@ -591,14 +645,13 @@ async def handle_url_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         page = await loop.run_in_executor(None, create_page_sync)
         if page is None:
-            await status_msg.edit_text("❌ Не удалось создать страницу!", parse_mode="HTML")
+            await status_msg.edit_text("❌ Не удалось получить страницу!", parse_mode="HTML")
             return
         
         success = await loop.run_in_executor(None, do_browser_action_sync, page, "goto", url)
         
         if success:
             screenshot = await loop.run_in_executor(None, do_browser_action_sync, page, "screenshot", None)
-            await loop.run_in_executor(None, do_browser_action_sync, page, "close", None)
             
             if screenshot:
                 from io import BytesIO
@@ -608,10 +661,10 @@ async def handle_url_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await status_msg.delete()
                 await update.message.reply_photo(
                     photo=photo,
-                    caption=f"✅ <b>Сайт открыт:</b>\n{url}",
+                    caption=f"✅ <b>Сайт открыт через stealth:</b>\n{url}",
                     parse_mode="HTML"
                 )
-                log_storage.add_log(f"Открыт сайт: {url}", "BROWSER")
+                log_storage.add_log(f"Открыт сайт через Playwright: {url}", "BROWSER")
             else:
                 await status_msg.edit_text(f"✅ Сайт открыт, но скриншот не сохранился:\n{url}", parse_mode="HTML")
         else:
@@ -625,7 +678,7 @@ async def handle_url_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def start_browser_thread():
     def run_browser():
-        logging.info("🔄 Фоновый поток браузера запущен")
+        logging.info("🔄 Фоновый поток браузера Playwright запущен")
         if BROWSER_INSTALLED:
             init_browser_sync()
         while True:
@@ -666,7 +719,7 @@ def main():
     
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url_input))
     
-    log_storage.add_log("Бот запущен с Camoufox", "SYSTEM")
+    log_storage.add_log("Бот запущен с Playwright + stealth", "SYSTEM")
     logging.info("🚀 Бот запускается в режиме polling...")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
