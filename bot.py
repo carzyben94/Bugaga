@@ -65,13 +65,13 @@ def get_browser_sync():
     return browser_instance
 
 def create_page_sync():
-    """Создать новую страницу (ПРАВИЛЬНЫЙ СПОСОБ)"""
+    """Создать новую страницу (по документации Camoufox)"""
     browser = get_browser_sync()
     if browser is None:
         logging.error("❌ Браузер не инициализирован")
         return None
     try:
-        # В Camoufox 0.4.11 страницы создаются через new_page()
+        # ПО ДОКУМЕНТАЦИИ: используем new_page()
         page = browser.new_page()
         logging.info("✅ Страница создана!")
         return page
