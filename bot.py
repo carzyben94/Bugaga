@@ -11,16 +11,12 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 
-# Токен бота
 TOKEN = os.getenv("TELEGRAM_TOKEN_BOT")
-
 if not TOKEN:
-    logging.error("❌ TELEGRAM_TOKEN_BOT не найден!")
-    raise ValueError("Добавьте TELEGRAM_TOKEN_BOT в переменные Railway")
+    raise ValueError("❌ TELEGRAM_TOKEN_BOT не найден!")
 
 # ============= ПРОВЕРКА NODRIVER =============
 def check_nodriver_installed():
-    """Проверяет, установлен ли Nodriver"""
     try:
         import nodriver as nd
         logging.info("✅ Nodriver установлен!")
@@ -37,7 +33,7 @@ browser_lock = asyncio.Lock()
 browser_initialized = False
 
 async def init_browser():
-    """Инициализация Nodriver"""
+    """Инициализация Nodriver с Xvfb"""
     global browser_instance, browser_initialized
     
     if not NODRIVER_INSTALLED:
@@ -46,19 +42,23 @@ async def init_browser():
     
     async with browser_lock:
         if browser_instance is None and not browser_initialized:
-            logging.info("🔄 Запуск Nodriver...")
+            logging.info("🔄 Запуск Nodriver с Xvfb...")
             try:
                 import nodriver as nd
                 
+                # Проверяем DISPLAY
+                display = os.environ.get('DISPLAY', ':99')
+                logging.info(f"📺 Используется DISPLAY={display}")
+                
                 browser_instance = await nd.start(
-                    headless=False,  # False для лучшей маскировки
+                    headless=False,  # <-- Включаем GUI через Xvfb
                     window_size=(1024, 768),
-                    browser_executable_path='/usr/bin/google-chrome',  # Явно указываем путь к Chrome
+                    browser_executable_path='/usr/bin/google-chrome',
                     arguments=[
                         '--no-sandbox',
                         '--disable-setuid-sandbox',
                         '--disable-dev-shm-usage',
-                        '--disable-gpu',
+                        # НЕ добавляем --disable-gpu, чтобы не выдавать бота
                         '--disable-blink-features=AutomationControlled',
                         '--disable-features=IsolateOrigins,site-per-process',
                         '--disable-site-isolation-trials',
@@ -68,7 +68,7 @@ async def init_browser():
                     ]
                 )
                 browser_initialized = True
-                logging.info("✅ Nodriver запущен!")
+                logging.info("✅ Nodriver с Xvfb успешно запущен!")
                 return True
             except Exception as e:
                 logging.error(f"❌ Ошибка запуска Nodriver: {e}")
@@ -78,14 +78,12 @@ async def init_browser():
     return browser_instance is not None
 
 async def get_browser():
-    """Получить экземпляр браузера"""
     global browser_instance
     if browser_instance is None and not browser_initialized:
         await init_browser()
     return browser_instance
 
 async def create_page():
-    """Создать новую страницу"""
     browser = await get_browser()
     if browser is None:
         logging.error("❌ Браузер не инициализирован")
@@ -99,7 +97,6 @@ async def create_page():
         return None
 
 async def do_browser_action(page, action, url=None):
-    """Выполнить действие с браузером"""
     try:
         if action == "goto" and url:
             await page.get(url)
@@ -188,7 +185,6 @@ def format_logs_clean(logs, limit=30):
     return "\n".join(lines)
 
 # ============= КЛАВИАТУРЫ =============
-
 def get_logs_keyboard():
     keyboard = [
         [InlineKeyboardButton("📋 Копировать логи", callback_data="copy_logs")],
@@ -224,23 +220,20 @@ def log_command(func):
         return await func(update, context)
     return wrapper
 
-# ===================================
-
 log_storage = LogStorage()
 
 # ============= КОМАНДЫ =============
-
 @log_command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = "✅" if NODRIVER_INSTALLED else "❌"
     await update.message.reply_text(
-        f"🖥️ <b>Stealth Browser Bot (Nodriver)</b>\n\n"
+        f"🖥️ <b>Stealth Browser Bot (Nodriver + Xvfb)</b>\n\n"
         f"📋 /logs  – показать логи\n"
         f"🗑️ /clear – очистить логи\n"
         f"🌐 /browser – управление браузером\n\n"
         f"⚡ Браузер: {status}\n"
-        f"🛡️ Защита: Nodriver (Stealth)\n\n"
-        f"<i>Nodriver использует Chrome для обхода защиты</i>",
+        f"🛡️ Защита: Nodriver + Xvfb\n\n"
+        f"<i>Xvfb эмулирует графический интерфейс для лучшей маскировки</i>",
         parse_mode="HTML"
     )
 
@@ -250,14 +243,12 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         logs = log_storage.get_all_logs(limit=30)
-        
         if not logs:
             await status_msg.edit_text("📭 Логов пока нет", parse_mode="HTML")
             return
         
         display_text = format_logs_for_window(logs)
         clean_text = format_logs_clean(logs)
-        
         context.user_data['copy_logs'] = clean_text
         
         await status_msg.edit_text(
@@ -266,9 +257,7 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_logs_keyboard(),
             disable_web_page_preview=True
         )
-        
         log_storage.add_log("Показаны логи", "INFO")
-            
     except Exception as e:
         await status_msg.edit_text(f"❌ Ошибка: {str(e)}", parse_mode="HTML")
         log_storage.add_log(f"Ошибка в /logs: {str(e)}", "ERROR")
@@ -282,25 +271,19 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🌐 <b>Управление браузером Nodriver</b>\n\n"
-        "🛡️ Stealth-режим активен\n"
+        "🛡️ Stealth-режим с Xvfb активен\n"
         "Используйте кнопки для управления:",
         parse_mode="HTML",
         reply_markup=get_browser_keyboard()
     )
 
 # ============= ОБРАБОТЧИКИ КНОПОК =============
-
 async def copy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
     copy_text = context.user_data.get('copy_logs', '')
-    
     if copy_text:
-        await query.message.reply_text(
-            f"<pre>{copy_text}</pre>",
-            parse_mode="HTML"
-        )
+        await query.message.reply_text(f"<pre>{copy_text}</pre>", parse_mode="HTML")
         log_storage.add_log("Скопированы логи", "SYSTEM")
         await query.answer("✅ Логи отправлены!")
     else:
@@ -309,7 +292,6 @@ async def copy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def clear_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
     log_storage.clear_logs()
     await query.message.edit_text("🗑️ Логи очищены ✅", parse_mode="HTML")
     await query.answer("✅ Очищено!")
@@ -317,7 +299,6 @@ async def clear_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def browser_status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
     global browser_instance
     
     if not NODRIVER_INSTALLED:
@@ -326,7 +307,7 @@ async def browser_status_callback(update: Update, context: ContextTypes.DEFAULT_
     
     if browser_instance is not None:
         await query.message.reply_text(
-            "✅ Браузер запущен и работает\n🛡️ Stealth-защита активна",
+            "✅ Браузер запущен и работает\n🛡️ Stealth-защита с Xvfb активна",
             parse_mode="HTML"
         )
     else:
@@ -340,7 +321,6 @@ async def browser_status_callback(update: Update, context: ContextTypes.DEFAULT_
 async def browser_restart_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
     global browser_instance, browser_initialized
     
     if not NODRIVER_INSTALLED:
@@ -358,7 +338,6 @@ async def browser_restart_callback(update: Update, context: ContextTypes.DEFAULT
         browser_initialized = False
     
     success = await init_browser()
-    
     if success:
         await query.message.reply_text("✅ Браузер перезапущен!", parse_mode="HTML")
         log_storage.add_log("Браузер перезапущен", "SYSTEM")
@@ -387,12 +366,11 @@ async def browser_screenshot_callback(update: Update, context: ContextTypes.DEFA
             photo.name = "screenshot.png"
             await query.message.reply_photo(
                 photo=photo, 
-                caption="📸 Скриншот example.com\n🛡️ Сделан через Nodriver"
+                caption="📸 Скриншот example.com\n🛡️ Сделан через Nodriver + Xvfb"
             )
             log_storage.add_log("Сделан скриншот через Nodriver", "BROWSER")
         else:
             await query.message.reply_text("❌ Ошибка создания скриншота!", parse_mode="HTML")
-        
     except Exception as e:
         await query.message.reply_text(f"❌ Ошибка: {str(e)}", parse_mode="HTML")
         log_storage.add_log(f"Ошибка скриншота: {str(e)}", "ERROR")
@@ -406,7 +384,6 @@ async def open_site_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     
     context.user_data['waiting_for_url'] = True
-    
     await query.message.reply_text(
         "🌐 <b>Введите URL сайта</b>\n\n"
         "Примеры:\n"
@@ -414,7 +391,7 @@ async def open_site_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "• https://github.com\n"
         "• https://example.com\n\n"
         "❗ Введите полный адрес с https://\n"
-        "🛡️ Будет использован stealth-режим Nodriver",
+        "🛡️ Будет использован stealth-режим Nodriver + Xvfb",
         parse_mode="HTML"
     )
 
@@ -428,7 +405,6 @@ async def handle_url_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     url = update.message.text.strip()
-    
     if not url.startswith(('http://', 'https://')):
         await update.message.reply_text(
             "❌ <b>Неверный формат URL</b>\n\n"
@@ -439,7 +415,6 @@ async def handle_url_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     context.user_data['waiting_for_url'] = False
-    
     status_msg = await update.message.reply_text(f"⏳ Открываю {url}...", parse_mode="HTML")
     
     try:
@@ -452,15 +427,13 @@ async def handle_url_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if success:
             screenshot = await do_browser_action(page, "screenshot", None)
-            
             if screenshot:
                 photo = BytesIO(screenshot)
                 photo.name = "screenshot.png"
-                
                 await status_msg.delete()
                 await update.message.reply_photo(
                     photo=photo,
-                    caption=f"✅ <b>Сайт открыт через Nodriver:</b>\n{url}",
+                    caption=f"✅ <b>Сайт открыт через Nodriver + Xvfb:</b>\n{url}",
                     parse_mode="HTML"
                 )
                 log_storage.add_log(f"Открыт сайт через Nodriver: {url}", "BROWSER")
@@ -468,13 +441,11 @@ async def handle_url_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await status_msg.edit_text(f"✅ Сайт открыт, но скриншот не сохранился:\n{url}", parse_mode="HTML")
         else:
             await status_msg.edit_text(f"❌ Ошибка открытия:\n{url}", parse_mode="HTML")
-        
     except Exception as e:
         await status_msg.edit_text(f"❌ Ошибка: {str(e)}", parse_mode="HTML")
         log_storage.add_log(f"Ошибка открытия {url}: {str(e)}", "ERROR")
 
 # ============= ЗАПУСК =============
-
 def start_browser_thread():
     def run_browser():
         logging.info("🔄 Фоновый поток браузера Nodriver запущен")
@@ -518,8 +489,8 @@ def main():
     
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url_input))
     
-    log_storage.add_log("Бот запущен с Nodriver", "SYSTEM")
-    logging.info("🚀 Бот с Nodriver запущен!")
+    log_storage.add_log("Бот запущен с Nodriver + Xvfb", "SYSTEM")
+    logging.info("🚀 Бот с Nodriver + Xvfb запущен!")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
