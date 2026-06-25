@@ -1,23 +1,161 @@
 import os
 import logging
+import sys
 from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-
-# Импорт из logger.py
-from logger import (
-    LogStorage,
-    format_logs_for_display,
-    format_logs_for_copy,
-    get_logs_keyboard,
-    log_command
-)
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 
-# Проверка наличия файлов
+# ПРОВЕРКА ФАЙЛОВ
 logging.info(f"📁 Текущая директория: {os.getcwd()}")
-logging.info(f"📁 Файлы: {os.listdir('.')}")
+logging.info(f"📁 Все файлы: {os.listdir('.')}")
+
+# ЯВНАЯ ЗАГРУЗКА МОДУЛЯ
+import importlib.util
+
+def load_module_from_file(filepath, module_name):
+    """Загружает модуль из файла"""
+    spec = importlib.util.spec_from_file_location(module_name, filepath)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+# Загружаем logger.py как модуль
+logger_path = os.path.join(os.getcwd(), "logger.py")
+
+if os.path.exists(logger_path):
+    logging.info("✅ logger.py найден, загружаю...")
+    try:
+        logger = load_module_from_file(logger_path, "logger")
+        LogStorage = logger.LogStorage
+        format_logs_for_display = logger.format_logs_for_display
+        format_logs_for_copy = logger.format_logs_for_copy
+        get_logs_keyboard = logger.get_logs_keyboard
+        log_command = logger.log_command
+        logging.info("✅ logger.py загружен успешно!")
+    except Exception as e:
+        logging.error(f"❌ Ошибка загрузки logger.py: {e}")
+        raise
+else:
+    logging.error("❌ logger.py НЕ НАЙДЕН!")
+    logging.info("💡 Создаю logger.py...")
+    
+    # Создаём logger.py
+    with open("logger.py", "w") as f:
+        f.write('''import logging
+from datetime import datetime
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+class LogStorage:
+    def __init__(self, max_logs=100):
+        self.logs = []
+        self.max_logs = max_logs
+    
+    def add_log(self, message, log_type="INFO", user_id=None, username=None):
+        log_entry = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "type": log_type,
+            "user_id": user_id,
+            "username": username,
+            "message": message
+        }
+        self.logs.append(log_entry)
+        if len(self.logs) > self.max_logs:
+            self.logs.pop(0)
+        logging.info(f"[{log_type}] {message}")
+    
+    def get_all_logs(self, limit=50):
+        return self.logs[-limit:] if self.logs else []
+    
+    def clear_logs(self):
+        self.logs.clear()
+        self.add_log("Логи очищены", "SYSTEM")
+    
+    def get_stats(self):
+        types_count = {}
+        for log in self.logs:
+            log_type = log["type"]
+            types_count[log_type] = types_count.get(log_type, 0) + 1
+        return {"total": len(self.logs), "by_type": types_count}
+
+def format_logs_for_display(logs, limit=30):
+    if not logs:
+        return "📭 <b>Логов пока нет</b>"
+    
+    lines = []
+    lines.append("📋 <b>ВСЕ ЛОГИ</b>")
+    lines.append(f"🕐 <b>{datetime.now().strftime('%d.%m.%Y %H:%M:%S')}</b>")
+    lines.append("═" * 30)
+    lines.append("")
+    
+    emoji_map = {"INFO": "ℹ️", "COMMAND": "⚡", "ERROR": "❌", "SYSTEM": "🔧", "WARNING": "⚠️"}
+    
+    for log in logs[:limit]:
+        timestamp = log["timestamp"]
+        log_type = log["type"]
+        message = log["message"]
+        username = log.get("username", "")
+        emoji = emoji_map.get(log_type, "📌")
+        user_info = f" @{username}" if username else ""
+        lines.append(f"<code>{timestamp}</code> {emoji} [{log_type}]{user_info}")
+        lines.append(f"  {message}")
+        lines.append("")
+    
+    return "\n".join(lines)
+
+def format_logs_for_copy(logs, limit=30):
+    if not logs:
+        return "Логов нет"
+    
+    lines = []
+    for log in logs[:limit]:
+        timestamp = log["timestamp"]
+        log_type = log["type"]
+        message = log["message"]
+        username = log.get("username", "")
+        user_info = f" @{username}" if username else ""
+        lines.append(f"[{timestamp}] [{log_type}]{user_info}")
+        lines.append(f"  {message}")
+        lines.append("")
+    
+    return "\n".join(lines)
+
+def get_logs_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("📋 Копировать логи", callback_data="copy_logs")],
+        [InlineKeyboardButton("🗑️ Очистить логи", callback_data="clear_logs")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def log_command(func):
+    async def wrapper(update, context):
+        user = update.effective_user
+        user_id = user.id if user else None
+        username = user.username if user else None
+        command = update.message.text if update.message else "unknown"
+        
+        log_storage = context.bot_data.get('log_storage')
+        if log_storage:
+            log_storage.add_log(
+                f"Команда: {command}",
+                "COMMAND",
+                user_id=user_id,
+                username=username
+            )
+        
+        return await func(update, context)
+    return wrapper
+''')
+    logging.info("✅ logger.py создан!")
+    
+    # Загружаем созданный модуль
+    logger = load_module_from_file(logger_path, "logger")
+    LogStorage = logger.LogStorage
+    format_logs_for_display = logger.format_logs_for_display
+    format_logs_for_copy = logger.format_logs_for_copy
+    get_logs_keyboard = logger.get_logs_keyboard
+    log_command = logger.log_command
 
 # Токен бота
 TOKEN = os.getenv("TELEGRAM_TOKEN_BOT")
