@@ -1,8 +1,12 @@
 import os
 import logging
+import asyncio
+import threading
+import time
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from camoufox.sync_api import Camoufox
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -13,6 +17,41 @@ TOKEN = os.getenv("TELEGRAM_TOKEN_BOT")
 if not TOKEN:
     logging.error("❌ TELEGRAM_TOKEN_BOT не найден!")
     raise ValueError("Добавьте TELEGRAM_TOKEN_BOT в переменные Railway")
+
+# ============= ГЛОБАЛЬНЫЙ БРАУЗЕР =============
+browser_instance = None
+browser_lock = threading.Lock()
+
+def init_browser():
+    """Инициализация браузера в отдельном потоке"""
+    global browser_instance
+    with browser_lock:
+        if browser_instance is None:
+            logging.info("🔄 Запуск Camoufox...")
+            try:
+                browser_instance = Camoufox(
+                    headless=False,  # Важно: False для обхода детекции
+                    display=":99",
+                    window_size=(1024, 768),
+                    preferences={
+                        "dom.ipc.processCount": 1,
+                        "extensions.enabledScopes": 0,
+                        "media.webspeech.enabled": False,
+                    }
+                )
+                # Открываем браузер, но не закрываем
+                browser_instance.contexts  # Инициализация
+                logging.info("✅ Camoufox запущен!")
+            except Exception as e:
+                logging.error(f"❌ Ошибка запуска Camoufox: {e}")
+                browser_instance = None
+
+def get_browser():
+    """Получить экземпляр браузера (создать если нет)"""
+    global browser_instance
+    if browser_instance is None:
+        init_browser()
+    return browser_instance
 
 # ============= ЛОГГЕР =============
 class LogStorage:
@@ -52,7 +91,8 @@ def format_logs_for_window(logs, limit=30):
         "COMMAND": "⚡", 
         "ERROR": "❌", 
         "SYSTEM": "🔧", 
-        "WARNING": "⚠️"
+        "WARNING": "⚠️",
+        "BROWSER": "🌐"
     }
     
     for log in logs[:limit]:
@@ -93,7 +133,8 @@ def format_logs_clean(logs, limit=30):
 def get_logs_keyboard():
     keyboard = [
         [InlineKeyboardButton("📋 Копировать логи", callback_data="copy_logs")],
-        [InlineKeyboardButton("🗑️ Очистить логи", callback_data="clear_logs")]
+        [InlineKeyboardButton("🗑️ Очистить логи", callback_data="clear_logs")],
+        [InlineKeyboardButton("🌐 Открыть сайт", callback_data="open_site")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -125,8 +166,11 @@ log_storage = LogStorage()
 @log_command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
+        "🖥️ <b>Stealth Browser Bot</b>\n\n"
         "📋 /logs  – показать логи\n"
-        "🗑️ /clear – очистить логи",
+        "🗑️ /clear – очистить логи\n"
+        "🌐 /browser – управление браузером\n\n"
+        "⚡ Браузер запускается автоматически при первой команде",
         parse_mode="HTML"
     )
 
@@ -166,6 +210,21 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_storage.clear_logs()
     await update.message.reply_text("🗑️ Логи очищены ✅", parse_mode="HTML")
 
+# Команда /browser - управление браузером
+@log_command
+async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🌐 <b>Управление браузером</b>\n\n"
+        "Браузер запускается в фоне.\n"
+        "Используйте кнопки для управления:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Проверить статус", callback_data="browser_status")],
+            [InlineKeyboardButton("🔄 Перезапустить", callback_data="browser_restart")],
+            [InlineKeyboardButton("📸 Сделать скриншот", callback_data="browser_screenshot")]
+        ])
+    )
+
 # Обработчики кнопок
 async def copy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -191,7 +250,115 @@ async def clear_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.message.edit_text("🗑️ Логи очищены ✅", parse_mode="HTML")
     await query.answer("✅ Очищено!")
 
+async def open_site_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Открыть сайт в браузере"""
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        browser = get_browser()
+        if browser is None:
+            await query.message.reply_text("❌ Браузер не запущен!", parse_mode="HTML")
+            return
+        
+        # Открываем страницу
+        page = browser.new_page()
+        page.goto("https://example.com")
+        page.screenshot(path="screenshot.png")
+        
+        log_storage.add_log("Открыт сайт example.com", "BROWSER")
+        await query.message.reply_text("✅ Сайт открыт! Скриншот сохранен.", parse_mode="HTML")
+        
+    except Exception as e:
+        await query.message.reply_text(f"❌ Ошибка: {str(e)}", parse_mode="HTML")
+        log_storage.add_log(f"Ошибка открытия сайта: {str(e)}", "ERROR")
+
+async def browser_status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Проверка статуса браузера"""
+    query = update.callback_query
+    await query.answer()
+    
+    global browser_instance
+    if browser_instance is not None:
+        await query.message.reply_text("✅ Браузер запущен и работает", parse_mode="HTML")
+    else:
+        await query.message.reply_text("❌ Браузер не запущен. Инициализация...", parse_mode="HTML")
+        init_browser()
+        if browser_instance is not None:
+            await query.message.reply_text("✅ Браузер успешно запущен!", parse_mode="HTML")
+
+async def browser_restart_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Перезапуск браузера"""
+    query = update.callback_query
+    await query.answer()
+    
+    global browser_instance
+    await query.message.reply_text("🔄 Перезапуск браузера...", parse_mode="HTML")
+    
+    if browser_instance:
+        try:
+            browser_instance.close()
+        except:
+            pass
+        browser_instance = None
+    
+    init_browser()
+    
+    if browser_instance is not None:
+        await query.message.reply_text("✅ Браузер перезапущен!", parse_mode="HTML")
+        log_storage.add_log("Браузер перезапущен", "SYSTEM")
+    else:
+        await query.message.reply_text("❌ Ошибка перезапуска!", parse_mode="HTML")
+
+async def browser_screenshot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сделать скриншот"""
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        browser = get_browser()
+        if browser is None:
+            await query.message.reply_text("❌ Браузер не запущен!", parse_mode="HTML")
+            return
+        
+        page = browser.new_page()
+        page.goto("https://example.com")
+        screenshot = page.screenshot(full_page=True)
+        
+        # Отправляем скриншот в Telegram
+        from io import BytesIO
+        photo = BytesIO(screenshot)
+        photo.name = "screenshot.png"
+        
+        await query.message.reply_photo(
+            photo=photo,
+            caption="📸 Скриншот страницы example.com"
+        )
+        
+        log_storage.add_log("Сделан скриншот", "BROWSER")
+        
+    except Exception as e:
+        await query.message.reply_text(f"❌ Ошибка: {str(e)}", parse_mode="HTML")
+        log_storage.add_log(f"Ошибка скриншота: {str(e)}", "ERROR")
+
+def start_browser_thread():
+    """Запуск браузера в фоновом потоке"""
+    def run_browser():
+        logging.info("🔄 Фоновый поток браузера запущен")
+        browser = get_browser()
+        if browser:
+            logging.info("✅ Браузер инициализирован в фоне")
+        while True:
+            time.sleep(60)  # Держим поток живым
+    
+    thread = threading.Thread(target=run_browser, daemon=True)
+    thread.start()
+    logging.info("✅ Фоновый поток запущен")
+
 def main():
+    # Запускаем браузер в фоне при старте
+    start_browser_thread()
+    
     app = Application.builder().token(TOKEN).build()
     
     app.bot_data['log_storage'] = log_storage
@@ -199,14 +366,19 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("logs", logs_command))
     app.add_handler(CommandHandler("clear", clear_command))
+    app.add_handler(CommandHandler("browser", browser_command))
     
     app.add_handler(CallbackQueryHandler(copy_callback, pattern="copy_logs"))
     app.add_handler(CallbackQueryHandler(clear_callback, pattern="clear_logs"))
+    app.add_handler(CallbackQueryHandler(open_site_callback, pattern="open_site"))
+    app.add_handler(CallbackQueryHandler(browser_status_callback, pattern="browser_status"))
+    app.add_handler(CallbackQueryHandler(browser_restart_callback, pattern="browser_restart"))
+    app.add_handler(CallbackQueryHandler(browser_screenshot_callback, pattern="browser_screenshot"))
     
-    log_storage.add_log("Бот запущен", "SYSTEM")
+    log_storage.add_log("Бот запущен с Camoufox", "SYSTEM")
     logging.info("🚀 Бот запускается в режиме polling...")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
-    main() 
+    main()
