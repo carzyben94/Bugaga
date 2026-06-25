@@ -1,5 +1,5 @@
 import os
-import logging 
+import logging
 import asyncio
 import threading
 import time
@@ -53,6 +53,7 @@ async def init_browser():
                 browser_instance = await nd.start(
                     headless=False,  # False для лучшей маскировки
                     window_size=(1024, 768),
+                    browser_executable_path='/usr/bin/google-chrome',  # Явно указываем путь к Chrome
                     arguments=[
                         '--no-sandbox',
                         '--disable-setuid-sandbox',
@@ -239,7 +240,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🌐 /browser – управление браузером\n\n"
         f"⚡ Браузер: {status}\n"
         f"🛡️ Защита: Nodriver (Stealth)\n\n"
-        f"<i>Nodriver автоматически скачивает Chromium при первом запуске</i>",
+        f"<i>Nodriver использует Chrome для обхода защиты</i>",
         parse_mode="HTML"
     )
 
