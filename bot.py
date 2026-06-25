@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Telegram-бот для управления CloakBrowser + Playwright + Xvfb
+С интеграцией Railway API для сбора логов
 Автоматически устанавливает все зависимости при первом запуске
 """
 
@@ -12,7 +13,11 @@ import asyncio
 import logging
 import tempfile
 import shutil
+import json
+import requests
+from datetime import datetime
 from pathlib import Path
+from typing import List, Dict, Optional
 
 # ===== АВТОУСТАНОВЩИК =====
 
@@ -32,6 +37,7 @@ def install_dependencies():
         "playwright>=1.56.0",
         "cloakbrowser>=0.1.0",
         "python-dotenv>=1.0.0",
+        "requests>=2.31.0",
     ]
     
     for pkg in packages:
@@ -88,12 +94,176 @@ PROXY_URL = os.environ.get('PROXY_URL', '')
 HEADLESS = os.environ.get('HEADLESS', 'false').lower() == 'true'
 DISPLAY = os.environ.get('DISPLAY', ':99')
 
+# Настройки Railway API
+RAILWAY_API_KEY = os.environ.get('RAILWAY_API_KEY', '')
+RAILWAY_PROJECT_ID = os.environ.get('RAILWAY_PROJECT_ID', '')
+RAILWAY_SERVICE_ID = os.environ.get('RAILWAY_SERVICE_ID', '')
+RAILWAY_ENVIRONMENT_ID = os.environ.get('RAILWAY_ENVIRONMENT_ID', '')
+
 # Логирование
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# ===== RAILWAY API КЛИЕНТ =====
+
+class RailwayAPIClient:
+    """Клиент для работы с Railway API"""
+    
+    BASE_URL = "https://railway.app/api/v2"
+    
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        self.session = requests.Session()
+        self.session.headers.update(self.headers)
+    
+    def get_project_logs(self, project_id: str, service_id: str = None, 
+                         environment_id: str = None, limit: int = 100) -> Optional[List[Dict]]:
+        """
+        Получить логи проекта из Railway
+        
+        Args:
+            project_id: ID проекта
+            service_id: ID сервиса (опционально)
+            environment_id: ID окружения (опционально)
+            limit: Количество последних записей
+            
+        Returns:
+            Список логов или None при ошибке
+        """
+        try:
+            # Формируем запрос к GraphQL API Railway
+            query = """
+            query GetDeployments($projectId: String!, $limit: Int!) {
+                deployments(projectId: $projectId, first: $limit) {
+                    edges {
+                        node {
+                            id
+                            status
+                            createdAt
+                            logs {
+                                edges {
+                                    node {
+                                        message
+                                        timestamp
+                                        level
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            """
+            
+            variables = {
+                "projectId": project_id,
+                "limit": limit
+            }
+            
+            response = self.session.post(
+                f"{self.BASE_URL}/graphql",
+                json={"query": query, "variables": variables}
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                logs = []
+                
+                # Извлекаем логи из ответа
+                for deployment in data.get("data", {}).get("deployments", {}).get("edges", []):
+                    deployment_node = deployment.get("node", {})
+                    logs_data = deployment_node.get("logs", {}).get("edges", [])
+                    
+                    for log_edge in logs_data:
+                        log_node = log_edge.get("node", {})
+                        logs.append({
+                            "message": log_node.get("message", ""),
+                            "timestamp": log_node.get("timestamp", ""),
+                            "level": log_node.get("level", "INFO"),
+                            "deployment_id": deployment_node.get("id", ""),
+                            "deployment_status": deployment_node.get("status", "")
+                        })
+                
+                return logs[-limit:] if logs else []
+            
+            logger.error(f"Ошибка получения логов: {response.status_code} - {response.text}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Исключение при получении логов: {e}")
+            return None
+    
+    def get_recent_logs(self, limit: int = 50) -> Optional[List[Dict]]:
+        """
+        Получить последние логи для текущего сервиса
+        
+        Args:
+            limit: Количество записей
+            
+        Returns:
+            Список логов
+        """
+        if not RAILWAY_SERVICE_ID:
+            # Если нет service_id, получаем логи всего проекта
+            return self.get_project_logs(RAILWAY_PROJECT_ID, limit=limit)
+        
+        try:
+            # Используем REST API для получения логов сервиса
+            url = f"{self.BASE_URL}/projects/{RAILWAY_PROJECT_ID}/services/{RAILWAY_SERVICE_ID}/logs"
+            if RAILWAY_ENVIRONMENT_ID:
+                url += f"?environmentId={RAILWAY_ENVIRONMENT_ID}"
+            
+            response = self.session.get(url, params={"limit": limit})
+            
+            if response.status_code == 200:
+                logs = response.json()
+                return logs.get("logs", [])[-limit:] if logs else []
+            
+            # Fallback: используем GraphQL
+            return self.get_project_logs(RAILWAY_PROJECT_ID, RAILWAY_SERVICE_ID, limit=limit)
+            
+        except Exception as e:
+            logger.error(f"Ошибка получения логов сервиса: {e}")
+            # Fallback к получению логов проекта
+            return self.get_project_logs(RAILWAY_PROJECT_ID, limit=limit)
+    
+    def get_service_status(self) -> Optional[Dict]:
+        """Получить статус сервиса"""
+        if not RAILWAY_SERVICE_ID:
+            return None
+        
+        try:
+            url = f"{self.BASE_URL}/projects/{RAILWAY_PROJECT_ID}/services/{RAILWAY_SERVICE_ID}"
+            response = self.session.get(url)
+            
+            if response.status_code == 200:
+                return response.json()
+            
+            return None
+        except Exception as e:
+            logger.error(f"Ошибка получения статуса: {e}")
+            return None
+    
+    def restart_service(self) -> bool:
+        """Перезапустить сервис на Railway"""
+        if not RAILWAY_SERVICE_ID:
+            return False
+        
+        try:
+            url = f"{self.BASE_URL}/projects/{RAILWAY_PROJECT_ID}/services/{RAILWAY_SERVICE_ID}/restart"
+            response = self.session.post(url)
+            
+            return response.status_code == 200
+        except Exception as e:
+            logger.error(f"Ошибка перезапуска сервиса: {e}")
+            return False
 
 # ===== БРАУЗЕРНАЯ ЛОГИКА =====
 
@@ -164,7 +334,123 @@ async def check_status():
     else:
         status.append("🖥️ Xvfb: ❌ не найден")
     
+    # Проверяем Railway API
+    if RAILWAY_API_KEY:
+        status.append("🚂 Railway API: ✅ подключен")
+        status.append(f"📦 Проект: {RAILWAY_PROJECT_ID or 'не указан'}")
+    else:
+        status.append("🚂 Railway API: ❌ не настроен")
+    
     return "\n".join(status)
+
+# ===== ФУНКЦИИ ДЛЯ РАБОТЫ С ЛОГАМИ =====
+
+def format_logs(logs: List[Dict], limit: int = 20) -> str:
+    """Форматирует логи для отображения в Telegram"""
+    if not logs:
+        return "📭 Логи не найдены"
+    
+    formatted = ["📋 *Последние логи Railway:*\n"]
+    formatted.append(f"📊 Всего записей: {len(logs)}\n")
+    
+    # Берем последние limit записей
+    recent_logs = logs[-limit:]
+    
+    for i, log in enumerate(recent_logs, 1):
+        timestamp = log.get('timestamp', '')
+        if timestamp:
+            try:
+                dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                timestamp = dt.strftime('%H:%M:%S')
+            except:
+                timestamp = timestamp[:8]
+        
+        level = log.get('level', 'INFO')
+        message = log.get('message', '')
+        
+        # Эмодзи для уровня лога
+        level_emoji = {
+            'ERROR': '❌',
+            'WARNING': '⚠️',
+            'INFO': 'ℹ️',
+            'DEBUG': '🔍'
+        }.get(level, '📝')
+        
+        # Обрезаем длинные сообщения
+        if len(message) > 100:
+            message = message[:97] + '...'
+        
+        formatted.append(
+            f"{i}. {level_emoji} `{timestamp}` {level}: {message}"
+        )
+    
+    # Если слишком много текста, отправляем частями
+    return "\n".join(formatted)
+
+async def get_railway_logs(context: ContextTypes.DEFAULT_TYPE, limit: int = 50) -> str:
+    """Получить логи из Railway API"""
+    if not RAILWAY_API_KEY or not RAILWAY_PROJECT_ID:
+        return "❌ Railway API не настроен. Установите переменные:\nRAILWAY_API_KEY\nRAILWAY_PROJECT_ID"
+    
+    try:
+        client = RailwayAPIClient(RAILWAY_API_KEY)
+        logs = client.get_recent_logs(limit=limit)
+        
+        if logs is None:
+            return "❌ Ошибка получения логов из Railway API"
+        
+        if not logs:
+            return "📭 Логи не найдены"
+        
+        return format_logs(logs, limit=min(limit, 20))
+        
+    except Exception as e:
+        logger.error(f"Ошибка получения логов: {e}")
+        return f"❌ Ошибка: {str(e)[:200]}"
+
+async def get_service_status_text() -> str:
+    """Получить статус сервиса Railway"""
+    if not RAILWAY_API_KEY or not RAILWAY_PROJECT_ID:
+        return "❌ Railway API не настроен"
+    
+    try:
+        client = RailwayAPIClient(RAILWAY_API_KEY)
+        status = client.get_service_status()
+        
+        if not status:
+            return "❌ Не удалось получить статус сервиса"
+        
+        lines = [
+            "🚂 *Статус сервиса Railway*",
+            f"📊 Статус: {status.get('status', 'Неизвестно')}",
+            f"🔄 Реплики: {status.get('replicas', 0)}",
+            f"📦 Память: {status.get('memory', 'N/A')}",
+            f"💾 CPU: {status.get('cpu', 'N/A')}",
+        ]
+        
+        return "\n".join(lines)
+        
+    except Exception as e:
+        logger.error(f"Ошибка получения статуса: {e}")
+        return f"❌ Ошибка: {str(e)[:200]}"
+
+async def restart_railway_service() -> str:
+    """Перезапустить сервис на Railway"""
+    if not RAILWAY_API_KEY or not RAILWAY_SERVICE_ID:
+        return "❌ Railway API не настроен или не указан SERVICE_ID"
+    
+    try:
+        client = RailwayAPIClient(RAILWAY_API_KEY)
+        success = client.restart_service()
+        
+        if success:
+            return "✅ Сервис успешно перезапущен"
+        else:
+            return "❌ Не удалось перезапустить сервис"
+            
+    except Exception as e:
+        logger.error(f"Ошибка перезапуска: {e}")
+        return f"❌ Ошибка: {str(e)[:200]}"
 
 # ===== КОМАНДЫ ТЕЛЕГРАМ =====
 
@@ -173,13 +459,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🌐 Открыть X.com", callback_data='open_x')],
         [InlineKeyboardButton("📸 Сделать скриншот", callback_data='screenshot')],
-        [InlineKeyboardButton("🔄 Проверить статус", callback_data='status')],
-        [InlineKeyboardButton("📊 Помощь", callback_data='help')],
+        [InlineKeyboardButton("📊 Статус системы", callback_data='status')],
+        [InlineKeyboardButton("📋 Логи Railway", callback_data='logs')],
+        [InlineKeyboardButton("🚂 Статус Railway", callback_data='railway_status')],
+        [InlineKeyboardButton("🔄 Перезапустить сервис", callback_data='restart_service')],
+        [InlineKeyboardButton("📖 Помощь", callback_data='help')],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "🤖 *Бот управления браузером*\n\n"
+        "🤖 *Бот управления браузером + Railway*\n\n"
         "Стек: Playwright + CloakBrowser + Xvfb\n"
+        "Интеграция: Railway API для мониторинга\n\n"
         "Выберите действие:",
         reply_markup=reply_markup,
         parse_mode='Markdown'
@@ -204,7 +494,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("✅ Скриншот готов!")
             with open(screenshot_path, 'rb') as photo:
                 await query.message.reply_photo(photo=photo)
-            os.unlink(screenshot_path)  # Удаляем временный файл
+            os.unlink(screenshot_path)
         else:
             await query.edit_message_text("❌ Не удалось сделать скриншот")
     
@@ -212,19 +502,74 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_text = await check_status()
         await query.edit_message_text(f"📊 *Статус системы*\n\n{status_text}", parse_mode='Markdown')
     
+    elif data == 'logs':
+        await query.edit_message_text("⏳ Получаю логи из Railway...")
+        logs_text = await get_railway_logs(context, limit=50)
+        
+        # Если текст слишком длинный, отправляем по частям
+        if len(logs_text) > 4000:
+            # Отправляем первые строки
+            await query.edit_message_text(logs_text[:4000])
+            # Отправляем остаток новым сообщением
+            await query.message.reply_text(logs_text[4000:8000])
+        else:
+            await query.edit_message_text(logs_text, parse_mode='Markdown')
+    
+    elif data == 'railway_status':
+        await query.edit_message_text("⏳ Получаю статус...")
+        status_text = await get_service_status_text()
+        await query.edit_message_text(status_text, parse_mode='Markdown')
+    
+    elif data == 'restart_service':
+        # Подтверждение перезапуска
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Да, перезапустить", callback_data='confirm_restart'),
+                InlineKeyboardButton("❌ Отмена", callback_data='cancel_restart')
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "⚠️ *Подтверждение перезапуска*\n\n"
+            "Вы действительно хотите перезапустить сервис на Railway?\n"
+            "Это может занять несколько минут.",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+    
+    elif data == 'confirm_restart':
+        await query.edit_message_text("🔄 Перезапускаю сервис...")
+        result = await restart_railway_service()
+        await query.edit_message_text(result)
+    
+    elif data == 'cancel_restart':
+        await query.edit_message_text("❌ Перезапуск отменен")
+    
     elif data == 'help':
         help_text = """
 📖 *Помощь*
 
-*Команды:*
+*Основные команды:*
 /start - Главное меню
 /status - Статус системы
+/logs - Получить логи из Railway
+/railway - Статус сервиса Railway
+/restart - Перезапустить сервис
 
 *Кнопки:*
 🌐 Открыть X.com - проверяет доступность
 📸 Сделать скриншот - фото главной страницы
+📋 Логи Railway - последние логи сервиса
+🚂 Статус Railway - информация о сервисе
+🔄 Перезапустить сервис - перезапуск на Railway
 
-*Настройка:*
+*Настройка Railway:*
+• RAILWAY_API_KEY - API ключ
+• RAILWAY_PROJECT_ID - ID проекта
+• RAILWAY_SERVICE_ID - ID сервиса (опционально)
+• RAILWAY_ENVIRONMENT_ID - ID окружения (опционально)
+
+*Настройка бота:*
 • TELEGRAM_BOT_TOKEN - токен бота
 • PROXY_URL - прокси (опционально)
 • HEADLESS - true/false (по умолчанию false)
@@ -232,6 +577,37 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 *Стек:* Playwright + CloakBrowser + Xvfb
         """
         await query.edit_message_text(help_text, parse_mode='Markdown')
+
+# ===== ДОПОЛНИТЕЛЬНЫЕ КОМАНДЫ =====
+
+async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для получения логов"""
+    await update.message.reply_text("⏳ Получаю логи из Railway...")
+    logs_text = await get_railway_logs(context, limit=50)
+    await update.message.reply_text(logs_text, parse_mode='Markdown')
+
+async def railway_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для получения статуса Railway"""
+    await update.message.reply_text("⏳ Получаю статус...")
+    status_text = await get_service_status_text()
+    await update.message.reply_text(status_text, parse_mode='Markdown')
+
+async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для перезапуска сервиса"""
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Да, перезапустить", callback_data='confirm_restart'),
+            InlineKeyboardButton("❌ Отмена", callback_data='cancel_restart')
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "⚠️ *Подтверждение перезапуска*\n\n"
+        "Вы действительно хотите перезапустить сервис на Railway?\n"
+        "Это может занять несколько минут.",
+        parse_mode='Markdown',
+        reply_markup=reply_markup
+    )
 
 # ===== ОБРАБОТЧИК ОШИБОК =====
 
@@ -249,15 +625,24 @@ def main():
     """Основная функция запуска"""
     app = Application.builder().token(TOKEN).build()
     
-    # Регистрируем обработчики
+    # Регистрируем обработчики команд
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("logs", logs_command))
+    app.add_handler(CommandHandler("railway", railway_command))
+    app.add_handler(CommandHandler("restart", restart_command))
+    app.add_handler(CommandHandler("status", start))  # Перенаправляем на меню
+    
+    # Регистрируем обработчик кнопок
     app.add_handler(CallbackQueryHandler(button_handler))
+    
+    # Регистрируем обработчик ошибок
     app.add_error_handler(error_handler)
     
     logger.info("🚀 Бот запущен!")
     logger.info(f"🔑 Токен: {TOKEN[:10]}...")
     logger.info(f"🖥️ Headless: {HEADLESS}")
     logger.info(f"🔌 Proxy: {'✅' if PROXY_URL else '❌'}")
+    logger.info(f"🚂 Railway API: {'✅' if RAILWAY_API_KEY else '❌'}")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
