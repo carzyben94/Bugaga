@@ -1,10 +1,12 @@
 import os
 import logging
 import asyncio
+import threading
+import time
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-from camoufox.async_api import Camoufox  # <-- Асинхронная версия
+from camoufox.sync_api import Camoufox
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -16,18 +18,19 @@ if not TOKEN:
     logging.error("❌ TELEGRAM_TOKEN_BOT не найден!")
     raise ValueError("Добавьте TELEGRAM_TOKEN_BOT в переменные Railway")
 
-# ============= ГЛОБАЛЬНЫЙ БРАУЗЕР =============
+# ============= ГЛОБАЛЬНЫЙ БРАУЗЕР (Синхронный Camoufox в потоке) =============
 browser_instance = None
-browser_lock = asyncio.Lock()
+browser_lock = threading.Lock()
+browser_thread = None
 
-async def init_browser():
-    """Инициализация браузера (асинхронная)"""
+def init_browser_sync():
+    """Инициализация браузера в отдельном потоке (синхронная)"""
     global browser_instance
-    async with browser_lock:
+    with browser_lock:
         if browser_instance is None:
-            logging.info("🔄 Запуск Camoufox...")
+            logging.info("🔄 Запуск Camoufox в отдельном потоке...")
             try:
-                browser_instance = await Camoufox(
+                browser_instance = Camoufox(
                     headless="virtual",
                     window_size=(1024, 768),
                     preferences={
@@ -35,7 +38,9 @@ async def init_browser():
                         "extensions.enabledScopes": 0,
                         "media.webspeech.enabled": False,
                     }
-                ).__aenter__()  # <-- Асинхронный вход
+                )
+                # Вход в контекст
+                browser_instance.__enter__()
                 logging.info("✅ Camoufox запущен!")
                 return True
             except Exception as e:
@@ -44,25 +49,39 @@ async def init_browser():
                 return False
     return False
 
-async def get_browser():
-    """Получить экземпляр браузера"""
+def get_browser_sync():
+    """Получить экземпляр браузера (синхронно)"""
     global browser_instance
     if browser_instance is None:
-        await init_browser()
+        init_browser_sync()
     return browser_instance
 
-async def create_page():
-    """Создать новую страницу (асинхронно)"""
-    browser = await get_browser()
+def create_page_sync():
+    """Создать новую страницу (синхронно)"""
+    browser = get_browser_sync()
     if browser is None:
         return None
-    
     try:
-        page = await browser.new_page()
-        return page
+        return browser.new_page()
     except Exception as e:
         logging.error(f"❌ Ошибка создания страницы: {e}")
         return None
+
+# Асинхронные обертки для Telegram
+async def init_browser():
+    """Асинхронная обертка для инициализации браузера"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, init_browser_sync)
+
+async def get_browser():
+    """Асинхронная обертка для получения браузера"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, get_browser_sync)
+
+async def create_page():
+    """Асинхронная обертка для создания страницы"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, create_page_sync)
 
 # ============= ЛОГГЕР =============
 class LogStorage:
@@ -91,12 +110,10 @@ class LogStorage:
         self.add_log("Логи очищены", "SYSTEM")
 
 def format_logs_for_window(logs, limit=30):
-    """Форматирует логи для отдельного окна с прокруткой"""
     if not logs:
         return "📭 Логов пока нет"
     
     lines = []
-    
     emoji_map = {
         "INFO": "ℹ️", 
         "COMMAND": "⚡", 
@@ -123,12 +140,10 @@ def format_logs_for_window(logs, limit=30):
     return "\n".join(lines)
 
 def format_logs_clean(logs, limit=30):
-    """Чистый текст для копирования"""
     if not logs:
         return "Логов нет"
     
     lines = []
-    
     for log in logs[:limit]:
         timestamp = log["timestamp"]
         log_type = log["type"]
@@ -170,7 +185,6 @@ def log_command(func):
 
 # ===================================
 
-# Создаём хранилище логов
 log_storage = LogStorage()
 
 # Команда /start
@@ -221,12 +235,11 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_storage.clear_logs()
     await update.message.reply_text("🗑️ Логи очищены ✅", parse_mode="HTML")
 
-# Команда /browser - управление браузером
+# Команда /browser
 @log_command
 async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🌐 <b>Управление браузером</b>\n\n"
-        "Браузер запускается в фоне.\n"
         "Используйте кнопки для управления:",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
@@ -272,9 +285,16 @@ async def open_site_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await query.message.reply_text("❌ Не удалось создать страницу!", parse_mode="HTML")
             return
         
-        await page.goto("https://example.com")
-        await page.screenshot(path="screenshot.png")
-        await page.close()
+        # Все операции с page выполняются синхронно в потоке
+        loop = asyncio.get_event_loop()
+        
+        def do_browser_actions():
+            page.goto("https://example.com")
+            page.screenshot(path="screenshot.png")
+            page.close()
+            return True
+        
+        await loop.run_in_executor(None, do_browser_actions)
         
         log_storage.add_log("Открыт сайт example.com", "BROWSER")
         await query.message.reply_text("✅ Сайт открыт! Скриншот сохранен.", parse_mode="HTML")
@@ -309,7 +329,11 @@ async def browser_restart_callback(update: Update, context: ContextTypes.DEFAULT
     
     if browser_instance:
         try:
-            await browser_instance.__aexit__(None, None, None)
+            # Закрываем в отдельном потоке
+            def close_browser():
+                browser_instance.__exit__(None, None, None)
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, close_browser)
         except:
             pass
         browser_instance = None
@@ -333,9 +357,15 @@ async def browser_screenshot_callback(update: Update, context: ContextTypes.DEFA
             await query.message.reply_text("❌ Не удалось создать страницу!", parse_mode="HTML")
             return
         
-        await page.goto("https://example.com")
-        screenshot = await page.screenshot(full_page=True)
-        await page.close()
+        loop = asyncio.get_event_loop()
+        
+        def do_screenshot():
+            page.goto("https://example.com")
+            screenshot = page.screenshot(full_page=True)
+            page.close()
+            return screenshot
+        
+        screenshot = await loop.run_in_executor(None, do_screenshot)
         
         # Отправляем скриншот в Telegram
         from io import BytesIO
@@ -360,15 +390,23 @@ async def start_browser_background():
     logging.info("✅ Фоновый запуск браузера завершен")
 
 def main():
-    # Создаем event loop для фоновых задач
+    # Создаем event loop
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
     # Запускаем браузер в фоне
     loop.run_until_complete(start_browser_background())
     
-    app = Application.builder().token(TOKEN).build()
+    # Сброс webhook перед запуском
+    async def reset_webhook():
+        app = Application.builder().token(TOKEN).build()
+        await app.bot.delete_webhook(drop_pending_updates=True)
+        await app.initialize()
+        await app.shutdown()
     
+    loop.run_until_complete(reset_webhook())
+    
+    app = Application.builder().token(TOKEN).build()
     app.bot_data['log_storage'] = log_storage
     
     app.add_handler(CommandHandler("start", start))
@@ -383,7 +421,7 @@ def main():
     app.add_handler(CallbackQueryHandler(browser_restart_callback, pattern="browser_restart"))
     app.add_handler(CallbackQueryHandler(browser_screenshot_callback, pattern="browser_screenshot"))
     
-    log_storage.add_log("Бот запущен с Camoufox (async)", "SYSTEM")
+    log_storage.add_log("Бот запущен с Camoufox", "SYSTEM")
     logging.info("🚀 Бот запускается в режиме polling...")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
