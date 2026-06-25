@@ -3,6 +3,8 @@ import logging
 import asyncio
 import threading
 import time
+import subprocess
+import sys
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
@@ -17,6 +19,53 @@ if not TOKEN:
     logging.error("❌ TELEGRAM_TOKEN_BOT не найден!")
     raise ValueError("Добавьте TELEGRAM_TOKEN_BOT в переменные Railway")
 
+# ============= УСТАНОВКА БРАУЗЕРА =============
+def install_browser():
+    """Установка браузера Camoufox"""
+    logging.info("🔄 Проверка и установка браузера Camoufox...")
+    try:
+        # Пробуем импортировать Camoufox
+        from camoufox.sync_api import Camoufox
+        logging.info("✅ Camoufox уже установлен")
+        
+        # Пробуем создать тестовую страницу
+        try:
+            with Camoufox(headless=True) as test_browser:
+                test_page = test_browser.new_page()
+                test_page.close()
+            logging.info("✅ Браузер уже установлен и работает!")
+            return True
+        except Exception as e:
+            logging.warning(f"⚠️ Браузер не работает: {e}")
+            logging.info("🔄 Устанавливаем браузер...")
+            
+            # Устанавливаем браузер через командную строку
+            result = subprocess.run(
+                [sys.executable, "-m", "camoufox", "fetch"],
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode == 0:
+                logging.info("✅ Браузер успешно установлен!")
+                return True
+            else:
+                logging.error(f"❌ Ошибка установки: {result.stderr}")
+                return False
+                
+    except ImportError:
+        logging.error("❌ Camoufox не установлен! Установите: pip install camoufox[geoip]")
+        return False
+    except Exception as e:
+        logging.error(f"❌ Ошибка установки браузера: {e}")
+        return False
+
+# Устанавливаем браузер при запуске
+BROWSER_INSTALLED = install_browser()
+
+if not BROWSER_INSTALLED:
+    logging.warning("⚠️ Браузер не установлен! Функции браузера могут не работать.")
+
 # ============= ГЛОБАЛЬНЫЙ БРАУЗЕР =============
 browser_instance = None
 browser_lock = threading.Lock()
@@ -25,6 +74,11 @@ browser_initialized = False
 def init_browser_sync():
     """Инициализация браузера по документации Camoufox 0.4.11"""
     global browser_instance, browser_initialized
+    
+    if not BROWSER_INSTALLED:
+        logging.error("❌ Браузер не установлен! Запустите /install_browser")
+        return False
+    
     with browser_lock:
         if browser_instance is None and not browser_initialized:
             logging.info("🔄 Запуск Camoufox...")
@@ -65,13 +119,12 @@ def get_browser_sync():
     return browser_instance
 
 def create_page_sync():
-    """Создать новую страницу (по документации Camoufox)"""
+    """Создать новую страницу"""
     browser = get_browser_sync()
     if browser is None:
         logging.error("❌ Браузер не инициализирован")
         return None
     try:
-        # ПО ДОКУМЕНТАЦИИ: используем new_page()
         page = browser.new_page()
         logging.info("✅ Страница создана!")
         return page
@@ -182,7 +235,8 @@ def get_browser_keyboard():
         [InlineKeyboardButton("🌐 Открыть сайт", callback_data="open_site")],
         [InlineKeyboardButton("✅ Проверить статус", callback_data="browser_status")],
         [InlineKeyboardButton("🔄 Перезапустить", callback_data="browser_restart")],
-        [InlineKeyboardButton("📸 Сделать скриншот", callback_data="browser_screenshot")]
+        [InlineKeyboardButton("📸 Сделать скриншот", callback_data="browser_screenshot")],
+        [InlineKeyboardButton("📥 Установить браузер", callback_data="install_browser")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -213,14 +267,33 @@ log_storage = LogStorage()
 
 @log_command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status = "✅" if BROWSER_INSTALLED else "❌"
     await update.message.reply_text(
-        "🖥️ <b>Stealth Browser Bot</b>\n\n"
-        "📋 /logs  – показать логи\n"
-        "🗑️ /clear – очистить логи\n"
-        "🌐 /browser – управление браузером\n\n"
-        "⚡ Браузер запускается автоматически при первой команде",
+        f"🖥️ <b>Stealth Browser Bot</b>\n\n"
+        f"📋 /logs  – показать логи\n"
+        f"🗑️ /clear – очистить логи\n"
+        f"🌐 /browser – управление браузером\n"
+        f"📥 /install_browser – установить браузер\n\n"
+        f"⚡ Браузер: {status}\n\n"
+        f"<i>Если браузер не работает, нажмите /install_browser</i>",
         parse_mode="HTML"
     )
+
+@log_command
+async def install_browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для установки браузера"""
+    status_msg = await update.message.reply_text("⏳ Установка браузера...", parse_mode="HTML")
+    
+    loop = asyncio.get_event_loop()
+    success = await loop.run_in_executor(None, install_browser)
+    
+    if success:
+        global BROWSER_INSTALLED
+        BROWSER_INSTALLED = True
+        await status_msg.edit_text("✅ Браузер успешно установлен!", parse_mode="HTML")
+        log_storage.add_log("Браузер установлен по команде /install_browser", "SYSTEM")
+    else:
+        await status_msg.edit_text("❌ Ошибка установки браузера! Проверьте логи.", parse_mode="HTML")
 
 @log_command
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -265,7 +338,25 @@ async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=get_browser_keyboard()
     )
 
-# ============= ОБРАБОТЧИКИ =============
+# ============= ОБРАБОТЧИКИ КНОПОК =============
+
+async def install_browser_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback для установки браузера"""
+    query = update.callback_query
+    await query.answer()
+    
+    status_msg = await query.message.reply_text("⏳ Установка браузера...", parse_mode="HTML")
+    
+    loop = asyncio.get_event_loop()
+    success = await loop.run_in_executor(None, install_browser)
+    
+    if success:
+        global BROWSER_INSTALLED
+        BROWSER_INSTALLED = True
+        await status_msg.edit_text("✅ Браузер успешно установлен!", parse_mode="HTML")
+        log_storage.add_log("Браузер установлен по кнопке", "SYSTEM")
+    else:
+        await status_msg.edit_text("❌ Ошибка установки браузера! Проверьте логи.", parse_mode="HTML")
 
 async def copy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -296,6 +387,11 @@ async def browser_status_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     
     global browser_instance
+    
+    if not BROWSER_INSTALLED:
+        await query.message.reply_text("❌ Браузер не установлен! Нажмите '📥 Установить браузер'", parse_mode="HTML")
+        return
+    
     if browser_instance is not None:
         await query.message.reply_text("✅ Браузер запущен и работает", parse_mode="HTML")
     else:
@@ -312,6 +408,11 @@ async def browser_restart_callback(update: Update, context: ContextTypes.DEFAULT
     await query.answer()
     
     global browser_instance, browser_initialized
+    
+    if not BROWSER_INSTALLED:
+        await query.message.reply_text("❌ Браузер не установлен! Нажмите '📥 Установить браузер'", parse_mode="HTML")
+        return
+    
     await query.message.reply_text("🔄 Перезапуск браузера...", parse_mode="HTML")
     
     loop = asyncio.get_event_loop()
@@ -337,6 +438,10 @@ async def browser_restart_callback(update: Update, context: ContextTypes.DEFAULT
 async def browser_screenshot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    
+    if not BROWSER_INSTALLED:
+        await query.message.reply_text("❌ Браузер не установлен! Нажмите '📥 Установить браузер'", parse_mode="HTML")
+        return
     
     loop = asyncio.get_event_loop()
     
@@ -368,6 +473,10 @@ async def open_site_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     await query.answer()
     
+    if not BROWSER_INSTALLED:
+        await query.message.reply_text("❌ Браузер не установлен! Нажмите '📥 Установить браузер'", parse_mode="HTML")
+        return
+    
     context.user_data['waiting_for_url'] = True
     
     await query.message.reply_text(
@@ -383,6 +492,11 @@ async def open_site_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def handle_url_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает введенный URL"""
     if not context.user_data.get('waiting_for_url'):
+        return
+    
+    if not BROWSER_INSTALLED:
+        await update.message.reply_text("❌ Браузер не установлен! Нажмите /install_browser", parse_mode="HTML")
+        context.user_data['waiting_for_url'] = False
         return
     
     url = update.message.text.strip()
@@ -440,7 +554,8 @@ async def handle_url_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def start_browser_thread():
     def run_browser():
         logging.info("🔄 Фоновый поток браузера запущен")
-        init_browser_sync()
+        if BROWSER_INSTALLED:
+            init_browser_sync()
         while True:
             time.sleep(60)
     
@@ -467,6 +582,7 @@ def main():
     app.add_handler(CommandHandler("logs", logs_command))
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(CommandHandler("browser", browser_command))
+    app.add_handler(CommandHandler("install_browser", install_browser_command))
     
     app.add_handler(CallbackQueryHandler(copy_callback, pattern="copy_logs"))
     app.add_handler(CallbackQueryHandler(clear_callback, pattern="clear_logs"))
@@ -474,6 +590,7 @@ def main():
     app.add_handler(CallbackQueryHandler(browser_restart_callback, pattern="browser_restart"))
     app.add_handler(CallbackQueryHandler(browser_screenshot_callback, pattern="browser_screenshot"))
     app.add_handler(CallbackQueryHandler(open_site_callback, pattern="open_site"))
+    app.add_handler(CallbackQueryHandler(install_browser_callback, pattern="install_browser"))
     
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url_input))
     
