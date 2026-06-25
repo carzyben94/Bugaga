@@ -14,7 +14,6 @@ import logging
 import tempfile
 import shutil
 import json
-import requests
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional
@@ -37,21 +36,26 @@ def install_dependencies():
         "playwright>=1.56.0",
         "cloakbrowser>=0.1.0",
         "python-dotenv>=1.0.0",
-        "requests>=2.31.0",
+        "requests>=2.31.0",  # <--- ДОБАВЛЯЕМ requests
     ]
     
     for pkg in packages:
         print(f"📦 Устанавливаю {pkg}...")
-        subprocess.run(
+        result = subprocess.run(
             [sys.executable, "-m", "pip", "install", "--quiet", pkg],
-            check=False
+            check=False,
+            capture_output=True,
+            text=True
         )
+        if result.returncode != 0:
+            print(f"⚠️ Ошибка установки {pkg}: {result.stderr[:200]}")
     
     # 3. Устанавливаем Playwright браузеры
     print("🌐 Устанавливаю Playwright Chromium...")
     subprocess.run(
         [sys.executable, "-m", "playwright", "install", "chromium"],
-        check=False
+        check=False,
+        capture_output=True
     )
     
     # 4. Проверяем Xvfb (только на Linux)
@@ -76,6 +80,7 @@ try:
     from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
     from playwright.async_api import async_playwright
     from cloakbrowser import launch
+    import requests  # <--- ИМПОРТИРУЕМ requests
 except ImportError as e:
     print(f"❌ Ошибка импорта: {e}")
     print("🔄 Перезапустите скрипт для повторной установки")
@@ -100,10 +105,18 @@ RAILWAY_PROJECT_ID = os.environ.get('RAILWAY_PROJECT_ID', '')
 RAILWAY_SERVICE_ID = os.environ.get('RAILWAY_SERVICE_ID', '')
 RAILWAY_ENVIRONMENT_ID = os.environ.get('RAILWAY_ENVIRONMENT_ID', '')
 
+# Настройки логирования
+LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO')
+LOG_FILE = os.environ.get('LOG_FILE', 'bot.log')
+
 # Логирование
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(LOG_FILE)
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -138,7 +151,72 @@ class RailwayAPIClient:
             Список логов или None при ошибке
         """
         try:
-            # Формируем запрос к GraphQL API Railway
+            # Используем REST API для получения логов
+            url = f"{self.BASE_URL}/projects/{project_id}/deployments"
+            
+            # Получаем список деплоев
+            response = self.session.get(url)
+            
+            if response.status_code != 200:
+                logger.error(f"Ошибка получения деплоев: {response.status_code}")
+                return None
+            
+            deployments = response.json()
+            
+            if not deployments:
+                return []
+            
+            # Берем последний успешный деплой
+            latest_deployment = None
+            for deploy in deployments:
+                if deploy.get('status') == 'SUCCESS':
+                    latest_deployment = deploy
+                    break
+            
+            if not latest_deployment:
+                # Если нет успешных, берем последний
+                latest_deployment = deployments[0] if deployments else None
+            
+            if not latest_deployment:
+                return []
+            
+            # Получаем логи деплоя
+            deployment_id = latest_deployment.get('id')
+            logs_url = f"{self.BASE_URL}/deployments/{deployment_id}/logs"
+            
+            response = self.session.get(logs_url, params={"limit": limit})
+            
+            if response.status_code != 200:
+                logger.error(f"Ошибка получения логов: {response.status_code}")
+                # Пробуем альтернативный метод через GraphQL
+                return self._get_logs_graphql(project_id, limit)
+            
+            logs_data = response.json()
+            
+            # Форматируем логи
+            logs = []
+            for log in logs_data.get('logs', []):
+                logs.append({
+                    "message": log.get('message', ''),
+                    "timestamp": log.get('timestamp', ''),
+                    "level": log.get('level', 'INFO'),
+                    "deployment_id": deployment_id,
+                    "deployment_status": latest_deployment.get('status', '')
+                })
+            
+            return logs[-limit:] if logs else []
+            
+        except Exception as e:
+            logger.error(f"Исключение при получении логов: {e}")
+            # Пробуем GraphQL как fallback
+            try:
+                return self._get_logs_graphql(project_id, limit)
+            except:
+                return None
+    
+    def _get_logs_graphql(self, project_id: str, limit: int = 100) -> Optional[List[Dict]]:
+        """Получение логов через GraphQL API (fallback)"""
+        try:
             query = """
             query GetDeployments($projectId: String!, $limit: Int!) {
                 deployments(projectId: $projectId, first: $limit) {
@@ -176,7 +254,6 @@ class RailwayAPIClient:
                 data = response.json()
                 logs = []
                 
-                # Извлекаем логи из ответа
                 for deployment in data.get("data", {}).get("deployments", {}).get("edges", []):
                     deployment_node = deployment.get("node", {})
                     logs_data = deployment_node.get("logs", {}).get("edges", [])
@@ -193,11 +270,10 @@ class RailwayAPIClient:
                 
                 return logs[-limit:] if logs else []
             
-            logger.error(f"Ошибка получения логов: {response.status_code} - {response.text}")
             return None
             
         except Exception as e:
-            logger.error(f"Исключение при получении логов: {e}")
+            logger.error(f"Ошибка GraphQL запроса: {e}")
             return None
     
     def get_recent_logs(self, limit: int = 50) -> Optional[List[Dict]]:
@@ -210,35 +286,10 @@ class RailwayAPIClient:
         Returns:
             Список логов
         """
-        if not RAILWAY_SERVICE_ID:
-            # Если нет service_id, получаем логи всего проекта
-            return self.get_project_logs(RAILWAY_PROJECT_ID, limit=limit)
-        
-        try:
-            # Используем REST API для получения логов сервиса
-            url = f"{self.BASE_URL}/projects/{RAILWAY_PROJECT_ID}/services/{RAILWAY_SERVICE_ID}/logs"
-            if RAILWAY_ENVIRONMENT_ID:
-                url += f"?environmentId={RAILWAY_ENVIRONMENT_ID}"
-            
-            response = self.session.get(url, params={"limit": limit})
-            
-            if response.status_code == 200:
-                logs = response.json()
-                return logs.get("logs", [])[-limit:] if logs else []
-            
-            # Fallback: используем GraphQL
-            return self.get_project_logs(RAILWAY_PROJECT_ID, RAILWAY_SERVICE_ID, limit=limit)
-            
-        except Exception as e:
-            logger.error(f"Ошибка получения логов сервиса: {e}")
-            # Fallback к получению логов проекта
-            return self.get_project_logs(RAILWAY_PROJECT_ID, limit=limit)
+        return self.get_project_logs(RAILWAY_PROJECT_ID, limit=limit)
     
     def get_service_status(self) -> Optional[Dict]:
         """Получить статус сервиса"""
-        if not RAILWAY_SERVICE_ID:
-            return None
-        
         try:
             url = f"{self.BASE_URL}/projects/{RAILWAY_PROJECT_ID}/services/{RAILWAY_SERVICE_ID}"
             response = self.session.get(url)
@@ -264,6 +315,22 @@ class RailwayAPIClient:
         except Exception as e:
             logger.error(f"Ошибка перезапуска сервиса: {e}")
             return False
+    
+    def get_deployment_status(self) -> Optional[Dict]:
+        """Получить статус последнего деплоя"""
+        try:
+            url = f"{self.BASE_URL}/projects/{RAILWAY_PROJECT_ID}/deployments"
+            response = self.session.get(url, params={"limit": 1})
+            
+            if response.status_code == 200:
+                deployments = response.json()
+                if deployments:
+                    return deployments[0]
+            
+            return None
+        except Exception as e:
+            logger.error(f"Ошибка получения статуса деплоя: {e}")
+            return None
 
 # ===== БРАУЗЕРНАЯ ЛОГИКА =====
 
@@ -338,8 +405,16 @@ async def check_status():
     if RAILWAY_API_KEY:
         status.append("🚂 Railway API: ✅ подключен")
         status.append(f"📦 Проект: {RAILWAY_PROJECT_ID or 'не указан'}")
+        status.append(f"🔧 Сервис: {RAILWAY_SERVICE_ID or 'не указан'}")
     else:
         status.append("🚂 Railway API: ❌ не настроен")
+    
+    # Проверяем зависимости
+    try:
+        import requests
+        status.append("📦 Requests: ✅ установлен")
+    except:
+        status.append("📦 Requests: ❌ не установлен")
     
     return "\n".join(status)
 
@@ -363,7 +438,7 @@ def format_logs(logs: List[Dict], limit: int = 20) -> str:
                 dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
                 timestamp = dt.strftime('%H:%M:%S')
             except:
-                timestamp = timestamp[:8]
+                timestamp = timestamp[:8] if len(timestamp) >= 8 else timestamp
         
         level = log.get('level', 'INFO')
         message = log.get('message', '')
@@ -389,18 +464,21 @@ def format_logs(logs: List[Dict], limit: int = 20) -> str:
 
 async def get_railway_logs(context: ContextTypes.DEFAULT_TYPE, limit: int = 50) -> str:
     """Получить логи из Railway API"""
-    if not RAILWAY_API_KEY or not RAILWAY_PROJECT_ID:
-        return "❌ Railway API не настроен. Установите переменные:\nRAILWAY_API_KEY\nRAILWAY_PROJECT_ID"
+    if not RAILWAY_API_KEY:
+        return "❌ Railway API ключ не настроен. Установите переменную RAILWAY_API_KEY"
+    
+    if not RAILWAY_PROJECT_ID:
+        return "❌ Railway Project ID не настроен. Установите переменную RAILWAY_PROJECT_ID"
     
     try:
         client = RailwayAPIClient(RAILWAY_API_KEY)
         logs = client.get_recent_logs(limit=limit)
         
         if logs is None:
-            return "❌ Ошибка получения логов из Railway API"
+            return "❌ Ошибка получения логов из Railway API\n\nПроверьте:\n• API ключ\n• Project ID\n• Доступ к интернету"
         
         if not logs:
-            return "📭 Логи не найдены"
+            return "📭 Логи не найдены. Возможно, деплой еще не выполнялся."
         
         return format_logs(logs, limit=min(limit, 20))
         
@@ -415,18 +493,29 @@ async def get_service_status_text() -> str:
     
     try:
         client = RailwayAPIClient(RAILWAY_API_KEY)
-        status = client.get_service_status()
         
-        if not status:
-            return "❌ Не удалось получить статус сервиса"
+        # Получаем статус сервиса
+        service_status = client.get_service_status()
+        deployment_status = client.get_deployment_status()
         
         lines = [
             "🚂 *Статус сервиса Railway*",
-            f"📊 Статус: {status.get('status', 'Неизвестно')}",
-            f"🔄 Реплики: {status.get('replicas', 0)}",
-            f"📦 Память: {status.get('memory', 'N/A')}",
-            f"💾 CPU: {status.get('cpu', 'N/A')}",
+            "=" * 30
         ]
+        
+        if service_status:
+            lines.append(f"📊 Статус: {service_status.get('status', 'Неизвестно')}")
+            lines.append(f"🔄 Реплики: {service_status.get('replicas', 'N/A')}")
+            lines.append(f"📦 Память: {service_status.get('memory', 'N/A')}")
+            lines.append(f"💾 CPU: {service_status.get('cpu', 'N/A')}")
+        else:
+            lines.append("❌ Не удалось получить статус сервиса")
+        
+        if deployment_status:
+            lines.append("")
+            lines.append("*Последний деплой:*")
+            lines.append(f"📅 Создан: {deployment_status.get('createdAt', 'N/A')[:19]}")
+            lines.append(f"📊 Статус: {deployment_status.get('status', 'N/A')}")
         
         return "\n".join(lines)
         
@@ -436,17 +525,20 @@ async def get_service_status_text() -> str:
 
 async def restart_railway_service() -> str:
     """Перезапустить сервис на Railway"""
-    if not RAILWAY_API_KEY or not RAILWAY_SERVICE_ID:
-        return "❌ Railway API не настроен или не указан SERVICE_ID"
+    if not RAILWAY_API_KEY:
+        return "❌ Railway API ключ не настроен"
+    
+    if not RAILWAY_SERVICE_ID:
+        return "❌ Service ID не указан. Установите RAILWAY_SERVICE_ID"
     
     try:
         client = RailwayAPIClient(RAILWAY_API_KEY)
         success = client.restart_service()
         
         if success:
-            return "✅ Сервис успешно перезапущен"
+            return "✅ Сервис успешно перезапущен\n🔄 Ожидайте перезагрузки (1-2 минуты)"
         else:
-            return "❌ Не удалось перезапустить сервис"
+            return "❌ Не удалось перезапустить сервис\nПроверьте права доступа API ключа"
             
     except Exception as e:
         logger.error(f"Ошибка перезапуска: {e}")
@@ -575,7 +667,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • HEADLESS - true/false (по умолчанию false)
 
 *Стек:* Playwright + CloakBrowser + Xvfb
-        """
+"""
         await query.edit_message_text(help_text, parse_mode='Markdown')
 
 # ===== ДОПОЛНИТЕЛЬНЫЕ КОМАНДЫ =====
@@ -613,10 +705,17 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка глобальных ошибок"""
-    logger.error(f"Ошибка: {context.error}")
+    error_msg = str(context.error)
+    logger.error(f"Ошибка: {error_msg}")
+    
+    # Логируем в файл
+    with open(LOG_FILE, 'a') as f:
+        f.write(f"{datetime.now()} - ERROR: {error_msg}\n")
+    
     if update and update.effective_message:
         await update.effective_message.reply_text(
-            "❌ Произошла ошибка. Попробуйте снова позже."
+            f"❌ Произошла ошибка: {error_msg[:100]}\n\n"
+            "Попробуйте снова позже."
         )
 
 # ===== ЗАПУСК =====
@@ -643,6 +742,7 @@ def main():
     logger.info(f"🖥️ Headless: {HEADLESS}")
     logger.info(f"🔌 Proxy: {'✅' if PROXY_URL else '❌'}")
     logger.info(f"🚂 Railway API: {'✅' if RAILWAY_API_KEY else '❌'}")
+    logger.info(f"📝 Логи пишутся в: {LOG_FILE}")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
