@@ -1,13 +1,11 @@
 import os
 import logging
-import asyncio
 import threading
 import time
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from camoufox.sync_api import Camoufox
-import json
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -24,12 +22,14 @@ browser_instance = None
 browser_lock = threading.Lock()
 
 def init_browser():
-    """Инициализация браузера в отдельном потоке"""
+    """Инициализация браузера"""
     global browser_instance
     with browser_lock:
         if browser_instance is None:
             logging.info("🔄 Запуск Camoufox...")
             try:
+                # Camoufox использует контекстный менеджер
+                # Мы открываем браузер и сохраняем его
                 browser_instance = Camoufox(
                     headless=False,
                     display=":99",
@@ -40,9 +40,8 @@ def init_browser():
                         "media.webspeech.enabled": False,
                     }
                 )
-                # Просто создаем страницу для инициализации
-                page = browser_instance.new_page()
-                page.close()
+                # Инициализация через создание контекста
+                browser_instance._context  # Принудительная инициализация
                 logging.info("✅ Camoufox запущен!")
                 return True
             except Exception as e:
@@ -52,11 +51,26 @@ def init_browser():
     return False
 
 def get_browser():
-    """Получить экземпляр браузера (создать если нет)"""
+    """Получить экземпляр браузера"""
     global browser_instance
     if browser_instance is None:
         init_browser()
     return browser_instance
+
+def create_page():
+    """Создать новую страницу"""
+    browser = get_browser()
+    if browser is None:
+        return None
+    
+    try:
+        # В Camoufox страницы создаются через контекст
+        context = browser._context
+        page = context.new_page()
+        return page
+    except Exception as e:
+        logging.error(f"❌ Ошибка создания страницы: {e}")
+        return None
 
 # ============= ЛОГГЕР =============
 class LogStorage:
@@ -261,13 +275,11 @@ async def open_site_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.answer()
     
     try:
-        browser = get_browser()
-        if browser is None:
-            await query.message.reply_text("❌ Браузер не запущен!", parse_mode="HTML")
+        page = create_page()
+        if page is None:
+            await query.message.reply_text("❌ Не удалось создать страницу!", parse_mode="HTML")
             return
         
-        # Открываем страницу
-        page = browser.new_page()
         page.goto("https://example.com")
         page.screenshot(path="screenshot.png")
         page.close()
@@ -324,12 +336,11 @@ async def browser_screenshot_callback(update: Update, context: ContextTypes.DEFA
     await query.answer()
     
     try:
-        browser = get_browser()
-        if browser is None:
-            await query.message.reply_text("❌ Браузер не запущен!", parse_mode="HTML")
+        page = create_page()
+        if page is None:
+            await query.message.reply_text("❌ Не удалось создать страницу!", parse_mode="HTML")
             return
         
-        page = browser.new_page()
         page.goto("https://example.com")
         screenshot = page.screenshot(full_page=True)
         page.close()
