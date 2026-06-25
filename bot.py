@@ -29,8 +29,7 @@ def init_browser():
             logging.info("🔄 Запуск Camoufox...")
             try:
                 browser_instance = Camoufox(
-                    headless=False,
-                    display=":99",
+                    headless="virtual",  # Встроенный виртуальный дисплей, не требует Xvfb
                     window_size=(1024, 768),
                     preferences={
                         "dom.ipc.processCount": 1,
@@ -38,9 +37,8 @@ def init_browser():
                         "media.webspeech.enabled": False,
                     }
                 )
-                # Принудительная инициализация через создание страницы
-                test_page = browser_instance.new_page()
-                test_page.close()
+                # Явно входим в контекст (аналог with)
+                browser_instance.__enter__()
                 logging.info("✅ Camoufox запущен!")
                 return True
             except Exception as e:
@@ -314,7 +312,7 @@ async def browser_restart_callback(update: Update, context: ContextTypes.DEFAULT
     
     if browser_instance:
         try:
-            browser_instance.close()
+            browser_instance.__exit__(None, None, None)
         except:
             pass
         browser_instance = None
