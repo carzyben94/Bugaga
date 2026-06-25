@@ -2,10 +2,9 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Устанавливаем системные зависимости для Chrome и Nodriver
+# Минимальные зависимости для Chrome (только самое необходимое)
 RUN apt-get update && apt-get install -y \
     wget \
-    curl \
     gnupg \
     unzip \
     xvfb \
@@ -25,14 +24,9 @@ RUN apt-get update && apt-get install -y \
     libatk-bridge2.0-0 \
     libgtk-3-0 \
     libgbm1 \
-    libpangocairo-1.0-0 \
-    libx11-xcb-dev \
-    libxcb-dri3-0 \
-    libdrm2 \
-    libxshmfence1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем Chrome (Nodriver использует его)
+# Устанавливаем Chrome
 RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add - \
     && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update \
@@ -42,7 +36,6 @@ RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Добавляем Xvfb для виртуального экрана (важно для сервера)
 ENV DISPLAY=:99
 ENV PYTHONUNBUFFERED=1
 
