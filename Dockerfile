@@ -5,6 +5,32 @@ RUN apt-get update && apt-get install -y \
     wget \
     curl \
     gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Копируем и устанавливаем Python зависимости
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Устанавливаем Playwright с браузером, но БЕЗ install-deps
+RUN playwright install chromium
+
+# Устанавливаем зависимости вручную для новых версий Debian
+RUN apt-get update && apt-get install -y \
+    libnss3 \
+    libatk-bridge2.0-0 \
+    libdrm2 \
+    libxkbcommon0 \
+    libgbm1 \
+    libasound2 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxrandr2 \
+    libgbm-dev \
+    libpango-1.0-0 \
+    libcairo2 \
+    libatspi2.0-0 \
     libx11-xcb1 \
     libxcb1 \
     libxcomposite1 \
@@ -16,37 +42,28 @@ RUN apt-get update && apt-get install -y \
     libcups2 \
     libxss1 \
     libxrandr2 \
-    libasound2 \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
+    libgdk-pixbuf-2.0-0 \
     libgtk-3-0 \
-    libgbm1 \
-    libpangocairo-1.0-0 \
-    libx11-xcb-dev \
-    libxcb-dri3-0 \
-    libdrm2 \
-    libxshmfence1 \
+    libglib2.0-0 \
+    libdbus-1-3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем рабочую директорию
-WORKDIR /app
+# Дополнительно: устанавливаем отсутствующие пакеты (новые имена)
+RUN apt-get update && apt-get install -y \
+    fonts-unifont \
+    fonts-ubuntu \
+    libjpeg62-turbo \
+    libwebp7 \
+    libvpx9 \
+    libenchant-2-2 \
+    libicu72 \
+    libx264-164 \
+    libx265-209 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Копируем зависимости
-COPY requirements.txt .
-
-# Устанавливаем Python-пакеты
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Устанавливаем Playwright и браузеры
-RUN playwright install chromium && \
-    playwright install-deps
-
-# Копируем код
 COPY bot.py .
 
-# Переменные окружения
 ENV TELEGRAM_TOKEN_BOT=""
 ENV PYTHONUNBUFFERED=1
 
-# Запуск бота
 CMD ["python", "bot.py"]
