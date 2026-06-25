@@ -2,12 +2,13 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Устанавливаем зависимости
+# Устанавливаем зависимости + Xvfb
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
     unzip \
     curl \
+    xvfb \
     libx11-xcb1 \
     libxcb1 \
     libxcomposite1 \
@@ -29,7 +30,7 @@ RUN apt-get update && apt-get install -y \
     libxshmfence1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем Chrome (НОВЫЙ СПОСОБ)
+# Устанавливаем Chrome
 RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor > /etc/apt/trusted.gpg.d/google.gpg \
     && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update \
@@ -39,8 +40,12 @@ RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearm
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Настройка Xvfb
+ENV DISPLAY=:99
 ENV PYTHONUNBUFFERED=1
 
 COPY bot.py .
+COPY start.sh .
+RUN chmod +x start.sh
 
-CMD ["python", "bot.py"]
+CMD ["./start.sh"]
