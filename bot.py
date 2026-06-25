@@ -163,7 +163,7 @@ def get_chrome_path():
     return None
 
 async def init_browser():
-    """Инициализация Nodriver"""
+    """Инициализация Nodriver с улучшенными настройками"""
     global browser_instance, browser_initialized
     
     async with browser_lock:
@@ -182,7 +182,7 @@ async def init_browser():
                 
                 browser_instance = await nd.start(
                     headless=True,
-                    window_size=(1024, 768),
+                    window_size=(1280, 1024),
                     browser_executable_path=chrome_path,
                     arguments=[
                         '--no-sandbox',
@@ -193,7 +193,11 @@ async def init_browser():
                         '--disable-features=IsolateOrigins,site-per-process',
                         '--disable-site-isolation-trials',
                         '--disable-web-security',
-                        '--window-size=1024,768',
+                        '--disable-features=BlockInsecurePrivateNetworkRequests',
+                        '--disable-features=OutOfBlinkCors',
+                        '--window-size=1280,1024',
+                        '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        '--accept-lang=ru-RU,ru,en-US,en',
                     ]
                 )
                 browser_initialized = True
@@ -227,18 +231,41 @@ async def create_page():
         logging.error(f"❌ Ошибка создания страницы: {e}")
         return None
 
-async def do_browser_action(page, action, url=None):
-    """Выполнить действие с браузером"""
+async def do_browser_action(page, action, url=None, timeout=60):
+    """Выполнить действие с браузером с таймаутом"""
     try:
         if action == "goto" and url:
-            await page.get(url)
-            await page.wait_for('body', timeout=30000)
+            logging.info(f"🔄 Загрузка {url}...")
+            
+            # Устанавливаем таймаут на загрузку
+            await asyncio.wait_for(
+                page.get(url),
+                timeout=timeout
+            )
+            
+            # Ждем загрузки с таймаутом
+            try:
+                await asyncio.wait_for(
+                    page.wait_for('body', timeout=30000),
+                    timeout=timeout
+                )
+            except asyncio.TimeoutError:
+                logging.warning(f"⚠️ Таймаут ожидания body для {url}, но страница может быть загружена")
+            
+            # Дополнительная задержка для полной загрузки
+            await asyncio.sleep(2)
+            
+            logging.info(f"✅ Страница {url} загружена!")
             return True
+            
         elif action == "screenshot":
             return await page.screenshot()
         elif action == "close":
             return True
         return False
+    except asyncio.TimeoutError:
+        logging.error(f"❌ Таймаут выполнения действия {action} для {url}")
+        return None
     except Exception as e:
         logging.error(f"❌ Ошибка выполнения действия {action}: {e}")
         return None
@@ -615,17 +642,26 @@ async def handle_url_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     context.user_data['waiting_for_url'] = False
     
-    status_msg = await update.message.reply_text(f"⏳ Открываю {url}...", parse_mode="HTML")
+    status_msg = await update.message.reply_text(
+        f"⏳ Открываю {url}...\n\n_Это может занять до 60 секунд_",
+        parse_mode="Markdown"
+    )
     
     try:
+        # Создаем страницу с таймаутом
         page = await create_page()
         if page is None:
             await status_msg.edit_text("❌ Не удалось создать страницу!", parse_mode="HTML")
             return
         
-        success = await do_browser_action(page, "goto", url)
+        # Открываем сайт с таймаутом 60 секунд
+        success = await do_browser_action(page, "goto", url, timeout=60)
         
         if success:
+            # Даем время на полную загрузку
+            await asyncio.sleep(3)
+            
+            # Делаем скриншот
             screenshot = await do_browser_action(page, "screenshot", None)
             
             if screenshot:
@@ -640,10 +676,35 @@ async def handle_url_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 log_storage.add_log(f"Открыт сайт через Nodriver: {url}", "BROWSER")
             else:
-                await status_msg.edit_text(f"✅ Сайт открыт, но скриншот не сохранился:\n{url}", parse_mode="HTML")
+                await status_msg.edit_text(
+                    f"✅ Сайт открыт, но скриншот не сохранился:\n{url}\n\n"
+                    f"<i>Возможно, сайт заблокировал автоматизацию</i>",
+                    parse_mode="HTML"
+                )
         else:
-            await status_msg.edit_text(f"❌ Ошибка открытия:\n{url}", parse_mode="HTML")
+            await status_msg.edit_text(
+                f"❌ Ошибка открытия:\n{url}\n\n"
+                f"<i>Возможные причины:\n"
+                f"• Сайт заблокировал автоматизацию\n"
+                f"• Таймаут загрузки (60 сек)\n"
+                f"• Проблемы с сетью</i>",
+                parse_mode="HTML"
+            )
         
+        # Закрываем страницу
+        try:
+            await page.close()
+        except:
+            pass
+        
+    except asyncio.TimeoutError:
+        await status_msg.edit_text(
+            f"❌ <b>Таймаут!</b>\n\n"
+            f"Не удалось загрузить {url} за 60 секунд.\n\n"
+            f"<i>Возможно, сайт слишком тяжелый или блокирует запросы</i>",
+            parse_mode="HTML"
+        )
+        log_storage.add_log(f"Таймаут открытия {url}", "ERROR")
     except Exception as e:
         await status_msg.edit_text(f"❌ Ошибка: {str(e)}", parse_mode="HTML")
         log_storage.add_log(f"Ошибка открытия {url}: {str(e)}", "ERROR")
