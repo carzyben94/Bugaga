@@ -52,23 +52,55 @@ def format_logs_for_display(logs, limit=30):
         return "📭 <b>Логов пока нет</b>"
     
     lines = []
-    lines.append("📋 <b>ВСЕ ЛОГИ</b>")
-    lines.append(f"🕐 <b>{datetime.now().strftime('%d.%m.%Y %H:%M:%S')}</b>")
-    lines.append("═" * 30)
-    lines.append("")
     
-    emoji_map = {"INFO": "ℹ️", "COMMAND": "⚡", "ERROR": "❌", "SYSTEM": "🔧", "WARNING": "⚠️"}
+    # Заголовок с рамкой
+    lines.append("╔══════════════════════════════════════╗")
+    lines.append("║          📋  ВСЕ ЛОГИ  📋           ║")
+    lines.append("╚══════════════════════════════════════╝")
+    lines.append("")
+    lines.append(f"🕐 <b>{datetime.now().strftime('%d.%m.%Y %H:%M:%S')}</b>")
+    lines.append("")
+    lines.append("┌─────────────────────────────────────┐")
+    
+    emoji_map = {
+        "INFO": "ℹ️", 
+        "COMMAND": "⚡", 
+        "ERROR": "❌", 
+        "SYSTEM": "🔧", 
+        "WARNING": "⚠️"
+    }
+    
+    color_map = {
+        "INFO": "🔵",
+        "COMMAND": "🟣",
+        "ERROR": "🔴",
+        "SYSTEM": "🟠",
+        "WARNING": "🟡"
+    }
     
     for log in logs[:limit]:
         timestamp = log["timestamp"]
         log_type = log["type"]
         message = log["message"]
         username = log.get("username", "")
+        
         emoji = emoji_map.get(log_type, "📌")
-        user_info = f" @{username}" if username else ""
-        lines.append(f"<code>{timestamp}</code> {emoji} [{log_type}]{user_info}")
-        lines.append(f"  {message}")
-        lines.append("")
+        color = color_map.get(log_type, "⚪")
+        
+        user_info = f" 👤 @{username}" if username else ""
+        
+        # Каждый лог в отдельной строке с красивым оформлением
+        lines.append(f"│ {color} {emoji} <b>{log_type}</b>")
+        lines.append(f"│    🕐 {timestamp}")
+        lines.append(f"│    💬 {message[:60]}{'...' if len(message) > 60 else ''}")
+        if user_info:
+            lines.append(f"│    {user_info}")
+        lines.append("│")
+    
+    lines.append("└─────────────────────────────────────┘")
+    lines.append("")
+    lines.append(f"📊 <b>Всего логов:</b> {len(logs[:limit])}")
+    lines.append("🔹 <i>Последние записи</i>")
     
     return "\n".join(lines)
 
@@ -77,24 +109,102 @@ def format_logs_for_copy(logs, limit=30):
         return "Логов нет"
     
     lines = []
+    lines.append("=" * 50)
+    lines.append("📋 ВСЕ ЛОГИ")
+    lines.append("=" * 50)
+    lines.append("")
+    
     for log in logs[:limit]:
         timestamp = log["timestamp"]
         log_type = log["type"]
         message = log["message"]
         username = log.get("username", "")
-        user_info = f" @{username}" if username else ""
-        lines.append(f"[{timestamp}] [{log_type}]{user_info}")
+        user_info = f" [@{username}]" if username else ""
+        lines.append(f"[{timestamp}] {log_type}{user_info}")
         lines.append(f"  {message}")
-        lines.append("")
+        lines.append("-" * 40)
+    
+    lines.append("")
+    lines.append("=" * 50)
+    lines.append(f"Всего записей: {len(logs[:limit])}")
     
     return "\n".join(lines)
 
 def get_logs_keyboard():
     keyboard = [
         [InlineKeyboardButton("📋 Копировать логи", callback_data="copy_logs")],
-        [InlineKeyboardButton("🗑️ Очистить логи", callback_data="clear_logs")]
+        [InlineKeyboardButton("🗑️ Очистить логи", callback_data="clear_logs")],
+        [InlineKeyboardButton("📊 Статистика", callback_data="show_stats")]
     ]
     return InlineKeyboardMarkup(keyboard)
+
+def get_stats_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("📋 Посмотреть логи", callback_data="view_logs")],
+        [InlineKeyboardButton("🔄 Обновить", callback_data="refresh_stats")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def format_stats(stats):
+    lines = []
+    
+    # Красивый заголовок
+    lines.append("╔══════════════════════════════════════╗")
+    lines.append("║        📊  СТАТИСТИКА  📊           ║")
+    lines.append("╚══════════════════════════════════════╝")
+    lines.append("")
+    lines.append(f"🕐 <b>{datetime.now().strftime('%d.%m.%Y %H:%M:%S')}</b>")
+    lines.append("")
+    lines.append("┌─────────────────────────────────────┐")
+    lines.append(f"│  📝 <b>ВСЕГО ЛОГОВ:</b> {stats['total']}")
+    lines.append("│")
+    
+    emoji_map = {
+        "INFO": "ℹ️", 
+        "COMMAND": "⚡", 
+        "ERROR": "❌", 
+        "SYSTEM": "🔧", 
+        "WARNING": "⚠️"
+    }
+    
+    color_map = {
+        "INFO": "🔵",
+        "COMMAND": "🟣",
+        "ERROR": "🔴",
+        "SYSTEM": "🟠",
+        "WARNING": "🟡"
+    }
+    
+    # Прогресс-бары для каждого типа
+    max_count = max(stats['by_type'].values()) if stats['by_type'] else 1
+    
+    for log_type, count in stats['by_type'].items():
+        emoji = emoji_map.get(log_type, "📌")
+        color = color_map.get(log_type, "⚪")
+        percent = int((count / stats['total']) * 20) if stats['total'] > 0 else 0
+        bar = "█" * percent + "░" * (20 - percent)
+        lines.append(f"│  {color} {emoji} <b>{log_type}</b>")
+        lines.append(f"│     {count} записей")
+        lines.append(f"│     {bar} {int(percent*5)}%")
+        lines.append("│")
+    
+    # Красивая статистика в виде графиков
+    lines.append("└─────────────────────────────────────┘")
+    lines.append("")
+    lines.append("📈 <i>Активность бота</i>")
+    
+    # Статистика по типам в виде круговой диаграммы (текстовой)
+    total = stats['total']
+    if total > 0:
+        lines.append("")
+        for log_type, count in stats['by_type'].items():
+            emoji = emoji_map.get(log_type, "📌")
+            percent = int((count / total) * 100)
+            # Создаём мини-диаграмму
+            blocks = "▓" * int(percent / 5) + "░" * (20 - int(percent / 5))
+            lines.append(f"  {emoji} {blocks} {percent}% ({count})")
+    
+    return "\n".join(lines)
 
 def log_command(func):
     async def wrapper(update, context):
@@ -114,6 +224,7 @@ def log_command(func):
         
         return await func(update, context)
     return wrapper
+
 # ===================================
 
 # Создаём хранилище логов
@@ -123,12 +234,14 @@ log_storage = LogStorage()
 @log_command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 Бот работает!\n\n"
-        "Команды:\n"
-        "/start - приветствие\n"
-        "/logs - показать логи\n"
-        "/clear - очистить логи\n"
-        "/stats - статистика бота"
+        "🤖 <b>Добро пожаловать в Log Bot!</b>\n\n"
+        "┌─────────────────────────────────────┐\n"
+        "│  📋 <b>/logs</b>  – Посмотреть логи   │\n"
+        "│  📊 <b>/stats</b> – Статистика        │\n"
+        "│  🗑️ <b>/clear</b> – Очистить логи    │\n"
+        "└─────────────────────────────────────┘\n\n"
+        "🔹 <i>Нажмите на кнопки для управления</i>",
+        parse_mode="HTML"
     )
 
 # Команда /logs
@@ -140,7 +253,11 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logs = log_storage.get_all_logs(limit=50)
         
         if not logs:
-            await status_msg.edit_text("📭 <b>Логов пока нет</b>", parse_mode="HTML")
+            await status_msg.edit_text(
+                "📭 <b>Логов пока нет</b>\n\n"
+                "🔹 Начните использовать бота, чтобы появились записи",
+                parse_mode="HTML"
+            )
             return
         
         display_text = format_logs_for_display(logs)
@@ -157,36 +274,56 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log_storage.add_log("Показаны логи", "INFO")
             
     except Exception as e:
-        await status_msg.edit_text(f"❌ <b>Ошибка:</b>\n<code>{str(e)}</code>", parse_mode="HTML")
+        await status_msg.edit_text(
+            f"❌ <b>Ошибка:</b>\n<code>{str(e)}</code>",
+            parse_mode="HTML"
+        )
         log_storage.add_log(f"Ошибка в /logs: {str(e)}", "ERROR")
+
+# Команда /stats
+@log_command
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status_msg = await update.message.reply_text("📡 <i>Собираю статистику...</i>", parse_mode="HTML")
+    
+    try:
+        stats = log_storage.get_stats()
+        
+        if stats['total'] == 0:
+            await status_msg.edit_text(
+                "📊 <b>Статистика пуста</b>\n\n"
+                "🔹 Нет записей для отображения",
+                parse_mode="HTML"
+            )
+            return
+        
+        display_text = format_stats(stats)
+        
+        await status_msg.edit_text(
+            display_text,
+            parse_mode="HTML",
+            reply_markup=get_stats_keyboard(),
+            disable_web_page_preview=True
+        )
+        
+        log_storage.add_log("Показана статистика", "INFO")
+            
+    except Exception as e:
+        await status_msg.edit_text(
+            f"❌ <b>Ошибка:</b>\n<code>{str(e)}</code>",
+            parse_mode="HTML"
+        )
 
 # Команда /clear
 @log_command
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_storage.clear_logs()
-    await update.message.reply_text("🗑️ <b>Логи очищены</b>", parse_mode="HTML")
+    await update.message.reply_text(
+        "🗑️ <b>Логи очищены</b>\n\n"
+        "✅ Все записи удалены",
+        parse_mode="HTML"
+    )
 
-# Команда /stats
-@log_command
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    stats = log_storage.get_stats()
-    
-    lines = [
-        "📊 <b>СТАТИСТИКА БОТА</b>",
-        "═" * 30,
-        f"📝 Всего логов: <b>{stats['total']}</b>",
-        ""
-    ]
-    
-    emoji_map = {"INFO": "ℹ️", "COMMAND": "⚡", "ERROR": "❌", "SYSTEM": "🔧", "WARNING": "⚠️"}
-    
-    for log_type, count in stats['by_type'].items():
-        emoji = emoji_map.get(log_type, "📌")
-        lines.append(f"{emoji} {log_type}: <b>{count}</b>")
-    
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
-
-# Обработчик кнопки копирования
+# Обработчики кнопок
 async def copy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -195,7 +332,7 @@ async def copy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if copy_text:
         await query.message.reply_text(
-            f"📋 <b>Логи (скопируйте текст ниже)</b>\n\n"
+            f"📋 <b>Логи для копирования</b>\n\n"
             f"<pre>{copy_text}</pre>",
             parse_mode="HTML"
         )
@@ -204,27 +341,76 @@ async def copy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await query.answer("❌ Логи не найдены", show_alert=True)
 
-# Обработчик кнопки очистки
 async def clear_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
     log_storage.clear_logs()
-    await query.message.edit_text("🗑️ <b>Логи очищены</b>", parse_mode="HTML")
+    
+    await query.message.edit_text(
+        "🗑️ <b>Логи очищены</b>\n\n"
+        "✅ Все записи удалены",
+        parse_mode="HTML"
+    )
     await query.answer("✅ Логи очищены!")
+
+async def show_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        stats = log_storage.get_stats()
+        
+        if stats['total'] == 0:
+            await query.message.reply_text(
+                "📊 <b>Статистика пуста</b>",
+                parse_mode="HTML"
+            )
+            return
+        
+        display_text = format_stats(stats)
+        await query.message.reply_text(
+            display_text,
+            parse_mode="HTML",
+            reply_markup=get_stats_keyboard(),
+            disable_web_page_preview=True
+        )
+        
+        await query.answer("📊 Статистика готова!")
+            
+    except Exception as e:
+        await query.answer("❌ Ошибка", show_alert=True)
+
+async def view_logs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    # Возвращаемся к логам
+    await logs_command(update, context)
+
+async def refresh_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer("🔄 Обновляю...")
+    
+    await stats_command(update, context)
 
 def main():
     app = Application.builder().token(TOKEN).build()
     
     app.bot_data['log_storage'] = log_storage
     
+    # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("logs", logs_command))
-    app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("clear", clear_command))
     
+    # Callback кнопок
     app.add_handler(CallbackQueryHandler(copy_callback, pattern="copy_logs"))
     app.add_handler(CallbackQueryHandler(clear_callback, pattern="clear_logs"))
+    app.add_handler(CallbackQueryHandler(show_stats_callback, pattern="show_stats"))
+    app.add_handler(CallbackQueryHandler(view_logs_callback, pattern="view_logs"))
+    app.add_handler(CallbackQueryHandler(refresh_stats_callback, pattern="refresh_stats"))
     
     log_storage.add_log("Бот запущен", "SYSTEM")
     logging.info("🚀 Бот запускается в режиме polling...")
