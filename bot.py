@@ -39,13 +39,6 @@ class LogStorage:
     def clear_logs(self):
         self.logs.clear()
         self.add_log("Логи очищены", "SYSTEM")
-    
-    def get_stats(self):
-        types_count = {}
-        for log in self.logs:
-            log_type = log["type"]
-            types_count[log_type] = types_count.get(log_type, 0) + 1
-        return {"total": len(self.logs), "by_type": types_count}
 
 def format_logs_for_window(logs, limit=30):
     """Форматирует логи для отдельного окна с прокруткой"""
@@ -53,11 +46,6 @@ def format_logs_for_window(logs, limit=30):
         return "📭 Логов пока нет"
     
     lines = []
-    lines.append("╔══════════════════════════════════════╗")
-    lines.append("║          📋  ВСЕ ЛОГИ  📋           ║")
-    lines.append("╠══════════════════════════════════════╣")
-    lines.append(f"║  🕐 {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}")
-    lines.append("╠══════════════════════════════════════╣")
     
     emoji_map = {
         "INFO": "ℹ️", 
@@ -75,15 +63,11 @@ def format_logs_for_window(logs, limit=30):
         emoji = emoji_map.get(log_type, "📌")
         
         if username:
-            lines.append(f"║ {emoji} {timestamp} [{log_type}] @{username}")
+            lines.append(f"{emoji} {timestamp} [{log_type}] @{username}")
         else:
-            lines.append(f"║ {emoji} {timestamp} [{log_type}]")
-        lines.append(f"║    {message[:60]}{'...' if len(message) > 60 else ''}")
-        lines.append("║")
-    
-    lines.append("╠══════════════════════════════════════╣")
-    lines.append(f"║  📊 Всего записей: {len(logs[:limit])}")
-    lines.append("╚══════════════════════════════════════╝")
+            lines.append(f"{emoji} {timestamp} [{log_type}]")
+        lines.append(f"   {message[:60]}{'...' if len(message) > 60 else ''}")
+        lines.append("")
     
     return "\n".join(lines)
 
@@ -93,10 +77,6 @@ def format_logs_clean(logs, limit=30):
         return "Логов нет"
     
     lines = []
-    lines.append("=" * 50)
-    lines.append("📋 ВСЕ ЛОГИ")
-    lines.append("=" * 50)
-    lines.append("")
     
     for log in logs[:limit]:
         timestamp = log["timestamp"]
@@ -106,11 +86,7 @@ def format_logs_clean(logs, limit=30):
         user_info = f" [@{username}]" if username else ""
         lines.append(f"[{timestamp}] {log_type}{user_info}")
         lines.append(f"  {message}")
-        lines.append("-" * 40)
-    
-    lines.append("")
-    lines.append("=" * 50)
-    lines.append(f"Всего записей: {len(logs[:limit])}")
+        lines.append("")
     
     return "\n".join(lines)
 
@@ -150,8 +126,7 @@ log_storage = LogStorage()
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 <b>Log Bot</b>\n\n"
-        "📋 /logs  – показать логи (в отдельном окне)\n"
-        "📊 /stats – статистика\n"
+        "📋 /logs  – показать логи\n"
         "🗑️ /clear – очистить логи",
         parse_mode="HTML"
     )
@@ -168,14 +143,11 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text("📭 Логов пока нет", parse_mode="HTML")
             return
         
-        # Форматируем для окна
         display_text = format_logs_for_window(logs)
         clean_text = format_logs_clean(logs)
         
-        # Сохраняем для копирования
         context.user_data['copy_logs'] = clean_text
         
-        # Отправляем в виде кода (создаёт окно с прокруткой)
         await status_msg.edit_text(
             f"<pre>{display_text}</pre>",
             parse_mode="HTML",
@@ -188,31 +160,6 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await status_msg.edit_text(f"❌ Ошибка: {str(e)}", parse_mode="HTML")
         log_storage.add_log(f"Ошибка в /logs: {str(e)}", "ERROR")
-
-# Команда /stats
-@log_command
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    stats = log_storage.get_stats()
-    
-    if stats['total'] == 0:
-        await update.message.reply_text("📊 Нет данных", parse_mode="HTML")
-        return
-    
-    lines = []
-    lines.append("📊 <b>СТАТИСТИКА</b>")
-    lines.append("─" * 25)
-    lines.append(f"📝 Всего записей: <b>{stats['total']}</b>")
-    lines.append("")
-    
-    emoji_map = {"INFO": "ℹ️", "COMMAND": "⚡", "ERROR": "❌", "SYSTEM": "🔧", "WARNING": "⚠️"}
-    
-    for log_type, count in stats['by_type'].items():
-        emoji = emoji_map.get(log_type, "📌")
-        percent = int((count / stats['total']) * 100) if stats['total'] > 0 else 0
-        bar = "▰" * int(percent / 10) + "▱" * (10 - int(percent / 10))
-        lines.append(f"{emoji} {log_type}: {count}  {bar} {percent}%")
-    
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 # Команда /clear
 @log_command
@@ -228,7 +175,6 @@ async def copy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     copy_text = context.user_data.get('copy_logs', '')
     
     if copy_text:
-        # Отправляем чистый текст в отдельном окне
         await query.message.reply_text(
             f"<pre>{copy_text}</pre>",
             parse_mode="HTML"
@@ -253,7 +199,6 @@ def main():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("logs", logs_command))
-    app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("clear", clear_command))
     
     app.add_handler(CallbackQueryHandler(copy_callback, pattern="copy_logs"))
