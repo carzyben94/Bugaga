@@ -13,19 +13,20 @@ if not TOKEN:
 PLAYWRIGHT_DIR = "/root/.cache/ms-playwright"
 os.environ['PLAYWRIGHT_BROWSERS_PATH'] = PLAYWRIGHT_DIR
 
-# Куки
+# Свежие куки
 COOKIES = [
     {"name": "__cuid", "value": "55d2d7c5-4888-430a-b024-dd785da46ef4", "domain": ".x.com", "path": "/"},
     {"name": "lang", "value": "ru", "domain": ".x.com", "path": "/"},
     {"name": "dnt", "value": "1", "domain": ".x.com", "path": "/"},
-    {"name": "guest_id", "value": "v1%3A178232552081152335", "domain": ".x.com", "path": "/"},
-    {"name": "guest_id_marketing", "value": "v1%3A178232552081152335", "domain": ".x.com", "path": "/"},
-    {"name": "guest_id_ads", "value": "v1%3A178232552081152335", "domain": ".x.com", "path": "/"},
-    {"name": "personalization_id", "value": "\"v1_WrN9cfSG2zvM3RbiT1ZEkw==\"", "domain": ".x.com", "path": "/"},
+    {"name": "guest_id", "value": "v1%3A178267838599411411", "domain": ".x.com", "path": "/"},
+    {"name": "guest_id_marketing", "value": "v1%3A178267838599411411", "domain": ".x.com", "path": "/"},
+    {"name": "guest_id_ads", "value": "v1%3A178267838599411411", "domain": ".x.com", "path": "/"},
+    {"name": "personalization_id", "value": "\"v1_DKrxLZAC902dMFdd1QrVYg==\"", "domain": ".x.com", "path": "/"},
+    {"name": "gt", "value": "2071329406237220892", "domain": ".x.com", "path": "/"},
+    {"name": "__cf_bm", "value": ".I7b6GGmlN4fNcwOMuw9lT0dsT0ARfcIVwJt0bKVn1A-1782678389.549309-1.0.1.1-ZyWyQlXJpxNQRq6_2VYG2dr8Gz2iv_dZ2DrW2mnM.xR8yrtzsdhU310hzPoDkIQZYC6QGWKef5dCUOQQKZdp5_AmnVQS5zZ1p67ydtzPrydFxyV6zl740zd69v0Xs3JC", "domain": ".x.com", "path": "/"},
     {"name": "twid", "value": "u%3D2067347503503052800", "domain": ".x.com", "path": "/"},
-    {"name": "auth_token", "value": "9437c2dd7e6dd3b655cd4166f1fe303365f56d91", "domain": ".x.com", "path": "/"},
-    {"name": "ct0", "value": "6348cd308326bbc75e48654d2a7488c58d9d34f10712b0f1b3d7bde9e67a028c46de54fbbbace15ab6a518f71b27945510c1dc91b2ef7c9360aaf009883b0c5e326f4196c02e32c930a7c2222c4af9ff", "domain": ".x.com", "path": "/"},
-    {"name": "__cf_bm", "value": "Q_7xL8xOeTr7wEs9IKrku6FvBYFgQ66n2aAnMu3y1P4-1782677214.6550717-1.0.1.1-OZkEIr0AmPv26VE8f6.2K9ZLininp7rxWXyurqH.Nd4rkkGYHIGQThsakV2sgDqDsQ_3w7c7tSuHCk_J.QnG82ww8SOFtvgZBlyzDvaP5_U3zdSt85sRSMasmOtZm74q", "domain": ".x.com", "path": "/"}
+    {"name": "auth_token", "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936", "domain": ".x.com", "path": "/"},
+    {"name": "ct0", "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb", "domain": ".x.com", "path": "/"}
 ]
 
 browser_data = None
@@ -134,15 +135,17 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         browser = await get_browser()
         page = browser['page']
         
+        # Добавляем куки
         await browser['context'].add_cookies(COOKIES)
         await page.goto('https://x.com', wait_until='domcontentloaded', timeout=15000)
         
+        # Проверяем авторизацию
         is_logged_in = await page.evaluate('!!document.querySelector("[data-testid=primaryColumn]")')
         title = await page.title()
         
         await msg.edit_text(
             f"✅ Зашёл в X.com!\n"
-            f"📌 Заголовок: {title[:60]}\n"
+            f"📌 Заголовок: {title[:60] if title else 'Нет заголовка'}\n"
             f"🔐 Авторизация: {'✅' if is_logged_in else '❌'}"
         )
     except Exception as e:
@@ -177,7 +180,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await msg.edit_text(
             f"✅ Браузер работает!\n"
-            f"📌 Страница: {title[:40]}\n"
+            f"📌 Страница: {title[:40] if title else 'Нет заголовка'}\n"
             f"🔗 URL: {url[:50]}"
         )
     except Exception as e:
