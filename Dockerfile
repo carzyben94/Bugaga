@@ -1,51 +1,22 @@
 FROM python:3.11-slim
 
-WORKDIR /app
-
-# Устанавливаем зависимости + Xvfb
+# Устанавливаем зависимости для Playwright
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
-    unzip \
-    curl \
-    xvfb \
-    libx11-xcb1 \
-    libxcb1 \
-    libxcomposite1 \
-    libxcursor1 \
-    libxdamage1 \
-    libxi6 \
-    libxtst6 \
-    libnss3 \
-    libcups2 \
-    libxss1 \
-    libxrandr2 \
-    libasound2 \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
-    libgtk-3-0 \
-    libgbm1 \
-    libpangocairo-1.0-0 \
-    libdrm2 \
-    libxshmfence1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем Chrome
-RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor > /etc/apt/trusted.gpg.d/google.gpg \
-    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
-    && apt-get update \
-    && apt-get install -y google-chrome-stable \
-    && rm -rf /var/lib/apt/lists/*
+# Устанавливаем Playwright и браузеры
+RUN pip install playwright && playwright install chromium && playwright install-deps
 
+WORKDIR /app
+
+# Копируем зависимости и устанавливаем
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install -r requirements.txt
 
-# Настройка Xvfb
-ENV DISPLAY=:99
-ENV PYTHONUNBUFFERED=1
-
+# Копируем бота
 COPY bot.py .
-COPY start.sh .
-RUN chmod +x start.sh
 
-CMD ["./start.sh"]
+# Команда запуска
+CMD ["python", "bot.py"]
