@@ -1,21 +1,58 @@
 import os
-import asyncio
+import sys
+import subprocess
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# Токен из переменных окружения Railway
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
 
-# Команда /start
+# Устанавливаем путь для браузера
+PLAYWRIGHT_DIR = "/root/.cache/ms-playwright"
+os.environ['PLAYWRIGHT_BROWSERS_PATH'] = PLAYWRIGHT_DIR
+
+def install_playwright_browser():
+    """Устанавливает Chromium для Playwright при первом запуске"""
+    browser_path = os.path.join(PLAYWRIGHT_DIR, "chromium-1091", "chrome-linux", "chrome")
+    
+    if os.path.exists(browser_path):
+        print("✅ Браузер уже установлен")
+        return True
+    
+    print("⏳ Устанавливаю браузер Chromium...")
+    try:
+        # Устанавливаем браузер через командную строку
+        subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        
+        # Устанавливаем системные зависимости
+        subprocess.run(
+            [sys.executable, "-m", "playwright", "install-deps"],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        
+        print("✅ Браузер успешно установлен!")
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка установки браузера: {e}")
+        return False
+
+# Устанавливаем браузер при запуске
+install_playwright_browser()
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Привет! Я бот с браузером Playwright на борту.\n"
         "Отправь /status чтобы проверить браузер."
     )
 
-# Команда /status - проверка браузера со Stealth
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Запускаю браузер с защитой...")
     
@@ -38,10 +75,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             
             page = await context.new_page()
-            
-            # Применяем Stealth
             await stealth_async(page)
-            
             await page.goto('https://x.com', wait_until='networkidle')
             title = await page.title()
             await browser.close()
@@ -55,7 +89,6 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     app = Application.builder().token(TOKEN).build()
-    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("status", status))
     
@@ -63,4 +96,4 @@ def main():
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
-    main() 
+    main()
