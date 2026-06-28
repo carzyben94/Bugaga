@@ -17,6 +17,6 @@ RUN pip install -r requirements.txt
 
 # Копируем бота
 COPY bot.py .
-
+ 
 # Команда запуска
 CMD ["python", "bot.py"] 
