@@ -13,7 +13,7 @@ if not TOKEN:
 PLAYWRIGHT_DIR = "/root/.cache/ms-playwright"
 os.environ['PLAYWRIGHT_BROWSERS_PATH'] = PLAYWRIGHT_DIR
 
-# Куки в компактном формате
+# Куки
 COOKIES = [
     {"name": "__cuid", "value": "55d2d7c5-4888-430a-b024-dd785da46ef4", "domain": ".x.com", "path": "/"},
     {"name": "lang", "value": "ru", "domain": ".x.com", "path": "/"},
@@ -28,9 +28,7 @@ COOKIES = [
     {"name": "__cf_bm", "value": "Q_7xL8xOeTr7wEs9IKrku6FvBYFgQ66n2aAnMu3y1P4-1782677214.6550717-1.0.1.1-OZkEIr0AmPv26VE8f6.2K9ZLininp7rxWXyurqH.Nd4rkkGYHIGQThsakV2sgDqDsQ_3w7c7tSuHCk_J.QnG82ww8SOFtvgZBlyzDvaP5_U3zdSt85sRSMasmOtZm74q", "domain": ".x.com", "path": "/"}
 ]
 
-# Храним браузер и страницу глобально
-browser_instance = None
-page_instance = None
+browser_data = None
 
 def install_playwright_browser():
     browser_path = os.path.join(PLAYWRIGHT_DIR, "chromium-1091", "chrome-linux", "chrome")
@@ -49,21 +47,66 @@ def install_playwright_browser():
 
 install_playwright_browser()
 
+async def get_browser():
+    global browser_data
+    
+    from playwright.async_api import async_playwright
+    from playwright_stealth import stealth_async
+    
+    if browser_data:
+        try:
+            await browser_data['page'].evaluate('1')
+            return browser_data
+        except:
+            try:
+                await browser_data['browser'].close()
+            except:
+                pass
+            browser_data = None
+    
+    p = await async_playwright().start()
+    browser = await p.chromium.launch(
+        headless=True,
+        args=['--no-sandbox', '--disable-setuid-sandbox']
+    )
+    context = await browser.new_context(
+        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    )
+    page = await context.new_page()
+    await stealth_async(page)
+    
+    browser_data = {
+        'playwright': p,
+        'browser': browser,
+        'context': context,
+        'page': page
+    }
+    
+    return browser_data
+
+async def close_browser():
+    global browser_data
+    if browser_data:
+        try:
+            await browser_data['browser'].close()
+            await browser_data['playwright'].stop()
+        except:
+            pass
+        browser_data = None
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 Бот с браузером Playwright\n\n"
         "Доступные команды:\n"
-        "/go <url> - открыть любой сайт\n"
-        "/xlogin - зайти в X.com\n"
-        "/screen - скриншот текущей страницы\n"
-        "/status - проверить браузер\n"
-        "/stats - статистика"
+        "/go <url> - открыть сайт\n"
+        "/xlogin - вход в X.com\n"
+        "/screen - скриншот\n"
+        "/status - состояние браузера\n"
+        "/stats - статистика\n"
+        "/close - закрыть браузер"
     )
 
 async def go(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global browser_instance, page_instance
-    
-    # Проверяем, есть ли URL
     if not context.args:
         await update.message.reply_text("❌ Укажи URL: /go https://example.com")
         return
@@ -75,179 +118,85 @@ async def go(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(f"⏳ Открываю {url}...")
     
     try:
-        from playwright.async_api import async_playwright
+        browser = await get_browser()
+        page = browser['page']
         
-        # Если браузер уже запущен, используем его
-        if browser_instance and page_instance:
-            try:
-                await page_instance.goto(url, wait_until='networkidle')
-                await msg.edit_text(f"✅ Открыл: {url}")
-                return
-            except:
-                browser_instance = None
-                page_instance = None
-        
-        # Создаём новый браузер
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=['--no-sandbox', '--disable-setuid-sandbox']
-            )
-            
-            context_browser = await browser.new_context(
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            )
-            
-            page = await context_browser.new_page()
-            
-            await page.goto(url, wait_until='networkidle')
-            
-            # Сохраняем браузер и страницу
-            browser_instance = browser
-            page_instance = page
-            
-            await msg.edit_text(f"✅ Открыл: {url}")
-            
+        await page.goto(url, wait_until='networkidle')
+        await msg.edit_text(f"✅ Открыл: {url}")
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:100]}")
 
 async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global browser_instance, page_instance
-    
-    msg = await update.message.reply_text("⏳ Захожу в X.com с куками...")
+    msg = await update.message.reply_text("⏳ Захожу в X.com...")
     
     try:
-        from playwright.async_api import async_playwright
-        from playwright_stealth import stealth_async
+        browser = await get_browser()
+        page = browser['page']
         
-        # Закрываем старый браузер если есть
-        if browser_instance:
-            try:
-                await browser_instance.close()
-            except:
-                pass
-            browser_instance = None
-            page_instance = None
+        await browser['context'].add_cookies(COOKIES)
+        await page.goto('https://x.com', wait_until='networkidle')
         
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=['--no-sandbox', '--disable-setuid-sandbox']
-            )
-            
-            context = await browser.new_context(
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            )
-            
-            await context.add_cookies(COOKIES)
-            
-            page = await context.new_page()
-            await stealth_async(page)
-            
-            await page.goto('https://x.com', wait_until='networkidle')
-            
-            # Проверяем авторизацию
-            is_logged_in = await page.evaluate('!!document.querySelector("[data-testid=primaryColumn]")')
-            title = await page.title()
-            
-            # Сохраняем браузер и страницу
-            browser_instance = browser
-            page_instance = page
-            
-            await msg.edit_text(
-                f"✅ Зашёл в X.com!\n"
-                f"📌 Заголовок: {title[:60]}\n"
-                f"🔐 Авторизация: {'✅' if is_logged_in else '❌'}"
-            )
-            
+        is_logged_in = await page.evaluate('!!document.querySelector("[data-testid=primaryColumn]")')
+        title = await page.title()
+        
+        await msg.edit_text(
+            f"✅ Зашёл в X.com!\n"
+            f"📌 Заголовок: {title[:60]}\n"
+            f"🔐 Авторизация: {'✅' if is_logged_in else '❌'}"
+        )
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:100]}")
 
 async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global page_instance, browser_instance
-    
-    if not page_instance:
-        await update.message.reply_text("❌ Сначала открой страницу: /go или /xlogin")
-        return
-    
     msg = await update.message.reply_text("⏳ Делаю скриншот...")
     
     try:
-        # Делаем скриншот
-        screenshot = await page_instance.screenshot(full_page=True)
+        browser = await get_browser()
+        page = browser['page']
         
-        # Отправляем фото в чат
+        screenshot = await page.screenshot(full_page=True)
+        
+        await msg.delete()
         await update.message.reply_photo(
             photo=screenshot,
             caption="📸 Скриншот текущей страницы"
         )
-        
-        await msg.delete()
-        
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:100]}")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global browser_instance, page_instance
-    
     msg = await update.message.reply_text("⏳ Проверка браузера...")
     
     try:
-        from playwright.async_api import async_playwright
-        from playwright_stealth import stealth_async
+        browser = await get_browser()
+        page = browser['page']
         
-        # Проверяем, открыт ли браузер
-        if browser_instance and page_instance:
-            try:
-                # Пробуем получить URL
-                url = await page_instance.url
-                title = await page_instance.title()
-                
-                await msg.edit_text(
-                    f"✅ Браузер работает!\n"
-                    f"📌 Страница: {title[:40]}\n"
-                    f"🔗 URL: {url[:50]}"
-                )
-                return
-            except:
-                browser_instance = None
-                page_instance = None
+        url = await page.url
+        title = await page.title()
         
-        # Создаём новый браузер для проверки
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=['--no-sandbox', '--disable-setuid-sandbox']
-            )
-            page = await browser.new_page()
-            await stealth_async(page)
-            await page.goto('https://x.com', wait_until='networkidle')
-            title = await page.title()
-            await browser.close()
-            
-            await msg.edit_text(
-                f"✅ Браузер работает!\n"
-                f"📌 Заголовок: {title[:60]}"
-            )
-            
+        await msg.edit_text(
+            f"✅ Браузер работает!\n"
+            f"📌 Страница: {title[:40]}\n"
+            f"🔗 URL: {url[:50]}"
+        )
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:100]}")
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global browser_instance, page_instance
+    global browser_data
     
     browser_path = os.path.join(PLAYWRIGHT_DIR, "chromium-1091", "chrome-linux", "chrome")
     installed = os.path.exists(browser_path)
     
-    # Проверяем, открыт ли браузер
     is_open = "❌"
     url = "Нет"
-    if browser_instance and page_instance:
+    if browser_data:
         try:
-            url = await page_instance.url
+            page = browser_data['page']
+            url = await page.url
             is_open = "✅"
         except:
-            is_open = "❌"
+            is_open = "❌ (закрыт)"
     
     await update.message.reply_text(
         f"📊 Статистика\n\n"
@@ -258,6 +207,13 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🍪 Куки: {len(COOKIES)} шт."
     )
 
+async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text("⏳ Закрываю браузер...")
+    
+    await close_browser()
+    
+    await msg.edit_text("✅ Браузер закрыт!")
+
 def main():
     app = Application.builder().token(TOKEN).build()
     
@@ -267,6 +223,7 @@ def main():
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("close", close))
     
     print("🤖 Бот запущен...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
