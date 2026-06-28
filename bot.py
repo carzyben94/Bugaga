@@ -70,10 +70,14 @@ async def get_browser():
         args=['--no-sandbox', '--disable-setuid-sandbox']
     )
     context = await browser.new_context(
-        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        viewport={'width': 1280, 'height': 720}
     )
     page = await context.new_page()
     await stealth_async(page)
+    
+    # Устанавливаем таймауты
+    page.set_default_timeout(15000)  # 15 секунд вместо 30
     
     browser_data = {
         'playwright': p,
@@ -121,8 +125,11 @@ async def go(update: Update, context: ContextTypes.DEFAULT_TYPE):
         browser = await get_browser()
         page = browser['page']
         
-        await page.goto(url, wait_until='networkidle')
+        # Загружаем с таймаутом 15 секунд
+        await page.goto(url, wait_until='domcontentloaded', timeout=15000)
         await msg.edit_text(f"✅ Открыл: {url}")
+    except TimeoutError:
+        await msg.edit_text(f"⚠️ Страница загружается долго, но браузер открыт: {url}")
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:100]}")
 
@@ -134,7 +141,9 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         page = browser['page']
         
         await browser['context'].add_cookies(COOKIES)
-        await page.goto('https://x.com', wait_until='networkidle')
+        
+        # Загружаем с таймаутом 15 секунд
+        await page.goto('https://x.com', wait_until='domcontentloaded', timeout=15000)
         
         is_logged_in = await page.evaluate('!!document.querySelector("[data-testid=primaryColumn]")')
         title = await page.title()
@@ -144,6 +153,8 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📌 Заголовок: {title[:60]}\n"
             f"🔐 Авторизация: {'✅' if is_logged_in else '❌'}"
         )
+    except TimeoutError:
+        await msg.edit_text("⚠️ X.com долго грузится, но браузер открыт. Попробуй /screen")
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:100]}")
 
