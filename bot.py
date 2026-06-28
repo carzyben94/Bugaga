@@ -15,36 +15,38 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Отправь /status чтобы проверить браузер."
     )
 
-# Команда /status - проверка браузера с Stealth
+# Команда /status - проверка браузера со Stealth
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Запускаю браузер с защитой...")
     
     try:
-        from playwright_extra import chromium
-        from playwright_extra.stealth import StealthPlugin
+        from playwright.async_api import async_playwright
+        from playwright_stealth import stealth_async
         
-        # Активируем Stealth
-        chromium.use(StealthPlugin())
-        
-        browser = await chromium.launch(
-            headless=True,
-            args=[
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-blink-features=AutomationControlled'
-            ]
-        )
-        
-        context = await browser.new_context(
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        )
-        
-        page = await context.new_page()
-        await page.goto('https://x.com', wait_until='networkidle')
-        title = await page.title()
-        await browser.close()
-        
-        await update.message.reply_text(f"✅ Браузер с Stealth работает!\nЗаголовок X.com: {title[:50]}...")
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-blink-features=AutomationControlled'
+                ]
+            )
+            
+            context = await browser.new_context(
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            )
+            
+            page = await context.new_page()
+            
+            # Применяем Stealth
+            await stealth_async(page)
+            
+            await page.goto('https://x.com', wait_until='networkidle')
+            title = await page.title()
+            await browser.close()
+            
+            await update.message.reply_text(f"✅ Браузер со Stealth работает!\nЗаголовок X.com: {title[:50]}...")
         
     except ImportError as e:
         await update.message.reply_text(f"❌ Ошибка импорта: {str(e)[:100]}")
