@@ -205,8 +205,8 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(log_msg)
             return
         
-        # Проверяем URL
-        current_url = await page.url
+        # Проверяем URL (СВОЙСТВО - без await)
+        current_url = page.url
         log_msg += f"\n📍 URL: {current_url[:80]}"
         
         # Проверяем наличие элементов
@@ -236,7 +236,7 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             log_msg += f"\n\n⚠️ Ошибка проверки элементов: {str(e)}"
             log_error(f"Ошибка проверки селекторов: {str(e)}", traceback.format_exc())
         
-        # Проверяем куки в браузере
+        # Проверяем куки в браузере (МЕТОД - с await)
         try:
             cookies_in_browser = await browser['context'].cookies()
             auth_token = next((c for c in cookies_in_browser if c.get('name') == 'auth_token'), None)
@@ -251,10 +251,11 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             log_msg += f"\n\n⚠️ Ошибка проверки кук: {str(e)}"
         
+        # Заголовок страницы (МЕТОД - с await)
         title = await page.title()
         log_msg += f"\n\n📌 Заголовок: {title[:60] if title else 'Нет заголовка'}"
         
-        # Делаем скриншот
+        # Делаем скриншот (МЕТОД - с await)
         screenshot = None
         try:
             screenshot = await page.screenshot()
@@ -307,7 +308,9 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         browser = await get_browser()
         page = browser['page']
         
-        url = await page.url
+        # page.url - СВОЙСТВО (без await)
+        url = page.url
+        # page.title() - МЕТОД (с await)
         title = await page.title()
         
         await msg.edit_text(
@@ -331,7 +334,8 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if browser_data:
         try:
             page = browser_data['page']
-            url = await page.url
+            # page.url - СВОЙСТВО (без await)
+            url = page.url
             is_open = "✅"
         except:
             is_open = "❌ (закрыт)"
@@ -411,4 +415,4 @@ def main():
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
-    main() 
+    main()
