@@ -188,7 +188,6 @@ class DeepXParser:
             ('https://x.com/i/trends', 'trends'),
             ('https://x.com/i/communities', 'communities'),
             ('https://x.com/i/grok', 'grok'),
-            ('https://x.com/account/verify', 'verify'),
         ]
         
         for url, name in pages:
@@ -226,7 +225,7 @@ class DeepXParser:
             self.visited_urls.add(url)
             
             # Делаем несколько скроллов
-            for i in range(5):
+            for i in range(3):
                 await self.page.evaluate('window.scrollBy(0, 1000)')
                 await asyncio.sleep(1.5)
                 
@@ -242,97 +241,58 @@ class DeepXParser:
             self.data['pages'][page_name] = {'error': str(e)}
     
     async def extract_everything(self, page_name: str) -> Dict:
-        """Извлекает ВСЕ данные со страницы"""
+        """Извлекает ВСЕ данные со страницы - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
         return await self.page.evaluate(f'''
             () => {{
                 const data = {{
                     url: window.location.href,
                     title: document.title,
                     html: document.documentElement.outerHTML.slice(0, 100000),
-                    
-                    // ВСЕ элементы с их атрибутами
                     elements: [],
-                    
-                    // Кнопки (ВСЕ)
                     buttons: [],
                     button_testids: [],
-                    
-                    // TestID (ВСЕ)
                     testids: [],
                     testid_elements: {{}},
-                    
-                    // Поля ввода (ВСЕ)
                     inputs: [],
                     textareas: [],
                     selects: [],
-                    
-                    // Ссылки (ВСЕ)
                     links: [],
-                    
-                    // Формы (ВСЕ)
                     forms: [],
-                    
-                    // Изображения (ВСЕ)
                     images: [],
-                    
-                    // Заголовки (ВСЕ)
                     headers: [],
-                    
-                    // Текст (ВЕСЬ)
                     all_text: '',
-                    
-                    // Навигация
                     navigation: {{}},
-                    
-                    // Модалки
                     modals: [],
-                    
-                    // Выпадающие списки
                     dropdowns: [],
-                    
-                    // Меню
                     menus: [],
-                    
-                    // Вкладки
                     tabs: [],
-                    
-                    // Карточки
                     cards: [],
-                    
-                    // Атрибуты (ВСЕ)
                     attributes: {{}},
-                    
-                    // Классы (ВСЕ)
                     classes: new Set(),
-                    
-                    // Роли (ВСЕ)
                     roles: new Set(),
-                    
-                    // ARIA метки
                     aria_labels: [],
-                    
-                    // Placeholder
                     placeholders: [],
-                    
-                    // Значения полей
                     values: [],
-                    
-                    // Скрипты
                     scripts: [],
-                    
-                    // Стили
                     styles: [],
-                    
-                    // Количество элементов
                     element_counts: {{}},
-                    
-                    // Структура
-                    structure: {{
-                        depth: 0,
-                        children: 0,
-                        siblings: 0
-                    }}
+                    structure: {{ depth: 0, children: 0 }},
+                    tweets: []
                 }};
+                
+                // ===== ФУНКЦИЯ БЕЗОПАСНОГО ПОЛУЧЕНИЯ CLASSNAME =====
+                function getClassName(el) {{
+                    try {{
+                        if (el.className) {{
+                            if (typeof el.className === 'string') return el.className;
+                            if (el.className.baseVal) return el.className.baseVal;
+                            if (el.className.toString) return el.className.toString();
+                        }}
+                        return '';
+                    }} catch(e) {{
+                        return '';
+                    }}
+                }}
                 
                 // ===== СБОР ВСЕХ ЭЛЕМЕНТОВ =====
                 document.querySelectorAll('*').forEach(el => {{
@@ -340,47 +300,44 @@ class DeepXParser:
                     const rect = el.getBoundingClientRect();
                     const testid = el.getAttribute('data-testid') || '';
                     const id = el.id || '';
-                    const className = el.className || '';
+                    const className = getClassName(el);
                     const role = el.getAttribute('role') || '';
                     const ariaLabel = el.getAttribute('aria-label') || '';
                     
-                    // Собираем все элементы для детального анализа
-                    data.elements.push({{
-                        tag: tag,
-                        testid: testid,
-                        id: id,
-                        class: className.slice(0, 200),
-                        role: role,
-                        ariaLabel: ariaLabel.slice(0, 100),
-                        text: el.textContent?.trim()?.slice(0, 200) || '',
-                        visible: rect.width > 0 && rect.height > 0,
-                        x: Math.round(rect.x),
-                        y: Math.round(rect.y),
-                        width: Math.round(rect.width),
-                        height: Math.round(rect.height)
-                    }});
+                    // Только видимые элементы
+                    if (rect.width > 0 || rect.height > 0) {{
+                        data.elements.push({{
+                            tag: tag,
+                            testid: testid,
+                            id: id,
+                            class: className.slice(0, 200),
+                            role: role,
+                            ariaLabel: ariaLabel.slice(0, 100),
+                            text: el.textContent?.trim()?.slice(0, 200) || '',
+                            visible: rect.width > 0 && rect.height > 0,
+                            x: Math.round(rect.x),
+                            y: Math.round(rect.y),
+                            width: Math.round(rect.width),
+                            height: Math.round(rect.height)
+                        }});
+                    }}
                     
-                    // Счетчики по тегам
                     if (!data.element_counts[tag]) data.element_counts[tag] = 0;
                     data.element_counts[tag]++;
                     
-                    // Классы
                     if (className) {{
                         className.split(' ').forEach(c => {{
                             if (c) data.classes.add(c.slice(0, 100));
                         }});
                     }}
                     
-                    // Роли
                     if (role) data.roles.add(role);
                     
-                    // Атрибуты
                     for (const attr of el.attributes) {{
                         if (!data.attributes[attr.name]) data.attributes[attr.name] = new Set();
                         data.attributes[attr.name].add(attr.value?.slice(0, 100) || '');
                     }}
                     
-                    // TestID
                     if (testid) {{
                         if (!data.testids.includes(testid)) data.testids.push(testid);
                         if (!data.testid_elements[testid]) data.testid_elements[testid] = [];
@@ -391,14 +348,11 @@ class DeepXParser:
                         }});
                     }}
                     
-                    // ARIA метки
                     if (ariaLabel) data.aria_labels.push(ariaLabel.slice(0, 100));
                     
-                    // Placeholder
                     const placeholder = el.getAttribute('placeholder');
                     if (placeholder) data.placeholders.push(placeholder.slice(0, 100));
                     
-                    // Значения
                     const value = el.getAttribute('value');
                     if (value) data.values.push(value.slice(0, 100));
                 }});
@@ -409,6 +363,7 @@ class DeepXParser:
                     const text = el.textContent?.trim()?.slice(0, 50) || '';
                     const aria = el.getAttribute('aria-label') || '';
                     const type = el.getAttribute('type') || 'button';
+                    const className = getClassName(el);
                     
                     data.buttons.push({{
                         testid: testid,
@@ -416,7 +371,7 @@ class DeepXParser:
                         aria: aria.slice(0, 50),
                         type: type,
                         disabled: el.hasAttribute('disabled'),
-                        class: el.className?.slice(0, 100) || '',
+                        class: className.slice(0, 100),
                         tag: el.tagName
                     }});
                     
@@ -615,7 +570,6 @@ class DeepXParser:
                         const replyEl = el.querySelector('[data-testid="reply"]');
                         const viewsEl = el.querySelector('[data-testid="views"]');
                         
-                        // Проверяем, закреплен ли пост
                         const isPinned = el.querySelector('[aria-label="Pinned tweet"]') !== null;
                         
                         data.tweets.push({{
@@ -667,7 +621,6 @@ class DeepXParser:
                 }}
                 data.attributes = attrs;
                 
-                // Уникальные значения
                 data.aria_labels = [...new Set(data.aria_labels)];
                 data.placeholders = [...new Set(data.placeholders)];
                 data.values = [...new Set(data.values)];
@@ -723,10 +676,8 @@ class DeepXParser:
         if page_name in self.data['pages']:
             page = self.data['pages'][page_name]
             
-            # Добавляем новые посты
             if 'tweets' in new_data:
                 page['tweets'] = page.get('tweets', []) + new_data['tweets']
-                # Уникальные посты
                 seen = set()
                 unique = []
                 for t in page['tweets']:
@@ -736,11 +687,9 @@ class DeepXParser:
                         unique.append(t)
                 page['tweets'] = unique
             
-            # Добавляем новые кнопки
             if 'buttons' in new_data:
                 page['buttons'] = page.get('buttons', []) + new_data['buttons']
             
-            # Добавляем новые testid
             if 'testids' in new_data:
                 page['testids'] = list(set(page.get('testids', []) + new_data['testids']))
     
@@ -753,7 +702,7 @@ class DeepXParser:
             await asyncio.sleep(2)
             
             all_tweets = []
-            for i in range(10):
+            for i in range(5):
                 await self.page.evaluate('window.scrollBy(0, 1200)')
                 await asyncio.sleep(1.5)
                 
@@ -782,9 +731,7 @@ class DeepXParser:
                 ''')
                 
                 all_tweets.extend(tweets)
-                logger.info(f"📊 Собрано постов: {len(all_tweets)}")
                 
-                # Уникальные
                 seen = set()
                 unique = []
                 for t in all_tweets:
@@ -793,6 +740,8 @@ class DeepXParser:
                         seen.add(key)
                         unique.append(t)
                 all_tweets = unique
+                
+                logger.info(f"📊 Собрано постов: {len(all_tweets)}")
             
             self.data['tweets'] = all_tweets
             logger.info(f"✅ Всего постов: {len(all_tweets)}")
@@ -804,7 +753,6 @@ class DeepXParser:
         """Собирает все данные в единую структуру"""
         logger.info("📊 Компилирую все данные...")
         
-        # Собираем все testid со всех страниц
         all_testids = set()
         all_buttons = {}
         all_inputs = {}
@@ -814,11 +762,9 @@ class DeepXParser:
         
         for page_name, page_data in self.data['pages'].items():
             if isinstance(page_data, dict) and 'error' not in page_data:
-                # TestID
                 for testid in page_data.get('testids', []):
                     all_testids.add(testid)
                 
-                # Кнопки
                 for btn in page_data.get('buttons', []):
                     testid = btn.get('testid', '')
                     if testid:
@@ -835,7 +781,6 @@ class DeepXParser:
                         if page_name not in all_buttons[testid]['pages']:
                             all_buttons[testid]['pages'].append(page_name)
                 
-                # Поля ввода
                 for inp in page_data.get('inputs', []):
                     testid = inp.get('testid', '') or inp.get('name', '')
                     if testid:
@@ -850,25 +795,20 @@ class DeepXParser:
                         if page_name not in all_inputs[testid]['pages']:
                             all_inputs[testid]['pages'].append(page_name)
                 
-                # Ссылки
                 for link in page_data.get('links', []):
                     href = link.get('href', '')
                     if href:
-                        all_links[href] = {
-                            'text': link.get('text', ''),
-                            'pages': all_links.get(href, {}).get('pages', []) + [page_name]
-                        }
-                        all_links[href]['pages'] = list(set(all_links[href]['pages']))
+                        if href not in all_links:
+                            all_links[href] = {'text': link.get('text', ''), 'pages': []}
+                        if page_name not in all_links[href]['pages']:
+                            all_links[href]['pages'].append(page_name)
                 
-                # Формы
                 for form in page_data.get('forms', []):
                     all_forms.append(form)
                 
-                # Заголовки
                 for h in page_data.get('headers', []):
                     all_headers.append(h)
         
-        # Сохраняем в основную структуру
         self.data['all_testids'] = list(all_testids)
         self.data['all_buttons'] = all_buttons
         self.data['all_inputs'] = all_inputs
@@ -876,7 +816,6 @@ class DeepXParser:
         self.data['all_forms'] = all_forms
         self.data['all_headers'] = all_headers
         
-        # Статистика
         self.data['statistics'] = {
             'total_pages': len(self.data['pages']),
             'total_testids': len(all_testids),
@@ -951,19 +890,15 @@ async def deep_parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         browser = await get_browser()
         page = browser['page']
         
-        # Идем на X.com
         await page.goto('https://x.com', wait_until='domcontentloaded')
         await asyncio.sleep(2)
         
-        # Парсим
         parser = DeepXParser(page)
         data = await parser.parse_full_site()
         
-        # Сохраняем глобально
         global full_site_data
         full_site_data = data
         
-        # Отчет
         stats = data.get('statistics', {})
         report = f"📊 **ПАРСИНГ ЗАВЕРШЕН!**\n\n"
         report += f"📄 Страниц: {stats.get('total_pages', 0)}\n"
@@ -974,11 +909,9 @@ async def deep_parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         report += f"📋 Форм: {stats.get('total_forms', 0)}\n"
         report += f"📌 Заголовков: {stats.get('total_headers', 0)}\n"
         report += f"🐦 Постов: {stats.get('total_tweets', 0)}\n"
-        report += f"📈 Трендов: {stats.get('total_trends', 0)}\n"
         
         await msg.edit_text(report)
         
-        # Сохраняем файл
         filename = f"x_deep_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         with open(filename, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -990,7 +923,6 @@ async def deep_parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         os.remove(filename)
         
-        # Скриншот
         screenshot = await page.screenshot(type='jpeg', quality=80)
         await update.message.reply_photo(photo=screenshot, caption="📸 Текущая страница")
         
@@ -1034,7 +966,6 @@ async def show_all_testids(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     result = "🏷️ **ВСЕ TESTID**\n\n"
     for i, testid in enumerate(testids[:30], 1):
-        # Показываем на каких страницах
         pages = []
         for page_name, page_data in full_site_data['pages'].items():
             if isinstance(page_data, dict) and testid in page_data.get('testids', []):
