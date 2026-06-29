@@ -197,6 +197,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/go <url> - открыть сайт\n"
         "/xlogin - вход в X.com\n"
         "/explore - исследовать интерфейс X.com\n"
+        "/findbuttons - найти все кнопки на странице\n"
+        "/click <testid> - нажать кнопку по data-testid\n"
         "/screen - скриншот\n"
         "/status - состояние браузера\n"
         "/stats - статистика\n"
@@ -601,7 +603,6 @@ async def explore(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Отправляем результат
         if len(explore_result) > 4000:
-            # Если слишком длинно, отправляем файлом
             with open('explore_result.txt', 'w') as f:
                 f.write(explore_result)
             await update.message.reply_document(
@@ -616,6 +617,127 @@ async def explore(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         error_msg = f"Ошибка в explore: {str(e)}"
+        log_error(error_msg, traceback.format_exc())
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def findbuttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Находит все кнопки на странице"""
+    msg = await update.message.reply_text("⏳ Ищу кнопки...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        buttons = await page.evaluate('''
+            () => {
+                const result = [];
+                document.querySelectorAll('button, [role="button"]').forEach(el => {
+                    const testid = el.getAttribute('data-testid') || '';
+                    const text = el.textContent?.trim() || '';
+                    const ariaLabel = el.getAttribute('aria-label') || '';
+                    if (testid || text || ariaLabel) {
+                        result.push({
+                            testid: testid.slice(0, 50),
+                            text: text.slice(0, 50),
+                            ariaLabel: ariaLabel.slice(0, 50)
+                        });
+                    }
+                });
+                return result;
+            }
+        ''')
+        
+        if buttons:
+            result = "🔘 НАЙДЕННЫЕ КНОПКИ:\n\n"
+            count = 0
+            for btn in buttons[:30]:
+                if btn['testid']:
+                    result += f"📌 {btn['testid']}\n"
+                elif btn['ariaLabel']:
+                    result += f"🏷️ {btn['ariaLabel']}\n"
+                elif btn['text']:
+                    result += f"📝 {btn['text']}\n"
+                result += "\n"
+                count += 1
+            
+            if len(buttons) > 30:
+                result += f"... и еще {len(buttons)-30} кнопок"
+            else:
+                result += f"Всего кнопок: {len(buttons)}"
+            
+            if len(result) > 4000:
+                with open('buttons.txt', 'w') as f:
+                    f.write(result)
+                await update.message.reply_document(
+                    document=open('buttons.txt', 'rb'),
+                    filename=f"buttons_{datetime.now().strftime('%Y%m%d')}.txt"
+                )
+                os.remove('buttons.txt')
+            else:
+                await msg.edit_text(result)
+        else:
+            await msg.edit_text("❌ Кнопки не найдены")
+            
+    except Exception as e:
+        error_msg = f"Ошибка в findbuttons: {str(e)}"
+        log_error(error_msg, traceback.format_exc())
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def click_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Нажимает кнопку по data-testid"""
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Укажи data-testid кнопки\n"
+            "Пример: /click AppTabBar_Explore_Link\n\n"
+            "📌 Доступные кнопки:\n"
+            "• AppTabBar_Home_Link - Главная\n"
+            "• AppTabBar_Explore_Link - Обзор\n"
+            "• AppTabBar_Notifications_Link - Уведомления\n"
+            "• AppTabBar_Profile_Link - Профиль\n"
+            "• AppTabBar_DirectMessage_Link - Чат\n"
+            "• SideNav_NewTweet_Button - Новый пост\n"
+            "• tweetButton - Опубликовать\n"
+            "• reply - Ответить\n"
+            "• retweet - Репост\n"
+            "• like - Нравится\n"
+            "• bookmark - Закладка"
+        )
+        return
+    
+    testid = context.args[0]
+    msg = await update.message.reply_text(f"⏳ Ищу кнопку {testid}...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        # Ищем кнопку
+        selector = f'[data-testid="{testid}"]'
+        button = await page.query_selector(selector)
+        
+        if not button:
+            await msg.edit_text(f"❌ Кнопка {testid} не найдена")
+            return
+        
+        # Нажимаем
+        await button.click()
+        await page.wait_for_timeout(2000)
+        
+        # Делаем скриншот после клика
+        screenshot = await page.screenshot(
+            full_page=False,
+            type='jpeg',
+            quality=80
+        )
+        
+        await msg.edit_text(f"✅ Нажал на {testid}")
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption=f"📸 После клика на {testid}"
+        )
+        
+    except Exception as e:
+        error_msg = f"Ошибка в click_button: {str(e)}"
         log_error(error_msg, traceback.format_exc())
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
@@ -807,6 +929,8 @@ def main():
     app.add_handler(CommandHandler("go", go))
     app.add_handler(CommandHandler("xlogin", xlogin))
     app.add_handler(CommandHandler("explore", explore))
+    app.add_handler(CommandHandler("findbuttons", findbuttons))
+    app.add_handler(CommandHandler("click", click_button))
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("stats", stats))
