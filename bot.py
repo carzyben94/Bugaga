@@ -1467,7 +1467,7 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Укажи число: /tweet 1")
         return
     
-    msg = await update.message.reply_text(f"🔍 Ищу пост #{num + 1}...")
+    status_msg = await update.message.reply_text(f"🔍 Ищу пост #{num + 1}...")
     
     try:
         browser = await get_browser()
@@ -1476,21 +1476,23 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Проверяем что мы на X.com
         current_url = page.url
         if 'x.com' not in current_url:
-            await msg.edit_text("❌ Сначала зайди на X.com через /xlogin")
+            await status_msg.edit_text("❌ Сначала зайди на X.com через /xlogin")
             return
         
         # Ждем загрузки постов
         try:
-            await page.wait_for_selector('[data-testid="tweet"]', timeout=10000)
+            await page.wait_for_selector('[data-testid="tweet"]', timeout=15000)
         except:
-            await msg.edit_text("❌ Посты не загрузились. Попробуй обновить страницу")
+            await status_msg.edit_text("❌ Посты не загрузились. Попробуй обновить страницу")
             return
         
         # Собираем посты
         posts = await page.evaluate('''
             () => {
                 const result = [];
-                document.querySelectorAll('[data-testid="tweet"]').forEach(el => {
+                const tweets = document.querySelectorAll('[data-testid="tweet"]');
+                
+                tweets.forEach(el => {
                     const text = el.textContent?.trim() || '';
                     const rect = el.getBoundingClientRect();
                     
@@ -1498,9 +1500,13 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         const authorEl = el.querySelector('[data-testid="User-Name"]');
                         const author = authorEl?.textContent?.trim() || 'Unknown';
                         
-                        const likes = el.querySelector('[data-testid="like"]')?.textContent?.trim() || '0';
-                        const retweets = el.querySelector('[data-testid="retweet"]')?.textContent?.trim() || '0';
-                        const replies = el.querySelector('[data-testid="reply"]')?.textContent?.trim() || '0';
+                        const likeEl = el.querySelector('[data-testid="like"]');
+                        const retweetEl = el.querySelector('[data-testid="retweet"]');
+                        const replyEl = el.querySelector('[data-testid="reply"]');
+                        
+                        const likes = likeEl?.textContent?.trim() || '0';
+                        const retweets = retweetEl?.textContent?.trim() || '0';
+                        const replies = replyEl?.textContent?.trim() || '0';
                         
                         const timeEl = el.querySelector('time');
                         const time = timeEl?.getAttribute('datetime') || '';
@@ -1526,13 +1532,14 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ''')
         
         if not posts:
-            await msg.edit_text("❌ Посты не найдены")
+            await status_msg.edit_text("❌ Посты не найдены на странице")
             return
         
         if num >= len(posts):
-            await msg.edit_text(f"❌ Пост #{num + 1} не найден. Всего: {len(posts)}")
+            await status_msg.edit_text(f"❌ Пост #{num + 1} не найден. Всего постов: {len(posts)}")
             return
         
+        # Берем нужный пост (с конца - последний сверху)
         posts_reversed = list(reversed(posts))
         post = posts_reversed[num]
         
@@ -1543,45 +1550,48 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Если пост не виден - скроллим к нему
         if post['top'] < 0 or post['bottom'] > viewport['height']:
-            await msg.edit_text(f"📜 Скроллю к посту #{num + 1}...")
+            await status_msg.edit_text(f"📜 Скроллю к посту #{num + 1}...")
             
-            # Скролл через JavaScript
-            await page.evaluate('''
-                const el = document.querySelector('[data-testid="tweet"]');
-                if (el) {
-                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                }
+            # Скроллим к первому посту с нужным номером
+            await page.evaluate(f'''
+                const tweets = document.querySelectorAll('[data-testid="tweet"]');
+                if (tweets.length > {num}) {{
+                    const index = tweets.length - {num + 1};
+                    tweets[index].scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+                }}
             ''')
             await asyncio.sleep(1.5)
             
-            # Обновляем координаты после скролла
-            new_coords = await page.evaluate('''
-                () => {
-                    const el = document.querySelector('[data-testid="tweet"]');
-                    if (el) {
+            # Обновляем координаты
+            coords = await page.evaluate(f'''
+                () => {{
+                    const tweets = document.querySelectorAll('[data-testid="tweet"]');
+                    if (tweets.length > {num}) {{
+                        const index = tweets.length - {num + 1};
+                        const el = tweets[index];
                         const rect = el.getBoundingClientRect();
-                        return {
+                        return {{
                             x: rect.x + rect.width / 2,
                             y: rect.y + rect.height / 2,
                             width: rect.width,
                             height: rect.height,
                             top: rect.top,
                             bottom: rect.bottom
-                        };
-                    }
+                        }};
+                    }}
                     return null;
-                }
+                }}
             ''')
             
-            if new_coords:
-                post['x'] = new_coords['x']
-                post['y'] = new_coords['y']
-                post['width'] = new_coords['width']
-                post['height'] = new_coords['height']
+            if coords:
+                post['x'] = coords['x']
+                post['y'] = coords['y']
+                post['width'] = coords['width']
+                post['height'] = coords['height']
         
-        # Обрезаем текст до 100 символов
-        text_preview = post['text'][:100]
-        if len(post['text']) > 100:
+        # Обрезаем текст до 120 символов
+        text_preview = post['text'][:120]
+        if len(post['text']) > 120:
             text_preview += '...'
         
         # Форматируем время
@@ -1589,27 +1599,29 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if time_str:
             try:
                 dt = datetime.fromisoformat(time_str.replace('Z', '+00:00'))
-                time_str = dt.strftime('%d %b %Y')
+                time_str = dt.strftime('%d %b %Y, %H:%M')
             except:
                 time_str = post['time'][:10]
         
-        # КОМПАКТНЫЙ ВЫВОД
+        # Компактный вывод
         result = f"""📌 #{num + 1} @{post['author']}
+
 {text_preview}
+
 ❤️ {post['likes']}  🔁 {post['retweets']}  💬 {post['replies']}
-{time_str}"""
+🕐 {time_str}"""
         
         # ===== ДВИЖЕНИЕ ДЖОЙСТИКА К ПОСТУ =====
-        await msg.edit_text(f"🖱️ Двигаюсь к посту #{num + 1}...")
+        await status_msg.edit_text(f"🖱️ Двигаюсь к посту #{num + 1}...")
         
         joystick = JoystickController(page)
-        await joystick.init_position()  # Курсор в центр
-        await joystick.human_like_move(post['x'], post['y'])  # Плавное движение к посту
+        await joystick.init_position()
+        await joystick.human_like_move(post['x'], post['y'])
         
         await asyncio.sleep(0.3)
         
         # ===== СКРИНШОТ ПОСТА =====
-        await msg.edit_text(f"📸 Делаю скриншот поста #{num + 1}...")
+        await status_msg.edit_text(f"📸 Делаю скриншот поста #{num + 1}...")
         
         screenshot = None
         try:
@@ -1619,10 +1631,9 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
             clip_width = min(post['width'] + 40, viewport['width'])
             clip_height = min(post['height'] + 40, viewport['height'])
             
-            # Проверяем что область внутри viewport
             if (clip_x + clip_width <= viewport['width'] and 
                 clip_y + clip_height <= viewport['height'] and
-                clip_width > 10 and clip_height > 10):
+                clip_width > 20 and clip_height > 20):
                 
                 screenshot = await page.screenshot(
                     clip={
@@ -1646,7 +1657,7 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
         
         # Отправляем результат
-        await msg.edit_text(result)
+        await status_msg.edit_text(result)
         
         if screenshot:
             await update.message.reply_photo(
@@ -1659,7 +1670,10 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         error_msg = f"Ошибка: {str(e)}"
         log_error(error_msg, traceback.format_exc())
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+        try:
+            await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+        except:
+            await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def last_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает последний пост"""
@@ -1685,6 +1699,13 @@ async def list_tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
         browser = await get_browser()
         page = browser['page']
         
+        # Скроллим вниз для загрузки постов
+        await msg.edit_text("📜 Скроллю вниз для загрузки постов...")
+        for _ in range(3):
+            await page.evaluate('window.scrollBy(0, 800)')
+            await asyncio.sleep(1)
+        
+        # Собираем посты
         posts = await page.evaluate('''
             () => {
                 const result = [];
@@ -1695,12 +1716,13 @@ async def list_tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     const authorEl = el.querySelector('[data-testid="User-Name"]');
                     const author = authorEl?.textContent?.trim() || '';
                     
-                    result.push({
-                        text: text.slice(0, 80),
-                        author: author.slice(0, 50),
-                        x: rect.x + rect.width / 2,
-                        y: rect.y + rect.height / 2
-                    });
+                    if (rect.width > 0 && rect.height > 0) {
+                        result.push({
+                            text: text.slice(0, 80),
+                            author: author.slice(0, 50),
+                            y: rect.y
+                        });
+                    }
                 });
                 return result;
             }
@@ -1710,17 +1732,18 @@ async def list_tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("❌ Посты не найдены")
             return
         
-        posts_reversed = list(reversed(posts))
+        # Сортируем по y (сверху вниз)
+        posts_sorted = sorted(posts, key=lambda x: x['y'])
         
-        result = f"📋 НАЙДЕНО {len(posts_reversed)} ПОСТОВ:\n\n"
-        for i, post in enumerate(posts_reversed[:10], 1):
+        result = f"📋 НАЙДЕНО {len(posts_sorted)} ПОСТОВ:\n\n"
+        for i, post in enumerate(posts_sorted[:15], 1):
             result += f"{i}. {post['text'][:80]}\n"
             if post['author']:
                 result += f"   👤 {post['author']}\n"
-            result += f"   📍 ({int(post['x'])}, {int(post['y'])})\n\n"
+            result += "\n"
         
-        if len(posts_reversed) > 10:
-            result += f"... и еще {len(posts_reversed) - 10} постов"
+        if len(posts_sorted) > 15:
+            result += f"... и еще {len(posts_sorted) - 15} постов"
         
         await msg.edit_text(result)
         
