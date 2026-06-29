@@ -1,3 +1,4 @@
+# bot.py
 import os
 import sys
 import subprocess
@@ -8,6 +9,9 @@ import asyncio
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+
+# Импорт джойстика
+from joystick_controller import JoystickController
 
 # Настройка логирования
 logging.basicConfig(
@@ -27,7 +31,7 @@ if not TOKEN:
 PLAYWRIGHT_DIR = "/root/.cache/ms-playwright"
 os.environ['PLAYWRIGHT_BROWSERS_PATH'] = PLAYWRIGHT_DIR
 
-# Свежие куки
+# Куки X.com
 COOKIES = [
     {"name": "__cuid", "value": "55d2d7c5-4888-430a-b024-dd785da46ef4", "domain": ".x.com", "path": "/"},
     {"name": "lang", "value": "ru", "domain": ".x.com", "path": "/"},
@@ -49,7 +53,6 @@ MAX_LOGS = 50
 browser_lock = False
 
 def log_error(error_msg, traceback_str=None):
-    """Сохраняет ошибку в лог"""
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     log_entry = {
         'time': timestamp,
@@ -190,21 +193,24 @@ async def close_browser():
             pass
         browser_data = None
 
+# ========== ОСНОВНЫЕ КОМАНДЫ ==========
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 Бот с браузером Playwright\n\n"
-        "Доступные команды:\n"
+        "🤖 Бот с браузером Playwright + Джойстик\n\n"
+        "📌 Основные команды:\n"
         "/go <url> - открыть сайт\n"
         "/xlogin - вход в X.com\n"
-        "/explore - исследовать интерфейс X.com\n"
-        "/findbuttons - найти все кнопки на странице\n"
-        "/click <testid> - нажать кнопку по data-testid\n"
         "/screen - скриншот\n"
         "/status - состояние браузера\n"
-        "/stats - статистика\n"
         "/check - проверка авторизации\n"
-        "/logs - показать логи\n"
-        "/close - закрыть браузер"
+        "/close - закрыть браузер\n\n"
+        "🎮 Команды джойстика:\n"
+        "/joystick - тест джойстика\n"
+        "/joystick_ai <задача> - AI поиск и клик\n"
+        "/find <запрос> - найти элементы\n"
+        "/click <testid> - клик по testid\n"
+        "/findbuttons - все кнопки"
     )
 
 async def go(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -238,11 +244,9 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         logger.info(f"User {update.effective_user.id} начал xlogin")
         
-        # Сначала загружаем пустую страницу
         await page.goto('about:blank')
         await page.wait_for_timeout(1000)
         
-        # Очищаем старые куки
         try:
             await browser['context'].clear_cookies()
             logger.info("Старые куки очищены")
@@ -252,7 +256,6 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             browser = await get_browser()
             page = browser['page']
         
-        # Устанавливаем куки
         cookie_errors = []
         cookie_success = []
         
@@ -273,12 +276,10 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(cookie_errors) > 3:
                 log_msg += f"\n... и еще {len(cookie_errors)-3}"
         
-        # Переходим на страницу
         log_msg += "\n\n🔄 Перехожу на x.com..."
         try:
             await page.goto('https://x.com', wait_until='commit', timeout=15000)
             logger.info("Страница начала загрузку")
-            
             await page.wait_for_timeout(5000)
             
             try:
@@ -299,35 +300,12 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 pass
         
-        # Проверяем URL
         try:
             current_url = page.url
             log_msg += f"\n📍 URL: {current_url[:80]}"
         except:
             log_msg += f"\n📍 URL: Недоступен"
         
-        # Проверяем HTML
-        try:
-            html_content = await page.content()
-            log_msg += f"\n📄 HTML длина: {len(html_content)} символов"
-            
-            if len(html_content) < 100:
-                log_msg += "\n⚠️ HTML слишком короткий"
-            
-            if 'login' in html_content.lower():
-                log_msg += "\n🔍 Найдено 'login'"
-            if 'twitter' in html_content.lower() or 'x.com' in html_content.lower():
-                log_msg += "\n🔍 Найдено 'twitter' или 'x.com'"
-            if 'challenge' in html_content.lower():
-                log_msg += "\n⚠️ Страница проверки"
-            if 'cloudflare' in html_content.lower():
-                log_msg += "\n⚠️ Cloudflare защита"
-            if 'block' in html_content.lower():
-                log_msg += "\n⚠️ Возможна блокировка"
-        except Exception as e:
-            log_msg += f"\n⚠️ Ошибка проверки HTML: {str(e)}"
-        
-        # Проверяем элементы
         is_logged = False
         try:
             selectors = [
@@ -354,7 +332,6 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             log_msg += f"\n\n⚠️ Ошибка проверки элементов: {str(e)}"
         
-        # Проверяем куки
         try:
             cookies_in_browser = await browser['context'].cookies()
             auth_token = next((c for c in cookies_in_browser if c.get('name') == 'auth_token'), None)
@@ -363,14 +340,12 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             log_msg += f"\n\n⚠️ Ошибка проверки кук: {str(e)}"
         
-        # Заголовок
         try:
             title = await page.title()
             log_msg += f"\n\n📌 Заголовок: {title[:60] if title else 'Нет заголовка'}"
         except:
             log_msg += f"\n\n📌 Заголовок: Недоступен"
         
-        # Скриншот
         screenshot = None
         try:
             screenshot = await page.screenshot(
@@ -404,342 +379,6 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("❌ Браузер закрыт. Попробуйте снова /xlogin")
         else:
             await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def explore(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Исследует интерфейс X.com, находит кнопки и элементы"""
-    msg = await update.message.reply_text("🔍 Исследую интерфейс X.com...")
-    
-    try:
-        browser = await get_browser()
-        page = browser['page']
-        
-        # Проверяем что мы на X.com
-        current_url = page.url
-        if 'x.com' not in current_url:
-            await msg.edit_text("❌ Сначала зайди на X.com через /xlogin")
-            return
-        
-        # Собираем информацию о странице
-        explore_result = "🔍 ИССЛЕДОВАНИЕ ИНТЕРФЕЙСА X.COM\n\n"
-        
-        # 1. Основная информация
-        try:
-            title = await page.title()
-            explore_result += f"📌 Заголовок: {title[:60]}\n"
-            explore_result += f"📍 URL: {current_url[:80]}\n\n"
-        except:
-            pass
-        
-        # 2. Находим все кнопки
-        explore_result += "🔘 НАЙДЕННЫЕ КНОПКИ:\n"
-        try:
-            buttons = await page.evaluate('''
-                () => {
-                    const buttons = [];
-                    document.querySelectorAll('button, [role="button"], [data-testid*="button"]').forEach(el => {
-                        const text = el.textContent?.trim() || '';
-                        const testId = el.getAttribute('data-testid') || '';
-                        const ariaLabel = el.getAttribute('aria-label') || '';
-                        const type = el.getAttribute('type') || '';
-                        const className = el.className || '';
-                        buttons.push({
-                            text: text.slice(0, 50),
-                            testId: testId.slice(0, 50),
-                            ariaLabel: ariaLabel.slice(0, 50),
-                            type: type,
-                            class: className.slice(0, 50)
-                        });
-                    });
-                    return buttons;
-                }
-            ''')
-            
-            if buttons:
-                # Группируем кнопки по типу
-                button_groups = {}
-                for btn in buttons:
-                    key = btn['testId'] or btn['ariaLabel'] or btn['text'] or 'unknown'
-                    if key not in button_groups:
-                        button_groups[key] = 0
-                    button_groups[key] += 1
-                
-                # Показываем уникальные кнопки (первые 20)
-                count = 0
-                for key, value in list(button_groups.items())[:20]:
-                    if key and key != 'unknown':
-                        explore_result += f"  • {key}: {value} шт.\n"
-                        count += 1
-                
-                if count == 0:
-                    explore_result += "  ⚠️ Кнопки не найдены\n"
-                else:
-                    explore_result += f"\n  Всего уникальных кнопок: {len(button_groups)}\n"
-            else:
-                explore_result += "  ❌ Кнопки не найдены\n"
-        except Exception as e:
-            explore_result += f"  ⚠️ Ошибка поиска кнопок: {str(e)[:50]}\n"
-        
-        # 3. Находим все data-testid элементы
-        explore_result += "\n🏷️ DATA-TESTID ЭЛЕМЕНТЫ:\n"
-        try:
-            testids = await page.evaluate('''
-                () => {
-                    const elements = {};
-                    document.querySelectorAll('[data-testid]').forEach(el => {
-                        const id = el.getAttribute('data-testid');
-                        if (id) {
-                            elements[id] = (elements[id] || 0) + 1;
-                        }
-                    });
-                    return elements;
-                }
-            ''')
-            
-            if testids:
-                # Сортируем и показываем
-                sorted_ids = sorted(testids.items(), key=lambda x: x[1], reverse=True)
-                count = 0
-                for testid, count_elem in sorted_ids[:30]:
-                    explore_result += f"  • {testid}: {count_elem} шт.\n"
-                    count += 1
-                
-                if count == 0:
-                    explore_result += "  ⚠️ data-testid не найдены\n"
-                else:
-                    explore_result += f"\n  Всего data-testid: {len(testids)}\n"
-            else:
-                explore_result += "  ❌ data-testid не найдены\n"
-        except Exception as e:
-            explore_result += f"  ⚠️ Ошибка поиска data-testid: {str(e)[:50]}\n"
-        
-        # 4. Находим формы
-        explore_result += "\n📝 ФОРМЫ:\n"
-        try:
-            forms = await page.evaluate('''
-                () => {
-                    const forms = [];
-                    document.querySelectorAll('form').forEach(el => {
-                        const action = el.getAttribute('action') || '';
-                        const method = el.getAttribute('method') || '';
-                        const inputs = el.querySelectorAll('input, textarea, select').length;
-                        forms.push({ action: action.slice(0, 50), method: method, inputs: inputs });
-                    });
-                    return forms;
-                }
-            ''')
-            
-            if forms:
-                for i, form in enumerate(forms[:5], 1):
-                    explore_result += f"  Форма {i}: action={form['action'] or 'не указан'}, method={form['method'] or 'get'}, полей={form['inputs']}\n"
-            else:
-                explore_result += "  ❌ Формы не найдены\n"
-        except Exception as e:
-            explore_result += f"  ⚠️ Ошибка поиска форм: {str(e)[:50]}\n"
-        
-        # 5. Находим ссылки
-        explore_result += "\n🔗 ССЫЛКИ:\n"
-        try:
-            links = await page.evaluate('''
-                () => {
-                    const links = [];
-                    document.querySelectorAll('a[href]').forEach(el => {
-                        const href = el.getAttribute('href');
-                        const text = el.textContent?.trim() || '';
-                        if (href && !href.startsWith('javascript:')) {
-                            links.push({
-                                href: href.slice(0, 60),
-                                text: text.slice(0, 40)
-                            });
-                        }
-                    });
-                    return links;
-                }
-            ''')
-            
-            if links:
-                explore_result += f"  Всего ссылок: {len(links)}\n"
-                # Показываем первые 5 ссылок
-                for i, link in enumerate(links[:5], 1):
-                    explore_result += f"  {i}. {link['text'] or 'без текста'} → {link['href']}\n"
-            else:
-                explore_result += "  ❌ Ссылки не найдены\n"
-        except Exception as e:
-            explore_result += f"  ⚠️ Ошибка поиска ссылок: {str(e)[:50]}\n"
-        
-        # 6. Сохраняем HTML
-        try:
-            html_content = await page.content()
-            html_filename = f"x_com_page_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-            with open(html_filename, 'w', encoding='utf-8') as f:
-                f.write(html_content)
-            
-            explore_result += f"\n💾 HTML сохранен: {html_filename} ({len(html_content)} символов)"
-            
-            # Отправляем HTML файл
-            await update.message.reply_document(
-                document=open(html_filename, 'rb'),
-                filename=html_filename,
-                caption="📄 HTML страницы X.com"
-            )
-            os.remove(html_filename)
-            
-        except Exception as e:
-            explore_result += f"\n⚠️ Ошибка сохранения HTML: {str(e)[:50]}"
-        
-        # 7. Делаем скриншот
-        try:
-            screenshot = await page.screenshot(
-                full_page=False,
-                type='jpeg',
-                quality=80
-            )
-            
-            await update.message.reply_photo(
-                photo=screenshot,
-                caption="📸 Скриншот X.com"
-            )
-        except Exception as e:
-            explore_result += f"\n⚠️ Ошибка скриншота: {str(e)[:50]}"
-        
-        # Отправляем результат
-        if len(explore_result) > 4000:
-            with open('explore_result.txt', 'w') as f:
-                f.write(explore_result)
-            await update.message.reply_document(
-                document=open('explore_result.txt', 'rb'),
-                filename=f"explore_{datetime.now().strftime('%Y%m%d')}.txt"
-            )
-            os.remove('explore_result.txt')
-        else:
-            await msg.edit_text(explore_result)
-        
-        logger.info(f"Explore завершен для user {update.effective_user.id}")
-        
-    except Exception as e:
-        error_msg = f"Ошибка в explore: {str(e)}"
-        log_error(error_msg, traceback.format_exc())
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def findbuttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Находит все кнопки на странице"""
-    msg = await update.message.reply_text("⏳ Ищу кнопки...")
-    
-    try:
-        browser = await get_browser()
-        page = browser['page']
-        
-        buttons = await page.evaluate('''
-            () => {
-                const result = [];
-                document.querySelectorAll('button, [role="button"]').forEach(el => {
-                    const testid = el.getAttribute('data-testid') || '';
-                    const text = el.textContent?.trim() || '';
-                    const ariaLabel = el.getAttribute('aria-label') || '';
-                    if (testid || text || ariaLabel) {
-                        result.push({
-                            testid: testid.slice(0, 50),
-                            text: text.slice(0, 50),
-                            ariaLabel: ariaLabel.slice(0, 50)
-                        });
-                    }
-                });
-                return result;
-            }
-        ''')
-        
-        if buttons:
-            result = "🔘 НАЙДЕННЫЕ КНОПКИ:\n\n"
-            count = 0
-            for btn in buttons[:30]:
-                if btn['testid']:
-                    result += f"📌 {btn['testid']}\n"
-                elif btn['ariaLabel']:
-                    result += f"🏷️ {btn['ariaLabel']}\n"
-                elif btn['text']:
-                    result += f"📝 {btn['text']}\n"
-                result += "\n"
-                count += 1
-            
-            if len(buttons) > 30:
-                result += f"... и еще {len(buttons)-30} кнопок"
-            else:
-                result += f"Всего кнопок: {len(buttons)}"
-            
-            if len(result) > 4000:
-                with open('buttons.txt', 'w') as f:
-                    f.write(result)
-                await update.message.reply_document(
-                    document=open('buttons.txt', 'rb'),
-                    filename=f"buttons_{datetime.now().strftime('%Y%m%d')}.txt"
-                )
-                os.remove('buttons.txt')
-            else:
-                await msg.edit_text(result)
-        else:
-            await msg.edit_text("❌ Кнопки не найдены")
-            
-    except Exception as e:
-        error_msg = f"Ошибка в findbuttons: {str(e)}"
-        log_error(error_msg, traceback.format_exc())
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def click_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Нажимает кнопку по data-testid"""
-    if not context.args:
-        await update.message.reply_text(
-            "❌ Укажи data-testid кнопки\n"
-            "Пример: /click AppTabBar_Explore_Link\n\n"
-            "📌 Доступные кнопки:\n"
-            "• AppTabBar_Home_Link - Главная\n"
-            "• AppTabBar_Explore_Link - Обзор\n"
-            "• AppTabBar_Notifications_Link - Уведомления\n"
-            "• AppTabBar_Profile_Link - Профиль\n"
-            "• AppTabBar_DirectMessage_Link - Чат\n"
-            "• SideNav_NewTweet_Button - Новый пост\n"
-            "• tweetButton - Опубликовать\n"
-            "• reply - Ответить\n"
-            "• retweet - Репост\n"
-            "• like - Нравится\n"
-            "• bookmark - Закладка"
-        )
-        return
-    
-    testid = context.args[0]
-    msg = await update.message.reply_text(f"⏳ Ищу кнопку {testid}...")
-    
-    try:
-        browser = await get_browser()
-        page = browser['page']
-        
-        # Ищем кнопку
-        selector = f'[data-testid="{testid}"]'
-        button = await page.query_selector(selector)
-        
-        if not button:
-            await msg.edit_text(f"❌ Кнопка {testid} не найдена")
-            return
-        
-        # Нажимаем
-        await button.click()
-        await page.wait_for_timeout(2000)
-        
-        # Делаем скриншот после клика
-        screenshot = await page.screenshot(
-            full_page=False,
-            type='jpeg',
-            quality=80
-        )
-        
-        await msg.edit_text(f"✅ Нажал на {testid}")
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption=f"📸 После клика на {testid}"
-        )
-        
-    except Exception as e:
-        error_msg = f"Ошибка в click_button: {str(e)}"
-        log_error(error_msg, traceback.format_exc())
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Делаю скриншот...")
@@ -810,14 +449,12 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Проверяет авторизацию на X.com"""
     msg = await update.message.reply_text("⏳ Проверяю статус...")
     
     try:
         browser = await get_browser()
         page = browser['page']
         
-        # Проверяем разные элементы
         checks = {
             'primary_column': await page.query_selector('[data-testid="primaryColumn"]'),
             'tweet_button': await page.query_selector('[data-testid="tweetButton"]'),
@@ -830,7 +467,6 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for name, element in checks.items():
             status_msg += f"{name}: {'✅' if element else '❌'}\n"
         
-        # Проверяем куки
         cookies = await browser['context'].cookies()
         auth_token = next((c for c in cookies if c.get('name') == 'auth_token'), None)
         ct0 = next((c for c in cookies if c.get('name') == 'ct0'), None)
@@ -838,21 +474,18 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg += f"\n🍪 auth_token: {'✅' if auth_token else '❌'}"
         status_msg += f"\n🍪 ct0: {'✅' if ct0 else '❌'}"
         
-        # Проверяем URL
         try:
             current_url = page.url
             status_msg += f"\n\n📍 URL: {current_url[:80]}"
         except:
             status_msg += f"\n\n📍 URL: Недоступен"
         
-        # Проверяем заголовок
         try:
             title = await page.title()
             status_msg += f"\n📌 Заголовок: {title[:60] if title else 'Нет'}"
         except:
             status_msg += f"\n📌 Заголовок: Недоступен"
         
-        # Определяем статус
         status_msg += "\n\n"
         if checks['primary_column'] and checks['profile_link'] and checks['tweet_button']:
             status_msg += "✅ ПОЛНАЯ АВТОРИЗАЦИЯ!"
@@ -875,7 +508,6 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def show_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает последние логи ошибок"""
     msg = await update.message.reply_text("⏳ Загружаю логи...")
     
     try:
@@ -917,20 +549,328 @@ async def show_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Закрываю браузер...")
-    
     await close_browser()
-    
     await msg.edit_text("✅ Браузер закрыт!")
+
+# ========== КОМАНДЫ ДЖОЙСТИКА ==========
+
+async def joystick_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Тестирование джойстика"""
+    msg = await update.message.reply_text("🎮 Тестирую джойстик...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        joystick = JoystickController(page)
+        await joystick.init_position()
+        
+        await msg.edit_text("🔄 Круг...")
+        await joystick.move_with_pattern('circle', duration=2.0, size=150)
+        
+        await msg.edit_text("🔄 Квадрат...")
+        await joystick.move_with_pattern('square', duration=2.0, size=150)
+        
+        await msg.edit_text("🔄 Спираль...")
+        await joystick.move_with_pattern('spiral', duration=2.0, size=100)
+        
+        elements = await joystick.explore_screen()
+        
+        result = "🎮 ДЖОЙСТИК ТЕСТ\n\n"
+        result += f"Найдено элементов: {len(elements)}\n\n"
+        
+        for i, el in enumerate(elements[:5], 1):
+            result += f"{i}. {el['tag']}: {el['text'][:30]}\n"
+            result += f"   📍 ({int(el['x'])}, {int(el['y'])})\n"
+            result += f"   📐 {int(el['width'])}×{int(el['height'])}\n"
+            if el['testid']:
+                result += f"   🏷️ testid: {el['testid']}\n"
+            result += "\n"
+        
+        await msg.edit_text(result)
+        
+    except Exception as e:
+        error_msg = f"Ошибка в joystick_test: {str(e)}"
+        log_error(error_msg, traceback.format_exc())
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def joystick_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """AI агент управляет мышью"""
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Укажи задачу для AI\n"
+            "Пример: /joystick_ai найти кнопку Обзор\n"
+            "Пример: /joystick_ai нажать на Войти"
+        )
+        return
+    
+    task = ' '.join(context.args)
+    msg = await update.message.reply_text(f"🤖 AI ищет: {task}...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        joystick = JoystickController(page)
+        await joystick.init_position()
+        
+        elements = await joystick.explore_screen()
+        
+        # Ищем подходящий элемент
+        found = None
+        best_score = 0
+        
+        for el in elements:
+            score = 0
+            text_lower = el['text'].lower()
+            testid_lower = el['testid'].lower()
+            aria_lower = el['ariaLabel'].lower()
+            
+            # Проверяем каждое слово из запроса
+            for word in task.lower().split():
+                if word in text_lower:
+                    score += 3
+                if word in testid_lower:
+                    score += 2
+                if word in aria_lower:
+                    score += 2
+                # Проверяем частичное совпадение
+                for part in [text_lower, testid_lower, aria_lower]:
+                    if word in part and len(word) > 2:
+                        score += 1
+            
+            if score > best_score:
+                best_score = score
+                found = el
+        
+        if found and best_score > 0:
+            # Движение к элементу
+            await joystick.human_like_move(found['x'], found['y'])
+            await asyncio.sleep(0.3)
+            
+            # Клик
+            await joystick.click()
+            
+            await msg.edit_text(
+                f"✅ AI нашел и нажал!\n\n"
+                f"📌 Элемент: {found['tag']}\n"
+                f"📝 Текст: {found['text'][:50]}\n"
+                f"🏷️ testid: {found['testid'] or 'нет'}\n"
+                f"📍 Координаты: ({int(found['x'])}, {int(found['y'])})\n"
+                f"🎯 Точность: {best_score} баллов"
+            )
+        else:
+            # Показываем доступные элементы
+            result = f"❌ AI не нашел подходящий элемент\n\n"
+            result += f"Найдено элементов: {len(elements)}\n"
+            result += f"Запрос: {task}\n\n"
+            result += "📋 Доступные элементы:\n"
+            
+            for i, el in enumerate(elements[:10], 1):
+                result += f"{i}. {el['tag']}: {el['text'][:30]}\n"
+                if el['testid']:
+                    result += f"   🏷️ {el['testid']}\n"
+            
+            if len(elements) > 10:
+                result += f"\n... и еще {len(elements) - 10} элементов"
+            
+            await msg.edit_text(result)
+            
+    except Exception as e:
+        error_msg = f"Ошибка в joystick_ai: {str(e)}"
+        log_error(error_msg, traceback.format_exc())
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def find_elements(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Находит элементы по запросу"""
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Что ищем?\n"
+            "Пример: /find кнопка Войти\n"
+            "Пример: /find testid tweetButton\n"
+            "Пример: /find профиль"
+        )
+        return
+    
+    query = ' '.join(context.args)
+    msg = await update.message.reply_text(f"🔍 Ищу: {query}...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        joystick = JoystickController(page)
+        await joystick.init_position()
+        
+        elements = await joystick.explore_screen()
+        
+        # Фильтруем
+        found = []
+        for el in elements:
+            text = el['text'].lower()
+            testid = el['testid'].lower()
+            aria = el['ariaLabel'].lower()
+            el_id = el['id'].lower()
+            tag = el['tag'].lower()
+            
+            if (query.lower() in text or 
+                query.lower() in testid or
+                query.lower() in aria or
+                query.lower() in el_id or
+                query.lower() in tag):
+                found.append(el)
+        
+        if found:
+            result = f"✅ Найдено {len(found)} элементов:\n\n"
+            for i, el in enumerate(found[:10], 1):
+                result += f"{i}. {el['tag']}"
+                if el['type']:
+                    result += f" [{el['type']}]"
+                result += f": {el['text'][:30]}\n"
+                result += f"   📍 ({int(el['x'])}, {int(el['y'])})\n"
+                if el['testid']:
+                    result += f"   🏷️ testid: {el['testid']}\n"
+                if el['id']:
+                    result += f"   🔑 id: {el['id']}\n"
+                result += "\n"
+            
+            if len(found) > 10:
+                result += f"... и еще {len(found) - 10} элементов"
+            
+            # Показываем первый найденный
+            if found:
+                await joystick.human_like_move(found[0]['x'], found[0]['y'])
+                result += "\n\n🖱️ Курсор наведен на первый элемент"
+            
+            await msg.edit_text(result)
+        else:
+            await msg.edit_text(
+                f"❌ Ничего не найдено по запросу: {query}\n\n"
+                f"Всего элементов на странице: {len(elements)}"
+            )
+            
+    except Exception as e:
+        error_msg = f"Ошибка в find_elements: {str(e)}"
+        log_error(error_msg, traceback.format_exc())
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def findbuttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Находит все кнопки на странице"""
+    msg = await update.message.reply_text("⏳ Ищу кнопки...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        joystick = JoystickController(page)
+        await joystick.init_position()
+        
+        elements = await joystick.explore_screen()
+        
+        # Фильтруем только кнопки
+        buttons = [el for el in elements if el['tag'] == 'button' or 'button' in el.get('role', '')]
+        
+        if buttons:
+            result = "🔘 НАЙДЕННЫЕ КНОПКИ:\n\n"
+            for i, btn in enumerate(buttons[:30], 1):
+                result += f"{i}. {btn['text'][:50] or 'без текста'}\n"
+                if btn['testid']:
+                    result += f"   🏷️ {btn['testid']}\n"
+                if btn['ariaLabel']:
+                    result += f"   🏷️ aria-label: {btn['ariaLabel']}\n"
+                result += f"   📍 ({int(btn['x'])}, {int(btn['y'])})\n\n"
+            
+            if len(buttons) > 30:
+                result += f"... и еще {len(buttons) - 30} кнопок"
+            else:
+                result += f"Всего кнопок: {len(buttons)}"
+            
+            if len(result) > 4000:
+                with open('buttons.txt', 'w') as f:
+                    f.write(result)
+                await update.message.reply_document(
+                    document=open('buttons.txt', 'rb'),
+                    filename=f"buttons_{datetime.now().strftime('%Y%m%d')}.txt"
+                )
+                os.remove('buttons.txt')
+            else:
+                await msg.edit_text(result)
+        else:
+            await msg.edit_text("❌ Кнопки не найдены")
+            
+    except Exception as e:
+        error_msg = f"Ошибка в findbuttons: {str(e)}"
+        log_error(error_msg, traceback.format_exc())
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def click_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Нажимает кнопку по data-testid с использованием джойстика"""
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Укажи data-testid кнопки\n"
+            "Пример: /click AppTabBar_Explore_Link\n\n"
+            "📌 Доступные кнопки:\n"
+            "• AppTabBar_Home_Link - Главная\n"
+            "• AppTabBar_Explore_Link - Обзор\n"
+            "• AppTabBar_Notifications_Link - Уведомления\n"
+            "• AppTabBar_Profile_Link - Профиль\n"
+            "• AppTabBar_DirectMessage_Link - Чат\n"
+            "• SideNav_NewTweet_Button - Новый пост\n"
+            "• tweetButton - Опубликовать\n"
+            "• reply - Ответить\n"
+            "• retweet - Репост\n"
+            "• like - Нравится\n"
+            "• bookmark - Закладка"
+        )
+        return
+    
+    testid = context.args[0]
+    msg = await update.message.reply_text(f"⏳ Ищу кнопку {testid}...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        joystick = JoystickController(page)
+        await joystick.init_position()
+        
+        # Используем джойстик для поиска и клика
+        selector = f'[data-testid="{testid}"]'
+        success = await joystick.move_to_element(selector)
+        
+        if not success:
+            await msg.edit_text(f"❌ Кнопка {testid} не найдена")
+            return
+        
+        await joystick.click()
+        await asyncio.sleep(1)
+        
+        screenshot = await page.screenshot(
+            full_page=False,
+            type='jpeg',
+            quality=80
+        )
+        
+        await msg.edit_text(f"✅ Нажал на {testid}")
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption=f"📸 После клика на {testid}"
+        )
+        
+    except Exception as e:
+        error_msg = f"Ошибка в click_button: {str(e)}"
+        log_error(error_msg, traceback.format_exc())
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+# ========== ЗАПУСК ==========
 
 def main():
     app = Application.builder().token(TOKEN).build()
     
+    # Основные команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("go", go))
     app.add_handler(CommandHandler("xlogin", xlogin))
-    app.add_handler(CommandHandler("explore", explore))
-    app.add_handler(CommandHandler("findbuttons", findbuttons))
-    app.add_handler(CommandHandler("click", click_button))
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("stats", stats))
@@ -938,7 +878,17 @@ def main():
     app.add_handler(CommandHandler("logs", show_logs))
     app.add_handler(CommandHandler("close", close))
     
-    print("🤖 Бот запущен...")
+    # Команды джойстика
+    app.add_handler(CommandHandler("joystick", joystick_test))
+    app.add_handler(CommandHandler("joystick_ai", joystick_ai))
+    app.add_handler(CommandHandler("find", find_elements))
+    app.add_handler(CommandHandler("findbuttons", findbuttons))
+    app.add_handler(CommandHandler("click", click_button))
+    
+    print("🤖 Бот с джойстиком запущен...")
+    print("📌 Доступные команды:")
+    print("   Основные: /start, /go, /xlogin, /screen, /status, /check, /close")
+    print("   Джойстик: /joystick, /joystick_ai, /find, /findbuttons, /click")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
