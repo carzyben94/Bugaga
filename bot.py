@@ -1471,6 +1471,10 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         browser = await get_browser()
+        if not browser:
+            await status_msg.edit_text("❌ Браузер не открыт. Сначала /xlogin")
+            return
+            
         page = browser['page']
         
         # Проверяем что мы на X.com
@@ -1552,7 +1556,7 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if post['top'] < 0 or post['bottom'] > viewport['height']:
             await status_msg.edit_text(f"📜 Скроллю к посту #{num + 1}...")
             
-            # Скроллим к первому посту с нужным номером
+            # Скроллим к конкретному посту
             await page.evaluate(f'''
                 const tweets = document.querySelectorAll('[data-testid="tweet"]');
                 if (tweets.length > {num}) {{
@@ -1625,7 +1629,6 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         screenshot = None
         try:
-            # Проверяем что область валидная
             clip_x = max(0, post['x'] - post['width']/2 - 20)
             clip_y = max(0, post['y'] - post['height']/2 - 20)
             clip_width = min(post['width'] + 40, viewport['width'])
@@ -1646,7 +1649,6 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     quality=85
                 )
             else:
-                # Если клип не влазит - делаем полный скриншот
                 screenshot = await page.screenshot(type='jpeg', quality=80)
                 
         except Exception as e:
@@ -1679,50 +1681,97 @@ async def last_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает последний пост"""
     try:
         browser = await get_browser()
+        if not browser:
+            await update.message.reply_text("❌ Браузер не открыт. Сначала /xlogin")
+            return
+            
         page = browser['page']
         current_url = page.url
         if 'x.com' not in current_url:
             await update.message.reply_text("❌ Сначала зайди на X.com через /xlogin")
             return
-    except:
-        await update.message.reply_text("❌ Браузер не открыт. Сначала /xlogin")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Браузер не открыт. Сначала /xlogin\nОшибка: {str(e)[:100]}")
         return
     
+    # Создаем новый список аргументов, не перезаписывая context.args
+    old_args = context.args
     context.args = ['1']
-    await get_tweet(update, context)
+    try:
+        await get_tweet(update, context)
+    finally:
+        context.args = old_args
 
 async def list_tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает список всех постов на странице"""
+    """Показывает список всех постов на странице в красивом формате"""
     msg = await update.message.reply_text("🔍 Ищу посты...")
     
     try:
         browser = await get_browser()
+        if not browser:
+            await msg.edit_text("❌ Браузер не открыт. Сначала /xlogin")
+            return
+            
         page = browser['page']
         
         # Скроллим вниз для загрузки постов
         await msg.edit_text("📜 Скроллю вниз для загрузки постов...")
         for _ in range(3):
             await page.evaluate('window.scrollBy(0, 800)')
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.8)
         
-        # Собираем посты
+        # Собираем посты с красивым форматированием
         posts = await page.evaluate('''
             () => {
                 const result = [];
-                document.querySelectorAll('[data-testid="tweet"]').forEach(el => {
+                const tweets = document.querySelectorAll('[data-testid="tweet"]');
+                
+                tweets.forEach((el, index) => {
                     const text = el.textContent?.trim() || '';
                     const rect = el.getBoundingClientRect();
                     
+                    // Автор
                     const authorEl = el.querySelector('[data-testid="User-Name"]');
-                    const author = authorEl?.textContent?.trim() || '';
+                    let author = authorEl?.textContent?.trim() || 'Unknown';
+                    // Очищаем от лишних символов
+                    author = author.replace(/·/g, '').trim();
                     
-                    if (rect.width > 0 && rect.height > 0) {
-                        result.push({
-                            text: text.slice(0, 80),
-                            author: author.slice(0, 50),
-                            y: rect.y
-                        });
-                    }
+                    // Проверяем закреплен ли пост
+                    const isPinned = el.querySelector('[aria-label="Pinned tweet"]') !== null;
+                    
+                    // Статистика
+                    const likeEl = el.querySelector('[data-testid="like"]');
+                    const retweetEl = el.querySelector('[data-testid="retweet"]');
+                    const replyEl = el.querySelector('[data-testid="reply"]');
+                    const viewsEl = el.querySelector('[data-testid="views"]');
+                    
+                    const likes = likeEl?.textContent?.trim() || '0';
+                    const retweets = retweetEl?.textContent?.trim() || '0';
+                    const replies = replyEl?.textContent?.trim() || '0';
+                    const views = viewsEl?.textContent?.trim() || '';
+                    
+                    // Время
+                    const timeEl = el.querySelector('time');
+                    const time = timeEl?.getAttribute('datetime') || '';
+                    
+                    // Первые строки текста (для превью)
+                    const textLines = text.split('\\n').filter(line => line.trim().length > 0);
+                    const preview = textLines.slice(0, 2).join(' ').slice(0, 120);
+                    
+                    result.push({
+                        index: index + 1,
+                        author: author,
+                        text: text,
+                        preview: preview,
+                        time: time,
+                        likes: likes,
+                        retweets: retweets,
+                        replies: replies,
+                        views: views,
+                        isPinned: isPinned,
+                        x: rect.x + rect.width / 2,
+                        y: rect.y + rect.height / 2
+                    });
                 });
                 return result;
             }
@@ -1732,22 +1781,72 @@ async def list_tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("❌ Посты не найдены")
             return
         
-        # Сортируем по y (сверху вниз)
-        posts_sorted = sorted(posts, key=lambda x: x['y'])
+        # Форматируем вывод
+        result = f"📋 **НАЙДЕНО {len(posts)} ПОСТОВ**\n\n"
         
-        result = f"📋 НАЙДЕНО {len(posts_sorted)} ПОСТОВ:\n\n"
-        for i, post in enumerate(posts_sorted[:15], 1):
-            result += f"{i}. {post['text'][:80]}\n"
-            if post['author']:
-                result += f"   👤 {post['author']}\n"
+        for i, post in enumerate(posts, 1):
+            # Номер с иконкой
+            if post['isPinned']:
+                result += f"📌 **#{i}** (Закреплено) "
+            else:
+                result += f"**#{i}** "
+            
+            # Автор
+            result += f"@{post['author']}\n"
+            
+            # Текст (первые 120 символов)
+            text_preview = post['preview'][:120]
+            if len(post['preview']) > 120:
+                text_preview += '...'
+            
+            if text_preview:
+                result += f"   {text_preview}\n"
+            
+            # Статистика в одну строку
+            stats = []
+            if post['likes'] != '0':
+                stats.append(f"❤️ {post['likes']}")
+            if post['retweets'] != '0':
+                stats.append(f"🔄 {post['retweets']}")
+            if post['replies'] != '0':
+                stats.append(f"💬 {post['replies']}")
+            
+            if stats:
+                result += f"   {'  '.join(stats)}\n"
+            
+            # Время
+            if post['time']:
+                try:
+                    dt = datetime.fromisoformat(post['time'].replace('Z', '+00:00'))
+                    time_str = dt.strftime('%d %b %Y, %H:%M')
+                    result += f"   🕐 {time_str}\n"
+                except:
+                    pass
+            
             result += "\n"
+            
+            # Ограничиваем длину сообщения
+            if len(result) > 3500:
+                result += f"\n... и еще {len(posts) - i} постов\n"
+                break
         
-        if len(posts_sorted) > 15:
-            result += f"... и еще {len(posts_sorted) - 15} постов"
-        
-        await msg.edit_text(result)
+        # Отправляем результат
+        if len(result) > 4000:
+            # Если слишком длинно - отправляем файлом
+            with open('tweets_list.txt', 'w', encoding='utf-8') as f:
+                f.write(result)
+            await msg.edit_text("📄 Список постов слишком длинный, отправляю файлом:")
+            await update.message.reply_document(
+                document=open('tweets_list.txt', 'rb'),
+                filename=f"tweets_{datetime.now().strftime('%Y%m%d_%H%M')}.txt"
+            )
+            os.remove('tweets_list.txt')
+        else:
+            await msg.edit_text(result)
         
     except Exception as e:
+        error_msg = f"Ошибка в list_tweets: {str(e)}"
+        log_error(error_msg, traceback.format_exc())
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def like_tweet_by_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
