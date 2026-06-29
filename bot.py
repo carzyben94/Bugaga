@@ -1,8 +1,11 @@
 # x_scanner.py - Бот для полного сканирования X.com
 import os
+import sys
+import subprocess
 import json
 import asyncio
 import logging
+import traceback
 from datetime import datetime
 from typing import List, Dict, Any
 from telegram import Update
@@ -15,27 +18,62 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
 
+PLAYWRIGHT_DIR = "/root/.cache/ms-playwright"
+os.environ['PLAYWRIGHT_BROWSERS_PATH'] = PLAYWRIGHT_DIR
+
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('bot.log'),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger(__name__)
 
-# Куки X.com
+# Куки X.com (все как было)
 COOKIES = [
-    {"name": "auth_token", "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936", "domain": ".x.com", "path": "/"},
-    {"name": "ct0", "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb", "domain": ".x.com", "path": "/"},
-    {"name": "twid", "value": "u%3D2067347503503052800", "domain": ".x.com", "path": "/"},
+    {"name": "__cuid", "value": "55d2d7c5-4888-430a-b024-dd785da46ef4", "domain": ".x.com", "path": "/"},
+    {"name": "lang", "value": "ru", "domain": ".x.com", "path": "/"},
+    {"name": "dnt", "value": "1", "domain": ".x.com", "path": "/"},
     {"name": "guest_id", "value": "v1%3A178267838599411411", "domain": ".x.com", "path": "/"},
+    {"name": "guest_id_marketing", "value": "v1%3A178267838599411411", "domain": ".x.com", "path": "/"},
+    {"name": "guest_id_ads", "value": "v1%3A178267838599411411", "domain": ".x.com", "path": "/"},
+    {"name": "personalization_id", "value": "\"v1_DKrxLZAC902dMFdd1QrVYg==\"", "domain": ".x.com", "path": "/"},
+    {"name": "gt", "value": "2071329406237220892", "domain": ".x.com", "path": "/"},
+    {"name": "__cf_bm", "value": ".I7b6GGmlN4fNcwOMuw9lT0dsT0ARfcIVwJt0bKVn1A-1782678389.549309-1.0.1.1-ZyWyQlXJpxNQRq6_2VYG2dr8Gz2iv_dZ2DrW2mnM.xR8yrtzsdhU310hzPoDkIQZYC6QGWKef5dCUOQQKZdp5_AmnVQS5zZ1p67ydtzPrydFxyV6zl740zd69v0Xs3JC", "domain": ".x.com", "path": "/"},
+    {"name": "twid", "value": "u%3D2067347503503052800", "domain": ".x.com", "path": "/"},
+    {"name": "auth_token", "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936", "domain": ".x.com", "path": "/"},
+    {"name": "ct0", "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb", "domain": ".x.com", "path": "/"}
 ]
 
 # Глобальные переменные
 browser_data = None
+browser_lock = False
 scan_results = {}
 
-# ========== УПРАВЛЕНИЕ БРАУЗЕРОМ ==========
+# ========== УСТАНОВКА БРАУЗЕРА (как было) ==========
+def install_playwright_browser():
+    browser_path = os.path.join(PLAYWRIGHT_DIR, "chromium-1091", "chrome-linux", "chrome")
+    if os.path.exists(browser_path):
+        print("✅ Браузер уже установлен")
+        return True
+    print("⏳ Устанавливаю браузер Chromium...")
+    try:
+        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+        subprocess.run([sys.executable, "-m", "playwright", "install-deps"], check=True)
+        print("✅ Браузер успешно установлен!")
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка установки браузера: {e}")
+        return False
+
+install_playwright_browser()
+
+# ========== УПРАВЛЕНИЕ БРАУЗЕРОМ (как было) ==========
 async def get_browser():
-    global browser_data
+    global browser_data, browser_lock
+    
     if browser_data:
         try:
             await browser_data['page'].evaluate('1')
@@ -47,32 +85,106 @@ async def get_browser():
                 pass
             browser_data = None
     
-    p = await async_playwright().start()
-    browser = await p.chromium.launch(
-        headless=True,
-        args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled']
-    )
-    context = await browser.new_context(
-        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        viewport={'width': 1280, 'height': 720}
-    )
-    page = await context.new_page()
-    await stealth_async(page)
+    while browser_lock:
+        await asyncio.sleep(0.5)
     
-    # Устанавливаем куки
-    for cookie in COOKIES:
+    browser_lock = True
+    
+    try:
+        p = await async_playwright().start()
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-blink-features=AutomationControlled',
+                '--disable-dev-shm-usage',
+                '--disable-web-security',
+                '--disable-features=IsolateOrigins,site-per-process',
+                '--disable-site-isolation-trials',
+                '--disable-features=BlockInsecurePrivateNetworkRequests',
+                '--disable-gpu',
+                '--disable-software-rasterizer'
+            ]
+        )
+        
+        context = await browser.new_context(
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            viewport={'width': 1280, 'height': 720},
+            locale='en-US',
+            timezone_id='America/New_York',
+            permissions=['geolocation'],
+            device_scale_factor=1,
+            has_touch=False,
+            is_mobile=False,
+            extra_http_headers={
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+                'Cache-Control': 'max-age=0',
+                'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                'sec-ch-ua-mobile': '?0',
+                'sec-ch-ua-platform': '"Windows"'
+            }
+        )
+        page = await context.new_page()
+        await stealth_async(page)
+        
+        await page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+            });
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3, 4, 5]
+            });
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['en-US', 'en']
+            });
+            window.chrome = {
+                runtime: {}
+            };
+            Object.defineProperty(navigator, 'deviceMemory', {
+                get: () => 8
+            });
+            Object.defineProperty(navigator, 'hardwareConcurrency', {
+                get: () => 4
+            });
+        """)
+        
+        # Устанавливаем куки
+        for cookie in COOKIES:
+            try:
+                await context.add_cookies([cookie])
+            except Exception as e:
+                logger.warning(f"Ошибка установки куки {cookie['name']}: {e}")
+        
+        browser_data = {
+            'playwright': p,
+            'browser': browser,
+            'context': context,
+            'page': page
+        }
+        
+        return browser_data
+    finally:
+        browser_lock = False
+
+async def close_browser():
+    global browser_data, browser_lock
+    if browser_data:
         try:
-            await context.add_cookies([cookie])
+            await browser_data['browser'].close()
+            await browser_data['playwright'].stop()
         except:
             pass
-    
-    browser_data = {
-        'playwright': p,
-        'browser': browser,
-        'context': context,
-        'page': page
-    }
-    return browser_data
+        browser_data = None
 
 # ========== СКАНЕР X.COM ==========
 class XScanner:
@@ -86,9 +198,9 @@ class XScanner:
             'forms': [],
             'testids': {},
             'tweets': [],
-            'selectors': {},
             'navigation': [],
             'profile': {},
+            'selectors': {},
             'timestamp': datetime.now().isoformat()
         }
     
@@ -96,11 +208,9 @@ class XScanner:
         """Полное сканирование страницы"""
         logger.info("🔍 Начинаю полное сканирование...")
         
-        # 1. Базовая информация
         self.results['url'] = self.page.url
         self.results['title'] = await self.page.title()
         
-        # 2. Сканируем все элементы
         await self.scan_buttons()
         await self.scan_links()
         await self.scan_forms()
@@ -110,7 +220,6 @@ class XScanner:
         await self.scan_profile()
         await self.scan_selectors()
         
-        # 3. Собираем статистику
         self.results['stats'] = {
             'total_buttons': len(self.results['buttons']),
             'total_links': len(self.results['links']),
@@ -119,11 +228,10 @@ class XScanner:
             'total_tweets': len(self.results['tweets'])
         }
         
-        logger.info(f"✅ Сканирование завершено! Найдено {self.results['stats']['total_tweets']} постов")
+        logger.info(f"✅ Сканирование завершено!")
         return self.results
     
     async def scan_buttons(self):
-        """Сканирует все кнопки"""
         buttons = await self.page.evaluate('''
             () => {
                 const result = [];
@@ -137,10 +245,7 @@ class XScanner:
                             type: el.getAttribute('type') || '',
                             class: el.className?.slice(0, 50) || '',
                             x: Math.round(rect.x + rect.width/2),
-                            y: Math.round(rect.y + rect.height/2),
-                            width: Math.round(rect.width),
-                            height: Math.round(rect.height),
-                            visible: true
+                            y: Math.round(rect.y + rect.height/2)
                         });
                     }
                 });
@@ -151,14 +256,12 @@ class XScanner:
         logger.info(f"🔘 Найдено кнопок: {len(buttons)}")
     
     async def scan_links(self):
-        """Сканирует все ссылки"""
         links = await self.page.evaluate('''
             () => {
                 const result = [];
                 document.querySelectorAll('a[href]').forEach(el => {
                     const href = el.getAttribute('href');
                     if (href && !href.startsWith('javascript:')) {
-                        const rect = el.getBoundingClientRect();
                         result.push({
                             href: href.slice(0, 100),
                             text: el.textContent?.trim()?.slice(0, 50) || '',
@@ -174,7 +277,6 @@ class XScanner:
         logger.info(f"🔗 Найдено ссылок: {len(links)}")
     
     async def scan_forms(self):
-        """Сканирует все формы"""
         forms = await self.page.evaluate('''
             () => {
                 const result = [];
@@ -201,7 +303,6 @@ class XScanner:
         logger.info(f"📝 Найдено форм: {len(forms)}")
     
     async def scan_testids(self):
-        """Собирает все data-testid"""
         testids = await self.page.evaluate('''
             () => {
                 const result = {};
@@ -216,10 +317,9 @@ class XScanner:
             }
         ''')
         self.results['testids'] = testids
-        logger.info(f"🏷️ Найдено data-testid: {len(testids)}")
+        logger.info(f"🏷️ Найдено testid: {len(testids)}")
     
     async def scan_tweets(self):
-        """Сканирует все посты"""
         tweets = await self.page.evaluate('''
             () => {
                 const result = [];
@@ -232,7 +332,6 @@ class XScanner:
                         const likeEl = el.querySelector('[data-testid="like"]');
                         const retweetEl = el.querySelector('[data-testid="retweet"]');
                         const replyEl = el.querySelector('[data-testid="reply"]');
-                        const viewsEl = el.querySelector('[data-testid="views"]');
                         
                         result.push({
                             text: text.slice(0, 200),
@@ -240,10 +339,7 @@ class XScanner:
                             time: timeEl?.getAttribute('datetime') || '',
                             likes: likeEl?.textContent?.trim() || '0',
                             retweets: retweetEl?.textContent?.trim() || '0',
-                            replies: replyEl?.textContent?.trim() || '0',
-                            views: viewsEl?.textContent?.trim() || '',
-                            x: Math.round(rect.x + rect.width/2),
-                            y: Math.round(rect.y + rect.height/2)
+                            replies: replyEl?.textContent?.trim() || '0'
                         });
                     }
                 });
@@ -254,24 +350,21 @@ class XScanner:
         logger.info(f"🐦 Найдено постов: {len(tweets)}")
     
     async def scan_navigation(self):
-        """Сканирует элементы навигации"""
         nav = await self.page.evaluate('''
             () => {
                 const result = [];
-                const selectors = [
-                    '[data-testid="AppTabBar_Home_Link"]',
-                    '[data-testid="AppTabBar_Explore_Link"]',
-                    '[data-testid="AppTabBar_Notifications_Link"]',
-                    '[data-testid="AppTabBar_Profile_Link"]',
-                    '[data-testid="AppTabBar_DirectMessage_Link"]',
-                    '[data-testid="SideNav_NewTweet_Button"]'
+                const items = [
+                    'AppTabBar_Home_Link',
+                    'AppTabBar_Explore_Link', 
+                    'AppTabBar_Notifications_Link',
+                    'AppTabBar_Profile_Link',
+                    'AppTabBar_DirectMessage_Link'
                 ];
-                selectors.forEach(selector => {
-                    const el = document.querySelector(selector);
+                items.forEach(id => {
+                    const el = document.querySelector(`[data-testid="${id}"]`);
                     if (el) {
                         result.push({
-                            testid: selector.match(/AppTabBar_(.*)_Link/)?.[1] || selector,
-                            present: true,
+                            testid: id,
                             text: el.textContent?.trim() || ''
                         });
                     }
@@ -280,28 +373,17 @@ class XScanner:
             }
         ''')
         self.results['navigation'] = nav
-        logger.info(f"🧭 Найдено элементов навигации: {len(nav)}")
+        logger.info(f"🧭 Найдено навигации: {len(nav)}")
     
     async def scan_profile(self):
-        """Сканирует информацию профиля"""
         profile = await self.page.evaluate('''
             () => {
                 const result = {};
-                const avatar = document.querySelector('[data-testid="UserAvatar-Container"] img');
-                if (avatar) result.avatar = avatar.getAttribute('src') || '';
-                
                 const name = document.querySelector('[data-testid="UserName"]');
                 if (name) result.name = name.textContent?.trim() || '';
                 
                 const bio = document.querySelector('[data-testid="UserDescription"]');
                 if (bio) result.bio = bio.textContent?.trim() || '';
-                
-                const stats = document.querySelectorAll('[data-testid="UserProfileHeader_Items"] a');
-                stats.forEach(el => {
-                    const text = el.textContent?.trim() || '';
-                    if (text.includes('Followers')) result.followers = text;
-                    if (text.includes('Following')) result.following = text;
-                });
                 
                 return result;
             }
@@ -310,77 +392,35 @@ class XScanner:
         logger.info(f"👤 Профиль: {profile.get('name', 'Не найден')}")
     
     async def scan_selectors(self):
-        """Собирает все основные селекторы для будущих функций"""
         selectors = await self.page.evaluate('''
             () => {
                 const result = {
-                    tweet_input: !!document.querySelector('[data-testid="tweetTextarea_0"]'),
                     tweet_button: !!document.querySelector('[data-testid="tweetButton"]'),
-                    reply: !!document.querySelector('[data-testid="reply"]'),
-                    retweet: !!document.querySelector('[data-testid="retweet"]'),
                     like: !!document.querySelector('[data-testid="like"]'),
-                    bookmark: !!document.querySelector('[data-testid="bookmark"]'),
-                    share: !!document.querySelector('[data-testid="share"]'),
-                    search: !!document.querySelector('[data-testid="Search"]'),
-                    dm: !!document.querySelector('[data-testid="dm"]'),
-                    more: !!document.querySelector('[data-testid="more"]'),
-                    profile: !!document.querySelector('[data-testid="profile"]'),
-                    settings: !!document.querySelector('[data-testid="settings"]'),
-                    logout: !!document.querySelector('[data-testid="logout"]')
+                    retweet: !!document.querySelector('[data-testid="retweet"]'),
+                    reply: !!document.querySelector('[data-testid="reply"]'),
+                    bookmark: !!document.querySelector('[data-testid="bookmark"]')
                 };
                 return result;
             }
         ''')
         self.results['selectors'] = selectors
-        
-        # Сохраняем как готовые команды
-        available_commands = []
-        for key, exists in selectors.items():
-            if exists:
-                available_commands.append(f"/{key}")
-        
-        self.results['available_commands'] = available_commands
-        logger.info(f"📋 Доступных функций: {len(available_commands)}")
+        logger.info(f"📋 Доступных функций: {sum(1 for v in selectors.values() if v)}")
 
 # ========== КОМАНДЫ ТЕЛЕГРАМ ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 **X.com Scanner Bot**\n\n"
-        "🚀 Полное сканирование X.com:\n"
-        "/scan - сканировать текущую страницу\n"
+        "📌 Команды:\n"
         "/xlogin - войти в X.com\n"
-        "/go <url> - открыть URL\n"
+        "/scan - полное сканирование\n"
         "/report - показать отчет\n"
-        "/export - экспортировать JSON\n"
+        "/export - экспорт JSON\n"
         "/status - статус браузера\n"
         "/close - закрыть браузер\n\n"
-        "📊 После /scan бот соберет:\n"
-        "• Все кнопки и их testid\n"
-        "• Все ссылки\n"
-        "• Все формы\n"
-        "• Все посты\n"
-        "• Навигацию\n"
-        "• Доступные функции"
+        "После /scan бот соберет все данные для будущих функций!"
     )
-
-async def go(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Укажи URL: /go https://x.com")
-        return
-    
-    url = context.args[0]
-    if not url.startswith('http'):
-        url = 'https://' + url
-    
-    msg = await update.message.reply_text(f"⏳ Открываю {url}...")
-    
-    try:
-        browser = await get_browser()
-        await browser['page'].goto(url, wait_until='domcontentloaded', timeout=15000)
-        await msg.edit_text(f"✅ Открыл: {url}")
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:100]}")
 
 async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Захожу в X.com...")
@@ -392,92 +432,57 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await page.goto('https://x.com', wait_until='domcontentloaded', timeout=15000)
         await asyncio.sleep(3)
         
-        # Проверяем вход
         is_logged = await page.query_selector('[data-testid="tweetButton"]') is not None
         
         if is_logged:
             await msg.edit_text("✅ Успешный вход в X.com!")
         else:
-            await msg.edit_text("⚠️ Вход не подтвержден. Попробуй /scan для проверки")
+            await msg.edit_text("⚠️ Проверка входа...")
         
-        # Делаем скриншот
         screenshot = await page.screenshot(type='jpeg', quality=80)
-        await update.message.reply_photo(photo=screenshot, caption="📸 Текущая страница")
+        await update.message.reply_photo(photo=screenshot, caption="📸 X.com")
         
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Полное сканирование X.com"""
-    msg = await update.message.reply_text("🔍 Начинаю полное сканирование X.com...\n⏳ Это может занять 10-20 секунд")
+    msg = await update.message.reply_text("🔍 Начинаю сканирование X.com...\n⏳ Это займет 10-20 секунд")
     
     try:
         browser = await get_browser()
         page = browser['page']
         
-        # Проверяем что на X.com
         if 'x.com' not in page.url:
             await msg.edit_text("❌ Сначала зайди на X.com через /xlogin")
             return
         
-        # Создаем сканер
         scanner = XScanner(page)
-        
-        # Сканируем
-        await msg.edit_text("📊 Сканирую страницу...\n"
-                          "🔘 Кнопки...\n"
-                          "🔗 Ссылки...\n"
-                          "📝 Формы...\n"
-                          "🏷️ TestID...\n"
-                          "🐦 Посты...")
-        
         results = await scanner.scan_full()
         
-        # Сохраняем результаты
         global scan_results
         scan_results = results
         
-        # Формируем отчет
+        # Отчет
         report = f"📊 **ОТЧЕТ О СКАНИРОВАНИИ**\n\n"
-        report += f"📍 URL: {results['url'][:60]}\n"
-        report += f"📌 Заголовок: {results['title'][:50]}\n\n"
+        report += f"📍 {results['url'][:60]}\n"
+        report += f"📌 {results['title'][:50]}\n\n"
         
-        report += f"**📊 СТАТИСТИКА:**\n"
+        report += f"**СТАТИСТИКА:**\n"
         report += f"🔘 Кнопок: {results['stats']['total_buttons']}\n"
         report += f"🔗 Ссылок: {results['stats']['total_links']}\n"
         report += f"📝 Форм: {results['stats']['total_forms']}\n"
         report += f"🏷️ TestID: {results['stats']['total_testids']}\n"
         report += f"🐦 Постов: {results['stats']['total_tweets']}\n\n"
         
-        # Доступные функции
-        if results.get('available_commands'):
-            report += f"**✅ ДОСТУПНЫЕ ФУНКЦИИ:**\n"
-            commands = results['available_commands'][:10]
-            for cmd in commands:
-                report += f"• `{cmd}`\n"
-            if len(results['available_commands']) > 10:
-                report += f"• ... и еще {len(results['available_commands']) - 10}\n"
-            report += "\n"
-        
-        # Топ testid
         if results['testids']:
-            report += f"**🏷️ ОСНОВНЫЕ TESTID:**\n"
+            report += f"**ОСНОВНЫЕ TESTID:**\n"
             sorted_ids = sorted(results['testids'].items(), key=lambda x: x[1], reverse=True)[:5]
             for testid, count in sorted_ids:
                 report += f"• `{testid}`: {count} шт.\n"
-            report += "\n"
-        
-        # Последние посты
-        if results['tweets']:
-            report += f"**🐦 ПОСЛЕДНИЕ ПОСТЫ:**\n"
-            for i, tweet in enumerate(results['tweets'][:3], 1):
-                text = tweet['text'][:60].replace('\n', ' ')
-                report += f"{i}. @{tweet['author']}: {text}...\n"
-                report += f"   ❤️ {tweet['likes']}  🔁 {tweet['retweets']}\n"
         
         await msg.edit_text(report)
         
-        # Отправляем JSON файл
+        # JSON
         filename = f"scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         with open(filename, 'w', encoding='utf-8') as f:
             json.dump(results, f, ensure_ascii=False, indent=2)
@@ -485,49 +490,37 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_document(
             document=open(filename, 'rb'),
             filename=filename,
-            caption="📄 Полный отчет в JSON"
+            caption="📄 Полный отчет"
         )
         os.remove(filename)
         
         # Скриншот
         screenshot = await page.screenshot(type='jpeg', quality=80)
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption="📸 Скриншот страницы"
-        )
-        
-        logger.info(f"✅ Сканирование завершено для user {update.effective_user.id}")
+        await update.message.reply_photo(photo=screenshot, caption="📸 Страница")
         
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-        logger.error(f"Scan error: {e}")
+        logger.error(f"Scan error: {traceback.format_exc()}")
 
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает последний отчет"""
     global scan_results
-    
     if not scan_results:
         await update.message.reply_text("❌ Нет данных. Сначала /scan")
         return
     
-    # Форматируем отчет
-    report = f"📊 **ОТЧЕТ ОТ {scan_results['timestamp']}**\n\n"
+    report = f"📊 **ОТЧЕТ**\n\n"
     report += f"📍 {scan_results['url'][:60]}\n"
     report += f"📌 {scan_results['title'][:50]}\n\n"
     
     stats = scan_results.get('stats', {})
     report += f"🔘 {stats.get('total_buttons', 0)} кнопок\n"
     report += f"🔗 {stats.get('total_links', 0)} ссылок\n"
-    report += f"📝 {stats.get('total_forms', 0)} форм\n"
-    report += f"🏷️ {stats.get('total_testids', 0)} testid\n"
     report += f"🐦 {stats.get('total_tweets', 0)} постов\n"
     
     await update.message.reply_text(report)
 
 async def export_json(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Экспортирует данные в JSON"""
     global scan_results
-    
     if not scan_results:
         await update.message.reply_text("❌ Нет данных. Сначала /scan")
         return
@@ -539,7 +532,7 @@ async def export_json(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_document(
         document=open(filename, 'rb'),
         filename=filename,
-        caption="📄 Экспорт данных X.com"
+        caption="📄 Экспорт данных"
     )
     os.remove(filename)
 
@@ -548,32 +541,21 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if browser_data:
         try:
             page = browser_data['page']
-            url = page.url
-            await update.message.reply_text(f"✅ Браузер активен\n📍 {url[:60]}")
+            await update.message.reply_text(f"✅ Браузер активен\n📍 {page.url[:60]}")
         except:
-            await update.message.reply_text("⚠️ Браузер открыт, но не отвечает")
+            await update.message.reply_text("⚠️ Браузер не отвечает")
     else:
         await update.message.reply_text("❌ Браузер закрыт")
 
 async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global browser_data
-    if browser_data:
-        try:
-            await browser_data['browser'].close()
-            await browser_data['playwright'].stop()
-        except:
-            pass
-        browser_data = None
-        await update.message.reply_text("✅ Браузер закрыт")
-    else:
-        await update.message.reply_text("❌ Браузер уже закрыт")
+    await close_browser()
+    await update.message.reply_text("✅ Браузер закрыт")
 
 # ========== ЗАПУСК ==========
 def main():
     app = Application.builder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("go", go))
     app.add_handler(CommandHandler("xlogin", xlogin))
     app.add_handler(CommandHandler("scan", scan))
     app.add_handler(CommandHandler("report", report))
