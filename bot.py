@@ -1,4 +1,4 @@
-# bot.py - Полный бот с джойстиком и AI управлением
+# bot.py - Полный бот с джойстиком, AI управлением и поиском постов
 import os
 import sys
 import subprocess
@@ -78,7 +78,6 @@ class JoystickController:
         self.viewport_height = 1080
         
     async def init_position(self) -> Tuple[int, int]:
-        """Устанавливает курсор в центр экрана"""
         try:
             viewport = await self.page.viewport_size()
             if viewport:
@@ -93,12 +92,7 @@ class JoystickController:
             logger.error(f"Init position error: {e}")
         return 0, 0
     
-    async def move_joystick(self, 
-                           x: float, 
-                           y: float, 
-                           duration: float = 0.5,
-                           speed_mult: float = 1.0) -> Tuple[int, int]:
-        """Перемещает курсор как джойстик"""
+    async def move_joystick(self, x: float, y: float, duration: float = 0.5, speed_mult: float = 1.0) -> Tuple[int, int]:
         max_move = 200 * speed_mult
         dx = x * max_move
         dy = y * max_move
@@ -124,12 +118,7 @@ class JoystickController:
         
         return self.current_pos
     
-    async def move_to_element(self, 
-                            selector: str,
-                            offset_x: int = 0,
-                            offset_y: int = 0,
-                            duration: float = 0.5) -> bool:
-        """Перемещает курсор к элементу"""
+    async def move_to_element(self, selector: str, offset_x: int = 0, offset_y: int = 0, duration: float = 0.5) -> bool:
         try:
             element = await self.page.query_selector(selector)
             if not element:
@@ -164,11 +153,7 @@ class JoystickController:
             logger.error(f"Move to element error: {e}")
             return False
     
-    async def click(self, 
-                   button: str = 'left',
-                   double: bool = False,
-                   delay: float = 0.1) -> None:
-        """Клик в текущей позиции"""
+    async def click(self, button: str = 'left', double: bool = False, delay: float = 0.1) -> None:
         await asyncio.sleep(delay)
         
         if double:
@@ -181,11 +166,7 @@ class JoystickController:
             elif button == 'middle':
                 await self.page.mouse.click(*self.current_pos, button='middle')
     
-    async def drag(self, 
-                  target_x: float, 
-                  target_y: float,
-                  duration: float = 0.5) -> None:
-        """Перетаскивание"""
+    async def drag(self, target_x: float, target_y: float, duration: float = 0.5) -> None:
         cx, cy = self.current_pos
         
         await self.page.mouse.down()
@@ -207,14 +188,9 @@ class JoystickController:
         await self.page.mouse.up()
     
     async def scroll(self, delta_x: int = 0, delta_y: int = 0) -> None:
-        """Скролл"""
         await self.page.mouse.wheel(delta_x, delta_y)
     
-    async def human_like_move(self, 
-                            target_x: int, 
-                            target_y: int,
-                            speed: float = 1.0) -> None:
-        """Движение похожее на человеческое"""
+    async def human_like_move(self, target_x: int, target_y: int, speed: float = 1.0) -> None:
         cx, cy = self.current_pos
         
         distance = math.sqrt((target_x - cx)**2 + (target_y - cy)**2)
@@ -243,7 +219,6 @@ class JoystickController:
                 await asyncio.sleep(duration / steps)
     
     async def explore_screen(self) -> List[Dict[str, Any]]:
-        """Находит все интерактивные элементы на странице"""
         try:
             elements = await self.page.evaluate('''
                 () => {
@@ -302,7 +277,6 @@ class JoystickController:
             return []
     
     async def find_and_click(self, description: str) -> bool:
-        """Находит элемент по описанию и кликает"""
         elements = await self.explore_screen()
         
         if not elements:
@@ -350,7 +324,6 @@ class JoystickController:
         return False
     
     async def continuous_move(self, duration: float = 5.0):
-        """Непрерывное движение курсора"""
         self.is_moving = True
         start_time = asyncio.get_event_loop().time()
         
@@ -372,11 +345,9 @@ class JoystickController:
         self.is_moving = False
     
     def stop_continuous_move(self):
-        """Останавливает непрерывное движение"""
         self.is_moving = False
     
     async def move_with_pattern(self, pattern: str, **kwargs):
-        """Движение по паттерну"""
         cx, cy = self.current_pos
         duration = kwargs.get('duration', 3.0)
         size = kwargs.get('size', 100)
@@ -592,8 +563,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/go <url> - открыть сайт\n"
         "/xlogin - вход в X.com\n"
         "/explore - исследовать интерфейс X.com\n"
-        "/findbuttons - найти все кнопки на странице\n"
-        "/click <testid> - нажать кнопку по data-testid\n"
+        "/findbuttons - найти все кнопки\n"
+        "/click <testid> - клик по data-testid\n"
         "/screen - скриншот\n"
         "/status - состояние браузера\n"
         "/stats - статистика\n"
@@ -603,7 +574,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎮 Команды джойстика:\n"
         "/joystick - тест джойстика\n"
         "/joystick_ai <задача> - AI поиск и клик\n"
-        "/find <запрос> - найти элементы"
+        "/find <запрос> - найти элементы\n\n"
+        "🐦 Команды для постов:\n"
+        "/user <ник> - перейти к пользователю\n"
+        "/tweet <номер> - показать пост\n"
+        "/last - последний пост\n"
+        "/tweets - все посты\n"
+        "/like_tweet <номер> - лайкнуть пост\n"
+        "/find_tweet <текст> - найти пост по тексту"
     )
 
 async def go(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -774,7 +752,6 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def explore(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Исследует интерфейс X.com, находит кнопки и элементы"""
     msg = await update.message.reply_text("🔍 Исследую интерфейс X.com...")
     
     try:
@@ -974,7 +951,6 @@ async def explore(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def findbuttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Находит все кнопки на странице"""
     msg = await update.message.reply_text("⏳ Ищу кнопки...")
     
     try:
@@ -1022,7 +998,6 @@ async def findbuttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def click_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Нажимает кнопку по data-testid с использованием джойстика"""
     if not context.args:
         await update.message.reply_text(
             "❌ Укажи data-testid кнопки\n"
@@ -1207,7 +1182,6 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def show_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает последние логи ошибок"""
     msg = await update.message.reply_text("⏳ Загружаю логи...")
     
     try:
@@ -1255,7 +1229,6 @@ async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== КОМАНДЫ ДЖОЙСТИКА ==========
 
 async def joystick_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Тестирование джойстика"""
     msg = await update.message.reply_text("🎮 Тестирую джойстик...")
     
     try:
@@ -1295,7 +1268,6 @@ async def joystick_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def joystick_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """AI агент управляет мышью"""
     if not context.args:
         await update.message.reply_text(
             "❌ Укажи задачу для AI\n"
@@ -1375,7 +1347,6 @@ async def joystick_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def find_elements(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Находит элементы по запросу"""
     if not context.args:
         await update.message.reply_text(
             "❌ Что ищем?\n"
@@ -1444,6 +1415,308 @@ async def find_elements(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log_error(error_msg, traceback.format_exc())
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
+# ========== КОМАНДЫ ДЛЯ ПОСТОВ ==========
+
+async def go_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Переходит на страницу пользователя X.com"""
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Укажи ник пользователя\n"
+            "Пример: /user elonmusk\n"
+            "Пример: /user @elonmusk"
+        )
+        return
+    
+    username = context.args[0].replace('@', '')
+    msg = await update.message.reply_text(f"👤 Перехожу к @{username}...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        url = f"https://x.com/{username}"
+        await page.goto(url, wait_until='domcontentloaded', timeout=15000)
+        await asyncio.sleep(2)
+        
+        await msg.edit_text(f"✅ Перешел к @{username}")
+        
+        screenshot = await page.screenshot(type='jpeg', quality=80)
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption=f"👤 Профиль @{username}"
+        )
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Получает пост по номеру (компактный вывод)"""
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Укажи номер поста\n"
+            "Пример: /tweet 1 - последний\n"
+            "Пример: /tweet 2 - второй сверху"
+        )
+        return
+    
+    try:
+        num = int(context.args[0]) - 1
+        if num < 0:
+            num = 0
+    except:
+        await update.message.reply_text("❌ Укажи число: /tweet 1")
+        return
+    
+    msg = await update.message.reply_text(f"🔍 Ищу пост #{num + 1}...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        posts = await page.evaluate('''
+            () => {
+                const result = [];
+                document.querySelectorAll('[data-testid="tweet"]').forEach(el => {
+                    const text = el.textContent?.trim() || '';
+                    const rect = el.getBoundingClientRect();
+                    
+                    const authorEl = el.querySelector('[data-testid="User-Name"]');
+                    const author = authorEl?.textContent?.trim() || 'Unknown';
+                    
+                    const likes = el.querySelector('[data-testid="like"]')?.textContent?.trim() || '0';
+                    const retweets = el.querySelector('[data-testid="retweet"]')?.textContent?.trim() || '0';
+                    const replies = el.querySelector('[data-testid="reply"]')?.textContent?.trim() || '0';
+                    
+                    const timeEl = el.querySelector('time');
+                    const time = timeEl?.getAttribute('datetime') || '';
+                    
+                    result.push({
+                        text: text,
+                        author: author,
+                        likes: likes,
+                        retweets: retweets,
+                        replies: replies,
+                        time: time,
+                        x: rect.x + rect.width / 2,
+                        y: rect.y + rect.height / 2,
+                        width: rect.width,
+                        height: rect.height
+                    });
+                });
+                return result;
+            }
+        ''')
+        
+        if not posts:
+            await msg.edit_text("❌ Посты не найдены")
+            return
+        
+        if num >= len(posts):
+            await msg.edit_text(f"❌ Пост #{num + 1} не найден. Всего: {len(posts)}")
+            return
+        
+        posts_reversed = list(reversed(posts))
+        post = posts_reversed[num]
+        
+        # Обрезаем текст до 100 символов
+        text_preview = post['text'][:100]
+        if len(post['text']) > 100:
+            text_preview += '...'
+        
+        # Форматируем время
+        time_str = post['time']
+        if time_str:
+            try:
+                dt = datetime.fromisoformat(time_str.replace('Z', '+00:00'))
+                time_str = dt.strftime('%d %b %Y')
+            except:
+                time_str = post['time'][:10]
+        
+        # КОМПАКТНЫЙ ВЫВОД (Вариант 3)
+        result = f"""📌 #{num + 1} @{post['author']}
+{text_preview}
+❤️ {post['likes']}  🔁 {post['retweets']}  💬 {post['replies']}
+{time_str}"""
+        
+        joystick = JoystickController(page)
+        await joystick.init_position()
+        await joystick.human_like_move(post['x'], post['y'])
+        
+        screenshot = await page.screenshot(
+            clip={
+                'x': max(0, post['x'] - post['width']/2 - 20),
+                'y': max(0, post['y'] - post['height']/2 - 20),
+                'width': min(post['width'] + 40, 1280),
+                'height': min(post['height'] + 40, 720)
+            },
+            type='jpeg',
+            quality=85
+        )
+        
+        await msg.edit_text(result)
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption=f"📸 Пост #{num + 1}"
+        )
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def last_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает последний пост"""
+    context.args = ['1']
+    await get_tweet(update, context)
+
+async def list_tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает список всех постов на странице"""
+    msg = await update.message.reply_text("🔍 Ищу посты...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        posts = await page.evaluate('''
+            () => {
+                const result = [];
+                document.querySelectorAll('[data-testid="tweet"]').forEach(el => {
+                    const text = el.textContent?.trim() || '';
+                    const rect = el.getBoundingClientRect();
+                    
+                    const authorEl = el.querySelector('[data-testid="User-Name"]');
+                    const author = authorEl?.textContent?.trim() || '';
+                    
+                    result.push({
+                        text: text.slice(0, 80),
+                        author: author.slice(0, 50),
+                        x: rect.x + rect.width / 2,
+                        y: rect.y + rect.height / 2
+                    });
+                });
+                return result;
+            }
+        ''')
+        
+        if not posts:
+            await msg.edit_text("❌ Посты не найдены")
+            return
+        
+        posts_reversed = list(reversed(posts))
+        
+        result = f"📋 НАЙДЕНО {len(posts_reversed)} ПОСТОВ:\n\n"
+        for i, post in enumerate(posts_reversed[:10], 1):
+            result += f"{i}. {post['text'][:80]}\n"
+            if post['author']:
+                result += f"   👤 {post['author']}\n"
+            result += f"   📍 ({int(post['x'])}, {int(post['y'])})\n\n"
+        
+        if len(posts_reversed) > 10:
+            result += f"... и еще {len(posts_reversed) - 10} постов"
+        
+        await msg.edit_text(result)
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def like_tweet_by_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Лайкает пост по номеру"""
+    if not context.args:
+        await update.message.reply_text("❌ Укажи номер поста: /like_tweet 1")
+        return
+    
+    try:
+        num = int(context.args[0]) - 1
+    except:
+        await update.message.reply_text("❌ Укажи число")
+        return
+    
+    msg = await update.message.reply_text(f"❤️ Ищу пост #{num + 1}...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        posts = await page.query_selector_all('[data-testid="tweet"]')
+        
+        if not posts:
+            await msg.edit_text("❌ Посты не найдены")
+            return
+        
+        if num >= len(posts):
+            await msg.edit_text(f"❌ Пост #{num + 1} не найден")
+            return
+        
+        post = posts[len(posts) - 1 - num]
+        like_btn = await post.query_selector('[data-testid="like"]')
+        
+        if not like_btn:
+            await msg.edit_text("❌ Кнопка Like не найдена в этом посте")
+            return
+        
+        joystick = JoystickController(page)
+        await joystick.init_position()
+        
+        box = await like_btn.bounding_box()
+        await joystick.human_like_move(
+            box['x'] + box['width'] / 2,
+            box['y'] + box['height'] / 2
+        )
+        await joystick.click()
+        
+        await msg.edit_text(f"❤️ Лайкнут пост #{num + 1}!")
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def find_tweet_by_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Находит пост по тексту"""
+    if not context.args:
+        await update.message.reply_text("❌ Что ищем? /find_tweet текст")
+        return
+    
+    query = ' '.join(context.args)
+    msg = await update.message.reply_text(f"🔍 Ищу: {query}...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        posts = await page.evaluate(f'''
+            () => {{
+                const result = [];
+                document.querySelectorAll('[data-testid="tweet"]').forEach(el => {{
+                    const text = el.textContent?.trim() || '';
+                    const rect = el.getBoundingClientRect();
+                    
+                    if (text.toLowerCase().includes('{query.lower()}')) {{
+                        result.push({{
+                            text: text.slice(0, 300),
+                            x: rect.x + rect.width / 2,
+                            y: rect.y + rect.height / 2
+                        }});
+                    }}
+                }});
+                return result;
+            }}
+        ''')
+        
+        if posts:
+            post = posts[0]
+            
+            joystick = JoystickController(page)
+            await joystick.init_position()
+            await joystick.human_like_move(post['x'], post['y'])
+            
+            result = f"✅ Найден пост:\n\n"
+            result += f"{post['text'][:300]}\n\n"
+            result += f"📍 Координаты: ({int(post['x'])}, {int(post['y'])})"
+            
+            await msg.edit_text(result)
+        else:
+            await msg.edit_text(f"❌ Пост с текстом '{query}' не найден")
+            
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
 # ========== ЗАПУСК ==========
 
 def main():
@@ -1468,10 +1741,19 @@ def main():
     app.add_handler(CommandHandler("joystick_ai", joystick_ai))
     app.add_handler(CommandHandler("find", find_elements))
     
+    # Команды для постов
+    app.add_handler(CommandHandler("user", go_to_user))
+    app.add_handler(CommandHandler("tweet", get_tweet))
+    app.add_handler(CommandHandler("last", last_tweet))
+    app.add_handler(CommandHandler("tweets", list_tweets))
+    app.add_handler(CommandHandler("like_tweet", like_tweet_by_number))
+    app.add_handler(CommandHandler("find_tweet", find_tweet_by_text))
+    
     print("🤖 Бот с джойстиком запущен...")
     print("📌 Доступные команды:")
     print("   Основные: /start, /go, /xlogin, /explore, /findbuttons, /click, /screen, /status, /stats, /check, /logs, /close")
     print("   Джойстик: /joystick, /joystick_ai, /find")
+    print("   Посты: /user, /tweet, /last, /tweets, /like_tweet, /find_tweet")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
