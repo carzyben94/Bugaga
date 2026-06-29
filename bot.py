@@ -45,6 +45,7 @@ COOKIES = [
 browser_data = None
 error_logs = []
 MAX_LOGS = 50
+browser_lock = False  # Блокировка для предотвращения конфликтов
 
 def log_error(error_msg, traceback_str=None):
     """Сохраняет ошибку в лог"""
@@ -77,13 +78,15 @@ def install_playwright_browser():
 install_playwright_browser()
 
 async def get_browser():
-    global browser_data
+    global browser_data, browser_lock
     
     from playwright.async_api import async_playwright
     from playwright_stealth import stealth_async
     
+    # Проверяем существующий браузер
     if browser_data:
         try:
+            # Проверяем жив ли браузер
             await browser_data['page'].evaluate('1')
             return browser_data
         except:
@@ -93,69 +96,79 @@ async def get_browser():
                 pass
             browser_data = None
     
-    p = await async_playwright().start()
-    browser = await p.chromium.launch(
-        headless=False,  # Временно для отладки
-        args=[
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-blink-features=AutomationControlled',
-            '--disable-dev-shm-usage',
-            '--disable-web-security',
-            '--disable-features=IsolateOrigins,site-per-process',
-            '--disable-site-isolation-trials',
-            '--disable-features=BlockInsecurePrivateNetworkRequests'
-        ]
-    )
-    context = await browser.new_context(
-        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        viewport={'width': 1280, 'height': 720},
-        locale='en-US',
-        timezone_id='America/New_York',
-        extra_http_headers={
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1',
-            'Cache-Control': 'max-age=0'
+    # Ждем если браузер уже создается
+    while browser_lock:
+        await asyncio.sleep(0.5)
+    
+    browser_lock = True
+    
+    try:
+        p = await async_playwright().start()
+        browser = await p.chromium.launch(
+            headless=True,  # Возвращаем в headless режим
+            args=[
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-blink-features=AutomationControlled',
+                '--disable-dev-shm-usage',
+                '--disable-web-security',
+                '--disable-features=IsolateOrigins,site-per-process',
+                '--disable-site-isolation-trials',
+                '--disable-features=BlockInsecurePrivateNetworkRequests'
+            ]
+        )
+        context = await browser.new_context(
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            viewport={'width': 1280, 'height': 720},
+            locale='en-US',
+            timezone_id='America/New_York',
+            extra_http_headers={
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+                'Cache-Control': 'max-age=0'
+            }
+        )
+        page = await context.new_page()
+        await stealth_async(page)
+        
+        # Добавляем скрипт для скрытия автоматизации
+        await page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+            });
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3, 4, 5]
+            });
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['en-US', 'en']
+            });
+            window.chrome = {
+                runtime: {}
+            };
+        """)
+        
+        browser_data = {
+            'playwright': p,
+            'browser': browser,
+            'context': context,
+            'page': page
         }
-    )
-    page = await context.new_page()
-    await stealth_async(page)
-    
-    # Добавляем скрипт для скрытия автоматизации
-    await page.add_init_script("""
-        Object.defineProperty(navigator, 'webdriver', {
-            get: () => undefined
-        });
-        Object.defineProperty(navigator, 'plugins', {
-            get: () => [1, 2, 3, 4, 5]
-        });
-        Object.defineProperty(navigator, 'languages', {
-            get: () => ['en-US', 'en']
-        });
-        window.chrome = {
-            runtime: {}
-        };
-    """)
-    
-    browser_data = {
-        'playwright': p,
-        'browser': browser,
-        'context': context,
-        'page': page
-    }
-    
-    return browser_data
+        
+        return browser_data
+    finally:
+        browser_lock = False
 
 async def close_browser():
-    global browser_data
+    global browser_data, browser_lock
+    
     if browser_data:
         try:
             await browser_data['browser'].close()
@@ -209,8 +222,15 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"User {update.effective_user.id} начал xlogin")
         
         # Очищаем старые куки
-        await browser['context'].clear_cookies()
-        logger.info("Старые куки очищены")
+        try:
+            await browser['context'].clear_cookies()
+            logger.info("Старые куки очищены")
+        except Exception as e:
+            logger.warning(f"Ошибка очистки кук: {e}")
+            # Пересоздаем браузер если проблема
+            await close_browser()
+            browser = await get_browser()
+            page = browser['page']
         
         # Устанавливаем новые куки с логированием
         cookie_errors = []
@@ -236,7 +256,7 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Переходим на страницу
         log_msg += "\n\n🔄 Перехожу на x.com..."
         try:
-            # Ждем полной загрузки
+            # Ждем полной загрузки с таймаутом
             await page.goto('https://x.com', wait_until='networkidle', timeout=30000)
             logger.info("Страница загружена")
             
@@ -247,6 +267,14 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             error_msg = f"Ошибка загрузки страницы: {str(e)}"
             log_error(error_msg, traceback.format_exc())
             log_msg += f"\n❌ {error_msg}"
+            
+            # Пробуем перезагрузить страницу
+            try:
+                await page.reload(wait_until='domcontentloaded', timeout=15000)
+                log_msg += "\n🔄 Страница перезагружена"
+            except:
+                pass
+                
             await msg.edit_text(log_msg)
             return
         
@@ -268,8 +296,11 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             log_msg += f"\n⚠️ Ошибка проверки HTML: {str(e)}"
         
         # Проверяем URL (СВОЙСТВО - без await)
-        current_url = page.url
-        log_msg += f"\n📍 URL: {current_url[:80]}"
+        try:
+            current_url = page.url
+            log_msg += f"\n📍 URL: {current_url[:80]}"
+        except:
+            log_msg += f"\n📍 URL: Недоступен"
         
         # Проверяем наличие элементов
         is_logged = False
@@ -315,8 +346,11 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             log_msg += f"\n\n⚠️ Ошибка проверки кук: {str(e)}"
         
         # Заголовок страницы (МЕТОД - с await)
-        title = await page.title()
-        log_msg += f"\n\n📌 Заголовок: {title[:60] if title else 'Нет заголовка'}"
+        try:
+            title = await page.title()
+            log_msg += f"\n\n📌 Заголовок: {title[:60] if title else 'Нет заголовка'}"
+        except:
+            log_msg += f"\n\n📌 Заголовок: Недоступен"
         
         # Делаем скриншот (МЕТОД - с await)
         screenshot = None
@@ -343,7 +377,13 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         error_msg = f"Критическая ошибка в xlogin: {str(e)}"
         traceback_str = traceback.format_exc()
         log_error(error_msg, traceback_str)
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+        
+        # Если браузер закрыт, пробуем пересоздать
+        if "closed" in str(e).lower():
+            await close_browser()
+            await msg.edit_text("❌ Браузер был закрыт. Попробуйте снова /xlogin")
+        else:
+            await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Делаю скриншот...")
