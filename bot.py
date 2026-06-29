@@ -114,19 +114,22 @@ class ProgressTracker:
         
         try:
             await self.msg.edit_text(progress_text)
-        except:
-            pass
+        except Exception as e:
+            try:
+                await self.update.message.reply_text(progress_text)
+            except:
+                pass
             
     async def check_stuck(self):
         if time.time() - self.last_update > 15:
             self.is_stuck = True
             if not self.stuck_warning_sent:
                 self.stuck_warning_sent = True
-                await self.update.message.reply_text("⚠️ Агент возможно завис! Перезапускаю...")
                 try:
-                    return True
+                    await self.update.message.reply_text("⚠️ Агент возможно завис! Перезапускаю...")
                 except:
                     pass
+                return True
         else:
             self.is_stuck = False
             self.stuck_warning_sent = False
@@ -732,6 +735,8 @@ async def explore_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
         
     except Exception as e:
+        error_msg = f"❌ Ошибка: {str(e)}"
+        logger.error(error_msg)
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -966,7 +971,7 @@ def main():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("xlogin", xlogin))
-    app.add_handler(CommandHandler("explore", explore_command))  # 👈 КОМАНДА ДЛЯ ЗАПУСКА
+    app.add_handler(CommandHandler("explore", explore_command))
     app.add_handler(CommandHandler("tweets", tweets_command))
     app.add_handler(CommandHandler("tweet", tweet_command))
     app.add_handler(CommandHandler("last", last_tweet))
