@@ -1450,7 +1450,7 @@ async def go_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Получает пост по номеру (компактный вывод)"""
+    """Получает пост по номеру с движением джойстика и скриншотом"""
     if not context.args:
         await update.message.reply_text(
             "❌ Укажи номер поста\n"
@@ -1473,6 +1473,20 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         browser = await get_browser()
         page = browser['page']
         
+        # Проверяем что мы на X.com
+        current_url = page.url
+        if 'x.com' not in current_url:
+            await msg.edit_text("❌ Сначала зайди на X.com через /xlogin")
+            return
+        
+        # Ждем загрузки постов
+        try:
+            await page.wait_for_selector('[data-testid="tweet"]', timeout=10000)
+        except:
+            await msg.edit_text("❌ Посты не загрузились. Попробуй обновить страницу")
+            return
+        
+        # Собираем посты
         posts = await page.evaluate('''
             () => {
                 const result = [];
@@ -1480,28 +1494,32 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     const text = el.textContent?.trim() || '';
                     const rect = el.getBoundingClientRect();
                     
-                    const authorEl = el.querySelector('[data-testid="User-Name"]');
-                    const author = authorEl?.textContent?.trim() || 'Unknown';
-                    
-                    const likes = el.querySelector('[data-testid="like"]')?.textContent?.trim() || '0';
-                    const retweets = el.querySelector('[data-testid="retweet"]')?.textContent?.trim() || '0';
-                    const replies = el.querySelector('[data-testid="reply"]')?.textContent?.trim() || '0';
-                    
-                    const timeEl = el.querySelector('time');
-                    const time = timeEl?.getAttribute('datetime') || '';
-                    
-                    result.push({
-                        text: text,
-                        author: author,
-                        likes: likes,
-                        retweets: retweets,
-                        replies: replies,
-                        time: time,
-                        x: rect.x + rect.width / 2,
-                        y: rect.y + rect.height / 2,
-                        width: rect.width,
-                        height: rect.height
-                    });
+                    if (rect.width > 0 && rect.height > 0) {
+                        const authorEl = el.querySelector('[data-testid="User-Name"]');
+                        const author = authorEl?.textContent?.trim() || 'Unknown';
+                        
+                        const likes = el.querySelector('[data-testid="like"]')?.textContent?.trim() || '0';
+                        const retweets = el.querySelector('[data-testid="retweet"]')?.textContent?.trim() || '0';
+                        const replies = el.querySelector('[data-testid="reply"]')?.textContent?.trim() || '0';
+                        
+                        const timeEl = el.querySelector('time');
+                        const time = timeEl?.getAttribute('datetime') || '';
+                        
+                        result.push({
+                            text: text,
+                            author: author,
+                            likes: likes,
+                            retweets: retweets,
+                            replies: replies,
+                            time: time,
+                            x: rect.x + rect.width / 2,
+                            y: rect.y + rect.height / 2,
+                            width: rect.width,
+                            height: rect.height,
+                            top: rect.top,
+                            bottom: rect.bottom
+                        });
+                    }
                 });
                 return result;
             }
@@ -1518,6 +1536,49 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         posts_reversed = list(reversed(posts))
         post = posts_reversed[num]
         
+        # Проверяем видимость поста
+        viewport = await page.viewport_size()
+        if not viewport:
+            viewport = {'width': 1280, 'height': 720}
+        
+        # Если пост не виден - скроллим к нему
+        if post['top'] < 0 or post['bottom'] > viewport['height']:
+            await msg.edit_text(f"📜 Скроллю к посту #{num + 1}...")
+            
+            # Скролл через JavaScript
+            await page.evaluate('''
+                const el = document.querySelector('[data-testid="tweet"]');
+                if (el) {
+                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+            ''')
+            await asyncio.sleep(1.5)
+            
+            # Обновляем координаты после скролла
+            new_coords = await page.evaluate('''
+                () => {
+                    const el = document.querySelector('[data-testid="tweet"]');
+                    if (el) {
+                        const rect = el.getBoundingClientRect();
+                        return {
+                            x: rect.x + rect.width / 2,
+                            y: rect.y + rect.height / 2,
+                            width: rect.width,
+                            height: rect.height,
+                            top: rect.top,
+                            bottom: rect.bottom
+                        };
+                    }
+                    return null;
+                }
+            ''')
+            
+            if new_coords:
+                post['x'] = new_coords['x']
+                post['y'] = new_coords['y']
+                post['width'] = new_coords['width']
+                post['height'] = new_coords['height']
+        
         # Обрезаем текст до 100 символов
         text_preview = post['text'][:100]
         if len(post['text']) > 100:
@@ -1532,38 +1593,87 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 time_str = post['time'][:10]
         
-        # КОМПАКТНЫЙ ВЫВОД (Вариант 3)
+        # КОМПАКТНЫЙ ВЫВОД
         result = f"""📌 #{num + 1} @{post['author']}
 {text_preview}
 ❤️ {post['likes']}  🔁 {post['retweets']}  💬 {post['replies']}
 {time_str}"""
         
+        # ===== ДВИЖЕНИЕ ДЖОЙСТИКА К ПОСТУ =====
+        await msg.edit_text(f"🖱️ Двигаюсь к посту #{num + 1}...")
+        
         joystick = JoystickController(page)
-        await joystick.init_position()
-        await joystick.human_like_move(post['x'], post['y'])
+        await joystick.init_position()  # Курсор в центр
+        await joystick.human_like_move(post['x'], post['y'])  # Плавное движение к посту
         
-        screenshot = await page.screenshot(
-            clip={
-                'x': max(0, post['x'] - post['width']/2 - 20),
-                'y': max(0, post['y'] - post['height']/2 - 20),
-                'width': min(post['width'] + 40, 1280),
-                'height': min(post['height'] + 40, 720)
-            },
-            type='jpeg',
-            quality=85
-        )
+        await asyncio.sleep(0.3)
         
+        # ===== СКРИНШОТ ПОСТА =====
+        await msg.edit_text(f"📸 Делаю скриншот поста #{num + 1}...")
+        
+        screenshot = None
+        try:
+            # Проверяем что область валидная
+            clip_x = max(0, post['x'] - post['width']/2 - 20)
+            clip_y = max(0, post['y'] - post['height']/2 - 20)
+            clip_width = min(post['width'] + 40, viewport['width'])
+            clip_height = min(post['height'] + 40, viewport['height'])
+            
+            # Проверяем что область внутри viewport
+            if (clip_x + clip_width <= viewport['width'] and 
+                clip_y + clip_height <= viewport['height'] and
+                clip_width > 10 and clip_height > 10):
+                
+                screenshot = await page.screenshot(
+                    clip={
+                        'x': clip_x,
+                        'y': clip_y,
+                        'width': clip_width,
+                        'height': clip_height
+                    },
+                    type='jpeg',
+                    quality=85
+                )
+            else:
+                # Если клип не влазит - делаем полный скриншот
+                screenshot = await page.screenshot(type='jpeg', quality=80)
+                
+        except Exception as e:
+            logger.warning(f"Screenshot error: {e}")
+            try:
+                screenshot = await page.screenshot(type='jpeg', quality=80)
+            except:
+                pass
+        
+        # Отправляем результат
         await msg.edit_text(result)
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption=f"📸 Пост #{num + 1}"
-        )
+        
+        if screenshot:
+            await update.message.reply_photo(
+                photo=screenshot,
+                caption=f"📸 Пост #{num + 1}"
+            )
+        else:
+            await update.message.reply_text("⚠️ Не удалось сделать скриншот поста")
         
     except Exception as e:
+        error_msg = f"Ошибка: {str(e)}"
+        log_error(error_msg, traceback.format_exc())
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def last_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает последний пост"""
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        current_url = page.url
+        if 'x.com' not in current_url:
+            await update.message.reply_text("❌ Сначала зайди на X.com через /xlogin")
+            return
+    except:
+        await update.message.reply_text("❌ Браузер не открыт. Сначала /xlogin")
+        return
+    
     context.args = ['1']
     await get_tweet(update, context)
 
@@ -1618,7 +1728,7 @@ async def list_tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def like_tweet_by_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Лайкает пост по номеру"""
+    """Лайкает пост по номеру с движением джойстика"""
     if not context.args:
         await update.message.reply_text("❌ Укажи номер поста: /like_tweet 1")
         return
@@ -1652,6 +1762,9 @@ async def like_tweet_by_number(update: Update, context: ContextTypes.DEFAULT_TYP
             await msg.edit_text("❌ Кнопка Like не найдена в этом посте")
             return
         
+        # Движение джойстика к кнопке Like
+        await msg.edit_text(f"🖱️ Двигаюсь к кнопке Like...")
+        
         joystick = JoystickController(page)
         await joystick.init_position()
         
@@ -1660,6 +1773,8 @@ async def like_tweet_by_number(update: Update, context: ContextTypes.DEFAULT_TYP
             box['x'] + box['width'] / 2,
             box['y'] + box['height'] / 2
         )
+        
+        await asyncio.sleep(0.2)
         await joystick.click()
         
         await msg.edit_text(f"❤️ Лайкнут пост #{num + 1}!")
@@ -1668,7 +1783,7 @@ async def like_tweet_by_number(update: Update, context: ContextTypes.DEFAULT_TYP
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def find_tweet_by_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Находит пост по тексту"""
+    """Находит пост по тексту с движением джойстика"""
     if not context.args:
         await update.message.reply_text("❌ Что ищем? /find_tweet текст")
         return
@@ -1701,6 +1816,9 @@ async def find_tweet_by_text(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         if posts:
             post = posts[0]
+            
+            # Движение джойстика к найденному посту
+            await msg.edit_text(f"🖱️ Двигаюсь к найденному посту...")
             
             joystick = JoystickController(page)
             await joystick.init_position()
