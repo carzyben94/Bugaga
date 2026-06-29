@@ -1,4 +1,4 @@
-# bot.py
+# bot.py - Полный бот с джойстиком и AI управлением
 import os
 import sys
 import subprocess
@@ -6,14 +6,17 @@ import json
 import logging
 import traceback
 import asyncio
+import math
+import random
 from datetime import datetime
+from typing import Tuple, Optional, List, Dict, Any
+from dataclasses import dataclass
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+from playwright.async_api import Page, async_playwright
+from playwright_stealth import stealth_async
 
-# Импорт джойстика
-from joystick_controller import JoystickController
-
-# Настройка логирования
+# ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -24,6 +27,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ========== КОНФИГУРАЦИЯ ==========
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
@@ -31,7 +35,7 @@ if not TOKEN:
 PLAYWRIGHT_DIR = "/root/.cache/ms-playwright"
 os.environ['PLAYWRIGHT_BROWSERS_PATH'] = PLAYWRIGHT_DIR
 
-# Куки X.com
+# ========== КУКИ X.COM ==========
 COOKIES = [
     {"name": "__cuid", "value": "55d2d7c5-4888-430a-b024-dd785da46ef4", "domain": ".x.com", "path": "/"},
     {"name": "lang", "value": "ru", "domain": ".x.com", "path": "/"},
@@ -47,11 +51,399 @@ COOKIES = [
     {"name": "ct0", "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb", "domain": ".x.com", "path": "/"}
 ]
 
+# ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 browser_data = None
 error_logs = []
 MAX_LOGS = 50
 browser_lock = False
 
+# ========== КЛАСС ДЖОЙСТИКА ==========
+@dataclass
+class JoystickState:
+    x: float = 0.0
+    y: float = 0.0
+    speed: float = 1.0
+    smoothness: float = 0.3
+
+class JoystickController:
+    """Управление мышью как джойстиком для AI-агентов"""
+    
+    def __init__(self, page: Page):
+        self.page = page
+        self.state = JoystickState()
+        self.current_pos = (0, 0)
+        self.is_moving = False
+        self.move_task = None
+        self.viewport_width = 1920
+        self.viewport_height = 1080
+        
+    async def init_position(self) -> Tuple[int, int]:
+        """Устанавливает курсор в центр экрана"""
+        try:
+            viewport = await self.page.viewport_size()
+            if viewport:
+                self.viewport_width = viewport['width']
+                self.viewport_height = viewport['height']
+                center_x = viewport['width'] // 2
+                center_y = viewport['height'] // 2
+                await self.page.mouse.move(center_x, center_y)
+                self.current_pos = (center_x, center_y)
+                return center_x, center_y
+        except Exception as e:
+            logger.error(f"Init position error: {e}")
+        return 0, 0
+    
+    async def move_joystick(self, 
+                           x: float, 
+                           y: float, 
+                           duration: float = 0.5,
+                           speed_mult: float = 1.0) -> Tuple[int, int]:
+        """Перемещает курсор как джойстик"""
+        max_move = 200 * speed_mult
+        dx = x * max_move
+        dy = y * max_move
+        
+        cx, cy = self.current_pos
+        target_x = max(0, min(self.viewport_width, cx + dx))
+        target_y = max(0, min(self.viewport_height, cy + dy))
+        
+        steps = max(1, int(duration * 60))
+        
+        for i in range(steps):
+            progress = (i + 1) / steps
+            eased = self._ease_in_out(progress)
+            
+            cur_x = cx + (target_x - cx) * eased
+            cur_y = cy + (target_y - cy) * eased
+            
+            await self.page.mouse.move(cur_x, cur_y)
+            self.current_pos = (cur_x, cur_y)
+            
+            if i < steps - 1:
+                await asyncio.sleep(duration / steps)
+        
+        return self.current_pos
+    
+    async def move_to_element(self, 
+                            selector: str,
+                            offset_x: int = 0,
+                            offset_y: int = 0,
+                            duration: float = 0.5) -> bool:
+        """Перемещает курсор к элементу"""
+        try:
+            element = await self.page.query_selector(selector)
+            if not element:
+                return False
+            
+            box = await element.bounding_box()
+            if not box:
+                return False
+            
+            target_x = box['x'] + box['width'] // 2 + offset_x
+            target_y = box['y'] + box['height'] // 2 + offset_y
+            
+            cx, cy = self.current_pos
+            steps = max(1, int(duration * 60))
+            
+            for i in range(steps):
+                progress = (i + 1) / steps
+                eased = self._ease_in_out(progress)
+                
+                cur_x = cx + (target_x - cx) * eased
+                cur_y = cy + (target_y - cy) * eased
+                
+                await self.page.mouse.move(cur_x, cur_y)
+                self.current_pos = (cur_x, cur_y)
+                
+                if i < steps - 1:
+                    await asyncio.sleep(duration / steps)
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Move to element error: {e}")
+            return False
+    
+    async def click(self, 
+                   button: str = 'left',
+                   double: bool = False,
+                   delay: float = 0.1) -> None:
+        """Клик в текущей позиции"""
+        await asyncio.sleep(delay)
+        
+        if double:
+            await self.page.mouse.dblclick(*self.current_pos)
+        else:
+            if button == 'left':
+                await self.page.mouse.click(*self.current_pos)
+            elif button == 'right':
+                await self.page.mouse.click(*self.current_pos, button='right')
+            elif button == 'middle':
+                await self.page.mouse.click(*self.current_pos, button='middle')
+    
+    async def drag(self, 
+                  target_x: float, 
+                  target_y: float,
+                  duration: float = 0.5) -> None:
+        """Перетаскивание"""
+        cx, cy = self.current_pos
+        
+        await self.page.mouse.down()
+        
+        steps = max(1, int(duration * 60))
+        for i in range(steps):
+            progress = (i + 1) / steps
+            eased = self._ease_in_out(progress)
+            
+            cur_x = cx + (target_x - cx) * eased
+            cur_y = cy + (target_y - cy) * eased
+            
+            await self.page.mouse.move(cur_x, cur_y)
+            self.current_pos = (cur_x, cur_y)
+            
+            if i < steps - 1:
+                await asyncio.sleep(duration / steps)
+        
+        await self.page.mouse.up()
+    
+    async def scroll(self, delta_x: int = 0, delta_y: int = 0) -> None:
+        """Скролл"""
+        await self.page.mouse.wheel(delta_x, delta_y)
+    
+    async def human_like_move(self, 
+                            target_x: int, 
+                            target_y: int,
+                            speed: float = 1.0) -> None:
+        """Движение похожее на человеческое"""
+        cx, cy = self.current_pos
+        
+        distance = math.sqrt((target_x - cx)**2 + (target_y - cy)**2)
+        duration = min(2.0, distance / (800 * speed)) + random.uniform(0.1, 0.3)
+        
+        steps = max(1, int(duration * 60))
+        
+        for i in range(steps):
+            progress = (i + 1) / steps
+            
+            human_progress = self._human_curve(progress)
+            
+            noise_x = random.uniform(-5, 5) * (1 - progress)
+            noise_y = random.uniform(-5, 5) * (1 - progress)
+            
+            cur_x = cx + (target_x - cx) * human_progress + noise_x
+            cur_y = cy + (target_y - cy) * human_progress + noise_y
+            
+            cur_x = max(0, min(self.viewport_width, cur_x))
+            cur_y = max(0, min(self.viewport_height, cur_y))
+            
+            await self.page.mouse.move(cur_x, cur_y)
+            self.current_pos = (cur_x, cur_y)
+            
+            if i < steps - 1:
+                await asyncio.sleep(duration / steps)
+    
+    async def explore_screen(self) -> List[Dict[str, Any]]:
+        """Находит все интерактивные элементы на странице"""
+        try:
+            elements = await self.page.evaluate('''
+                () => {
+                    const result = [];
+                    const selectors = [
+                        'button', 
+                        'a[href]', 
+                        'input', 
+                        'textarea',
+                        'select',
+                        '[role="button"]',
+                        '[role="link"]',
+                        '[role="checkbox"]',
+                        '[role="radio"]',
+                        '[role="tab"]',
+                        '[role="menuitem"]',
+                        '[role="option"]',
+                        '[contenteditable="true"]',
+                        '[data-testid]'
+                    ];
+                    
+                    document.querySelectorAll(selectors.join(',')).forEach(el => {
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0 && rect.top < window.innerHeight) {
+                            const text = el.textContent?.trim() || '';
+                            const ariaLabel = el.getAttribute('aria-label') || '';
+                            const placeholder = el.getAttribute('placeholder') || '';
+                            const value = el.value || '';
+                            
+                            result.push({
+                                tag: el.tagName.toLowerCase(),
+                                type: el.type || '',
+                                text: text.slice(0, 100),
+                                ariaLabel: ariaLabel.slice(0, 100),
+                                placeholder: placeholder.slice(0, 50),
+                                value: value.slice(0, 50),
+                                testid: el.getAttribute('data-testid') || '',
+                                id: el.id || '',
+                                className: el.className || '',
+                                x: rect.x + rect.width / 2,
+                                y: rect.y + rect.height / 2,
+                                width: rect.width,
+                                height: rect.height,
+                                visible: rect.width > 0 && rect.height > 0,
+                                disabled: el.disabled || false,
+                                readonly: el.readOnly || false
+                            });
+                        }
+                    });
+                    return result;
+                }
+            ''')
+            return elements
+        except Exception as e:
+            logger.error(f"Explore screen error: {e}")
+            return []
+    
+    async def find_and_click(self, description: str) -> bool:
+        """Находит элемент по описанию и кликает"""
+        elements = await self.explore_screen()
+        
+        if not elements:
+            return False
+        
+        best_match = None
+        best_score = 0
+        
+        keywords = description.lower().split()
+        
+        for el in elements:
+            score = 0
+            text_lower = el['text'].lower()
+            aria_lower = el['ariaLabel'].lower()
+            testid_lower = el['testid'].lower()
+            placeholder_lower = el['placeholder'].lower()
+            
+            for keyword in keywords:
+                if keyword in text_lower:
+                    score += 3
+                if keyword in aria_lower:
+                    score += 2
+                if keyword in testid_lower:
+                    score += 2
+                if keyword in placeholder_lower:
+                    score += 1
+            
+            if score > best_score:
+                best_score = score
+                best_match = el
+        
+        if best_match and best_score > 0:
+            await self.human_like_move(best_match['x'], best_match['y'])
+            await asyncio.sleep(0.2)
+            await self.click()
+            return True
+        
+        if elements:
+            el = elements[0]
+            await self.human_like_move(el['x'], el['y'])
+            await asyncio.sleep(0.2)
+            await self.click()
+            return True
+        
+        return False
+    
+    async def continuous_move(self, duration: float = 5.0):
+        """Непрерывное движение курсора"""
+        self.is_moving = True
+        start_time = asyncio.get_event_loop().time()
+        
+        while self.is_moving and (asyncio.get_event_loop().time() - start_time) < duration:
+            angle = random.uniform(0, 2 * math.pi)
+            distance = random.uniform(50, 200)
+            
+            cx, cy = self.current_pos
+            target_x = max(0, min(self.viewport_width, cx + math.cos(angle) * distance))
+            target_y = max(0, min(self.viewport_height, cy + math.sin(angle) * distance))
+            
+            await self.human_like_move(target_x, target_y, speed=0.7)
+            
+            if random.random() < 0.1:
+                await self.click()
+            
+            await asyncio.sleep(random.uniform(0.5, 2.0))
+        
+        self.is_moving = False
+    
+    def stop_continuous_move(self):
+        """Останавливает непрерывное движение"""
+        self.is_moving = False
+    
+    async def move_with_pattern(self, pattern: str, **kwargs):
+        """Движение по паттерну"""
+        cx, cy = self.current_pos
+        duration = kwargs.get('duration', 3.0)
+        size = kwargs.get('size', 100)
+        steps = max(1, int(duration * 60))
+        
+        if pattern == 'circle':
+            for i in range(steps):
+                angle = (i / steps) * 2 * math.pi
+                x = cx + math.cos(angle) * size
+                y = cy + math.sin(angle) * size
+                x = max(0, min(self.viewport_width, x))
+                y = max(0, min(self.viewport_height, y))
+                await self.page.mouse.move(x, y)
+                self.current_pos = (x, y)
+                await asyncio.sleep(duration / steps)
+                
+        elif pattern == 'square':
+            points = [
+                (cx - size, cy - size),
+                (cx + size, cy - size),
+                (cx + size, cy + size),
+                (cx - size, cy + size),
+                (cx - size, cy - size)
+            ]
+            per_side = max(1, steps // 4)
+            for side in range(4):
+                start = points[side]
+                end = points[side + 1]
+                for i in range(per_side):
+                    t = i / per_side
+                    x = start[0] + (end[0] - start[0]) * t
+                    y = start[1] + (end[1] - start[1]) * t
+                    x = max(0, min(self.viewport_width, x))
+                    y = max(0, min(self.viewport_height, y))
+                    await self.page.mouse.move(x, y)
+                    self.current_pos = (x, y)
+                    await asyncio.sleep(duration / steps)
+                    
+        elif pattern == 'spiral':
+            for i in range(steps):
+                t = i / steps
+                angle = t * 4 * math.pi
+                r = t * size
+                x = cx + math.cos(angle) * r
+                y = cy + math.sin(angle) * r
+                x = max(0, min(self.viewport_width, x))
+                y = max(0, min(self.viewport_height, y))
+                await self.page.mouse.move(x, y)
+                self.current_pos = (x, y)
+                await asyncio.sleep(duration / steps)
+                
+        elif pattern == 'random':
+            for _ in range(min(steps, 20)):
+                x = random.randint(0, self.viewport_width)
+                y = random.randint(0, self.viewport_height)
+                await self.human_like_move(x, y)
+                await asyncio.sleep(random.uniform(0.3, 1.0))
+    
+    @staticmethod
+    def _ease_in_out(t: float) -> float:
+        return t * t * (3.0 - 2.0 * t)
+    
+    @staticmethod
+    def _human_curve(t: float) -> float:
+        return 1 - math.pow(1 - t, 2.5)
+
+# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def log_error(error_msg, traceback_str=None):
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     log_entry = {
@@ -81,11 +473,9 @@ def install_playwright_browser():
 
 install_playwright_browser()
 
+# ========== УПРАВЛЕНИЕ БРАУЗЕРОМ ==========
 async def get_browser():
     global browser_data, browser_lock
-    
-    from playwright.async_api import async_playwright
-    from playwright_stealth import stealth_async
     
     if browser_data:
         try:
@@ -616,7 +1006,6 @@ async def joystick_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         elements = await joystick.explore_screen()
         
-        # Ищем подходящий элемент
         found = None
         best_score = 0
         
@@ -626,7 +1015,6 @@ async def joystick_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
             testid_lower = el['testid'].lower()
             aria_lower = el['ariaLabel'].lower()
             
-            # Проверяем каждое слово из запроса
             for word in task.lower().split():
                 if word in text_lower:
                     score += 3
@@ -634,7 +1022,6 @@ async def joystick_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     score += 2
                 if word in aria_lower:
                     score += 2
-                # Проверяем частичное совпадение
                 for part in [text_lower, testid_lower, aria_lower]:
                     if word in part and len(word) > 2:
                         score += 1
@@ -644,11 +1031,8 @@ async def joystick_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 found = el
         
         if found and best_score > 0:
-            # Движение к элементу
             await joystick.human_like_move(found['x'], found['y'])
             await asyncio.sleep(0.3)
-            
-            # Клик
             await joystick.click()
             
             await msg.edit_text(
@@ -660,7 +1044,6 @@ async def joystick_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🎯 Точность: {best_score} баллов"
             )
         else:
-            # Показываем доступные элементы
             result = f"❌ AI не нашел подходящий элемент\n\n"
             result += f"Найдено элементов: {len(elements)}\n"
             result += f"Запрос: {task}\n\n"
@@ -687,8 +1070,7 @@ async def find_elements(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "❌ Что ищем?\n"
             "Пример: /find кнопка Войти\n"
-            "Пример: /find testid tweetButton\n"
-            "Пример: /find профиль"
+            "Пример: /find testid tweetButton"
         )
         return
     
@@ -704,7 +1086,6 @@ async def find_elements(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         elements = await joystick.explore_screen()
         
-        # Фильтруем
         found = []
         for el in elements:
             text = el['text'].lower()
@@ -737,7 +1118,6 @@ async def find_elements(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(found) > 10:
                 result += f"... и еще {len(found) - 10} элементов"
             
-            # Показываем первый найденный
             if found:
                 await joystick.human_like_move(found[0]['x'], found[0]['y'])
                 result += "\n\n🖱️ Курсор наведен на первый элемент"
@@ -767,7 +1147,6 @@ async def findbuttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         elements = await joystick.explore_screen()
         
-        # Фильтруем только кнопки
         buttons = [el for el in elements if el['tag'] == 'button' or 'button' in el.get('role', '')]
         
         if buttons:
@@ -834,7 +1213,6 @@ async def click_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         joystick = JoystickController(page)
         await joystick.init_position()
         
-        # Используем джойстик для поиска и клика
         selector = f'[data-testid="{testid}"]'
         success = await joystick.move_to_element(selector)
         
