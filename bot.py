@@ -4,6 +4,7 @@ import subprocess
 import json
 import logging
 import traceback
+import asyncio
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -45,7 +46,7 @@ COOKIES = [
 browser_data = None
 error_logs = []
 MAX_LOGS = 50
-browser_lock = False  # Блокировка для предотвращения конфликтов
+browser_lock = False
 
 def log_error(error_msg, traceback_str=None):
     """Сохраняет ошибку в лог"""
@@ -83,10 +84,8 @@ async def get_browser():
     from playwright.async_api import async_playwright
     from playwright_stealth import stealth_async
     
-    # Проверяем существующий браузер
     if browser_data:
         try:
-            # Проверяем жив ли браузер
             await browser_data['page'].evaluate('1')
             return browser_data
         except:
@@ -96,7 +95,6 @@ async def get_browser():
                 pass
             browser_data = None
     
-    # Ждем если браузер уже создается
     while browser_lock:
         await asyncio.sleep(0.5)
     
@@ -105,7 +103,7 @@ async def get_browser():
     try:
         p = await async_playwright().start()
         browser = await p.chromium.launch(
-            headless=True,  # Возвращаем в headless режим
+            headless=True,
             args=[
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -139,7 +137,6 @@ async def get_browser():
         page = await context.new_page()
         await stealth_async(page)
         
-        # Добавляем скрипт для скрытия автоматизации
         await page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined
@@ -221,18 +218,21 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         logger.info(f"User {update.effective_user.id} начал xlogin")
         
+        # Сначала загружаем пустую страницу
+        await page.goto('about:blank')
+        await page.wait_for_timeout(1000)
+        
         # Очищаем старые куки
         try:
             await browser['context'].clear_cookies()
             logger.info("Старые куки очищены")
         except Exception as e:
             logger.warning(f"Ошибка очистки кук: {e}")
-            # Пересоздаем браузер если проблема
             await close_browser()
             browser = await get_browser()
             page = browser['page']
         
-        # Устанавливаем новые куки с логированием
+        # Устанавливаем куки
         cookie_errors = []
         cookie_success = []
         
@@ -256,53 +256,62 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Переходим на страницу
         log_msg += "\n\n🔄 Перехожу на x.com..."
         try:
-            # Ждем полной загрузки с таймаутом
-            await page.goto('https://x.com', wait_until='networkidle', timeout=30000)
-            logger.info("Страница загружена")
+            # Пробуем с минимальными ожиданиями
+            await page.goto('https://x.com', wait_until='commit', timeout=15000)
+            logger.info("Страница начала загрузку")
             
-            # Дополнительная пауза для рендеринга
-            await page.wait_for_timeout(3000)
+            # Ждем немного
+            await page.wait_for_timeout(5000)
+            
+            # Пробуем дождаться body
+            try:
+                await page.wait_for_selector('body', timeout=10000)
+                logger.info("Body загружен")
+            except:
+                logger.warning("Body не загружен")
             
         except Exception as e:
-            error_msg = f"Ошибка загрузки страницы: {str(e)}"
+            error_msg = f"Ошибка загрузки: {str(e)}"
             log_error(error_msg, traceback.format_exc())
             log_msg += f"\n❌ {error_msg}"
             
-            # Пробуем перезагрузить страницу
+            # Пробуем перезагрузить
             try:
                 await page.reload(wait_until='domcontentloaded', timeout=15000)
                 log_msg += "\n🔄 Страница перезагружена"
+                await page.wait_for_timeout(3000)
             except:
                 pass
-                
-            await msg.edit_text(log_msg)
-            return
         
-        # Проверяем HTML страницы
-        try:
-            html_content = await page.content()
-            log_msg += f"\n📄 HTML длина: {len(html_content)} символов"
-            
-            # Проверяем наличие ключевых слов
-            if 'login' in html_content.lower():
-                log_msg += "\n🔍 Найдено слово 'login' в HTML"
-            if 'twitter' in html_content.lower() or 'x.com' in html_content.lower():
-                log_msg += "\n🔍 Найдено 'twitter' или 'x.com' в HTML"
-            if 'challenge' in html_content.lower():
-                log_msg += "\n⚠️ Обнаружена страница проверки (challenge)"
-            if 'cloudflare' in html_content.lower():
-                log_msg += "\n⚠️ Обнаружена Cloudflare защита"
-        except Exception as e:
-            log_msg += f"\n⚠️ Ошибка проверки HTML: {str(e)}"
-        
-        # Проверяем URL (СВОЙСТВО - без await)
+        # Проверяем URL
         try:
             current_url = page.url
             log_msg += f"\n📍 URL: {current_url[:80]}"
         except:
             log_msg += f"\n📍 URL: Недоступен"
         
-        # Проверяем наличие элементов
+        # Проверяем HTML
+        try:
+            html_content = await page.content()
+            log_msg += f"\n📄 HTML длина: {len(html_content)} символов"
+            
+            if len(html_content) < 100:
+                log_msg += "\n⚠️ HTML слишком короткий"
+            
+            if 'login' in html_content.lower():
+                log_msg += "\n🔍 Найдено 'login'"
+            if 'twitter' in html_content.lower() or 'x.com' in html_content.lower():
+                log_msg += "\n🔍 Найдено 'twitter' или 'x.com'"
+            if 'challenge' in html_content.lower():
+                log_msg += "\n⚠️ Страница проверки"
+            if 'cloudflare' in html_content.lower():
+                log_msg += "\n⚠️ Cloudflare защита"
+            if 'block' in html_content.lower():
+                log_msg += "\n⚠️ Возможна блокировка"
+        except Exception as e:
+            log_msg += f"\n⚠️ Ошибка проверки HTML: {str(e)}"
+        
+        # Проверяем элементы
         is_logged = False
         try:
             selectors = [
@@ -324,43 +333,35 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e:
                     selector_results.append(f"{name}: ⚠️ ошибка")
             
-            log_msg += "\n\n🔍 Элементы на странице:\n" + "\n".join(selector_results)
+            log_msg += "\n\n🔍 Элементы:\n" + "\n".join(selector_results)
             
         except Exception as e:
             log_msg += f"\n\n⚠️ Ошибка проверки элементов: {str(e)}"
-            log_error(f"Ошибка проверки селекторов: {str(e)}", traceback.format_exc())
         
-        # Проверяем куки в браузере (МЕТОД - с await)
+        # Проверяем куки
         try:
             cookies_in_browser = await browser['context'].cookies()
             auth_token = next((c for c in cookies_in_browser if c.get('name') == 'auth_token'), None)
-            log_msg += f"\n\n🍪 Кук в браузере: {len(cookies_in_browser)}"
-            log_msg += f"\n🔑 auth_token: {'✅ найден' if auth_token else '❌ не найден'}"
-            
-            if auth_token:
-                expires = auth_token.get('expires')
-                if expires:
-                    expires_date = datetime.fromtimestamp(expires).strftime('%Y-%m-%d %H:%M')
-                    log_msg += f"\n📅 Истекает: {expires_date}"
+            log_msg += f"\n\n🍪 Кук: {len(cookies_in_browser)}"
+            log_msg += f"\n🔑 auth_token: {'✅' if auth_token else '❌'}"
         except Exception as e:
             log_msg += f"\n\n⚠️ Ошибка проверки кук: {str(e)}"
         
-        # Заголовок страницы (МЕТОД - с await)
+        # Заголовок
         try:
             title = await page.title()
             log_msg += f"\n\n📌 Заголовок: {title[:60] if title else 'Нет заголовка'}"
         except:
             log_msg += f"\n\n📌 Заголовок: Недоступен"
         
-        # Делаем скриншот (МЕТОД - с await)
+        # Скриншот
         screenshot = None
         try:
             screenshot = await page.screenshot()
             log_msg += f"\n\n📸 Скриншот сделан"
         except Exception as e:
-            log_msg += f"\n\n⚠️ Ошибка создания скриншота: {str(e)}"
+            log_msg += f"\n\n⚠️ Ошибка скриншота: {str(e)}"
         
-        # Отправляем результат
         await msg.edit_text(
             f"✅ Зашёл в X.com!\n\n{log_msg}"
         )
@@ -374,14 +375,13 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"xlogin завершен, статус: {is_logged}")
         
     except Exception as e:
-        error_msg = f"Критическая ошибка в xlogin: {str(e)}"
+        error_msg = f"Критическая ошибка: {str(e)}"
         traceback_str = traceback.format_exc()
         log_error(error_msg, traceback_str)
         
-        # Если браузер закрыт, пробуем пересоздать
         if "closed" in str(e).lower():
             await close_browser()
-            await msg.edit_text("❌ Браузер был закрыт. Попробуйте снова /xlogin")
+            await msg.edit_text("❌ Браузер закрыт. Попробуйте снова /xlogin")
         else:
             await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
@@ -411,9 +411,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         browser = await get_browser()
         page = browser['page']
         
-        # page.url - СВОЙСТВО (без await)
         url = page.url
-        # page.title() - МЕТОД (с await)
         title = await page.title()
         
         await msg.edit_text(
@@ -437,7 +435,6 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if browser_data:
         try:
             page = browser_data['page']
-            # page.url - СВОЙСТВО (без await)
             url = page.url
             is_open = "✅"
         except:
@@ -469,7 +466,6 @@ async def show_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             log_text = "✅ Ошибок нет"
         
-        # Добавляем последние записи из файла
         try:
             with open('bot.log', 'r') as f:
                 lines = f.readlines()
@@ -481,7 +477,6 @@ async def show_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         
         if len(log_text) > 4000:
-            # Отправляем файлом
             with open('logs_temp.txt', 'w') as f:
                 f.write(log_text)
             await update.message.reply_document(
