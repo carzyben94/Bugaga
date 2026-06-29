@@ -196,6 +196,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Доступные команды:\n"
         "/go <url> - открыть сайт\n"
         "/xlogin - вход в X.com\n"
+        "/explore - исследовать интерфейс X.com\n"
         "/screen - скриншот\n"
         "/status - состояние браузера\n"
         "/stats - статистика\n"
@@ -402,6 +403,222 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
+async def explore(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Исследует интерфейс X.com, находит кнопки и элементы"""
+    msg = await update.message.reply_text("🔍 Исследую интерфейс X.com...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        # Проверяем что мы на X.com
+        current_url = page.url
+        if 'x.com' not in current_url:
+            await msg.edit_text("❌ Сначала зайди на X.com через /xlogin")
+            return
+        
+        # Собираем информацию о странице
+        explore_result = "🔍 ИССЛЕДОВАНИЕ ИНТЕРФЕЙСА X.COM\n\n"
+        
+        # 1. Основная информация
+        try:
+            title = await page.title()
+            explore_result += f"📌 Заголовок: {title[:60]}\n"
+            explore_result += f"📍 URL: {current_url[:80]}\n\n"
+        except:
+            pass
+        
+        # 2. Находим все кнопки
+        explore_result += "🔘 НАЙДЕННЫЕ КНОПКИ:\n"
+        try:
+            buttons = await page.evaluate('''
+                () => {
+                    const buttons = [];
+                    document.querySelectorAll('button, [role="button"], [data-testid*="button"]').forEach(el => {
+                        const text = el.textContent?.trim() || '';
+                        const testId = el.getAttribute('data-testid') || '';
+                        const ariaLabel = el.getAttribute('aria-label') || '';
+                        const type = el.getAttribute('type') || '';
+                        const className = el.className || '';
+                        buttons.push({
+                            text: text.slice(0, 50),
+                            testId: testId.slice(0, 50),
+                            ariaLabel: ariaLabel.slice(0, 50),
+                            type: type,
+                            class: className.slice(0, 50)
+                        });
+                    });
+                    return buttons;
+                }
+            ''')
+            
+            if buttons:
+                # Группируем кнопки по типу
+                button_groups = {}
+                for btn in buttons:
+                    key = btn['testId'] or btn['ariaLabel'] or btn['text'] or 'unknown'
+                    if key not in button_groups:
+                        button_groups[key] = 0
+                    button_groups[key] += 1
+                
+                # Показываем уникальные кнопки (первые 20)
+                count = 0
+                for key, value in list(button_groups.items())[:20]:
+                    if key and key != 'unknown':
+                        explore_result += f"  • {key}: {value} шт.\n"
+                        count += 1
+                
+                if count == 0:
+                    explore_result += "  ⚠️ Кнопки не найдены\n"
+                else:
+                    explore_result += f"\n  Всего уникальных кнопок: {len(button_groups)}\n"
+            else:
+                explore_result += "  ❌ Кнопки не найдены\n"
+        except Exception as e:
+            explore_result += f"  ⚠️ Ошибка поиска кнопок: {str(e)[:50]}\n"
+        
+        # 3. Находим все data-testid элементы
+        explore_result += "\n🏷️ DATA-TESTID ЭЛЕМЕНТЫ:\n"
+        try:
+            testids = await page.evaluate('''
+                () => {
+                    const elements = {};
+                    document.querySelectorAll('[data-testid]').forEach(el => {
+                        const id = el.getAttribute('data-testid');
+                        if (id) {
+                            elements[id] = (elements[id] || 0) + 1;
+                        }
+                    });
+                    return elements;
+                }
+            ''')
+            
+            if testids:
+                # Сортируем и показываем
+                sorted_ids = sorted(testids.items(), key=lambda x: x[1], reverse=True)
+                count = 0
+                for testid, count_elem in sorted_ids[:30]:
+                    explore_result += f"  • {testid}: {count_elem} шт.\n"
+                    count += 1
+                
+                if count == 0:
+                    explore_result += "  ⚠️ data-testid не найдены\n"
+                else:
+                    explore_result += f"\n  Всего data-testid: {len(testids)}\n"
+            else:
+                explore_result += "  ❌ data-testid не найдены\n"
+        except Exception as e:
+            explore_result += f"  ⚠️ Ошибка поиска data-testid: {str(e)[:50]}\n"
+        
+        # 4. Находим формы
+        explore_result += "\n📝 ФОРМЫ:\n"
+        try:
+            forms = await page.evaluate('''
+                () => {
+                    const forms = [];
+                    document.querySelectorAll('form').forEach(el => {
+                        const action = el.getAttribute('action') || '';
+                        const method = el.getAttribute('method') || '';
+                        const inputs = el.querySelectorAll('input, textarea, select').length;
+                        forms.push({ action: action.slice(0, 50), method: method, inputs: inputs });
+                    });
+                    return forms;
+                }
+            ''')
+            
+            if forms:
+                for i, form in enumerate(forms[:5], 1):
+                    explore_result += f"  Форма {i}: action={form['action'] or 'не указан'}, method={form['method'] or 'get'}, полей={form['inputs']}\n"
+            else:
+                explore_result += "  ❌ Формы не найдены\n"
+        except Exception as e:
+            explore_result += f"  ⚠️ Ошибка поиска форм: {str(e)[:50]}\n"
+        
+        # 5. Находим ссылки
+        explore_result += "\n🔗 ССЫЛКИ:\n"
+        try:
+            links = await page.evaluate('''
+                () => {
+                    const links = [];
+                    document.querySelectorAll('a[href]').forEach(el => {
+                        const href = el.getAttribute('href');
+                        const text = el.textContent?.trim() || '';
+                        if (href && !href.startsWith('javascript:')) {
+                            links.push({
+                                href: href.slice(0, 60),
+                                text: text.slice(0, 40)
+                            });
+                        }
+                    });
+                    return links;
+                }
+            ''')
+            
+            if links:
+                explore_result += f"  Всего ссылок: {len(links)}\n"
+                # Показываем первые 5 ссылок
+                for i, link in enumerate(links[:5], 1):
+                    explore_result += f"  {i}. {link['text'] or 'без текста'} → {link['href']}\n"
+            else:
+                explore_result += "  ❌ Ссылки не найдены\n"
+        except Exception as e:
+            explore_result += f"  ⚠️ Ошибка поиска ссылок: {str(e)[:50]}\n"
+        
+        # 6. Сохраняем HTML
+        try:
+            html_content = await page.content()
+            html_filename = f"x_com_page_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+            with open(html_filename, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+            
+            explore_result += f"\n💾 HTML сохранен: {html_filename} ({len(html_content)} символов)"
+            
+            # Отправляем HTML файл
+            await update.message.reply_document(
+                document=open(html_filename, 'rb'),
+                filename=html_filename,
+                caption="📄 HTML страницы X.com"
+            )
+            os.remove(html_filename)
+            
+        except Exception as e:
+            explore_result += f"\n⚠️ Ошибка сохранения HTML: {str(e)[:50]}"
+        
+        # 7. Делаем скриншот
+        try:
+            screenshot = await page.screenshot(
+                full_page=False,
+                type='jpeg',
+                quality=80
+            )
+            
+            await update.message.reply_photo(
+                photo=screenshot,
+                caption="📸 Скриншот X.com"
+            )
+        except Exception as e:
+            explore_result += f"\n⚠️ Ошибка скриншота: {str(e)[:50]}"
+        
+        # Отправляем результат
+        if len(explore_result) > 4000:
+            # Если слишком длинно, отправляем файлом
+            with open('explore_result.txt', 'w') as f:
+                f.write(explore_result)
+            await update.message.reply_document(
+                document=open('explore_result.txt', 'rb'),
+                filename=f"explore_{datetime.now().strftime('%Y%m%d')}.txt"
+            )
+            os.remove('explore_result.txt')
+        else:
+            await msg.edit_text(explore_result)
+        
+        logger.info(f"Explore завершен для user {update.effective_user.id}")
+        
+    except Exception as e:
+        error_msg = f"Ошибка в explore: {str(e)}"
+        log_error(error_msg, traceback.format_exc())
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
 async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Делаю скриншот...")
     
@@ -589,6 +806,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("go", go))
     app.add_handler(CommandHandler("xlogin", xlogin))
+    app.add_handler(CommandHandler("explore", explore))
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("stats", stats))
