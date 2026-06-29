@@ -1,4 +1,4 @@
-# x_model_builder.py - Строит полную модель X.com
+# x_deep_parser.py - Полный парсинг X.com
 import os
 import sys
 import subprocess
@@ -38,7 +38,7 @@ COOKIES = [
 
 browser_data = None
 browser_lock = False
-site_model = {}
+full_site_data = {}
 
 # ========== УСТАНОВКА БРАУЗЕРА ==========
 def install_playwright_browser():
@@ -126,187 +126,357 @@ async def close_browser():
             pass
         browser_data = None
 
-# ========== ПОСТРОИТЕЛЬ МОДЕЛИ САЙТА ==========
-class SiteModelBuilder:
+# ========== ГЛУБОКИЙ ПАРСИНГ ==========
+class DeepXParser:
     def __init__(self, page):
         self.page = page
-        self.model = {
+        self.data = {
             'pages': {},
-            'components': {},
-            'selectors': {},
+            'all_elements': [],
+            'buttons': {},
             'testids': {},
+            'inputs': {},
+            'links': {},
+            'forms': {},
+            'images': {},
+            'texts': [],
+            'headers': [],
+            'navigation': {},
+            'tweets': [],
+            'trends': [],
+            'modals': [],
+            'dropdowns': [],
+            'menus': [],
+            'tabs': [],
+            'cards': [],
+            'avatars': [],
+            'badges': [],
+            'notifications': [],
+            'search_fields': [],
+            'settings': [],
+            'profile': {},
+            'footer': {},
+            'sidebar': {},
+            'api_calls': [],
+            'dom_structure': {},
             'attributes': {},
             'classes': {},
             'roles': {},
-            'structure': {},
-            'fields': {},
-            'buttons': {},
-            'links': {},
-            'forms': {},
-            'tweets': [],
-            'navigation': {},
-            'headers': {},
-            'footers': {},
-            'sidebars': {},
-            'modals': {},
-            'dropdowns': {},
-            'inputs': {},
-            'texts': {},
-            'images': {},
-            'videos': {},
-            'metadata': {},
-            'api_endpoints': [],
+            'aria_labels': {},
+            'placeholders': {},
+            'values': {},
             'javascript': [],
             'css': [],
             'timestamp': datetime.now().isoformat()
         }
         self.visited_urls = set()
+        self.all_testids = set()
+        self.all_buttons = {}
+        self.all_inputs = {}
         
-    async def build_full_model(self):
-        """Строит полную модель сайта"""
-        logger.info("🏗️ Начинаю построение полной модели X.com...")
+    async def parse_full_site(self):
+        """Полный парсинг всего сайта"""
+        logger.info("🕷️ Начинаю ГЛУБОКИЙ парсинг X.com...")
         
-        # 1. Базовая страница
-        await self.analyze_page('https://x.com', 'home')
-        
-        # 2. Все разделы
-        sections = [
+        # Список всех страниц для парсинга
+        pages = [
+            ('https://x.com/home', 'home'),
             ('https://x.com/explore', 'explore'),
             ('https://x.com/notifications', 'notifications'),
             ('https://x.com/messages', 'messages'),
             ('https://x.com/settings', 'settings'),
             ('https://x.com/i/trends', 'trends'),
+            ('https://x.com/i/communities', 'communities'),
+            ('https://x.com/i/grok', 'grok'),
+            ('https://x.com/account/verify', 'verify'),
         ]
         
-        for url, name in sections:
-            await self.analyze_page(url, name)
+        for url, name in pages:
+            await self.parse_page(url, name)
+            await asyncio.sleep(1)
         
-        # 3. Глубокий анализ структуры
-        await self.analyze_structure()
+        # Дополнительно скроллим главную для постов
+        await self.scroll_for_tweets()
         
-        # 4. Сбор всех компонентов
-        await self.collect_all_components()
+        # Собираем всё в единую структуру
+        self.compile_all_data()
         
-        # 5. Анализ DOM
-        await self.analyze_dom()
-        
-        # 6. Сбор API вызовов
-        await self.capture_api_calls()
-        
-        logger.info("✅ Модель сайта построена!")
-        return self.model
+        logger.info(f"✅ Парсинг завершен!")
+        return self.data
     
-    async def analyze_page(self, url: str, page_name: str):
-        """Анализирует отдельную страницу"""
+    async def parse_page(self, url: str, page_name: str):
+        """Парсит одну страницу максимально глубоко"""
         try:
-            logger.info(f"📄 Анализирую страницу: {page_name}")
+            logger.info(f"📄 Парсинг: {page_name} ({url})")
             
             await self.page.goto(url, wait_until='domcontentloaded', timeout=15000)
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
             
             # Ждем загрузки
-            await self.page.wait_for_load_state('networkidle', timeout=5000)
+            try:
+                await self.page.wait_for_load_state('networkidle', timeout=5000)
+            except:
+                pass
             
-            # Собираем все данные со страницы
-            page_data = await self.extract_page_data(page_name)
-            self.model['pages'][page_name] = page_data
+            # Полный сбор данных со страницы
+            page_data = await self.extract_everything(page_name)
+            self.data['pages'][page_name] = page_data
             
             # Добавляем URL
             self.visited_urls.add(url)
             
-            # Скроллим для загрузки контента
-            for _ in range(3):
-                await self.page.evaluate('window.scrollBy(0, 800)')
-                await asyncio.sleep(1)
+            # Делаем несколько скроллов
+            for i in range(5):
+                await self.page.evaluate('window.scrollBy(0, 1000)')
+                await asyncio.sleep(1.5)
+                
+                # Собираем новые элементы после скролла
+                more_data = await self.extract_scrolled_content(page_name)
+                if more_data:
+                    self.merge_page_data(page_name, more_data)
             
-            # Собираем дополнительный контент
-            await self.extract_additional_content(page_name)
+            logger.info(f"✅ {page_name} - собрано данных")
             
         except Exception as e:
-            logger.error(f"Ошибка анализа {page_name}: {e}")
-            self.model['pages'][page_name] = {'error': str(e)}
+            logger.error(f"Ошибка парсинга {page_name}: {e}")
+            self.data['pages'][page_name] = {'error': str(e)}
     
-    async def extract_page_data(self, page_name: str) -> Dict:
-        """Извлекает все данные со страницы"""
+    async def extract_everything(self, page_name: str) -> Dict:
+        """Извлекает ВСЕ данные со страницы"""
         return await self.page.evaluate(f'''
             () => {{
                 const data = {{
                     url: window.location.href,
                     title: document.title,
-                    html: document.documentElement.outerHTML.slice(0, 50000),
-                    meta: {{}},
-                    headers: [],
-                    paragraphs: [],
-                    links: [],
-                    images: [],
-                    videos: [],
-                    forms: [],
-                    inputs: [],
+                    html: document.documentElement.outerHTML.slice(0, 100000),
+                    
+                    // ВСЕ элементы с их атрибутами
+                    elements: [],
+                    
+                    // Кнопки (ВСЕ)
                     buttons: [],
-                    dropdowns: [],
-                    modals: [],
+                    button_testids: [],
+                    
+                    // TestID (ВСЕ)
                     testids: [],
+                    testid_elements: {{}},
+                    
+                    // Поля ввода (ВСЕ)
+                    inputs: [],
+                    textareas: [],
+                    selects: [],
+                    
+                    // Ссылки (ВСЕ)
+                    links: [],
+                    
+                    // Формы (ВСЕ)
+                    forms: [],
+                    
+                    // Изображения (ВСЕ)
+                    images: [],
+                    
+                    // Заголовки (ВСЕ)
+                    headers: [],
+                    
+                    // Текст (ВЕСЬ)
+                    all_text: '',
+                    
+                    // Навигация
+                    navigation: {{}},
+                    
+                    // Модалки
+                    modals: [],
+                    
+                    // Выпадающие списки
+                    dropdowns: [],
+                    
+                    // Меню
+                    menus: [],
+                    
+                    // Вкладки
+                    tabs: [],
+                    
+                    // Карточки
+                    cards: [],
+                    
+                    // Атрибуты (ВСЕ)
                     attributes: {{}},
+                    
+                    // Классы (ВСЕ)
                     classes: new Set(),
+                    
+                    // Роли (ВСЕ)
                     roles: new Set(),
-                    textContent: document.body?.textContent?.slice(0, 10000) || '',
+                    
+                    // ARIA метки
+                    aria_labels: [],
+                    
+                    // Placeholder
+                    placeholders: [],
+                    
+                    // Значения полей
+                    values: [],
+                    
+                    // Скрипты
                     scripts: [],
-                    styles: []
+                    
+                    // Стили
+                    styles: [],
+                    
+                    // Количество элементов
+                    element_counts: {{}},
+                    
+                    // Структура
+                    structure: {{
+                        depth: 0,
+                        children: 0,
+                        siblings: 0
+                    }}
                 }};
                 
-                // Meta теги
-                document.querySelectorAll('meta').forEach(el => {{
-                    const name = el.getAttribute('name') || el.getAttribute('property') || '';
-                    const content = el.getAttribute('content') || '';
-                    if (name && content) data.meta[name] = content;
-                }});
-                
-                // Заголовки
-                document.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(el => {{
-                    const text = el.textContent?.trim() || '';
-                    if (text) data.headers.push({{
-                        tag: el.tagName,
-                        text: text.slice(0, 200),
-                        level: el.tagName.replace('H', ''),
-                        testid: el.getAttribute('data-testid') || ''
+                // ===== СБОР ВСЕХ ЭЛЕМЕНТОВ =====
+                document.querySelectorAll('*').forEach(el => {{
+                    const tag = el.tagName.toLowerCase();
+                    const rect = el.getBoundingClientRect();
+                    const testid = el.getAttribute('data-testid') || '';
+                    const id = el.id || '';
+                    const className = el.className || '';
+                    const role = el.getAttribute('role') || '';
+                    const ariaLabel = el.getAttribute('aria-label') || '';
+                    
+                    // Собираем все элементы для детального анализа
+                    data.elements.push({{
+                        tag: tag,
+                        testid: testid,
+                        id: id,
+                        class: className.slice(0, 200),
+                        role: role,
+                        ariaLabel: ariaLabel.slice(0, 100),
+                        text: el.textContent?.trim()?.slice(0, 200) || '',
+                        visible: rect.width > 0 && rect.height > 0,
+                        x: Math.round(rect.x),
+                        y: Math.round(rect.y),
+                        width: Math.round(rect.width),
+                        height: Math.round(rect.height)
                     }});
+                    
+                    // Счетчики по тегам
+                    if (!data.element_counts[tag]) data.element_counts[tag] = 0;
+                    data.element_counts[tag]++;
+                    
+                    // Классы
+                    if (className) {{
+                        className.split(' ').forEach(c => {{
+                            if (c) data.classes.add(c.slice(0, 100));
+                        }});
+                    }}
+                    
+                    // Роли
+                    if (role) data.roles.add(role);
+                    
+                    // Атрибуты
+                    for (const attr of el.attributes) {{
+                        if (!data.attributes[attr.name]) data.attributes[attr.name] = new Set();
+                        data.attributes[attr.name].add(attr.value?.slice(0, 100) || '');
+                    }}
+                    
+                    // TestID
+                    if (testid) {{
+                        if (!data.testids.includes(testid)) data.testids.push(testid);
+                        if (!data.testid_elements[testid]) data.testid_elements[testid] = [];
+                        data.testid_elements[testid].push({{
+                            tag: tag,
+                            text: el.textContent?.trim()?.slice(0, 50) || '',
+                            aria: ariaLabel.slice(0, 50)
+                        }});
+                    }}
+                    
+                    // ARIA метки
+                    if (ariaLabel) data.aria_labels.push(ariaLabel.slice(0, 100));
+                    
+                    // Placeholder
+                    const placeholder = el.getAttribute('placeholder');
+                    if (placeholder) data.placeholders.push(placeholder.slice(0, 100));
+                    
+                    // Значения
+                    const value = el.getAttribute('value');
+                    if (value) data.values.push(value.slice(0, 100));
                 }});
                 
-                // Параграфы
-                document.querySelectorAll('p').forEach(el => {{
-                    const text = el.textContent?.trim() || '';
-                    if (text && text.length > 10) data.paragraphs.push(text.slice(0, 500));
+                // ===== КНОПКИ =====
+                document.querySelectorAll('button, [role="button"], [data-testid*="button"]').forEach(el => {{
+                    const testid = el.getAttribute('data-testid') || '';
+                    const text = el.textContent?.trim()?.slice(0, 50) || '';
+                    const aria = el.getAttribute('aria-label') || '';
+                    const type = el.getAttribute('type') || 'button';
+                    
+                    data.buttons.push({{
+                        testid: testid,
+                        text: text,
+                        aria: aria.slice(0, 50),
+                        type: type,
+                        disabled: el.hasAttribute('disabled'),
+                        class: el.className?.slice(0, 100) || '',
+                        tag: el.tagName
+                    }});
+                    
+                    if (testid) data.button_testids.push(testid);
                 }});
                 
-                // Ссылки
+                // ===== ПОЛЯ ВВОДА =====
+                document.querySelectorAll('input, textarea, select').forEach(el => {{
+                    const testid = el.getAttribute('data-testid') || '';
+                    const name = el.getAttribute('name') || '';
+                    const type = el.getAttribute('type') || el.tagName.toLowerCase();
+                    const placeholder = el.getAttribute('placeholder') || '';
+                    const value = el.value || '';
+                    
+                    if (el.tagName === 'INPUT') {{
+                        data.inputs.push({{
+                            testid: testid,
+                            name: name,
+                            type: type,
+                            placeholder: placeholder.slice(0, 50),
+                            value: value.slice(0, 50),
+                            required: el.hasAttribute('required'),
+                            disabled: el.hasAttribute('disabled')
+                        }});
+                    }} else if (el.tagName === 'TEXTAREA') {{
+                        data.textareas.push({{
+                            testid: testid,
+                            name: name,
+                            placeholder: placeholder.slice(0, 50),
+                            value: value.slice(0, 50)
+                        }});
+                    }} else if (el.tagName === 'SELECT') {{
+                        const options = [];
+                        el.querySelectorAll('option').forEach(opt => {{
+                            options.push(opt.textContent?.trim() || '');
+                        }});
+                        data.selects.push({{
+                            testid: testid,
+                            name: name,
+                            options: options.slice(0, 20)
+                        }});
+                    }}
+                }});
+                
+                // ===== ССЫЛКИ =====
                 document.querySelectorAll('a[href]').forEach(el => {{
                     const href = el.getAttribute('href');
                     if (href && !href.startsWith('javascript:')) {{
                         data.links.push({{
                             href: href.slice(0, 200),
-                            text: el.textContent?.trim()?.slice(0, 100) || '',
+                            text: el.textContent?.trim()?.slice(0, 50) || '',
                             title: el.getAttribute('title') || '',
                             aria: el.getAttribute('aria-label') || '',
                             testid: el.getAttribute('data-testid') || '',
-                            role: el.getAttribute('role') || ''
+                            rel: el.getAttribute('rel') || ''
                         }});
                     }}
                 }});
                 
-                // Изображения
-                document.querySelectorAll('img').forEach(el => {{
-                    const src = el.getAttribute('src');
-                    if (src) {{
-                        data.images.push({{
-                            src: src.slice(0, 200),
-                            alt: el.getAttribute('alt') || '',
-                            title: el.getAttribute('title') || '',
-                            testid: el.getAttribute('data-testid') || ''
-                        }});
-                    }}
-                }});
-                
-                // Формы
+                // ===== ФОРМЫ =====
                 document.querySelectorAll('form').forEach(el => {{
                     const form = {{
                         action: el.getAttribute('action') || '',
@@ -321,51 +491,172 @@ class SiteModelBuilder:
                             name: input.getAttribute('name') || '',
                             id: input.id || '',
                             placeholder: input.getAttribute('placeholder') || '',
-                            value: input.value || '',
-                            testid: input.getAttribute('data-testid') || '',
-                            required: input.hasAttribute('required'),
-                            disabled: input.hasAttribute('disabled'),
-                            readonly: input.hasAttribute('readonly')
+                            testid: input.getAttribute('data-testid') || ''
                         }});
                     }});
                     data.forms.push(form);
                 }});
                 
-                // Кнопки
-                document.querySelectorAll('button, [role="button"]').forEach(el => {{
-                    data.buttons.push({{
-                        text: el.textContent?.trim()?.slice(0, 50) || '',
+                // ===== ИЗОБРАЖЕНИЯ =====
+                document.querySelectorAll('img').forEach(el => {{
+                    const src = el.getAttribute('src');
+                    if (src) {{
+                        data.images.push({{
+                            src: src.slice(0, 200),
+                            alt: el.getAttribute('alt') || '',
+                            title: el.getAttribute('title') || '',
+                            testid: el.getAttribute('data-testid') || '',
+                            width: el.width,
+                            height: el.height
+                        }});
+                    }}
+                }});
+                
+                // ===== ЗАГОЛОВКИ =====
+                document.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(el => {{
+                    data.headers.push({{
+                        tag: el.tagName,
+                        text: el.textContent?.trim()?.slice(0, 200) || '',
+                        level: el.tagName.replace('H', ''),
                         testid: el.getAttribute('data-testid') || '',
-                        aria: el.getAttribute('aria-label') || '',
-                        role: el.getAttribute('role') || '',
-                        type: el.getAttribute('type') || 'button',
-                        disabled: el.hasAttribute('disabled'),
-                        class: el.className?.slice(0, 100) || ''
+                        id: el.id || ''
                     }});
                 }});
                 
-                // Все data-testid
-                document.querySelectorAll('[data-testid]').forEach(el => {{
-                    const testid = el.getAttribute('data-testid');
-                    if (testid && !data.testids.includes(testid)) {{
-                        data.testids.push(testid);
+                // ===== ВЕСЬ ТЕКСТ =====
+                data.all_text = document.body?.textContent?.slice(0, 50000) || '';
+                
+                // ===== НАВИГАЦИЯ =====
+                const navItems = [
+                    'AppTabBar_Home_Link',
+                    'AppTabBar_Explore_Link',
+                    'AppTabBar_Notifications_Link',
+                    'AppTabBar_Profile_Link',
+                    'AppTabBar_DirectMessage_Link',
+                    'AppTabBar_More_Menu',
+                    'AppTabBar_Follow_Link'
+                ];
+                navItems.forEach(id => {{
+                    const el = document.querySelector(`[data-testid="${{id}}"]`);
+                    data.navigation[id] = {{
+                        present: !!el,
+                        text: el?.textContent?.trim() || '',
+                        aria: el?.getAttribute('aria-label') || ''
+                    }};
+                }});
+                
+                // ===== МОДАЛКИ =====
+                document.querySelectorAll('[role="dialog"], [data-testid*="modal"], [data-testid*="Modal"]').forEach(el => {{
+                    const testid = el.getAttribute('data-testid') || '';
+                    data.modals.push({{
+                        testid: testid,
+                        text: el.textContent?.trim()?.slice(0, 200) || '',
+                        visible: el.getBoundingClientRect().width > 0
+                    }});
+                }});
+                
+                // ===== ВЫПАДАЮЩИЕ СПИСКИ =====
+                document.querySelectorAll('[role="listbox"], [data-testid*="dropdown"], select').forEach(el => {{
+                    const testid = el.getAttribute('data-testid') || '';
+                    const items = [];
+                    el.querySelectorAll('option, [role="option"]').forEach(opt => {{
+                        items.push(opt.textContent?.trim() || '');
+                    }});
+                    data.dropdowns.push({{
+                        testid: testid,
+                        items: items.slice(0, 20)
+                    }});
+                }});
+                
+                // ===== МЕНЮ =====
+                document.querySelectorAll('[role="menu"], [data-testid*="menu"]').forEach(el => {{
+                    const testid = el.getAttribute('data-testid') || '';
+                    const items = [];
+                    el.querySelectorAll('[role="menuitem"]').forEach(item => {{
+                        items.push(item.textContent?.trim() || '');
+                    }});
+                    data.menus.push({{
+                        testid: testid,
+                        items: items.slice(0, 20)
+                    }});
+                }});
+                
+                // ===== ВКЛАДКИ =====
+                document.querySelectorAll('[role="tablist"]').forEach(el => {{
+                    const tabs = [];
+                    el.querySelectorAll('[role="tab"]').forEach(tab => {{
+                        tabs.push(tab.textContent?.trim() || '');
+                    }});
+                    data.tabs.push({{
+                        testid: el.getAttribute('data-testid') || '',
+                        tabs: tabs.slice(0, 10)
+                    }});
+                }});
+                
+                // ===== КАРТОЧКИ =====
+                document.querySelectorAll('[data-testid*="card"], article, [role="article"]').forEach(el => {{
+                    const testid = el.getAttribute('data-testid') || '';
+                    data.cards.push({{
+                        testid: testid,
+                        text: el.textContent?.trim()?.slice(0, 200) || '',
+                        hasImage: !!el.querySelector('img'),
+                        hasLink: !!el.querySelector('a')
+                    }});
+                }});
+                
+                // ===== ПОСТЫ =====
+                document.querySelectorAll('[data-testid="tweet"]').forEach(el => {{
+                    const text = el.textContent?.trim() || '';
+                    if (text.length > 10) {{
+                        const authorEl = el.querySelector('[data-testid="User-Name"]');
+                        const timeEl = el.querySelector('time');
+                        const likeEl = el.querySelector('[data-testid="like"]');
+                        const retweetEl = el.querySelector('[data-testid="retweet"]');
+                        const replyEl = el.querySelector('[data-testid="reply"]');
+                        const viewsEl = el.querySelector('[data-testid="views"]');
+                        
+                        // Проверяем, закреплен ли пост
+                        const isPinned = el.querySelector('[aria-label="Pinned tweet"]') !== null;
+                        
+                        data.tweets.push({{
+                            text: text.slice(0, 500),
+                            author: authorEl?.textContent?.trim() || 'Unknown',
+                            time: timeEl?.getAttribute('datetime') || '',
+                            likes: likeEl?.textContent?.trim() || '0',
+                            retweets: retweetEl?.textContent?.trim() || '0',
+                            replies: replyEl?.textContent?.trim() || '0',
+                            views: viewsEl?.textContent?.trim() || '0',
+                            isPinned: isPinned
+                        }});
                     }}
                 }});
                 
-                // Все атрибуты
-                document.querySelectorAll('*').forEach(el => {{
-                    for (const attr of el.attributes) {{
-                        if (!data.attributes[attr.name]) data.attributes[attr.name] = new Set();
-                        data.attributes[attr.name].add(attr.value?.slice(0, 100) || '');
+                // ===== СКРИПТЫ =====
+                document.querySelectorAll('script').forEach(el => {{
+                    const src = el.getAttribute('src');
+                    if (src) {{
+                        data.scripts.push(src.slice(0, 200));
                     }}
-                    if (el.className) {{
-                        el.className.split(' ').forEach(c => {{
-                            if (c) data.classes.add(c.slice(0, 50));
-                        }});
-                    }}
-                    const role = el.getAttribute('role');
-                    if (role) data.roles.add(role);
                 }});
+                
+                // ===== СТИЛИ =====
+                document.querySelectorAll('link[rel="stylesheet"]').forEach(el => {{
+                    const href = el.getAttribute('href');
+                    if (href) {{
+                        data.styles.push(href.slice(0, 200));
+                    }}
+                }});
+                
+                // ===== СТРУКТУРА =====
+                function getDepth(el, depth = 0) {{
+                    let max = depth;
+                    for (const child of el.children) {{
+                        max = Math.max(max, getDepth(child, depth + 1));
+                    }}
+                    return max;
+                }}
+                data.structure.depth = getDepth(document.body);
+                data.structure.children = document.body.children.length;
                 
                 // Преобразуем Set в массивы
                 data.classes = Array.from(data.classes);
@@ -376,15 +667,96 @@ class SiteModelBuilder:
                 }}
                 data.attributes = attrs;
                 
+                // Уникальные значения
+                data.aria_labels = [...new Set(data.aria_labels)];
+                data.placeholders = [...new Set(data.placeholders)];
+                data.values = [...new Set(data.values)];
+                
                 return data;
             }}
         ''')
     
-    async def extract_additional_content(self, page_name: str):
-        """Извлекает дополнительный контент (посты, тренды)"""
+    async def extract_scrolled_content(self, page_name: str) -> Dict:
+        """Извлекает контент после скролла"""
+        return await self.page.evaluate('''
+            () => {
+                const result = {
+                    tweets: [],
+                    buttons: [],
+                    testids: [],
+                    images: []
+                };
+                
+                document.querySelectorAll('[data-testid="tweet"]').forEach(el => {
+                    const text = el.textContent?.trim() || '';
+                    if (text.length > 20) {
+                        result.tweets.push({
+                            text: text.slice(0, 200),
+                            author: el.querySelector('[data-testid="User-Name"]')?.textContent?.trim() || 'Unknown'
+                        });
+                    }
+                });
+                
+                document.querySelectorAll('button, [role="button"]').forEach(el => {
+                    const testid = el.getAttribute('data-testid');
+                    if (testid) {
+                        result.buttons.push({
+                            testid: testid,
+                            text: el.textContent?.trim()?.slice(0, 30) || ''
+                        });
+                    }
+                });
+                
+                document.querySelectorAll('[data-testid]').forEach(el => {
+                    const testid = el.getAttribute('data-testid');
+                    if (testid && !result.testids.includes(testid)) {
+                        result.testids.push(testid);
+                    }
+                });
+                
+                return result;
+            }
+        ''')
+    
+    def merge_page_data(self, page_name: str, new_data: Dict):
+        """Объединяет данные после скролла"""
+        if page_name in self.data['pages']:
+            page = self.data['pages'][page_name]
+            
+            # Добавляем новые посты
+            if 'tweets' in new_data:
+                page['tweets'] = page.get('tweets', []) + new_data['tweets']
+                # Уникальные посты
+                seen = set()
+                unique = []
+                for t in page['tweets']:
+                    key = t.get('text', '')[:50]
+                    if key not in seen:
+                        seen.add(key)
+                        unique.append(t)
+                page['tweets'] = unique
+            
+            # Добавляем новые кнопки
+            if 'buttons' in new_data:
+                page['buttons'] = page.get('buttons', []) + new_data['buttons']
+            
+            # Добавляем новые testid
+            if 'testids' in new_data:
+                page['testids'] = list(set(page.get('testids', []) + new_data['testids']))
+    
+    async def scroll_for_tweets(self):
+        """Скроллит главную для сбора постов"""
         try:
-            # Посты
-            if page_name in ['home', 'explore']:
+            logger.info("📜 Скроллю главную для сбора постов...")
+            
+            await self.page.goto('https://x.com/home', wait_until='domcontentloaded')
+            await asyncio.sleep(2)
+            
+            all_tweets = []
+            for i in range(10):
+                await self.page.evaluate('window.scrollBy(0, 1200)')
+                await asyncio.sleep(1.5)
+                
                 tweets = await self.page.evaluate('''
                     () => {
                         const result = [];
@@ -395,288 +767,151 @@ class SiteModelBuilder:
                                 const timeEl = el.querySelector('time');
                                 const likeEl = el.querySelector('[data-testid="like"]');
                                 const retweetEl = el.querySelector('[data-testid="retweet"]');
-                                const replyEl = el.querySelector('[data-testid="reply"]');
-                                const viewsEl = el.querySelector('[data-testid="views"]');
                                 
                                 result.push({
                                     text: text.slice(0, 300),
                                     author: authorEl?.textContent?.trim() || 'Unknown',
                                     time: timeEl?.getAttribute('datetime') || '',
                                     likes: likeEl?.textContent?.trim() || '0',
-                                    retweets: retweetEl?.textContent?.trim() || '0',
-                                    replies: replyEl?.textContent?.trim() || '0',
-                                    views: viewsEl?.textContent?.trim() || '0',
-                                    testid: el.getAttribute('data-testid') || ''
+                                    retweets: retweetEl?.textContent?.trim() || '0'
                                 });
                             }
                         });
                         return result;
                     }
                 ''')
-                self.model['tweets'].extend(tweets)
-                logger.info(f"🐦 Собрано постов: {len(tweets)}")
+                
+                all_tweets.extend(tweets)
+                logger.info(f"📊 Собрано постов: {len(all_tweets)}")
+                
+                # Уникальные
+                seen = set()
+                unique = []
+                for t in all_tweets:
+                    key = t.get('text', '')[:50]
+                    if key not in seen:
+                        seen.add(key)
+                        unique.append(t)
+                all_tweets = unique
             
-            # Тренды
-            if page_name == 'explore':
-                trends = await self.page.evaluate('''
-                    () => {
-                        const result = [];
-                        document.querySelectorAll('[data-testid="trend"]').forEach(el => {
-                            const text = el.textContent?.trim() || '';
-                            if (text) result.push(text.slice(0, 100));
-                        });
-                        return result;
-                    }
-                ''')
-                self.model['metadata']['trends'] = trends
-                logger.info(f"📈 Найдено трендов: {len(trends)}")
-                
+            self.data['tweets'] = all_tweets
+            logger.info(f"✅ Всего постов: {len(all_tweets)}")
+            
         except Exception as e:
-            logger.error(f"Ошибка извлечения контента: {e}")
+            logger.error(f"Ошибка скролла: {e}")
     
-    async def analyze_structure(self):
-        """Анализирует структуру сайта"""
-        structure = await self.page.evaluate('''
-            () => {
-                const result = {
-                    hasHeader: !!document.querySelector('header'),
-                    hasFooter: !!document.querySelector('footer'),
-                    hasNav: !!document.querySelector('nav'),
-                    hasMain: !!document.querySelector('main'),
-                    hasSidebar: !!document.querySelector('aside'),
-                    hasArticle: !!document.querySelector('article'),
-                    hasSection: !!document.querySelector('section'),
-                    hasDialog: !!document.querySelector('dialog'),
-                    hasModal: !!document.querySelector('[role="dialog"]'),
-                    hasMenu: !!document.querySelector('[role="menu"]'),
-                    hasTablist: !!document.querySelector('[role="tablist"]'),
-                    hasToolbar: !!document.querySelector('[role="toolbar"]'),
-                    mainContent: '',
-                    sidebarContent: '',
-                    headerContent: '',
-                    footerContent: ''
-                };
-                
-                const main = document.querySelector('main');
-                if (main) result.mainContent = main.textContent?.slice(0, 500) || '';
-                
-                const sidebar = document.querySelector('aside');
-                if (sidebar) result.sidebarContent = sidebar.textContent?.slice(0, 200) || '';
-                
-                const header = document.querySelector('header');
-                if (header) result.headerContent = header.textContent?.slice(0, 200) || '';
-                
-                const footer = document.querySelector('footer');
-                if (footer) result.footerContent = footer.textContent?.slice(0, 200) || '';
-                
-                // Структура заголовков
-                result.headings = {};
-                document.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(el => {
-                    const level = el.tagName;
-                    if (!result.headings[level]) result.headings[level] = 0;
-                    result.headings[level]++;
-                });
-                
-                return result;
-            }
-        ''')
-        self.model['structure'] = structure
-    
-    async def collect_all_components(self):
-        """Собирает все компоненты сайта"""
-        components = await self.page.evaluate('''
-            () => {
-                const result = {
-                    buttons: {},
-                    inputs: {},
-                    dropdowns: [],
-                    modals: [],
-                    tabs: [],
-                    menus: [],
-                    lists: [],
-                    cards: [],
-                    avatars: [],
-                    badges: [],
-                    progress: [],
-                    notifications: [],
-                    searchFields: [],
-                    navigation: {}
-                };
-                
-                // Навигация
-                const navItems = document.querySelectorAll('[data-testid*="AppTabBar"]');
-                navItems.forEach(el => {
-                    const testid = el.getAttribute('data-testid');
-                    if (testid) {
-                        result.navigation[testid] = {
-                            text: el.textContent?.trim() || '',
-                            present: true,
-                            testid: testid
-                        };
-                    }
-                });
-                
-                // Кнопки с testid
-                document.querySelectorAll('[data-testid]').forEach(el => {
-                    const testid = el.getAttribute('data-testid');
-                    if (testid && testid.includes('button')) {
-                        result.buttons[testid] = {
-                            text: el.textContent?.trim()?.slice(0, 50) || '',
-                            testid: testid,
-                            tag: el.tagName
-                        };
-                    }
-                    
-                    // Поля ввода
-                    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
-                        const type = el.getAttribute('type') || 'text';
-                        result.inputs[testid || el.id || 'unknown'] = {
-                            type: type,
-                            placeholder: el.getAttribute('placeholder') || '',
-                            testid: testid || '',
-                            name: el.getAttribute('name') || ''
-                        };
-                    }
-                    
-                    // Поиск
-                    if (testid === 'Search' || testid?.includes('search')) {
-                        result.searchFields.push({
-                            testid: testid,
-                            placeholder: el.getAttribute('placeholder') || '',
-                            type: el.tagName
-                        });
-                    }
-                });
-                
-                // Списки
-                document.querySelectorAll('ul, ol').forEach(el => {
-                    const items = el.querySelectorAll('li').length;
-                    if (items > 0) {
-                        result.lists.push({
-                            items: items,
-                            testid: el.getAttribute('data-testid') || '',
-                            role: el.getAttribute('role') || ''
-                        });
-                    }
-                });
-                
-                // Карточки
-                document.querySelectorAll('[data-testid*="card"], article').forEach(el => {
-                    const testid = el.getAttribute('data-testid') || '';
-                    result.cards.push({
-                        testid: testid,
-                        text: el.textContent?.slice(0, 100) || '',
-                        hasImage: !!el.querySelector('img')
-                    });
-                });
-                
-                return result;
-            }
-        ''')
+    def compile_all_data(self):
+        """Собирает все данные в единую структуру"""
+        logger.info("📊 Компилирую все данные...")
         
-        self.model['components'] = components
-        logger.info(f"🧩 Собрано компонентов: {len(components)}")
-    
-    async def analyze_dom(self):
-        """Глубокий анализ DOM структуры"""
-        dom = await self.page.evaluate('''
-            () => {
-                const result = {
-                    totalElements: document.querySelectorAll('*').length,
-                    uniqueTags: new Set(),
-                    elementCounts: {},
-                    depth: 0,
-                    attributes: {},
-                    textNodes: 0
-                };
-                
-                // Считаем элементы по тегам
-                document.querySelectorAll('*').forEach(el => {
-                    const tag = el.tagName.toLowerCase();
-                    if (!result.elementCounts[tag]) result.elementCounts[tag] = 0;
-                    result.elementCounts[tag]++;
-                    result.uniqueTags.add(tag);
-                    
-                    // Собираем частоту атрибутов
-                    for (const attr of el.attributes) {
-                        if (!result.attributes[attr.name]) result.attributes[attr.name] = 0;
-                        result.attributes[attr.name]++;
-                    }
-                });
-                
-                // Максимальная глубина
-                function getMaxDepth(node, depth = 0) {
-                    let max = depth;
-                    for (const child of node.children) {
-                        max = Math.max(max, getMaxDepth(child, depth + 1));
-                    }
-                    return max;
-                }
-                result.depth = getMaxDepth(document.body);
-                
-                result.uniqueTags = Array.from(result.uniqueTags);
-                
-                // Сортируем по популярности
-                const sorted = Object.entries(result.elementCounts)
-                    .sort((a, b) => b[1] - a[1])
-                    .slice(0, 20);
-                result.elementCounts = Object.fromEntries(sorted);
-                
-                return result;
-            }
-        ''')
-        self.model['metadata']['dom'] = dom
-        logger.info(f"📊 DOM: {dom['totalElements']} элементов, глубина {dom['depth']}")
-    
-    async def capture_api_calls(self):
-        """Перехватывает API вызовы"""
-        api_calls = []
+        # Собираем все testid со всех страниц
+        all_testids = set()
+        all_buttons = {}
+        all_inputs = {}
+        all_links = {}
+        all_forms = []
+        all_headers = []
         
-        # Перехватываем запросы
-        self.page.on('request', lambda request: api_calls.append({
-            'url': request.url,
-            'method': request.method,
-            'headers': dict(request.headers),
-            'resourceType': request.resource_type
-        }))
+        for page_name, page_data in self.data['pages'].items():
+            if isinstance(page_data, dict) and 'error' not in page_data:
+                # TestID
+                for testid in page_data.get('testids', []):
+                    all_testids.add(testid)
+                
+                # Кнопки
+                for btn in page_data.get('buttons', []):
+                    testid = btn.get('testid', '')
+                    if testid:
+                        if testid not in all_buttons:
+                            all_buttons[testid] = {
+                                'texts': [],
+                                'arias': [],
+                                'pages': []
+                            }
+                        if btn.get('text'):
+                            all_buttons[testid]['texts'].append(btn['text'])
+                        if btn.get('aria'):
+                            all_buttons[testid]['arias'].append(btn['aria'])
+                        if page_name not in all_buttons[testid]['pages']:
+                            all_buttons[testid]['pages'].append(page_name)
+                
+                # Поля ввода
+                for inp in page_data.get('inputs', []):
+                    testid = inp.get('testid', '') or inp.get('name', '')
+                    if testid:
+                        if testid not in all_inputs:
+                            all_inputs[testid] = {
+                                'type': inp.get('type', ''),
+                                'placeholders': [],
+                                'pages': []
+                            }
+                        if inp.get('placeholder'):
+                            all_inputs[testid]['placeholders'].append(inp['placeholder'])
+                        if page_name not in all_inputs[testid]['pages']:
+                            all_inputs[testid]['pages'].append(page_name)
+                
+                # Ссылки
+                for link in page_data.get('links', []):
+                    href = link.get('href', '')
+                    if href:
+                        all_links[href] = {
+                            'text': link.get('text', ''),
+                            'pages': all_links.get(href, {}).get('pages', []) + [page_name]
+                        }
+                        all_links[href]['pages'] = list(set(all_links[href]['pages']))
+                
+                # Формы
+                for form in page_data.get('forms', []):
+                    all_forms.append(form)
+                
+                # Заголовки
+                for h in page_data.get('headers', []):
+                    all_headers.append(h)
         
-        # Ждем немного для сбора
-        await asyncio.sleep(3)
+        # Сохраняем в основную структуру
+        self.data['all_testids'] = list(all_testids)
+        self.data['all_buttons'] = all_buttons
+        self.data['all_inputs'] = all_inputs
+        self.data['all_links'] = all_links
+        self.data['all_forms'] = all_forms
+        self.data['all_headers'] = all_headers
         
-        # Фильтруем API вызовы X.com
-        api_calls = [call for call in api_calls if 'x.com' in call['url'] and 
-                    (call['resourceType'] in ['xhr', 'fetch'] or 
-                     'api' in call['url'] or 'graphql' in call['url'])]
+        # Статистика
+        self.data['statistics'] = {
+            'total_pages': len(self.data['pages']),
+            'total_testids': len(all_testids),
+            'total_buttons': len(all_buttons),
+            'total_inputs': len(all_inputs),
+            'total_links': len(all_links),
+            'total_forms': len(all_forms),
+            'total_headers': len(all_headers),
+            'total_tweets': len(self.data.get('tweets', [])),
+            'total_trends': len(self.data.get('trends', []))
+        }
         
-        self.model['api_endpoints'] = api_calls[:20]  # Топ 20
-        logger.info(f"🌐 Перехвачено API вызовов: {len(api_calls)}")
-    
-    async def save_model(self, filename: str):
-        """Сохраняет модель в файл"""
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(self.model, f, ensure_ascii=False, indent=2)
-        logger.info(f"💾 Модель сохранена: {filename}")
+        logger.info(f"📊 Статистика: {self.data['statistics']}")
 
 # ========== КОМАНДЫ ТЕЛЕГРАМ ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🏗️ **X.com Complete Model Builder**\n\n"
-        "Строит полную модель сайта X.com:\n"
+        "🕷️ **X.com Deep Parser**\n\n"
+        "Выкачивает ВСЁ с X.com:\n"
         "• Все страницы и разделы\n"
-        "• Все элементы DOM\n"
-        "• Все testid и компоненты\n"
-        "• Структура и навигация\n"
-        "• API вызовы\n"
-        "• Полная карта сайта\n\n"
+        "• Все кнопки и их testid\n"
+        "• Все поля ввода\n"
+        "• Все ссылки и формы\n"
+        "• Все посты с лайками\n"
+        "• Все атрибуты и классы\n"
+        "• Полная структура DOM\n\n"
         "📌 Команды:\n"
-        "/build - построить полную модель\n"
-        "/model - показать модель\n"
-        "/components - все компоненты\n"
-        "/testids - все testid\n"
-        "/structure - структура сайта\n"
+        "/xlogin - войти в X.com\n"
+        "/parse - начать глубокий парсинг\n"
+        "/report - показать отчет\n"
         "/export - экспортировать JSON\n"
-        "/xlogin - войти в X.com"
+        "/testids - все testid\n"
+        "/buttons - все кнопки\n"
+        "/tweets - все посты"
     )
 
 async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -696,18 +931,20 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
-async def build_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Строит полную модель сайта"""
+async def deep_parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Глубокий парсинг всего сайта"""
     msg = await update.message.reply_text(
-        "🏗️ **Начинаю построение полной модели X.com...**\n\n"
-        "📄 Анализирую страницы:\n"
+        "🕷️ **Начинаю ГЛУБОКИЙ парсинг X.com...**\n\n"
+        "📄 Парсинг страниц:\n"
         "• Главная\n"
         "• Обзор\n"
         "• Уведомления\n"
         "• Сообщения\n"
         "• Настройки\n"
-        "• Тренды\n\n"
-        "⏳ Это займет 2-3 минуты..."
+        "• Тренды\n"
+        "• Сообщества\n"
+        "• Grok\n\n"
+        "⏳ Это займет 3-5 минут..."
     )
     
     try:
@@ -718,43 +955,38 @@ async def build_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await page.goto('https://x.com', wait_until='domcontentloaded')
         await asyncio.sleep(2)
         
-        # Строим модель
-        builder = SiteModelBuilder(page)
-        model = await builder.build_full_model()
+        # Парсим
+        parser = DeepXParser(page)
+        data = await parser.parse_full_site()
         
         # Сохраняем глобально
-        global site_model
-        site_model = model
+        global full_site_data
+        full_site_data = data
         
         # Отчет
-        report = f"📊 **МОДЕЛЬ ПОСТРОЕНА!**\n\n"
-        report += f"📄 Страниц: {len(model['pages'])}\n"
-        report += f"🔘 Кнопок: {len(model['components'].get('buttons', {}))}\n"
-        report += f"🏷️ TestID: {len(model.get('testids', {}))}\n"
-        report += f"📝 Форм: {len(model['pages'].get('home', {}).get('forms', []))}\n"
-        report += f"🔗 Ссылок: {len(model['pages'].get('home', {}).get('links', []))}\n"
-        report += f"🐦 Постов: {len(model.get('tweets', []))}\n"
-        report += f"🌐 API вызовов: {len(model.get('api_endpoints', []))}\n"
-        report += f"📊 DOM элементов: {model.get('metadata', {}).get('dom', {}).get('totalElements', 0)}\n\n"
-        
-        report += f"**Структура:**\n"
-        structure = model.get('structure', {})
-        report += f"• Header: {'✅' if structure.get('hasHeader') else '❌'}\n"
-        report += f"• Footer: {'✅' if structure.get('hasFooter') else '❌'}\n"
-        report += f"• Main: {'✅' if structure.get('hasMain') else '❌'}\n"
-        report += f"• Sidebar: {'✅' if structure.get('hasSidebar') else '❌'}\n"
+        stats = data.get('statistics', {})
+        report = f"📊 **ПАРСИНГ ЗАВЕРШЕН!**\n\n"
+        report += f"📄 Страниц: {stats.get('total_pages', 0)}\n"
+        report += f"🏷️ TestID: {stats.get('total_testids', 0)}\n"
+        report += f"🔘 Кнопок: {stats.get('total_buttons', 0)}\n"
+        report += f"📝 Поля ввода: {stats.get('total_inputs', 0)}\n"
+        report += f"🔗 Ссылок: {stats.get('total_links', 0)}\n"
+        report += f"📋 Форм: {stats.get('total_forms', 0)}\n"
+        report += f"📌 Заголовков: {stats.get('total_headers', 0)}\n"
+        report += f"🐦 Постов: {stats.get('total_tweets', 0)}\n"
+        report += f"📈 Трендов: {stats.get('total_trends', 0)}\n"
         
         await msg.edit_text(report)
         
-        # Сохраняем модель
-        filename = f"x_model_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        await builder.save_model(filename)
+        # Сохраняем файл
+        filename = f"x_deep_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
         
-        # Отправляем файл
         await update.message.reply_document(
             document=open(filename, 'rb'),
             filename=filename,
-            caption="📄 Полная модель X.com"
+            caption="📄 Полный парсинг X.com"
         )
         os.remove(filename)
         
@@ -762,150 +994,122 @@ async def build_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
         screenshot = await page.screenshot(type='jpeg', quality=80)
         await update.message.reply_photo(photo=screenshot, caption="📸 Текущая страница")
         
-        logger.info(f"✅ Модель построена для user {update.effective_user.id}")
+        logger.info(f"✅ Парсинг завершен для user {update.effective_user.id}")
         
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-        logger.error(f"Build error: {traceback.format_exc()}")
+        logger.error(f"Parse error: {traceback.format_exc()}")
 
-async def show_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает модель"""
-    global site_model
-    if not site_model:
-        await update.message.reply_text("❌ Модель не построена. Сначала /build")
+async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global full_site_data
+    if not full_site_data:
+        await update.message.reply_text("❌ Нет данных. Сначала /parse")
         return
     
-    model = site_model
-    
-    report = f"🏗️ **ПОЛНАЯ МОДЕЛЬ X.COM**\n\n"
-    report += f"🕐 {model.get('timestamp', '')[:19]}\n\n"
-    
-    # Страницы
-    report += f"**📄 СТРАНИЦЫ ({len(model.get('pages', {}))}):**\n"
-    for page_name, data in model.get('pages', {}).items():
-        if isinstance(data, dict) and 'error' not in data:
-            title = data.get('title', '')[:30]
-            report += f"• {page_name}: {title}\n"
-    report += "\n"
-    
-    # Компоненты
-    comps = model.get('components', {})
-    report += f"**🧩 КОМПОНЕНТЫ:**\n"
-    report += f"• Кнопок: {len(comps.get('buttons', {}))}\n"
-    report += f"• Поля ввода: {len(comps.get('inputs', {}))}\n"
-    report += f"• Карточек: {len(comps.get('cards', []))}\n"
-    report += f"• Списков: {len(comps.get('lists', []))}\n"
-    report += f"• Поисков: {len(comps.get('searchFields', []))}\n"
-    report += "\n"
-    
-    # Навигация
-    nav = comps.get('navigation', {})
-    if nav:
-        report += f"**🧭 НАВИГАЦИЯ:**\n"
-        for testid, info in nav.items():
-            report += f"• {testid}: {info.get('text', '')[:30]}\n"
-        report += "\n"
-    
-    # API
-    api = model.get('api_endpoints', [])
-    if api:
-        report += f"**🌐 API ({len(api)}):**\n"
-        for call in api[:5]:
-            report += f"• {call.get('method', 'GET')}: {call.get('url', '')[:50]}\n"
-        if len(api) > 5:
-            report += f"• ... и еще {len(api) - 5}\n"
+    stats = full_site_data.get('statistics', {})
+    report = f"📊 **ПОЛНЫЙ ОТЧЕТ**\n\n"
+    report += f"🕐 {full_site_data.get('timestamp', '')[:19]}\n\n"
+    report += f"**СТАТИСТИКА:**\n"
+    report += f"📄 Страниц: {stats.get('total_pages', 0)}\n"
+    report += f"🏷️ TestID: {stats.get('total_testids', 0)}\n"
+    report += f"🔘 Кнопок: {stats.get('total_buttons', 0)}\n"
+    report += f"📝 Поля ввода: {stats.get('total_inputs', 0)}\n"
+    report += f"🔗 Ссылок: {stats.get('total_links', 0)}\n"
+    report += f"📋 Форм: {stats.get('total_forms', 0)}\n"
+    report += f"📌 Заголовков: {stats.get('total_headers', 0)}\n"
+    report += f"🐦 Постов: {stats.get('total_tweets', 0)}\n"
     
     await update.message.reply_text(report)
 
-async def show_components(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает все компоненты"""
-    global site_model
-    if not site_model:
-        await update.message.reply_text("❌ Модель не построена. Сначала /build")
+async def show_all_testids(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global full_site_data
+    if not full_site_data:
+        await update.message.reply_text("❌ Нет данных. Сначала /parse")
         return
     
-    comps = site_model.get('components', {})
+    testids = full_site_data.get('all_testids', [])
+    if not testids:
+        await update.message.reply_text("❌ TestID не найдены")
+        return
     
-    result = "🧩 **ВСЕ КОМПОНЕНТЫ**\n\n"
-    
-    # Кнопки
-    buttons = comps.get('buttons', {})
-    if buttons:
-        result += f"**🔘 КНОПКИ ({len(buttons)}):**\n"
-        for testid, info in list(buttons.items())[:10]:
-            result += f"• `{testid}`: {info.get('text', '')[:30]}\n"
-        if len(buttons) > 10:
-            result += f"• ... и еще {len(buttons) - 10}\n"
+    result = "🏷️ **ВСЕ TESTID**\n\n"
+    for i, testid in enumerate(testids[:30], 1):
+        # Показываем на каких страницах
+        pages = []
+        for page_name, page_data in full_site_data['pages'].items():
+            if isinstance(page_data, dict) and testid in page_data.get('testids', []):
+                pages.append(page_name)
+        result += f"{i}. `{testid}`"
+        if pages:
+            result += f" [{', '.join(pages[:3])}]"
         result += "\n"
     
-    # Поля ввода
-    inputs = comps.get('inputs', {})
-    if inputs:
-        result += f"**📝 ПОЛЯ ВВОДА ({len(inputs)}):**\n"
-        for name, info in list(inputs.items())[:10]:
-            result += f"• {name}: {info.get('type', '')} - {info.get('placeholder', '')}\n"
-        if len(inputs) > 10:
-            result += f"• ... и еще {len(inputs) - 10}\n"
-        result += "\n"
-    
-    # Поиск
-    search = comps.get('searchFields', [])
-    if search:
-        result += f"**🔍 ПОИСК ({len(search)}):**\n"
-        for s in search[:5]:
-            result += f"• {s.get('testid', '')}: {s.get('placeholder', '')}\n"
+    if len(testids) > 30:
+        result += f"\n... и еще {len(testids) - 30} testid"
     
     await update.message.reply_text(result)
 
-async def show_structure(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает структуру сайта"""
-    global site_model
-    if not site_model:
-        await update.message.reply_text("❌ Модель не построена. Сначала /build")
+async def show_all_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global full_site_data
+    if not full_site_data:
+        await update.message.reply_text("❌ Нет данных. Сначала /parse")
         return
     
-    structure = site_model.get('structure', {})
-    dom = site_model.get('metadata', {}).get('dom', {})
+    buttons = full_site_data.get('all_buttons', {})
+    if not buttons:
+        await update.message.reply_text("❌ Кнопки не найдены")
+        return
     
-    result = "📊 **СТРУКТУРА САЙТА**\n\n"
+    result = "🔘 **ВСЕ КНОПКИ**\n\n"
+    for i, (testid, info) in enumerate(list(buttons.items())[:25], 1):
+        result += f"{i}. `{testid}`\n"
+        if info.get('texts'):
+            result += f"   📝 {info['texts'][0][:40]}\n"
+        if info.get('pages'):
+            result += f"   📄 {', '.join(info['pages'][:3])}\n"
+        result += "\n"
     
-    result += f"**Основные элементы:**\n"
-    result += f"• Header: {'✅' if structure.get('hasHeader') else '❌'}\n"
-    result += f"• Footer: {'✅' if structure.get('hasFooter') else '❌'}\n"
-    result += f"• Navigation: {'✅' if structure.get('hasNav') else '❌'}\n"
-    result += f"• Main: {'✅' if structure.get('hasMain') else '❌'}\n"
-    result += f"• Sidebar: {'✅' if structure.get('hasSidebar') else '❌'}\n"
-    result += f"• Article: {'✅' if structure.get('hasArticle') else '❌'}\n"
-    result += f"• Section: {'✅' if structure.get('hasSection') else '❌'}\n"
-    result += f"• Modal: {'✅' if structure.get('hasModal') else '❌'}\n\n"
-    
-    result += f"**DOM Статистика:**\n"
-    result += f"• Всего элементов: {dom.get('totalElements', 0)}\n"
-    result += f"• Уникальных тегов: {len(dom.get('uniqueTags', []))}\n"
-    result += f"• Макс. глубина: {dom.get('depth', 0)}\n\n"
-    
-    result += f"**Заголовки:**\n"
-    headings = structure.get('headings', {})
-    for level, count in headings.items():
-        result += f"• {level}: {count} шт.\n"
+    if len(buttons) > 25:
+        result += f"... и еще {len(buttons) - 25} кнопок"
     
     await update.message.reply_text(result)
 
-async def export_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Экспортирует модель в JSON"""
-    global site_model
-    if not site_model:
-        await update.message.reply_text("❌ Модель не построена. Сначала /build")
+async def show_tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global full_site_data
+    if not full_site_data:
+        await update.message.reply_text("❌ Нет данных. Сначала /parse")
         return
     
-    filename = f"x_model_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    tweets = full_site_data.get('tweets', [])
+    if not tweets:
+        await update.message.reply_text("❌ Посты не найдены")
+        return
+    
+    result = "🐦 **ВСЕ ПОСТЫ**\n\n"
+    for i, tweet in enumerate(tweets[:10], 1):
+        result += f"{i}. @{tweet.get('author', 'Unknown')}\n"
+        result += f"   {tweet.get('text', '')[:100]}...\n"
+        result += f"   ❤️ {tweet.get('likes', '0')}  🔁 {tweet.get('retweets', '0')}\n\n"
+    
+    if len(tweets) > 10:
+        result += f"... и еще {len(tweets) - 10} постов"
+    
+    await update.message.reply_text(result)
+
+async def export_json(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global full_site_data
+    if not full_site_data:
+        await update.message.reply_text("❌ Нет данных. Сначала /parse")
+        return
+    
+    filename = f"x_full_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     with open(filename, 'w', encoding='utf-8') as f:
-        json.dump(site_model, f, ensure_ascii=False, indent=2)
+        json.dump(full_site_data, f, ensure_ascii=False, indent=2)
     
     await update.message.reply_document(
         document=open(filename, 'rb'),
         filename=filename,
-        caption="📄 Полная модель X.com"
+        caption="📄 Полный экспорт X.com"
     )
     os.remove(filename)
 
@@ -930,16 +1134,17 @@ def main():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("xlogin", xlogin))
-    app.add_handler(CommandHandler("build", build_model))
-    app.add_handler(CommandHandler("model", show_model))
-    app.add_handler(CommandHandler("components", show_components))
-    app.add_handler(CommandHandler("structure", show_structure))
-    app.add_handler(CommandHandler("export", export_model))
+    app.add_handler(CommandHandler("parse", deep_parse))
+    app.add_handler(CommandHandler("report", show_report))
+    app.add_handler(CommandHandler("testids", show_all_testids))
+    app.add_handler(CommandHandler("buttons", show_all_buttons))
+    app.add_handler(CommandHandler("tweets", show_tweets))
+    app.add_handler(CommandHandler("export", export_json))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("close", close))
     
-    print("🏗️ X.com Model Builder запущен!")
-    print("📌 Команды: /build - построить полную модель")
+    print("🕷️ X.com Deep Parser запущен!")
+    print("📌 Команды: /xlogin → /parse → /report")
     app.run_polling()
 
 if __name__ == "__main__":
