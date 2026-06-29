@@ -112,16 +112,23 @@ async def get_browser():
                 '--disable-web-security',
                 '--disable-features=IsolateOrigins,site-per-process',
                 '--disable-site-isolation-trials',
-                '--disable-features=BlockInsecurePrivateNetworkRequests'
+                '--disable-features=BlockInsecurePrivateNetworkRequests',
+                '--disable-gpu',
+                '--disable-software-rasterizer'
             ]
         )
+        
         context = await browser.new_context(
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             viewport={'width': 1280, 'height': 720},
             locale='en-US',
             timezone_id='America/New_York',
+            permissions=['geolocation'],
+            device_scale_factor=1,
+            has_touch=False,
+            is_mobile=False,
             extra_http_headers={
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.9',
                 'Accept-Encoding': 'gzip, deflate, br',
                 'DNT': '1',
@@ -131,7 +138,10 @@ async def get_browser():
                 'Sec-Fetch-Mode': 'navigate',
                 'Sec-Fetch-Site': 'none',
                 'Sec-Fetch-User': '?1',
-                'Cache-Control': 'max-age=0'
+                'Cache-Control': 'max-age=0',
+                'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                'sec-ch-ua-mobile': '?0',
+                'sec-ch-ua-platform': '"Windows"'
             }
         )
         page = await context.new_page()
@@ -150,6 +160,12 @@ async def get_browser():
             window.chrome = {
                 runtime: {}
             };
+            Object.defineProperty(navigator, 'deviceMemory', {
+                get: () => 8
+            });
+            Object.defineProperty(navigator, 'hardwareConcurrency', {
+                get: () => 4
+            });
         """)
         
         browser_data = {
@@ -183,6 +199,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/screen - скриншот\n"
         "/status - состояние браузера\n"
         "/stats - статистика\n"
+        "/check - проверка авторизации\n"
         "/logs - показать логи\n"
         "/close - закрыть браузер"
     )
@@ -256,14 +273,11 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Переходим на страницу
         log_msg += "\n\n🔄 Перехожу на x.com..."
         try:
-            # Пробуем с минимальными ожиданиями
             await page.goto('https://x.com', wait_until='commit', timeout=15000)
             logger.info("Страница начала загрузку")
             
-            # Ждем немного
             await page.wait_for_timeout(5000)
             
-            # Пробуем дождаться body
             try:
                 await page.wait_for_selector('body', timeout=10000)
                 logger.info("Body загружен")
@@ -275,7 +289,6 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             log_error(error_msg, traceback.format_exc())
             log_msg += f"\n❌ {error_msg}"
             
-            # Пробуем перезагрузить
             try:
                 await page.reload(wait_until='domcontentloaded', timeout=15000)
                 log_msg += "\n🔄 Страница перезагружена"
@@ -357,7 +370,11 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Скриншот
         screenshot = None
         try:
-            screenshot = await page.screenshot()
+            screenshot = await page.screenshot(
+                full_page=False,
+                type='jpeg',
+                quality=80
+            )
             log_msg += f"\n\n📸 Скриншот сделан"
         except Exception as e:
             log_msg += f"\n\n⚠️ Ошибка скриншота: {str(e)}"
@@ -392,7 +409,11 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         browser = await get_browser()
         page = browser['page']
         
-        screenshot = await page.screenshot(full_page=True)
+        screenshot = await page.screenshot(
+            full_page=False,
+            type='jpeg',
+            quality=80
+        )
         
         await msg.delete()
         await update.message.reply_photo(
@@ -448,6 +469,63 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔗 Текущий URL: {url[:50]}\n"
         f"🍪 Куки: {len(COOKIES)} шт."
     )
+
+async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Проверяет авторизацию на X.com"""
+    msg = await update.message.reply_text("⏳ Проверяю статус...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        # Проверяем разные элементы
+        checks = {
+            'primary_column': await page.query_selector('[data-testid="primaryColumn"]'),
+            'tweet_button': await page.query_selector('[data-testid="tweetButton"]'),
+            'profile_link': await page.query_selector('[data-testid="AppTabBar_Profile_Link"]'),
+            'login_form': await page.query_selector('[data-testid="loginForm"]'),
+            'challenge': await page.query_selector('[data-testid="challenge"]')
+        }
+        
+        status_msg = "🔍 **Статус авторизации:**\n\n"
+        for name, element in checks.items():
+            status_msg += f"{name}: {'✅' if element else '❌'}\n"
+        
+        # Проверяем куки
+        cookies = await browser['context'].cookies()
+        auth_token = next((c for c in cookies if c.get('name') == 'auth_token'), None)
+        ct0 = next((c for c in cookies if c.get('name') == 'ct0'), None)
+        
+        status_msg += f"\n🍪 auth_token: {'✅' if auth_token else '❌'}"
+        status_msg += f"\n🍪 ct0: {'✅' if ct0 else '❌'}"
+        
+        # Проверяем URL
+        status_msg += f"\n\n📍 URL: {page.url}"
+        
+        # Проверяем заголовок
+        title = await page.title()
+        status_msg += f"\n📌 Заголовок: {title[:60] if title else 'Нет'}"
+        
+        # Определяем статус
+        if checks['primary_column'] and checks['profile_link'] and checks['tweet_button']:
+            status_msg += "\n\n✅ **Полная авторизация!**"
+        elif checks['primary_column'] and checks['profile_link']:
+            status_msg += "\n\n⚠️ **Частичная авторизация (не хватает кнопок)**"
+        elif checks['primary_column']:
+            status_msg += "\n\n⚠️ **Частичная авторизация (только основная колонка)**"
+        elif checks['login_form']:
+            status_msg += "\n\n❌ **Требуется вход**"
+        elif checks['challenge']:
+            status_msg += "\n\n⚠️ **Требуется проверка (капча/Cloudflare)**"
+        else:
+            status_msg += "\n\n❌ **Статус не определен**"
+        
+        await msg.edit_text(status_msg, parse_mode='Markdown')
+        
+    except Exception as e:
+        error_msg = f"Ошибка в check_auth: {str(e)}"
+        log_error(error_msg, traceback.format_exc())
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def show_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает последние логи ошибок"""
@@ -506,6 +584,7 @@ def main():
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("check", check_auth))
     app.add_handler(CommandHandler("logs", show_logs))
     app.add_handler(CommandHandler("close", close))
     
