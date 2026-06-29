@@ -95,15 +95,55 @@ async def get_browser():
     
     p = await async_playwright().start()
     browser = await p.chromium.launch(
-        headless=True,
-        args=['--no-sandbox', '--disable-setuid-sandbox']
+        headless=False,  # Временно для отладки
+        args=[
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-blink-features=AutomationControlled',
+            '--disable-dev-shm-usage',
+            '--disable-web-security',
+            '--disable-features=IsolateOrigins,site-per-process',
+            '--disable-site-isolation-trials',
+            '--disable-features=BlockInsecurePrivateNetworkRequests'
+        ]
     )
     context = await browser.new_context(
         user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        viewport={'width': 1280, 'height': 720}
+        viewport={'width': 1280, 'height': 720},
+        locale='en-US',
+        timezone_id='America/New_York',
+        extra_http_headers={
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0'
+        }
     )
     page = await context.new_page()
     await stealth_async(page)
+    
+    # Добавляем скрипт для скрытия автоматизации
+    await page.add_init_script("""
+        Object.defineProperty(navigator, 'webdriver', {
+            get: () => undefined
+        });
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => [1, 2, 3, 4, 5]
+        });
+        Object.defineProperty(navigator, 'languages', {
+            get: () => ['en-US', 'en']
+        });
+        window.chrome = {
+            runtime: {}
+        };
+    """)
     
     browser_data = {
         'playwright': p,
@@ -196,14 +236,36 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Переходим на страницу
         log_msg += "\n\n🔄 Перехожу на x.com..."
         try:
-            await page.goto('https://x.com', wait_until='domcontentloaded', timeout=15000)
+            # Ждем полной загрузки
+            await page.goto('https://x.com', wait_until='networkidle', timeout=30000)
             logger.info("Страница загружена")
+            
+            # Дополнительная пауза для рендеринга
+            await page.wait_for_timeout(3000)
+            
         except Exception as e:
             error_msg = f"Ошибка загрузки страницы: {str(e)}"
             log_error(error_msg, traceback.format_exc())
             log_msg += f"\n❌ {error_msg}"
             await msg.edit_text(log_msg)
             return
+        
+        # Проверяем HTML страницы
+        try:
+            html_content = await page.content()
+            log_msg += f"\n📄 HTML длина: {len(html_content)} символов"
+            
+            # Проверяем наличие ключевых слов
+            if 'login' in html_content.lower():
+                log_msg += "\n🔍 Найдено слово 'login' в HTML"
+            if 'twitter' in html_content.lower() or 'x.com' in html_content.lower():
+                log_msg += "\n🔍 Найдено 'twitter' или 'x.com' в HTML"
+            if 'challenge' in html_content.lower():
+                log_msg += "\n⚠️ Обнаружена страница проверки (challenge)"
+            if 'cloudflare' in html_content.lower():
+                log_msg += "\n⚠️ Обнаружена Cloudflare защита"
+        except Exception as e:
+            log_msg += f"\n⚠️ Ошибка проверки HTML: {str(e)}"
         
         # Проверяем URL (СВОЙСТВО - без await)
         current_url = page.url
@@ -217,7 +279,8 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ("tweet_button", '[data-testid="tweetButton"]'),
                 ("profile_link", '[data-testid="AppTabBar_Profile_Link"]'),
                 ("login_form", '[data-testid="loginForm"]'),
-                ("toast_error", '[data-testid="toast"]')
+                ("toast_error", '[data-testid="toast"]'),
+                ("challenge", '[data-testid="challenge"]')
             ]
             
             selector_results = []
