@@ -487,7 +487,7 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'challenge': await page.query_selector('[data-testid="challenge"]')
         }
         
-        status_msg = "🔍 **Статус авторизации:**\n\n"
+        status_msg = "🔍 СТАТУС АВТОРИЗАЦИИ:\n\n"
         for name, element in checks.items():
             status_msg += f"{name}: {'✅' if element else '❌'}\n"
         
@@ -500,27 +500,35 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg += f"\n🍪 ct0: {'✅' if ct0 else '❌'}"
         
         # Проверяем URL
-        status_msg += f"\n\n📍 URL: {page.url}"
+        try:
+            current_url = page.url
+            status_msg += f"\n\n📍 URL: {current_url[:80]}"
+        except:
+            status_msg += f"\n\n📍 URL: Недоступен"
         
         # Проверяем заголовок
-        title = await page.title()
-        status_msg += f"\n📌 Заголовок: {title[:60] if title else 'Нет'}"
+        try:
+            title = await page.title()
+            status_msg += f"\n📌 Заголовок: {title[:60] if title else 'Нет'}"
+        except:
+            status_msg += f"\n📌 Заголовок: Недоступен"
         
         # Определяем статус
+        status_msg += "\n\n"
         if checks['primary_column'] and checks['profile_link'] and checks['tweet_button']:
-            status_msg += "\n\n✅ **Полная авторизация!**"
+            status_msg += "✅ ПОЛНАЯ АВТОРИЗАЦИЯ!"
         elif checks['primary_column'] and checks['profile_link']:
-            status_msg += "\n\n⚠️ **Частичная авторизация (не хватает кнопок)**"
+            status_msg += "⚠️ ЧАСТИЧНАЯ АВТОРИЗАЦИЯ (не хватает кнопок)"
         elif checks['primary_column']:
-            status_msg += "\n\n⚠️ **Частичная авторизация (только основная колонка)**"
+            status_msg += "⚠️ ЧАСТИЧНАЯ АВТОРИЗАЦИЯ (только основная колонка)"
         elif checks['login_form']:
-            status_msg += "\n\n❌ **Требуется вход**"
+            status_msg += "❌ ТРЕБУЕТСЯ ВХОД"
         elif checks['challenge']:
-            status_msg += "\n\n⚠️ **Требуется проверка (капча/Cloudflare)**"
+            status_msg += "⚠️ ТРЕБУЕТСЯ ПРОВЕРКА (капча/Cloudflare)"
         else:
-            status_msg += "\n\n❌ **Статус не определен**"
+            status_msg += "❌ СТАТУС НЕ ОПРЕДЕЛЕН"
         
-        await msg.edit_text(status_msg, parse_mode='Markdown')
+        await msg.edit_text(status_msg)
         
     except Exception as e:
         error_msg = f"Ошибка в check_auth: {str(e)}"
@@ -533,7 +541,7 @@ async def show_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         if error_logs:
-            log_text = "📋 **Последние ошибки:**\n\n"
+            log_text = "📋 Последние ошибки:\n\n"
             for i, log in enumerate(error_logs[-10:], 1):
                 log_text += f"{i}. 🕐 {log['time']}\n"
                 log_text += f"   ❌ {log['error'][:100]}\n"
@@ -548,9 +556,9 @@ async def show_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
             with open('bot.log', 'r') as f:
                 lines = f.readlines()
                 if lines:
-                    log_text += "\n📄 **Последние записи из файла:**\n"
+                    log_text += "\n📄 Последние записи из файла:\n"
                     last_lines = lines[-5:]
-                    log_text += "```\n" + "".join(last_lines) + "```"
+                    log_text += "".join(last_lines)
         except:
             pass
         
@@ -563,7 +571,7 @@ async def show_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             os.remove('logs_temp.txt')
         else:
-            await msg.edit_text(log_text, parse_mode='Markdown')
+            await msg.edit_text(log_text)
             
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка при загрузке логов: {str(e)}")
