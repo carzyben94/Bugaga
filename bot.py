@@ -591,16 +591,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📌 Основные команды:\n"
         "/go <url> - открыть сайт\n"
         "/xlogin - вход в X.com\n"
+        "/explore - исследовать интерфейс X.com\n"
+        "/findbuttons - найти все кнопки на странице\n"
+        "/click <testid> - нажать кнопку по data-testid\n"
         "/screen - скриншот\n"
         "/status - состояние браузера\n"
+        "/stats - статистика\n"
         "/check - проверка авторизации\n"
+        "/logs - показать логи\n"
         "/close - закрыть браузер\n\n"
         "🎮 Команды джойстика:\n"
         "/joystick - тест джойстика\n"
         "/joystick_ai <задача> - AI поиск и клик\n"
-        "/find <запрос> - найти элементы\n"
-        "/click <testid> - клик по testid\n"
-        "/findbuttons - все кнопки"
+        "/find <запрос> - найти элементы"
     )
 
 async def go(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -770,6 +773,312 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
+async def explore(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Исследует интерфейс X.com, находит кнопки и элементы"""
+    msg = await update.message.reply_text("🔍 Исследую интерфейс X.com...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        current_url = page.url
+        if 'x.com' not in current_url:
+            await msg.edit_text("❌ Сначала зайди на X.com через /xlogin")
+            return
+        
+        explore_result = "🔍 ИССЛЕДОВАНИЕ ИНТЕРФЕЙСА X.COM\n\n"
+        
+        try:
+            title = await page.title()
+            explore_result += f"📌 Заголовок: {title[:60]}\n"
+            explore_result += f"📍 URL: {current_url[:80]}\n\n"
+        except:
+            pass
+        
+        explore_result += "🔘 НАЙДЕННЫЕ КНОПКИ:\n"
+        try:
+            buttons = await page.evaluate('''
+                () => {
+                    const buttons = [];
+                    document.querySelectorAll('button, [role="button"], [data-testid*="button"]').forEach(el => {
+                        const text = el.textContent?.trim() || '';
+                        const testId = el.getAttribute('data-testid') || '';
+                        const ariaLabel = el.getAttribute('aria-label') || '';
+                        const type = el.getAttribute('type') || '';
+                        const className = el.className || '';
+                        buttons.push({
+                            text: text.slice(0, 50),
+                            testId: testId.slice(0, 50),
+                            ariaLabel: ariaLabel.slice(0, 50),
+                            type: type,
+                            class: className.slice(0, 50)
+                        });
+                    });
+                    return buttons;
+                }
+            ''')
+            
+            if buttons:
+                button_groups = {}
+                for btn in buttons:
+                    key = btn['testId'] or btn['ariaLabel'] or btn['text'] or 'unknown'
+                    if key not in button_groups:
+                        button_groups[key] = 0
+                    button_groups[key] += 1
+                
+                count = 0
+                for key, value in list(button_groups.items())[:20]:
+                    if key and key != 'unknown':
+                        explore_result += f"  • {key}: {value} шт.\n"
+                        count += 1
+                
+                if count == 0:
+                    explore_result += "  ⚠️ Кнопки не найдены\n"
+                else:
+                    explore_result += f"\n  Всего уникальных кнопок: {len(button_groups)}\n"
+            else:
+                explore_result += "  ❌ Кнопки не найдены\n"
+        except Exception as e:
+            explore_result += f"  ⚠️ Ошибка поиска кнопок: {str(e)[:50]}\n"
+        
+        explore_result += "\n🏷️ DATA-TESTID ЭЛЕМЕНТЫ:\n"
+        try:
+            testids = await page.evaluate('''
+                () => {
+                    const elements = {};
+                    document.querySelectorAll('[data-testid]').forEach(el => {
+                        const id = el.getAttribute('data-testid');
+                        if (id) {
+                            elements[id] = (elements[id] || 0) + 1;
+                        }
+                    });
+                    return elements;
+                }
+            ''')
+            
+            if testids:
+                sorted_ids = sorted(testids.items(), key=lambda x: x[1], reverse=True)
+                count = 0
+                for testid, count_elem in sorted_ids[:30]:
+                    explore_result += f"  • {testid}: {count_elem} шт.\n"
+                    count += 1
+                
+                if count == 0:
+                    explore_result += "  ⚠️ data-testid не найдены\n"
+                else:
+                    explore_result += f"\n  Всего data-testid: {len(testids)}\n"
+            else:
+                explore_result += "  ❌ data-testid не найдены\n"
+        except Exception as e:
+            explore_result += f"  ⚠️ Ошибка поиска data-testid: {str(e)[:50]}\n"
+        
+        explore_result += "\n📝 ФОРМЫ:\n"
+        try:
+            forms = await page.evaluate('''
+                () => {
+                    const forms = [];
+                    document.querySelectorAll('form').forEach(el => {
+                        const action = el.getAttribute('action') || '';
+                        const method = el.getAttribute('method') || '';
+                        const inputs = el.querySelectorAll('input, textarea, select').length;
+                        forms.push({ action: action.slice(0, 50), method: method, inputs: inputs });
+                    });
+                    return forms;
+                }
+            ''')
+            
+            if forms:
+                for i, form in enumerate(forms[:5], 1):
+                    explore_result += f"  Форма {i}: action={form['action'] or 'не указан'}, method={form['method'] or 'get'}, полей={form['inputs']}\n"
+            else:
+                explore_result += "  ❌ Формы не найдены\n"
+        except Exception as e:
+            explore_result += f"  ⚠️ Ошибка поиска форм: {str(e)[:50]}\n"
+        
+        explore_result += "\n🔗 ССЫЛКИ:\n"
+        try:
+            links = await page.evaluate('''
+                () => {
+                    const links = [];
+                    document.querySelectorAll('a[href]').forEach(el => {
+                        const href = el.getAttribute('href');
+                        const text = el.textContent?.trim() || '';
+                        if (href && !href.startsWith('javascript:')) {
+                            links.push({
+                                href: href.slice(0, 60),
+                                text: text.slice(0, 40)
+                            });
+                        }
+                    });
+                    return links;
+                }
+            ''')
+            
+            if links:
+                explore_result += f"  Всего ссылок: {len(links)}\n"
+                for i, link in enumerate(links[:5], 1):
+                    explore_result += f"  {i}. {link['text'] or 'без текста'} → {link['href']}\n"
+            else:
+                explore_result += "  ❌ Ссылки не найдены\n"
+        except Exception as e:
+            explore_result += f"  ⚠️ Ошибка поиска ссылок: {str(e)[:50]}\n"
+        
+        try:
+            html_content = await page.content()
+            html_filename = f"x_com_page_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+            with open(html_filename, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+            
+            explore_result += f"\n💾 HTML сохранен: {html_filename} ({len(html_content)} символов)"
+            
+            await update.message.reply_document(
+                document=open(html_filename, 'rb'),
+                filename=html_filename,
+                caption="📄 HTML страницы X.com"
+            )
+            os.remove(html_filename)
+            
+        except Exception as e:
+            explore_result += f"\n⚠️ Ошибка сохранения HTML: {str(e)[:50]}"
+        
+        try:
+            screenshot = await page.screenshot(
+                full_page=False,
+                type='jpeg',
+                quality=80
+            )
+            
+            await update.message.reply_photo(
+                photo=screenshot,
+                caption="📸 Скриншот X.com"
+            )
+        except Exception as e:
+            explore_result += f"\n⚠️ Ошибка скриншота: {str(e)[:50]}"
+        
+        if len(explore_result) > 4000:
+            with open('explore_result.txt', 'w') as f:
+                f.write(explore_result)
+            await update.message.reply_document(
+                document=open('explore_result.txt', 'rb'),
+                filename=f"explore_{datetime.now().strftime('%Y%m%d')}.txt"
+            )
+            os.remove('explore_result.txt')
+        else:
+            await msg.edit_text(explore_result)
+        
+        logger.info(f"Explore завершен для user {update.effective_user.id}")
+        
+    except Exception as e:
+        error_msg = f"Ошибка в explore: {str(e)}"
+        log_error(error_msg, traceback.format_exc())
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def findbuttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Находит все кнопки на странице"""
+    msg = await update.message.reply_text("⏳ Ищу кнопки...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        joystick = JoystickController(page)
+        await joystick.init_position()
+        
+        elements = await joystick.explore_screen()
+        
+        buttons = [el for el in elements if el['tag'] == 'button' or 'button' in el.get('role', '')]
+        
+        if buttons:
+            result = "🔘 НАЙДЕННЫЕ КНОПКИ:\n\n"
+            for i, btn in enumerate(buttons[:30], 1):
+                result += f"{i}. {btn['text'][:50] or 'без текста'}\n"
+                if btn['testid']:
+                    result += f"   🏷️ {btn['testid']}\n"
+                if btn['ariaLabel']:
+                    result += f"   🏷️ aria-label: {btn['ariaLabel']}\n"
+                result += f"   📍 ({int(btn['x'])}, {int(btn['y'])})\n\n"
+            
+            if len(buttons) > 30:
+                result += f"... и еще {len(buttons) - 30} кнопок"
+            else:
+                result += f"Всего кнопок: {len(buttons)}"
+            
+            if len(result) > 4000:
+                with open('buttons.txt', 'w') as f:
+                    f.write(result)
+                await update.message.reply_document(
+                    document=open('buttons.txt', 'rb'),
+                    filename=f"buttons_{datetime.now().strftime('%Y%m%d')}.txt"
+                )
+                os.remove('buttons.txt')
+            else:
+                await msg.edit_text(result)
+        else:
+            await msg.edit_text("❌ Кнопки не найдены")
+            
+    except Exception as e:
+        error_msg = f"Ошибка в findbuttons: {str(e)}"
+        log_error(error_msg, traceback.format_exc())
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def click_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Нажимает кнопку по data-testid с использованием джойстика"""
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Укажи data-testid кнопки\n"
+            "Пример: /click AppTabBar_Explore_Link\n\n"
+            "📌 Доступные кнопки:\n"
+            "• AppTabBar_Home_Link - Главная\n"
+            "• AppTabBar_Explore_Link - Обзор\n"
+            "• AppTabBar_Notifications_Link - Уведомления\n"
+            "• AppTabBar_Profile_Link - Профиль\n"
+            "• AppTabBar_DirectMessage_Link - Чат\n"
+            "• SideNav_NewTweet_Button - Новый пост\n"
+            "• tweetButton - Опубликовать\n"
+            "• reply - Ответить\n"
+            "• retweet - Репост\n"
+            "• like - Нравится\n"
+            "• bookmark - Закладка"
+        )
+        return
+    
+    testid = context.args[0]
+    msg = await update.message.reply_text(f"⏳ Ищу кнопку {testid}...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        joystick = JoystickController(page)
+        await joystick.init_position()
+        
+        selector = f'[data-testid="{testid}"]'
+        success = await joystick.move_to_element(selector)
+        
+        if not success:
+            await msg.edit_text(f"❌ Кнопка {testid} не найдена")
+            return
+        
+        await joystick.click()
+        await asyncio.sleep(1)
+        
+        screenshot = await page.screenshot(
+            full_page=False,
+            type='jpeg',
+            quality=80
+        )
+        
+        await msg.edit_text(f"✅ Нажал на {testid}")
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption=f"📸 После клика на {testid}"
+        )
+        
+    except Exception as e:
+        error_msg = f"Ошибка в click_button: {str(e)}"
+        log_error(error_msg, traceback.format_exc())
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
 async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Делаю скриншот...")
     
@@ -898,6 +1207,7 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def show_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает последние логи ошибок"""
     msg = await update.message.reply_text("⏳ Загружаю логи...")
     
     try:
@@ -1134,112 +1444,6 @@ async def find_elements(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log_error(error_msg, traceback.format_exc())
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
-async def findbuttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Находит все кнопки на странице"""
-    msg = await update.message.reply_text("⏳ Ищу кнопки...")
-    
-    try:
-        browser = await get_browser()
-        page = browser['page']
-        
-        joystick = JoystickController(page)
-        await joystick.init_position()
-        
-        elements = await joystick.explore_screen()
-        
-        buttons = [el for el in elements if el['tag'] == 'button' or 'button' in el.get('role', '')]
-        
-        if buttons:
-            result = "🔘 НАЙДЕННЫЕ КНОПКИ:\n\n"
-            for i, btn in enumerate(buttons[:30], 1):
-                result += f"{i}. {btn['text'][:50] or 'без текста'}\n"
-                if btn['testid']:
-                    result += f"   🏷️ {btn['testid']}\n"
-                if btn['ariaLabel']:
-                    result += f"   🏷️ aria-label: {btn['ariaLabel']}\n"
-                result += f"   📍 ({int(btn['x'])}, {int(btn['y'])})\n\n"
-            
-            if len(buttons) > 30:
-                result += f"... и еще {len(buttons) - 30} кнопок"
-            else:
-                result += f"Всего кнопок: {len(buttons)}"
-            
-            if len(result) > 4000:
-                with open('buttons.txt', 'w') as f:
-                    f.write(result)
-                await update.message.reply_document(
-                    document=open('buttons.txt', 'rb'),
-                    filename=f"buttons_{datetime.now().strftime('%Y%m%d')}.txt"
-                )
-                os.remove('buttons.txt')
-            else:
-                await msg.edit_text(result)
-        else:
-            await msg.edit_text("❌ Кнопки не найдены")
-            
-    except Exception as e:
-        error_msg = f"Ошибка в findbuttons: {str(e)}"
-        log_error(error_msg, traceback.format_exc())
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def click_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Нажимает кнопку по data-testid с использованием джойстика"""
-    if not context.args:
-        await update.message.reply_text(
-            "❌ Укажи data-testid кнопки\n"
-            "Пример: /click AppTabBar_Explore_Link\n\n"
-            "📌 Доступные кнопки:\n"
-            "• AppTabBar_Home_Link - Главная\n"
-            "• AppTabBar_Explore_Link - Обзор\n"
-            "• AppTabBar_Notifications_Link - Уведомления\n"
-            "• AppTabBar_Profile_Link - Профиль\n"
-            "• AppTabBar_DirectMessage_Link - Чат\n"
-            "• SideNav_NewTweet_Button - Новый пост\n"
-            "• tweetButton - Опубликовать\n"
-            "• reply - Ответить\n"
-            "• retweet - Репост\n"
-            "• like - Нравится\n"
-            "• bookmark - Закладка"
-        )
-        return
-    
-    testid = context.args[0]
-    msg = await update.message.reply_text(f"⏳ Ищу кнопку {testid}...")
-    
-    try:
-        browser = await get_browser()
-        page = browser['page']
-        
-        joystick = JoystickController(page)
-        await joystick.init_position()
-        
-        selector = f'[data-testid="{testid}"]'
-        success = await joystick.move_to_element(selector)
-        
-        if not success:
-            await msg.edit_text(f"❌ Кнопка {testid} не найдена")
-            return
-        
-        await joystick.click()
-        await asyncio.sleep(1)
-        
-        screenshot = await page.screenshot(
-            full_page=False,
-            type='jpeg',
-            quality=80
-        )
-        
-        await msg.edit_text(f"✅ Нажал на {testid}")
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption=f"📸 После клика на {testid}"
-        )
-        
-    except Exception as e:
-        error_msg = f"Ошибка в click_button: {str(e)}"
-        log_error(error_msg, traceback.format_exc())
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
 # ========== ЗАПУСК ==========
 
 def main():
@@ -1249,6 +1453,9 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("go", go))
     app.add_handler(CommandHandler("xlogin", xlogin))
+    app.add_handler(CommandHandler("explore", explore))
+    app.add_handler(CommandHandler("findbuttons", findbuttons))
+    app.add_handler(CommandHandler("click", click_button))
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("stats", stats))
@@ -1260,13 +1467,11 @@ def main():
     app.add_handler(CommandHandler("joystick", joystick_test))
     app.add_handler(CommandHandler("joystick_ai", joystick_ai))
     app.add_handler(CommandHandler("find", find_elements))
-    app.add_handler(CommandHandler("findbuttons", findbuttons))
-    app.add_handler(CommandHandler("click", click_button))
     
     print("🤖 Бот с джойстиком запущен...")
     print("📌 Доступные команды:")
-    print("   Основные: /start, /go, /xlogin, /screen, /status, /check, /close")
-    print("   Джойстик: /joystick, /joystick_ai, /find, /findbuttons, /click")
+    print("   Основные: /start, /go, /xlogin, /explore, /findbuttons, /click, /screen, /status, /stats, /check, /logs, /close")
+    print("   Джойстик: /joystick, /joystick_ai, /find")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
