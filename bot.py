@@ -1,27 +1,23 @@
-# bot.py - X.com бот с Phantomwright
+# bot.py - X.com бот (авторизация + статус)
 import os
 import sys
 import subprocess
 import logging
-import traceback
 import asyncio
-import math
-import random
 from datetime import datetime
-from typing import Tuple, Optional, List, Dict, Any
-from dataclasses import dataclass
+from typing import Optional
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# ========== ПРОВЕРКА И УСТАНОВКА PHANTOMWRIGHT ==========
+# ========== ПРОВЕРКА PHANTOMWRIGHT ==========
 try:
-    from phantomwright_driver.async_api import Page, async_playwright
+    from phantomwright_driver.async_api import async_playwright
     PHANTOMWRIGHT_AVAILABLE = True
     print("✅ Phantomwright загружен")
 except ImportError:
     PHANTOMWRIGHT_AVAILABLE = False
     print("⚠️ Phantomwright не найден, использую Playwright")
-    from playwright.async_api import Page, async_playwright
+    from playwright.async_api import async_playwright
 
 # ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
 logging.basicConfig(
@@ -60,135 +56,51 @@ COOKIES = [
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 browser_data = None
-error_logs = []
-MAX_LOGS = 50
 browser_lock = False
+login_status = {
+    'is_logged_in': False,
+    'username': None,
+    'last_check': None,
+    'cookies_valid': False
+}
 
 # ========== УСТАНОВКА БРАУЗЕРА ==========
 def get_chromium_path() -> Optional[str]:
-    """Находит путь к Chromium"""
     base_dir = PLAYWRIGHT_DIR
-    
     if not os.path.exists(base_dir):
         return None
-    
     for item in os.listdir(base_dir):
         if item.startswith("chromium-") and "headless" not in item:
             chrome_path = os.path.join(base_dir, item, "chrome-linux", "chrome")
             if os.path.exists(chrome_path):
                 return chrome_path
-    
     return None
 
 def install_browser():
-    """Устанавливает браузер"""
-    # Проверяем, установлен ли уже
     if get_chromium_path():
         print("✅ Браузер уже установлен")
         return True
     
     print("⏳ Устанавливаю браузер...")
     
-    # Пробуем через Phantomwright
     if PHANTOMWRIGHT_AVAILABLE:
         try:
-            subprocess.run(
-                [sys.executable, "-m", "phantomwright_driver", "install", "chromium"],
-                check=True,
-                capture_output=True
-            )
+            subprocess.run([sys.executable, "-m", "phantomwright_driver", "install", "chromium"], check=True)
             print("✅ Браузер установлен через Phantomwright")
             return True
         except Exception as e:
             print(f"⚠️ Ошибка Phantomwright: {e}")
     
-    # Fallback на Playwright
     try:
-        subprocess.run(
-            [sys.executable, "-m", "playwright", "install", "chromium"],
-            check=True,
-            capture_output=True
-        )
-        subprocess.run(
-            [sys.executable, "-m", "playwright", "install-deps"],
-            check=True,
-            capture_output=True
-        )
+        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+        subprocess.run([sys.executable, "-m", "playwright", "install-deps"], check=True)
         print("✅ Браузер установлен через Playwright")
         return True
     except Exception as e:
         print(f"❌ Ошибка установки: {e}")
         return False
 
-# Устанавливаем браузер при запуске
 install_browser()
-
-# ========== ДЖОЙСТИК ==========
-@dataclass
-class JoystickState:
-    x: float = 0.0
-    y: float = 0.0
-    speed: float = 1.0
-    smoothness: float = 0.3
-
-class JoystickController:
-    def __init__(self, page: Page):
-        self.page = page
-        self.state = JoystickState()
-        self.current_pos = (0, 0)
-        self.viewport_width = 1280
-        self.viewport_height = 720
-        
-    async def init_position(self) -> Tuple[int, int]:
-        try:
-            viewport = await self.page.viewport_size()
-            if viewport:
-                self.viewport_width = viewport['width']
-                self.viewport_height = viewport['height']
-                center_x = viewport['width'] // 2
-                center_y = viewport['height'] // 2
-                await self.page.mouse.move(center_x, center_y)
-                self.current_pos = (center_x, center_y)
-                return center_x, center_y
-        except Exception as e:
-            logger.error(f"Init position error: {e}")
-        return 0, 0
-    
-    async def human_like_move(self, target_x: int, target_y: int, speed: float = 1.0) -> None:
-        cx, cy = self.current_pos
-        distance = math.sqrt((target_x - cx)**2 + (target_y - cy)**2)
-        
-        if distance < 10:
-            await self.page.mouse.move(target_x, target_y)
-            self.current_pos = (target_x, target_y)
-            return
-        
-        duration = min(2.0, distance / (800 * speed)) + random.uniform(0.1, 0.3)
-        steps = max(1, int(duration * 60))
-        
-        for i in range(steps):
-            progress = (i + 1) / steps
-            human_progress = 1 - math.pow(1 - progress, 2.5)
-            noise_x = random.uniform(-5, 5) * (1 - progress)
-            noise_y = random.uniform(-5, 5) * (1 - progress)
-            
-            cur_x = cx + (target_x - cx) * human_progress + noise_x
-            cur_y = cy + (target_y - cy) * human_progress + noise_y
-            cur_x = max(0, min(self.viewport_width, cur_x))
-            cur_y = max(0, min(self.viewport_height, cur_y))
-            
-            await self.page.mouse.move(cur_x, cur_y)
-            self.current_pos = (cur_x, cur_y)
-            
-            if i < steps - 1:
-                await asyncio.sleep(duration / steps)
-    
-    async def click(self, button: str = 'left', delay: float = 0.1) -> None:
-        await asyncio.sleep(delay)
-        await self.page.mouse.click(*self.current_pos, button=button)
-    
-    async def scroll(self, delta_y: int = 0) -> None:
-        await self.page.mouse.wheel(0, delta_y)
 
 # ========== УПРАВЛЕНИЕ БРАУЗЕРОМ ==========
 async def get_browser():
@@ -213,16 +125,11 @@ async def get_browser():
     try:
         p = await async_playwright().start()
         
-        # Находим путь к браузеру
         chromium_path = get_chromium_path()
         if not chromium_path:
-            # Пробуем установить
             install_browser()
             chromium_path = get_chromium_path()
         
-        print(f"🔍 Использую браузер: {chromium_path}")
-        
-        # Запускаем браузер
         launch_args = {
             'headless': True,
             'args': [
@@ -235,7 +142,6 @@ async def get_browser():
                 '--headless=new',
             ]
         }
-        
         if chromium_path:
             launch_args['executable_path'] = chromium_path
         
@@ -250,45 +156,27 @@ async def get_browser():
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.9',
                 'DNT': '1',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-User': '?1',
-                'Cache-Control': 'max-age=0',
             }
         )
         page = await context.new_page()
         
-        # Маскировка
         await page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
             Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
             Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
             Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 4 });
-            
-            window.chrome = {
-                runtime: { connect: () => {}, sendMessage: () => {} },
-                app: { isInstalled: false },
-                webstore: {}
-            };
-            
+            window.chrome = { runtime: { connect: () => {}, sendMessage: () => {} }, app: { isInstalled: false } };
             Object.defineProperty(document, 'hidden', { get: () => false });
             Object.defineProperty(document, 'visibilityState', { get: () => 'visible' });
-            
-            if (window.console) {
-                console.log = function() {};
-                console.debug = function() {};
-                console.info = function() {};
-                console.warn = function() {};
-            }
         """)
         
         browser_data = {
             'playwright': p,
             'browser': browser,
             'context': context,
-            'page': page
+            'page': page,
+            'started_at': datetime.now()
         }
         
         logger.info("✅ Браузер запущен")
@@ -297,7 +185,7 @@ async def get_browser():
         browser_lock = False
 
 async def close_browser():
-    global browser_data
+    global browser_data, login_status
     if browser_data:
         try:
             await browser_data['browser'].close()
@@ -305,6 +193,12 @@ async def close_browser():
         except:
             pass
         browser_data = None
+        login_status = {
+            'is_logged_in': False,
+            'username': None,
+            'last_check': None,
+            'cookies_valid': False
+        }
 
 # ========== КОМАНДЫ ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -312,14 +206,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🐦 **X.com Bot**\n\n"
         "📌 **Команды:**\n"
         "/login — авторизация в X.com\n"
-        "/tweet <номер> — показать пост\n"
-        "/last — последний пост\n"
-        "/tweets — список постов\n"
-        "/like <номер> — лайкнуть пост\n"
-        "/search <запрос> — поиск постов\n"
-        "/user <ник> — перейти к пользователю\n"
         "/screen — скриншот\n"
-        "/status — статус браузера\n"
+        "/status — статус браузера и авторизации\n"
         "/close — закрыть браузер"
     )
 
@@ -349,297 +237,77 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await msg.edit_text("🔄 Загружаю X.com...")
         await page.goto('https://x.com', wait_until='domcontentloaded', timeout=30000)
-        await page.wait_for_timeout(5000)
         
-        cookies = await browser['context'].cookies()
-        auth_token = next((c for c in cookies if c.get('name') == 'auth_token'), None)
-        ct0 = next((c for c in cookies if c.get('name') == 'ct0'), None)
+        # Ждем загрузки
+        try:
+            await page.wait_for_selector('[data-testid="primaryColumn"]', timeout=15000)
+        except:
+            await page.wait_for_timeout(5000)
         
-        status_msg = f"✅ X.com\n\n🍪 auth_token: {'✅' if auth_token else '❌'}\n🍪 ct0: {'✅' if ct0 else '❌'}\n"
+        await page.wait_for_timeout(3000)
         
-        tweet_btn = await page.query_selector('[data-testid="tweetButton"]')
-        if tweet_btn:
-            status_msg += "\n✅ **ВЫ АВТОРИЗОВАНЫ!**"
+        # Проверка авторизации через JS
+        auth_status = await page.evaluate('''
+            () => {
+                const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]');
+                const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
+                const hasHomeLink = !!document.querySelector('[data-testid="AppTabBar_Home_Link"]');
+                const hasSideNav = !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
+                const hasLoginForm = !!document.querySelector('[data-testid="loginForm"]');
+                const hasPrimaryColumn = !!document.querySelector('[data-testid="primaryColumn"]');
+                
+                const cookies = document.cookie.split(';').reduce((acc, c) => {
+                    const [key, val] = c.trim().split('=');
+                    acc[key] = val;
+                    return acc;
+                }, {});
+                
+                return {
+                    hasTweetBtn,
+                    hasProfileLink,
+                    hasHomeLink,
+                    hasSideNav,
+                    hasLoginForm,
+                    hasPrimaryColumn,
+                    hasAuthToken: !!cookies.auth_token,
+                    hasCt0: !!cookies.ct0,
+                    isLoggedIn: hasTweetBtn || hasProfileLink || hasHomeLink || hasSideNav
+                };
+            }
+        ''')
+        
+        # Обновляем глобальный статус
+        global login_status
+        login_status['is_logged_in'] = auth_status['isLoggedIn']
+        login_status['last_check'] = datetime.now()
+        login_status['cookies_valid'] = auth_status['hasAuthToken'] and auth_status['hasCt0']
+        
+        # Формируем ответ
+        status_msg = f"✅ X.com\n\n"
+        status_msg += f"🍪 auth_token: {'✅' if auth_status['hasAuthToken'] else '❌'}\n"
+        status_msg += f"🍪 ct0: {'✅' if auth_status['hasCt0'] else '❌'}\n\n"
+        
+        if auth_status['isLoggedIn']:
+            status_msg += "✅ **ВЫ АВТОРИЗОВАНЫ!**\n"
+            if auth_status['hasTweetBtn']:
+                status_msg += "   • Кнопка Tweet: ✅\n"
+            if auth_status['hasProfileLink']:
+                status_msg += "   • Профиль: ✅\n"
+            if auth_status['hasHomeLink']:
+                status_msg += "   • Домой: ✅\n"
+        elif auth_status['hasLoginForm']:
+            status_msg += "❌ **НЕ АВТОРИЗОВАН** (форма входа)\n"
         else:
-            status_msg += "\n❌ **НЕ АВТОРИЗОВАН**"
+            status_msg += "⚠️ **НЕ ОПРЕДЕЛЕНО**\n"
         
         await msg.edit_text(status_msg)
         
+        # Скриншот
         screenshot = await page.screenshot(type='jpeg', quality=80)
-        await update.message.reply_photo(photo=screenshot, caption="📸 X.com")
-        
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Укажи номер: /tweet 1")
-        return
-    
-    try:
-        num = int(context.args[0]) - 1
-        if num < 0:
-            num = 0
-    except:
-        await update.message.reply_text("❌ Укажи число")
-        return
-    
-    msg = await update.message.reply_text(f"🔍 Ищу пост #{num + 1}...")
-    
-    try:
-        browser = await get_browser()
-        page = browser['page']
-        
-        # Ждем загрузки постов
-        try:
-            await page.wait_for_selector('[data-testid="tweet"]', timeout=15000)
-        except:
-            await msg.edit_text("❌ Посты не загрузились. Попробуй /login сначала")
-            return
-        
-        posts = await page.evaluate('''
-            () => {
-                const result = [];
-                document.querySelectorAll('[data-testid="tweet"]').forEach(el => {
-                    const text = el.textContent?.trim() || '';
-                    const rect = el.getBoundingClientRect();
-                    const authorEl = el.querySelector('[data-testid="User-Name"]');
-                    const author = authorEl?.textContent?.trim() || 'Unknown';
-                    const likeEl = el.querySelector('[data-testid="like"]');
-                    const retweetEl = el.querySelector('[data-testid="retweet"]');
-                    const replyEl = el.querySelector('[data-testid="reply"]');
-                    const timeEl = el.querySelector('time');
-                    
-                    result.push({
-                        text: text,
-                        author: author,
-                        likes: likeEl?.textContent?.trim() || '0',
-                        retweets: retweetEl?.textContent?.trim() || '0',
-                        replies: replyEl?.textContent?.trim() || '0',
-                        time: timeEl?.getAttribute('datetime') || '',
-                        x: rect.x + rect.width / 2,
-                        y: rect.y + rect.height / 2,
-                        width: rect.width,
-                        height: rect.height
-                    });
-                });
-                return result;
-            }
-        ''')
-        
-        if not posts:
-            await msg.edit_text("❌ Посты не найдены")
-            return
-        
-        if num >= len(posts):
-            await msg.edit_text(f"❌ Пост #{num + 1} не найден. Всего: {len(posts)}")
-            return
-        
-        posts_reversed = list(reversed(posts))
-        post = posts_reversed[num]
-        
-        # Двигаемся к посту
-        joystick = JoystickController(page)
-        await joystick.init_position()
-        await joystick.human_like_move(post['x'], post['y'])
-        
-        result = f"📌 **#{num + 1}** @{post['author']}\n\n"
-        result += f"{post['text'][:500]}\n\n"
-        result += f"❤️ {post['likes']}  🔁 {post['retweets']}  💬 {post['replies']}\n"
-        
-        if post['time']:
-            try:
-                dt = datetime.fromisoformat(post['time'].replace('Z', '+00:00'))
-                result += f"🕐 {dt.strftime('%d %b %Y, %H:%M')}"
-            except:
-                pass
-        
-        await msg.edit_text(result)
-        
-        # Скриншот поста
-        viewport = await page.viewport_size()
-        if viewport:
-            clip = {
-                'x': max(0, post['x'] - post['width']/2 - 20),
-                'y': max(0, post['y'] - post['height']/2 - 20),
-                'width': min(post['width'] + 40, viewport['width']),
-                'height': min(post['height'] + 40, viewport['height'])
-            }
-            try:
-                screenshot = await page.screenshot(clip=clip, type='jpeg', quality=85)
-                await update.message.reply_photo(photo=screenshot, caption=f"📸 Пост #{num + 1}")
-            except:
-                pass
-        
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def last_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.args = ['1']
-    await get_tweet(update, context)
-
-async def list_tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("🔍 Ищу посты...")
-    
-    try:
-        browser = await get_browser()
-        page = browser['page']
-        
-        await msg.edit_text("📜 Скроллю вниз...")
-        for _ in range(3):
-            await page.evaluate('window.scrollBy(0, 800)')
-            await asyncio.sleep(0.8)
-        
-        posts = await page.evaluate('''
-            () => {
-                const result = [];
-                document.querySelectorAll('[data-testid="tweet"]').forEach((el, i) => {
-                    const text = el.textContent?.trim() || '';
-                    const authorEl = el.querySelector('[data-testid="User-Name"]');
-                    const author = authorEl?.textContent?.trim()?.replace(/·/g, '').trim() || 'Unknown';
-                    const likeEl = el.querySelector('[data-testid="like"]');
-                    const retweetEl = el.querySelector('[data-testid="retweet"]');
-                    
-                    result.push({
-                        index: i + 1,
-                        author: author,
-                        preview: text.split('\\n').filter(l => l.trim()).join(' ').slice(0, 120),
-                        likes: likeEl?.textContent?.trim() || '0',
-                        retweets: retweetEl?.textContent?.trim() || '0'
-                    });
-                });
-                return result;
-            }
-        ''')
-        
-        if not posts:
-            await msg.edit_text("❌ Посты не найдены")
-            return
-        
-        result = f"📋 **НАЙДЕНО {len(posts)} ПОСТОВ**\n\n"
-        for post in posts[:10]:
-            result += f"**#{post['index']}** @{post['author']}\n   {post['preview']}\n   ❤️ {post['likes']}  🔁 {post['retweets']}\n\n"
-        
-        if len(posts) > 10:
-            result += f"... и еще {len(posts) - 10} постов"
-        
-        await msg.edit_text(result)
-        
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def like_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Укажи номер: /like 1")
-        return
-    
-    try:
-        num = int(context.args[0]) - 1
-    except:
-        await update.message.reply_text("❌ Укажи число")
-        return
-    
-    msg = await update.message.reply_text(f"❤️ Ищу пост #{num + 1}...")
-    
-    try:
-        browser = await get_browser()
-        page = browser['page']
-        
-        posts = await page.query_selector_all('[data-testid="tweet"]')
-        if not posts or num >= len(posts):
-            await msg.edit_text("❌ Пост не найден")
-            return
-        
-        post = posts[len(posts) - 1 - num]
-        like_btn = await post.query_selector('[data-testid="like"]')
-        
-        if not like_btn:
-            await msg.edit_text("❌ Кнопка Like не найдена")
-            return
-        
-        joystick = JoystickController(page)
-        await joystick.init_position()
-        
-        box = await like_btn.bounding_box()
-        await joystick.human_like_move(box['x'] + box['width']/2, box['y'] + box['height']/2)
-        await joystick.click()
-        
-        await msg.edit_text(f"❤️ Лайкнут пост #{num + 1}!")
-        
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def search_tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Что ищем? /search текст")
-        return
-    
-    query = ' '.join(context.args)
-    msg = await update.message.reply_text(f"🔍 Ищу: {query}...")
-    
-    try:
-        browser = await get_browser()
-        page = browser['page']
-        
-        # Скроллим для загрузки
-        for _ in range(3):
-            await page.evaluate('window.scrollBy(0, 600)')
-            await asyncio.sleep(0.5)
-        
-        posts = await page.evaluate(f'''
-            () => {{
-                const query = '{query.lower()}';
-                const result = [];
-                document.querySelectorAll('[data-testid="tweet"]').forEach((el, i) => {{
-                    const text = el.textContent?.trim() || '';
-                    if (text.toLowerCase().includes(query)) {{
-                        const authorEl = el.querySelector('[data-testid="User-Name"]');
-                        const author = authorEl?.textContent?.trim()?.replace(/·/g, '').trim() || 'Unknown';
-                        result.push({{
-                            index: i + 1,
-                            author: author,
-                            preview: text.split('\\n').filter(l => l.trim()).join(' ').slice(0, 200)
-                        }});
-                    }}
-                }});
-                return result;
-            }}
-        ''')
-        
-        if not posts:
-            await msg.edit_text(f"❌ Посты с '{query}' не найдены")
-            return
-        
-        result = f"🔍 **НАЙДЕНО {len(posts)} ПОСТОВ** по запросу: '{query}'\n\n"
-        for post in posts[:5]:
-            result += f"**#{post['index']}** @{post['author']}\n   {post['preview']}\n\n"
-        
-        if len(posts) > 5:
-            result += f"... и еще {len(posts) - 5} постов"
-        
-        await msg.edit_text(result)
-        
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def go_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Укажи ник: /user elonmusk")
-        return
-    
-    username = context.args[0].replace('@', '')
-    msg = await update.message.reply_text(f"👤 Перехожу к @{username}...")
-    
-    try:
-        browser = await get_browser()
-        page = browser['page']
-        
-        await page.goto(f"https://x.com/{username}", wait_until='domcontentloaded', timeout=15000)
-        await asyncio.sleep(2)
-        
-        await msg.edit_text(f"✅ Перешел к @{username}")
-        screenshot = await page.screenshot(type='jpeg', quality=80)
-        await update.message.reply_photo(photo=screenshot, caption=f"👤 @{username}")
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption=f"📸 X.com - {'✅ Авторизован' if auth_status['isLoggedIn'] else '❌ Не авторизован'}"
+        )
         
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
@@ -653,25 +321,153 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         screenshot = await page.screenshot(type='jpeg', quality=80)
         await msg.delete()
-        await update.message.reply_photo(photo=screenshot, caption="📸 Скриншот")
+        
+        # Получаем информацию о странице
+        url = page.url
+        title = await page.title()
+        
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption=f"📸 {title[:40] if title else 'X.com'}\n🔗 {url[:50]}"
+        )
         
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:100]}")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Улучшенный статус с полной информацией"""
+    
+    msg = await update.message.reply_text("⏳ Проверяю статус...")
+    
     try:
-        browser = await get_browser()
-        page = browser['page']
-        url = page.url
-        title = await page.title()
+        # Проверяем браузер
+        browser_ok = False
+        browser_info = {}
         
-        await update.message.reply_text(
-            f"✅ Браузер работает!\n"
-            f"📌 {title[:40] if title else 'Нет заголовка'}\n"
-            f"🔗 {url[:60]}"
-        )
+        if browser_data:
+            try:
+                page = browser_data['page']
+                await page.evaluate('1')  # Проверка что страница жива
+                browser_ok = True
+                
+                # Собираем информацию
+                url = page.url
+                title = await page.title()
+                started_at = browser_data.get('started_at')
+                uptime = (datetime.now() - started_at).total_seconds() if started_at else 0
+                
+                # Проверяем авторизацию через JS
+                auth_check = await page.evaluate('''
+                    () => {
+                        const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]');
+                        const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
+                        const hasHomeLink = !!document.querySelector('[data-testid="AppTabBar_Home_Link"]');
+                        const hasSideNav = !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
+                        const hasLoginForm = !!document.querySelector('[data-testid="loginForm"]');
+                        const hasPrimaryColumn = !!document.querySelector('[data-testid="primaryColumn"]');
+                        
+                        const cookies = document.cookie.split(';').reduce((acc, c) => {
+                            const [key, val] = c.trim().split('=');
+                            acc[key] = val;
+                            return acc;
+                        }, {});
+                        
+                        // Пытаемся получить имя пользователя
+                        let username = null;
+                        const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
+                        if (profileLink) {
+                            const href = profileLink.getAttribute('href');
+                            if (href) {
+                                const match = href.match(/^\\/([^\\/]+)/);
+                                if (match) username = match[1];
+                            }
+                        }
+                        
+                        return {
+                            hasTweetBtn,
+                            hasProfileLink,
+                            hasHomeLink,
+                            hasSideNav,
+                            hasLoginForm,
+                            hasPrimaryColumn,
+                            hasAuthToken: !!cookies.auth_token,
+                            hasCt0: !!cookies.ct0,
+                            username: username,
+                            isLoggedIn: hasTweetBtn || hasProfileLink || hasHomeLink || hasSideNav
+                        };
+                    }
+                ''')
+                
+                browser_info = {
+                    'url': url,
+                    'title': title[:60] if title else 'Нет',
+                    'uptime': uptime,
+                    'auth': auth_check
+                }
+                
+            except Exception as e:
+                browser_ok = False
+                browser_info['error'] = str(e)[:50]
+        else:
+            browser_info = {'error': 'Браузер не запущен'}
+        
+        # Формируем статус
+        status_msg = "📊 **СТАТУС БОТА**\n\n"
+        
+        # Браузер
+        if browser_ok:
+            status_msg += "🌐 **Браузер:** ✅ Запущен\n"
+            if browser_info.get('uptime'):
+                hours = int(browser_info['uptime'] // 3600)
+                minutes = int((browser_info['uptime'] % 3600) // 60)
+                status_msg += f"⏱️ Аптайм: {hours}ч {minutes}м\n"
+        else:
+            status_msg += "🌐 **Браузер:** ❌ Не запущен\n"
+        
+        # Страница
+        if browser_ok and browser_info.get('url'):
+            status_msg += f"🔗 URL: {browser_info['url'][:60]}\n"
+            status_msg += f"📌 Заголовок: {browser_info.get('title', 'Нет')}\n"
+        
+        # Авторизация
+        status_msg += "\n🔐 **АВТОРИЗАЦИЯ:**\n"
+        
+        if browser_ok and browser_info.get('auth'):
+            auth = browser_info['auth']
+            
+            status_msg += f"🍪 auth_token: {'✅' if auth.get('hasAuthToken') else '❌'}\n"
+            status_msg += f"🍪 ct0: {'✅' if auth.get('hasCt0') else '❌'}\n"
+            
+            if auth.get('isLoggedIn'):
+                status_msg += "\n✅ **ВЫ АВТОРИЗОВАНЫ**\n"
+                if auth.get('username'):
+                    status_msg += f"👤 @{auth['username']}\n"
+                if auth.get('hasTweetBtn'):
+                    status_msg += "   • Кнопка Tweet: ✅\n"
+                if auth.get('hasProfileLink'):
+                    status_msg += "   • Профиль: ✅\n"
+                if auth.get('hasHomeLink'):
+                    status_msg += "   • Домой: ✅\n"
+            elif auth.get('hasLoginForm'):
+                status_msg += "\n❌ **НЕ АВТОРИЗОВАН** (форма входа)\n"
+            else:
+                status_msg += "\n⚠️ **НЕ ОПРЕДЕЛЕНО**\n"
+        else:
+            status_msg += "❌ Нет данных (выполните /login)\n"
+        
+        # Системная информация
+        status_msg += f"\n🕐 Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
+        
+        # Информация о Phantomwright
+        status_msg += f"📦 Драйвер: {'Phantomwright' if PHANTOMWRIGHT_AVAILABLE else 'Playwright'}\n"
+        
+        # Куки
+        status_msg += f"🍪 Куки загружены: {len(COOKIES)} шт.\n"
+        
+        await msg.edit_text(status_msg)
+        
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
+        await msg.edit_text(f"❌ Ошибка при получении статуса: {str(e)[:200]}")
 
 async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Закрываю браузер...")
@@ -684,17 +480,12 @@ def main():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("login", login))
-    app.add_handler(CommandHandler("tweet", get_tweet))
-    app.add_handler(CommandHandler("last", last_tweet))
-    app.add_handler(CommandHandler("tweets", list_tweets))
-    app.add_handler(CommandHandler("like", like_tweet))
-    app.add_handler(CommandHandler("search", search_tweets))
-    app.add_handler(CommandHandler("user", go_to_user))
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("close", close))
     
     print("🐦 X.com Bot запущен!")
+    print("📌 Команды: /login, /screen, /status, /close")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
