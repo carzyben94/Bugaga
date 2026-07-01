@@ -184,7 +184,7 @@ provider:
             return False
     
     async def execute_command(self, command: str, progress_callback=None) -> str:
-        """Выполняет команду через goose run с передачей кук"""
+        """Выполняет команду через goose run с принудительным подключением Playwright"""
         if not self.initialized:
             success = await self.initialize()
             if not success:
@@ -210,10 +210,10 @@ provider:
             await progress_callback(f"🤖 Отправляю команду в Agnes AI: {command[:50]}...")
         
         try:
-            # Формируем строку кук для передачи в браузер
+            # Формируем строку кук
             cookies_str = "; ".join([f"{c['name']}={c['value']}" for c in COOKIES])
             
-            # Проверяем, установлен ли Chrome
+            # Проверяем Chrome
             if progress_callback:
                 await progress_callback("🔍 Проверяю наличие Chrome...")
             
@@ -227,14 +227,12 @@ provider:
             if chrome_check.returncode != 0:
                 if progress_callback:
                     await progress_callback("⚠️ Chrome не найден. Устанавливаю...")
-                
                 install = await asyncio.create_subprocess_exec(
                     sys.executable, "-m", "playwright", "install", "chrome",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE
                 )
                 await install.communicate()
-                
                 if install.returncode != 0:
                     if progress_callback:
                         await progress_callback("🔄 Пробую Chromium...")
@@ -258,31 +256,24 @@ provider:
             if progress_callback:
                 await progress_callback("🔄 Запускаю Goose с Playwright MCP...")
             
-            # Если есть WebSocket URL — подключаемся к существующему браузеру
-            # Если нет — передаём куки в новый браузер
-            if browser_ws_url:
-                if progress_callback:
-                    await progress_callback(f"🔗 Подключаюсь к браузеру (WebSocket)...")
-                process = await asyncio.create_subprocess_exec(
-                    "goose", "run",
-                    "--with-extension", f"npx -y @playwright/mcp@latest --browser-url {browser_ws_url}",
-                    "-t", full_command,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=env
-                )
-            else:
-                if progress_callback:
-                    await progress_callback("🆕 Запускаю новый браузер с куками...")
-                # Передаём куки через аргументы Playwright MCP
-                process = await asyncio.create_subprocess_exec(
-                    "goose", "run",
-                    "--with-extension", f"npx -y @playwright/mcp@latest --cookies '{cookies_str}'",
-                    "-t", full_command,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=env
-                )
+            # ПРИНУДИТЕЛЬНО подключаем расширение Playwright
+            extension_cmd = "npx -y @playwright/mcp@latest"
+            
+            # Добавляем куки, если нет WebSocket
+            if not browser_ws_url:
+                extension_cmd += f" --cookies '{cookies_str}'"
+            
+            if progress_callback:
+                await progress_callback(f"🔧 Расширение: {extension_cmd[:60]}...")
+            
+            process = await asyncio.create_subprocess_exec(
+                "goose", "run",
+                "--with-extension", extension_cmd,
+                "-t", full_command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env
+            )
             
             if progress_callback:
                 await progress_callback("⏳ Выполняю команду (до 120 сек)...")
@@ -298,7 +289,7 @@ provider:
                 error = stderr.decode() if stderr else "Неизвестная ошибка"
                 logger.error(f"Goose ошибка: {error}")
                 if progress_callback:
-                    await progress_callback(f"❌ Ошибка выполнения: {error[:100]}...")
+                    await progress_callback(f"❌ Ошибка: {error[:100]}...")
                 return f"❌ Ошибка Goose: {error[:200]}"
                 
         except asyncio.TimeoutError:
@@ -306,9 +297,9 @@ provider:
                 await progress_callback("⏰ Таймаут 120 сек!")
             return "❌ Таймаут выполнения команды (120 сек)"
         except Exception as e:
-            logger.error(f"Ошибка выполнения: {e}")
+            logger.error(f"Ошибка: {e}")
             if progress_callback:
-                await progress_callback(f"❌ Критическая ошибка: {str(e)[:100]}...")
+                await progress_callback(f"❌ Ошибка: {str(e)[:100]}...")
             return f"❌ Ошибка: {str(e)[:200]}"
     
     async def close(self):
