@@ -1,11 +1,12 @@
-# bot.py - X.com бот (ИСПРАВЛЕННАЯ ВЕРСИЯ)
+# explorer.py - Агент-исследователь X.com
 import os
 import sys
 import subprocess
 import logging
 import asyncio
+import json
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, List, Any
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -13,7 +14,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.FileHandler('bot.log'), logging.StreamHandler()]
+    handlers=[logging.FileHandler('explorer.log'), logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
 
@@ -53,11 +54,12 @@ COOKIES = [
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 browser_data = None
 browser_lock = False
-login_status = {
-    'is_logged_in': False,
-    'username': None,
-    'last_check': None,
-    'cookies_valid': False
+exploration_results = {
+    'pages': {},
+    'total_elements': 0,
+    'clicked_elements': 0,
+    'errors': [],
+    'logs': []
 }
 
 # ========== УСТАНОВКА БРАУЗЕРА ==========
@@ -127,7 +129,7 @@ async def get_browser():
             chromium_path = get_chromium_path()
         
         launch_args = {
-            'headless': True,
+            'headless': False,  # Включаем видимый режим для отладки
             'args': [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -135,7 +137,6 @@ async def get_browser():
                 '--disable-dev-shm-usage',
                 '--disable-gpu',
                 '--window-size=1280,720',
-                '--headless=new',
             ]
         }
         if chromium_path:
@@ -148,11 +149,6 @@ async def get_browser():
             viewport={'width': 1280, 'height': 720},
             locale='en-US',
             timezone_id='America/New_York',
-            extra_http_headers={
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'DNT': '1',
-            }
         )
         page = await context.new_page()
         
@@ -163,8 +159,6 @@ async def get_browser():
             Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
             Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 4 });
             window.chrome = { runtime: { connect: () => {}, sendMessage: () => {} }, app: { isInstalled: false } };
-            Object.defineProperty(document, 'hidden', { get: () => false });
-            Object.defineProperty(document, 'visibilityState', { get: () => 'visible' });
         """)
         
         browser_data = {
@@ -181,7 +175,7 @@ async def get_browser():
         browser_lock = False
 
 async def close_browser():
-    global browser_data, login_status
+    global browser_data
     if browser_data:
         try:
             await browser_data['browser'].close()
@@ -189,66 +183,230 @@ async def close_browser():
         except:
             pass
         browser_data = None
-        login_status = {
-            'is_logged_in': False,
-            'username': None,
-            'last_check': None,
-            'cookies_valid': False
-        }
 
-# ========== ДЕКОРАТОР ДЛЯ ПРОВЕРКИ АВТОРИЗАЦИИ ==========
-def require_auth(func):
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-        if not login_status.get('is_logged_in', False):
-            await update.message.reply_text(
-                "❌ Вы не авторизованы в X.com!\n\n"
-                "Сначала выполните команду:\n"
-                "/login — авторизация в X.com\n\n"
-                "После успешного входа повторите команду."
-            )
-            return
-        
-        if not browser_data:
-            await update.message.reply_text(
-                "⚠️ Браузер не активен.\n"
-                "Выполните /login заново."
-            )
-            return
+# ========== АГЕНТ-ИССЛЕДОВАТЕЛЬ ==========
+class XExplorer:
+    def __init__(self, page):
+        self.page = page
+        self.results = {
+            'elements': [],
+            'clicked': [],
+            'errors': [],
+            'screenshots': [],
+            'logs': []
+        }
+        self.log("🔍 Агент-исследователь запущен")
+    
+    def log(self, message):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        log_entry = f"[{timestamp}] {message}"
+        self.results['logs'].append(log_entry)
+        logger.info(log_entry)
+        return log_entry
+    
+    async def scan_page(self, url: str, name: str = "unknown"):
+        """Сканирует страницу и находит все интерактивные элементы"""
+        self.log(f"📄 Сканирую страницу: {url}")
         
         try:
-            page = browser_data['page']
-            await page.evaluate('1')
-        except Exception:
-            await update.message.reply_text(
-                "⚠️ Сессия истекла.\n"
-                "Выполните /login заново."
-            )
-            return
-        
-        return await func(update, context, *args, **kwargs)
+            await self.page.goto(url, wait_until='domcontentloaded', timeout=30000)
+            await self.page.wait_for_timeout(3000)
+            
+            # Делаем скриншот до сканирования
+            screenshot = await self.page.screenshot(type='jpeg', quality=70)
+            self.results['screenshots'].append({
+                'stage': 'before_scan',
+                'data': screenshot
+            })
+            
+            # Собираем все элементы
+            elements = await self.page.evaluate('''
+                () => {
+                    const elements = [];
+                    const selectors = [
+                        'button',
+                        'a[href]',
+                        'input',
+                        'textarea',
+                        'select',
+                        '[role="button"]',
+                        '[role="link"]',
+                        '[role="tab"]',
+                        '[role="menuitem"]',
+                        '[data-testid]',
+                        '[aria-label]',
+                        '[aria-haspopup="menu"]'
+                    ];
+                    
+                    const allElements = document.querySelectorAll(selectors.join(','));
+                    
+                    for (const el of allElements) {
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width === 0 || rect.height === 0) continue;
+                        if (el.offsetParent === null) continue;
+                        
+                        const data = {
+                            tag: el.tagName.toLowerCase(),
+                            type: el.type || '',
+                            text: (el.textContent || '').trim().slice(0, 100),
+                            aria: el.getAttribute('aria-label') || '',
+                            testid: el.getAttribute('data-testid') || '',
+                            role: el.getAttribute('role') || '',
+                            href: el.getAttribute('href') || '',
+                            id: el.id || '',
+                            class: el.className || '',
+                            visible: true,
+                            x: Math.round(rect.x),
+                            y: Math.round(rect.y),
+                            width: Math.round(rect.width),
+                            height: Math.round(rect.height),
+                            disabled: el.disabled || false,
+                            readonly: el.readOnly || false
+                        };
+                        
+                        if (data.text || data.aria || data.testid || data.role) {
+                            elements.push(data);
+                        }
+                    }
+                    
+                    return elements;
+                }
+            ''')
+            
+            self.log(f"🔍 Найдено {len(elements)} интерактивных элементов")
+            self.results['elements'] = elements
+            
+            # Сохраняем в файл
+            with open(f'scan_{name}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json', 'w', encoding='utf-8') as f:
+                json.dump({
+                    'url': url,
+                    'name': name,
+                    'timestamp': datetime.now().isoformat(),
+                    'total': len(elements),
+                    'elements': elements
+                }, f, ensure_ascii=False, indent=2)
+            
+            return elements
+            
+        except Exception as e:
+            self.log(f"❌ Ошибка сканирования: {str(e)}")
+            self.results['errors'].append(str(e))
+            return []
     
-    return wrapper
+    async def click_elements(self, elements: List[Dict], max_clicks: int = 20):
+        """Кликает по найденным элементам и логирует результат"""
+        self.log(f"🖱️ Начинаю кликать по {min(len(elements), max_clicks)} элементам...")
+        
+        clicked = 0
+        for i, el_data in enumerate(elements[:max_clicks]):
+            try:
+                # Пропускаем опасные элементы
+                if el_data.get('disabled') or el_data.get('readonly'):
+                    continue
+                
+                # Пропускаем ссылки на внешние сайты
+                href = el_data.get('href', '')
+                if href and (href.startswith('http') and 'x.com' not in href):
+                    continue
+                
+                # Пропускаем элементы с большим текстом (обычно это не кнопки)
+                if len(el_data.get('text', '')) > 50 and not el_data.get('aria'):
+                    continue
+                
+                self.log(f"🔄 Клик #{i+1}: {el_data.get('text', 'без текста')} [{el_data.get('testid', '')}]")
+                
+                # Находим элемент на странице
+                selector = self._build_selector(el_data)
+                if not selector:
+                    continue
+                
+                try:
+                    element = await self.page.query_selector(selector)
+                    if element:
+                        await element.click(timeout=2000)
+                        await self.page.wait_for_timeout(500)
+                        clicked += 1
+                        self.results['clicked'].append({
+                            'element': el_data,
+                            'success': True,
+                            'timestamp': datetime.now().isoformat()
+                        })
+                        
+                        # Делаем скриншот после клика
+                        if clicked % 5 == 0:
+                            screenshot = await self.page.screenshot(type='jpeg', quality=70)
+                            self.results['screenshots'].append({
+                                'stage': f'after_click_{clicked}',
+                                'data': screenshot
+                            })
+                    else:
+                        self.log(f"⚠️ Элемент не найден на странице")
+                except Exception as e:
+                    self.log(f"⚠️ Клик не удался: {str(e)[:100]}")
+                    self.results['errors'].append({
+                        'element': el_data,
+                        'error': str(e)
+                    })
+                    
+            except Exception as e:
+                self.log(f"❌ Ошибка при клике: {str(e)}")
+                self.results['errors'].append(str(e))
+        
+        self.log(f"✅ Успешно кликнуто: {clicked} элементов")
+        return clicked
+    
+    def _build_selector(self, el_data: Dict) -> Optional[str]:
+        """Строит CSS-селектор для элемента"""
+        if el_data.get('testid'):
+            return f'[data-testid="{el_data["testid"]}"]'
+        if el_data.get('id'):
+            return f'#{el_data["id"]}'
+        if el_data.get('aria'):
+            return f'[aria-label="{el_data["aria"]}"]'
+        if el_data.get('text'):
+            text = el_data['text'][:30].replace('"', '\\"')
+            return f'*:has-text("{text}")'
+        return None
+    
+    def get_report(self) -> str:
+        """Формирует отчет"""
+        report = "📊 **Отчет агента-исследователя**\n\n"
+        report += f"🔍 Найдено элементов: {len(self.results['elements'])}\n"
+        report += f"🖱️ Кликнуто: {len(self.results['clicked'])}\n"
+        report += f"❌ Ошибок: {len(self.results['errors'])}\n"
+        report += f"📸 Скриншотов: {len(self.results['screenshots'])}\n\n"
+        
+        report += "📋 **Логи:**\n"
+        for log in self.results['logs'][-20:]:
+            report += f"• {log}\n"
+        
+        report += "\n📌 **Найденные элементы (первые 10):**\n"
+        for i, el in enumerate(self.results['elements'][:10]):
+            text = el.get('text', '') or el.get('aria', '') or el.get('testid', '')
+            report += f"  {i+1}. {el['tag']}"
+            if text:
+                report += f" - {text[:40]}"
+            if el.get('testid'):
+                report += f" [testid: {el['testid']}]"
+            report += "\n"
+        
+        return report
 
-# ========== КОМАНДЫ ==========
+# ========== КОМАНДЫ БОТА ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 X.com Бот\n\n"
-        "🔐 Авторизация:\n"
-        "/login — войти в X.com\n\n"
-        "📰 Лента:\n"
-        "/feed — показать посты\n"
-        "/post N — пост по номеру\n"
-        "/top — самый популярный\n"
-        "/stats N — статистика поста\n\n"
-        "📈 Тренды:\n"
-        "/trends — актуальные темы\n\n"
-        "👤 Профиль:\n"
-        "/me — мой профиль\n\n"
-        "🛠️ Система:\n"
+        "🤖 **X.com Агент-исследователь**\n\n"
+        "🔍 **Команды:**\n"
+        "/explore — запустить исследование\n"
+        "/explore_home — исследовать главную\n"
+        "/explore_explore — исследовать обзор\n"
+        "/explore_notifications — исследовать уведомления\n"
+        "/explore_all — исследовать все страницы\n"
+        "/report — показать отчет\n"
         "/status — статус бота\n"
-        "/screen — скриншот\n"
-        "/close — закрыть браузер"
+        "/close — закрыть браузер",
+        parse_mode='Markdown'
     )
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -285,678 +443,266 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await page.wait_for_timeout(3000)
         
-        auth_status = await page.evaluate('''
-            () => {
-                const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]');
-                const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
-                const hasHomeLink = !!document.querySelector('[data-testid="AppTabBar_Home_Link"]');
-                const hasSideNav = !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
-                const hasLoginForm = !!document.querySelector('[data-testid="loginForm"]');
-                const hasPrimaryColumn = !!document.querySelector('[data-testid="primaryColumn"]');
-                
-                const cookies = document.cookie.split(';').reduce((acc, c) => {
-                    const [key, val] = c.trim().split('=');
-                    acc[key] = val;
-                    return acc;
-                }, {});
-                
-                let username = null;
-                const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
-                if (profileLink) {
-                    const href = profileLink.getAttribute('href');
-                    if (href) {
-                        const match = href.match(/^\\/([^\\/]+)/);
-                        if (match) username = match[1];
-                    }
-                }
-                
-                return {
-                    hasTweetBtn,
-                    hasProfileLink,
-                    hasHomeLink,
-                    hasSideNav,
-                    hasLoginForm,
-                    hasPrimaryColumn,
-                    hasAuthToken: !!cookies.auth_token,
-                    hasCt0: !!cookies.ct0,
-                    username: username,
-                    isLoggedIn: hasTweetBtn || hasProfileLink || hasHomeLink || hasSideNav
-                };
-            }
-        ''')
-        
-        global login_status
-        login_status['is_logged_in'] = auth_status['isLoggedIn']
-        login_status['username'] = auth_status.get('username')
-        login_status['last_check'] = datetime.now()
-        login_status['cookies_valid'] = auth_status['hasAuthToken'] and auth_status['hasCt0']
-        
-        status_msg = f"✅ X.com\n\n"
-        status_msg += f"🍪 auth_token: {'✅' if auth_status['hasAuthToken'] else '❌'}\n"
-        status_msg += f"🍪 ct0: {'✅' if auth_status['hasCt0'] else '❌'}\n\n"
-        
-        if auth_status['isLoggedIn']:
-            status_msg += "✅ ВЫ АВТОРИЗОВАНЫ!\n"
-            if auth_status.get('username'):
-                status_msg += f"👤 @{auth_status['username']}\n"
-            if auth_status['hasTweetBtn']:
-                status_msg += "   • Кнопка Tweet: ✅\n"
-            if auth_status['hasProfileLink']:
-                status_msg += "   • Профиль: ✅\n"
-            if auth_status['hasHomeLink']:
-                status_msg += "   • Домой: ✅\n"
-        elif auth_status['hasLoginForm']:
-            status_msg += "❌ НЕ АВТОРИЗОВАН (форма входа)\n"
-        else:
-            status_msg += "⚠️ НЕ ОПРЕДЕЛЕНО\n"
-        
-        await msg.edit_text(status_msg)
-        
         screenshot = await page.screenshot(type='jpeg', quality=80)
+        await msg.edit_text("✅ Авторизация выполнена!")
         await update.message.reply_photo(
             photo=screenshot,
-            caption=f"📸 X.com - {'✅ Авторизован' if auth_status['isLoggedIn'] else '❌ Не авторизован'}"
+            caption="📸 Вы на главной странице X.com"
         )
         
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
-@require_auth
-async def feed(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("⏳ Загружаю ленту...")
+async def explore(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text("🔍 Запускаю агента-исследователя...")
     
     try:
         browser = await get_browser()
         page = browser['page']
         
+        explorer = XExplorer(page)
+        
+        # Сканируем текущую страницу
+        url = page.url
+        await explorer.scan_page(url, "current")
+        
+        # Кликаем по элементам
+        elements = explorer.results['elements']
+        await explorer.click_elements(elements, max_clicks=15)
+        
+        # Формируем отчет
+        report = explorer.get_report()
+        await msg.edit_text(report, parse_mode='Markdown')
+        
+        # Отправляем скриншоты
+        if explorer.results['screenshots']:
+            for s in explorer.results['screenshots'][:3]:
+                try:
+                    await update.message.reply_photo(
+                        photo=s['data'],
+                        caption=f"📸 {s['stage']}"
+                    )
+                except:
+                    pass
+        
+        # Сохраняем результаты
+        global exploration_results
+        exploration_results = explorer.results
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def explore_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text("🏠 Исследую главную страницу...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        explorer = XExplorer(page)
+        
+        # Переходим на главную
         await page.goto('https://x.com/home', wait_until='domcontentloaded', timeout=30000)
         await page.wait_for_timeout(3000)
         
-        posts = await page.evaluate('''
-            () => {
-                // Преобразуем NodeList в массив
-                const tweets = Array.from(document.querySelectorAll('[data-testid="tweet"]'));
-                const result = [];
-                
-                for (const tweet of tweets.slice(0, 5)) {
-                    const nameEl = tweet.querySelector('[data-testid="User-Name"]');
-                    const name = nameEl ? nameEl.textContent.trim() : 'Неизвестный';
-                    
-                    const textEl = tweet.querySelector('[data-testid="tweetText"]');
-                    const text = textEl ? textEl.textContent.trim().slice(0, 150) : '';
-                    
-                    const likeBtn = tweet.querySelector('[data-testid="like"]');
-                    let likes = '0';
-                    if (likeBtn) {
-                        const label = likeBtn.getAttribute('aria-label') || '';
-                        const match = label.match(/([\\d.]+\\s*тыс\.?|\\d+)/);
-                        likes = match ? match[1] : '0';
-                    }
-                    
-                    const retweetBtn = tweet.querySelector('[data-testid="retweet"]');
-                    let retweets = '0';
-                    if (retweetBtn) {
-                        const label = retweetBtn.getAttribute('aria-label') || '';
-                        const match = label.match(/([\\d.]+\\s*тыс\.?|\\d+)/);
-                        retweets = match ? match[1] : '0';
-                    }
-                    
-                    const replyBtn = tweet.querySelector('[data-testid="reply"]');
-                    let replies = '0';
-                    if (replyBtn) {
-                        const label = replyBtn.getAttribute('aria-label') || '';
-                        const match = label.match(/(\\d+)/);
-                        replies = match ? match[1] : '0';
-                    }
-                    
-                    const timeEl = tweet.querySelector('time');
-                    const time = timeEl ? timeEl.textContent.trim() : '';
-                    
-                    if (text || name) {
-                        result.push({
-                            name: name,
-                            text: text || '[Медиа]',
-                            likes: likes,
-                            retweets: retweets,
-                            replies: replies,
-                            time: time
-                        });
-                    }
-                }
-                
-                return result;
-            }
-        ''')
+        # Сканируем
+        elements = await explorer.scan_page('https://x.com/home', 'home')
         
-        if not posts:
-            await msg.edit_text("📭 В ленте нет постов или не удалось загрузить.\nПопробуйте /login сначала.")
-            return
+        # Кликаем по элементам (кроме опасных)
+        safe_elements = [e for e in elements if not e.get('href', '').startswith('http')]
+        await explorer.click_elements(safe_elements, max_clicks=20)
         
-        response = "📰 Лента\n\n"
-        for i, post in enumerate(posts, 1):
-            response += f"{i}. @{post['name']}"
-            if post['time']:
-                response += f" · {post['time']}"
-            response += "\n"
-            response += f"📝 {post['text']}\n"
-            response += f"❤️ {post['likes']} | 🔄 {post['retweets']} | 💬 {post['replies']}\n"
-            response += "────────────────────\n"
+        report = explorer.get_report()
+        await msg.edit_text(report, parse_mode='Markdown')
         
-        response += f"\n📊 Всего постов: {len(posts)}"
+        # Отправляем скриншоты
+        if explorer.results['screenshots']:
+            for s in explorer.results['screenshots'][:2]:
+                try:
+                    await update.message.reply_photo(
+                        photo=s['data'],
+                        caption=f"📸 {s['stage']}"
+                    )
+                except:
+                    pass
         
-        await msg.edit_text(response)
+        global exploration_results
+        exploration_results = explorer.results
         
     except Exception as e:
-        logger.error(f"Feed error: {e}")
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
-@require_auth
-async def post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("📌 Использование: /post [номер]")
-        return
-    
-    try:
-        num = int(context.args[0]) - 1
-        if num < 0:
-            await update.message.reply_text("❌ Номер должен быть больше 0")
-            return
-    except ValueError:
-        await update.message.reply_text("❌ Введите число: /post 3")
-        return
-    
-    msg = await update.message.reply_text(f"⏳ Загружаю пост #{num+1}...")
+async def explore_explore(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text("📈 Исследую страницу обзора...")
     
     try:
         browser = await get_browser()
         page = browser['page']
         
-        await page.goto('https://x.com/home', wait_until='domcontentloaded', timeout=30000)
-        await page.wait_for_timeout(3000)
-        
-        post_data = await page.evaluate(f'''
-            () => {{
-                const tweets = Array.from(document.querySelectorAll('[data-testid="tweet"]'));
-                const tweet = tweets[{num}];
-                if (!tweet) return null;
-                
-                const nameEl = tweet.querySelector('[data-testid="User-Name"]');
-                const name = nameEl ? nameEl.textContent.trim() : 'Неизвестный';
-                
-                const textEl = tweet.querySelector('[data-testid="tweetText"]');
-                const text = textEl ? textEl.textContent.trim() : '[Медиа]';
-                
-                const likeBtn = tweet.querySelector('[data-testid="like"]');
-                let likes = '0';
-                if (likeBtn) {{
-                    const label = likeBtn.getAttribute('aria-label') || '';
-                    const match = label.match(/([\\d.]+\\s*тыс\.?|\\d+)/);
-                    likes = match ? match[1] : '0';
-                }}
-                
-                const retweetBtn = tweet.querySelector('[data-testid="retweet"]');
-                let retweets = '0';
-                if (retweetBtn) {{
-                    const label = retweetBtn.getAttribute('aria-label') || '';
-                    const match = label.match(/([\\d.]+\\s*тыс\.?|\\d+)/);
-                    retweets = match ? match[1] : '0';
-                }}
-                
-                const replyBtn = tweet.querySelector('[data-testid="reply"]');
-                let replies = '0';
-                if (replyBtn) {{
-                    const label = replyBtn.getAttribute('aria-label') || '';
-                    const match = label.match(/(\\d+)/);
-                    replies = match ? match[1] : '0';
-                }}
-                
-                const timeEl = tweet.querySelector('time');
-                const time = timeEl ? timeEl.textContent.trim() : '';
-                
-                const hasPhoto = !!tweet.querySelector('[data-testid="tweetPhoto"] img');
-                
-                return {{
-                    name, text, likes, retweets, replies, time, hasPhoto
-                }};
-            }}
-        ''')
-        
-        if not post_data:
-            await msg.edit_text(f"❌ Пост #{num+1} не найден")
-            return
-        
-        response = f"📄 Пост #{num+1}\n\n"
-        response += f"👤 @{post_data['name']}"
-        if post_data['time']:
-            response += f" · {post_data['time']}"
-        response += "\n\n"
-        response += f"📝 {post_data['text']}\n\n"
-        response += f"❤️ {post_data['likes']} | 🔄 {post_data['retweets']} | 💬 {post_data['replies']}"
-        if post_data['hasPhoto']:
-            response += " | 🖼️ Есть фото"
-        
-        await msg.edit_text(response)
-        
-    except Exception as e:
-        logger.error(f"Post error: {e}")
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-@require_auth
-async def trends(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("⏳ Загружаю тренды...")
-    
-    try:
-        browser = await get_browser()
-        page = browser['page']
+        explorer = XExplorer(page)
         
         await page.goto('https://x.com/explore', wait_until='domcontentloaded', timeout=30000)
         await page.wait_for_timeout(3000)
         
-        trends_data = await page.evaluate('''
-            () => {
-                const trends = Array.from(document.querySelectorAll('[data-testid="trend"]'));
-                const result = [];
-                
-                for (const trend of trends.slice(0, 10)) {
-                    const textEl = trend.querySelector('[data-testid="trend"] div:last-child > div:last-child');
-                    const text = textEl ? textEl.textContent.trim() : '';
-                    
-                    const categoryEl = trend.querySelector('[data-testid="trend"] div:first-child');
-                    const category = categoryEl ? categoryEl.textContent.trim() : '';
-                    
-                    const descEl = trend.querySelector('[data-testid="trend"] div:nth-child(3)');
-                    const desc = descEl ? descEl.textContent.trim() : '';
-                    
-                    if (text) {
-                        result.push({ text, category, desc });
-                    }
-                }
-                
-                return result;
-            }
-        ''')
+        elements = await explorer.scan_page('https://x.com/explore', 'explore')
+        safe_elements = [e for e in elements if not e.get('href', '').startswith('http')]
+        await explorer.click_elements(safe_elements, max_clicks=15)
         
-        if not trends_data:
-            await msg.edit_text("📭 Тренды не найдены")
-            return
+        report = explorer.get_report()
+        await msg.edit_text(report, parse_mode='Markdown')
         
-        response = "📈 Актуальные тренды\n\n"
+        if explorer.results['screenshots']:
+            for s in explorer.results['screenshots'][:2]:
+                try:
+                    await update.message.reply_photo(
+                        photo=s['data'],
+                        caption=f"📸 {s['stage']}"
+                    )
+                except:
+                    pass
         
-        for i, trend in enumerate(trends_data[:7], 1):
-            response += f"{i}. {trend['text']}\n"
-            if trend['category']:
-                response += f"   📌 {trend['category']}\n"
-            if trend['desc']:
-                response += f"   📝 {trend['desc']}\n"
-            response += "\n"
-        
-        await msg.edit_text(response)
+        global exploration_results
+        exploration_results = explorer.results
         
     except Exception as e:
-        logger.error(f"Trends error: {e}")
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
-@require_auth
-async def me(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("⏳ Загружаю профиль...")
+async def explore_notifications(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text("🔔 Исследую страницу уведомлений...")
     
     try:
         browser = await get_browser()
         page = browser['page']
         
-        profile_data = await page.evaluate('''
-            () => {
-                const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
-                let username = null;
-                if (profileLink) {
-                    const href = profileLink.getAttribute('href');
-                    if (href) {
-                        const match = href.match(/^\\/([^\\/]+)/);
-                        if (match) username = match[1];
-                    }
-                }
-                
-                const nameEl = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"] .css-146c3p1');
-                let name = null;
-                if (nameEl) {
-                    const span = nameEl.querySelector('span');
-                    if (span) name = span.textContent.trim();
-                }
-                
-                return { username, name };
-            }
-        ''')
+        explorer = XExplorer(page)
         
-        response = "👤 Мой профиль\n\n"
-        response += f"📛 Имя: {profile_data.get('name') or login_status.get('username', 'Неизвестно')}\n"
-        response += f"🔗 Username: @{profile_data.get('username') or login_status.get('username') or 'неизвестно'}\n"
-        response += f"\n📊 Статус: ✅ Авторизован"
-        response += f"\n🍪 Куки: ✅ OK"
-        
-        await msg.edit_text(response)
-        
-    except Exception as e:
-        logger.error(f"Me error: {e}")
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-@require_auth
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("📌 Использование: /stats [номер]")
-        return
-    
-    try:
-        num = int(context.args[0]) - 1
-    except ValueError:
-        await update.message.reply_text("❌ Введите число: /stats 3")
-        return
-    
-    msg = await update.message.reply_text(f"⏳ Загружаю статистику поста #{num+1}...")
-    
-    try:
-        browser = await get_browser()
-        page = browser['page']
-        
-        await page.goto('https://x.com/home', wait_until='domcontentloaded', timeout=30000)
+        await page.goto('https://x.com/notifications', wait_until='domcontentloaded', timeout=30000)
         await page.wait_for_timeout(3000)
         
-        stats_data = await page.evaluate(f'''
-            () => {{
-                const tweets = Array.from(document.querySelectorAll('[data-testid="tweet"]'));
-                const tweet = tweets[{num}];
-                if (!tweet) return null;
-                
-                const nameEl = tweet.querySelector('[data-testid="User-Name"]');
-                const name = nameEl ? nameEl.textContent.trim() : 'Неизвестный';
-                
-                const textEl = tweet.querySelector('[data-testid="tweetText"]');
-                const text = textEl ? textEl.textContent.trim().slice(0, 100) : '';
-                
-                const likeBtn = tweet.querySelector('[data-testid="like"]');
-                let likes = '0';
-                if (likeBtn) {{
-                    const label = likeBtn.getAttribute('aria-label') || '';
-                    const match = label.match(/([\\d.]+\\s*тыс\.?|\\d+)/);
-                    likes = match ? match[1] : '0';
-                }}
-                
-                const retweetBtn = tweet.querySelector('[data-testid="retweet"]');
-                let retweets = '0';
-                if (retweetBtn) {{
-                    const label = retweetBtn.getAttribute('aria-label') || '';
-                    const match = label.match(/([\\d.]+\\s*тыс\.?|\\d+)/);
-                    retweets = match ? match[1] : '0';
-                }}
-                
-                const replyBtn = tweet.querySelector('[data-testid="reply"]');
-                let replies = '0';
-                if (replyBtn) {{
-                    const label = replyBtn.getAttribute('aria-label') || '';
-                    const match = label.match(/(\\d+)/);
-                    replies = match ? match[1] : '0';
-                }}
-                
-                const timeEl = tweet.querySelector('time');
-                const time = timeEl ? timeEl.textContent.trim() : '';
-                
-                let views = 'Нет данных';
-                const viewEl = tweet.querySelector('a[aria-label*="просмотр"]');
-                if (viewEl) {{
-                    const label = viewEl.getAttribute('aria-label') || '';
-                    const match = label.match(/([\\d.]+\\s*тыс\.?|\\d+)/);
-                    views = match ? match[1] : 'Нет данных';
-                }}
-                
-                return {{ name, text, likes, retweets, replies, time, views }};
-            }}
-        ''')
+        elements = await explorer.scan_page('https://x.com/notifications', 'notifications')
+        safe_elements = [e for e in elements if not e.get('href', '').startswith('http')]
+        await explorer.click_elements(safe_elements, max_clicks=15)
         
-        if not stats_data:
-            await msg.edit_text(f"❌ Пост #{num+1} не найден")
-            return
+        report = explorer.get_report()
+        await msg.edit_text(report, parse_mode='Markdown')
         
-        response = f"📊 Статистика поста #{num+1}\n\n"
-        response += f"👤 @{stats_data['name']}"
-        if stats_data['time']:
-            response += f" · {stats_data['time']}"
-        response += "\n\n"
-        response += f"📝 {stats_data['text']}...\n\n" if len(stats_data['text']) > 50 else f"📝 {stats_data['text']}\n\n"
-        response += f"💬 Ответы: {stats_data['replies']}\n"
-        response += f"🔄 Репосты: {stats_data['retweets']}\n"
-        response += f"❤️ Лайки: {stats_data['likes']}\n"
-        response += f"👁️ Просмотры: {stats_data['views']}"
+        if explorer.results['screenshots']:
+            for s in explorer.results['screenshots'][:2]:
+                try:
+                    await update.message.reply_photo(
+                        photo=s['data'],
+                        caption=f"📸 {s['stage']}"
+                    )
+                except:
+                    pass
         
-        await msg.edit_text(response)
+        global exploration_results
+        exploration_results = explorer.results
         
     except Exception as e:
-        logger.error(f"Stats error: {e}")
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
-@require_auth
-async def top(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("⏳ Ищу самый популярный пост...")
+async def explore_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text("🌐 Исследую все страницы... (это займет время)")
     
     try:
         browser = await get_browser()
         page = browser['page']
         
-        await page.goto('https://x.com/home', wait_until='domcontentloaded', timeout=30000)
-        await page.wait_for_timeout(3000)
+        pages = [
+            ('https://x.com/home', 'home'),
+            ('https://x.com/explore', 'explore'),
+            ('https://x.com/notifications', 'notifications'),
+        ]
         
-        top_post = await page.evaluate('''
-            () => {
-                const tweets = Array.from(document.querySelectorAll('[data-testid="tweet"]'));
-                let best = null;
-                let maxLikes = -1;
-                
-                for (const tweet of tweets) {
-                    const likeBtn = tweet.querySelector('[data-testid="like"]');
-                    let likes = 0;
-                    if (likeBtn) {
-                        const label = likeBtn.getAttribute('aria-label') || '';
-                        const match = label.match(/(\\d+)/);
-                        if (match) likes = parseInt(match[1]);
-                    }
-                    
-                    if (likes > maxLikes) {
-                        maxLikes = likes;
-                        
-                        const nameEl = tweet.querySelector('[data-testid="User-Name"]');
-                        const name = nameEl ? nameEl.textContent.trim() : 'Неизвестный';
-                        
-                        const textEl = tweet.querySelector('[data-testid="tweetText"]');
-                        const text = textEl ? textEl.textContent.trim() : '[Медиа]';
-                        
-                        const retweetBtn = tweet.querySelector('[data-testid="retweet"]');
-                        let retweets = '0';
-                        if (retweetBtn) {
-                            const label = retweetBtn.getAttribute('aria-label') || '';
-                            const match = label.match(/(\\d+)/);
-                            retweets = match ? match[1] : '0';
-                        }
-                        
-                        const replyBtn = tweet.querySelector('[data-testid="reply"]');
-                        let replies = '0';
-                        if (replyBtn) {
-                            const label = replyBtn.getAttribute('aria-label') || '';
-                            const match = label.match(/(\\d+)/);
-                            replies = match ? match[1] : '0';
-                        }
-                        
-                        const timeEl = tweet.querySelector('time');
-                        const time = timeEl ? timeEl.textContent.trim() : '';
-                        
-                        best = { name, text, likes, retweets, replies, time };
-                    }
-                }
-                
-                return best;
-            }
-        ''')
+        all_results = {}
         
-        if not top_post:
-            await msg.edit_text("❌ Не удалось найти популярный пост")
-            return
+        for url, name in pages:
+            explorer = XExplorer(page)
+            
+            await page.goto(url, wait_until='domcontentloaded', timeout=30000)
+            await page.wait_for_timeout(2000)
+            
+            elements = await explorer.scan_page(url, name)
+            safe_elements = [e for e in elements if not e.get('href', '').startswith('http')]
+            await explorer.click_elements(safe_elements, max_clicks=10)
+            
+            all_results[name] = explorer.results
+            
+            # Отправляем промежуточный отчет
+            await update.message.reply_text(
+                f"✅ {name} исследована: {len(elements)} элементов, {len(explorer.results['clicked'])} кликов"
+            )
         
-        response = "🏆 Самый популярный пост\n\n"
-        response += f"👤 @{top_post['name']}"
-        if top_post['time']:
-            response += f" · {top_post['time']}"
-        response += "\n\n"
-        response += f"📝 {top_post['text']}\n\n"
-        response += f"❤️ {top_post['likes']} лайков\n"
-        response += f"🔄 {top_post['retweets']} репостов\n"
-        response += f"💬 {top_post['replies']} ответов"
+        # Формируем сводный отчет
+        total_elements = sum(len(r['elements']) for r in all_results.values())
+        total_clicks = sum(len(r['clicked']) for r in all_results.values())
+        total_errors = sum(len(r['errors']) for r in all_results.values())
         
-        await msg.edit_text(response)
+        report = "📊 **Сводный отчет по всем страницам**\n\n"
+        report += f"📄 Страниц: {len(pages)}\n"
+        report += f"🔍 Всего элементов: {total_elements}\n"
+        report += f"🖱️ Всего кликов: {total_clicks}\n"
+        report += f"❌ Ошибок: {total_errors}\n\n"
+        
+        for name, results in all_results.items():
+            report += f"**{name}:** {len(results['elements'])} элементов, {len(results['clicked'])} кликов\n"
+        
+        await msg.edit_text(report, parse_mode='Markdown')
+        
+        global exploration_results
+        exploration_results = all_results
         
     except Exception as e:
-        logger.error(f"Top error: {e}")
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global exploration_results
+    
+    if not exploration_results or not exploration_results.get('elements'):
+        await update.message.reply_text("📭 Нет данных. Запустите исследование: /explore")
+        return
+    
+    if isinstance(exploration_results, dict) and 'elements' in exploration_results:
+        # Один результат
+        report = "📊 **Отчет исследования**\n\n"
+        report += f"🔍 Найдено: {len(exploration_results['elements'])}\n"
+        report += f"🖱️ Кликнуто: {len(exploration_results.get('clicked', []))}\n"
+        report += f"❌ Ошибок: {len(exploration_results.get('errors', []))}\n\n"
+        
+        report += "📋 **Последние логи:**\n"
+        for log in exploration_results.get('logs', [])[-10:]:
+            report += f"• {log}\n"
+        
+        await update.message.reply_text(report, parse_mode='Markdown')
+    else:
+        # Несколько результатов
+        report = "📊 **Сводный отчет**\n\n"
+        for name, results in exploration_results.items():
+            if isinstance(results, dict):
+                report += f"**{name}:** {len(results.get('elements', []))} элементов, {len(results.get('clicked', []))} кликов\n"
+        await update.message.reply_text(report, parse_mode='Markdown')
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("⏳ Проверяю статус...")
+    status_msg = "📊 **Статус агента**\n\n"
     
-    try:
-        browser_ok = False
-        browser_info = {}
-        
-        if browser_data:
-            try:
-                page = browser_data['page']
-                await page.evaluate('1')
-                browser_ok = True
-                
-                url = page.url
-                title = await page.title()
-                started_at = browser_data.get('started_at')
-                uptime = (datetime.now() - started_at).total_seconds() if started_at else 0
-                
-                auth_check = await page.evaluate('''
-                    () => {
-                        const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]');
-                        const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
-                        const hasHomeLink = !!document.querySelector('[data-testid="AppTabBar_Home_Link"]');
-                        const hasSideNav = !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
-                        const hasLoginForm = !!document.querySelector('[data-testid="loginForm"]');
-                        
-                        const cookies = document.cookie.split(';').reduce((acc, c) => {
-                            const [key, val] = c.trim().split('=');
-                            acc[key] = val;
-                            return acc;
-                        }, {});
-                        
-                        let username = null;
-                        const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
-                        if (profileLink) {
-                            const href = profileLink.getAttribute('href');
-                            if (href) {
-                                const match = href.match(/^\\/([^\\/]+)/);
-                                if (match) username = match[1];
-                            }
-                        }
-                        
-                        return {
-                            hasTweetBtn,
-                            hasProfileLink,
-                            hasHomeLink,
-                            hasSideNav,
-                            hasLoginForm,
-                            hasAuthToken: !!cookies.auth_token,
-                            hasCt0: !!cookies.ct0,
-                            username: username,
-                            isLoggedIn: hasTweetBtn || hasProfileLink || hasHomeLink || hasSideNav
-                        };
-                    }
-                ''')
-                
-                browser_info = {
-                    'url': url,
-                    'title': title[:60] if title else 'Нет',
-                    'uptime': uptime,
-                    'auth': auth_check
-                }
-                
-                login_status['is_logged_in'] = auth_check['isLoggedIn']
-                login_status['username'] = auth_check.get('username')
-                login_status['last_check'] = datetime.now()
-                login_status['cookies_valid'] = auth_check['hasAuthToken'] and auth_check['hasCt0']
-                
-            except Exception as e:
-                browser_ok = False
-                browser_info['error'] = str(e)[:50]
-        else:
-            browser_info = {'error': 'Браузер не запущен'}
-        
-        status_msg = "📊 СТАТУС БОТА\n\n"
-        
-        if browser_ok:
-            status_msg += "🌐 Браузер: ✅ Запущен\n"
-            if browser_info.get('uptime'):
-                hours = int(browser_info['uptime'] // 3600)
-                minutes = int((browser_info['uptime'] % 3600) // 60)
-                status_msg += f"⏱️ Аптайм: {hours}ч {minutes}м\n"
-        else:
-            status_msg += "🌐 Браузер: ❌ Не запущен\n"
-        
-        if browser_ok and browser_info.get('url'):
-            status_msg += f"🔗 URL: {browser_info['url'][:60]}\n"
-            status_msg += f"📌 Заголовок: {browser_info.get('title', 'Нет')}\n"
-        
-        status_msg += "\n🔐 АВТОРИЗАЦИЯ:\n"
-        
-        if browser_ok and browser_info.get('auth'):
-            auth = browser_info['auth']
-            
-            status_msg += f"🍪 auth_token: {'✅' if auth.get('hasAuthToken') else '❌'}\n"
-            status_msg += f"🍪 ct0: {'✅' if auth.get('hasCt0') else '❌'}\n"
-            
-            if auth.get('isLoggedIn'):
-                status_msg += "\n✅ ВЫ АВТОРИЗОВАНЫ\n"
-                if auth.get('username'):
-                    status_msg += f"👤 @{auth['username']}\n"
-                if auth.get('hasTweetBtn'):
-                    status_msg += "   • Кнопка Tweet: ✅\n"
-                if auth.get('hasProfileLink'):
-                    status_msg += "   • Профиль: ✅\n"
-                if auth.get('hasHomeLink'):
-                    status_msg += "   • Домой: ✅\n"
-            elif auth.get('hasLoginForm'):
-                status_msg += "\n❌ НЕ АВТОРИЗОВАН (форма входа)\n"
-            else:
-                status_msg += "\n⚠️ НЕ ОПРЕДЕЛЕНО\n"
-        else:
-            status_msg += "❌ Нет данных (выполните /login)\n"
-        
-        status_msg += f"\n🕐 {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
-        status_msg += f"📦 Драйвер: {'Phantomwright' if PHANTOMWRIGHT_AVAILABLE else 'Playwright'}\n"
-        status_msg += f"🍪 Куки загружены: {len(COOKIES)} шт."
-        
-        await msg.edit_text(status_msg)
-        
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("⏳ Делаю скриншот...")
+    if browser_data:
+        status_msg += "🌐 Браузер: ✅ Запущен\n"
+        try:
+            url = browser_data['page'].url
+            status_msg += f"🔗 Текущая страница: {url[:60]}\n"
+        except:
+            status_msg += "🔗 Страница: Неизвестно\n"
+    else:
+        status_msg += "🌐 Браузер: ❌ Не запущен\n"
     
-    try:
-        browser = await get_browser()
-        page = browser['page']
-        
-        screenshot = await page.screenshot(type='jpeg', quality=80)
-        await msg.delete()
-        
-        url = page.url
-        title = await page.title()
-        
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption=f"📸 {title[:40] if title else 'X.com'}\n🔗 {url[:50]}"
-        )
-        
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:100]}")
+    if exploration_results:
+        if isinstance(exploration_results, dict) and 'elements' in exploration_results:
+            status_msg += f"\n📊 Последнее исследование:\n"
+            status_msg += f"   🔍 Элементов: {len(exploration_results['elements'])}\n"
+            status_msg += f"   🖱️ Кликов: {len(exploration_results.get('clicked', []))}\n"
+    
+    await update.message.reply_text(status_msg, parse_mode='Markdown')
 
 async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Закрываю браузер...")
@@ -969,26 +715,24 @@ def main():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("login", login))
-    app.add_handler(CommandHandler("feed", feed))
-    app.add_handler(CommandHandler("post", post))
-    app.add_handler(CommandHandler("trends", trends))
-    app.add_handler(CommandHandler("me", me))
-    app.add_handler(CommandHandler("stats", stats))
-    app.add_handler(CommandHandler("top", top))
+    app.add_handler(CommandHandler("explore", explore))
+    app.add_handler(CommandHandler("explore_home", explore_home))
+    app.add_handler(CommandHandler("explore_explore", explore_explore))
+    app.add_handler(CommandHandler("explore_notifications", explore_notifications))
+    app.add_handler(CommandHandler("explore_all", explore_all))
+    app.add_handler(CommandHandler("report", report))
     app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("close", close))
     
-    print("🐦 X.com Bot запущен!")
+    print("🐦 X.com Агент-исследователь запущен!")
     print("📌 Команды:")
     print("   🔐 /login — авторизация")
-    print("   📰 /feed — лента")
-    print("   📄 /post N — пост по номеру")
-    print("   📈 /trends — тренды")
-    print("   👤 /me — мой профиль")
-    print("   📊 /stats N — статистика поста")
-    print("   🏆 /top — лучший пост")
-    print("   📸 /screen — скриншот")
+    print("   🔍 /explore — исследовать текущую страницу")
+    print("   🏠 /explore_home — исследовать главную")
+    print("   📈 /explore_explore — исследовать обзор")
+    print("   🔔 /explore_notifications — исследовать уведомления")
+    print("   🌐 /explore_all — исследовать все страницы")
+    print("   📊 /report — показать отчет")
     print("   📊 /status — статус")
     print("   ❌ /close — закрыть браузер")
     
