@@ -510,7 +510,6 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     const retweetEl = tweet.querySelector('[data-testid="retweet"]');
                     const replyEl = tweet.querySelector('[data-testid="reply"]');
                     const mediaEl = tweet.querySelector('[data-testid="tweetPhoto"]');
-                    const linkEl = tweet.querySelector('a[href*="/status/"]');
                     const isPinned = !!tweet.querySelector('[data-testid="pinIcon"]');
                     
                     tweets.push({{
@@ -520,8 +519,7 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         retweets: retweetEl ? retweetEl.innerText : '0',
                         replies: replyEl ? replyEl.innerText : '0',
                         has_media: !!mediaEl,
-                        is_pinned: isPinned,
-                        url: linkEl ? `https://x.com${{linkEl.getAttribute('href')}}` : ''
+                        is_pinned: isPinned
                     }});
                 }});
                 
@@ -552,9 +550,6 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             if tweet['has_media']:
                 report += " | 🖼️"
-            
-            if tweet['url']:
-                report += f"\n🔗 {tweet['url']}"
             
             report += "\n\n"
         
@@ -617,7 +612,6 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     const retweetEl = tweet.querySelector('[data-testid="retweet"]');
                     const replyEl = tweet.querySelector('[data-testid="reply"]');
                     const mediaEl = tweet.querySelector('[data-testid="tweetPhoto"]');
-                    const linkEl = tweet.querySelector('a[href*="/status/"]');
                     
                     tweets.push({
                         text: textEl ? textEl.innerText : '',
@@ -625,8 +619,7 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         likes: likesEl ? likesEl.innerText : '0',
                         retweets: retweetEl ? retweetEl.innerText : '0',
                         replies: replyEl ? replyEl.innerText : '0',
-                        has_media: !!mediaEl,
-                        url: linkEl ? `https://x.com${linkEl.getAttribute('href')}` : ''
+                        has_media: !!mediaEl
                     });
                 });
                 
@@ -652,9 +645,6 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             if tweet['has_media']:
                 report += " | 🖼️"
-            
-            if tweet['url']:
-                report += f"\n🔗 {tweet['url']}"
             
             report += "\n\n"
         
