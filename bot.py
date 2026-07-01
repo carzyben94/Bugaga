@@ -132,7 +132,7 @@ class GooseManager:
         self.init_error = None
         
     async def initialize(self):
-        """Проверяет наличие Goose и создаёт конфиг с Playwright"""
+        """Проверяет наличие Goose и создаёт конфиг с Playwright MCP"""
         if self.initialized:
             return True
             
@@ -151,7 +151,7 @@ class GooseManager:
                 self.init_error = "goose не найден"
                 return False
             
-            # Создаём конфиг для Goose с Agnes AI и расширением Playwright
+            # Создаём конфиг для Goose с правильным подключением Playwright
             config_dir = os.path.expanduser("~/.config/goose")
             os.makedirs(config_dir, exist_ok=True)
             config_path = os.path.join(config_dir, "config.yaml")
@@ -163,13 +163,15 @@ provider:
   api_key: {AGNES_API_KEY or ""}
   model: agnes-2.0-flash
 
-# Подключаем Playwright MCP как расширение
+# Подключаем Playwright MCP с правильной командой
 extensions:
-  - playwright
+  - name: playwright
+    command: npx -y @playwright/mcp@latest
+    type: stdio
 """
             with open(config_path, "w") as f:
                 f.write(config_content)
-            logger.info(f"✅ Конфиг Goose с Playwright создан в {config_path}")
+            logger.info(f"✅ Конфиг Goose с Playwright MCP создан")
             
             # Проверяем, что файл создался
             if not os.path.exists(config_path):
@@ -177,7 +179,7 @@ extensions:
                 return False
                 
             self.initialized = True
-            logger.info("✅ Goose готов к работе с Playwright")
+            logger.info("✅ Goose готов к работе с Playwright MCP")
             return True
                 
         except FileNotFoundError:
