@@ -5,6 +5,7 @@ import subprocess
 import logging
 import asyncio
 import json
+import re
 from datetime import datetime
 from typing import Optional
 from telegram import Update
@@ -531,11 +532,9 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"❌ Твиты @{username} не найдены!")
             return
         
-        line = "─" * 35
         report = f"📊 **ТВИТЫ @{username}**\n"
         report += f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
-        report += f"📌 Всего: {len(tweets_data)}\n"
-        report += f"{line}\n\n"
+        report += f"📌 Всего: {len(tweets_data)}\n\n"
         
         for i, tweet in enumerate(tweets_data, 1):
             if tweet['is_pinned']:
@@ -546,11 +545,11 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = tweet['text'][:250]
             if len(tweet['text']) > 250:
                 text += "..."
-            report += f"{text}\n\n"
+            report += f"{text}\n"
             
             if tweet['time']:
                 time_str = tweet['time'][:16].replace('T', ' ')
-                report += f"🕐 {time_str}\n"
+                report += f"🕐 {time_str}"
             
             stats = []
             if tweet['replies'] and tweet['replies'] != '0':
@@ -563,9 +562,11 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 stats.append("🖼️")
             
             if stats:
-                report += " | ".join(stats) + "\n"
+                if tweet['time']:
+                    report += "  "
+                report += " | ".join(stats)
             
-            report += f"{line}\n\n"
+            report += "\n\n"
         
         if len(report) > 4000:
             filename = f"tweets_{username}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
@@ -646,12 +647,10 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"❌ По запросу '{query}' ничего не найдено!")
             return
         
-        line = "─" * 35
         report = f"🔍 **РЕЗУЛЬТАТЫ ПО ЗАПРОСУ**\n"
         report += f"📌 `{query}`\n"
         report += f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
-        report += f"📊 Найдено: {len(tweets_data)}\n"
-        report += f"{line}\n\n"
+        report += f"📊 Найдено: {len(tweets_data)}\n\n"
         
         for i, tweet in enumerate(tweets_data, 1):
             report += f"**{i}.** "
@@ -659,11 +658,11 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = tweet['text'][:280]
             if len(tweet['text']) > 280:
                 text += "..."
-            report += f"{text}\n\n"
+            report += f"{text}\n"
             
             if tweet['time']:
                 time_str = tweet['time'][:16].replace('T', ' ')
-                report += f"🕐 {time_str}\n"
+                report += f"🕐 {time_str}"
             
             stats = []
             if tweet['replies'] and tweet['replies'] != '0':
@@ -676,9 +675,11 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 stats.append("🖼️")
             
             if stats:
-                report += " | ".join(stats) + "\n"
+                if tweet['time']:
+                    report += "  "
+                report += " | ".join(stats)
             
-            report += f"{line}\n\n"
+            report += "\n\n"
         
         if len(report) > 4000:
             filename = f"search_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
