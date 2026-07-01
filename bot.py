@@ -45,7 +45,7 @@ AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
 AGNES_BASE_URL = "https://apihub.agnes-ai.com/v1"
 
 def call_agnes(prompt: str, tools: list = None) -> str:
-    """Вызывает Agnes-2.0-Flash через OpenAI-совместимый API"""
+    """Вызывает Agnes-2.0-Flash через OpenAI-совместимый API с системным промптом"""
     if not AGNES_API_KEY:
         return "⚠️ AGNES_API_KEY не задан! Добавь переменную на Railway."
 
@@ -54,14 +54,51 @@ def call_agnes(prompt: str, tools: list = None) -> str:
         "Content-Type": "application/json"
     }
 
+    # Системный промпт для компактных и красивых ответов
+    system_prompt = """Ты — AI-агент, управляющий браузером через Playwright.
+
+ПРАВИЛА ОТВЕТОВ:
+1. Отвечай КРАТКО и по ДЕЛУ (максимум 2-3 предложения)
+2. Используй эмодзи для визуального оформления:
+   ✅ — успех
+   ❌ — ошибка
+   📸 — скриншот
+   🔗 — ссылка
+   📊 — данные
+   ⏳ — ожидание
+   🚀 — запуск
+   🔍 — поиск
+   📝 — текст
+   🖱️ — клик
+3. Если выполнил действие — просто напиши "✅ Готово" или "✅ Страница открыта"
+4. Не объясняй, что и как ты делал — только результат
+5. Если ошибка — напиши "❌ Ошибка: <краткая причина>"
+6. Не пиши длинные тексты, не перечисляй варианты действий
+7. Не пиши "Я сделал..." — пиши результат сразу
+
+Примеры хороших ответов:
+- ✅ Страница x.com открыта
+- 📸 Скриншот сохранён
+- ❌ Ошибка: страница не найдена
+- 🔗 Ссылки собраны: 15 шт.
+- ✅ Кнопка нажата
+- 📝 Текст введён
+- 🔍 Результатов найдено: 5
+
+Примеры плохих ответов (НЕ ТАК):
+- "Я открыл страницу и теперь я могу..."
+- "Для того чтобы выполнить действие, мне нужно..."
+- "Сначала я сделал это, потом то..."
+"""
+
     payload = {
         "model": "agnes-2.0-flash",
         "messages": [
-            {"role": "system", "content": "Ты — AI-агент, управляющий браузером через Playwright. Конвертируй команды пользователя в действия на странице. Возвращай только результат выполнения."},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.3,
-        "max_tokens": 2000,
+        "max_tokens": 500,  # Ограничиваем длину ответа
         "tools": tools or [],
         "parallel_tool_calls": True
     }
@@ -77,9 +114,9 @@ def call_agnes(prompt: str, tools: list = None) -> str:
             result = response.json()["choices"][0]["message"]["content"]
             return result
         else:
-            return f"❌ Ошибка Agnes: {response.status_code} - {response.text[:100]}"
+            return f"❌ Ошибка Agnes: {response.status_code}"
     except Exception as e:
-        return f"❌ Ошибка вызова Agnes: {str(e)[:100]}"
+        return f"❌ Ошибка: {str(e)[:100]}"
 
 # ========== КУКИ X.COM ==========
 COOKIES = [
@@ -213,61 +250,30 @@ provider:
             # Формируем строку кук
             cookies_str = "; ".join([f"{c['name']}={c['value']}" for c in COOKIES])
             
-            # Проверяем Chrome
+            # Проверяем Playwright (один раз!)
             if progress_callback:
-                await progress_callback("🔍 Проверяю наличие Chrome...")
+                await progress_callback("🔍 Проверяю Playwright...")
             
-            chrome_check = await asyncio.create_subprocess_exec(
-                "which", "google-chrome",
+            # Проверяем, установлен ли playwright
+            playwright_check = await asyncio.create_subprocess_exec(
+                sys.executable, "-c", 
+                "import playwright; print('OK')",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-            await chrome_check.communicate()
+            await playwright_check.communicate()
             
-            if chrome_check.returncode != 0:
+            if playwright_check.returncode != 0:
                 if progress_callback:
-                    await progress_callback("⚠️ Chrome не найден. Устанавливаю...")
+                    await progress_callback("📦 Устанавливаю Playwright...")
                 install = await asyncio.create_subprocess_exec(
-                    sys.executable, "-m", "playwright", "install", "chrome",
+                    sys.executable, "-m", "pip", "install", "playwright",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE
                 )
                 await install.communicate()
-                if install.returncode != 0:
-                    if progress_callback:
-                        await progress_callback("🔄 Пробую Chromium...")
-                    install2 = await asyncio.create_subprocess_exec(
-                        sys.executable, "-m", "playwright", "install", "chromium",
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE
-                    )
-                    await install2.communicate()
-                else:
-                    if progress_callback:
-                        await progress_callback("✅ Chrome установлен!")
-            
-            # Проверяем и устанавливаем Playwright MCP
-            if progress_callback:
-                await progress_callback("🔧 Проверяю Playwright MCP...")
-            
-            mcp_check = await asyncio.create_subprocess_exec(
-                "npx", "@playwright/mcp", "--version",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            await mcp_check.communicate()
-            
-            if mcp_check.returncode != 0:
                 if progress_callback:
-                    await progress_callback("📦 Устанавливаю Playwright MCP...")
-                install_mcp = await asyncio.create_subprocess_exec(
-                    "npm", "install", "-g", "@playwright/mcp",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                await install_mcp.communicate()
-                if progress_callback:
-                    await progress_callback("✅ Playwright MCP установлен!")
+                    await progress_callback("✅ Playwright установлен!")
             
             env = os.environ.copy()
             env["GOOSE_TELEMETRY_ENABLED"] = "false"
@@ -277,7 +283,7 @@ provider:
             env["GOOSE_MODEL"] = "agnes-2.0-flash"
             
             if progress_callback:
-                await progress_callback("🔄 Запускаю Goose с Playwright MCP...")
+                await progress_callback("🔄 Запускаю Goose...")
             
             # Формируем команду расширения
             extension_cmd = "npx -y @playwright/mcp@latest"
@@ -305,19 +311,19 @@ provider:
             if process.returncode == 0:
                 result = stdout.decode() if stdout else stderr.decode()
                 if progress_callback:
-                    await progress_callback("✅ Команда выполнена успешно!")
-                return result if result else "✅ Команда выполнена"
+                    await progress_callback("✅ Готово!")
+                return result if result else "✅ Готово"
             else:
                 error = stderr.decode() if stderr else "Неизвестная ошибка"
                 logger.error(f"Goose ошибка: {error}")
                 if progress_callback:
                     await progress_callback(f"❌ Ошибка: {error[:100]}...")
-                return f"❌ Ошибка Goose: {error[:200]}"
+                return f"❌ Ошибка: {error[:200]}"
                 
         except asyncio.TimeoutError:
             if progress_callback:
                 await progress_callback("⏰ Таймаут 120 сек!")
-            return "❌ Таймаут выполнения команды (120 сек)"
+            return "❌ Таймаут (120 сек)"
         except Exception as e:
             logger.error(f"Ошибка: {e}")
             if progress_callback:
