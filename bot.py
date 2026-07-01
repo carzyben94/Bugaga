@@ -509,11 +509,14 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     const isPinned = !!tweet.querySelector('[data-testid="pinIcon"]');
                     
                     let text = textEl ? textEl.innerText : '';
-                    text = text.replace(/https?:\\/\\/[^\\s]+/g, '');
-                    text = text.replace(/http?:\\/\\/[^\\s]+/g, '');
-                    text = text.replace(/ftp?:\\/\\/[^\\s]+/g, '');
-                    text = text.replace(/www\\.[^\\s]+/g, '');
+                    text = text.replace(/https?:\\/\\/[^\\s]*/g, '');
+                    text = text.replace(/http?:\\/\\/[^\\s]*/g, '');
+                    text = text.replace(/ftp?:\\/\\/[^\\s]*/g, '');
+                    text = text.replace(/www\\.[^\\s]*/g, '');
                     text = text.replace(/[a-zA-Z0-9.-]+\\.[a-zA-Z]{{2,}}\\S*/g, '');
+                    text = text.replace(/\\b[a-zA-Z0-9.-]+\\.[a-zA-Z]{{2,}}\\b/g, '');
+                    text = text.replace(/[a-zA-Z0-9]+-[a-zA-Z0-9]+-[a-zA-Z0-9]+/g, '');
+                    text = text.replace(/[a-zA-Z0-9]+\\.[a-zA-Z]{{2,}}\\b/g, '');
                     text = text.replace(/\\n\\s*\\n/g, '\\n');
                     text = text.replace(/\\s{{2,}}/g, ' ');
                     text = text.trim();
@@ -612,11 +615,14 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     const timeEl = tweet.querySelector('time');
                     
                     let text = textEl ? textEl.innerText : '';
-                    text = text.replace(/https?:\\/\\/[^\\s]+/g, '');
-                    text = text.replace(/http?:\\/\\/[^\\s]+/g, '');
-                    text = text.replace(/ftp?:\\/\\/[^\\s]+/g, '');
-                    text = text.replace(/www\\.[^\\s]+/g, '');
+                    text = text.replace(/https?:\\/\\/[^\\s]*/g, '');
+                    text = text.replace(/http?:\\/\\/[^\\s]*/g, '');
+                    text = text.replace(/ftp?:\\/\\/[^\\s]*/g, '');
+                    text = text.replace(/www\\.[^\\s]*/g, '');
                     text = text.replace(/[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}\\S*/g, '');
+                    text = text.replace(/\\b[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}\\b/g, '');
+                    text = text.replace(/[a-zA-Z0-9]+-[a-zA-Z0-9]+-[a-zA-Z0-9]+/g, '');
+                    text = text.replace(/[a-zA-Z0-9]+\\.[a-zA-Z]{2,}\\b/g, '');
                     text = text.replace(/\\n\\s*\\n/g, '\\n');
                     text = text.replace(/\\s{2,}/g, ' ');
                     text = text.trim();
