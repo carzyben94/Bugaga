@@ -196,13 +196,58 @@ async def close_browser():
             'cookies_valid': False
         }
 
+# ========== ДЕКОРАТОР ДЛЯ ПРОВЕРКИ АВТОРИЗАЦИИ ==========
+def require_auth(func):
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        if not login_status.get('is_logged_in', False):
+            await update.message.reply_text(
+                "❌ Вы не авторизованы в X.com!\n\n"
+                "Сначала выполните команду:\n"
+                "/login — авторизация в X.com\n\n"
+                "После успешного входа повторите команду."
+            )
+            return
+        
+        if not browser_data:
+            await update.message.reply_text(
+                "⚠️ Браузер не активен.\n"
+                "Выполните /login заново."
+            )
+            return
+        
+        try:
+            page = browser_data['page']
+            await page.evaluate('1')
+        except Exception:
+            await update.message.reply_text(
+                "⚠️ Сессия истекла.\n"
+                "Выполните /login заново."
+            )
+            return
+        
+        return await func(update, context, *args, **kwargs)
+    
+    return wrapper
+
 # ========== КОМАНДЫ ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "/login — авторизация в X.com\n"
+        "🤖 X.com Бот\n\n"
+        "🔐 Авторизация:\n"
+        "/login — войти в X.com\n\n"
+        "📰 Лента:\n"
+        "/feed — показать посты\n"
+        "/post N — пост по номеру\n"
+        "/top — самый популярный\n"
+        "/stats N — статистика поста\n\n"
+        "📈 Тренды:\n"
+        "/trends — актуальные темы\n\n"
+        "👤 Профиль:\n"
+        "/me — мой профиль\n\n"
+        "🛠️ Система:\n"
+        "/status — статус бота\n"
         "/screen — скриншот\n"
-        "/status — статус браузера\n"
         "/close — закрыть браузер"
     )
 
@@ -316,26 +361,457 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
-async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("⏳ Делаю скриншот...")
+@require_auth
+async def feed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text("⏳ Загружаю ленту...")
     
     try:
         browser = await get_browser()
         page = browser['page']
         
-        screenshot = await page.screenshot(type='jpeg', quality=80)
-        await msg.delete()
+        await page.goto('https://x.com/home', wait_until='domcontentloaded', timeout=30000)
+        await page.wait_for_timeout(3000)
         
-        url = page.url
-        title = await page.title()
+        posts = await page.evaluate('''
+            () => {
+                const tweets = document.querySelectorAll('[data-testid="tweet"]');
+                const result = [];
+                
+                for (const tweet of tweets.slice(0, 5)) {
+                    const nameEl = tweet.querySelector('[data-testid="User-Name"]');
+                    const name = nameEl ? nameEl.textContent.trim() : 'Неизвестный';
+                    
+                    const textEl = tweet.querySelector('[data-testid="tweetText"]');
+                    const text = textEl ? textEl.textContent.trim().slice(0, 150) : '';
+                    
+                    const likeBtn = tweet.querySelector('[data-testid="like"]');
+                    let likes = '0';
+                    if (likeBtn) {
+                        const label = likeBtn.getAttribute('aria-label') || '';
+                        const match = label.match(/([\\d.]+\\s*тыс\.?|\\d+)/);
+                        likes = match ? match[1] : '0';
+                    }
+                    
+                    const retweetBtn = tweet.querySelector('[data-testid="retweet"]');
+                    let retweets = '0';
+                    if (retweetBtn) {
+                        const label = retweetBtn.getAttribute('aria-label') || '';
+                        const match = label.match(/([\\d.]+\\s*тыс\.?|\\d+)/);
+                        retweets = match ? match[1] : '0';
+                    }
+                    
+                    const replyBtn = tweet.querySelector('[data-testid="reply"]');
+                    let replies = '0';
+                    if (replyBtn) {
+                        const label = replyBtn.getAttribute('aria-label') || '';
+                        const match = label.match(/(\\d+)/);
+                        replies = match ? match[1] : '0';
+                    }
+                    
+                    const timeEl = tweet.querySelector('time');
+                    const time = timeEl ? timeEl.textContent.trim() : '';
+                    
+                    if (text || name) {
+                        result.push({
+                            name: name,
+                            text: text || '[Медиа]',
+                            likes: likes,
+                            retweets: retweets,
+                            replies: replies,
+                            time: time
+                        });
+                    }
+                }
+                
+                return result;
+            }
+        ''')
         
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption=f"📸 {title[:40] if title else 'X.com'}\n🔗 {url[:50]}"
-        )
+        if not posts:
+            await msg.edit_text("📭 В ленте нет постов или не удалось загрузить.")
+            return
+        
+        response = "📰 Лента\n\n"
+        for i, post in enumerate(posts, 1):
+            response += f"{i}. @{post['name']}"
+            if post['time']:
+                response += f" · {post['time']}"
+            response += "\n"
+            response += f"📝 {post['text']}\n"
+            response += f"❤️ {post['likes']} | 🔄 {post['retweets']} | 💬 {post['replies']}\n"
+            response += "────────────────────\n"
+        
+        response += f"\n📊 Всего постов: {len(posts)}"
+        
+        await msg.edit_text(response)
         
     except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:100]}")
+        logger.error(f"Feed error: {e}")
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+@require_auth
+async def post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("📌 Использование: /post [номер]")
+        return
+    
+    try:
+        num = int(context.args[0]) - 1
+        if num < 0:
+            await update.message.reply_text("❌ Номер должен быть больше 0")
+            return
+    except ValueError:
+        await update.message.reply_text("❌ Введите число: /post 3")
+        return
+    
+    msg = await update.message.reply_text(f"⏳ Загружаю пост #{num+1}...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        await page.goto('https://x.com/home', wait_until='domcontentloaded', timeout=30000)
+        await page.wait_for_timeout(3000)
+        
+        post_data = await page.evaluate(f'''
+            () => {{
+                const tweets = document.querySelectorAll('[data-testid="tweet"]');
+                const tweet = tweets[{num}];
+                if (!tweet) return null;
+                
+                const nameEl = tweet.querySelector('[data-testid="User-Name"]');
+                const name = nameEl ? nameEl.textContent.trim() : 'Неизвестный';
+                
+                const textEl = tweet.querySelector('[data-testid="tweetText"]');
+                const text = textEl ? textEl.textContent.trim() : '[Медиа]';
+                
+                const likeBtn = tweet.querySelector('[data-testid="like"]');
+                let likes = '0';
+                if (likeBtn) {{
+                    const label = likeBtn.getAttribute('aria-label') || '';
+                    const match = label.match(/([\\d.]+\\s*тыс\.?|\\d+)/);
+                    likes = match ? match[1] : '0';
+                }}
+                
+                const retweetBtn = tweet.querySelector('[data-testid="retweet"]');
+                let retweets = '0';
+                if (retweetBtn) {{
+                    const label = retweetBtn.getAttribute('aria-label') || '';
+                    const match = label.match(/([\\d.]+\\s*тыс\.?|\\d+)/);
+                    retweets = match ? match[1] : '0';
+                }}
+                
+                const replyBtn = tweet.querySelector('[data-testid="reply"]');
+                let replies = '0';
+                if (replyBtn) {{
+                    const label = replyBtn.getAttribute('aria-label') || '';
+                    const match = label.match(/(\\d+)/);
+                    replies = match ? match[1] : '0';
+                }}
+                
+                const timeEl = tweet.querySelector('time');
+                const time = timeEl ? timeEl.textContent.trim() : '';
+                
+                const hasPhoto = !!tweet.querySelector('[data-testid="tweetPhoto"] img');
+                
+                return {{
+                    name, text, likes, retweets, replies, time, hasPhoto
+                }};
+            }}
+        ''')
+        
+        if not post_data:
+            await msg.edit_text(f"❌ Пост #{num+1} не найден")
+            return
+        
+        response = f"📄 Пост #{num+1}\n\n"
+        response += f"👤 @{post_data['name']}"
+        if post_data['time']:
+            response += f" · {post_data['time']}"
+        response += "\n\n"
+        response += f"📝 {post_data['text']}\n\n"
+        response += f"❤️ {post_data['likes']} | 🔄 {post_data['retweets']} | 💬 {post_data['replies']}"
+        if post_data['hasPhoto']:
+            response += " | 🖼️ Есть фото"
+        
+        await msg.edit_text(response)
+        
+    except Exception as e:
+        logger.error(f"Post error: {e}")
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+@require_auth
+async def trends(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text("⏳ Загружаю тренды...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        await page.goto('https://x.com/explore', wait_until='domcontentloaded', timeout=30000)
+        await page.wait_for_timeout(3000)
+        
+        trends_data = await page.evaluate('''
+            () => {
+                const trends = document.querySelectorAll('[data-testid="trend"]');
+                const result = [];
+                
+                for (const trend of trends.slice(0, 10)) {
+                    const textEl = trend.querySelector('[data-testid="trend"] div:last-child > div:last-child');
+                    const text = textEl ? textEl.textContent.trim() : '';
+                    
+                    const categoryEl = trend.querySelector('[data-testid="trend"] div:first-child');
+                    const category = categoryEl ? categoryEl.textContent.trim() : '';
+                    
+                    const descEl = trend.querySelector('[data-testid="trend"] div:nth-child(3)');
+                    const desc = descEl ? descEl.textContent.trim() : '';
+                    
+                    if (text) {
+                        result.push({ text, category, desc });
+                    }
+                }
+                
+                return result;
+            }
+        ''')
+        
+        if not trends_data:
+            await msg.edit_text("📭 Тренды не найдены")
+            return
+        
+        response = "📈 Актуальные тренды\n\n"
+        
+        for i, trend in enumerate(trends_data[:7], 1):
+            response += f"{i}. {trend['text']}\n"
+            if trend['category']:
+                response += f"   📌 {trend['category']}\n"
+            if trend['desc']:
+                response += f"   📝 {trend['desc']}\n"
+            response += "\n"
+        
+        await msg.edit_text(response)
+        
+    except Exception as e:
+        logger.error(f"Trends error: {e}")
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+@require_auth
+async def me(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text("⏳ Загружаю профиль...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        profile_data = await page.evaluate('''
+            () => {
+                const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
+                let username = null;
+                if (profileLink) {
+                    const href = profileLink.getAttribute('href');
+                    if (href) {
+                        const match = href.match(/^\\/([^\\/]+)/);
+                        if (match) username = match[1];
+                    }
+                }
+                
+                const nameEl = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"] .css-146c3p1');
+                let name = null;
+                if (nameEl) {
+                    const span = nameEl.querySelector('span');
+                    if (span) name = span.textContent.trim();
+                }
+                
+                return { username, name };
+            }
+        ''')
+        
+        response = "👤 Мой профиль\n\n"
+        response += f"📛 Имя: {profile_data.get('name') or login_status.get('username', 'Неизвестно')}\n"
+        response += f"🔗 Username: @{profile_data.get('username') or login_status.get('username') or 'неизвестно'}\n"
+        response += f"\n📊 Статус: ✅ Авторизован"
+        response += f"\n🍪 Куки: ✅ OK"
+        
+        await msg.edit_text(response)
+        
+    except Exception as e:
+        logger.error(f"Me error: {e}")
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+@require_auth
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("📌 Использование: /stats [номер]")
+        return
+    
+    try:
+        num = int(context.args[0]) - 1
+    except ValueError:
+        await update.message.reply_text("❌ Введите число: /stats 3")
+        return
+    
+    msg = await update.message.reply_text(f"⏳ Загружаю статистику поста #{num+1}...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        await page.goto('https://x.com/home', wait_until='domcontentloaded', timeout=30000)
+        await page.wait_for_timeout(3000)
+        
+        stats_data = await page.evaluate(f'''
+            () => {{
+                const tweets = document.querySelectorAll('[data-testid="tweet"]');
+                const tweet = tweets[{num}];
+                if (!tweet) return null;
+                
+                const nameEl = tweet.querySelector('[data-testid="User-Name"]');
+                const name = nameEl ? nameEl.textContent.trim() : 'Неизвестный';
+                
+                const textEl = tweet.querySelector('[data-testid="tweetText"]');
+                const text = textEl ? textEl.textContent.trim().slice(0, 100) : '';
+                
+                const likeBtn = tweet.querySelector('[data-testid="like"]');
+                let likes = '0';
+                if (likeBtn) {{
+                    const label = likeBtn.getAttribute('aria-label') || '';
+                    const match = label.match(/([\\d.]+\\s*тыс\.?|\\d+)/);
+                    likes = match ? match[1] : '0';
+                }}
+                
+                const retweetBtn = tweet.querySelector('[data-testid="retweet"]');
+                let retweets = '0';
+                if (retweetBtn) {{
+                    const label = retweetBtn.getAttribute('aria-label') || '';
+                    const match = label.match(/([\\d.]+\\s*тыс\.?|\\d+)/);
+                    retweets = match ? match[1] : '0';
+                }}
+                
+                const replyBtn = tweet.querySelector('[data-testid="reply"]');
+                let replies = '0';
+                if (replyBtn) {{
+                    const label = replyBtn.getAttribute('aria-label') || '';
+                    const match = label.match(/(\\d+)/);
+                    replies = match ? match[1] : '0';
+                }}
+                
+                const timeEl = tweet.querySelector('time');
+                const time = timeEl ? timeEl.textContent.trim() : '';
+                
+                let views = 'Нет данных';
+                const viewEl = tweet.querySelector('a[aria-label*="просмотр"]');
+                if (viewEl) {{
+                    const label = viewEl.getAttribute('aria-label') || '';
+                    const match = label.match(/([\\d.]+\\s*тыс\.?|\\d+)/);
+                    views = match ? match[1] : 'Нет данных';
+                }}
+                
+                return {{ name, text, likes, retweets, replies, time, views }};
+            }}
+        ''')
+        
+        if not stats_data:
+            await msg.edit_text(f"❌ Пост #{num+1} не найден")
+            return
+        
+        response = f"📊 Статистика поста #{num+1}\n\n"
+        response += f"👤 @{stats_data['name']}"
+        if stats_data['time']:
+            response += f" · {stats_data['time']}"
+        response += "\n\n"
+        response += f"📝 {stats_data['text']}...\n\n" if len(stats_data['text']) > 50 else f"📝 {stats_data['text']}\n\n"
+        response += f"💬 Ответы: {stats_data['replies']}\n"
+        response += f"🔄 Репосты: {stats_data['retweets']}\n"
+        response += f"❤️ Лайки: {stats_data['likes']}\n"
+        response += f"👁️ Просмотры: {stats_data['views']}"
+        
+        await msg.edit_text(response)
+        
+    except Exception as e:
+        logger.error(f"Stats error: {e}")
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+@require_auth
+async def top(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text("⏳ Ищу самый популярный пост...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        await page.goto('https://x.com/home', wait_until='domcontentloaded', timeout=30000)
+        await page.wait_for_timeout(3000)
+        
+        top_post = await page.evaluate('''
+            () => {
+                const tweets = document.querySelectorAll('[data-testid="tweet"]');
+                let best = null;
+                let maxLikes = -1;
+                
+                for (const tweet of tweets) {
+                    const likeBtn = tweet.querySelector('[data-testid="like"]');
+                    let likes = 0;
+                    if (likeBtn) {
+                        const label = likeBtn.getAttribute('aria-label') || '';
+                        const match = label.match(/(\\d+)/);
+                        if (match) likes = parseInt(match[1]);
+                    }
+                    
+                    if (likes > maxLikes) {
+                        maxLikes = likes;
+                        
+                        const nameEl = tweet.querySelector('[data-testid="User-Name"]');
+                        const name = nameEl ? nameEl.textContent.trim() : 'Неизвестный';
+                        
+                        const textEl = tweet.querySelector('[data-testid="tweetText"]');
+                        const text = textEl ? textEl.textContent.trim() : '[Медиа]';
+                        
+                        const retweetBtn = tweet.querySelector('[data-testid="retweet"]');
+                        let retweets = '0';
+                        if (retweetBtn) {
+                            const label = retweetBtn.getAttribute('aria-label') || '';
+                            const match = label.match(/(\\d+)/);
+                            retweets = match ? match[1] : '0';
+                        }
+                        
+                        const replyBtn = tweet.querySelector('[data-testid="reply"]');
+                        let replies = '0';
+                        if (replyBtn) {
+                            const label = replyBtn.getAttribute('aria-label') || '';
+                            const match = label.match(/(\\d+)/);
+                            replies = match ? match[1] : '0';
+                        }
+                        
+                        const timeEl = tweet.querySelector('time');
+                        const time = timeEl ? timeEl.textContent.trim() : '';
+                        
+                        best = { name, text, likes, retweets, replies, time };
+                    }
+                }
+                
+                return best;
+            }
+        ''')
+        
+        if not top_post:
+            await msg.edit_text("❌ Не удалось найти популярный пост")
+            return
+        
+        response = "🏆 Самый популярный пост\n\n"
+        response += f"👤 @{top_post['name']}"
+        if top_post['time']:
+            response += f" · {top_post['time']}"
+        response += "\n\n"
+        response += f"📝 {top_post['text']}\n\n"
+        response += f"❤️ {top_post['likes']} лайков\n"
+        response += f"🔄 {top_post['retweets']} репостов\n"
+        response += f"💬 {top_post['replies']} ответов"
+        
+        await msg.edit_text(response)
+        
+    except Exception as e:
+        logger.error(f"Top error: {e}")
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Проверяю статус...")
@@ -460,6 +936,27 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
+async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text("⏳ Делаю скриншот...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        screenshot = await page.screenshot(type='jpeg', quality=80)
+        await msg.delete()
+        
+        url = page.url
+        title = await page.title()
+        
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption=f"📸 {title[:40] if title else 'X.com'}\n🔗 {url[:50]}"
+        )
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:100]}")
+
 async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Закрываю браузер...")
     await close_browser()
@@ -471,12 +968,29 @@ def main():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("login", login))
-    app.add_handler(CommandHandler("screen", screen))
+    app.add_handler(CommandHandler("feed", feed))
+    app.add_handler(CommandHandler("post", post))
+    app.add_handler(CommandHandler("trends", trends))
+    app.add_handler(CommandHandler("me", me))
+    app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("top", top))
     app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("close", close))
     
     print("🐦 X.com Bot запущен!")
-    print("📌 Команды: /start, /login, /screen, /status, /close")
+    print("📌 Команды:")
+    print("   🔐 /login — авторизация")
+    print("   📰 /feed — лента")
+    print("   📄 /post N — пост по номеру")
+    print("   📈 /trends — тренды")
+    print("   👤 /me — мой профиль")
+    print("   📊 /stats N — статистика поста")
+    print("   🏆 /top — лучший пост")
+    print("   📸 /screen — скриншот")
+    print("   📊 /status — статус")
+    print("   ❌ /close — закрыть браузер")
+    
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
