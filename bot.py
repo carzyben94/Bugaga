@@ -283,8 +283,8 @@ class GooseManager:
             self.initialized = False
             logger.info("Goose остановлен")
 
-# Создаём экземпляр Goose
-goose = GooseManager()
+# Создаём экземпляр GooseManager
+goose_manager = GooseManager()
 
 # ========== УСТАНОВКА БРАУЗЕРА ==========
 def get_chromium_path() -> Optional[str]:
@@ -688,9 +688,9 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             status_msg += "❌ Нет данных (выполните /login)\n"
         
-        status_msg += f"\n🤖 **Goose:** {'✅ Запущен' if goose.initialized else '❌ Не запущен'}\n"
-        if goose.init_error:
-            status_msg += f"⚠️ Ошибка: {goose.init_error[:100]}\n"
+        status_msg += f"\n🤖 **Goose:** {'✅ Запущен' if goose_manager.initialized else '❌ Не запущен'}\n"
+        if goose_manager.init_error:
+            status_msg += f"⚠️ Ошибка: {goose_manager.init_error[:100]}\n"
         status_msg += f"\n🕐 {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
         status_msg += f"📦 Драйвер: {'Phantomwright' if PHANTOMWRIGHT_AVAILABLE else 'Playwright'}\n"
         status_msg += f"🍪 Куки загружены: {len(COOKIES)} шт."
@@ -728,16 +728,16 @@ async def goose_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await get_browser()
         
-        if not goose.initialized:
+        if not goose_manager.initialized:
             await msg.edit_text("🔄 Запускаю Goose...")
-            success = await goose.initialize()
+            success = await goose_manager.initialize()
             if not success:
-                error_msg = goose.init_error or "Неизвестная ошибка"
+                error_msg = goose_manager.init_error or "Неизвестная ошибка"
                 await msg.edit_text(f"❌ Не удалось запустить Goose: {error_msg[:200]}")
                 return
         
         await msg.edit_text("🎯 Выполняю...")
-        result = await goose.execute_command(command_text)
+        result = await goose_manager.execute_command(command_text)
         
         if len(result) > 4000:
             parts = [result[i:i+4000] for i in range(0, len(result), 4000)]
@@ -750,7 +750,7 @@ async def goose_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
-# ========== НОВЫЕ КОМАНДЫ ДЛЯ УПРАВЛЕНИЯ GOOSE ==========
+# ========== КОМАНДЫ УПРАВЛЕНИЯ GOOSE ==========
 
 async def install_goose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Устанавливает Goose через pip"""
@@ -780,29 +780,34 @@ async def test_goose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔄 Тестирую Goose...")
     
     try:
+        # Проверяем CLI
+        process = await asyncio.create_subprocess_exec(
+            "goose", "--version",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        
+        if process.returncode == 0:
+            version_output = stdout.decode().strip() or stderr.decode().strip()
+            await msg.edit_text(f"✅ **Goose CLI работает!**\n\n"
+                               f"📦 Версия: {version_output}\n\n"
+                               f"Теперь можете использовать `/goose <команда>`")
+            return
+        
+        # Если CLI не найден, проверяем Python-модуль
         try:
             import goose
             version = goose.__version__ if hasattr(goose, '__version__') else 'неизвестно'
-            await msg.edit_text(f"✅ Goose найден как Python-модуль (версия: {version})")
+            await msg.edit_text(f"✅ **Goose Python-модуль работает!**\n\n"
+                               f"📦 Версия: {version}\n\n"
+                               f"Теперь можете использовать `/goose <команда>`")
         except ImportError:
-            await msg.edit_text("⚠️ Goose не найден как Python-модуль. Установите через /install_goose")
-            return
-        
-        try:
-            process = await asyncio.create_subprocess_exec(
-                "goose", "--version",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, stderr = await process.communicate()
-            if process.returncode == 0:
-                version_output = stdout.decode().strip() or stderr.decode().strip()
-                await msg.edit_text(f"✅ Goose CLI доступен: {version_output}")
-            else:
-                await msg.edit_text("⚠️ Goose CLI не найден, но модуль Python установлен.")
-        except FileNotFoundError:
-            await msg.edit_text("⚠️ Goose CLI не найден, но модуль Python установлен.")
-            
+            await msg.edit_text("❌ **Goose не найден!**\n\n"
+                               "Установите через:\n"
+                               "• `/install_goose` — через pip\n"
+                               "• Или вручную: `pip install goose-ai`")
+                
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка теста: {str(e)[:200]}")
 
@@ -814,11 +819,29 @@ async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         diag = "🔍 **ДИАГНОСТИКА БОТА**\n\n"
         diag += f"🐍 Python: {sys.version.split()[0]}\n"
         
+        # Проверяем CLI
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "goose", "--version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await process.communicate()
+            if process.returncode == 0:
+                version = stdout.decode().strip() or stderr.decode().strip()
+                diag += f"📦 Goose (CLI): ✅ {version}\n"
+            else:
+                diag += "📦 Goose (CLI): ❌ не найден\n"
+        except FileNotFoundError:
+            diag += "📦 Goose (CLI): ❌ не найден\n"
+        
+        # Проверяем Python-модуль
         try:
             import goose
-            diag += f"📦 Goose: ✅ установлен (версия: {goose.__version__ if hasattr(goose, '__version__') else 'неизвестно'})\n"
+            version = goose.__version__ if hasattr(goose, '__version__') else 'неизвестно'
+            diag += f"📦 Goose (Python): ✅ {version}\n"
         except ImportError:
-            diag += "📦 Goose: ❌ не установлен\n"
+            diag += "📦 Goose (Python): ❌ не установлен\n"
         
         try:
             import playwright
@@ -838,9 +861,9 @@ async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             diag += "🔐 X.com: ❌ не авторизован\n"
         
-        diag += f"🤖 Goose MCP: {'✅ запущен' if goose.initialized else '❌ не запущен'}\n"
-        if goose.init_error:
-            diag += f"   Ошибка: {goose.init_error[:100]}\n"
+        diag += f"🤖 Goose MCP: {'✅ запущен' if goose_manager.initialized else '❌ не запущен'}\n"
+        if goose_manager.init_error:
+            diag += f"   Ошибка: {goose_manager.init_error[:100]}\n"
         
         diag += f"\n🔑 TOKEN: {'✅' if TOKEN else '❌'}\n"
         
@@ -854,16 +877,16 @@ async def restart_goose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔄 Перезапускаю Goose...")
     
     try:
-        await goose.close()
-        goose.initialized = False
+        await goose_manager.close()
+        goose_manager.initialized = False
         
-        success = await goose.initialize()
+        success = await goose_manager.initialize()
         
         if success:
             await msg.edit_text("✅ **Goose перезапущен!**\n\n"
                                "Теперь можете использовать `/goose <команда>`")
         else:
-            error_msg = goose.init_error or "Неизвестная ошибка"
+            error_msg = goose_manager.init_error or "Неизвестная ошибка"
             await msg.edit_text(f"❌ **Не удалось перезапустить Goose:**\n```\n{error_msg[:200]}\n```")
             
     except Exception as e:
@@ -887,7 +910,7 @@ def main():
     import atexit
     @atexit.register
     def cleanup():
-        asyncio.create_task(goose.close())
+        asyncio.create_task(goose_manager.close())
     
     print("🐦 X.com Bot с Goose запущен!")
     print("📌 Команды: /start, /login, /screen, /status, /goose, /close")
