@@ -163,17 +163,18 @@ provider:
   api_key: {AGNES_API_KEY or ""}
   model: agnes-2.0-flash
 
-# Подключаем Playwright MCP с правильной командой
+# Подключаем Playwright MCP как STDIO расширение
 extensions:
   - name: playwright
-    command: npx -y @playwright/mcp@latest
+    command: npx
+    args:
+      - @playwright/mcp@latest
     type: stdio
 """
             with open(config_path, "w") as f:
                 f.write(config_content)
             logger.info(f"✅ Конфиг Goose с Playwright MCP создан")
             
-            # Проверяем, что файл создался
             if not os.path.exists(config_path):
                 self.init_error = "Не удалось создать конфиг"
                 return False
