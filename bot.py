@@ -245,7 +245,7 @@ provider:
         browser_ctx = ""
         
         # Проверяем, есть ли WebSocket URL
-        if browser_ws_url:
+        if browser_ws_url and browser_ws_url != "❌ Недоступен (Phantomwright)":
             if progress_callback:
                 await progress_callback(f"🔗 Найден WebSocket: {browser_ws_url[:50]}...")
             
@@ -262,7 +262,7 @@ provider:
             if progress_callback:
                 await progress_callback("⚠️ WebSocket не найден. Запускаю браузер через /login...")
             await get_browser()
-            if browser_ws_url:
+            if browser_ws_url and browser_ws_url != "❌ Недоступен (Phantomwright)":
                 if progress_callback:
                     await progress_callback(f"🔗 Браузер запущен, WebSocket: {browser_ws_url[:50]}...")
         
@@ -283,7 +283,7 @@ provider:
                 await progress_callback("🔄 Запускаю Goose...")
             
             # ГЛАВНОЕ: подключаемся к твоему браузеру через WebSocket
-            if browser_ws_url:
+            if browser_ws_url and browser_ws_url != "❌ Недоступен (Phantomwright)":
                 if progress_callback:
                     await progress_callback("🔗 Подключаюсь к твоему браузеру...")
                 extension_cmd = f"npx -y @playwright/mcp@latest --browser-url {browser_ws_url}"
@@ -399,6 +399,7 @@ async def get_browser():
             install_browser()
             chromium_path = get_chromium_path()
         
+        # Запускаем браузер с remote-debugging-port для CDP
         launch_args = {
             'headless': True,
             'args': [
@@ -409,6 +410,7 @@ async def get_browser():
                 '--disable-gpu',
                 '--window-size=1280,720',
                 '--headless=new',
+                '--remote-debugging-port=9222',  # Включаем CDP
             ]
         }
         if chromium_path:
@@ -416,15 +418,24 @@ async def get_browser():
         
         browser = await p.chromium.launch(**launch_args)
         
+        # Получаем WebSocket URL для Phantomwright
         try:
-            if hasattr(browser, '_connection') and browser._connection:
-                browser_ws_url = browser._connection.websocket.url
-                logger.info(f"🔗 WebSocket URL: {browser_ws_url}")
+            if hasattr(browser, 'ws_endpoint'):
+                browser_ws_url = browser.ws_endpoint
+                logger.info(f"🔗 WebSocket URL (ws_endpoint): {browser_ws_url}")
+            elif hasattr(browser, '_connection') and browser._connection:
+                if hasattr(browser._connection, 'websocket') and browser._connection.websocket:
+                    browser_ws_url = browser._connection.websocket.url
+                    logger.info(f"🔗 WebSocket URL (_connection): {browser_ws_url}")
+                else:
+                    browser_ws_url = None
+                    logger.warning("⚠️ Нет websocket в _connection")
             else:
-                browser_ws_url = None
+                # Если не удалось получить, ставим заглушку
+                browser_ws_url = "❌ Недоступен (Phantomwright)"
                 logger.warning("⚠️ Не удалось получить WebSocket URL")
         except Exception as e:
-            browser_ws_url = None
+            browser_ws_url = "❌ Недоступен (Phantomwright)"
             logger.warning(f"⚠️ Ошибка получения WebSocket URL: {e}")
         
         context = await browser.new_context(
@@ -460,6 +471,7 @@ async def get_browser():
         }
         
         logger.info("✅ Браузер запущен")
+        logger.info(f"🔗 WebSocket: {browser_ws_url}")
         return browser_data
     finally:
         browser_lock = False
@@ -666,7 +678,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         const hasLoginForm = !!document.querySelector('[data-testid="loginForm"]');
                         
                         const cookies = document.cookie.split(';').reduce((acc, c) => {
-                            const [key, val] = c.trim().split('=');
+                            const [key, val] = c.trim().split('='');
                             acc[key] = val;
                             return acc;
                         }, {});
@@ -721,12 +733,17 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 hours = int(browser_info['uptime'] // 3600)
                 minutes = int((browser_info['uptime'] % 3600) // 60)
                 status_msg += f"⏱️ Аптайм: {hours}ч {minutes}м\n"
+            # Показываем WebSocket статус
             if browser_ws_url:
-                status_msg += f"🔗 WebSocket: ✅ {browser_ws_url[:50]}...\n"
+                if browser_ws_url == "❌ Недоступен (Phantomwright)":
+                    status_msg += f"🔗 WebSocket: {browser_ws_url}\n"
+                else:
+                    status_msg += f"🔗 WebSocket: ✅ {browser_ws_url[:50]}...\n"
             else:
                 status_msg += "🔗 WebSocket: ❌ Не сохранён\n"
         else:
             status_msg += "🌐 Браузер: ❌ Не запущен\n"
+            status_msg += "🔗 WebSocket: ❌ Нет браузера\n"
         
         if browser_ok and browser_info.get('url'):
             status_msg += f"🔗 URL: {browser_info['url'][:60]}\n"
@@ -1068,7 +1085,13 @@ async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ImportError:
             diag += "🎭 Playwright: ❌\n"
         diag += f"🌐 Браузер: {'✅' if browser_data else '❌'}\n"
-        diag += f"🔗 WebSocket: {'✅' if browser_ws_url else '❌'}\n"
+        if browser_ws_url:
+            if browser_ws_url == "❌ Недоступен (Phantomwright)":
+                diag += f"🔗 WebSocket: {browser_ws_url}\n"
+            else:
+                diag += f"🔗 WebSocket: ✅ {browser_ws_url[:50]}...\n"
+        else:
+            diag += "🔗 WebSocket: ❌\n"
         diag += f"🔐 Авторизация: {'✅' if login_status['is_logged_in'] else '❌'}\n"
         diag += f"🤖 Goose: {'✅' if goose_manager.initialized else '❌'}\n"
         diag += f"🧠 Agnes: {'✅' if AGNES_API_KEY else '❌'}\n"
