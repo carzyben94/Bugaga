@@ -5,19 +5,17 @@ RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
     curl \
-    nodejs \
-    npm \
-    git \
     && rm -rf /var/lib/apt/lists/*
+
+# Устанавливаем Node.js 20 (нужен для npm и Goose)
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs
 
 # Устанавливаем Playwright и браузеры
 RUN pip install playwright && playwright install chromium && playwright install-deps
 
-# Устанавливаем Goose через pip (правильный способ)
-RUN pip install goose-ai
-
-# ИЛИ устанавливаем через npm (если есть официальный пакет)
-# RUN npm install -g goose-ai
+# Устанавливаем Goose через npm (ПРАВИЛЬНЫЙ СПОСОБ!)
+RUN npm install -g @block/goose
 
 WORKDIR /app
 
@@ -29,4 +27,4 @@ RUN pip install -r requirements.txt
 COPY bot.py .
 
 # Команда запуска
-CMD ["python", "bot.py"] 
+CMD ["python", "bot.py"]
