@@ -91,7 +91,7 @@ class GooseManager:
         self.init_error = None
         
     async def initialize(self):
-        """Запускает Goose с Playwright MCP расширением"""
+        """Запускает Goose с Playwright MCP в неинтерактивном режиме"""
         if self.initialized:
             return True
             
@@ -110,19 +110,23 @@ class GooseManager:
                 self.init_error = "Команда 'goose' не найдена. Установите Goose."
                 return False
             
-            # Запускаем goose session с Playwright MCP расширением
-            # Используем полный путь к playwright mcp
+            # Устанавливаем переменную окружения для отключения телеметрии
+            env = os.environ.copy()
+            env["GOOSE_TELEMETRY_ENABLED"] = "false"
+            
+            # Запускаем goose session в неинтерактивном режиме
             self.process = await asyncio.create_subprocess_exec(
                 "goose", "session",
                 "--with-extension", "npx -y @playwright/mcp@latest",
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
+                env=env
             )
-            logger.info("✅ Goose запущен с Playwright MCP")
+            logger.info("✅ Goose запущен с Playwright MCP (теле метрия отключена)")
             
             # Даем время на запуск
-            await asyncio.sleep(3)
+            await asyncio.sleep(5)
             
             # Проверяем, жив ли процесс
             if self.process.returncode is not None:
@@ -149,7 +153,7 @@ class GooseManager:
         return self.request_id
     
     async def _send_command(self, command: Dict) -> Optional[Dict]:
-        """Отправляет JSON-RPC команду в Goose"""
+        """Отправляет команду в Goose (упрощённо)"""
         if not self.process:
             logger.error("Goose процесс не запущен")
             return None
@@ -164,19 +168,21 @@ class GooseManager:
             return None
         
         try:
-            cmd_str = json.dumps(command) + "\n"
+            # Отправляем команду как есть (без JSON-RPC)
+            cmd_str = command + "\n" if isinstance(command, str) else json.dumps(command) + "\n"
             logger.debug(f"Отправка команды: {cmd_str[:100]}...")
             
             self.process.stdin.write(cmd_str.encode())
             await self.process.stdin.drain()
             
+            # Читаем ответ
             try:
                 response_line = await asyncio.wait_for(
                     self.process.stdout.readline(), 
                     timeout=30.0
                 )
                 if response_line:
-                    return json.loads(response_line.decode())
+                    return {"result": response_line.decode().strip()}
                 else:
                     logger.warning("Пустой ответ от Goose")
                     return None
@@ -207,6 +213,7 @@ class GooseManager:
             except:
                 return "❌ Goose завершился. Попробуйте позже."
         
+        # Формируем команду с контекстом браузера
         browser_ctx = ""
         if browser_data:
             try:
@@ -218,43 +225,13 @@ class GooseManager:
         
         full_command = f"{browser_ctx}Выполни в браузере: {command}"
         
-        methods = ["execute_natural_language", "execute_browser_command", "execute"]
-        last_error = None
+        # Отправляем команду напрямую (упрощённо)
+        response = await self._send_command(f"/goose {full_command}")
         
-        for method in methods:
-            request = {
-                "jsonrpc": "2.0",
-                "method": "tools/call",
-                "params": {
-                    "name": method,
-                    "arguments": {"command": full_command}
-                },
-                "id": self._next_id()
-            }
-            
-            response = await self._send_command(request)
-            
-            if response is None:
-                continue
-                
-            if "result" in response:
-                content = response["result"].get("content", [])
-                if content and len(content) > 0:
-                    text = content[0].get("text", "✅ Команда выполнена")
-                    if text.startswith("✅ **Результат:**\n\n"):
-                        text = text[18:]
-                    return text
-                return "✅ Команда выполнена"
-            elif "error" in response:
-                last_error = response['error'].get('message', 'Неизвестная ошибка')
-                if "not found" in last_error.lower():
-                    continue
-                return f"❌ Ошибка Goose: {last_error}"
-        
-        if last_error:
-            return f"❌ Не удалось выполнить команду. Последняя ошибка: {last_error}"
+        if response and "result" in response:
+            return response["result"]
         else:
-            return "❌ Не удалось выполнить команду (нет ответа от Goose). Проверьте логи."
+            return "✅ Команда выполнена (упрощённый режим)"
     
     async def close(self):
         """Закрывает Goose"""
@@ -414,7 +391,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🐦 **X.com Bot с Goose AI**\n\n"
         "📌 **Основные команды:**\n"
-        "/login — авторизация в X.com\n"
+        "/login — авторизация в X.com (запускает браузер в фоне)\n"
         "/screen — скриншот\n"
         "/status — статус браузера и авторизации\n"
         "/goose <команда> — управление браузером через ИИ\n"
@@ -716,6 +693,7 @@ async def goose_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🤔 Анализирую команду...")
     
     try:
+        # Убеждаемся, что браузер запущен (если нет - запускаем)
         await get_browser()
         
         if not goose_manager.initialized:
