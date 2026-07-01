@@ -363,8 +363,17 @@ async def get_browser():
         
         browser = await p.chromium.launch(**launch_args)
         
-        browser_ws_url = browser.ws_endpoint
-        logger.info(f"🔗 WebSocket URL: {browser_ws_url}")
+        # Получаем WebSocket URL через _connection
+        try:
+            if hasattr(browser, '_connection') and browser._connection:
+                browser_ws_url = browser._connection.websocket.url
+                logger.info(f"🔗 WebSocket URL: {browser_ws_url}")
+            else:
+                browser_ws_url = None
+                logger.warning("⚠️ Не удалось получить WebSocket URL")
+        except Exception as e:
+            browser_ws_url = None
+            logger.warning(f"⚠️ Ошибка получения WebSocket URL: {e}")
         
         context = await browser.new_context(
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -399,7 +408,6 @@ async def get_browser():
         }
         
         logger.info("✅ Браузер запущен")
-        logger.info(f"🔗 WebSocket URL сохранён: {browser_ws_url}")
         return browser_data
     finally:
         browser_lock = False
@@ -734,18 +742,15 @@ async def goose_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async def update_status(text):
         """Обновляет сообщение с логами"""
         try:
-            # Добавляем время к каждому логу
             timestamp = datetime.now().strftime("%H:%M:%S")
             await msg.edit_text(f"🔄 **Логи выполнения** ({timestamp}):\n\n`{text}`")
-        except Exception as e:
-            # Если не можем редактировать (сообщение слишком старое), отправляем новое
+        except Exception:
             try:
                 await update.message.reply_text(f"📋 {text}")
             except:
                 pass
     
     try:
-        # Убеждаемся, что браузер запущен
         await update_status("🌐 Проверяю браузер...")
         await get_browser()
         
@@ -780,7 +785,6 @@ async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         diag = "🔍 **ДИАГНОСТИКА БОТА**\n\n"
         diag += f"🐍 Python: {sys.version.split()[0]}\n"
         
-        # Проверяем Goose CLI
         installed, version = await check_goose_installed()
         diag += f"📦 Goose (CLI): {'✅ ' + version if installed else '❌ не установлен'}\n"
         
