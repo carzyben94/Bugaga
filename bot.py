@@ -1,4 +1,4 @@
-# bot.py - Полный бот с джойстиком, AI управлением, поиском постов и переводом ON/OFF 
+# bot.py - Полный бот с джойстиком (оптимизирован для headless)
 import os
 import sys
 import subprocess
@@ -15,10 +15,10 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from playwright.async_api import Page, async_playwright
 from playwright_stealth import stealth_async
-import requests  # Для перевода
+import requests
 
 # ========== НАСТРОЙКА ПЕРЕВОДА ==========
-translate_enabled = True  # По умолчанию перевод ВКЛЮЧЕН
+translate_enabled = True
 
 # ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
 logging.basicConfig(
@@ -63,10 +63,8 @@ browser_lock = False
 
 # ========== ФУНКЦИЯ ПЕРЕВОДА ==========
 async def translate_text(text: str, target_lang: str = 'ru') -> str:
-    """Переводит текст через бесплатный API"""
     if not translate_enabled or not text or len(text) < 5:
         return text
-    
     try:
         url = "https://translate.googleapis.com/translate_a/single"
         params = {
@@ -95,8 +93,6 @@ class JoystickState:
     smoothness: float = 0.3
 
 class JoystickController:
-    """Управление мышью как джойстиком для AI-агентов"""
-    
     def __init__(self, page: Page):
         self.page = page
         self.state = JoystickState()
@@ -307,13 +303,11 @@ class JoystickController:
     
     async def find_and_click(self, description: str) -> bool:
         elements = await self.explore_screen()
-        
         if not elements:
             return False
         
         best_match = None
         best_score = 0
-        
         keywords = description.lower().split()
         
         for el in elements:
@@ -495,6 +489,7 @@ async def get_browser():
     
     try:
         p = await async_playwright().start()
+        
         browser = await p.chromium.launch(
             headless=True,
             args=[
@@ -526,7 +521,33 @@ async def get_browser():
                 '--enable-features=NetworkService,NetworkServiceInProcess',
                 '--force-color-profile=srgb',
                 '--window-position=0,0',
-                '--window-size=1280,720'
+                '--window-size=1280,720',
+                '--disable-infobars',
+                '--headless=new',
+                '--hide-scrollbars',
+                '--mute-audio',
+                '--disable-background-networking',
+                '--disable-sync',
+                '--disable-translate',
+                '--disable-web-resources',
+                '--safebrowsing-disable-auto-update',
+                '--disable-features=ChromeWhatsNewUI',
+                '--disable-features=TranslateUI',
+                '--disable-ipc-flooding-protection',
+                '--disable-renderer-backgrounding',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-breakpad',
+                '--disable-crash-reporter',
+                '--disable-dev-shm-usage',
+                '--disable-hang-monitor',
+                '--disable-prompt-on-repost',
+                '--disable-session-crashed-bubble',
+                '--disable-stack-profiler',
+                '--disable-system-crash-reporter',
+                '--no-first-run',
+                '--no-default-browser-check',
+                '--no-pings',
+                '--disable-domain-reliability'
             ]
         )
         
@@ -559,9 +580,7 @@ async def get_browser():
         page = await context.new_page()
         await stealth_async(page)
         
-        # Более мощный скрипт для обхода детекции
         await page.add_init_script("""
-            // Удаляем все следы автоматизации
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined
             });
@@ -582,7 +601,6 @@ async def get_browser():
                 get: () => 4
             });
             
-            // Эмуляция Chrome
             window.chrome = {
                 runtime: {
                     connect: () => {},
@@ -607,7 +625,6 @@ async def get_browser():
                 }
             };
             
-            // Скрываем что это Playwright
             if (window.document) {
                 Object.defineProperty(document, 'hidden', {
                     get: () => false
@@ -617,7 +634,6 @@ async def get_browser():
                 });
             }
             
-            // Переопределяем функции обнаружения
             if (window.console) {
                 console.log = function() {};
                 console.debug = function() {};
@@ -625,7 +641,6 @@ async def get_browser():
                 console.warn = function() {};
             }
             
-            // Удаляем CDP
             if (window.performance && window.performance.getEntries) {
                 const originalGetEntries = window.performance.getEntries;
                 window.performance.getEntries = function() {
@@ -634,6 +649,21 @@ async def get_browser():
                         !entry.name.includes('devtools')
                     );
                 };
+            }
+            
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => false
+            });
+            
+            const originalNavigator = window.navigator;
+            const newNavigator = Object.create(originalNavigator);
+            Object.defineProperty(newNavigator, 'webdriver', {
+                get: () => false
+            });
+            window.navigator = newNavigator;
+            
+            if (!window.hasOwnProperty('ontouchstart')) {
+                window.ontouchstart = null;
             }
         """)
         
@@ -644,6 +674,7 @@ async def get_browser():
             'page': page
         }
         
+        logger.info("✅ Браузер запущен в headless режиме")
         return browser_data
     finally:
         browser_lock = False
@@ -661,19 +692,16 @@ async def close_browser():
 
 # ========== КОМАНДЫ ПЕРЕВОДА ==========
 async def translate_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Включает автоматический перевод постов"""
     global translate_enabled
     translate_enabled = True
     await update.message.reply_text("✅ **Перевод ВКЛЮЧЕН**\n\nТеперь все посты будут автоматически переводиться на русский язык.")
 
 async def translate_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Выключает автоматический перевод постов"""
     global translate_enabled
     translate_enabled = False
     await update.message.reply_text("❌ **Перевод ВЫКЛЮЧЕН**\n\nПосты будут показываться в оригинале.")
 
 async def translate_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает статус перевода"""
     status = "✅ ВКЛЮЧЕН" if translate_enabled else "❌ ВЫКЛЮЧЕН"
     await update.message.reply_text(
         f"🔤 **Статус перевода:** {status}\n\n"
@@ -750,12 +778,10 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         logger.info(f"User {update.effective_user.id} начал xlogin")
         
-        # 1. Очищаем куки
         await browser['context'].clear_cookies()
         await page.goto('about:blank')
         await page.wait_for_timeout(2000)
         
-        # 2. Устанавливаем куки
         cookie_errors = []
         cookie_success = []
         
@@ -771,135 +797,61 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 }
                 await browser['context'].add_cookies([cookie_data])
                 cookie_success.append(cookie['name'])
-                logger.info(f"Cookie установлена: {cookie['name']}")
             except Exception as e:
                 cookie_errors.append(f"{cookie['name']}: {str(e)}")
-                logger.warning(f"Ошибка куки {cookie['name']}: {e}")
         
         log_msg = f"✅ Кук установлено: {len(cookie_success)}\n"
         if cookie_errors:
             log_msg += f"⚠️ Ошибки: {len(cookie_errors)}\n"
         
-        # 3. Переход с имитацией человека
         await msg.edit_text("🔄 Загружаю X.com...")
         
-        # Делаем несколько попыток с разными параметрами
         for attempt in range(3):
             try:
                 await page.goto('https://x.com', wait_until='domcontentloaded', timeout=30000)
-                await page.wait_for_timeout(2000 + attempt * 1000)
+                await page.wait_for_timeout(5000)
                 break
             except Exception as e:
                 logger.warning(f"Попытка {attempt+1} загрузки: {e}")
                 if attempt < 2:
                     await page.reload(wait_until='domcontentloaded', timeout=15000)
-                    await page.wait_for_timeout(2000)
+                    await page.wait_for_timeout(3000)
                 else:
                     raise
         
-        # 4. Обработка ошибки "Something went wrong"
-        # Проверяем наличие сообщения об ошибке
-        error_detected = False
-        try:
-            # Проверяем наличие текста ошибки
-            error_text = await page.evaluate('''
-                () => {
-                    const body = document.body?.textContent || '';
-                    return body.includes('Something went wrong') || 
-                           body.includes('Try again') ||
-                           body.includes('privacy related extensions');
-                }
-            ''')
-            
-            if error_text:
-                error_detected = True
-                log_msg += "\n⚠️ Обнаружена ошибка X.com"
-                
-                # Пробуем обновить страницу с задержкой
-                await msg.edit_text("🔄 Обновляю страницу...")
-                await page.reload(wait_until='domcontentloaded', timeout=20000)
-                await page.wait_for_timeout(3000)
-                
-                # Пробуем кликнуть "Try again"
-                try:
-                    try_again = await page.query_selector('text=Try again')
-                    if try_again:
-                        await try_again.click()
-                        await page.wait_for_timeout(3000)
-                        log_msg += "\n✅ Нажата кнопка Try again"
-                except:
-                    pass
-                
-                # Пробуем кликнуть в любом месте для активации
-                try:
-                    await page.mouse.click(640, 360)
-                    await page.wait_for_timeout(1000)
-                except:
-                    pass
-        except Exception as e:
-            logger.warning(f"Ошибка проверки ошибки: {e}")
-        
-        # 5. Прокрутка для активации
-        await page.evaluate('window.scrollBy(0, 200)')
-        await page.wait_for_timeout(1000)
-        await page.evaluate('window.scrollBy(0, -200)')
-        await page.wait_for_timeout(1000)
-        
-        # 6. Проверка авторизации
         is_logged = False
+        
+        cookies = await browser['context'].cookies()
+        auth_token = next((c for c in cookies if c.get('name') == 'auth_token'), None)
+        ct0 = next((c for c in cookies if c.get('name') == 'ct0'), None)
+        
+        log_msg += f"\n\n🍪 auth_token: {'✅' if auth_token else '❌'}"
+        log_msg += f"\n🍪 ct0: {'✅' if ct0 else '❌'}"
+        
         try:
-            # Проверяем куки
-            cookies = await browser['context'].cookies()
-            auth_token = next((c for c in cookies if c.get('name') == 'auth_token'), None)
-            ct0 = next((c for c in cookies if c.get('name') == 'ct0'), None)
+            await page.wait_for_timeout(3000)
             
-            log_msg += f"\n\n🍪 auth_token: {'✅' if auth_token else '❌'}"
-            log_msg += f"\n🍪 ct0: {'✅' if ct0 else '❌'}"
-            
-            # Проверяем наличие кнопки твита - главный признак входа
-            try:
-                # Ждем немного для загрузки динамического контента
-                await page.wait_for_timeout(2000)
+            tweet_btn = await page.query_selector('[data-testid="tweetButton"]')
+            if tweet_btn:
+                is_logged = True
+                log_msg += "\n\n✅ **ВЫ АВТОРИЗОВАНЫ!**"
+                log_msg += "\n🔵 Кнопка Tweet найдена"
+            else:
+                profile = await page.query_selector('[data-testid="AppTabBar_Profile_Link"]')
+                home = await page.query_selector('[data-testid="AppTabBar_Home_Link"]')
                 
-                tweet_btn = await page.query_selector('[data-testid="tweetButton"]')
-                if tweet_btn:
+                if profile or home:
                     is_logged = True
                     log_msg += "\n\n✅ **ВЫ АВТОРИЗОВАНЫ!**"
-                    log_msg += "\n🔵 Кнопка Tweet найдена"
+                    if profile:
+                        log_msg += "\n🔵 Профиль найден"
+                    if home:
+                        log_msg += "\n🔵 Домашняя страница найдена"
                 else:
-                    # Пробуем другие селекторы
-                    profile = await page.query_selector('[data-testid="AppTabBar_Profile_Link"]')
-                    home = await page.query_selector('[data-testid="AppTabBar_Home_Link"]')
-                    explore = await page.query_selector('[data-testid="AppTabBar_Explore_Link"]')
-                    
-                    if profile or home or explore:
-                        is_logged = True
-                        log_msg += "\n\n✅ **ВЫ АВТОРИЗОВАНЫ!**"
-                        if profile:
-                            log_msg += "\n🔵 Профиль найден"
-                        if home:
-                            log_msg += "\n🔵 Домашняя страница найдена"
-                        if explore:
-                            log_msg += "\n🔵 Обзор найден"
-                    else:
-                        # Проверяем наличие формы входа
-                        login_form = await page.query_selector('[data-testid="loginForm"]')
-                        if login_form:
-                            log_msg += "\n\n❌ Требуется вход"
-                        else:
-                            # Проверяем наличие кнопки входа
-                            login_btn = await page.query_selector('a[href="/login"]')
-                            if login_btn:
-                                log_msg += "\n\n❌ Требуется вход"
-                            else:
-                                log_msg += "\n\n⚠️ Статус не определен"
-            except Exception as e:
-                log_msg += f"\n\n⚠️ Ошибка проверки: {str(e)[:50]}"
-            
+                    log_msg += "\n\n❌ **НЕ АВТОРИЗОВАН**"
         except Exception as e:
             log_msg += f"\n\n⚠️ Ошибка проверки: {str(e)[:50]}"
         
-        # 7. Делаем скриншот
         screenshot = None
         try:
             screenshot = await page.screenshot(type='jpeg', quality=80)
@@ -907,10 +859,8 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             log_msg += f"\n\n⚠️ Ошибка скриншота: {str(e)[:50]}"
         
-        # 8. Отправка результата
         final_msg = f"✅ X.com\n\n{log_msg}"
         
-        # Если слишком длинное - обрезаем
         if len(final_msg) > 4000:
             final_msg = final_msg[:4000] + "...\n(обрезано)"
         
@@ -1631,7 +1581,6 @@ async def go_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Получает пост по номеру с движением джойстика, скриншотом и переводом"""
     if not context.args:
         await update.message.reply_text(
             "❌ Укажи номер поста\n"
@@ -1766,10 +1715,8 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 post['width'] = coords['width']
                 post['height'] = coords['height']
         
-        # ===== ПОЛУЧАЕМ ТЕКСТ ПОСТА =====
         original_text = post['text']
         
-        # ===== ПЕРЕВОД (если включен) =====
         translated_text = None
         if translate_enabled and len(original_text) > 10:
             try:
@@ -1779,7 +1726,6 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 pass
         
-        # Форматируем время
         time_str = post['time']
         if time_str:
             try:
@@ -1788,7 +1734,6 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 time_str = post['time'][:10]
         
-        # ===== ФОРМИРУЕМ ВЫВОД =====
         text_preview = original_text[:300]
         if len(original_text) > 300:
             text_preview += '...'
@@ -1796,7 +1741,6 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result = f"📌 #{num + 1} @{post['author']}\n\n"
         result += f"📝 {text_preview}\n"
         
-        # Добавляем перевод, если включен и есть
         if translate_enabled and translated_text:
             trans_preview = translated_text[:300]
             if len(translated_text) > 300:
@@ -1806,7 +1750,6 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result += f"\n❤️ {post['likes']}  🔁 {post['retweets']}  💬 {post['replies']}\n"
         result += f"🕐 {time_str}"
         
-        # ===== ДВИЖЕНИЕ ДЖОЙСТИКА =====
         await status_msg.edit_text(f"🖱️ Двигаюсь к посту #{num + 1}...")
         
         joystick = JoystickController(page)
@@ -1815,7 +1758,6 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await asyncio.sleep(0.3)
         
-        # ===== СКРИНШОТ =====
         await status_msg.edit_text(f"📸 Делаю скриншот поста #{num + 1}...")
         
         screenshot = None
@@ -1849,7 +1791,6 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 pass
         
-        # Отправляем результат
         if len(result) > 4000:
             with open('tweet_result.txt', 'w', encoding='utf-8') as f:
                 f.write(result)
@@ -1882,7 +1823,6 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def last_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает последний пост"""
     try:
         browser = await get_browser()
         if not browser:
@@ -1906,7 +1846,6 @@ async def last_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.args = old_args
 
 async def list_tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает список всех постов"""
     msg = await update.message.reply_text("🔍 Ищу посты...")
     
     try:
@@ -2136,9 +2075,7 @@ async def find_tweet_by_text(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ========== ПОИСК ПОСТОВ ==========
-
 async def search_tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ищет посты по ключевому слову с джойстиком и скриншотом"""
     if not context.args:
         await update.message.reply_text(
             "❌ Введи поисковый запрос\n"
@@ -2318,7 +2255,6 @@ async def search_tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def search_author(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ищет посты от конкретного автора"""
     if not context.args:
         await update.message.reply_text("❌ Укажи автора: /search_author @elonmusk")
         return
@@ -2389,7 +2325,6 @@ async def search_author(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def search_hashtag(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ищет посты с хештегом"""
     if not context.args:
         await update.message.reply_text("❌ Укажи хештег: /search_hashtag #BTC")
         return
@@ -2460,7 +2395,6 @@ async def search_hashtag(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ========== ЗАПУСК ==========
-
 def main():
     app = Application.builder().token(TOKEN).build()
     
@@ -2491,23 +2425,18 @@ def main():
     app.add_handler(CommandHandler("like_tweet", like_tweet_by_number))
     app.add_handler(CommandHandler("find_tweet", find_tweet_by_text))
     
-    # 🔍 Команды поиска
+    # Команды поиска
     app.add_handler(CommandHandler("search", search_tweets))
     app.add_handler(CommandHandler("search_author", search_author))
     app.add_handler(CommandHandler("search_hashtag", search_hashtag))
     
-    # 🔤 Команды перевода
+    # Команды перевода
     app.add_handler(CommandHandler("translate_on", translate_on))
     app.add_handler(CommandHandler("translate_off", translate_off))
     app.add_handler(CommandHandler("translate_status", translate_status))
     
-    print("🤖 Бот с джойстиком запущен...")
-    print("📌 Доступные команды:")
-    print("   Основные: /start, /go, /xlogin, /explore, /findbuttons, /click, /screen, /status, /stats, /check, /logs, /close")
-    print("   Джойстик: /joystick, /joystick_ai, /find")
-    print("   Посты: /user, /tweet, /last, /tweets, /like_tweet, /find_tweet")
-    print("   🔍 Поиск: /search, /search_author, /search_hashtag")
-    print("   🔤 Перевод: /translate_on, /translate_off, /translate_status")
+    print("🤖 Бот с джойстиком запущен (headless режим)")
+    print("📌 Все команды загружены")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
