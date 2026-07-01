@@ -506,7 +506,6 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     const textEl = tweet.querySelector('[data-testid="tweetText"]');
                     const timeEl = tweet.querySelector('time');
-                    const likesEl = tweet.querySelector('[data-testid="like"]');
                     const isPinned = !!tweet.querySelector('[data-testid="pinIcon"]');
                     
                     let text = textEl ? textEl.innerText : '';
@@ -514,7 +513,7 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     text = text.replace(/http?:\\/\\/[^\\s]+/g, '');
                     text = text.replace(/ftp?:\\/\\/[^\\s]+/g, '');
                     text = text.replace(/www\\.[^\\s]+/g, '');
-                    text = text.replace(/[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}\\S*/g, '');
+                    text = text.replace(/[a-zA-Z0-9.-]+\\.[a-zA-Z]{{2,}}\\S*/g, '');
                     text = text.replace(/\\n\\s*\\n/g, '\\n');
                     text = text.replace(/\\s{{2,}}/g, ' ');
                     text = text.trim();
@@ -522,7 +521,6 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     tweets.push({{
                         text: text,
                         time: timeEl ? timeEl.getAttribute('datetime') : '',
-                        likes: likesEl ? likesEl.innerText : '0',
                         is_pinned: isPinned
                     }});
                 }});
@@ -552,12 +550,7 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             if tweet['time']:
                 time_str = tweet['time'][:16].replace('T', ' ')
-                report += f"🕐 {time_str}"
-            
-            if tweet['likes'] and tweet['likes'] != '0':
-                if tweet['time']:
-                    report += "  "
-                report += f"❤️ {tweet['likes']}"
+                report += f"\n🕐 {time_str}"
             
             report += "\n\n"
         
@@ -617,7 +610,6 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     const textEl = tweet.querySelector('[data-testid="tweetText"]');
                     const timeEl = tweet.querySelector('time');
-                    const likesEl = tweet.querySelector('[data-testid="like"]');
                     
                     let text = textEl ? textEl.innerText : '';
                     text = text.replace(/https?:\\/\\/[^\\s]+/g, '');
@@ -631,8 +623,7 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     tweets.push({
                         text: text,
-                        time: timeEl ? timeEl.getAttribute('datetime') : '',
-                        likes: likesEl ? likesEl.innerText : '0'
+                        time: timeEl ? timeEl.getAttribute('datetime') : ''
                     });
                 });
                 
@@ -661,12 +652,7 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             if tweet['time']:
                 time_str = tweet['time'][:16].replace('T', ' ')
-                report += f"🕐 {time_str}"
-            
-            if tweet['likes'] and tweet['likes'] != '0':
-                if tweet['time']:
-                    report += "  "
-                report += f"❤️ {tweet['likes']}"
+                report += f"\n🕐 {time_str}"
             
             report += "\n\n"
         
