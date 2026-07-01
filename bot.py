@@ -132,12 +132,12 @@ class GooseManager:
         self.init_error = None
         
     async def initialize(self):
-        """Запускает Goose в фоновом режиме без интерактива"""
+        """Проверяет наличие Goose и создаёт конфиг"""
         if self.initialized:
             return True
             
         try:
-            logger.info("🔄 Запускаю Goose...")
+            logger.info("🔄 Проверяю Goose...")
             
             # Проверяем, есть ли goose
             check = await asyncio.create_subprocess_exec(
@@ -167,51 +167,8 @@ provider:
                 f.write(config_content)
             logger.info("✅ Конфиг Goose создан")
             
-            # Запускаем goose в режиме сессии с минимальным интерактивом
-            env = os.environ.copy()
-            env["GOOSE_TELEMETRY_ENABLED"] = "false"
-            env["TERM"] = "dumb"  # Отключаем интерактивный терминал
-            
-            self.process = await asyncio.create_subprocess_exec(
-                "goose", "session",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env
-            )
-            
-            # Даём время на запуск
-            await asyncio.sleep(2)
-            
-            # Проверяем, жив ли процесс
-            if self.process.returncode is not None:
-                stderr = await self.process.stderr.read()
-                error_msg = stderr.decode() if stderr else "процесс завершился"
-                
-                # Если ошибка про провайдера, пробуем через другой способ
-                if "provider" in error_msg.lower() or "model" in error_msg.lower():
-                    logger.info("🔄 Пробую альтернативный запуск...")
-                    # Пробуем через goose run
-                    self.process = await asyncio.create_subprocess_exec(
-                        "goose", "run",
-                        stdin=asyncio.subprocess.PIPE,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        env=env
-                    )
-                    await asyncio.sleep(2)
-                    
-                    if self.process.returncode is not None:
-                        stderr = await self.process.stderr.read()
-                        error_msg = stderr.decode() if stderr else "процесс завершился"
-                        self.init_error = error_msg[:200]
-                        return False
-                
-                self.init_error = error_msg[:200]
-                return False
-            
             self.initialized = True
-            logger.info("✅ Goose запущен")
+            logger.info("✅ Goose готов к работе")
             return True
                 
         except FileNotFoundError:
@@ -223,13 +180,12 @@ provider:
             return False
     
     async def execute_command(self, command: str) -> str:
-        """Выполняет команду через Agnes AI"""
+        """Выполняет команду через goose run"""
         if not self.initialized:
             success = await self.initialize()
             if not success:
                 return f"❌ Не удалось запустить Goose: {self.init_error or 'Неизвестная ошибка'}"
         
-        # Получаем контекст браузера
         browser_ctx = ""
         if browser_data:
             try:
@@ -239,27 +195,38 @@ provider:
             except:
                 pass
         
-        # Формируем полную команду
         full_command = f"{browser_ctx}Выполни в браузере: {command}"
         
-        # Отправляем в Agnes AI
-        result = call_agnes(full_command)
-        
-        return result
+        # Используем goose run вместо goose session
+        try:
+            env = os.environ.copy()
+            env["GOOSE_TELEMETRY_ENABLED"] = "false"
+            
+            process = await asyncio.create_subprocess_exec(
+                "goose", "run", "-t", full_command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env
+            )
+            
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60)
+            
+            if process.returncode == 0:
+                result = stdout.decode() or stderr.decode()
+                return result if result else "✅ Команда выполнена"
+            else:
+                error = stderr.decode() if stderr else "Неизвестная ошибка"
+                return f"❌ Ошибка Goose: {error[:200]}"
+                
+        except asyncio.TimeoutError:
+            return "❌ Таймаут выполнения команды (60 сек)"
+        except Exception as e:
+            return f"❌ Ошибка: {str(e)[:200]}"
     
     async def close(self):
-        """Закрывает Goose"""
-        if self.process:
-            try:
-                self.process.terminate()
-                await asyncio.wait_for(self.process.wait(), timeout=5)
-            except:
-                try:
-                    self.process.kill()
-                except:
-                    pass
-            self.initialized = False
-            logger.info("Goose остановлен")
+        """Закрывает Goose (ничего не делает, т.к. процесс не висит)"""
+        self.initialized = False
+        logger.info("Goose остановлен")
 
 # Создаём экземпляр GooseManager
 goose_manager = GooseManager()
@@ -668,7 +635,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Проверяем Goose CLI
         installed, version = await check_goose_installed()
         status_msg += f"\n🤖 **Goose CLI:** {'✅ ' + version if installed else '❌ Не установлен'}\n"
-        status_msg += f"🤖 **Goose MCP:** {'✅ Запущен' if goose_manager.initialized else '❌ Не запущен'}\n"
+        status_msg += f"🤖 **Goose готов:** {'✅' if goose_manager.initialized else '❌ Не инициализирован'}\n"
         if goose_manager.init_error:
             status_msg += f"⚠️ Ошибка: {goose_manager.init_error[:100]}\n"
         
@@ -713,14 +680,14 @@ async def goose_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await get_browser()
         
         if not goose_manager.initialized:
-            await msg.edit_text("🔄 Запускаю Goose...")
+            await msg.edit_text("🔄 Проверяю Goose...")
             success = await goose_manager.initialize()
             if not success:
                 error_msg = goose_manager.init_error or "Неизвестная ошибка"
-                await msg.edit_text(f"❌ Не удалось запустить Goose: {error_msg[:200]}")
+                await msg.edit_text(f"❌ Не удалось инициализировать Goose: {error_msg[:200]}")
                 return
         
-        await msg.edit_text("🎯 Выполняю через Agnes AI...")
+        await msg.edit_text("🎯 Выполняю через Goose...")
         result = await goose_manager.execute_command(command_text)
         
         if len(result) > 4000:
@@ -765,7 +732,7 @@ async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             diag += "🔐 X.com: ❌ не авторизован\n"
         
-        diag += f"🤖 Goose MCP: {'✅ запущен' if goose_manager.initialized else '❌ не запущен'}\n"
+        diag += f"🤖 Goose готов: {'✅' if goose_manager.initialized else '❌ Не инициализирован'}\n"
         if goose_manager.init_error:
             diag += f"   Ошибка: {goose_manager.init_error[:100]}\n"
         
@@ -778,12 +745,12 @@ async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка диагностики: {str(e)[:200]}")
 
 async def restart_goose(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Перезапускает Goose"""
+    """Перезапускает Goose (пересоздаёт конфиг)"""
     msg = await update.message.reply_text("🔄 Перезапускаю Goose...")
     
     try:
-        await goose_manager.close()
         goose_manager.initialized = False
+        goose_manager.init_error = None
         
         success = await goose_manager.initialize()
         
