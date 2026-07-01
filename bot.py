@@ -132,14 +132,14 @@ class GooseManager:
         self.init_error = None
         
     async def initialize(self):
-        """Запускает Goose как CLI (без Python-импорта)"""
+        """Запускает Goose в фоновом режиме без интерактива"""
         if self.initialized:
             return True
             
         try:
-            logger.info("🔄 Запускаю Goose CLI...")
+            logger.info("🔄 Запускаю Goose...")
             
-            # Проверяем, есть ли команда goose в PATH
+            # Проверяем, есть ли goose
             check = await asyncio.create_subprocess_exec(
                 "goose", "--version",
                 stdout=asyncio.subprocess.PIPE,
@@ -148,16 +148,8 @@ class GooseManager:
             await check.communicate()
             
             if check.returncode != 0:
-                # Пробуем найти goose через which
-                which = await asyncio.create_subprocess_exec(
-                    "which", "goose",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                stdout, stderr = await which.communicate()
-                if which.returncode != 0:
-                    self.init_error = "goose не найден. Установите через Dockerfile."
-                    return False
+                self.init_error = "goose не найден"
+                return False
             
             # Создаём конфиг для Goose с Agnes AI
             config_dir = os.path.expanduser("~/.config/goose")
@@ -170,16 +162,15 @@ provider:
   base_url: https://apihub.agnes-ai.com/v1
   api_key: {AGNES_API_KEY or ""}
   model: agnes-2.0-flash
-extensions:
-  - playwright
 """
             with open(config_path, "w") as f:
                 f.write(config_content)
             logger.info("✅ Конфиг Goose создан")
             
-            # Запускаем goose session с отключённой телеметрией
+            # Запускаем goose в режиме сессии с минимальным интерактивом
             env = os.environ.copy()
             env["GOOSE_TELEMETRY_ENABLED"] = "false"
+            env["TERM"] = "dumb"  # Отключаем интерактивный терминал
             
             self.process = await asyncio.create_subprocess_exec(
                 "goose", "session",
@@ -190,13 +181,32 @@ extensions:
             )
             
             # Даём время на запуск
-            await asyncio.sleep(3)
+            await asyncio.sleep(2)
             
             # Проверяем, жив ли процесс
             if self.process.returncode is not None:
                 stderr = await self.process.stderr.read()
                 error_msg = stderr.decode() if stderr else "процесс завершился"
-                logger.error(f"❌ Goose завершился: {error_msg}")
+                
+                # Если ошибка про провайдера, пробуем через другой способ
+                if "provider" in error_msg.lower() or "model" in error_msg.lower():
+                    logger.info("🔄 Пробую альтернативный запуск...")
+                    # Пробуем через goose run
+                    self.process = await asyncio.create_subprocess_exec(
+                        "goose", "run",
+                        stdin=asyncio.subprocess.PIPE,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        env=env
+                    )
+                    await asyncio.sleep(2)
+                    
+                    if self.process.returncode is not None:
+                        stderr = await self.process.stderr.read()
+                        error_msg = stderr.decode() if stderr else "процесс завершился"
+                        self.init_error = error_msg[:200]
+                        return False
+                
                 self.init_error = error_msg[:200]
                 return False
             
@@ -213,7 +223,7 @@ extensions:
             return False
     
     async def execute_command(self, command: str) -> str:
-        """Выполняет команду через Goose с Agnes AI"""
+        """Выполняет команду через Agnes AI"""
         if not self.initialized:
             success = await self.initialize()
             if not success:
