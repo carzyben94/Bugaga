@@ -91,12 +91,12 @@ class GooseManager:
         self.init_error = None
         
     async def initialize(self):
-        """Запускает Goose как MCP-сервер через CLI"""
+        """Запускает Goose с Playwright MCP расширением"""
         if self.initialized:
             return True
             
         try:
-            logger.info("🔄 Запускаю Goose MCP сервер...")
+            logger.info("🔄 Запускаю Goose с Playwright MCP...")
             
             # Проверяем, есть ли команда goose
             check = await asyncio.create_subprocess_exec(
@@ -110,14 +110,16 @@ class GooseManager:
                 self.init_error = "Команда 'goose' не найдена. Установите Goose."
                 return False
             
-            # Запускаем goose mcp serve
+            # Запускаем goose session с Playwright MCP расширением
+            # Используем полный путь к playwright mcp
             self.process = await asyncio.create_subprocess_exec(
-                "goose", "mcp", "serve",
+                "goose", "session",
+                "--with-extension", "npx -y @playwright/mcp@latest",
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-            logger.info("✅ Goose запущен через CLI: goose mcp serve")
+            logger.info("✅ Goose запущен с Playwright MCP")
             
             # Даем время на запуск
             await asyncio.sleep(3)
@@ -130,26 +132,9 @@ class GooseManager:
                 self.init_error = error_msg
                 return False
             
-            # Отправляем initialize
-            init_cmd = {
-                "jsonrpc": "2.0",
-                "method": "initialize",
-                "params": {
-                    "capabilities": {},
-                    "clientInfo": {"name": "telegram-bot", "version": "1.0.0"}
-                },
-                "id": self._next_id()
-            }
-            
-            response = await self._send_command(init_cmd)
-            if response and "result" in response:
-                self.initialized = True
-                logger.info("✅ Goose MCP сервер инициализирован")
-                return True
-            else:
-                logger.error(f"❌ Ошибка инициализации Goose: {response}")
-                self.init_error = str(response)
-                return False
+            self.initialized = True
+            logger.info("✅ Goose MCP инициализирован")
+            return True
                 
         except FileNotFoundError:
             self.init_error = "Команда 'goose' не найдена. Убедитесь, что Goose установлен."
