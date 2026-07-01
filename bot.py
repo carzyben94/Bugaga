@@ -1,4 +1,4 @@
-# bot.py - Бот для X.com с Phantomwright
+# bot.py - X.com бот с Phantomwright
 import os
 import sys
 import subprocess
@@ -12,7 +12,16 @@ from typing import Tuple, Optional, List, Dict, Any
 from dataclasses import dataclass
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from phantomwright_driver.async_api import Page, async_playwright
+
+# ========== ПРОВЕРКА И УСТАНОВКА PHANTOMWRIGHT ==========
+try:
+    from phantomwright_driver.async_api import Page, async_playwright
+    PHANTOMWRIGHT_AVAILABLE = True
+    print("✅ Phantomwright загружен")
+except ImportError:
+    PHANTOMWRIGHT_AVAILABLE = False
+    print("⚠️ Phantomwright не найден, использую Playwright")
+    from playwright.async_api import Page, async_playwright
 
 # ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
 logging.basicConfig(
@@ -56,21 +65,62 @@ MAX_LOGS = 50
 browser_lock = False
 
 # ========== УСТАНОВКА БРАУЗЕРА ==========
+def get_chromium_path() -> Optional[str]:
+    """Находит путь к Chromium"""
+    base_dir = PLAYWRIGHT_DIR
+    
+    if not os.path.exists(base_dir):
+        return None
+    
+    for item in os.listdir(base_dir):
+        if item.startswith("chromium-") and "headless" not in item:
+            chrome_path = os.path.join(base_dir, item, "chrome-linux", "chrome")
+            if os.path.exists(chrome_path):
+                return chrome_path
+    
+    return None
+
 def install_browser():
-    browser_path = os.path.join(PLAYWRIGHT_DIR, "chromium-1091", "chrome-linux", "chrome")
-    if os.path.exists(browser_path):
+    """Устанавливает браузер"""
+    # Проверяем, установлен ли уже
+    if get_chromium_path():
         print("✅ Браузер уже установлен")
         return True
-    print("⏳ Устанавливаю браузер Chromium...")
+    
+    print("⏳ Устанавливаю браузер...")
+    
+    # Пробуем через Phantomwright
+    if PHANTOMWRIGHT_AVAILABLE:
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "phantomwright_driver", "install", "chromium"],
+                check=True,
+                capture_output=True
+            )
+            print("✅ Браузер установлен через Phantomwright")
+            return True
+        except Exception as e:
+            print(f"⚠️ Ошибка Phantomwright: {e}")
+    
+    # Fallback на Playwright
     try:
-        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
-        subprocess.run([sys.executable, "-m", "playwright", "install-deps"], check=True)
-        print("✅ Браузер успешно установлен!")
+        subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            check=True,
+            capture_output=True
+        )
+        subprocess.run(
+            [sys.executable, "-m", "playwright", "install-deps"],
+            check=True,
+            capture_output=True
+        )
+        print("✅ Браузер установлен через Playwright")
         return True
     except Exception as e:
-        print(f"❌ Ошибка установки браузера: {e}")
+        print(f"❌ Ошибка установки: {e}")
         return False
 
+# Устанавливаем браузер при запуске
 install_browser()
 
 # ========== ДЖОЙСТИК ==========
@@ -107,6 +157,12 @@ class JoystickController:
     async def human_like_move(self, target_x: int, target_y: int, speed: float = 1.0) -> None:
         cx, cy = self.current_pos
         distance = math.sqrt((target_x - cx)**2 + (target_y - cy)**2)
+        
+        if distance < 10:
+            await self.page.mouse.move(target_x, target_y)
+            self.current_pos = (target_x, target_y)
+            return
+        
         duration = min(2.0, distance / (800 * speed)) + random.uniform(0.1, 0.3)
         steps = max(1, int(duration * 60))
         
@@ -157,9 +213,19 @@ async def get_browser():
     try:
         p = await async_playwright().start()
         
-        browser = await p.chromium.launch(
-            headless=True,
-            args=[
+        # Находим путь к браузеру
+        chromium_path = get_chromium_path()
+        if not chromium_path:
+            # Пробуем установить
+            install_browser()
+            chromium_path = get_chromium_path()
+        
+        print(f"🔍 Использую браузер: {chromium_path}")
+        
+        # Запускаем браузер
+        launch_args = {
+            'headless': True,
+            'args': [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--disable-blink-features=AutomationControlled',
@@ -168,7 +234,12 @@ async def get_browser():
                 '--window-size=1280,720',
                 '--headless=new',
             ]
-        )
+        }
+        
+        if chromium_path:
+            launch_args['executable_path'] = chromium_path
+        
+        browser = await p.chromium.launch(**launch_args)
         
         context = await browser.new_context(
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -188,6 +259,7 @@ async def get_browser():
         )
         page = await context.new_page()
         
+        # Маскировка
         await page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
@@ -318,7 +390,12 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         browser = await get_browser()
         page = browser['page']
         
-        await page.wait_for_selector('[data-testid="tweet"]', timeout=15000)
+        # Ждем загрузки постов
+        try:
+            await page.wait_for_selector('[data-testid="tweet"]', timeout=15000)
+        except:
+            await msg.edit_text("❌ Посты не загрузились. Попробуй /login сначала")
+            return
         
         posts = await page.evaluate('''
             () => {
@@ -361,6 +438,7 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         posts_reversed = list(reversed(posts))
         post = posts_reversed[num]
         
+        # Двигаемся к посту
         joystick = JoystickController(page)
         await joystick.init_position()
         await joystick.human_like_move(post['x'], post['y'])
@@ -378,6 +456,7 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await msg.edit_text(result)
         
+        # Скриншот поста
         viewport = await page.viewport_size()
         if viewport:
             clip = {
@@ -386,8 +465,11 @@ async def get_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'width': min(post['width'] + 40, viewport['width']),
                 'height': min(post['height'] + 40, viewport['height'])
             }
-            screenshot = await page.screenshot(clip=clip, type='jpeg', quality=85)
-            await update.message.reply_photo(photo=screenshot, caption=f"📸 Пост #{num + 1}")
+            try:
+                screenshot = await page.screenshot(clip=clip, type='jpeg', quality=85)
+                await update.message.reply_photo(photo=screenshot, caption=f"📸 Пост #{num + 1}")
+            except:
+                pass
         
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
@@ -499,6 +581,7 @@ async def search_tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
         browser = await get_browser()
         page = browser['page']
         
+        # Скроллим для загрузки
         for _ in range(3):
             await page.evaluate('window.scrollBy(0, 600)')
             await asyncio.sleep(0.5)
