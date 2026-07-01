@@ -165,8 +165,13 @@ provider:
 """
             with open(config_path, "w") as f:
                 f.write(config_content)
-            logger.info("✅ Конфиг Goose создан")
+            logger.info(f"✅ Конфиг Goose создан в {config_path}")
             
+            # Проверяем, что файл создался
+            if not os.path.exists(config_path):
+                self.init_error = "Не удалось создать конфиг"
+                return False
+                
             self.initialized = True
             logger.info("✅ Goose готов к работе")
             return True
@@ -184,7 +189,7 @@ provider:
         if not self.initialized:
             success = await self.initialize()
             if not success:
-                return f"❌ Не удалось запустить Goose: {self.init_error or 'Неизвестная ошибка'}"
+                return f"❌ Не удалось инициализировать Goose: {self.init_error or 'Неизвестная ошибка'}"
         
         browser_ctx = ""
         if browser_data:
@@ -197,11 +202,16 @@ provider:
         
         full_command = f"{browser_ctx}Выполни в браузере: {command}"
         
-        # Используем goose run вместо goose session
         try:
+            # Устанавливаем переменные окружения для Goose
             env = os.environ.copy()
             env["GOOSE_TELEMETRY_ENABLED"] = "false"
+            env["GOOSE_PROVIDER"] = "openai"
+            env["OPENAI_BASE_URL"] = "https://apihub.agnes-ai.com/v1"
+            env["OPENAI_API_KEY"] = AGNES_API_KEY or ""
+            env["GOOSE_MODEL"] = "agnes-2.0-flash"
             
+            # Запускаем goose run
             process = await asyncio.create_subprocess_exec(
                 "goose", "run", "-t", full_command,
                 stdout=asyncio.subprocess.PIPE,
@@ -212,15 +222,17 @@ provider:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60)
             
             if process.returncode == 0:
-                result = stdout.decode() or stderr.decode()
+                result = stdout.decode() if stdout else stderr.decode()
                 return result if result else "✅ Команда выполнена"
             else:
                 error = stderr.decode() if stderr else "Неизвестная ошибка"
+                logger.error(f"Goose ошибка: {error}")
                 return f"❌ Ошибка Goose: {error[:200]}"
                 
         except asyncio.TimeoutError:
             return "❌ Таймаут выполнения команды (60 сек)"
         except Exception as e:
+            logger.error(f"Ошибка выполнения: {e}")
             return f"❌ Ошибка: {str(e)[:200]}"
     
     async def close(self):
