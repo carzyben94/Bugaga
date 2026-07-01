@@ -208,11 +208,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/status — Статус браузера\n"
         "/close — Закрыть браузер\n\n"
         "🤖 XBOT\n"
-        "/profilex <username> — Полный парсинг профиля\n"
+        "/profilex <username> — Парсинг профиля\n"
         "/tweets <username> — Твиты пользователя\n"
         "/stats <username> — Статистика профиля\n"
-        "/search <запрос> — Поиск твитов\n"
-        "/trends — Топ трендов"
+        "/search <запрос> — Поиск твитов"
     )
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1056,92 +1055,6 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in search: {e}", exc_info=True)
 
 
-# ========== ТРЕНДЫ ==========
-
-async def trends(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Топ трендов"""
-    msg = await update.message.reply_text("📊 Получаю тренды...")
-    
-    try:
-        browser = await get_browser()
-        page = browser['page']
-        
-        await page.goto("https://x.com/explore/tabs/for-you", wait_until='domcontentloaded')
-        await page.wait_for_timeout(3000)
-        
-        trends_data = await page.evaluate('''
-            () => {
-                const trends = [];
-                const trendElements = document.querySelectorAll('[data-testid="trend"]');
-                
-                trendElements.forEach((trend, index) => {
-                    if (index >= 10) return;
-                    
-                    const text = trend.innerText || '';
-                    const lines = text.split('\\n').filter(line => line.trim());
-                    
-                    let category = '';
-                    let title = '';
-                    let tweets = '';
-                    
-                    if (lines.length >= 2) {
-                        if (lines[0].includes('·') || lines[0].includes('Актуально')) {
-                            category = lines[0];
-                            title = lines[1] || '';
-                            tweets = lines[2] || '';
-                        } else {
-                            title = lines[0] || '';
-                            category = lines[1] || '';
-                            tweets = lines[2] || '';
-                        }
-                    } else if (lines.length === 1) {
-                        title = lines[0];
-                    }
-                    
-                    trends.push({
-                        title: title,
-                        category: category,
-                        tweets: tweets
-                    });
-                });
-                
-                return trends;
-            }
-        ''')
-        
-        if not trends_data:
-            await msg.edit_text("❌ Тренды не найдены!")
-            return
-        
-        report = f"📊 ТОП ТРЕНДОВ\n"
-        report += f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
-        report += f"📌 Найдено: {len(trends_data)}\n\n"
-        
-        for i, trend in enumerate(trends_data, 1):
-            if trend['title']:
-                report += f"{i}. {trend['title']}\n"
-                
-                if trend['category']:
-                    report += f"   📂 {trend['category']}\n"
-                
-                if trend['tweets']:
-                    report += f"   📊 {trend['tweets']}\n"
-                
-                report += "\n"
-        
-        await msg.edit_text(report)
-        
-        screenshot = await page.screenshot(type='jpeg', quality=80)
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption="📸 Тренды X.com"
-        )
-        
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-        logger.error(f"Error in trends: {e}", exc_info=True)
-
-
 # ========== ЗАПУСК ==========
 def main():
     app = Application.builder().token(TOKEN).build()
@@ -1158,12 +1071,11 @@ def main():
     app.add_handler(CommandHandler("tweets", tweets))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("search", search))
-    app.add_handler(CommandHandler("trends", trends))
     
     print("✅ Бот запущен!")
     print("Команды:")
     print("  /start, /login, /screen, /status, /close")
-    print("  /profilex, /tweets, /stats, /search, /trends")
+    print("  /profilex, /tweets, /stats, /search")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
