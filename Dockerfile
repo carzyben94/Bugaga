@@ -5,17 +5,19 @@ RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
     curl \
-    xz-utils \
+    nodejs \
+    npm \
+    git \
     && rm -rf /var/lib/apt/lists/*
-
-# Устанавливаем Node.js 20 из официального архива
-RUN curl -fsSL https://nodejs.org/dist/v20.11.0/node-v20.11.0-linux-x64.tar.xz | tar -xJ -C /usr/local --strip-components=1
 
 # Устанавливаем Playwright и браузеры
 RUN pip install playwright && playwright install chromium && playwright install-deps
 
-# Устанавливаем Goose
-RUN npm install -g @block/goose
+# Устанавливаем Goose через pip (правильный способ)
+RUN pip install goose-ai
+
+# ИЛИ устанавливаем через npm (если есть официальный пакет)
+# RUN npm install -g goose-ai
 
 WORKDIR /app
 
