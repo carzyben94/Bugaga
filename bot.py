@@ -246,6 +246,29 @@ provider:
                     if progress_callback:
                         await progress_callback("✅ Chrome установлен!")
             
+            # Проверяем и устанавливаем Playwright MCP
+            if progress_callback:
+                await progress_callback("🔧 Проверяю Playwright MCP...")
+            
+            mcp_check = await asyncio.create_subprocess_exec(
+                "npx", "@playwright/mcp", "--version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            await mcp_check.communicate()
+            
+            if mcp_check.returncode != 0:
+                if progress_callback:
+                    await progress_callback("📦 Устанавливаю Playwright MCP...")
+                install_mcp = await asyncio.create_subprocess_exec(
+                    "npm", "install", "-g", "@playwright/mcp",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                await install_mcp.communicate()
+                if progress_callback:
+                    await progress_callback("✅ Playwright MCP установлен!")
+            
             env = os.environ.copy()
             env["GOOSE_TELEMETRY_ENABLED"] = "false"
             env["GOOSE_PROVIDER"] = "openai"
@@ -256,10 +279,9 @@ provider:
             if progress_callback:
                 await progress_callback("🔄 Запускаю Goose с Playwright MCP...")
             
-            # ПРИНУДИТЕЛЬНО подключаем расширение Playwright
+            # Формируем команду расширения
             extension_cmd = "npx -y @playwright/mcp@latest"
             
-            # Добавляем куки, если нет WebSocket
             if not browser_ws_url:
                 extension_cmd += f" --cookies '{cookies_str}'"
             
@@ -468,11 +490,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/login — авторизация в X.com (запускает браузер)\n"
         "/screen — скриншот\n"
         "/status — статус браузера\n"
-        "/goose <команда> — управление браузером через ИИ (автоустановка Chrome)\n"
+        "/goose <команда> — управление браузером через ИИ\n"
         "/close — закрыть браузер\n\n"
-        "🔧 **Утилиты:**\n"
-        "/diagnose — полная диагностика\n"
-        "/restart_goose — перезапустить Goose\n\n"
+        "🔧 **Управление Goose:**\n"
+        "/goose_config — настройка Goose\n"
+        "/goose_extensions — управление расширениями\n"
+        "/goose_provider — настройка провайдера\n"
+        "/goose_restart — перезапустить Goose\n\n"
+        "📦 **Скиллы:**\n"
+        "/skills_status — статус скиллов\n"
+        "/skills_list — список скиллов\n"
+        "/skills_install — установить Playwright CLI Skill\n"
+        "/skills_add <URL> — установить скилл\n\n"
         "🤖 **Примеры /goose:**\n"
         "• `открой x.com и найди новости про ИИ`\n"
         "• `сделай скриншот главной страницы`\n"
@@ -750,7 +779,317 @@ async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await close_browser()
     await msg.edit_text("✅ Браузер закрыт!")
 
-# ========== КОМАНДА GOOSE С ЛОГАМИ И АВТОУСТАНОВКОЙ CHROME ==========
+# ========== КОМАНДЫ УПРАВЛЕНИЯ GOOSE ==========
+
+async def goose_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает конфигурацию Goose"""
+    msg = await update.message.reply_text("🔄 Читаю конфиг Goose...")
+    
+    try:
+        config_path = os.path.expanduser("~/.config/goose/config.yaml")
+        
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                content = f.read()
+            
+            if len(content) > 4000:
+                parts = [content[i:i+4000] for i in range(0, len(content), 4000)]
+                await msg.edit_text(f"📄 **Конфиг Goose:**\n\n```yaml\n{parts[0]}\n```")
+                for part in parts[1:]:
+                    await update.message.reply_text(f"📄 *Продолжение:*\n\n```yaml\n{part}\n```")
+            else:
+                await msg.edit_text(f"📄 **Конфиг Goose:**\n\n```yaml\n{content}\n```")
+        else:
+            await msg.edit_text("❌ Конфиг Goose не найден. Выполните `/goose_restart` для создания.")
+            
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def goose_extensions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает и управляет расширениями Goose"""
+    msg = await update.message.reply_text("🔄 Проверяю расширения Goose...")
+    
+    try:
+        # Проверяем конфиг на наличие расширений
+        config_path = os.path.expanduser("~/.config/goose/config.yaml")
+        
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                content = f.read()
+            
+            # Ищем расширения в конфиге
+            extensions = []
+            if 'extensions:' in content:
+                lines = content.split('\n')
+                in_extensions = False
+                for line in lines:
+                    if 'extensions:' in line:
+                        in_extensions = True
+                        continue
+                    if in_extensions and line.strip().startswith('-'):
+                        extensions.append(line.strip()[2:])
+                    elif in_extensions and line.strip() and not line.strip().startswith('-'):
+                        break
+            
+            if extensions:
+                status_msg = "🔧 **Расширения Goose:**\n\n"
+                for ext in extensions:
+                    status_msg += f"✅ {ext}\n"
+                status_msg += f"\n📁 Файл: `{config_path}`"
+            else:
+                status_msg = "🔧 **Расширения Goose:**\n\n❌ Расширения не найдены\n\n"
+                status_msg += "📌 **Установить расширение:**\n"
+                status_msg += "Добавьте в конфиг:\n```yaml\nextensions:\n  - playwright\n```"
+        else:
+            status_msg = "❌ Конфиг Goose не найден."
+        
+        await msg.edit_text(status_msg)
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def goose_provider(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает и управляет провайдером Goose"""
+    msg = await update.message.reply_text("🔄 Проверяю провайдера Goose...")
+    
+    try:
+        config_path = os.path.expanduser("~/.config/goose/config.yaml")
+        
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                content = f.read()
+            
+            # Извлекаем информацию о провайдере
+            provider_info = "📊 **Провайдер Goose:**\n\n"
+            
+            if 'provider:' in content:
+                lines = content.split('\n')
+                in_provider = False
+                for line in lines:
+                    if 'provider:' in line:
+                        in_provider = True
+                        continue
+                    if in_provider and line.strip():
+                        if 'type:' in line:
+                            provider_info += f"🔧 Тип: {line.split(':')[1].strip()}\n"
+                        elif 'base_url:' in line:
+                            provider_info += f"🌐 URL: {line.split(':')[1].strip()}\n"
+                        elif 'model:' in line:
+                            provider_info += f"🧠 Модель: {line.split(':')[1].strip()}\n"
+                        elif 'api_key:' in line:
+                            key = line.split(':')[1].strip()
+                            if key and len(key) > 10:
+                                provider_info += f"🔑 Ключ: {key[:6]}...{key[-4:]}\n"
+                            else:
+                                provider_info += f"🔑 Ключ: {'✅' if key else '❌ не задан'}\n"
+                    elif in_provider and not line.strip():
+                        break
+            else:
+                provider_info += "❌ Провайдер не настроен"
+            
+            await msg.edit_text(provider_info)
+        else:
+            await msg.edit_text("❌ Конфиг Goose не найден.")
+            
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def goose_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Перезапускает Goose"""
+    msg = await update.message.reply_text("🔄 Перезапускаю Goose...")
+    
+    async def update_status(text):
+        try:
+            await msg.edit_text(f"🔄 **Перезапуск Goose:**\n\n`{text}`")
+        except:
+            pass
+    
+    try:
+        await update_status("Останавливаю Goose...")
+        await goose_manager.close()
+        goose_manager.initialized = False
+        
+        await update_status("Создаю конфиг...")
+        success = await goose_manager.initialize()
+        
+        if success:
+            await update_status("✅ Goose перезапущен!")
+            await msg.edit_text("✅ **Goose перезапущен!**\n\n"
+                               "📌 Проверьте:\n"
+                               "/goose_config — конфигурация\n"
+                               "/goose_extensions — расширения\n"
+                               "/goose_provider — провайдер\n\n"
+                               "Теперь можете использовать `/goose <команда>`")
+        else:
+            error_msg = goose_manager.init_error or "Неизвестная ошибка"
+            await msg.edit_text(f"❌ **Не удалось перезапустить Goose:**\n```\n{error_msg[:200]}\n```")
+            
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+# ========== КОМАНДЫ ДЛЯ РАБОТЫ СО СКИЛЛАМИ ==========
+
+async def skills_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает статус скиллов и расширений Goose"""
+    msg = await update.message.reply_text("🔄 Проверяю статус...")
+    
+    try:
+        skills_dir = os.path.expanduser("~/.agents/skills/")
+        skills_count = 0
+        skills_list = []
+        
+        if os.path.exists(skills_dir):
+            for item in os.listdir(skills_dir):
+                skill_path = os.path.join(skills_dir, item)
+                if os.path.isdir(skill_path):
+                    # Проверяем наличие SKILL.md
+                    skill_file = os.path.join(skill_path, "SKILL.md")
+                    if os.path.exists(skill_file):
+                        skills_count += 1
+                        skills_list.append(item)
+        
+        # Проверяем, включено ли расширение Skills
+        config_path = os.path.expanduser("~/.config/goose/config.yaml")
+        skills_enabled = "❌ Не включено"
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                content = f.read()
+                if 'skills' in content.lower() or 'summon' in content.lower():
+                    skills_enabled = "✅ Включено (вероятно)"
+        
+        status_msg = "📦 **СТАТУС СКИЛЛОВ**\n\n"
+        status_msg += f"📁 Папка: `{skills_dir}`\n"
+        status_msg += f"📦 Скиллов: {skills_count}\n"
+        status_msg += f"🔧 Skills Extension: {skills_enabled}\n\n"
+        
+        if skills_list:
+            status_msg += "📌 **Установленные:**\n"
+            for skill in skills_list:
+                status_msg += f"  ✅ {skill}\n"
+        else:
+            status_msg += "❌ Скиллы не установлены\n\n"
+            status_msg += "📌 **Установить:**\n"
+            status_msg += "• `/skills_install` — Playwright CLI\n"
+            status_msg += "• `/skills_add <URL>` — свой скилл"
+        
+        await msg.edit_text(status_msg)
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def skills_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает список установленных скиллов"""
+    msg = await update.message.reply_text("🔄 Проверяю установленные скиллы...")
+    
+    try:
+        skills_dir = os.path.expanduser("~/.agents/skills/")
+        skills_list = []
+        
+        if os.path.exists(skills_dir):
+            for item in os.listdir(skills_dir):
+                skill_path = os.path.join(skills_dir, item)
+                if os.path.isdir(skill_path):
+                    skill_file = os.path.join(skill_path, "SKILL.md")
+                    if os.path.exists(skill_file):
+                        skills_list.append(item)
+        
+        if skills_list:
+            status_msg = "📦 **Установленные скиллы:**\n\n"
+            for skill in skills_list:
+                status_msg += f"✅ {skill}\n"
+            status_msg += f"\n📁 Папка: `{skills_dir}`"
+        else:
+            status_msg = "📦 **Установленные скиллы:**\n\n❌ Скиллы не найдены"
+        
+        await msg.edit_text(status_msg)
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def skills_install(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Устанавливает скилл Playwright CLI"""
+    msg = await update.message.reply_text("🔄 Устанавливаю скилл Playwright CLI...")
+    
+    async def update_status(text):
+        try:
+            await msg.edit_text(f"🔄 **Установка скилла:**\n\n`{text}`")
+        except:
+            pass
+    
+    try:
+        await update_status("Проверяю npx...")
+        
+        check_npx = await asyncio.create_subprocess_exec(
+            "npx", "--version",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        await check_npx.communicate()
+        
+        if check_npx.returncode != 0:
+            await msg.edit_text("❌ **npx не найден!**\n\nУстановите Node.js вручную.")
+            return
+        
+        await update_status("Устанавливаю Playwright CLI Skill...")
+        
+        process = await asyncio.create_subprocess_exec(
+            "npx", "skills", "add",
+            "https://github.com/microsoft/playwright-cli",
+            "--skill", "playwright-cli",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        
+        if process.returncode == 0:
+            await msg.edit_text("✅ **Скилл Playwright CLI успешно установлен!**\n\n"
+                               "📌 Теперь Goose может управлять браузером.\n\n"
+                               "🔄 Включите расширение Skills в Goose:\n"
+                               "`goose configure` → Toggle Extensions → включите Skills\n\n"
+                               "📌 Проверьте: `/skills_list`")
+        else:
+            error = stderr.decode() if stderr else "Неизвестная ошибка"
+            await msg.edit_text(f"❌ **Ошибка установки скилла:**\n```\n{error[:500]}\n```")
+            
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def skills_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Устанавливает скилл из URL"""
+    if not context.args:
+        await update.message.reply_text(
+            "🔧 **Установка скилла**\n\n"
+            "Используйте: `/skills_add <URL>`\n\n"
+            "📌 **Примеры:**\n"
+            "• `/skills_add https://github.com/microsoft/playwright-cli --skill playwright-cli`\n"
+            "• `/skills_add https://github.com/block/Agent-Skills --skill api-setup`"
+        )
+        return
+    
+    url = context.args[0]
+    msg = await update.message.reply_text(f"🔄 Устанавливаю скилл из {url}...")
+    
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "npx", "skills", "add", url,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        
+        if process.returncode == 0:
+            await msg.edit_text(f"✅ **Скилл успешно установлен!**\n\n"
+                               f"📌 URL: {url}\n\n"
+                               f"🔄 Включите расширение Skills в Goose:\n"
+                               f"`goose configure` → Toggle Extensions → включите Skills")
+        else:
+            error = stderr.decode() if stderr else "Неизвестная ошибка"
+            await msg.edit_text(f"❌ **Ошибка установки:**\n```\n{error[:500]}\n```")
+            
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+# ========== КОМАНДА GOOSE С ЛОГАМИ ==========
 async def goose_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Выполняет команду через Goose с Agnes AI и логами в чат"""
     command_text = " ".join(context.args) if context.args else None
@@ -765,15 +1104,14 @@ async def goose_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• `/goose найди кнопку Войти и нажми`\n"
             "• `/goose прокрути страницу вниз`\n\n"
             "💡 Мозг: Agnes AI\n"
-            "🔧 Chrome устанавливается автоматически, если не найден\n"
-            "🍪 Куки передаются в новый браузер"
+            "🔧 Chrome устанавливается автоматически\n"
+            "🍪 Куки передаются в браузер"
         )
         return
     
     msg = await update.message.reply_text("🔄 **Начинаю работу...**")
     
     async def update_status(text):
-        """Обновляет сообщение с логами"""
         try:
             timestamp = datetime.now().strftime("%H:%M:%S")
             await msg.edit_text(f"🔄 **Логи выполнения** ({timestamp}):\n\n`{text}`")
@@ -853,37 +1191,32 @@ async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка диагностики: {str(e)[:200]}")
 
-async def restart_goose(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Перезапускает Goose"""
-    msg = await update.message.reply_text("🔄 Перезапускаю Goose...")
-    
-    try:
-        goose_manager.initialized = False
-        goose_manager.init_error = None
-        
-        success = await goose_manager.initialize()
-        
-        if success:
-            await msg.edit_text("✅ **Goose перезапущен!**\n\nТеперь можете использовать `/goose <команда>`")
-        else:
-            error_msg = goose_manager.init_error or "Неизвестная ошибка"
-            await msg.edit_text(f"❌ **Не удалось перезапустить Goose:**\n```\n{error_msg[:200]}\n```")
-            
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
 # ========== ЗАПУСК ==========
 def main():
     app = Application.builder().token(TOKEN).build()
     
+    # Основные команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("login", login))
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("close", close))
     app.add_handler(CommandHandler("goose", goose_command))
+    
+    # Управление Goose
+    app.add_handler(CommandHandler("goose_config", goose_config))
+    app.add_handler(CommandHandler("goose_extensions", goose_extensions))
+    app.add_handler(CommandHandler("goose_provider", goose_provider))
+    app.add_handler(CommandHandler("goose_restart", goose_restart))
+    
+    # Скиллы
+    app.add_handler(CommandHandler("skills_status", skills_status))
+    app.add_handler(CommandHandler("skills_list", skills_list))
+    app.add_handler(CommandHandler("skills_install", skills_install))
+    app.add_handler(CommandHandler("skills_add", skills_add))
+    
+    # Диагностика
     app.add_handler(CommandHandler("diagnose", diagnose))
-    app.add_handler(CommandHandler("restart_goose", restart_goose))
     
     import atexit
     @atexit.register
@@ -892,7 +1225,8 @@ def main():
     
     print("🐦 X.com Bot с Goose + Agnes AI запущен!")
     print("📌 Команды: /start, /login, /screen, /status, /goose, /close")
-    print("🔧 Утилиты: /diagnose, /restart_goose")
+    print("🔧 Управление Goose: /goose_config, /goose_extensions, /goose_provider, /goose_restart")
+    print("📦 Скиллы: /skills_status, /skills_list, /skills_install, /skills_add")
     if AGNES_API_KEY:
         print("🧠 Agnes AI: ✅ ключ задан")
     else:
