@@ -71,28 +71,47 @@ class GooseManager:
         self.process = None
         self.initialized = False
         self.request_id = 0
+        self.init_error = None
         
     async def initialize(self):
         """Запускает Goose как MCP-сервер"""
+        if self.initialized:
+            return True
+            
         try:
-            # Проверяем, установлен ли goose
-            check = subprocess.run(["which", "goose"], capture_output=True, text=True)
-            if check.returncode != 0:
-                logger.warning("⚠️ Goose не найден в PATH, пробую установить...")
-                try:
-                    subprocess.run([sys.executable, "-m", "pip", "install", "goose-ai"], check=True)
-                except:
-                    subprocess.run(["npm", "install", "-g", "@block/goose"], check=True)
+            logger.info("🔄 Запускаю Goose MCP сервер...")
             
-            # Запускаем Goose в режиме MCP сервера
-            self.process = await asyncio.create_subprocess_exec(
-                "goose", "mcp", "serve",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
+            # Пробуем запустить goose через python -m
+            try:
+                self.process = await asyncio.create_subprocess_exec(
+                    sys.executable, "-m", "goose", "mcp", "serve",
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                logger.info("✅ Goose запущен через python -m goose")
+            except FileNotFoundError:
+                # Пробуем через прямую команду
+                self.process = await asyncio.create_subprocess_exec(
+                    "goose", "mcp", "serve",
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                logger.info("✅ Goose запущен через команду goose")
             
-            # Инициализация MCP
+            # Даем время на запуск
+            await asyncio.sleep(2)
+            
+            # Проверяем, жив ли процесс
+            if self.process.returncode is not None:
+                stderr = await self.process.stderr.read()
+                error_msg = stderr.decode() if stderr else "Неизвестная ошибка"
+                logger.error(f"❌ Goose завершился при запуске: {error_msg}")
+                self.init_error = error_msg
+                return False
+            
+            # Отправляем initialize
             init_cmd = {
                 "jsonrpc": "2.0",
                 "method": "initialize",
@@ -103,39 +122,19 @@ class GooseManager:
                 "id": self._next_id()
             }
             
-            await self._send_command(init_cmd)
-            
-            # Добавляем навык Playwright
-            skill_cmd = {
-                "jsonrpc": "2.0",
-                "method": "tools/call",
-                "params": {
-                    "name": "add_skill",
-                    "arguments": {"skill": "playwright"}
-                },
-                "id": self._next_id()
-            }
-            await self._send_command(skill_cmd)
-            
-            self.initialized = True
-            logger.info("✅ Goose MCP сервер запущен")
-            return True
-            
+            response = await self._send_command(init_cmd)
+            if response and "result" in response:
+                self.initialized = True
+                logger.info("✅ Goose MCP сервер инициализирован")
+                return True
+            else:
+                logger.error(f"❌ Ошибка инициализации Goose: {response}")
+                return False
+                
         except Exception as e:
             logger.error(f"❌ Ошибка запуска Goose: {e}")
-            # Пробуем альтернативный способ через npx
-            try:
-                self.process = await asyncio.create_subprocess_exec(
-                    "npx", "-y", "@block/goose", "mcp", "serve",
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                self.initialized = True
-                logger.info("✅ Goose запущен через npx")
-                return True
-            except:
-                return False
+            self.init_error = str(e)
+            return False
     
     def _next_id(self):
         self.request_id += 1
@@ -144,10 +143,22 @@ class GooseManager:
     async def _send_command(self, command: Dict) -> Optional[Dict]:
         """Отправляет JSON-RPC команду в Goose"""
         if not self.process:
-            raise Exception("Goose не запущен")
+            logger.error("Goose процесс не запущен")
+            return None
+        
+        if self.process.returncode is not None:
+            logger.error(f"Goose процесс завершился с кодом {self.process.returncode}")
+            try:
+                stderr = await self.process.stderr.read()
+                logger.error(f"stderr: {stderr.decode() if stderr else 'Нет'}")
+            except:
+                pass
+            return None
         
         try:
             cmd_str = json.dumps(command) + "\n"
+            logger.debug(f"Отправка команды: {cmd_str[:100]}...")
+            
             self.process.stdin.write(cmd_str.encode())
             await self.process.stdin.drain()
             
@@ -159,10 +170,16 @@ class GooseManager:
                 )
                 if response_line:
                     return json.loads(response_line.decode())
+                else:
+                    logger.warning("Пустой ответ от Goose")
+                    return None
             except asyncio.TimeoutError:
-                logger.warning("Timeout при чтении ответа Goose")
-            return None
+                logger.warning("Таймаут при чтении ответа Goose (30 сек)")
+                return None
             
+        except BrokenPipeError:
+            logger.error("BrokenPipeError: Goose процесс закрыл stdin")
+            return None
         except Exception as e:
             logger.error(f"Ошибка отправки команды в Goose: {e}")
             return None
@@ -170,11 +187,21 @@ class GooseManager:
     async def execute_command(self, command: str) -> str:
         """Выполняет команду через Goose с Playwright"""
         if not self.initialized:
-            await self.initialize()
-            if not self.initialized:
-                return "❌ Не удалось запустить Goose"
+            success = await self.initialize()
+            if not success:
+                error_msg = self.init_error or "Неизвестная ошибка"
+                return f"❌ Не удалось запустить Goose: {error_msg[:200]}"
         
-        # Если команда про браузер, добавляем контекст с текущей страницей
+        # Проверяем, жив ли процесс
+        if self.process and self.process.returncode is not None:
+            try:
+                stderr = await self.process.stderr.read()
+                error_msg = stderr.decode() if stderr else "процесс завершился"
+                return f"❌ Goose завершился. Ошибка: {error_msg[:200]}"
+            except:
+                return "❌ Goose завершился. Попробуйте позже."
+        
+        # Получаем контекст браузера
         browser_ctx = ""
         if browser_data:
             try:
@@ -184,30 +211,47 @@ class GooseManager:
             except:
                 pass
         
-        # Формируем запрос на выполнение
         full_command = f"{browser_ctx}Выполни в браузере: {command}"
         
-        request = {
-            "jsonrpc": "2.0",
-            "method": "tools/call",
-            "params": {
-                "name": "execute_natural_language",
-                "arguments": {"command": full_command}
-            },
-            "id": self._next_id()
-        }
+        # Пробуем разные методы
+        methods = ["execute_natural_language", "execute_browser_command", "execute"]
+        last_error = None
         
-        response = await self._send_command(request)
+        for method in methods:
+            request = {
+                "jsonrpc": "2.0",
+                "method": "tools/call",
+                "params": {
+                    "name": method,
+                    "arguments": {"command": full_command}
+                },
+                "id": self._next_id()
+            }
+            
+            response = await self._send_command(request)
+            
+            if response is None:
+                continue
+                
+            if "result" in response:
+                content = response["result"].get("content", [])
+                if content and len(content) > 0:
+                    text = content[0].get("text", "✅ Команда выполнена")
+                    # Убираем лишние префиксы
+                    if text.startswith("✅ **Результат:**\n\n"):
+                        text = text[18:]
+                    return text
+                return "✅ Команда выполнена"
+            elif "error" in response:
+                last_error = response['error'].get('message', 'Неизвестная ошибка')
+                if "not found" in last_error.lower():
+                    continue
+                return f"❌ Ошибка Goose: {last_error}"
         
-        if response and "result" in response:
-            content = response["result"].get("content", [])
-            if content and len(content) > 0:
-                return content[0].get("text", "✅ Команда выполнена")
-            return "✅ Команда выполнена"
-        elif response and "error" in response:
-            return f"❌ Ошибка Goose: {response['error'].get('message', 'Неизвестная ошибка')}"
+        if last_error:
+            return f"❌ Не удалось выполнить команду. Последняя ошибка: {last_error}"
         else:
-            return "❌ Не удалось выполнить команду (таймаут или ошибка соединения)"
+            return "❌ Не удалось выполнить команду (нет ответа от Goose). Проверьте логи."
     
     async def close(self):
         """Закрывает Goose"""
@@ -216,7 +260,10 @@ class GooseManager:
                 self.process.terminate()
                 await asyncio.wait_for(self.process.wait(), timeout=5)
             except:
-                self.process.kill()
+                try:
+                    self.process.kill()
+                except:
+                    pass
             self.initialized = False
             logger.info("Goose остановлен")
 
@@ -622,6 +669,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Добавляем статус Goose
         status_msg += f"\n🤖 **Goose:** {'✅ Запущен' if goose.initialized else '❌ Не запущен'}\n"
+        if goose.init_error:
+            status_msg += f"⚠️ Ошибка: {goose.init_error[:100]}\n"
         status_msg += f"\n🕐 {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
         status_msg += f"📦 Драйвер: {'Phantomwright' if PHANTOMWRIGHT_AVAILABLE else 'Playwright'}\n"
         status_msg += f"🍪 Куки загружены: {len(COOKIES)} шт."
@@ -663,9 +712,10 @@ async def goose_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Инициализируем Goose если нужно
         if not goose.initialized:
             await msg.edit_text("🔄 Запускаю Goose...")
-            await goose.initialize()
-            if not goose.initialized:
-                await msg.edit_text("❌ Не удалось запустить Goose. Попробуйте позже.")
+            success = await goose.initialize()
+            if not success:
+                error_msg = goose.init_error or "Неизвестная ошибка"
+                await msg.edit_text(f"❌ Не удалось запустить Goose: {error_msg[:200]}")
                 return
         
         # Выполняем команду
