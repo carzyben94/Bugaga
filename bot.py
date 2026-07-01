@@ -1,4 +1,4 @@
-# bot.py - X.com бот (минимальная версия)
+# bot.py - X.com бот
 import os
 import sys
 import subprocess
@@ -200,8 +200,6 @@ async def close_browser():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🐦 X.com Bot\n\n"
-        "📌 Команды:\n"
         "/login — авторизация в X.com\n"
         "/screen — скриншот\n"
         "/status — статус браузера\n"
@@ -478,7 +476,7 @@ def main():
     app.add_handler(CommandHandler("close", close))
     
     print("🐦 X.com Bot запущен!")
-    print("📌 Команды: /login, /screen, /status, /close")
+    print("📌 Команды: /start, /login, /screen, /status, /close")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
