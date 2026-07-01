@@ -132,7 +132,7 @@ class GooseManager:
         self.init_error = None
         
     async def initialize(self):
-        """Проверяет наличие Goose и создаёт конфиг"""
+        """Проверяет наличие Goose и создаёт конфиг с Playwright"""
         if self.initialized:
             return True
             
@@ -151,7 +151,7 @@ class GooseManager:
                 self.init_error = "goose не найден"
                 return False
             
-            # Создаём конфиг для Goose с Agnes AI
+            # Создаём конфиг для Goose с Agnes AI и расширением Playwright
             config_dir = os.path.expanduser("~/.config/goose")
             os.makedirs(config_dir, exist_ok=True)
             config_path = os.path.join(config_dir, "config.yaml")
@@ -162,10 +162,14 @@ provider:
   base_url: https://apihub.agnes-ai.com/v1
   api_key: {AGNES_API_KEY or ""}
   model: agnes-2.0-flash
+
+# Подключаем расширение Playwright для управления браузером
+extensions:
+  - playwright
 """
             with open(config_path, "w") as f:
                 f.write(config_content)
-            logger.info(f"✅ Конфиг Goose создан в {config_path}")
+            logger.info(f"✅ Конфиг Goose с Playwright создан в {config_path}")
             
             # Проверяем, что файл создался
             if not os.path.exists(config_path):
@@ -173,7 +177,7 @@ provider:
                 return False
                 
             self.initialized = True
-            logger.info("✅ Goose готов к работе")
+            logger.info("✅ Goose готов к работе с Playwright")
             return True
                 
         except FileNotFoundError:
