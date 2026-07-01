@@ -399,4 +399,4 @@ class JoystickController:
     
     @staticmethod
     def _human_curve(t: float) -> float:
-        return 1 - math.pow(1 - t, 2.5)
+        return 1 - math.pow(1 - t, 2.5) 
