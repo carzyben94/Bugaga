@@ -31,6 +31,9 @@ RUN npm install -g @playwright/mcp
 # Добавляем Goose в PATH
 ENV PATH="/root/.local/bin:${PATH}"
 
+# Убедись что git установлен
+RUN apt-get update && apt-get install -y git
+
 WORKDIR /app
 
 # Копируем зависимости и устанавливаем
