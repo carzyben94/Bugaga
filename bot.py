@@ -1,10 +1,11 @@
-# bot.py - X.com бот с Goose
+# bot.py - X.com бот с Goose и Agnes AI
 import os
 import sys
 import subprocess
 import logging
 import asyncio
 import json
+import requests
 from datetime import datetime
 from typing import Optional, Dict, Any
 from telegram import Update
@@ -38,6 +39,47 @@ if not TOKEN:
 
 PLAYWRIGHT_DIR = "/root/.cache/ms-playwright"
 os.environ['PLAYWRIGHT_BROWSERS_PATH'] = PLAYWRIGHT_DIR
+
+# ========== НАСТРОЙКА AGNES AI ==========
+AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
+AGNES_BASE_URL = "https://apihub.agnes-ai.com/v1"
+
+def call_agnes(prompt: str, tools: list = None) -> str:
+    """Вызывает Agnes-2.0-Flash через OpenAI-совместимый API"""
+    if not AGNES_API_KEY:
+        return "⚠️ AGNES_API_KEY не задан! Добавь переменную на Railway."
+
+    headers = {
+        "Authorization": f"Bearer {AGNES_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": "agnes-2.0-flash",
+        "messages": [
+            {"role": "system", "content": "Ты — AI-агент, управляющий браузером через Playwright. Конвертируй команды пользователя в действия на странице. Возвращай только результат выполнения."},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.3,
+        "max_tokens": 2000,
+        "tools": tools or [],
+        "parallel_tool_calls": True
+    }
+
+    try:
+        response = requests.post(
+            f"{AGNES_BASE_URL}/chat/completions",
+            json=payload,
+            headers=headers,
+            timeout=30
+        )
+        if response.status_code == 200:
+            result = response.json()["choices"][0]["message"]["content"]
+            return result
+        else:
+            return f"❌ Ошибка Agnes: {response.status_code} - {response.text[:100]}"
+    except Exception as e:
+        return f"❌ Ошибка вызова Agnes: {str(e)[:100]}"
 
 # ========== КУКИ X.COM ==========
 COOKIES = [
@@ -87,18 +129,17 @@ class GooseManager:
     def __init__(self):
         self.process = None
         self.initialized = False
-        self.request_id = 0
         self.init_error = None
         
     async def initialize(self):
-        """Запускает Goose с Playwright MCP в неинтерактивном режиме"""
+        """Запускает Goose в фоновом режиме"""
         if self.initialized:
             return True
             
         try:
-            logger.info("🔄 Запускаю Goose с Playwright MCP...")
+            logger.info("🔄 Запускаю Goose...")
             
-            # Проверяем, есть ли команда goose
+            # Проверяем, есть ли goose
             check = await asyncio.create_subprocess_exec(
                 "goose", "--version",
                 stdout=asyncio.subprocess.PIPE,
@@ -107,113 +148,50 @@ class GooseManager:
             await check.communicate()
             
             if check.returncode != 0:
-                self.init_error = "Команда 'goose' не найдена. Установите Goose."
+                self.init_error = "goose не найден"
                 return False
             
-            # Устанавливаем переменную окружения для отключения телеметрии
+            # Запускаем goose session
             env = os.environ.copy()
             env["GOOSE_TELEMETRY_ENABLED"] = "false"
             
-            # Запускаем goose session в неинтерактивном режиме
             self.process = await asyncio.create_subprocess_exec(
                 "goose", "session",
-                "--with-extension", "npx -y @playwright/mcp@latest",
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env
             )
-            logger.info("✅ Goose запущен с Playwright MCP (теле метрия отключена)")
             
-            # Даем время на запуск
-            await asyncio.sleep(5)
+            # Ждём запуска
+            await asyncio.sleep(2)
             
-            # Проверяем, жив ли процесс
             if self.process.returncode is not None:
                 stderr = await self.process.stderr.read()
-                error_msg = stderr.decode() if stderr else "Неизвестная ошибка"
-                logger.error(f"❌ Goose завершился при запуске: {error_msg}")
-                self.init_error = error_msg
+                error_msg = stderr.decode() if stderr else "процесс завершился"
+                self.init_error = error_msg[:200]
                 return False
             
             self.initialized = True
-            logger.info("✅ Goose MCP инициализирован")
+            logger.info("✅ Goose запущен")
             return True
                 
         except FileNotFoundError:
-            self.init_error = "Команда 'goose' не найдена. Убедитесь, что Goose установлен."
+            self.init_error = "goose не найден в PATH"
             return False
         except Exception as e:
-            logger.error(f"❌ Ошибка запуска Goose: {e}")
-            self.init_error = str(e)
+            self.init_error = str(e)[:200]
+            logger.error(f"Ошибка: {e}")
             return False
-    
-    def _next_id(self):
-        self.request_id += 1
-        return self.request_id
-    
-    async def _send_command(self, command: Dict) -> Optional[Dict]:
-        """Отправляет команду в Goose (упрощённо)"""
-        if not self.process:
-            logger.error("Goose процесс не запущен")
-            return None
-        
-        if self.process.returncode is not None:
-            logger.error(f"Goose процесс завершился с кодом {self.process.returncode}")
-            try:
-                stderr = await self.process.stderr.read()
-                logger.error(f"stderr: {stderr.decode() if stderr else 'Нет'}")
-            except:
-                pass
-            return None
-        
-        try:
-            # Отправляем команду как есть (без JSON-RPC)
-            cmd_str = command + "\n" if isinstance(command, str) else json.dumps(command) + "\n"
-            logger.debug(f"Отправка команды: {cmd_str[:100]}...")
-            
-            self.process.stdin.write(cmd_str.encode())
-            await self.process.stdin.drain()
-            
-            # Читаем ответ
-            try:
-                response_line = await asyncio.wait_for(
-                    self.process.stdout.readline(), 
-                    timeout=30.0
-                )
-                if response_line:
-                    return {"result": response_line.decode().strip()}
-                else:
-                    logger.warning("Пустой ответ от Goose")
-                    return None
-            except asyncio.TimeoutError:
-                logger.warning("Таймаут при чтении ответа Goose (30 сек)")
-                return None
-            
-        except BrokenPipeError:
-            logger.error("BrokenPipeError: Goose процесс закрыл stdin")
-            return None
-        except Exception as e:
-            logger.error(f"Ошибка отправки команды в Goose: {e}")
-            return None
     
     async def execute_command(self, command: str) -> str:
-        """Выполняет команду через Goose с Playwright"""
+        """Выполняет команду через Goose с Agnes AI"""
         if not self.initialized:
             success = await self.initialize()
             if not success:
-                error_msg = self.init_error or "Неизвестная ошибка"
-                return f"❌ Не удалось запустить Goose: {error_msg[:200]}"
+                return f"❌ Не удалось запустить Goose: {self.init_error or 'Неизвестная ошибка'}"
         
-        if self.process and self.process.returncode is not None:
-            try:
-                stderr = await self.process.stderr.read()
-                error_msg = stderr.decode() if stderr else "процесс завершился"
-                return f"❌ Goose завершился. Ошибка: {error_msg[:200]}"
-            except:
-                return "❌ Goose завершился. Попробуйте позже."
-        
-        # Формируем команду с контекстом браузера
+        # Получаем контекст браузера
         browser_ctx = ""
         if browser_data:
             try:
@@ -223,15 +201,13 @@ class GooseManager:
             except:
                 pass
         
+        # Формируем полную команду
         full_command = f"{browser_ctx}Выполни в браузере: {command}"
         
-        # Отправляем команду напрямую (упрощённо)
-        response = await self._send_command(f"/goose {full_command}")
+        # Отправляем в Agnes AI
+        result = call_agnes(full_command)
         
-        if response and "result" in response:
-            return response["result"]
-        else:
-            return "✅ Команда выполнена (упрощённый режим)"
+        return result
     
     async def close(self):
         """Закрывает Goose"""
@@ -389,22 +365,21 @@ async def close_browser():
 # ========== КОМАНДЫ ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🐦 **X.com Bot с Goose AI**\n\n"
+        "🐦 **X.com Bot с Goose + Agnes AI**\n\n"
         "📌 **Основные команды:**\n"
-        "/login — авторизация в X.com (запускает браузер в фоне)\n"
+        "/login — авторизация в X.com\n"
         "/screen — скриншот\n"
-        "/status — статус браузера и авторизации\n"
+        "/status — статус браузера\n"
         "/goose <команда> — управление браузером через ИИ\n"
         "/close — закрыть браузер\n\n"
         "🔧 **Утилиты:**\n"
-        "/install_goose — установить Goose\n"
-        "/test_goose — проверить Goose\n"
         "/diagnose — полная диагностика\n"
         "/restart_goose — перезапустить Goose\n\n"
         "🤖 **Примеры /goose:**\n"
         "• `открой x.com и найди новости про ИИ`\n"
         "• `сделай скриншот главной страницы`\n"
-        "• `найди кнопку Tweet и нажми на неё`"
+        "• `найди кнопку Tweet и нажми на неё`\n\n"
+        f"🧠 Мозг: {'Agnes AI ✅' if AGNES_API_KEY else 'Agnes AI ❌ (ключ не задан)'}"
     )
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -658,6 +633,9 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg += f"🤖 **Goose MCP:** {'✅ Запущен' if goose_manager.initialized else '❌ Не запущен'}\n"
         if goose_manager.init_error:
             status_msg += f"⚠️ Ошибка: {goose_manager.init_error[:100]}\n"
+        
+        # Статус Agnes AI
+        status_msg += f"🧠 **Agnes AI:** {'✅ Ключ задан' if AGNES_API_KEY else '❌ Ключ не задан'}\n"
         status_msg += f"\n🕐 {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
         status_msg += f"📦 Драйвер: {'Phantomwright' if PHANTOMWRIGHT_AVAILABLE else 'Playwright'}\n"
         status_msg += f"🍪 Куки загружены: {len(COOKIES)} шт."
@@ -674,26 +652,26 @@ async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========== КОМАНДА GOOSE ==========
 async def goose_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Выполняет команду через Goose AI"""
+    """Выполняет команду через Goose с Agnes AI"""
     command_text = " ".join(context.args) if context.args else None
     
     if not command_text:
         await update.message.reply_text(
-            "🤖 **Goose AI Agent**\n\n"
+            "🤖 **Goose AI Agent + Agnes**\n\n"
             "Используйте: `/goose <команда>`\n\n"
             "📌 **Примеры:**\n"
             "• `/goose открой x.com и найди новости про ИИ`\n"
             "• `/goose сделай скриншот главной страницы`\n"
             "• `/goose найди кнопку Войти и нажми`\n"
             "• `/goose прокрути страницу вниз`\n\n"
-            "💡 Goose использует ваш браузер и все куки!"
+            "💡 Мозг: Agnes AI"
         )
         return
     
-    msg = await update.message.reply_text("🤔 Анализирую команду...")
+    msg = await update.message.reply_text("🤔 Анализирую команду через Agnes AI...")
     
     try:
-        # Убеждаемся, что браузер запущен (если нет - запускаем)
+        # Убеждаемся, что браузер запущен
         await get_browser()
         
         if not goose_manager.initialized:
@@ -704,7 +682,7 @@ async def goose_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.edit_text(f"❌ Не удалось запустить Goose: {error_msg[:200]}")
                 return
         
-        await msg.edit_text("🎯 Выполняю...")
+        await msg.edit_text("🎯 Выполняю через Agnes AI...")
         result = await goose_manager.execute_command(command_text)
         
         if len(result) > 4000:
@@ -718,62 +696,7 @@ async def goose_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
-# ========== КОМАНДЫ УПРАВЛЕНИЯ GOOSE ==========
-
-async def install_goose(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Устанавливает Goose через npm"""
-    msg = await update.message.reply_text("🔄 Устанавливаю Goose...")
-    
-    try:
-        # Проверяем npm
-        check_npm = await asyncio.create_subprocess_exec(
-            "npm", "--version",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        await check_npm.communicate()
-        
-        if check_npm.returncode != 0:
-            await msg.edit_text("❌ npm не найден! Установите Node.js вручную.")
-            return
-        
-        # Устанавливаем goose
-        process = await asyncio.create_subprocess_exec(
-            "npm", "install", "-g", "@block/goose",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await process.communicate()
-        
-        if process.returncode == 0:
-            # Проверяем
-            installed, version = await check_goose_installed()
-            if installed:
-                await msg.edit_text(f"✅ **Goose установлен!**\n\n📦 Версия: {version}\n\nТеперь выполните `/restart_goose`")
-            else:
-                await msg.edit_text("⚠️ Установка прошла, но goose не найден. Попробуйте перезапустить бота.")
-        else:
-            error = stderr.decode() if stderr else "Неизвестная ошибка"
-            await msg.edit_text(f"❌ Ошибка: {error[:500]}")
-            
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def test_goose(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Тестирует Goose"""
-    msg = await update.message.reply_text("🔄 Тестирую Goose...")
-    
-    try:
-        installed, version = await check_goose_installed()
-        
-        if installed:
-            await msg.edit_text(f"✅ **Goose работает!**\n\n📦 Версия: {version}\n\nТеперь можете использовать `/goose <команда>`")
-        else:
-            await msg.edit_text("❌ **Goose не найден!**\n\nУстановите через `/install_goose` или в Dockerfile.")
-                
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
+# ========== ДИАГНОСТИКА ==========
 async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Полная диагностика"""
     msg = await update.message.reply_text("🔄 Провожу диагностику...")
@@ -808,12 +731,13 @@ async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if goose_manager.init_error:
             diag += f"   Ошибка: {goose_manager.init_error[:100]}\n"
         
+        diag += f"🧠 Agnes AI: {'✅ ключ задан' if AGNES_API_KEY else '❌ ключ не задан'}\n"
         diag += f"\n🔑 TOKEN: {'✅' if TOKEN else '❌'}\n"
         
         await msg.edit_text(diag)
         
     except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+        await msg.edit_text(f"❌ Ошибка диагностики: {str(e)[:200]}")
 
 async def restart_goose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Перезапускает Goose"""
@@ -844,8 +768,6 @@ def main():
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("close", close))
     app.add_handler(CommandHandler("goose", goose_command))
-    app.add_handler(CommandHandler("install_goose", install_goose))
-    app.add_handler(CommandHandler("test_goose", test_goose))
     app.add_handler(CommandHandler("diagnose", diagnose))
     app.add_handler(CommandHandler("restart_goose", restart_goose))
     
@@ -854,9 +776,13 @@ def main():
     def cleanup():
         asyncio.create_task(goose_manager.close())
     
-    print("🐦 X.com Bot с Goose запущен!")
+    print("🐦 X.com Bot с Goose + Agnes AI запущен!")
     print("📌 Команды: /start, /login, /screen, /status, /goose, /close")
-    print("🔧 Утилиты: /install_goose, /test_goose, /diagnose, /restart_goose")
+    print("🔧 Утилиты: /diagnose, /restart_goose")
+    if AGNES_API_KEY:
+        print("🧠 Agnes AI: ✅ ключ задан")
+    else:
+        print("⚠️ AGNES_API_KEY не задан! Добавь переменную на Railway.")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
