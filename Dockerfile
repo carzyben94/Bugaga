@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Устанавливаем зависимости (добавил bzip2)
+# Устанавливаем зависимости
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
@@ -15,8 +15,8 @@ RUN pip install playwright && playwright install chromium && playwright install-
 # Устанавливаем Goose через официальный скрипт с GitHub
 RUN curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | bash
 
-# Добавляем Goose в PATH
-ENV PATH="/root/.goose/bin:${PATH}"
+# Добавляем Goose в PATH (правильный путь!)
+ENV PATH="/root/.local/bin:${PATH}"
 
 WORKDIR /app
 
