@@ -1,4 +1,4 @@
-# bot.py - X.com бот (авторизация + статус)
+# bot.py - X.com бот
 import os
 import sys
 import subprocess
@@ -238,7 +238,6 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text("🔄 Загружаю X.com...")
         await page.goto('https://x.com', wait_until='domcontentloaded', timeout=30000)
         
-        # Ждем загрузки
         try:
             await page.wait_for_selector('[data-testid="primaryColumn"]', timeout=15000)
         except:
@@ -246,7 +245,6 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await page.wait_for_timeout(3000)
         
-        # Проверка авторизации через JS
         auth_status = await page.evaluate('''
             () => {
                 const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]');
@@ -262,6 +260,16 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return acc;
                 }, {});
                 
+                let username = null;
+                const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
+                if (profileLink) {
+                    const href = profileLink.getAttribute('href');
+                    if (href) {
+                        const match = href.match(/^\\/([^\\/]+)/);
+                        if (match) username = match[1];
+                    }
+                }
+                
                 return {
                     hasTweetBtn,
                     hasProfileLink,
@@ -271,24 +279,26 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     hasPrimaryColumn,
                     hasAuthToken: !!cookies.auth_token,
                     hasCt0: !!cookies.ct0,
+                    username: username,
                     isLoggedIn: hasTweetBtn || hasProfileLink || hasHomeLink || hasSideNav
                 };
             }
         ''')
         
-        # Обновляем глобальный статус
         global login_status
         login_status['is_logged_in'] = auth_status['isLoggedIn']
+        login_status['username'] = auth_status.get('username')
         login_status['last_check'] = datetime.now()
         login_status['cookies_valid'] = auth_status['hasAuthToken'] and auth_status['hasCt0']
         
-        # Формируем ответ
         status_msg = f"✅ X.com\n\n"
         status_msg += f"🍪 auth_token: {'✅' if auth_status['hasAuthToken'] else '❌'}\n"
         status_msg += f"🍪 ct0: {'✅' if auth_status['hasCt0'] else '❌'}\n\n"
         
         if auth_status['isLoggedIn']:
             status_msg += "✅ **ВЫ АВТОРИЗОВАНЫ!**\n"
+            if auth_status.get('username'):
+                status_msg += f"👤 @{auth_status['username']}\n"
             if auth_status['hasTweetBtn']:
                 status_msg += "   • Кнопка Tweet: ✅\n"
             if auth_status['hasProfileLink']:
@@ -302,7 +312,6 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await msg.edit_text(status_msg)
         
-        # Скриншот
         screenshot = await page.screenshot(type='jpeg', quality=80)
         await update.message.reply_photo(
             photo=screenshot,
@@ -322,7 +331,6 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         screenshot = await page.screenshot(type='jpeg', quality=80)
         await msg.delete()
         
-        # Получаем информацию о странице
         url = page.url
         title = await page.title()
         
@@ -335,28 +343,23 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:100]}")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Улучшенный статус с полной информацией"""
-    
     msg = await update.message.reply_text("⏳ Проверяю статус...")
     
     try:
-        # Проверяем браузер
         browser_ok = False
         browser_info = {}
         
         if browser_data:
             try:
                 page = browser_data['page']
-                await page.evaluate('1')  # Проверка что страница жива
+                await page.evaluate('1')
                 browser_ok = True
                 
-                # Собираем информацию
                 url = page.url
                 title = await page.title()
                 started_at = browser_data.get('started_at')
                 uptime = (datetime.now() - started_at).total_seconds() if started_at else 0
                 
-                # Проверяем авторизацию через JS
                 auth_check = await page.evaluate('''
                     () => {
                         const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]');
@@ -364,7 +367,6 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         const hasHomeLink = !!document.querySelector('[data-testid="AppTabBar_Home_Link"]');
                         const hasSideNav = !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
                         const hasLoginForm = !!document.querySelector('[data-testid="loginForm"]');
-                        const hasPrimaryColumn = !!document.querySelector('[data-testid="primaryColumn"]');
                         
                         const cookies = document.cookie.split(';').reduce((acc, c) => {
                             const [key, val] = c.trim().split('=');
@@ -372,7 +374,6 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             return acc;
                         }, {});
                         
-                        // Пытаемся получить имя пользователя
                         let username = null;
                         const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
                         if (profileLink) {
@@ -389,7 +390,6 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             hasHomeLink,
                             hasSideNav,
                             hasLoginForm,
-                            hasPrimaryColumn,
                             hasAuthToken: !!cookies.auth_token,
                             hasCt0: !!cookies.ct0,
                             username: username,
@@ -405,16 +405,19 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     'auth': auth_check
                 }
                 
+                login_status['is_logged_in'] = auth_check['isLoggedIn']
+                login_status['username'] = auth_check.get('username')
+                login_status['last_check'] = datetime.now()
+                login_status['cookies_valid'] = auth_check['hasAuthToken'] and auth_check['hasCt0']
+                
             except Exception as e:
                 browser_ok = False
                 browser_info['error'] = str(e)[:50]
         else:
             browser_info = {'error': 'Браузер не запущен'}
         
-        # Формируем статус
         status_msg = "📊 **СТАТУС БОТА**\n\n"
         
-        # Браузер
         if browser_ok:
             status_msg += "🌐 **Браузер:** ✅ Запущен\n"
             if browser_info.get('uptime'):
@@ -424,12 +427,10 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             status_msg += "🌐 **Браузер:** ❌ Не запущен\n"
         
-        # Страница
         if browser_ok and browser_info.get('url'):
             status_msg += f"🔗 URL: {browser_info['url'][:60]}\n"
             status_msg += f"📌 Заголовок: {browser_info.get('title', 'Нет')}\n"
         
-        # Авторизация
         status_msg += "\n🔐 **АВТОРИЗАЦИЯ:**\n"
         
         if browser_ok and browser_info.get('auth'):
@@ -455,19 +456,14 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             status_msg += "❌ Нет данных (выполните /login)\n"
         
-        # Системная информация
-        status_msg += f"\n🕐 Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
-        
-        # Информация о Phantomwright
+        status_msg += f"\n🕐 {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
         status_msg += f"📦 Драйвер: {'Phantomwright' if PHANTOMWRIGHT_AVAILABLE else 'Playwright'}\n"
-        
-        # Куки
-        status_msg += f"🍪 Куки загружены: {len(COOKIES)} шт.\n"
+        status_msg += f"🍪 Куки загружены: {len(COOKIES)} шт."
         
         await msg.edit_text(status_msg)
         
     except Exception as e:
-        await msg.edit_text(f"❌ Ошибка при получении статуса: {str(e)[:200]}")
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Закрываю браузер...")
