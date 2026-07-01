@@ -507,7 +507,26 @@ async def get_browser():
                 '--disable-site-isolation-trials',
                 '--disable-features=BlockInsecurePrivateNetworkRequests',
                 '--disable-gpu',
-                '--disable-software-rasterizer'
+                '--disable-software-rasterizer',
+                '--disable-features=ChromeWhatsNewUI',
+                '--disable-features=TranslateUI',
+                '--disable-background-timer-throttling',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-renderer-backgrounding',
+                '--disable-field-trial-config',
+                '--disable-client-side-phishing-detection',
+                '--disable-component-extensions-with-background-pages',
+                '--disable-default-apps',
+                '--disable-extensions',
+                '--disable-plugins',
+                '--disable-translate',
+                '--disable-sync',
+                '--metrics-recording-only',
+                '--safebrowsing-disable-auto-update',
+                '--enable-features=NetworkService,NetworkServiceInProcess',
+                '--force-color-profile=srgb',
+                '--window-position=0,0',
+                '--window-size=1280,720'
             ]
         )
         
@@ -521,7 +540,7 @@ async def get_browser():
             has_touch=False,
             is_mobile=False,
             extra_http_headers={
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
                 'Accept-Language': 'en-US,en;q=0.9',
                 'Accept-Encoding': 'gzip, deflate, br',
                 'DNT': '1',
@@ -540,25 +559,82 @@ async def get_browser():
         page = await context.new_page()
         await stealth_async(page)
         
+        # Более мощный скрипт для обхода детекции
         await page.add_init_script("""
+            // Удаляем все следы автоматизации
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined
             });
+            
             Object.defineProperty(navigator, 'plugins', {
                 get: () => [1, 2, 3, 4, 5]
             });
+            
             Object.defineProperty(navigator, 'languages', {
                 get: () => ['en-US', 'en']
             });
-            window.chrome = {
-                runtime: {}
-            };
+            
             Object.defineProperty(navigator, 'deviceMemory', {
                 get: () => 8
             });
+            
             Object.defineProperty(navigator, 'hardwareConcurrency', {
                 get: () => 4
             });
+            
+            // Эмуляция Chrome
+            window.chrome = {
+                runtime: {
+                    connect: () => {},
+                    sendMessage: () => {}
+                },
+                app: {
+                    isInstalled: false,
+                    InstallState: {
+                        DISABLED: 'disabled',
+                        INSTALLED: 'installed',
+                        NOT_INSTALLED: 'not_installed'
+                    },
+                    RunningState: {
+                        CANNOT_RUN: 'cannot_run',
+                        READY_TO_RUN: 'ready_to_run',
+                        RUNNING: 'running'
+                    }
+                },
+                webstore: {
+                    onInstallStageChanged: {},
+                    onDownloadProgress: {}
+                }
+            };
+            
+            // Скрываем что это Playwright
+            if (window.document) {
+                Object.defineProperty(document, 'hidden', {
+                    get: () => false
+                });
+                Object.defineProperty(document, 'visibilityState', {
+                    get: () => 'visible'
+                });
+            }
+            
+            // Переопределяем функции обнаружения
+            if (window.console) {
+                console.log = function() {};
+                console.debug = function() {};
+                console.info = function() {};
+                console.warn = function() {};
+            }
+            
+            // Удаляем CDP
+            if (window.performance && window.performance.getEntries) {
+                const originalGetEntries = window.performance.getEntries;
+                window.performance.getEntries = function() {
+                    return originalGetEntries.call(this).filter(entry => 
+                        !entry.name.includes('cdp') && 
+                        !entry.name.includes('devtools')
+                    );
+                };
+            }
         """)
         
         browser_data = {
@@ -674,133 +750,182 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         logger.info(f"User {update.effective_user.id} начал xlogin")
         
+        # 1. Очищаем куки
+        await browser['context'].clear_cookies()
         await page.goto('about:blank')
-        await page.wait_for_timeout(1000)
+        await page.wait_for_timeout(2000)
         
-        try:
-            await browser['context'].clear_cookies()
-            logger.info("Старые куки очищены")
-        except Exception as e:
-            logger.warning(f"Ошибка очистки кук: {e}")
-            await close_browser()
-            browser = await get_browser()
-            page = browser['page']
-        
+        # 2. Устанавливаем куки
         cookie_errors = []
         cookie_success = []
         
         for cookie in COOKIES:
             try:
-                await browser['context'].add_cookies([cookie])
+                cookie_data = {
+                    'name': cookie['name'],
+                    'value': cookie['value'],
+                    'domain': '.x.com',
+                    'path': '/',
+                    'secure': True,
+                    'httpOnly': False
+                }
+                await browser['context'].add_cookies([cookie_data])
                 cookie_success.append(cookie['name'])
+                logger.info(f"Cookie установлена: {cookie['name']}")
             except Exception as e:
-                error_msg = f"Ошибка установки куки {cookie['name']}: {str(e)}"
-                cookie_errors.append(error_msg)
-                logger.warning(error_msg)
+                cookie_errors.append(f"{cookie['name']}: {str(e)}")
+                logger.warning(f"Ошибка куки {cookie['name']}: {e}")
         
-        log_msg = f"✅ Установлено кук: {len(cookie_success)}\n"
-        log_msg += f"❌ Ошибок: {len(cookie_errors)}\n"
-        
+        log_msg = f"✅ Кук установлено: {len(cookie_success)}\n"
         if cookie_errors:
-            log_msg += f"\n⚠️ Ошибки установки:\n" + "\n".join(cookie_errors[:3])
-            if len(cookie_errors) > 3:
-                log_msg += f"\n... и еще {len(cookie_errors)-3}"
+            log_msg += f"⚠️ Ошибки: {len(cookie_errors)}\n"
         
-        log_msg += "\n\n🔄 Перехожу на x.com..."
+        # 3. Переход с имитацией человека
+        await msg.edit_text("🔄 Загружаю X.com...")
+        
+        # Делаем несколько попыток с разными параметрами
+        for attempt in range(3):
+            try:
+                await page.goto('https://x.com', wait_until='domcontentloaded', timeout=30000)
+                await page.wait_for_timeout(2000 + attempt * 1000)
+                break
+            except Exception as e:
+                logger.warning(f"Попытка {attempt+1} загрузки: {e}")
+                if attempt < 2:
+                    await page.reload(wait_until='domcontentloaded', timeout=15000)
+                    await page.wait_for_timeout(2000)
+                else:
+                    raise
+        
+        # 4. Обработка ошибки "Something went wrong"
+        # Проверяем наличие сообщения об ошибке
+        error_detected = False
         try:
-            await page.goto('https://x.com', wait_until='commit', timeout=15000)
-            logger.info("Страница начала загрузку")
-            await page.wait_for_timeout(5000)
+            # Проверяем наличие текста ошибки
+            error_text = await page.evaluate('''
+                () => {
+                    const body = document.body?.textContent || '';
+                    return body.includes('Something went wrong') || 
+                           body.includes('Try again') ||
+                           body.includes('privacy related extensions');
+                }
+            ''')
             
-            try:
-                await page.wait_for_selector('body', timeout=10000)
-                logger.info("Body загружен")
-            except:
-                logger.warning("Body не загружен")
-            
-        except Exception as e:
-            error_msg = f"Ошибка загрузки: {str(e)}"
-            log_error(error_msg, traceback.format_exc())
-            log_msg += f"\n❌ {error_msg}"
-            
-            try:
-                await page.reload(wait_until='domcontentloaded', timeout=15000)
-                log_msg += "\n🔄 Страница перезагружена"
+            if error_text:
+                error_detected = True
+                log_msg += "\n⚠️ Обнаружена ошибка X.com"
+                
+                # Пробуем обновить страницу с задержкой
+                await msg.edit_text("🔄 Обновляю страницу...")
+                await page.reload(wait_until='domcontentloaded', timeout=20000)
                 await page.wait_for_timeout(3000)
-            except:
-                pass
+                
+                # Пробуем кликнуть "Try again"
+                try:
+                    try_again = await page.query_selector('text=Try again')
+                    if try_again:
+                        await try_again.click()
+                        await page.wait_for_timeout(3000)
+                        log_msg += "\n✅ Нажата кнопка Try again"
+                except:
+                    pass
+                
+                # Пробуем кликнуть в любом месте для активации
+                try:
+                    await page.mouse.click(640, 360)
+                    await page.wait_for_timeout(1000)
+                except:
+                    pass
+        except Exception as e:
+            logger.warning(f"Ошибка проверки ошибки: {e}")
         
-        try:
-            current_url = page.url
-            log_msg += f"\n📍 URL: {current_url[:80]}"
-        except:
-            log_msg += f"\n📍 URL: Недоступен"
+        # 5. Прокрутка для активации
+        await page.evaluate('window.scrollBy(0, 200)')
+        await page.wait_for_timeout(1000)
+        await page.evaluate('window.scrollBy(0, -200)')
+        await page.wait_for_timeout(1000)
         
+        # 6. Проверка авторизации
         is_logged = False
         try:
-            selectors = [
-                ("primary_column", '[data-testid="primaryColumn"]'),
-                ("tweet_button", '[data-testid="tweetButton"]'),
-                ("profile_link", '[data-testid="AppTabBar_Profile_Link"]'),
-                ("login_form", '[data-testid="loginForm"]'),
-                ("toast_error", '[data-testid="toast"]'),
-                ("challenge", '[data-testid="challenge"]')
-            ]
+            # Проверяем куки
+            cookies = await browser['context'].cookies()
+            auth_token = next((c for c in cookies if c.get('name') == 'auth_token'), None)
+            ct0 = next((c for c in cookies if c.get('name') == 'ct0'), None)
             
-            selector_results = []
-            for name, selector in selectors:
-                try:
-                    exists = await page.query_selector(selector) is not None
-                    selector_results.append(f"{name}: {'✅' if exists else '❌'}")
-                    if name == "primary_column" and exists:
+            log_msg += f"\n\n🍪 auth_token: {'✅' if auth_token else '❌'}"
+            log_msg += f"\n🍪 ct0: {'✅' if ct0 else '❌'}"
+            
+            # Проверяем наличие кнопки твита - главный признак входа
+            try:
+                # Ждем немного для загрузки динамического контента
+                await page.wait_for_timeout(2000)
+                
+                tweet_btn = await page.query_selector('[data-testid="tweetButton"]')
+                if tweet_btn:
+                    is_logged = True
+                    log_msg += "\n\n✅ **ВЫ АВТОРИЗОВАНЫ!**"
+                    log_msg += "\n🔵 Кнопка Tweet найдена"
+                else:
+                    # Пробуем другие селекторы
+                    profile = await page.query_selector('[data-testid="AppTabBar_Profile_Link"]')
+                    home = await page.query_selector('[data-testid="AppTabBar_Home_Link"]')
+                    explore = await page.query_selector('[data-testid="AppTabBar_Explore_Link"]')
+                    
+                    if profile or home or explore:
                         is_logged = True
-                except Exception as e:
-                    selector_results.append(f"{name}: ⚠️ ошибка")
-            
-            log_msg += "\n\n🔍 Элементы:\n" + "\n".join(selector_results)
+                        log_msg += "\n\n✅ **ВЫ АВТОРИЗОВАНЫ!**"
+                        if profile:
+                            log_msg += "\n🔵 Профиль найден"
+                        if home:
+                            log_msg += "\n🔵 Домашняя страница найдена"
+                        if explore:
+                            log_msg += "\n🔵 Обзор найден"
+                    else:
+                        # Проверяем наличие формы входа
+                        login_form = await page.query_selector('[data-testid="loginForm"]')
+                        if login_form:
+                            log_msg += "\n\n❌ Требуется вход"
+                        else:
+                            # Проверяем наличие кнопки входа
+                            login_btn = await page.query_selector('a[href="/login"]')
+                            if login_btn:
+                                log_msg += "\n\n❌ Требуется вход"
+                            else:
+                                log_msg += "\n\n⚠️ Статус не определен"
+            except Exception as e:
+                log_msg += f"\n\n⚠️ Ошибка проверки: {str(e)[:50]}"
             
         except Exception as e:
-            log_msg += f"\n\n⚠️ Ошибка проверки элементов: {str(e)}"
+            log_msg += f"\n\n⚠️ Ошибка проверки: {str(e)[:50]}"
         
-        try:
-            cookies_in_browser = await browser['context'].cookies()
-            auth_token = next((c for c in cookies_in_browser if c.get('name') == 'auth_token'), None)
-            log_msg += f"\n\n🍪 Кук: {len(cookies_in_browser)}"
-            log_msg += f"\n🔑 auth_token: {'✅' if auth_token else '❌'}"
-        except Exception as e:
-            log_msg += f"\n\n⚠️ Ошибка проверки кук: {str(e)}"
-        
-        try:
-            title = await page.title()
-            log_msg += f"\n\n📌 Заголовок: {title[:60] if title else 'Нет заголовка'}"
-        except:
-            log_msg += f"\n\n📌 Заголовок: Недоступен"
-        
+        # 7. Делаем скриншот
         screenshot = None
         try:
-            screenshot = await page.screenshot(
-                full_page=False,
-                type='jpeg',
-                quality=80
-            )
-            log_msg += f"\n\n📸 Скриншот сделан"
+            screenshot = await page.screenshot(type='jpeg', quality=80)
+            log_msg += "\n\n📸 Скриншот сделан"
         except Exception as e:
-            log_msg += f"\n\n⚠️ Ошибка скриншота: {str(e)}"
+            log_msg += f"\n\n⚠️ Ошибка скриншота: {str(e)[:50]}"
         
-        await msg.edit_text(
-            f"✅ Зашёл в X.com!\n\n{log_msg}"
-        )
+        # 8. Отправка результата
+        final_msg = f"✅ X.com\n\n{log_msg}"
+        
+        # Если слишком длинное - обрезаем
+        if len(final_msg) > 4000:
+            final_msg = final_msg[:4000] + "...\n(обрезано)"
+        
+        await msg.edit_text(final_msg)
         
         if screenshot:
             await update.message.reply_photo(
                 photo=screenshot,
-                caption=f"📸 Скриншот {datetime.now().strftime('%H:%M:%S')}"
+                caption=f"📸 X.com {datetime.now().strftime('%H:%M:%S')}"
             )
         
-        logger.info(f"xlogin завершен, статус: {is_logged}")
+        logger.info(f"xlogin завершен, статус: {'✅' if is_logged else '❌'}")
         
     except Exception as e:
-        error_msg = f"Критическая ошибка: {str(e)}"
+        error_msg = f"Ошибка: {str(e)}"
         traceback_str = traceback.format_exc()
         log_error(error_msg, traceback_str)
         
@@ -808,7 +933,7 @@ async def xlogin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await close_browser()
             await msg.edit_text("❌ Браузер закрыт. Попробуйте снова /xlogin")
         else:
-            await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+            await msg.edit_text(f"❌ {error_msg[:200]}")
 
 async def explore(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔍 Исследую интерфейс X.com...")
