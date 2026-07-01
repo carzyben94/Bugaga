@@ -1,4 +1,4 @@
-# bot.py - X.com бот с автоматической установкой BirdAPI
+# bot.py - X.com бот с одним поиском через Playwright
 import os
 import sys
 import subprocess
@@ -24,58 +24,6 @@ if not TOKEN:
 
 PLAYWRIGHT_DIR = "/root/.cache/ms-playwright"
 os.environ['PLAYWRIGHT_BROWSERS_PATH'] = PLAYWRIGHT_DIR
-
-# ========== УСТАНОВКА BIRDAPI ==========
-
-def install_birdapi():
-    """Автоматическая установка BirdAPI"""
-    try:
-        from bird import TwitterClient
-        print("✅ BirdAPI уже установлен")
-        return True
-    except ImportError:
-        print("⏳ Устанавливаю BirdAPI...")
-        
-        try:
-            # Проверяем наличие git
-            subprocess.run(['git', '--version'], check=True, capture_output=True)
-            result = subprocess.run([
-                sys.executable, '-m', 'pip', 'install',
-                'git+https://github.com/obug/birdapi.git'
-            ], capture_output=True, text=True)
-            
-            if result.returncode == 0:
-                print("✅ BirdAPI установлен!")
-                return True
-            else:
-                print(f"❌ Ошибка установки: {result.stderr}")
-                return False
-                
-        except subprocess.CalledProcessError as e:
-            print(f"❌ Git не найден: {e}")
-            return False
-        except Exception as e:
-            print(f"❌ Ошибка: {e}")
-            return False
-
-# Устанавливаем при запуске
-print("🔍 Проверка BirdAPI...")
-BIRD_INSTALLED = install_birdapi()
-
-# ========== ПОДКЛЮЧАЕМ BIRDAPI ==========
-bird_client = None
-if BIRD_INSTALLED:
-    try:
-        from bird import TwitterClient
-        AUTH_TOKEN = "c9d83e923e1ad6cf67d19a0bc4f9877a49087936"
-        CT0 = "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb"
-        bird_client = TwitterClient(auth_token=AUTH_TOKEN, ct0=CT0)
-        print("✅ BirdAPI клиент создан")
-    except Exception as e:
-        print(f"⚠️ Ошибка BirdAPI: {e}")
-        bird_client = None
-else:
-    print("⚠️ BirdAPI недоступен, работаем через Playwright")
 
 # ========== ПРОВЕРКА PHANTOMWRIGHT ==========
 try:
@@ -252,21 +200,489 @@ async def close_browser():
 # ========== КОМАНДЫ ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    status_bird = "✅" if bird_client else "❌"
     await update.message.reply_text(
-        f"🏠 ОСНОВНЫЕ\n"
-        f"/start — Показать меню\n"
-        f"/login — Авторизация в X.com\n"
-        f"/screen — Скриншот\n"
-        f"/status — Статус браузера\n"
-        f"/close — Закрыть браузер\n\n"
-        f"🤖 XBOT\n"
-        f"/tweets <username> — Твиты пользователя\n"
-        f"/search <запрос> — Поиск твитов (BirdAPI {status_bird})\n"
-        f"/search2 <запрос> — Поиск твитов (Playwright)"
+        "🏠 ОСНОВНЫЕ\n"
+        "/start — Показать меню\n"
+        "/login — Авторизация в X.com\n"
+        "/screen — Скриншот\n"
+        "/status — Статус браузера\n"
+        "/close — Закрыть браузер\n\n"
+        "🤖 XBOT\n"
+        "/tweets <username> — Твиты пользователя\n"
+        "/search <запрос> — Поиск твитов"
     )
 
-# ... (остальные команды: login, screen, status, close, tweets, search, search2 - такие же как в прошлом коде)
+async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text("⏳ Захожу в X.com...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        await browser['context'].clear_cookies()
+        await page.goto('about:blank')
+        await page.wait_for_timeout(2000)
+        
+        for cookie in COOKIES:
+            try:
+                await browser['context'].add_cookies([{
+                    'name': cookie['name'],
+                    'value': cookie['value'],
+                    'domain': '.x.com',
+                    'path': '/',
+                    'secure': True,
+                    'httpOnly': False
+                }])
+            except Exception as e:
+                logger.warning(f"Cookie error {cookie['name']}: {e}")
+        
+        await msg.edit_text("🔄 Загружаю X.com...")
+        await page.goto('https://x.com', wait_until='domcontentloaded', timeout=30000)
+        
+        try:
+            await page.wait_for_selector('[data-testid="primaryColumn"]', timeout=15000)
+        except:
+            await page.wait_for_timeout(5000)
+        
+        await page.wait_for_timeout(3000)
+        
+        auth_status = await page.evaluate('''
+            () => {
+                const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]');
+                const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
+                const hasHomeLink = !!document.querySelector('[data-testid="AppTabBar_Home_Link"]');
+                const hasSideNav = !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
+                const hasLoginForm = !!document.querySelector('[data-testid="loginForm"]');
+                const hasPrimaryColumn = !!document.querySelector('[data-testid="primaryColumn"]');
+                
+                const cookies = document.cookie.split(';').reduce((acc, c) => {
+                    const [key, val] = c.trim().split('=');
+                    acc[key] = val;
+                    return acc;
+                }, {});
+                
+                let username = null;
+                const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
+                if (profileLink) {
+                    const href = profileLink.getAttribute('href');
+                    if (href) {
+                        const match = href.match(/^\\/([^\\/]+)/);
+                        if (match) username = match[1];
+                    }
+                }
+                
+                return {
+                    hasTweetBtn,
+                    hasProfileLink,
+                    hasHomeLink,
+                    hasSideNav,
+                    hasLoginForm,
+                    hasPrimaryColumn,
+                    hasAuthToken: !!cookies.auth_token,
+                    hasCt0: !!cookies.ct0,
+                    username: username,
+                    isLoggedIn: hasTweetBtn || hasProfileLink || hasHomeLink || hasSideNav
+                };
+            }
+        ''')
+        
+        global login_status
+        login_status['is_logged_in'] = auth_status['isLoggedIn']
+        login_status['username'] = auth_status.get('username')
+        login_status['last_check'] = datetime.now()
+        login_status['cookies_valid'] = auth_status['hasAuthToken'] and auth_status['hasCt0']
+        
+        status_msg = f"✅ X.com\n\n"
+        status_msg += f"🍪 auth_token: {'✅' if auth_status['hasAuthToken'] else '❌'}\n"
+        status_msg += f"🍪 ct0: {'✅' if auth_status['hasCt0'] else '❌'}\n\n"
+        
+        if auth_status['isLoggedIn']:
+            status_msg += "✅ ВЫ АВТОРИЗОВАНЫ!\n"
+            if auth_status.get('username'):
+                status_msg += f"👤 @{auth_status['username']}\n"
+            if auth_status['hasTweetBtn']:
+                status_msg += "   • Кнопка Tweet: ✅\n"
+            if auth_status['hasProfileLink']:
+                status_msg += "   • Профиль: ✅\n"
+            if auth_status['hasHomeLink']:
+                status_msg += "   • Домой: ✅\n"
+        elif auth_status['hasLoginForm']:
+            status_msg += "❌ НЕ АВТОРИЗОВАН (форма входа)\n"
+        else:
+            status_msg += "⚠️ НЕ ОПРЕДЕЛЕНО\n"
+        
+        await msg.edit_text(status_msg)
+        
+        screenshot = await page.screenshot(type='jpeg', quality=80)
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption=f"📸 X.com - {'✅ Авторизован' if auth_status['isLoggedIn'] else '❌ Не авторизован'}"
+        )
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text("⏳ Делаю скриншот...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        screenshot = await page.screenshot(type='jpeg', quality=80)
+        await msg.delete()
+        
+        url = page.url
+        title = await page.title()
+        
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption=f"📸 {title[:40] if title else 'X.com'}\n🔗 {url[:50]}"
+        )
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:100]}")
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text("⏳ Проверяю статус...")
+    
+    try:
+        browser_ok = False
+        browser_info = {}
+        
+        if browser_data:
+            try:
+                page = browser_data['page']
+                await page.evaluate('1')
+                browser_ok = True
+                
+                url = page.url
+                title = await page.title()
+                started_at = browser_data.get('started_at')
+                uptime = (datetime.now() - started_at).total_seconds() if started_at else 0
+                
+                auth_check = await page.evaluate('''
+                    () => {
+                        const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]');
+                        const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
+                        const hasHomeLink = !!document.querySelector('[data-testid="AppTabBar_Home_Link"]');
+                        const hasSideNav = !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
+                        const hasLoginForm = !!document.querySelector('[data-testid="loginForm"]');
+                        
+                        const cookies = document.cookie.split(';').reduce((acc, c) => {
+                            const [key, val] = c.trim().split('=');
+                            acc[key] = val;
+                            return acc;
+                        }, {});
+                        
+                        let username = null;
+                        const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
+                        if (profileLink) {
+                            const href = profileLink.getAttribute('href');
+                            if (href) {
+                                const match = href.match(/^\\/([^\\/]+)/);
+                                if (match) username = match[1];
+                            }
+                        }
+                        
+                        return {
+                            hasTweetBtn,
+                            hasProfileLink,
+                            hasHomeLink,
+                            hasSideNav,
+                            hasLoginForm,
+                            hasAuthToken: !!cookies.auth_token,
+                            hasCt0: !!cookies.ct0,
+                            username: username,
+                            isLoggedIn: hasTweetBtn || hasProfileLink || hasHomeLink || hasSideNav
+                        };
+                    }
+                ''')
+                
+                browser_info = {
+                    'url': url,
+                    'title': title[:60] if title else 'Нет',
+                    'uptime': uptime,
+                    'auth': auth_check
+                }
+                
+                login_status['is_logged_in'] = auth_check['isLoggedIn']
+                login_status['username'] = auth_check.get('username')
+                login_status['last_check'] = datetime.now()
+                login_status['cookies_valid'] = auth_check['hasAuthToken'] and auth_check['hasCt0']
+                
+            except Exception as e:
+                browser_ok = False
+                browser_info['error'] = str(e)[:50]
+        else:
+            browser_info = {'error': 'Браузер не запущен'}
+        
+        status_msg = "📊 СТАТУС БОТА\n\n"
+        
+        if browser_ok:
+            status_msg += "🌐 Браузер: ✅ Запущен\n"
+            if browser_info.get('uptime'):
+                hours = int(browser_info['uptime'] // 3600)
+                minutes = int((browser_info['uptime'] % 3600) // 60)
+                status_msg += f"⏱️ Аптайм: {hours}ч {minutes}м\n"
+        else:
+            status_msg += "🌐 Браузер: ❌ Не запущен\n"
+        
+        if browser_ok and browser_info.get('url'):
+            status_msg += f"🔗 URL: {browser_info['url'][:60]}\n"
+            status_msg += f"📌 Заголовок: {browser_info.get('title', 'Нет')}\n"
+        
+        status_msg += "\n🔐 АВТОРИЗАЦИЯ:\n"
+        
+        if browser_ok and browser_info.get('auth'):
+            auth = browser_info['auth']
+            
+            status_msg += f"🍪 auth_token: {'✅' if auth.get('hasAuthToken') else '❌'}\n"
+            status_msg += f"🍪 ct0: {'✅' if auth.get('hasCt0') else '❌'}\n"
+            
+            if auth.get('isLoggedIn'):
+                status_msg += "\n✅ ВЫ АВТОРИЗОВАНЫ\n"
+                if auth.get('username'):
+                    status_msg += f"👤 @{auth['username']}\n"
+                if auth.get('hasTweetBtn'):
+                    status_msg += "   • Кнопка Tweet: ✅\n"
+                if auth.get('hasProfileLink'):
+                    status_msg += "   • Профиль: ✅\n"
+                if auth.get('hasHomeLink'):
+                    status_msg += "   • Домой: ✅\n"
+            elif auth.get('hasLoginForm'):
+                status_msg += "\n❌ НЕ АВТОРИЗОВАН (форма входа)\n"
+            else:
+                status_msg += "\n⚠️ НЕ ОПРЕДЕЛЕНО\n"
+        else:
+            status_msg += "❌ Нет данных (выполните /login)\n"
+        
+        status_msg += f"\n🕐 {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
+        status_msg += f"📦 Драйвер: {'Phantomwright' if PHANTOMWRIGHT_AVAILABLE else 'Playwright'}\n"
+        status_msg += f"🍪 Куки загружены: {len(COOKIES)} шт."
+        
+        await msg.edit_text(status_msg)
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text("⏳ Закрываю браузер...")
+    await close_browser()
+    await msg.edit_text("✅ Браузер закрыт!")
+
+# ========== ТВИТЫ ПОЛЬЗОВАТЕЛЯ ==========
+
+async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Парсинг твитов пользователя"""
+    if not context.args:
+        await update.message.reply_text(
+            "ℹ️ Использование: /tweets <username> [count]\n"
+            "Пример: /tweets elonmusk 10"
+        )
+        return
+    
+    username = context.args[0].replace('@', '').strip()
+    count = int(context.args[1]) if len(context.args) > 1 else 10
+    msg = await update.message.reply_text(f"📊 Парсю твиты @{username}...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        await page.goto(f"https://x.com/{username}", wait_until='domcontentloaded')
+        await page.wait_for_timeout(3000)
+        
+        await page.wait_for_selector('[data-testid="tweet"]', timeout=10000)
+        
+        tweets_data = await page.evaluate(f'''
+            () => {{
+                const tweets = [];
+                const tweetElements = document.querySelectorAll('[data-testid="tweet"]');
+                const count = {count};
+                
+                tweetElements.forEach((tweet, index) => {{
+                    if (index >= count) return;
+                    
+                    const textEl = tweet.querySelector('[data-testid="tweetText"]');
+                    const timeEl = tweet.querySelector('time');
+                    const isPinned = !!tweet.querySelector('[data-testid="pinIcon"]');
+                    
+                    let text = textEl ? textEl.innerText : '';
+                    text = text.replace(/https?:\\/\\/[^\\s]*/g, '');
+                    text = text.replace(/http?:\\/\\/[^\\s]*/g, '');
+                    text = text.replace(/ftp?:\\/\\/[^\\s]*/g, '');
+                    text = text.replace(/www\\.[^\\s]*/g, '');
+                    text = text.replace(/[a-zA-Z0-9.-]+\\.[a-zA-Z]{{2,}}\\S*/g, '');
+                    text = text.replace(/\\b[a-zA-Z0-9.-]+\\.[a-zA-Z]{{2,}}\\b/g, '');
+                    text = text.replace(/[a-zA-Z0-9]+-[a-zA-Z0-9]+-[a-zA-Z0-9]+/g, '');
+                    text = text.replace(/[a-zA-Z0-9]+\\.[a-zA-Z]{{2,}}\\b/g, '');
+                    text = text.replace(/\\n\\s*\\n/g, '\\n');
+                    text = text.replace(/\\s{{2,}}/g, ' ');
+                    text = text.trim();
+                    
+                    tweets.push({{
+                        text: text,
+                        time: timeEl ? timeEl.getAttribute('datetime') : '',
+                        is_pinned: isPinned
+                    }});
+                }});
+                
+                return tweets;
+            }}
+        ''')
+        
+        if not tweets_data:
+            await msg.edit_text(f"❌ Твиты @{username} не найдены!")
+            return
+        
+        report = f"📊 **ТВИТЫ @{username}**\n"
+        report += f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
+        report += f"📌 Всего: {len(tweets_data)}\n\n"
+        
+        for i, tweet in enumerate(tweets_data, 1):
+            if tweet['is_pinned']:
+                report += f"📌 **{i}. ЗАКРЕПЛЕН**\n"
+            else:
+                report += f"**{i}.** "
+            
+            text = tweet['text'][:250]
+            if len(tweet['text']) > 250:
+                text += "..."
+            report += f"{text}\n"
+            
+            if tweet['time']:
+                time_str = tweet['time'][:16].replace('T', ' ')
+                report += f"\n🕐 {time_str}"
+            
+            report += "\n\n"
+        
+        if len(report) > 4000:
+            filename = f"tweets_{username}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(report)
+            await update.message.reply_document(
+                document=open(filename, 'rb'),
+                caption=f"📄 {len(tweets_data)} твитов @{username}"
+            )
+        else:
+            await msg.edit_text(report, parse_mode='Markdown')
+        
+        screenshot = await page.screenshot(type='jpeg', quality=80)
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption=f"📸 Твиты @{username}"
+        )
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+        logger.error(f"Error in tweets: {e}", exc_info=True)
+
+
+# ========== ПОИСК ТВИТОВ (PLAYWRIGHT) ==========
+
+async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Поиск твитов через Playwright"""
+    if not context.args:
+        await update.message.reply_text(
+            "ℹ️ Использование: /search <запрос>\n"
+            "Пример: /search биткоин"
+        )
+        return
+    
+    query = ' '.join(context.args)
+    msg = await update.message.reply_text(f"🔍 Ищу: {query}...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        search_url = f"https://x.com/search?q={query.replace(' ', '%20')}&src=typed_query"
+        await page.goto(search_url, wait_until='domcontentloaded')
+        await page.wait_for_timeout(3000)
+        
+        await page.wait_for_selector('[data-testid="tweet"]', timeout=10000)
+        
+        tweets_data = await page.evaluate('''
+            () => {
+                const tweets = [];
+                const tweetElements = document.querySelectorAll('[data-testid="tweet"]');
+                
+                tweetElements.forEach((tweet, index) => {
+                    if (index >= 10) return;
+                    
+                    const textEl = tweet.querySelector('[data-testid="tweetText"]');
+                    const timeEl = tweet.querySelector('time');
+                    
+                    let text = textEl ? textEl.innerText : '';
+                    text = text.replace(/https?:\\/\\/[^\\s]*/g, '');
+                    text = text.replace(/http?:\\/\\/[^\\s]*/g, '');
+                    text = text.replace(/ftp?:\\/\\/[^\\s]*/g, '');
+                    text = text.replace(/www\\.[^\\s]*/g, '');
+                    text = text.replace(/[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}\\S*/g, '');
+                    text = text.replace(/\\b[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}\\b/g, '');
+                    text = text.replace(/[a-zA-Z0-9]+-[a-zA-Z0-9]+-[a-zA-Z0-9]+/g, '');
+                    text = text.replace(/[a-zA-Z0-9]+\\.[a-zA-Z]{2,}\\b/g, '');
+                    text = text.replace(/\\n\\s*\\n/g, '\\n');
+                    text = text.replace(/\\s{2,}/g, ' ');
+                    text = text.trim();
+                    
+                    tweets.push({
+                        text: text,
+                        time: timeEl ? timeEl.getAttribute('datetime') : ''
+                    });
+                });
+                
+                return tweets;
+            }
+        ''')
+        
+        if not tweets_data:
+            await msg.edit_text(f"❌ По запросу '{query}' ничего не найдено!")
+            return
+        
+        report = f"🔍 **РЕЗУЛЬТАТЫ ПО ЗАПРОСУ**\n"
+        report += f"📌 `{query}`\n"
+        report += f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
+        report += f"📊 Найдено: {len(tweets_data)}\n\n"
+        
+        for i, tweet in enumerate(tweets_data, 1):
+            report += f"**{i}.** "
+            
+            text = tweet['text'][:280]
+            if len(tweet['text']) > 280:
+                text += "..."
+            
+            if text.strip():
+                report += f"{text}\n"
+            
+            if tweet['time']:
+                time_str = tweet['time'][:16].replace('T', ' ')
+                report += f"\n🕐 {time_str}"
+            
+            report += "\n\n"
+        
+        if len(report) > 4000:
+            filename = f"search_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(report)
+            await update.message.reply_document(
+                document=open(filename, 'rb'),
+                caption=f"📄 Результаты поиска: {query}"
+            )
+        else:
+            await msg.edit_text(report, parse_mode='Markdown')
+        
+        screenshot = await page.screenshot(type='jpeg', quality=80)
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption=f"🔍 Поиск: {query}"
+        )
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+        logger.error(f"Error in search: {e}", exc_info=True)
+
 
 # ========== ЗАПУСК ==========
 def main():
@@ -282,13 +698,11 @@ def main():
     # XBOT
     app.add_handler(CommandHandler("tweets", tweets))
     app.add_handler(CommandHandler("search", search))
-    app.add_handler(CommandHandler("search2", search2))
     
     print("✅ Бот запущен!")
-    print(f"📦 BirdAPI: {'✅ Доступен' if bird_client else '❌ Недоступен'}")
     print("Команды:")
     print("  /start, /login, /screen, /status, /close")
-    print("  /tweets, /search (BirdAPI), /search2 (Playwright)")
+    print("  /tweets, /search")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
