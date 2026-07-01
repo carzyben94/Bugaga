@@ -163,7 +163,7 @@ provider:
   api_key: {AGNES_API_KEY or ""}
   model: agnes-2.0-flash
 
-# Подключаем расширение Playwright для управления браузером
+# Подключаем Playwright MCP как расширение
 extensions:
   - playwright
 """
