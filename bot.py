@@ -132,43 +132,89 @@ class GooseManager:
         self.init_error = None
         
     async def initialize(self):
-        """Запускает Goose в фоновом режиме"""
+        """Запускает Goose через Python API (без интерактива)"""
         if self.initialized:
             return True
             
         try:
-            logger.info("🔄 Запускаю Goose...")
+            logger.info("🔄 Запускаю Goose через Python API...")
             
-            # Проверяем, есть ли goose
-            check = await asyncio.create_subprocess_exec(
-                "goose", "--version",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            await check.communicate()
+            # Проверяем, есть ли goose как модуль
+            try:
+                import goose
+                logger.info("✅ Goose найден как Python-модуль")
+            except ImportError:
+                # Пробуем установить goose-ai
+                try:
+                    subprocess.run([sys.executable, "-m", "pip", "install", "goose-ai"], check=True)
+                    import goose
+                    logger.info("✅ Goose установлен через pip")
+                except Exception as e:
+                    self.init_error = f"Не удалось установить Goose: {e}"
+                    return False
             
-            if check.returncode != 0:
-                self.init_error = "goose не найден"
-                return False
-            
-            # Запускаем goose session
+            # Запускаем goose напрямую через subprocess с отключённой телеметрией
             env = os.environ.copy()
             env["GOOSE_TELEMETRY_ENABLED"] = "false"
+            env["GOOSE_PROVIDER"] = "openai"  # Используем OpenAI-совместимый API
+            env["OPENAI_BASE_URL"] = "https://apihub.agnes-ai.com/v1"
+            env["OPENAI_API_KEY"] = AGNES_API_KEY or ""
+            env["GOOSE_MODEL"] = "agnes-2.0-flash"
             
+            # Запускаем goose в режиме сессии с автоматическим ответом на все вопросы
             self.process = await asyncio.create_subprocess_exec(
                 "goose", "session",
-                stdin=asyncio.subprocess.PIPE,
+                "--non-interactive",  # Отключаем интерактив
+                stdin=asyncio.subprocess.DEVNULL,  # Закрываем stdin
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env
             )
             
-            # Ждём запуска
-            await asyncio.sleep(2)
+            # Даём время на запуск
+            await asyncio.sleep(3)
             
+            # Проверяем, жив ли процесс
             if self.process.returncode is not None:
                 stderr = await self.process.stderr.read()
                 error_msg = stderr.decode() if stderr else "процесс завершился"
+                logger.error(f"❌ Goose завершился: {error_msg}")
+                
+                # Если ошибка про провайдера, пробуем через конфиг
+                if "provider" in error_msg.lower() or "model" in error_msg.lower():
+                    logger.info("🔄 Пробую настроить провайдер через конфиг...")
+                    # Создаём конфиг вручную
+                    config_dir = os.path.expanduser("~/.config/goose")
+                    os.makedirs(config_dir, exist_ok=True)
+                    config_path = os.path.join(config_dir, "config.yaml")
+                    
+                    config_content = f"""
+provider:
+  type: openai
+  base_url: https://apihub.agnes-ai.com/v1
+  api_key: {AGNES_API_KEY or ""}
+  model: agnes-2.0-flash
+"""
+                    with open(config_path, "w") as f:
+                        f.write(config_content)
+                    
+                    # Повторяем запуск
+                    self.process = await asyncio.create_subprocess_exec(
+                        "goose", "session",
+                        "--non-interactive",
+                        stdin=asyncio.subprocess.DEVNULL,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        env=env
+                    )
+                    await asyncio.sleep(3)
+                    
+                    if self.process.returncode is not None:
+                        stderr = await self.process.stderr.read()
+                        error_msg = stderr.decode() if stderr else "процесс завершился"
+                        self.init_error = error_msg[:200]
+                        return False
+                
                 self.init_error = error_msg[:200]
                 return False
             
