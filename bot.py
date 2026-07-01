@@ -1,4 +1,4 @@
-# explorer.py - Агент-исследователь X.com
+# explorer.py - Агент-исследователь X.com (ИСПРАВЛЕННАЯ ВЕРСИЯ)
 import os
 import sys
 import subprocess
@@ -106,9 +106,11 @@ async def get_browser():
     
     if browser_data:
         try:
+            # Проверяем жив ли браузер
             await browser_data['page'].evaluate('1')
             return browser_data
-        except:
+        except Exception as e:
+            logger.warning(f"Браузер мертв, перезапускаю: {e}")
             try:
                 await browser_data['browser'].close()
             except:
@@ -129,7 +131,8 @@ async def get_browser():
             chromium_path = get_chromium_path()
         
         launch_args = {
-            'headless': False,  # Включаем видимый режим для отладки
+            'headless': False,
+            'timeout': 60000,  # Увеличиваем таймаут
             'args': [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -137,6 +140,7 @@ async def get_browser():
                 '--disable-dev-shm-usage',
                 '--disable-gpu',
                 '--window-size=1280,720',
+                '--remote-debugging-port=9222',  # Для отладки
             ]
         }
         if chromium_path:
@@ -151,6 +155,10 @@ async def get_browser():
             timezone_id='America/New_York',
         )
         page = await context.new_page()
+        
+        # Устанавливаем таймауты для страницы
+        page.set_default_timeout(60000)
+        page.set_default_navigation_timeout(60000)
         
         await page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -171,6 +179,9 @@ async def get_browser():
         
         logger.info("✅ Браузер запущен")
         return browser_data
+    except Exception as e:
+        logger.error(f"❌ Ошибка запуска браузера: {e}")
+        raise
     finally:
         browser_lock = False
 
@@ -180,8 +191,8 @@ async def close_browser():
         try:
             await browser_data['browser'].close()
             await browser_data['playwright'].stop()
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Ошибка при закрытии: {e}")
         browser_data = None
 
 # ========== АГЕНТ-ИССЛЕДОВАТЕЛЬ ==========
@@ -204,22 +215,40 @@ class XExplorer:
         logger.info(log_entry)
         return log_entry
     
+    async def ensure_page_alive(self):
+        """Проверяет что страница жива"""
+        try:
+            await self.page.evaluate('1')
+            return True
+        except:
+            return False
+    
     async def scan_page(self, url: str, name: str = "unknown"):
         """Сканирует страницу и находит все интерактивные элементы"""
         self.log(f"📄 Сканирую страницу: {url}")
         
         try:
-            await self.page.goto(url, wait_until='domcontentloaded', timeout=30000)
-            await self.page.wait_for_timeout(3000)
+            # Проверяем что страница жива
+            if not await self.ensure_page_alive():
+                self.log("⚠️ Страница мертва, перезапускаем браузер")
+                global browser_data
+                browser_data = None
+                return []
             
-            # Делаем скриншот до сканирования
-            screenshot = await self.page.screenshot(type='jpeg', quality=70)
-            self.results['screenshots'].append({
-                'stage': 'before_scan',
-                'data': screenshot
-            })
+            await self.page.goto(url, wait_until='domcontentloaded', timeout=60000)
+            await self.page.wait_for_timeout(5000)
             
-            # Собираем все элементы
+            # Делаем скриншот
+            try:
+                screenshot = await self.page.screenshot(type='jpeg', quality=70)
+                self.results['screenshots'].append({
+                    'stage': 'before_scan',
+                    'data': screenshot
+                })
+            except Exception as e:
+                self.log(f"⚠️ Скриншот не удался: {e}")
+            
+            # Собираем элементы
             elements = await self.page.evaluate('''
                 () => {
                     const elements = [];
@@ -277,14 +306,17 @@ class XExplorer:
             self.results['elements'] = elements
             
             # Сохраняем в файл
-            with open(f'scan_{name}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json', 'w', encoding='utf-8') as f:
-                json.dump({
-                    'url': url,
-                    'name': name,
-                    'timestamp': datetime.now().isoformat(),
-                    'total': len(elements),
-                    'elements': elements
-                }, f, ensure_ascii=False, indent=2)
+            try:
+                with open(f'scan_{name}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json', 'w', encoding='utf-8') as f:
+                    json.dump({
+                        'url': url,
+                        'name': name,
+                        'timestamp': datetime.now().isoformat(),
+                        'total': len(elements),
+                        'elements': elements
+                    }, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                self.log(f"⚠️ Не удалось сохранить файл: {e}")
             
             return elements
             
@@ -300,6 +332,11 @@ class XExplorer:
         clicked = 0
         for i, el_data in enumerate(elements[:max_clicks]):
             try:
+                # Проверяем что страница жива
+                if not await self.ensure_page_alive():
+                    self.log("⚠️ Страница умерла, останавливаю клики")
+                    break
+                
                 # Пропускаем опасные элементы
                 if el_data.get('disabled') or el_data.get('readonly'):
                     continue
@@ -309,11 +346,11 @@ class XExplorer:
                 if href and (href.startswith('http') and 'x.com' not in href):
                     continue
                 
-                # Пропускаем элементы с большим текстом (обычно это не кнопки)
+                # Пропускаем элементы с большим текстом
                 if len(el_data.get('text', '')) > 50 and not el_data.get('aria'):
                     continue
                 
-                self.log(f"🔄 Клик #{i+1}: {el_data.get('text', 'без текста')} [{el_data.get('testid', '')}]")
+                self.log(f"🔄 Клик #{i+1}: {el_data.get('text', 'без текста')[:30]} [{el_data.get('testid', '')}]")
                 
                 # Находим элемент на странице
                 selector = self._build_selector(el_data)
@@ -323,8 +360,10 @@ class XExplorer:
                 try:
                     element = await self.page.query_selector(selector)
                     if element:
-                        await element.click(timeout=2000)
-                        await self.page.wait_for_timeout(500)
+                        # Ждем что элемент станет кликабельным
+                        await element.wait_for_element_state('visible', timeout=5000)
+                        await element.click(timeout=5000)
+                        await self.page.wait_for_timeout(1000)
                         clicked += 1
                         self.results['clicked'].append({
                             'element': el_data,
@@ -334,11 +373,14 @@ class XExplorer:
                         
                         # Делаем скриншот после клика
                         if clicked % 5 == 0:
-                            screenshot = await self.page.screenshot(type='jpeg', quality=70)
-                            self.results['screenshots'].append({
-                                'stage': f'after_click_{clicked}',
-                                'data': screenshot
-                            })
+                            try:
+                                screenshot = await self.page.screenshot(type='jpeg', quality=70)
+                                self.results['screenshots'].append({
+                                    'stage': f'after_click_{clicked}',
+                                    'data': screenshot
+                                })
+                            except:
+                                pass
                     else:
                         self.log(f"⚠️ Элемент не найден на странице")
                 except Exception as e:
@@ -365,7 +407,8 @@ class XExplorer:
             return f'[aria-label="{el_data["aria"]}"]'
         if el_data.get('text'):
             text = el_data['text'][:30].replace('"', '\\"')
-            return f'*:has-text("{text}")'
+            if text:
+                return f'*:has-text("{text}")'
         return None
     
     def get_report(self) -> str:
@@ -377,7 +420,7 @@ class XExplorer:
         report += f"📸 Скриншотов: {len(self.results['screenshots'])}\n\n"
         
         report += "📋 **Логи:**\n"
-        for log in self.results['logs'][-20:]:
+        for log in self.results['logs'][-15:]:
             report += f"• {log}\n"
         
         report += "\n📌 **Найденные элементы (первые 10):**\n"
@@ -434,10 +477,10 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.warning(f"Cookie error {cookie['name']}: {e}")
         
         await msg.edit_text("🔄 Загружаю X.com...")
-        await page.goto('https://x.com', wait_until='domcontentloaded', timeout=30000)
+        await page.goto('https://x.com', wait_until='domcontentloaded', timeout=60000)
         
         try:
-            await page.wait_for_selector('[data-testid="primaryColumn"]', timeout=15000)
+            await page.wait_for_selector('[data-testid="primaryColumn"]', timeout=30000)
         except:
             await page.wait_for_timeout(5000)
         
@@ -457,6 +500,7 @@ async def explore(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔍 Запускаю агента-исследователя...")
     
     try:
+        # Получаем или создаем браузер
         browser = await get_browser()
         page = browser['page']
         
@@ -464,10 +508,13 @@ async def explore(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Сканируем текущую страницу
         url = page.url
-        await explorer.scan_page(url, "current")
+        elements = await explorer.scan_page(url, "current")
+        
+        if not elements:
+            await msg.edit_text("⚠️ Не найдено элементов для исследования. Возможно, нужно авторизоваться.")
+            return
         
         # Кликаем по элементам
-        elements = explorer.results['elements']
         await explorer.click_elements(elements, max_clicks=15)
         
         # Формируем отчет
@@ -482,15 +529,15 @@ async def explore(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         photo=s['data'],
                         caption=f"📸 {s['stage']}"
                     )
-                except:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Не удалось отправить скриншот: {e}")
         
-        # Сохраняем результаты
         global exploration_results
         exploration_results = explorer.results
         
     except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+        logger.error(f"Explore error: {e}")
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}\n\nПопробуйте /login сначала.")
 
 async def explore_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🏠 Исследую главную страницу...")
@@ -502,13 +549,17 @@ async def explore_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
         explorer = XExplorer(page)
         
         # Переходим на главную
-        await page.goto('https://x.com/home', wait_until='domcontentloaded', timeout=30000)
-        await page.wait_for_timeout(3000)
+        await page.goto('https://x.com/home', wait_until='domcontentloaded', timeout=60000)
+        await page.wait_for_timeout(5000)
         
         # Сканируем
         elements = await explorer.scan_page('https://x.com/home', 'home')
         
-        # Кликаем по элементам (кроме опасных)
+        if not elements:
+            await msg.edit_text("⚠️ Не найдено элементов. Возможно, нужно авторизоваться.")
+            return
+        
+        # Кликаем по элементам
         safe_elements = [e for e in elements if not e.get('href', '').startswith('http')]
         await explorer.click_elements(safe_elements, max_clicks=20)
         
@@ -530,7 +581,8 @@ async def explore_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
         exploration_results = explorer.results
         
     except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+        logger.error(f"Explore home error: {e}")
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}\n\nПопробуйте /login сначала.")
 
 async def explore_explore(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("📈 Исследую страницу обзора...")
@@ -541,10 +593,15 @@ async def explore_explore(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         explorer = XExplorer(page)
         
-        await page.goto('https://x.com/explore', wait_until='domcontentloaded', timeout=30000)
-        await page.wait_for_timeout(3000)
+        await page.goto('https://x.com/explore', wait_until='domcontentloaded', timeout=60000)
+        await page.wait_for_timeout(5000)
         
         elements = await explorer.scan_page('https://x.com/explore', 'explore')
+        
+        if not elements:
+            await msg.edit_text("⚠️ Не найдено элементов. Возможно, нужно авторизоваться.")
+            return
+        
         safe_elements = [e for e in elements if not e.get('href', '').startswith('http')]
         await explorer.click_elements(safe_elements, max_clicks=15)
         
@@ -565,7 +622,8 @@ async def explore_explore(update: Update, context: ContextTypes.DEFAULT_TYPE):
         exploration_results = explorer.results
         
     except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+        logger.error(f"Explore explore error: {e}")
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}\n\nПопробуйте /login сначала.")
 
 async def explore_notifications(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔔 Исследую страницу уведомлений...")
@@ -576,10 +634,15 @@ async def explore_notifications(update: Update, context: ContextTypes.DEFAULT_TY
         
         explorer = XExplorer(page)
         
-        await page.goto('https://x.com/notifications', wait_until='domcontentloaded', timeout=30000)
-        await page.wait_for_timeout(3000)
+        await page.goto('https://x.com/notifications', wait_until='domcontentloaded', timeout=60000)
+        await page.wait_for_timeout(5000)
         
         elements = await explorer.scan_page('https://x.com/notifications', 'notifications')
+        
+        if not elements:
+            await msg.edit_text("⚠️ Не найдено элементов. Возможно, нужно авторизоваться.")
+            return
+        
         safe_elements = [e for e in elements if not e.get('href', '').startswith('http')]
         await explorer.click_elements(safe_elements, max_clicks=15)
         
@@ -600,7 +663,8 @@ async def explore_notifications(update: Update, context: ContextTypes.DEFAULT_TY
         exploration_results = explorer.results
         
     except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+        logger.error(f"Explore notifications error: {e}")
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}\n\nПопробуйте /login сначала.")
 
 async def explore_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🌐 Исследую все страницы... (это займет время)")
@@ -620,12 +684,14 @@ async def explore_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for url, name in pages:
             explorer = XExplorer(page)
             
-            await page.goto(url, wait_until='domcontentloaded', timeout=30000)
-            await page.wait_for_timeout(2000)
+            await page.goto(url, wait_until='domcontentloaded', timeout=60000)
+            await page.wait_for_timeout(5000)
             
             elements = await explorer.scan_page(url, name)
-            safe_elements = [e for e in elements if not e.get('href', '').startswith('http')]
-            await explorer.click_elements(safe_elements, max_clicks=10)
+            
+            if elements:
+                safe_elements = [e for e in elements if not e.get('href', '').startswith('http')]
+                await explorer.click_elements(safe_elements, max_clicks=10)
             
             all_results[name] = explorer.results
             
@@ -654,12 +720,13 @@ async def explore_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
         exploration_results = all_results
         
     except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+        logger.error(f"Explore all error: {e}")
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}\n\nПопробуйте /login сначала.")
 
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global exploration_results
     
-    if not exploration_results or not exploration_results.get('elements'):
+    if not exploration_results:
         await update.message.reply_text("📭 Нет данных. Запустите исследование: /explore")
         return
     
