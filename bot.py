@@ -474,7 +474,7 @@ async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== ТВИТЫ ПОЛЬЗОВАТЕЛЯ ==========
 
 async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Парсинг твитов пользователя"""
+    """Парсинг твитов пользователя с красивым оформлением"""
     if not context.args:
         await update.message.reply_text(
             "ℹ️ Использование: /tweets <username> [count]\n"
@@ -531,27 +531,41 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"❌ Твиты @{username} не найдены!")
             return
         
-        report = f"📊 ТВИТЫ @{username}\n"
+        line = "─" * 35
+        report = f"📊 **ТВИТЫ @{username}**\n"
         report += f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
-        report += f"📌 Всего: {len(tweets_data)}\n\n"
+        report += f"📌 Всего: {len(tweets_data)}\n"
+        report += f"{line}\n\n"
         
         for i, tweet in enumerate(tweets_data, 1):
             if tweet['is_pinned']:
-                report += f"📌 {i}. ЗАКРЕПЛЕН\n"
+                report += f"📌 **{i}. ЗАКРЕПЛЕН**\n"
             else:
-                report += f"{i}. "
+                report += f"**{i}.** "
             
-            report += f"{tweet['text'][:200]}\n"
+            text = tweet['text'][:250]
+            if len(tweet['text']) > 250:
+                text += "..."
+            report += f"{text}\n\n"
             
             if tweet['time']:
-                report += f"🕐 {tweet['time'][:16]}\n"
+                time_str = tweet['time'][:16].replace('T', ' ')
+                report += f"🕐 {time_str}\n"
             
-            report += f"💬 {tweet['replies']} | 🔄 {tweet['retweets']} | ❤️ {tweet['likes']}"
-            
+            stats = []
+            if tweet['replies'] and tweet['replies'] != '0':
+                stats.append(f"💬 {tweet['replies']}")
+            if tweet['retweets'] and tweet['retweets'] != '0':
+                stats.append(f"🔄 {tweet['retweets']}")
+            if tweet['likes'] and tweet['likes'] != '0':
+                stats.append(f"❤️ {tweet['likes']}")
             if tweet['has_media']:
-                report += " | 🖼️"
+                stats.append("🖼️")
             
-            report += "\n\n"
+            if stats:
+                report += " | ".join(stats) + "\n"
+            
+            report += f"{line}\n\n"
         
         if len(report) > 4000:
             filename = f"tweets_{username}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
@@ -562,7 +576,7 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption=f"📄 {len(tweets_data)} твитов @{username}"
             )
         else:
-            await msg.edit_text(report)
+            await msg.edit_text(report, parse_mode='Markdown')
         
         screenshot = await page.screenshot(type='jpeg', quality=80)
         await update.message.reply_photo(
@@ -574,10 +588,11 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
         logger.error(f"Error in tweets: {e}", exc_info=True)
 
+
 # ========== ПОИСК ТВИТОВ ==========
 
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Поиск твитов"""
+    """Поиск твитов с красивым оформлением"""
     if not context.args:
         await update.message.reply_text(
             "ℹ️ Использование: /search <запрос>\n"
@@ -631,22 +646,39 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"❌ По запросу '{query}' ничего не найдено!")
             return
         
-        report = f"🔍 РЕЗУЛЬТАТЫ ПО ЗАПРОСУ: '{query}'\n"
+        line = "─" * 35
+        report = f"🔍 **РЕЗУЛЬТАТЫ ПО ЗАПРОСУ**\n"
+        report += f"📌 `{query}`\n"
         report += f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
-        report += f"📌 Найдено: {len(tweets_data)}\n\n"
+        report += f"📊 Найдено: {len(tweets_data)}\n"
+        report += f"{line}\n\n"
         
         for i, tweet in enumerate(tweets_data, 1):
-            report += f"{i}. {tweet['text'][:200]}\n"
+            report += f"**{i}.** "
+            
+            text = tweet['text'][:280]
+            if len(tweet['text']) > 280:
+                text += "..."
+            report += f"{text}\n\n"
             
             if tweet['time']:
-                report += f"🕐 {tweet['time'][:16]}\n"
+                time_str = tweet['time'][:16].replace('T', ' ')
+                report += f"🕐 {time_str}\n"
             
-            report += f"💬 {tweet['replies']} | 🔄 {tweet['retweets']} | ❤️ {tweet['likes']}"
-            
+            stats = []
+            if tweet['replies'] and tweet['replies'] != '0':
+                stats.append(f"💬 {tweet['replies']}")
+            if tweet['retweets'] and tweet['retweets'] != '0':
+                stats.append(f"🔄 {tweet['retweets']}")
+            if tweet['likes'] and tweet['likes'] != '0':
+                stats.append(f"❤️ {tweet['likes']}")
             if tweet['has_media']:
-                report += " | 🖼️"
+                stats.append("🖼️")
             
-            report += "\n\n"
+            if stats:
+                report += " | ".join(stats) + "\n"
+            
+            report += f"{line}\n\n"
         
         if len(report) > 4000:
             filename = f"search_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
@@ -657,7 +689,7 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption=f"📄 Результаты поиска: {query}"
             )
         else:
-            await msg.edit_text(report)
+            await msg.edit_text(report, parse_mode='Markdown')
         
         screenshot = await page.screenshot(type='jpeg', quality=80)
         await update.message.reply_photo(
