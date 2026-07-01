@@ -1,12 +1,11 @@
-# explorer.py - Агент-исследователь X.com (ИСПРАВЛЕННАЯ ВЕРСИЯ)
+# bot.py - X.com бот
 import os
 import sys
 import subprocess
 import logging
 import asyncio
-import json
 from datetime import datetime
-from typing import Optional, Dict, List, Any
+from typing import Optional
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -14,7 +13,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.FileHandler('explorer.log'), logging.StreamHandler()]
+    handlers=[logging.FileHandler('bot.log'), logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
 
@@ -54,12 +53,11 @@ COOKIES = [
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 browser_data = None
 browser_lock = False
-exploration_results = {
-    'pages': {},
-    'total_elements': 0,
-    'clicked_elements': 0,
-    'errors': [],
-    'logs': []
+login_status = {
+    'is_logged_in': False,
+    'username': None,
+    'last_check': None,
+    'cookies_valid': False
 }
 
 # ========== УСТАНОВКА БРАУЗЕРА ==========
@@ -106,11 +104,9 @@ async def get_browser():
     
     if browser_data:
         try:
-            # Проверяем жив ли браузер
             await browser_data['page'].evaluate('1')
             return browser_data
-        except Exception as e:
-            logger.warning(f"Браузер мертв, перезапускаю: {e}")
+        except:
             try:
                 await browser_data['browser'].close()
             except:
@@ -131,8 +127,7 @@ async def get_browser():
             chromium_path = get_chromium_path()
         
         launch_args = {
-            'headless': False,
-            'timeout': 60000,  # Увеличиваем таймаут
+            'headless': True,
             'args': [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -140,7 +135,7 @@ async def get_browser():
                 '--disable-dev-shm-usage',
                 '--disable-gpu',
                 '--window-size=1280,720',
-                '--remote-debugging-port=9222',  # Для отладки
+                '--headless=new',
             ]
         }
         if chromium_path:
@@ -153,12 +148,13 @@ async def get_browser():
             viewport={'width': 1280, 'height': 720},
             locale='en-US',
             timezone_id='America/New_York',
+            extra_http_headers={
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'DNT': '1',
+            }
         )
         page = await context.new_page()
-        
-        # Устанавливаем таймауты для страницы
-        page.set_default_timeout(60000)
-        page.set_default_navigation_timeout(60000)
         
         await page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -167,6 +163,8 @@ async def get_browser():
             Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
             Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 4 });
             window.chrome = { runtime: { connect: () => {}, sendMessage: () => {} }, app: { isInstalled: false } };
+            Object.defineProperty(document, 'hidden', { get: () => false });
+            Object.defineProperty(document, 'visibilityState', { get: () => 'visible' });
         """)
         
         browser_data = {
@@ -179,277 +177,33 @@ async def get_browser():
         
         logger.info("✅ Браузер запущен")
         return browser_data
-    except Exception as e:
-        logger.error(f"❌ Ошибка запуска браузера: {e}")
-        raise
     finally:
         browser_lock = False
 
 async def close_browser():
-    global browser_data
+    global browser_data, login_status
     if browser_data:
         try:
             await browser_data['browser'].close()
             await browser_data['playwright'].stop()
-        except Exception as e:
-            logger.warning(f"Ошибка при закрытии: {e}")
-        browser_data = None
-
-# ========== АГЕНТ-ИССЛЕДОВАТЕЛЬ ==========
-class XExplorer:
-    def __init__(self, page):
-        self.page = page
-        self.results = {
-            'elements': [],
-            'clicked': [],
-            'errors': [],
-            'screenshots': [],
-            'logs': []
-        }
-        self.log("🔍 Агент-исследователь запущен")
-    
-    def log(self, message):
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        log_entry = f"[{timestamp}] {message}"
-        self.results['logs'].append(log_entry)
-        logger.info(log_entry)
-        return log_entry
-    
-    async def ensure_page_alive(self):
-        """Проверяет что страница жива"""
-        try:
-            await self.page.evaluate('1')
-            return True
         except:
-            return False
-    
-    async def scan_page(self, url: str, name: str = "unknown"):
-        """Сканирует страницу и находит все интерактивные элементы"""
-        self.log(f"📄 Сканирую страницу: {url}")
-        
-        try:
-            # Проверяем что страница жива
-            if not await self.ensure_page_alive():
-                self.log("⚠️ Страница мертва, перезапускаем браузер")
-                global browser_data
-                browser_data = None
-                return []
-            
-            await self.page.goto(url, wait_until='domcontentloaded', timeout=60000)
-            await self.page.wait_for_timeout(5000)
-            
-            # Делаем скриншот
-            try:
-                screenshot = await self.page.screenshot(type='jpeg', quality=70)
-                self.results['screenshots'].append({
-                    'stage': 'before_scan',
-                    'data': screenshot
-                })
-            except Exception as e:
-                self.log(f"⚠️ Скриншот не удался: {e}")
-            
-            # Собираем элементы
-            elements = await self.page.evaluate('''
-                () => {
-                    const elements = [];
-                    const selectors = [
-                        'button',
-                        'a[href]',
-                        'input',
-                        'textarea',
-                        'select',
-                        '[role="button"]',
-                        '[role="link"]',
-                        '[role="tab"]',
-                        '[role="menuitem"]',
-                        '[data-testid]',
-                        '[aria-label]',
-                        '[aria-haspopup="menu"]'
-                    ];
-                    
-                    const allElements = document.querySelectorAll(selectors.join(','));
-                    
-                    for (const el of allElements) {
-                        const rect = el.getBoundingClientRect();
-                        if (rect.width === 0 || rect.height === 0) continue;
-                        if (el.offsetParent === null) continue;
-                        
-                        const data = {
-                            tag: el.tagName.toLowerCase(),
-                            type: el.type || '',
-                            text: (el.textContent || '').trim().slice(0, 100),
-                            aria: el.getAttribute('aria-label') || '',
-                            testid: el.getAttribute('data-testid') || '',
-                            role: el.getAttribute('role') || '',
-                            href: el.getAttribute('href') || '',
-                            id: el.id || '',
-                            class: el.className || '',
-                            visible: true,
-                            x: Math.round(rect.x),
-                            y: Math.round(rect.y),
-                            width: Math.round(rect.width),
-                            height: Math.round(rect.height),
-                            disabled: el.disabled || false,
-                            readonly: el.readOnly || false
-                        };
-                        
-                        if (data.text || data.aria || data.testid || data.role) {
-                            elements.push(data);
-                        }
-                    }
-                    
-                    return elements;
-                }
-            ''')
-            
-            self.log(f"🔍 Найдено {len(elements)} интерактивных элементов")
-            self.results['elements'] = elements
-            
-            # Сохраняем в файл
-            try:
-                with open(f'scan_{name}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json', 'w', encoding='utf-8') as f:
-                    json.dump({
-                        'url': url,
-                        'name': name,
-                        'timestamp': datetime.now().isoformat(),
-                        'total': len(elements),
-                        'elements': elements
-                    }, f, ensure_ascii=False, indent=2)
-            except Exception as e:
-                self.log(f"⚠️ Не удалось сохранить файл: {e}")
-            
-            return elements
-            
-        except Exception as e:
-            self.log(f"❌ Ошибка сканирования: {str(e)}")
-            self.results['errors'].append(str(e))
-            return []
-    
-    async def click_elements(self, elements: List[Dict], max_clicks: int = 20):
-        """Кликает по найденным элементам и логирует результат"""
-        self.log(f"🖱️ Начинаю кликать по {min(len(elements), max_clicks)} элементам...")
-        
-        clicked = 0
-        for i, el_data in enumerate(elements[:max_clicks]):
-            try:
-                # Проверяем что страница жива
-                if not await self.ensure_page_alive():
-                    self.log("⚠️ Страница умерла, останавливаю клики")
-                    break
-                
-                # Пропускаем опасные элементы
-                if el_data.get('disabled') or el_data.get('readonly'):
-                    continue
-                
-                # Пропускаем ссылки на внешние сайты
-                href = el_data.get('href', '')
-                if href and (href.startswith('http') and 'x.com' not in href):
-                    continue
-                
-                # Пропускаем элементы с большим текстом
-                if len(el_data.get('text', '')) > 50 and not el_data.get('aria'):
-                    continue
-                
-                self.log(f"🔄 Клик #{i+1}: {el_data.get('text', 'без текста')[:30]} [{el_data.get('testid', '')}]")
-                
-                # Находим элемент на странице
-                selector = self._build_selector(el_data)
-                if not selector:
-                    continue
-                
-                try:
-                    element = await self.page.query_selector(selector)
-                    if element:
-                        # Ждем что элемент станет кликабельным
-                        await element.wait_for_element_state('visible', timeout=5000)
-                        await element.click(timeout=5000)
-                        await self.page.wait_for_timeout(1000)
-                        clicked += 1
-                        self.results['clicked'].append({
-                            'element': el_data,
-                            'success': True,
-                            'timestamp': datetime.now().isoformat()
-                        })
-                        
-                        # Делаем скриншот после клика
-                        if clicked % 5 == 0:
-                            try:
-                                screenshot = await self.page.screenshot(type='jpeg', quality=70)
-                                self.results['screenshots'].append({
-                                    'stage': f'after_click_{clicked}',
-                                    'data': screenshot
-                                })
-                            except:
-                                pass
-                    else:
-                        self.log(f"⚠️ Элемент не найден на странице")
-                except Exception as e:
-                    self.log(f"⚠️ Клик не удался: {str(e)[:100]}")
-                    self.results['errors'].append({
-                        'element': el_data,
-                        'error': str(e)
-                    })
-                    
-            except Exception as e:
-                self.log(f"❌ Ошибка при клике: {str(e)}")
-                self.results['errors'].append(str(e))
-        
-        self.log(f"✅ Успешно кликнуто: {clicked} элементов")
-        return clicked
-    
-    def _build_selector(self, el_data: Dict) -> Optional[str]:
-        """Строит CSS-селектор для элемента"""
-        if el_data.get('testid'):
-            return f'[data-testid="{el_data["testid"]}"]'
-        if el_data.get('id'):
-            return f'#{el_data["id"]}'
-        if el_data.get('aria'):
-            return f'[aria-label="{el_data["aria"]}"]'
-        if el_data.get('text'):
-            text = el_data['text'][:30].replace('"', '\\"')
-            if text:
-                return f'*:has-text("{text}")'
-        return None
-    
-    def get_report(self) -> str:
-        """Формирует отчет"""
-        report = "📊 **Отчет агента-исследователя**\n\n"
-        report += f"🔍 Найдено элементов: {len(self.results['elements'])}\n"
-        report += f"🖱️ Кликнуто: {len(self.results['clicked'])}\n"
-        report += f"❌ Ошибок: {len(self.results['errors'])}\n"
-        report += f"📸 Скриншотов: {len(self.results['screenshots'])}\n\n"
-        
-        report += "📋 **Логи:**\n"
-        for log in self.results['logs'][-15:]:
-            report += f"• {log}\n"
-        
-        report += "\n📌 **Найденные элементы (первые 10):**\n"
-        for i, el in enumerate(self.results['elements'][:10]):
-            text = el.get('text', '') or el.get('aria', '') or el.get('testid', '')
-            report += f"  {i+1}. {el['tag']}"
-            if text:
-                report += f" - {text[:40]}"
-            if el.get('testid'):
-                report += f" [testid: {el['testid']}]"
-            report += "\n"
-        
-        return report
+            pass
+        browser_data = None
+        login_status = {
+            'is_logged_in': False,
+            'username': None,
+            'last_check': None,
+            'cookies_valid': False
+        }
 
-# ========== КОМАНДЫ БОТА ==========
+# ========== КОМАНДЫ ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 **X.com Агент-исследователь**\n\n"
-        "🔍 **Команды:**\n"
-        "/explore — запустить исследование\n"
-        "/explore_home — исследовать главную\n"
-        "/explore_explore — исследовать обзор\n"
-        "/explore_notifications — исследовать уведомления\n"
-        "/explore_all — исследовать все страницы\n"
-        "/report — показать отчет\n"
-        "/status — статус бота\n"
-        "/close — закрыть браузер",
-        parse_mode='Markdown'
+        "/login — авторизация в X.com\n"
+        "/screen — скриншот\n"
+        "/status — статус браузера\n"
+        "/close — закрыть браузер"
     )
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -477,299 +231,234 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.warning(f"Cookie error {cookie['name']}: {e}")
         
         await msg.edit_text("🔄 Загружаю X.com...")
-        await page.goto('https://x.com', wait_until='domcontentloaded', timeout=60000)
+        await page.goto('https://x.com', wait_until='domcontentloaded', timeout=30000)
         
         try:
-            await page.wait_for_selector('[data-testid="primaryColumn"]', timeout=30000)
+            await page.wait_for_selector('[data-testid="primaryColumn"]', timeout=15000)
         except:
             await page.wait_for_timeout(5000)
         
         await page.wait_for_timeout(3000)
         
+        auth_status = await page.evaluate('''
+            () => {
+                const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]');
+                const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
+                const hasHomeLink = !!document.querySelector('[data-testid="AppTabBar_Home_Link"]');
+                const hasSideNav = !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
+                const hasLoginForm = !!document.querySelector('[data-testid="loginForm"]');
+                const hasPrimaryColumn = !!document.querySelector('[data-testid="primaryColumn"]');
+                
+                const cookies = document.cookie.split(';').reduce((acc, c) => {
+                    const [key, val] = c.trim().split('=');
+                    acc[key] = val;
+                    return acc;
+                }, {});
+                
+                let username = null;
+                const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
+                if (profileLink) {
+                    const href = profileLink.getAttribute('href');
+                    if (href) {
+                        const match = href.match(/^\\/([^\\/]+)/);
+                        if (match) username = match[1];
+                    }
+                }
+                
+                return {
+                    hasTweetBtn,
+                    hasProfileLink,
+                    hasHomeLink,
+                    hasSideNav,
+                    hasLoginForm,
+                    hasPrimaryColumn,
+                    hasAuthToken: !!cookies.auth_token,
+                    hasCt0: !!cookies.ct0,
+                    username: username,
+                    isLoggedIn: hasTweetBtn || hasProfileLink || hasHomeLink || hasSideNav
+                };
+            }
+        ''')
+        
+        global login_status
+        login_status['is_logged_in'] = auth_status['isLoggedIn']
+        login_status['username'] = auth_status.get('username')
+        login_status['last_check'] = datetime.now()
+        login_status['cookies_valid'] = auth_status['hasAuthToken'] and auth_status['hasCt0']
+        
+        status_msg = f"✅ X.com\n\n"
+        status_msg += f"🍪 auth_token: {'✅' if auth_status['hasAuthToken'] else '❌'}\n"
+        status_msg += f"🍪 ct0: {'✅' if auth_status['hasCt0'] else '❌'}\n\n"
+        
+        if auth_status['isLoggedIn']:
+            status_msg += "✅ ВЫ АВТОРИЗОВАНЫ!\n"
+            if auth_status.get('username'):
+                status_msg += f"👤 @{auth_status['username']}\n"
+            if auth_status['hasTweetBtn']:
+                status_msg += "   • Кнопка Tweet: ✅\n"
+            if auth_status['hasProfileLink']:
+                status_msg += "   • Профиль: ✅\n"
+            if auth_status['hasHomeLink']:
+                status_msg += "   • Домой: ✅\n"
+        elif auth_status['hasLoginForm']:
+            status_msg += "❌ НЕ АВТОРИЗОВАН (форма входа)\n"
+        else:
+            status_msg += "⚠️ НЕ ОПРЕДЕЛЕНО\n"
+        
+        await msg.edit_text(status_msg)
+        
         screenshot = await page.screenshot(type='jpeg', quality=80)
-        await msg.edit_text("✅ Авторизация выполнена!")
         await update.message.reply_photo(
             photo=screenshot,
-            caption="📸 Вы на главной странице X.com"
+            caption=f"📸 X.com - {'✅ Авторизован' if auth_status['isLoggedIn'] else '❌ Не авторизован'}"
         )
         
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
-async def explore(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("🔍 Запускаю агента-исследователя...")
+async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text("⏳ Делаю скриншот...")
     
     try:
-        # Получаем или создаем браузер
         browser = await get_browser()
         page = browser['page']
         
-        explorer = XExplorer(page)
+        screenshot = await page.screenshot(type='jpeg', quality=80)
+        await msg.delete()
         
-        # Сканируем текущую страницу
         url = page.url
-        elements = await explorer.scan_page(url, "current")
+        title = await page.title()
         
-        if not elements:
-            await msg.edit_text("⚠️ Не найдено элементов для исследования. Возможно, нужно авторизоваться.")
-            return
-        
-        # Кликаем по элементам
-        await explorer.click_elements(elements, max_clicks=15)
-        
-        # Формируем отчет
-        report = explorer.get_report()
-        await msg.edit_text(report, parse_mode='Markdown')
-        
-        # Отправляем скриншоты
-        if explorer.results['screenshots']:
-            for s in explorer.results['screenshots'][:3]:
-                try:
-                    await update.message.reply_photo(
-                        photo=s['data'],
-                        caption=f"📸 {s['stage']}"
-                    )
-                except Exception as e:
-                    logger.warning(f"Не удалось отправить скриншот: {e}")
-        
-        global exploration_results
-        exploration_results = explorer.results
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption=f"📸 {title[:40] if title else 'X.com'}\n🔗 {url[:50]}"
+        )
         
     except Exception as e:
-        logger.error(f"Explore error: {e}")
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}\n\nПопробуйте /login сначала.")
-
-async def explore_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("🏠 Исследую главную страницу...")
-    
-    try:
-        browser = await get_browser()
-        page = browser['page']
-        
-        explorer = XExplorer(page)
-        
-        # Переходим на главную
-        await page.goto('https://x.com/home', wait_until='domcontentloaded', timeout=60000)
-        await page.wait_for_timeout(5000)
-        
-        # Сканируем
-        elements = await explorer.scan_page('https://x.com/home', 'home')
-        
-        if not elements:
-            await msg.edit_text("⚠️ Не найдено элементов. Возможно, нужно авторизоваться.")
-            return
-        
-        # Кликаем по элементам
-        safe_elements = [e for e in elements if not e.get('href', '').startswith('http')]
-        await explorer.click_elements(safe_elements, max_clicks=20)
-        
-        report = explorer.get_report()
-        await msg.edit_text(report, parse_mode='Markdown')
-        
-        # Отправляем скриншоты
-        if explorer.results['screenshots']:
-            for s in explorer.results['screenshots'][:2]:
-                try:
-                    await update.message.reply_photo(
-                        photo=s['data'],
-                        caption=f"📸 {s['stage']}"
-                    )
-                except:
-                    pass
-        
-        global exploration_results
-        exploration_results = explorer.results
-        
-    except Exception as e:
-        logger.error(f"Explore home error: {e}")
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}\n\nПопробуйте /login сначала.")
-
-async def explore_explore(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("📈 Исследую страницу обзора...")
-    
-    try:
-        browser = await get_browser()
-        page = browser['page']
-        
-        explorer = XExplorer(page)
-        
-        await page.goto('https://x.com/explore', wait_until='domcontentloaded', timeout=60000)
-        await page.wait_for_timeout(5000)
-        
-        elements = await explorer.scan_page('https://x.com/explore', 'explore')
-        
-        if not elements:
-            await msg.edit_text("⚠️ Не найдено элементов. Возможно, нужно авторизоваться.")
-            return
-        
-        safe_elements = [e for e in elements if not e.get('href', '').startswith('http')]
-        await explorer.click_elements(safe_elements, max_clicks=15)
-        
-        report = explorer.get_report()
-        await msg.edit_text(report, parse_mode='Markdown')
-        
-        if explorer.results['screenshots']:
-            for s in explorer.results['screenshots'][:2]:
-                try:
-                    await update.message.reply_photo(
-                        photo=s['data'],
-                        caption=f"📸 {s['stage']}"
-                    )
-                except:
-                    pass
-        
-        global exploration_results
-        exploration_results = explorer.results
-        
-    except Exception as e:
-        logger.error(f"Explore explore error: {e}")
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}\n\nПопробуйте /login сначала.")
-
-async def explore_notifications(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("🔔 Исследую страницу уведомлений...")
-    
-    try:
-        browser = await get_browser()
-        page = browser['page']
-        
-        explorer = XExplorer(page)
-        
-        await page.goto('https://x.com/notifications', wait_until='domcontentloaded', timeout=60000)
-        await page.wait_for_timeout(5000)
-        
-        elements = await explorer.scan_page('https://x.com/notifications', 'notifications')
-        
-        if not elements:
-            await msg.edit_text("⚠️ Не найдено элементов. Возможно, нужно авторизоваться.")
-            return
-        
-        safe_elements = [e for e in elements if not e.get('href', '').startswith('http')]
-        await explorer.click_elements(safe_elements, max_clicks=15)
-        
-        report = explorer.get_report()
-        await msg.edit_text(report, parse_mode='Markdown')
-        
-        if explorer.results['screenshots']:
-            for s in explorer.results['screenshots'][:2]:
-                try:
-                    await update.message.reply_photo(
-                        photo=s['data'],
-                        caption=f"📸 {s['stage']}"
-                    )
-                except:
-                    pass
-        
-        global exploration_results
-        exploration_results = explorer.results
-        
-    except Exception as e:
-        logger.error(f"Explore notifications error: {e}")
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}\n\nПопробуйте /login сначала.")
-
-async def explore_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("🌐 Исследую все страницы... (это займет время)")
-    
-    try:
-        browser = await get_browser()
-        page = browser['page']
-        
-        pages = [
-            ('https://x.com/home', 'home'),
-            ('https://x.com/explore', 'explore'),
-            ('https://x.com/notifications', 'notifications'),
-        ]
-        
-        all_results = {}
-        
-        for url, name in pages:
-            explorer = XExplorer(page)
-            
-            await page.goto(url, wait_until='domcontentloaded', timeout=60000)
-            await page.wait_for_timeout(5000)
-            
-            elements = await explorer.scan_page(url, name)
-            
-            if elements:
-                safe_elements = [e for e in elements if not e.get('href', '').startswith('http')]
-                await explorer.click_elements(safe_elements, max_clicks=10)
-            
-            all_results[name] = explorer.results
-            
-            # Отправляем промежуточный отчет
-            await update.message.reply_text(
-                f"✅ {name} исследована: {len(elements)} элементов, {len(explorer.results['clicked'])} кликов"
-            )
-        
-        # Формируем сводный отчет
-        total_elements = sum(len(r['elements']) for r in all_results.values())
-        total_clicks = sum(len(r['clicked']) for r in all_results.values())
-        total_errors = sum(len(r['errors']) for r in all_results.values())
-        
-        report = "📊 **Сводный отчет по всем страницам**\n\n"
-        report += f"📄 Страниц: {len(pages)}\n"
-        report += f"🔍 Всего элементов: {total_elements}\n"
-        report += f"🖱️ Всего кликов: {total_clicks}\n"
-        report += f"❌ Ошибок: {total_errors}\n\n"
-        
-        for name, results in all_results.items():
-            report += f"**{name}:** {len(results['elements'])} элементов, {len(results['clicked'])} кликов\n"
-        
-        await msg.edit_text(report, parse_mode='Markdown')
-        
-        global exploration_results
-        exploration_results = all_results
-        
-    except Exception as e:
-        logger.error(f"Explore all error: {e}")
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}\n\nПопробуйте /login сначала.")
-
-async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global exploration_results
-    
-    if not exploration_results:
-        await update.message.reply_text("📭 Нет данных. Запустите исследование: /explore")
-        return
-    
-    if isinstance(exploration_results, dict) and 'elements' in exploration_results:
-        # Один результат
-        report = "📊 **Отчет исследования**\n\n"
-        report += f"🔍 Найдено: {len(exploration_results['elements'])}\n"
-        report += f"🖱️ Кликнуто: {len(exploration_results.get('clicked', []))}\n"
-        report += f"❌ Ошибок: {len(exploration_results.get('errors', []))}\n\n"
-        
-        report += "📋 **Последние логи:**\n"
-        for log in exploration_results.get('logs', [])[-10:]:
-            report += f"• {log}\n"
-        
-        await update.message.reply_text(report, parse_mode='Markdown')
-    else:
-        # Несколько результатов
-        report = "📊 **Сводный отчет**\n\n"
-        for name, results in exploration_results.items():
-            if isinstance(results, dict):
-                report += f"**{name}:** {len(results.get('elements', []))} элементов, {len(results.get('clicked', []))} кликов\n"
-        await update.message.reply_text(report, parse_mode='Markdown')
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:100]}")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    status_msg = "📊 **Статус агента**\n\n"
+    msg = await update.message.reply_text("⏳ Проверяю статус...")
     
-    if browser_data:
-        status_msg += "🌐 Браузер: ✅ Запущен\n"
-        try:
-            url = browser_data['page'].url
-            status_msg += f"🔗 Текущая страница: {url[:60]}\n"
-        except:
-            status_msg += "🔗 Страница: Неизвестно\n"
-    else:
-        status_msg += "🌐 Браузер: ❌ Не запущен\n"
-    
-    if exploration_results:
-        if isinstance(exploration_results, dict) and 'elements' in exploration_results:
-            status_msg += f"\n📊 Последнее исследование:\n"
-            status_msg += f"   🔍 Элементов: {len(exploration_results['elements'])}\n"
-            status_msg += f"   🖱️ Кликов: {len(exploration_results.get('clicked', []))}\n"
-    
-    await update.message.reply_text(status_msg, parse_mode='Markdown')
+    try:
+        browser_ok = False
+        browser_info = {}
+        
+        if browser_data:
+            try:
+                page = browser_data['page']
+                await page.evaluate('1')
+                browser_ok = True
+                
+                url = page.url
+                title = await page.title()
+                started_at = browser_data.get('started_at')
+                uptime = (datetime.now() - started_at).total_seconds() if started_at else 0
+                
+                auth_check = await page.evaluate('''
+                    () => {
+                        const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]');
+                        const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
+                        const hasHomeLink = !!document.querySelector('[data-testid="AppTabBar_Home_Link"]');
+                        const hasSideNav = !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
+                        const hasLoginForm = !!document.querySelector('[data-testid="loginForm"]');
+                        
+                        const cookies = document.cookie.split(';').reduce((acc, c) => {
+                            const [key, val] = c.trim().split('=');
+                            acc[key] = val;
+                            return acc;
+                        }, {});
+                        
+                        let username = null;
+                        const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
+                        if (profileLink) {
+                            const href = profileLink.getAttribute('href');
+                            if (href) {
+                                const match = href.match(/^\\/([^\\/]+)/);
+                                if (match) username = match[1];
+                            }
+                        }
+                        
+                        return {
+                            hasTweetBtn,
+                            hasProfileLink,
+                            hasHomeLink,
+                            hasSideNav,
+                            hasLoginForm,
+                            hasAuthToken: !!cookies.auth_token,
+                            hasCt0: !!cookies.ct0,
+                            username: username,
+                            isLoggedIn: hasTweetBtn || hasProfileLink || hasHomeLink || hasSideNav
+                        };
+                    }
+                ''')
+                
+                browser_info = {
+                    'url': url,
+                    'title': title[:60] if title else 'Нет',
+                    'uptime': uptime,
+                    'auth': auth_check
+                }
+                
+                login_status['is_logged_in'] = auth_check['isLoggedIn']
+                login_status['username'] = auth_check.get('username')
+                login_status['last_check'] = datetime.now()
+                login_status['cookies_valid'] = auth_check['hasAuthToken'] and auth_check['hasCt0']
+                
+            except Exception as e:
+                browser_ok = False
+                browser_info['error'] = str(e)[:50]
+        else:
+            browser_info = {'error': 'Браузер не запущен'}
+        
+        status_msg = "📊 СТАТУС БОТА\n\n"
+        
+        if browser_ok:
+            status_msg += "🌐 Браузер: ✅ Запущен\n"
+            if browser_info.get('uptime'):
+                hours = int(browser_info['uptime'] // 3600)
+                minutes = int((browser_info['uptime'] % 3600) // 60)
+                status_msg += f"⏱️ Аптайм: {hours}ч {minutes}м\n"
+        else:
+            status_msg += "🌐 Браузер: ❌ Не запущен\n"
+        
+        if browser_ok and browser_info.get('url'):
+            status_msg += f"🔗 URL: {browser_info['url'][:60]}\n"
+            status_msg += f"📌 Заголовок: {browser_info.get('title', 'Нет')}\n"
+        
+        status_msg += "\n🔐 АВТОРИЗАЦИЯ:\n"
+        
+        if browser_ok and browser_info.get('auth'):
+            auth = browser_info['auth']
+            
+            status_msg += f"🍪 auth_token: {'✅' if auth.get('hasAuthToken') else '❌'}\n"
+            status_msg += f"🍪 ct0: {'✅' if auth.get('hasCt0') else '❌'}\n"
+            
+            if auth.get('isLoggedIn'):
+                status_msg += "\n✅ ВЫ АВТОРИЗОВАНЫ\n"
+                if auth.get('username'):
+                    status_msg += f"👤 @{auth['username']}\n"
+                if auth.get('hasTweetBtn'):
+                    status_msg += "   • Кнопка Tweet: ✅\n"
+                if auth.get('hasProfileLink'):
+                    status_msg += "   • Профиль: ✅\n"
+                if auth.get('hasHomeLink'):
+                    status_msg += "   • Домой: ✅\n"
+            elif auth.get('hasLoginForm'):
+                status_msg += "\n❌ НЕ АВТОРИЗОВАН (форма входа)\n"
+            else:
+                status_msg += "\n⚠️ НЕ ОПРЕДЕЛЕНО\n"
+        else:
+            status_msg += "❌ Нет данных (выполните /login)\n"
+        
+        status_msg += f"\n🕐 {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
+        status_msg += f"📦 Драйвер: {'Phantomwright' if PHANTOMWRIGHT_AVAILABLE else 'Playwright'}\n"
+        status_msg += f"🍪 Куки загружены: {len(COOKIES)} шт."
+        
+        await msg.edit_text(status_msg)
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Закрываю браузер...")
@@ -782,27 +471,12 @@ def main():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("login", login))
-    app.add_handler(CommandHandler("explore", explore))
-    app.add_handler(CommandHandler("explore_home", explore_home))
-    app.add_handler(CommandHandler("explore_explore", explore_explore))
-    app.add_handler(CommandHandler("explore_notifications", explore_notifications))
-    app.add_handler(CommandHandler("explore_all", explore_all))
-    app.add_handler(CommandHandler("report", report))
+    app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("close", close))
     
-    print("🐦 X.com Агент-исследователь запущен!")
-    print("📌 Команды:")
-    print("   🔐 /login — авторизация")
-    print("   🔍 /explore — исследовать текущую страницу")
-    print("   🏠 /explore_home — исследовать главную")
-    print("   📈 /explore_explore — исследовать обзор")
-    print("   🔔 /explore_notifications — исследовать уведомления")
-    print("   🌐 /explore_all — исследовать все страницы")
-    print("   📊 /report — показать отчет")
-    print("   📊 /status — статус")
-    print("   ❌ /close — закрыть браузер")
-    
+    print("🐦 X.com Bot запущен!")
+    print("📌 Команды: /start, /login, /screen, /status, /close")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
