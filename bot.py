@@ -132,40 +132,58 @@ class GooseManager:
         self.init_error = None
         
     async def initialize(self):
-        """Запускает Goose через Python API (без интерактива)"""
+        """Запускает Goose как CLI (без Python-импорта)"""
         if self.initialized:
             return True
             
         try:
-            logger.info("🔄 Запускаю Goose через Python API...")
+            logger.info("🔄 Запускаю Goose CLI...")
             
-            # Проверяем, есть ли goose как модуль
-            try:
-                import goose
-                logger.info("✅ Goose найден как Python-модуль")
-            except ImportError:
-                # Пробуем установить goose-ai
-                try:
-                    subprocess.run([sys.executable, "-m", "pip", "install", "goose-ai"], check=True)
-                    import goose
-                    logger.info("✅ Goose установлен через pip")
-                except Exception as e:
-                    self.init_error = f"Не удалось установить Goose: {e}"
+            # Проверяем, есть ли команда goose в PATH
+            check = await asyncio.create_subprocess_exec(
+                "goose", "--version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            await check.communicate()
+            
+            if check.returncode != 0:
+                # Пробуем найти goose через which
+                which = await asyncio.create_subprocess_exec(
+                    "which", "goose",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await which.communicate()
+                if which.returncode != 0:
+                    self.init_error = "goose не найден. Установите через Dockerfile."
                     return False
             
-            # Запускаем goose напрямую через subprocess с отключённой телеметрией
+            # Создаём конфиг для Goose с Agnes AI
+            config_dir = os.path.expanduser("~/.config/goose")
+            os.makedirs(config_dir, exist_ok=True)
+            config_path = os.path.join(config_dir, "config.yaml")
+            
+            config_content = f"""
+provider:
+  type: openai
+  base_url: https://apihub.agnes-ai.com/v1
+  api_key: {AGNES_API_KEY or ""}
+  model: agnes-2.0-flash
+extensions:
+  - playwright
+"""
+            with open(config_path, "w") as f:
+                f.write(config_content)
+            logger.info("✅ Конфиг Goose создан")
+            
+            # Запускаем goose session с отключённой телеметрией
             env = os.environ.copy()
             env["GOOSE_TELEMETRY_ENABLED"] = "false"
-            env["GOOSE_PROVIDER"] = "openai"  # Используем OpenAI-совместимый API
-            env["OPENAI_BASE_URL"] = "https://apihub.agnes-ai.com/v1"
-            env["OPENAI_API_KEY"] = AGNES_API_KEY or ""
-            env["GOOSE_MODEL"] = "agnes-2.0-flash"
             
-            # Запускаем goose в режиме сессии с автоматическим ответом на все вопросы
             self.process = await asyncio.create_subprocess_exec(
                 "goose", "session",
-                "--non-interactive",  # Отключаем интерактив
-                stdin=asyncio.subprocess.DEVNULL,  # Закрываем stdin
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env
@@ -179,42 +197,6 @@ class GooseManager:
                 stderr = await self.process.stderr.read()
                 error_msg = stderr.decode() if stderr else "процесс завершился"
                 logger.error(f"❌ Goose завершился: {error_msg}")
-                
-                # Если ошибка про провайдера, пробуем через конфиг
-                if "provider" in error_msg.lower() or "model" in error_msg.lower():
-                    logger.info("🔄 Пробую настроить провайдер через конфиг...")
-                    # Создаём конфиг вручную
-                    config_dir = os.path.expanduser("~/.config/goose")
-                    os.makedirs(config_dir, exist_ok=True)
-                    config_path = os.path.join(config_dir, "config.yaml")
-                    
-                    config_content = f"""
-provider:
-  type: openai
-  base_url: https://apihub.agnes-ai.com/v1
-  api_key: {AGNES_API_KEY or ""}
-  model: agnes-2.0-flash
-"""
-                    with open(config_path, "w") as f:
-                        f.write(config_content)
-                    
-                    # Повторяем запуск
-                    self.process = await asyncio.create_subprocess_exec(
-                        "goose", "session",
-                        "--non-interactive",
-                        stdin=asyncio.subprocess.DEVNULL,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        env=env
-                    )
-                    await asyncio.sleep(3)
-                    
-                    if self.process.returncode is not None:
-                        stderr = await self.process.stderr.read()
-                        error_msg = stderr.decode() if stderr else "процесс завершился"
-                        self.init_error = error_msg[:200]
-                        return False
-                
                 self.init_error = error_msg[:200]
                 return False
             
