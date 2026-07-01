@@ -7,7 +7,7 @@ import asyncio
 import json
 import requests
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Callable, Awaitable
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -100,6 +100,7 @@ COOKIES = [
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 browser_data = None
 browser_lock = False
+browser_ws_url = None
 login_status = {
     'is_logged_in': False,
     'username': None,
@@ -132,14 +133,13 @@ class GooseManager:
         self.init_error = None
         
     async def initialize(self):
-        """Проверяет наличие Goose и создаёт конфиг с Playwright MCP"""
+        """Проверяет наличие Goose и создаёт конфиг"""
         if self.initialized:
             return True
             
         try:
             logger.info("🔄 Проверяю Goose...")
             
-            # Проверяем, есть ли goose
             check = await asyncio.create_subprocess_exec(
                 "goose", "--version",
                 stdout=asyncio.subprocess.PIPE,
@@ -151,7 +151,7 @@ class GooseManager:
                 self.init_error = "goose не найден"
                 return False
             
-            # Создаём конфиг для Goose с правильным подключением Playwright
+            # Создаём конфиг для Goose с Agnes AI
             config_dir = os.path.expanduser("~/.config/goose")
             os.makedirs(config_dir, exist_ok=True)
             config_path = os.path.join(config_dir, "config.yaml")
@@ -162,25 +162,17 @@ provider:
   base_url: https://apihub.agnes-ai.com/v1
   api_key: {AGNES_API_KEY or ""}
   model: agnes-2.0-flash
-
-# Подключаем Playwright MCP как STDIO расширение
-extensions:
-  - name: playwright
-    command: npx
-    args:
-      - @playwright/mcp@latest
-    type: stdio
 """
             with open(config_path, "w") as f:
                 f.write(config_content)
-            logger.info(f"✅ Конфиг Goose с Playwright MCP создан")
+            logger.info(f"✅ Конфиг Goose создан")
             
             if not os.path.exists(config_path):
                 self.init_error = "Не удалось создать конфиг"
                 return False
                 
             self.initialized = True
-            logger.info("✅ Goose готов к работе с Playwright MCP")
+            logger.info("✅ Goose готов к работе")
             return True
                 
         except FileNotFoundError:
@@ -191,12 +183,15 @@ extensions:
             logger.error(f"Ошибка: {e}")
             return False
     
-    async def execute_command(self, command: str) -> str:
-        """Выполняет команду через goose run"""
+    async def execute_command(self, command: str, progress_callback=None) -> str:
+        """Выполняет команду через goose run с подключением к существующему браузеру"""
         if not self.initialized:
             success = await self.initialize()
             if not success:
                 return f"❌ Не удалось инициализировать Goose: {self.init_error or 'Неизвестная ошибка'}"
+        
+        if progress_callback:
+            await progress_callback("📋 Получаю контекст браузера...")
         
         browser_ctx = ""
         if browser_data:
@@ -204,13 +199,17 @@ extensions:
                 page = browser_data['page']
                 url = page.url
                 browser_ctx = f"Текущая страница: {url}\n"
+                if progress_callback:
+                    await progress_callback(f"🌐 Текущая страница: {url[:60]}...")
             except:
                 pass
         
         full_command = f"{browser_ctx}Выполни в браузере: {command}"
         
+        if progress_callback:
+            await progress_callback(f"🤖 Отправляю команду в Agnes AI: {command[:50]}...")
+        
         try:
-            # Устанавливаем переменные окружения для Goose
             env = os.environ.copy()
             env["GOOSE_TELEMETRY_ENABLED"] = "false"
             env["GOOSE_PROVIDER"] = "openai"
@@ -218,32 +217,62 @@ extensions:
             env["OPENAI_API_KEY"] = AGNES_API_KEY or ""
             env["GOOSE_MODEL"] = "agnes-2.0-flash"
             
-            # Запускаем goose run
-            process = await asyncio.create_subprocess_exec(
-                "goose", "run", "-t", full_command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env
-            )
+            if progress_callback:
+                await progress_callback("🔄 Запускаю Goose с Playwright MCP...")
             
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60)
+            # Формируем команду с подключением к существующему браузеру
+            if browser_ws_url:
+                if progress_callback:
+                    await progress_callback(f"🔗 Подключаюсь к браузеру (WebSocket)...")
+                process = await asyncio.create_subprocess_exec(
+                    "goose", "run",
+                    "--with-extension", f"npx -y @playwright/mcp@latest --browser-url {browser_ws_url}",
+                    "-t", full_command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env
+                )
+            else:
+                if progress_callback:
+                    await progress_callback("🆕 Запускаю новый браузер (нет активной сессии)...")
+                process = await asyncio.create_subprocess_exec(
+                    "goose", "run",
+                    "--with-extension", "npx -y @playwright/mcp@latest",
+                    "-t", full_command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env
+                )
+            
+            if progress_callback:
+                await progress_callback("⏳ Выполняю команду (до 120 сек)...")
+            
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
             
             if process.returncode == 0:
                 result = stdout.decode() if stdout else stderr.decode()
+                if progress_callback:
+                    await progress_callback("✅ Команда выполнена успешно!")
                 return result if result else "✅ Команда выполнена"
             else:
                 error = stderr.decode() if stderr else "Неизвестная ошибка"
                 logger.error(f"Goose ошибка: {error}")
+                if progress_callback:
+                    await progress_callback(f"❌ Ошибка выполнения: {error[:100]}...")
                 return f"❌ Ошибка Goose: {error[:200]}"
                 
         except asyncio.TimeoutError:
-            return "❌ Таймаут выполнения команды (60 сек)"
+            if progress_callback:
+                await progress_callback("⏰ Таймаут 120 сек!")
+            return "❌ Таймаут выполнения команды (120 сек)"
         except Exception as e:
             logger.error(f"Ошибка выполнения: {e}")
+            if progress_callback:
+                await progress_callback(f"❌ Критическая ошибка: {str(e)[:100]}...")
             return f"❌ Ошибка: {str(e)[:200]}"
     
     async def close(self):
-        """Закрывает Goose (ничего не делает, т.к. процесс не висит)"""
+        """Закрывает Goose"""
         self.initialized = False
         logger.info("Goose остановлен")
 
@@ -290,7 +319,7 @@ install_browser()
 
 # ========== УПРАВЛЕНИЕ БРАУЗЕРОМ ==========
 async def get_browser():
-    global browser_data, browser_lock
+    global browser_data, browser_lock, browser_ws_url
     
     if browser_data:
         try:
@@ -302,6 +331,7 @@ async def get_browser():
             except:
                 pass
             browser_data = None
+            browser_ws_url = None
     
     while browser_lock:
         await asyncio.sleep(0.5)
@@ -332,6 +362,9 @@ async def get_browser():
             launch_args['executable_path'] = chromium_path
         
         browser = await p.chromium.launch(**launch_args)
+        
+        browser_ws_url = browser.ws_endpoint
+        logger.info(f"🔗 WebSocket URL: {browser_ws_url}")
         
         context = await browser.new_context(
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -366,12 +399,13 @@ async def get_browser():
         }
         
         logger.info("✅ Браузер запущен")
+        logger.info(f"🔗 WebSocket URL сохранён: {browser_ws_url}")
         return browser_data
     finally:
         browser_lock = False
 
 async def close_browser():
-    global browser_data, login_status
+    global browser_data, login_status, browser_ws_url
     if browser_data:
         try:
             await browser_data['browser'].close()
@@ -379,6 +413,7 @@ async def close_browser():
         except:
             pass
         browser_data = None
+        browser_ws_url = None
         login_status = {
             'is_logged_in': False,
             'username': None,
@@ -391,7 +426,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🐦 **X.com Bot с Goose + Agnes AI**\n\n"
         "📌 **Основные команды:**\n"
-        "/login — авторизация в X.com\n"
+        "/login — авторизация в X.com (запускает браузер)\n"
         "/screen — скриншот\n"
         "/status — статус браузера\n"
         "/goose <команда> — управление браузером через ИИ\n"
@@ -619,6 +654,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 hours = int(browser_info['uptime'] // 3600)
                 minutes = int((browser_info['uptime'] % 3600) // 60)
                 status_msg += f"⏱️ Аптайм: {hours}ч {minutes}м\n"
+            if browser_ws_url:
+                status_msg += f"🔗 WebSocket: ✅ {browser_ws_url[:50]}...\n"
         else:
             status_msg += "🌐 **Браузер:** ❌ Не запущен\n"
         
@@ -674,9 +711,9 @@ async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await close_browser()
     await msg.edit_text("✅ Браузер закрыт!")
 
-# ========== КОМАНДА GOOSE ==========
+# ========== КОМАНДА GOOSE С ЛОГАМИ ==========
 async def goose_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Выполняет команду через Goose с Agnes AI"""
+    """Выполняет команду через Goose с Agnes AI и логами в чат"""
     command_text = " ".join(context.args) if context.args else None
     
     if not command_text:
@@ -692,33 +729,47 @@ async def goose_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    msg = await update.message.reply_text("🤔 Анализирую команду через Agnes AI...")
+    msg = await update.message.reply_text("🔄 **Начинаю работу...**")
+    
+    async def update_status(text):
+        """Обновляет сообщение с логами"""
+        try:
+            # Добавляем время к каждому логу
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            await msg.edit_text(f"🔄 **Логи выполнения** ({timestamp}):\n\n`{text}`")
+        except Exception as e:
+            # Если не можем редактировать (сообщение слишком старое), отправляем новое
+            try:
+                await update.message.reply_text(f"📋 {text}")
+            except:
+                pass
     
     try:
         # Убеждаемся, что браузер запущен
+        await update_status("🌐 Проверяю браузер...")
         await get_browser()
         
         if not goose_manager.initialized:
-            await msg.edit_text("🔄 Проверяю Goose...")
+            await update_status("🔄 Инициализирую Goose...")
             success = await goose_manager.initialize()
             if not success:
                 error_msg = goose_manager.init_error or "Неизвестная ошибка"
-                await msg.edit_text(f"❌ Не удалось инициализировать Goose: {error_msg[:200]}")
+                await msg.edit_text(f"❌ **Не удалось инициализировать Goose:**\n\n`{error_msg[:200]}`")
                 return
         
-        await msg.edit_text("🎯 Выполняю через Goose...")
-        result = await goose_manager.execute_command(command_text)
+        await update_status("🚀 Запускаю выполнение команды...")
+        result = await goose_manager.execute_command(command_text, progress_callback=update_status)
         
         if len(result) > 4000:
             parts = [result[i:i+4000] for i in range(0, len(result), 4000)]
             await msg.edit_text(f"✅ **Результат:**\n\n{parts[0]}")
             for part in parts[1:]:
-                await update.message.reply_text(part)
+                await update.message.reply_text(f"📄 *Продолжение:*\n\n{part}")
         else:
             await msg.edit_text(f"✅ **Результат:**\n\n{result}")
             
     except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+        await msg.edit_text(f"❌ **Ошибка:**\n\n`{str(e)[:200]}`")
 
 # ========== ДИАГНОСТИКА ==========
 async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -743,6 +794,8 @@ async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if browser_data:
             diag += "🌐 Браузер: ✅ запущен\n"
+            if browser_ws_url:
+                diag += f"🔗 WebSocket: ✅ {browser_ws_url[:50]}...\n"
         else:
             diag += "🌐 Браузер: ❌ не запущен\n"
         
@@ -764,7 +817,7 @@ async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка диагностики: {str(e)[:200]}")
 
 async def restart_goose(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Перезапускает Goose (пересоздаёт конфиг)"""
+    """Перезапускает Goose"""
     msg = await update.message.reply_text("🔄 Перезапускаю Goose...")
     
     try:
