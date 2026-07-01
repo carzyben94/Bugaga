@@ -201,11 +201,18 @@ async def close_browser():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "/login — авторизация в X.com\n"
-        "/screen — скриншот\n"
-        "/status — статус браузера\n"
-        "/close — закрыть браузер\n"
-        "/profilex <username> — парсинг профиля"
+        "🏠 ОСНОВНЫЕ\n"
+        "/start — Показать меню\n"
+        "/login — Авторизация в X.com\n"
+        "/screen — Скриншот\n"
+        "/status — Статус браузера\n"
+        "/close — Закрыть браузер\n\n"
+        "🤖 XBOT\n"
+        "/profilex <username> — Полный парсинг профиля\n"
+        "/tweets <username> — Твиты пользователя\n"
+        "/stats <username> — Статистика профиля\n"
+        "/search <запрос> — Поиск твитов\n"
+        "/trends — Топ трендов"
     )
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -485,12 +492,10 @@ async def profilex(update: Update, context: ContextTypes.DEFAULT_TYPE):
         browser = await get_browser()
         page = browser['page']
         
-        # Переходим на профиль
         profile_url = f"https://x.com/{username}"
         await page.goto(profile_url, wait_until='domcontentloaded', timeout=30000)
         await page.wait_for_timeout(3000)
         
-        # Проверяем, существует ли профиль
         error_check = await page.evaluate('''
             () => {
                 const error = document.querySelector('[data-testid="errorDetail"]');
@@ -502,13 +507,11 @@ async def profilex(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"❌ Профиль @{username} не существует!")
             return
         
-        # Ждем загрузки профиля
         try:
             await page.wait_for_selector('[data-testid="UserName"]', timeout=10000)
         except:
             pass
         
-        # Полный парсинг профиля
         profile_data = await page.evaluate('''
             () => {
                 const result = {
@@ -532,7 +535,6 @@ async def profilex(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     pinned_tweet: null
                 };
                 
-                // 1. Имя пользователя
                 const nameEl = document.querySelector('[data-testid="UserName"]');
                 if (nameEl) {
                     const text = nameEl.innerText;
@@ -543,13 +545,11 @@ async def profilex(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     }
                 }
                 
-                // 2. Биография
                 const bioEl = document.querySelector('[data-testid="UserDescription"]');
                 if (bioEl) {
                     result.bio = bioEl.innerText || '';
                 }
                 
-                // 3. Статистика
                 const followingEl = document.querySelector('[data-testid="followingCount"]');
                 if (followingEl) {
                     result.following = followingEl.innerText || '0';
@@ -570,37 +570,31 @@ async def profilex(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     result.likes_count = likesEl.innerText || '0';
                 }
                 
-                // 4. Местоположение
                 const locationEl = document.querySelector('[data-testid="UserLocation"]');
                 if (locationEl) {
                     result.location = locationEl.innerText || '';
                 }
                 
-                // 5. Дата регистрации
                 const joinDateEl = document.querySelector('[data-testid="UserJoinDate"]');
                 if (joinDateEl) {
                     result.join_date = joinDateEl.innerText || '';
                 }
                 
-                // 6. Дата рождения
                 const birthDateEl = document.querySelector('[data-testid="UserBirthDate"]');
                 if (birthDateEl) {
                     result.birth_date = birthDateEl.innerText || '';
                 }
                 
-                // 7. Сайт
                 const websiteEl = document.querySelector('[data-testid="UserUrl"] a');
                 if (websiteEl) {
                     result.website = websiteEl.getAttribute('href') || '';
                 }
                 
-                // 8. Аватар
                 const avatarEl = document.querySelector('[data-testid="UserAvatar"] img');
                 if (avatarEl) {
                     result.avatar_url = avatarEl.getAttribute('src') || '';
                 }
                 
-                // 9. Баннер
                 const bannerEl = document.querySelector('[data-testid="UserProfileHeader_Items"] [role="img"]');
                 if (bannerEl) {
                     const style = bannerEl.getAttribute('style') || '';
@@ -610,7 +604,6 @@ async def profilex(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     }
                 }
                 
-                // 10. Верификация
                 const verifiedEl = document.querySelector('[data-testid="icon-verified"]');
                 if (verifiedEl) {
                     const color = verifiedEl.getAttribute('fill') || '';
@@ -623,11 +616,9 @@ async def profilex(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     }
                 }
                 
-                // 11. Закрытый профиль
                 const privateEl = document.querySelector('[data-testid="protectedUser"]');
                 result.is_private = !!privateEl;
                 
-                // 12. Закрепленный твит
                 const pinnedEl = document.querySelector('[data-testid="pinIcon"]');
                 if (pinnedEl) {
                     const pinnedTweet = pinnedEl.closest('[data-testid="tweet"]');
@@ -646,7 +637,6 @@ async def profilex(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     }
                 }
                 
-                // 13. Последние твиты (до 10)
                 const tweetElements = document.querySelectorAll('[data-testid="tweet"]');
                 tweetElements.forEach((tweet, i) => {
                     const isPinned = !!tweet.querySelector('[data-testid="pinIcon"]');
@@ -675,10 +665,8 @@ async def profilex(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
         ''')
         
-        # Формируем красивый отчет
         report = f"👤 ПРОФИЛЬ @{profile_data.get('username', username)}\n\n"
         
-        # Имя и верификация
         report += f"Имя: {profile_data.get('display_name', 'Не указано')}\n"
         
         if profile_data.get('is_verified'):
@@ -689,7 +677,6 @@ async def profilex(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if profile_data.get('is_private'):
             report += f"Закрытый профиль 🔒\n"
         
-        # Статистика
         report += f"\nСтатистика:\n"
         report += f"• Твиты: {profile_data.get('tweets_count', '0')}\n"
         report += f"• Подписчики: {profile_data.get('followers', '0')}\n"
@@ -697,7 +684,6 @@ async def profilex(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if profile_data.get('likes_count') and profile_data['likes_count'] != '0':
             report += f"• Лайки: {profile_data.get('likes_count', '0')}\n"
         
-        # Информация
         if profile_data.get('bio'):
             report += f"\nБио:\n{profile_data['bio']}\n"
         
@@ -713,13 +699,11 @@ async def profilex(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if profile_data.get('website'):
             report += f"\nСайт: {profile_data['website']}\n"
         
-        # Закрепленный твит
         if profile_data.get('pinned_tweet'):
             report += f"\nЗакрепленный твит:\n"
             report += f"{profile_data['pinned_tweet']['text'][:150]}\n"
             report += f"❤️ {profile_data['pinned_tweet']['likes']} | 🔄 {profile_data['pinned_tweet']['retweets']}\n"
         
-        # Последние твиты
         if profile_data.get('tweets'):
             report += f"\nПоследние твиты ({len(profile_data['tweets'])}):\n"
             for i, tweet in enumerate(profile_data['tweets'][:5], 1):
@@ -731,11 +715,9 @@ async def profilex(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     report += f" | 🕐 {tweet['time'][:10]}"
                 report += "\n"
         
-        # Аватар
         if profile_data.get('avatar_url'):
             report += f"\nАватар: {profile_data['avatar_url']}\n"
         
-        # Отправляем результат
         if len(report) > 4000:
             filename = f"profile_{username}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
             with open(filename, 'w', encoding='utf-8') as f:
@@ -747,7 +729,6 @@ async def profilex(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await msg.edit_text(report)
         
-        # Скриншот профиля
         screenshot = await page.screenshot(type='jpeg', quality=80)
         await update.message.reply_photo(
             photo=screenshot,
@@ -759,21 +740,432 @@ async def profilex(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in profilex: {e}", exc_info=True)
 
 
+# ========== ТВИТЫ ПОЛЬЗОВАТЕЛЯ ==========
+
+async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Парсинг твитов пользователя"""
+    if not context.args:
+        await update.message.reply_text(
+            "ℹ️ Использование: /tweets <username> [count]\n"
+            "Пример: /tweets elonmusk 10"
+        )
+        return
+    
+    username = context.args[0].replace('@', '').strip()
+    count = int(context.args[1]) if len(context.args) > 1 else 10
+    msg = await update.message.reply_text(f"📊 Парсю твиты @{username}...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        await page.goto(f"https://x.com/{username}", wait_until='domcontentloaded')
+        await page.wait_for_timeout(3000)
+        
+        await page.wait_for_selector('[data-testid="tweet"]', timeout=10000)
+        
+        tweets_data = await page.evaluate(f'''
+            () => {{
+                const tweets = [];
+                const tweetElements = document.querySelectorAll('[data-testid="tweet"]');
+                const count = {count};
+                
+                tweetElements.forEach((tweet, index) => {{
+                    if (index >= count) return;
+                    
+                    const textEl = tweet.querySelector('[data-testid="tweetText"]');
+                    const timeEl = tweet.querySelector('time');
+                    const likesEl = tweet.querySelector('[data-testid="like"]');
+                    const retweetEl = tweet.querySelector('[data-testid="retweet"]');
+                    const replyEl = tweet.querySelector('[data-testid="reply"]');
+                    const mediaEl = tweet.querySelector('[data-testid="tweetPhoto"]');
+                    const linkEl = tweet.querySelector('a[href*="/status/"]');
+                    const isPinned = !!tweet.querySelector('[data-testid="pinIcon"]');
+                    
+                    tweets.push({{
+                        text: textEl ? textEl.innerText : '',
+                        time: timeEl ? timeEl.getAttribute('datetime') : '',
+                        likes: likesEl ? likesEl.innerText : '0',
+                        retweets: retweetEl ? retweetEl.innerText : '0',
+                        replies: replyEl ? replyEl.innerText : '0',
+                        has_media: !!mediaEl,
+                        is_pinned: isPinned,
+                        url: linkEl ? `https://x.com${{linkEl.getAttribute('href')}}` : ''
+                    }});
+                }});
+                
+                return tweets;
+            }}
+        ''')
+        
+        if not tweets_data:
+            await msg.edit_text(f"❌ Твиты @{username} не найдены!")
+            return
+        
+        report = f"📊 ТВИТЫ @{username}\n"
+        report += f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
+        report += f"📌 Всего: {len(tweets_data)}\n\n"
+        
+        for i, tweet in enumerate(tweets_data, 1):
+            if tweet['is_pinned']:
+                report += f"📌 {i}. ЗАКРЕПЛЕН\n"
+            else:
+                report += f"{i}. "
+            
+            report += f"{tweet['text'][:200]}\n"
+            
+            if tweet['time']:
+                report += f"🕐 {tweet['time'][:16]}\n"
+            
+            report += f"💬 {tweet['replies']} | 🔄 {tweet['retweets']} | ❤️ {tweet['likes']}"
+            
+            if tweet['has_media']:
+                report += " | 🖼️"
+            
+            if tweet['url']:
+                report += f"\n🔗 {tweet['url']}"
+            
+            report += "\n\n"
+        
+        if len(report) > 4000:
+            filename = f"tweets_{username}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(report)
+            await update.message.reply_document(
+                document=open(filename, 'rb'),
+                caption=f"📄 {len(tweets_data)} твитов @{username}"
+            )
+        else:
+            await msg.edit_text(report)
+        
+        screenshot = await page.screenshot(type='jpeg', quality=80)
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption=f"📸 Твиты @{username}"
+        )
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+        logger.error(f"Error in tweets: {e}", exc_info=True)
+
+
+# ========== СТАТИСТИКА ПРОФИЛЯ ==========
+
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Статистика профиля"""
+    if not context.args:
+        await update.message.reply_text(
+            "ℹ️ Использование: /stats <username>\n"
+            "Пример: /stats elonmusk"
+        )
+        return
+    
+    username = context.args[0].replace('@', '').strip()
+    msg = await update.message.reply_text(f"📊 Собираю статистику @{username}...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        await page.goto(f"https://x.com/{username}", wait_until='domcontentloaded')
+        await page.wait_for_timeout(3000)
+        
+        stats_data = await page.evaluate('''
+            () => {
+                const result = {
+                    display_name: '',
+                    username: '',
+                    bio: '',
+                    followers: '0',
+                    following: '0',
+                    tweets: '0',
+                    likes: '0',
+                    verified: false
+                };
+                
+                const nameEl = document.querySelector('[data-testid="UserName"]');
+                if (nameEl) {
+                    const text = nameEl.innerText;
+                    const parts = text.split('\\n');
+                    if (parts.length >= 2) {
+                        result.display_name = parts[0] || '';
+                        result.username = parts[1] ? parts[1].replace('@', '') : '';
+                    }
+                }
+                
+                const bioEl = document.querySelector('[data-testid="UserDescription"]');
+                if (bioEl) {
+                    result.bio = bioEl.innerText || '';
+                }
+                
+                const followersEl = document.querySelector('[data-testid="followersCount"]');
+                if (followersEl) {
+                    result.followers = followersEl.innerText || '0';
+                }
+                
+                const followingEl = document.querySelector('[data-testid="followingCount"]');
+                if (followingEl) {
+                    result.following = followingEl.innerText || '0';
+                }
+                
+                const tweetsEl = document.querySelector('[data-testid="tweetsCount"]');
+                if (tweetsEl) {
+                    result.tweets = tweetsEl.innerText || '0';
+                }
+                
+                const likesEl = document.querySelector('[data-testid="likesCount"]');
+                if (likesEl) {
+                    result.likes = likesEl.innerText || '0';
+                }
+                
+                const verifiedEl = document.querySelector('[data-testid="icon-verified"]');
+                result.verified = !!verifiedEl;
+                
+                return result;
+            }
+        ''')
+        
+        report = f"📊 СТАТИСТИКА @{stats_data.get('username', username)}\n\n"
+        report += f"👤 Имя: {stats_data.get('display_name', 'Не указано')}\n"
+        
+        if stats_data.get('verified'):
+            report += f"✅ Верифицирован\n"
+        
+        if stats_data.get('bio'):
+            report += f"\n📝 Био: {stats_data['bio'][:150]}\n"
+        
+        report += f"\n📈 Показатели:\n"
+        report += f"   📝 Твиты: {stats_data.get('tweets', '0')}\n"
+        report += f"   👥 Подписчики: {stats_data.get('followers', '0')}\n"
+        report += f"   🔄 Подписки: {stats_data.get('following', '0')}\n"
+        report += f"   ❤️ Лайки: {stats_data.get('likes', '0')}\n"
+        
+        report += f"\n📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
+        
+        await msg.edit_text(report)
+        
+        screenshot = await page.screenshot(type='jpeg', quality=80)
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption=f"📸 Статистика @{username}"
+        )
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+        logger.error(f"Error in stats: {e}", exc_info=True)
+
+
+# ========== ПОИСК ТВИТОВ ==========
+
+async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Поиск твитов"""
+    if not context.args:
+        await update.message.reply_text(
+            "ℹ️ Использование: /search <запрос>\n"
+            "Пример: /search Bitcoin"
+        )
+        return
+    
+    query = ' '.join(context.args)
+    msg = await update.message.reply_text(f"🔍 Ищу: {query}...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        search_url = f"https://x.com/search?q={query.replace(' ', '%20')}&src=typed_query"
+        await page.goto(search_url, wait_until='domcontentloaded')
+        await page.wait_for_timeout(3000)
+        
+        await page.wait_for_selector('[data-testid="tweet"]', timeout=10000)
+        
+        tweets_data = await page.evaluate('''
+            () => {
+                const tweets = [];
+                const tweetElements = document.querySelectorAll('[data-testid="tweet"]');
+                
+                tweetElements.forEach((tweet, index) => {
+                    if (index >= 10) return;
+                    
+                    const textEl = tweet.querySelector('[data-testid="tweetText"]');
+                    const timeEl = tweet.querySelector('time');
+                    const likesEl = tweet.querySelector('[data-testid="like"]');
+                    const retweetEl = tweet.querySelector('[data-testid="retweet"]');
+                    const replyEl = tweet.querySelector('[data-testid="reply"]');
+                    const mediaEl = tweet.querySelector('[data-testid="tweetPhoto"]');
+                    const linkEl = tweet.querySelector('a[href*="/status/"]');
+                    
+                    tweets.push({
+                        text: textEl ? textEl.innerText : '',
+                        time: timeEl ? timeEl.getAttribute('datetime') : '',
+                        likes: likesEl ? likesEl.innerText : '0',
+                        retweets: retweetEl ? retweetEl.innerText : '0',
+                        replies: replyEl ? replyEl.innerText : '0',
+                        has_media: !!mediaEl,
+                        url: linkEl ? `https://x.com${linkEl.getAttribute('href')}` : ''
+                    });
+                });
+                
+                return tweets;
+            }
+        ''')
+        
+        if not tweets_data:
+            await msg.edit_text(f"❌ По запросу '{query}' ничего не найдено!")
+            return
+        
+        report = f"🔍 РЕЗУЛЬТАТЫ ПО ЗАПРОСУ: '{query}'\n"
+        report += f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
+        report += f"📌 Найдено: {len(tweets_data)}\n\n"
+        
+        for i, tweet in enumerate(tweets_data, 1):
+            report += f"{i}. {tweet['text'][:200]}\n"
+            
+            if tweet['time']:
+                report += f"🕐 {tweet['time'][:16]}\n"
+            
+            report += f"💬 {tweet['replies']} | 🔄 {tweet['retweets']} | ❤️ {tweet['likes']}"
+            
+            if tweet['has_media']:
+                report += " | 🖼️"
+            
+            if tweet['url']:
+                report += f"\n🔗 {tweet['url']}"
+            
+            report += "\n\n"
+        
+        if len(report) > 4000:
+            filename = f"search_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(report)
+            await update.message.reply_document(
+                document=open(filename, 'rb'),
+                caption=f"📄 Результаты поиска: {query}"
+            )
+        else:
+            await msg.edit_text(report)
+        
+        screenshot = await page.screenshot(type='jpeg', quality=80)
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption=f"🔍 Поиск: {query}"
+        )
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+        logger.error(f"Error in search: {e}", exc_info=True)
+
+
+# ========== ТРЕНДЫ ==========
+
+async def trends(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Топ трендов"""
+    msg = await update.message.reply_text("📊 Получаю тренды...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        await page.goto("https://x.com/explore/tabs/for-you", wait_until='domcontentloaded')
+        await page.wait_for_timeout(3000)
+        
+        trends_data = await page.evaluate('''
+            () => {
+                const trends = [];
+                const trendElements = document.querySelectorAll('[data-testid="trend"]');
+                
+                trendElements.forEach((trend, index) => {
+                    if (index >= 10) return;
+                    
+                    const text = trend.innerText || '';
+                    const lines = text.split('\\n').filter(line => line.trim());
+                    
+                    let category = '';
+                    let title = '';
+                    let tweets = '';
+                    
+                    if (lines.length >= 2) {
+                        if (lines[0].includes('·') || lines[0].includes('Актуально')) {
+                            category = lines[0];
+                            title = lines[1] || '';
+                            tweets = lines[2] || '';
+                        } else {
+                            title = lines[0] || '';
+                            category = lines[1] || '';
+                            tweets = lines[2] || '';
+                        }
+                    } else if (lines.length === 1) {
+                        title = lines[0];
+                    }
+                    
+                    trends.push({
+                        title: title,
+                        category: category,
+                        tweets: tweets
+                    });
+                });
+                
+                return trends;
+            }
+        ''')
+        
+        if not trends_data:
+            await msg.edit_text("❌ Тренды не найдены!")
+            return
+        
+        report = f"📊 ТОП ТРЕНДОВ\n"
+        report += f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
+        report += f"📌 Найдено: {len(trends_data)}\n\n"
+        
+        for i, trend in enumerate(trends_data, 1):
+            if trend['title']:
+                report += f"{i}. {trend['title']}\n"
+                
+                if trend['category']:
+                    report += f"   📂 {trend['category']}\n"
+                
+                if trend['tweets']:
+                    report += f"   📊 {trend['tweets']}\n"
+                
+                report += "\n"
+        
+        await msg.edit_text(report)
+        
+        screenshot = await page.screenshot(type='jpeg', quality=80)
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption="📸 Тренды X.com"
+        )
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+        logger.error(f"Error in trends: {e}", exc_info=True)
+
+
 # ========== ЗАПУСК ==========
 def main():
     app = Application.builder().token(TOKEN).build()
     
+    # Основные
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("login", login))
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("close", close))
+    
+    # XBOT
     app.add_handler(CommandHandler("profilex", profilex))
+    app.add_handler(CommandHandler("tweets", tweets))
+    app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("search", search))
+    app.add_handler(CommandHandler("trends", trends))
     
     print("✅ Бот запущен!")
-    print("Команды: /login, /screen, /status, /close, /profilex <username>")
+    print("Команды:")
+    print("  /start, /login, /screen, /status, /close")
+    print("  /profilex, /tweets, /stats, /search, /trends")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
-    main() 
+    main()
