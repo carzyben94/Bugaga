@@ -1,4 +1,4 @@
-# bot.py - X.com бот
+# bot.py - X.com бот (ИСПРАВЛЕННАЯ ВЕРСИЯ)
 import os
 import sys
 import subprocess
@@ -374,7 +374,8 @@ async def feed(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         posts = await page.evaluate('''
             () => {
-                const tweets = document.querySelectorAll('[data-testid="tweet"]');
+                // Преобразуем NodeList в массив
+                const tweets = Array.from(document.querySelectorAll('[data-testid="tweet"]'));
                 const result = [];
                 
                 for (const tweet of tweets.slice(0, 5)) {
@@ -428,7 +429,7 @@ async def feed(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ''')
         
         if not posts:
-            await msg.edit_text("📭 В ленте нет постов или не удалось загрузить.")
+            await msg.edit_text("📭 В ленте нет постов или не удалось загрузить.\nПопробуйте /login сначала.")
             return
         
         response = "📰 Лента\n\n"
@@ -475,7 +476,7 @@ async def post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         post_data = await page.evaluate(f'''
             () => {{
-                const tweets = document.querySelectorAll('[data-testid="tweet"]');
+                const tweets = Array.from(document.querySelectorAll('[data-testid="tweet"]'));
                 const tweet = tweets[{num}];
                 if (!tweet) return null;
                 
@@ -553,7 +554,7 @@ async def trends(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         trends_data = await page.evaluate('''
             () => {
-                const trends = document.querySelectorAll('[data-testid="trend"]');
+                const trends = Array.from(document.querySelectorAll('[data-testid="trend"]'));
                 const result = [];
                 
                 for (const trend of trends.slice(0, 10)) {
@@ -661,7 +662,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         stats_data = await page.evaluate(f'''
             () => {{
-                const tweets = document.querySelectorAll('[data-testid="tweet"]');
+                const tweets = Array.from(document.querySelectorAll('[data-testid="tweet"]'));
                 const tweet = tweets[{num}];
                 if (!tweet) return null;
                 
@@ -744,7 +745,7 @@ async def top(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         top_post = await page.evaluate('''
             () => {
-                const tweets = document.querySelectorAll('[data-testid="tweet"]');
+                const tweets = Array.from(document.querySelectorAll('[data-testid="tweet"]'));
                 let best = null;
                 let maxLikes = -1;
                 
