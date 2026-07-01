@@ -5,7 +5,6 @@ import subprocess
 import logging
 import asyncio
 import json
-import re
 from datetime import datetime
 from typing import Optional
 from telegram import Update
@@ -475,7 +474,7 @@ async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== ТВИТЫ ПОЛЬЗОВАТЕЛЯ ==========
 
 async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Парсинг твитов пользователя с красивым оформлением"""
+    """Парсинг твитов пользователя"""
     if not context.args:
         await update.message.reply_text(
             "ℹ️ Использование: /tweets <username> [count]\n"
@@ -508,18 +507,22 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     const textEl = tweet.querySelector('[data-testid="tweetText"]');
                     const timeEl = tweet.querySelector('time');
                     const likesEl = tweet.querySelector('[data-testid="like"]');
-                    const retweetEl = tweet.querySelector('[data-testid="retweet"]');
-                    const replyEl = tweet.querySelector('[data-testid="reply"]');
-                    const mediaEl = tweet.querySelector('[data-testid="tweetPhoto"]');
                     const isPinned = !!tweet.querySelector('[data-testid="pinIcon"]');
                     
+                    let text = textEl ? textEl.innerText : '';
+                    text = text.replace(/https?:\\/\\/[^\\s]+/g, '');
+                    text = text.replace(/http?:\\/\\/[^\\s]+/g, '');
+                    text = text.replace(/ftp?:\\/\\/[^\\s]+/g, '');
+                    text = text.replace(/www\\.[^\\s]+/g, '');
+                    text = text.replace(/[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}\\S*/g, '');
+                    text = text.replace(/\\n\\s*\\n/g, '\\n');
+                    text = text.replace(/\\s{{2,}}/g, ' ');
+                    text = text.trim();
+                    
                     tweets.push({{
-                        text: textEl ? textEl.innerText : '',
+                        text: text,
                         time: timeEl ? timeEl.getAttribute('datetime') : '',
                         likes: likesEl ? likesEl.innerText : '0',
-                        retweets: retweetEl ? retweetEl.innerText : '0',
-                        replies: replyEl ? replyEl.innerText : '0',
-                        has_media: !!mediaEl,
                         is_pinned: isPinned
                     }});
                 }});
@@ -551,20 +554,10 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 time_str = tweet['time'][:16].replace('T', ' ')
                 report += f"🕐 {time_str}"
             
-            stats = []
-            if tweet['replies'] and tweet['replies'] != '0':
-                stats.append(f"💬 {tweet['replies']}")
-            if tweet['retweets'] and tweet['retweets'] != '0':
-                stats.append(f"🔄 {tweet['retweets']}")
             if tweet['likes'] and tweet['likes'] != '0':
-                stats.append(f"❤️ {tweet['likes']}")
-            if tweet['has_media']:
-                stats.append("🖼️")
-            
-            if stats:
                 if tweet['time']:
                     report += "  "
-                report += " | ".join(stats)
+                report += f"❤️ {tweet['likes']}"
             
             report += "\n\n"
         
@@ -625,17 +618,21 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     const textEl = tweet.querySelector('[data-testid="tweetText"]');
                     const timeEl = tweet.querySelector('time');
                     const likesEl = tweet.querySelector('[data-testid="like"]');
-                    const retweetEl = tweet.querySelector('[data-testid="retweet"]');
-                    const replyEl = tweet.querySelector('[data-testid="reply"]');
-                    const mediaEl = tweet.querySelector('[data-testid="tweetPhoto"]');
+                    
+                    let text = textEl ? textEl.innerText : '';
+                    text = text.replace(/https?:\\/\\/[^\\s]+/g, '');
+                    text = text.replace(/http?:\\/\\/[^\\s]+/g, '');
+                    text = text.replace(/ftp?:\\/\\/[^\\s]+/g, '');
+                    text = text.replace(/www\\.[^\\s]+/g, '');
+                    text = text.replace(/[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}\\S*/g, '');
+                    text = text.replace(/\\n\\s*\\n/g, '\\n');
+                    text = text.replace(/\\s{2,}/g, ' ');
+                    text = text.trim();
                     
                     tweets.push({
-                        text: textEl ? textEl.innerText : '',
+                        text: text,
                         time: timeEl ? timeEl.getAttribute('datetime') : '',
-                        likes: likesEl ? likesEl.innerText : '0',
-                        retweets: retweetEl ? retweetEl.innerText : '0',
-                        replies: replyEl ? replyEl.innerText : '0',
-                        has_media: !!mediaEl
+                        likes: likesEl ? likesEl.innerText : '0'
                     });
                 });
                 
@@ -658,26 +655,18 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = tweet['text'][:280]
             if len(tweet['text']) > 280:
                 text += "..."
-            report += f"{text}\n"
+            
+            if text.strip():
+                report += f"{text}\n"
             
             if tweet['time']:
                 time_str = tweet['time'][:16].replace('T', ' ')
                 report += f"🕐 {time_str}"
             
-            stats = []
-            if tweet['replies'] and tweet['replies'] != '0':
-                stats.append(f"💬 {tweet['replies']}")
-            if tweet['retweets'] and tweet['retweets'] != '0':
-                stats.append(f"🔄 {tweet['retweets']}")
             if tweet['likes'] and tweet['likes'] != '0':
-                stats.append(f"❤️ {tweet['likes']}")
-            if tweet['has_media']:
-                stats.append("🖼️")
-            
-            if stats:
                 if tweet['time']:
                     report += "  "
-                report += " | ".join(stats)
+                report += f"❤️ {tweet['likes']}"
             
             report += "\n\n"
         
