@@ -201,16 +201,11 @@ async def close_browser():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 **X.com Bot**\n\n"
-        "📌 **Команды:**\n"
         "/login — авторизация в X.com\n"
         "/screen — скриншот\n"
         "/status — статус браузера\n"
         "/close — закрыть браузер\n"
-        "/parseprofile <username> — парсинг профиля\n\n"
-        "📌 **Пример:**\n"
-        "/parseprofile elonmusk",
-        parse_mode='Markdown'
+        "/profilex <username> — парсинг профиля"
     )
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -474,20 +469,17 @@ async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========== ПАРСИНГ ПРОФИЛЯ ==========
 
-async def parse_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def profilex(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Полный парсинг профиля пользователя X.com"""
     if not context.args:
         await update.message.reply_text(
-            "ℹ️ **Использование:** /parseprofile <username>\n"
-            "📌 **Примеры:**\n"
-            "/parseprofile elonmusk\n"
-            "/parseprofile @realDonaldTrump",
-            parse_mode='Markdown'
+            "ℹ️ Использование: /profilex <username>\n"
+            "Пример: /profilex elonmusk"
         )
         return
     
     username = context.args[0].replace('@', '').strip()
-    msg = await update.message.reply_text(f"👤 **Парсю профиль @{username}...**", parse_mode='Markdown')
+    msg = await update.message.reply_text(f"👤 Парсю профиль @{username}...")
     
     try:
         browser = await get_browser()
@@ -684,21 +676,21 @@ async def parse_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ''')
         
         # Формируем красивый отчет
-        report = f"👤 **ПРОФИЛЬ @{profile_data.get('username', username)}**\n\n"
+        report = f"👤 ПРОФИЛЬ @{profile_data.get('username', username)}\n\n"
         
         # Имя и верификация
-        report += f"📛 **Имя:** {profile_data.get('display_name', 'Не указано')}\n"
+        report += f"Имя: {profile_data.get('display_name', 'Не указано')}\n"
         
         if profile_data.get('is_verified'):
-            report += f"🔵 **Верифицирован** ✅\n"
+            report += f"Верифицирован ✅\n"
         elif profile_data.get('is_blue_verified'):
-            report += f"🔵 **Blue Verified** 💙\n"
+            report += f"Blue Verified 💙\n"
         
         if profile_data.get('is_private'):
-            report += f"🔒 **Закрытый профиль**\n"
+            report += f"Закрытый профиль 🔒\n"
         
         # Статистика
-        report += f"\n📊 **Статистика:**\n"
+        report += f"\nСтатистика:\n"
         report += f"• Твиты: {profile_data.get('tweets_count', '0')}\n"
         report += f"• Подписчики: {profile_data.get('followers', '0')}\n"
         report += f"• Подписки: {profile_data.get('following', '0')}\n"
@@ -707,29 +699,29 @@ async def parse_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Информация
         if profile_data.get('bio'):
-            report += f"\n📝 **Био:**\n{profile_data['bio']}\n"
+            report += f"\nБио:\n{profile_data['bio']}\n"
         
         if profile_data.get('location'):
-            report += f"\n📍 **Местоположение:** {profile_data['location']}\n"
+            report += f"\nМестоположение: {profile_data['location']}\n"
         
         if profile_data.get('join_date'):
-            report += f"📅 **Дата регистрации:** {profile_data['join_date']}\n"
+            report += f"Дата регистрации: {profile_data['join_date']}\n"
         
         if profile_data.get('birth_date'):
-            report += f"🎂 **Дата рождения:** {profile_data['birth_date']}\n"
+            report += f"Дата рождения: {profile_data['birth_date']}\n"
         
         if profile_data.get('website'):
-            report += f"\n🌐 **Сайт:** {profile_data['website']}\n"
+            report += f"\nСайт: {profile_data['website']}\n"
         
         # Закрепленный твит
         if profile_data.get('pinned_tweet'):
-            report += f"\n📌 **Закрепленный твит:**\n"
+            report += f"\nЗакрепленный твит:\n"
             report += f"{profile_data['pinned_tweet']['text'][:150]}\n"
             report += f"❤️ {profile_data['pinned_tweet']['likes']} | 🔄 {profile_data['pinned_tweet']['retweets']}\n"
         
         # Последние твиты
         if profile_data.get('tweets'):
-            report += f"\n📝 **Последние твиты ({len(profile_data['tweets'])}):**\n"
+            report += f"\nПоследние твиты ({len(profile_data['tweets'])}):\n"
             for i, tweet in enumerate(profile_data['tweets'][:5], 1):
                 report += f"\n{i}. {tweet['text'][:120]}\n"
                 report += f"   ❤️ {tweet['likes']} | 🔄 {tweet['retweets']} | 💬 {tweet['replies']}"
@@ -741,7 +733,7 @@ async def parse_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Аватар
         if profile_data.get('avatar_url'):
-            report += f"\n🖼️ **Аватар:** [Ссылка]({profile_data['avatar_url']})\n"
+            report += f"\nАватар: {profile_data['avatar_url']}\n"
         
         # Отправляем результат
         if len(report) > 4000:
@@ -750,21 +742,21 @@ async def parse_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f.write(report)
             await update.message.reply_document(
                 document=open(filename, 'rb'),
-                caption=f"📄 Профиль @{username}"
+                caption=f"Профиль @{username}"
             )
         else:
-            await msg.edit_text(report, parse_mode='Markdown')
+            await msg.edit_text(report)
         
         # Скриншот профиля
         screenshot = await page.screenshot(type='jpeg', quality=80)
         await update.message.reply_photo(
             photo=screenshot,
-            caption=f"📸 Профиль @{username}"
+            caption=f"Профиль @{username}"
         )
         
     except Exception as e:
-        await msg.edit_text(f"❌ **Ошибка:** {str(e)[:200]}", parse_mode='Markdown')
-        logger.error(f"Error in parse_profile: {e}", exc_info=True)
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+        logger.error(f"Error in profilex: {e}", exc_info=True)
 
 
 # ========== ЗАПУСК ==========
@@ -776,16 +768,10 @@ def main():
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("close", close))
-    app.add_handler(CommandHandler("parseprofile", parse_profile))
+    app.add_handler(CommandHandler("profilex", profilex))
     
-    print("🐦 X.com Bot запущен!")
-    print("📌 Команды:")
-    print("   /start - справка")
-    print("   /login - авторизация")
-    print("   /screen - скриншот")
-    print("   /status - статус")
-    print("   /close - закрыть браузер")
-    print("   /parseprofile <username> - парсинг профиля")
+    print("✅ Бот запущен!")
+    print("Команды: /login, /screen, /status, /close, /profilex <username>")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
