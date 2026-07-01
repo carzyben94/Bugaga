@@ -184,7 +184,7 @@ provider:
             return False
     
     async def execute_command(self, command: str, progress_callback=None) -> str:
-        """Выполняет команду через goose run с подключением к существующему браузеру"""
+        """Выполняет команду через goose run с передачей кук"""
         if not self.initialized:
             success = await self.initialize()
             if not success:
@@ -210,6 +210,44 @@ provider:
             await progress_callback(f"🤖 Отправляю команду в Agnes AI: {command[:50]}...")
         
         try:
+            # Формируем строку кук для передачи в браузер
+            cookies_str = "; ".join([f"{c['name']}={c['value']}" for c in COOKIES])
+            
+            # Проверяем, установлен ли Chrome
+            if progress_callback:
+                await progress_callback("🔍 Проверяю наличие Chrome...")
+            
+            chrome_check = await asyncio.create_subprocess_exec(
+                "which", "google-chrome",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            await chrome_check.communicate()
+            
+            if chrome_check.returncode != 0:
+                if progress_callback:
+                    await progress_callback("⚠️ Chrome не найден. Устанавливаю...")
+                
+                install = await asyncio.create_subprocess_exec(
+                    sys.executable, "-m", "playwright", "install", "chrome",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                await install.communicate()
+                
+                if install.returncode != 0:
+                    if progress_callback:
+                        await progress_callback("🔄 Пробую Chromium...")
+                    install2 = await asyncio.create_subprocess_exec(
+                        sys.executable, "-m", "playwright", "install", "chromium",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    await install2.communicate()
+                else:
+                    if progress_callback:
+                        await progress_callback("✅ Chrome установлен!")
+            
             env = os.environ.copy()
             env["GOOSE_TELEMETRY_ENABLED"] = "false"
             env["GOOSE_PROVIDER"] = "openai"
@@ -220,7 +258,8 @@ provider:
             if progress_callback:
                 await progress_callback("🔄 Запускаю Goose с Playwright MCP...")
             
-            # Формируем команду с подключением к существующему браузеру
+            # Если есть WebSocket URL — подключаемся к существующему браузеру
+            # Если нет — передаём куки в новый браузер
             if browser_ws_url:
                 if progress_callback:
                     await progress_callback(f"🔗 Подключаюсь к браузеру (WebSocket)...")
@@ -234,10 +273,11 @@ provider:
                 )
             else:
                 if progress_callback:
-                    await progress_callback("🆕 Запускаю новый браузер (нет активной сессии)...")
+                    await progress_callback("🆕 Запускаю новый браузер с куками...")
+                # Передаём куки через аргументы Playwright MCP
                 process = await asyncio.create_subprocess_exec(
                     "goose", "run",
-                    "--with-extension", "npx -y @playwright/mcp@latest",
+                    "--with-extension", f"npx -y @playwright/mcp@latest --cookies '{cookies_str}'",
                     "-t", full_command,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
@@ -437,7 +477,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/login — авторизация в X.com (запускает браузер)\n"
         "/screen — скриншот\n"
         "/status — статус браузера\n"
-        "/goose <команда> — управление браузером через ИИ\n"
+        "/goose <команда> — управление браузером через ИИ (автоустановка Chrome)\n"
         "/close — закрыть браузер\n\n"
         "🔧 **Утилиты:**\n"
         "/diagnose — полная диагностика\n"
@@ -719,7 +759,7 @@ async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await close_browser()
     await msg.edit_text("✅ Браузер закрыт!")
 
-# ========== КОМАНДА GOOSE С ЛОГАМИ ==========
+# ========== КОМАНДА GOOSE С ЛОГАМИ И АВТОУСТАНОВКОЙ CHROME ==========
 async def goose_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Выполняет команду через Goose с Agnes AI и логами в чат"""
     command_text = " ".join(context.args) if context.args else None
@@ -733,7 +773,9 @@ async def goose_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• `/goose сделай скриншот главной страницы`\n"
             "• `/goose найди кнопку Войти и нажми`\n"
             "• `/goose прокрути страницу вниз`\n\n"
-            "💡 Мозг: Agnes AI"
+            "💡 Мозг: Agnes AI\n"
+            "🔧 Chrome устанавливается автоматически, если не найден\n"
+            "🍪 Куки передаются в новый браузер"
         )
         return
     
