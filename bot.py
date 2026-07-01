@@ -810,14 +810,12 @@ async def goose_extensions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔄 Проверяю расширения Goose...")
     
     try:
-        # Проверяем конфиг на наличие расширений
         config_path = os.path.expanduser("~/.config/goose/config.yaml")
         
         if os.path.exists(config_path):
             with open(config_path, 'r') as f:
                 content = f.read()
             
-            # Ищем расширения в конфиге
             extensions = []
             if 'extensions:' in content:
                 lines = content.split('\n')
@@ -859,7 +857,6 @@ async def goose_provider(update: Update, context: ContextTypes.DEFAULT_TYPE):
             with open(config_path, 'r') as f:
                 content = f.read()
             
-            # Извлекаем информацию о провайдере
             provider_info = "📊 **Провайдер Goose:**\n\n"
             
             if 'provider:' in content:
@@ -942,13 +939,11 @@ async def skills_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for item in os.listdir(skills_dir):
                 skill_path = os.path.join(skills_dir, item)
                 if os.path.isdir(skill_path):
-                    # Проверяем наличие SKILL.md
                     skill_file = os.path.join(skill_path, "SKILL.md")
                     if os.path.exists(skill_file):
                         skills_count += 1
                         skills_list.append(item)
         
-        # Проверяем, включено ли расширение Skills
         config_path = os.path.expanduser("~/.config/goose/config.yaml")
         skills_enabled = "❌ Не включено"
         if os.path.exists(config_path):
@@ -1007,7 +1002,7 @@ async def skills_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def skills_install(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Устанавливает скилл Playwright CLI"""
+    """Устанавливает скилл Playwright CLI вручную (без интерактива)"""
     msg = await update.message.reply_text("🔄 Устанавливаю скилл Playwright CLI...")
     
     async def update_status(text):
@@ -1017,39 +1012,57 @@ async def skills_install(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
     
     try:
-        await update_status("Проверяю npx...")
+        # Создаём папку для скиллов Goose
+        skills_dir = os.path.expanduser("~/.agents/skills/playwright-cli")
+        os.makedirs(skills_dir, exist_ok=True)
+        await update_status(f"📁 Создаю папку: {skills_dir}")
         
-        check_npx = await asyncio.create_subprocess_exec(
-            "npx", "--version",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        await check_npx.communicate()
+        # Создаём SKILL.md напрямую
+        await update_status("📝 Создаю SKILL.md...")
         
-        if check_npx.returncode != 0:
-            await msg.edit_text("❌ **npx не найден!**\n\nУстановите Node.js вручную.")
-            return
+        skill_content = """---
+name: playwright-cli
+description: Управление браузером через Playwright CLI. Позволяет открывать страницы, кликать, заполнять формы, делать скриншоты.
+---
+
+# Playwright CLI Skill
+
+Ты умеешь управлять браузером через Playwright CLI.
+
+## Доступные команды
+
+- `npx playwright open <url>` — открыть страницу
+- `npx playwright click <selector>` — кликнуть по элементу
+- `npx playwright fill <selector> <text>` — заполнить поле
+- `npx playwright screenshot` — сделать скриншот
+- `npx playwright press <key>` — нажать клавишу
+
+## Инструкции
+
+Когда пользователь просит открыть сайт или нажать кнопку, используй Playwright CLI.
+Все команды выполняй через shell.
+
+Пример:
+- `/goose открой x.com` → `npx playwright open https://x.com`
+- `/goose нажми на кнопку Войти` → `npx playwright click "button:has-text('Войти')"`
+"""
         
-        await update_status("Устанавливаю Playwright CLI Skill...")
+        skill_file = os.path.join(skills_dir, "SKILL.md")
+        with open(skill_file, 'w', encoding='utf-8') as f:
+            f.write(skill_content)
         
-        process = await asyncio.create_subprocess_exec(
-            "npx", "skills", "add",
-            "https://github.com/microsoft/playwright-cli",
-            "--skill", "playwright-cli",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await process.communicate()
+        await update_status("✅ SKILL.md создан!")
         
-        if process.returncode == 0:
-            await msg.edit_text("✅ **Скилл Playwright CLI успешно установлен!**\n\n"
-                               "📌 Теперь Goose может управлять браузером.\n\n"
-                               "🔄 Включите расширение Skills в Goose:\n"
-                               "`goose configure` → Toggle Extensions → включите Skills\n\n"
-                               "📌 Проверьте: `/skills_list`")
+        # Проверяем установку
+        if os.path.exists(skill_file):
+            await msg.edit_text(f"✅ **Скилл Playwright CLI успешно установлен!**\n\n"
+                               f"📁 Папка: `{skills_dir}`\n"
+                               f"📄 Файл: `SKILL.md`\n\n"
+                               f"📌 Проверьте: `/skills_list`\n\n"
+                               f"🔄 Теперь Goose может управлять браузером!\n"
+                               f"Попробуйте: `/goose открой x.com`")
         else:
-            error = stderr.decode() if stderr else "Неизвестная ошибка"
-            await msg.edit_text(f"❌ **Ошибка установки скилла:**\n```\n{error[:500]}\n```")
+            await msg.edit_text("❌ Не удалось создать файл скилла")
             
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
