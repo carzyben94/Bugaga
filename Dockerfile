@@ -15,7 +15,7 @@ RUN pip install playwright && playwright install chromium && playwright install-
 # Устанавливаем Goose через официальный скрипт с GitHub
 RUN curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | bash
 
-# Добавляем Goose в PATH (правильный путь!)
+# Добавляем Goose в PATH
 ENV PATH="/root/.local/bin:${PATH}"
 
 WORKDIR /app
