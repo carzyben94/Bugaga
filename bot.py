@@ -45,7 +45,7 @@ AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
 AGNES_BASE_URL = "https://apihub.agnes-ai.com/v1"
 
 def call_agnes(prompt: str, tools: list = None) -> str:
-    """Вызывает Agnes-2.0-Flash через OpenAI-совместимый API с системным промптом"""
+    """Вызывает Agnes-2.0-Flash через OpenAI-совместимый API"""
     if not AGNES_API_KEY:
         return "⚠️ AGNES_API_KEY не задан! Добавь переменную на Railway."
 
@@ -54,42 +54,8 @@ def call_agnes(prompt: str, tools: list = None) -> str:
         "Content-Type": "application/json"
     }
 
-    # Системный промпт для компактных и красивых ответов
-    system_prompt = """Ты — AI-агент, управляющий браузером через Playwright.
-
-ПРАВИЛА ОТВЕТОВ:
-1. Отвечай КРАТКО и по ДЕЛУ (максимум 2-3 предложения)
-2. Используй эмодзи для визуального оформления:
-   ✅ — успех
-   ❌ — ошибка
-   📸 — скриншот
-   🔗 — ссылка
-   📊 — данные
-   ⏳ — ожидание
-   🚀 — запуск
-   🔍 — поиск
-   📝 — текст
-   🖱️ — клик
-3. Если выполнил действие — просто напиши "✅ Готово" или "✅ Страница открыта"
-4. Не объясняй, что и как ты делал — только результат
-5. Если ошибка — напиши "❌ Ошибка: <краткая причина>"
-6. Не пиши длинные тексты, не перечисляй варианты действий
-7. Не пиши "Я сделал..." — пиши результат сразу
-
-Примеры хороших ответов:
-- ✅ Страница x.com открыта
-- 📸 Скриншот сохранён
-- ❌ Ошибка: страница не найдена
-- 🔗 Ссылки собраны: 15 шт.
-- ✅ Кнопка нажата
-- 📝 Текст введён
-- 🔍 Результатов найдено: 5
-
-Примеры плохих ответов (НЕ ТАК):
-- "Я открыл страницу и теперь я могу..."
-- "Для того чтобы выполнить действие, мне нужно..."
-- "Сначала я сделал это, потом то..."
-"""
+    # Короткий системный промпт
+    system_prompt = """Ты — AI-агент. Отвечай кратко, максимум 2 предложения. Используй эмодзи. Только результат, без объяснений."""
 
     payload = {
         "model": "agnes-2.0-flash",
@@ -98,7 +64,7 @@ def call_agnes(prompt: str, tools: list = None) -> str:
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.3,
-        "max_tokens": 500,  # Ограничиваем длину ответа
+        "max_tokens": 200,
         "tools": tools or [],
         "parallel_tool_calls": True
     }
@@ -117,6 +83,70 @@ def call_agnes(prompt: str, tools: list = None) -> str:
             return f"❌ Ошибка Agnes: {response.status_code}"
     except Exception as e:
         return f"❌ Ошибка: {str(e)[:100]}"
+
+def format_goose_response(text: str) -> str:
+    """Форматирует ответ Goose, делая его кратким и красивым"""
+    if not text:
+        return "✅ Готово"
+    
+    # Убираем технические логи
+    lines = text.split('\n')
+    cleaned = []
+    
+    for line in lines:
+        # Пропускаем технические строки
+        if any(x in line for x in [
+            'shell', 'command:', 'timeout_secs', 'node -e', 
+            'require', 'Module', 'Error:', 'npm install',
+            'playwright', 'chromium', 'launch', 'headless',
+            'browser.newPage', 'page.goto', 'browser.close',
+            'URL:', 'Title:', '---', '```', '─', '│', '▸',
+            'const', 'await', 'async', 'function', 'console.log',
+            'stdout', 'stderr', 'exit code', 'Command exited'
+        ]):
+            continue
+        
+        # Пропускаем пустые строки
+        if not line.strip():
+            continue
+        
+        # Оставляем только полезные строки
+        cleaned.append(line.strip())
+    
+    # Если ничего не осталось — возвращаем краткий ответ
+    if not cleaned:
+        if 'google' in text.lower():
+            return "✅ Google открыт"
+        elif 'x.com' in text.lower() or 'twitter' in text.lower():
+            return "✅ X.com открыт"
+        elif 'error' in text.lower() or 'ошибк' in text.lower():
+            return "❌ Ошибка"
+        elif 'screenshot' in text.lower() or 'скриншот' in text.lower():
+            return "📸 Скриншот сделан"
+        else:
+            return "✅ Готово"
+    
+    # Берём первые 2-3 полезные строки
+    result = ' '.join(cleaned[:3])
+    
+    # Обрезаем до 200 символов
+    if len(result) > 200:
+        result = result[:200] + '...'
+    
+    # Добавляем эмодзи, если нет
+    if not any(x in result for x in ['✅', '❌', '📸', '🔗', '📊', '⏳', '🚀', '🔍', '📝', '🖱️']):
+        if 'error' in result.lower() or 'ошибк' in result.lower():
+            result = "❌ " + result
+        elif 'google' in result.lower():
+            result = "✅ " + result
+        elif 'x.com' in result.lower():
+            result = "✅ " + result
+        elif 'скриншот' in result.lower():
+            result = "📸 " + result
+        else:
+            result = "✅ " + result
+    
+    return result
 
 # ========== КУКИ X.COM ==========
 COOKIES = [
@@ -250,11 +280,10 @@ provider:
             # Формируем строку кук
             cookies_str = "; ".join([f"{c['name']}={c['value']}" for c in COOKIES])
             
-            # Проверяем Playwright (один раз!)
+            # Проверяем Playwright
             if progress_callback:
                 await progress_callback("🔍 Проверяю Playwright...")
             
-            # Проверяем, установлен ли playwright
             playwright_check = await asyncio.create_subprocess_exec(
                 sys.executable, "-c", 
                 "import playwright; print('OK')",
@@ -291,9 +320,6 @@ provider:
             if not browser_ws_url:
                 extension_cmd += f" --cookies '{cookies_str}'"
             
-            if progress_callback:
-                await progress_callback(f"🔧 Расширение: {extension_cmd[:60]}...")
-            
             process = await asyncio.create_subprocess_exec(
                 "goose", "run",
                 "--with-extension", extension_cmd,
@@ -304,7 +330,7 @@ provider:
             )
             
             if progress_callback:
-                await progress_callback("⏳ Выполняю команду (до 120 сек)...")
+                await progress_callback("⏳ Выполняю команду...")
             
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
             
@@ -422,7 +448,6 @@ async def get_browser():
         
         browser = await p.chromium.launch(**launch_args)
         
-        # Получаем WebSocket URL через _connection
         try:
             if hasattr(browser, '_connection') and browser._connection:
                 browser_ws_url = browser._connection.websocket.url
@@ -509,9 +534,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/skills_install — установить Playwright CLI Skill\n"
         "/skills_add <URL> — установить скилл\n\n"
         "Примеры /goose:\n"
-        "• открой x.com и найди новости про ИИ\n"
-        "• сделай скриншот главной страницы\n"
-        "• найди кнопку Tweet и нажми на неё\n\n"
+        "• открой x.com\n"
+        "• сделай скриншот\n"
+        "• найди кнопку Tweet и нажми\n\n"
         f"Мозг: {'Agnes AI ✅' if AGNES_API_KEY else 'Agnes AI ❌ (ключ не задан)'}"
     )
 
@@ -762,14 +787,12 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             status_msg += "❌ Нет данных (выполните /login)\n"
         
-        # Проверяем Goose CLI
         installed, version = await check_goose_installed()
         status_msg += f"\n🤖 Goose CLI: {'✅ ' + version if installed else '❌ Не установлен'}\n"
         status_msg += f"🤖 Goose готов: {'✅' if goose_manager.initialized else '❌ Не инициализирован'}\n"
         if goose_manager.init_error:
             status_msg += f"⚠️ Ошибка: {goose_manager.init_error[:100]}\n"
         
-        # Статус Agnes AI
         status_msg += f"🧠 Agnes AI: {'✅ Ключ задан' if AGNES_API_KEY else '❌ Ключ не задан'}\n"
         status_msg += f"\n🕐 {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
         status_msg += f"📦 Драйвер: {'Phantomwright' if PHANTOMWRIGHT_AVAILABLE else 'Playwright'}\n"
@@ -788,7 +811,6 @@ async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== КОМАНДЫ УПРАВЛЕНИЯ GOOSE ==========
 
 async def goose_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает конфигурацию Goose"""
     msg = await update.message.reply_text("🔄 Читаю конфиг Goose...")
     
     try:
@@ -812,7 +834,6 @@ async def goose_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def goose_extensions(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает и управляет расширениями Goose"""
     msg = await update.message.reply_text("🔄 Проверяю расширения Goose...")
     
     try:
@@ -841,9 +862,7 @@ async def goose_extensions(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     status_msg += f"✅ {ext}\n"
                 status_msg += f"\n📁 Файл: `{config_path}`"
             else:
-                status_msg = "🔧 Расширения Goose:\n\n❌ Расширения не найдены\n\n"
-                status_msg += "📌 Установить расширение:\n"
-                status_msg += "Добавьте в конфиг:\n```yaml\nextensions:\n  - playwright\n```"
+                status_msg = "🔧 Расширения Goose:\n\n❌ Расширения не найдены"
         else:
             status_msg = "❌ Конфиг Goose не найден."
         
@@ -853,7 +872,6 @@ async def goose_extensions(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def goose_provider(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает и управляет провайдером Goose"""
     msg = await update.message.reply_text("🔄 Проверяю провайдера Goose...")
     
     try:
@@ -898,7 +916,6 @@ async def goose_provider(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def goose_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Перезапускает Goose"""
     msg = await update.message.reply_text("🔄 Перезапускаю Goose...")
     
     async def update_status(text):
@@ -917,12 +934,7 @@ async def goose_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if success:
             await update_status("✅ Goose перезапущен!")
-            await msg.edit_text("✅ Goose перезапущен!\n\n"
-                               "📌 Проверьте:\n"
-                               "/goose_config — конфигурация\n"
-                               "/goose_extensions — расширения\n"
-                               "/goose_provider — провайдер\n\n"
-                               "Теперь можете использовать /goose <команда>")
+            await msg.edit_text("✅ Goose перезапущен!\n\n📌 Проверьте:\n/goose_config\n/goose_extensions\n/goose_provider")
         else:
             error_msg = goose_manager.init_error or "Неизвестная ошибка"
             await msg.edit_text(f"❌ Не удалось перезапустить Goose:\n```\n{error_msg[:200]}\n```")
@@ -933,7 +945,6 @@ async def goose_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== КОМАНДЫ ДЛЯ РАБОТЫ СО СКИЛЛАМИ ==========
 
 async def skills_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает статус скиллов и расширений Goose"""
     msg = await update.message.reply_text("🔄 Проверяю статус...")
     
     try:
@@ -979,7 +990,6 @@ async def skills_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def skills_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает список установленных скиллов"""
     msg = await update.message.reply_text("🔄 Проверяю установленные скиллы...")
     
     try:
@@ -1008,7 +1018,6 @@ async def skills_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def skills_install(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Устанавливает скилл Playwright CLI вручную (без интерактива)"""
     msg = await update.message.reply_text("🔄 Устанавливаю скилл Playwright CLI...")
     
     async def update_status(text):
@@ -1018,17 +1027,15 @@ async def skills_install(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
     
     try:
-        # Создаём папку для скиллов Goose
         skills_dir = os.path.expanduser("~/.agents/skills/playwright-cli")
         os.makedirs(skills_dir, exist_ok=True)
         await update_status(f"📁 Создаю папку: {skills_dir}")
         
-        # Создаём SKILL.md напрямую
         await update_status("📝 Создаю SKILL.md...")
         
         skill_content = """---
 name: playwright-cli
-description: Управление браузером через Playwright CLI. Позволяет открывать страницы, кликать, заполнять формы, делать скриншоты.
+description: Управление браузером через Playwright CLI.
 ---
 
 # Playwright CLI Skill
@@ -1037,20 +1044,10 @@ description: Управление браузером через Playwright CLI. 
 
 ## Доступные команды
 
-- `npx playwright open <url>` — открыть страницу
-- `npx playwright click <selector>` — кликнуть по элементу
-- `npx playwright fill <selector> <text>` — заполнить поле
-- `npx playwright screenshot` — сделать скриншот
-- `npx playwright press <key>` — нажать клавишу
-
-## Инструкции
-
-Когда пользователь просит открыть сайт или нажать кнопку, используй Playwright CLI.
-Все команды выполняй через shell.
-
-Пример:
-- /goose открой x.com → npx playwright open https://x.com
-- /goose нажми на кнопку Войти → npx playwright click "button:has-text('Войти')"
+- npx playwright open <url> — открыть страницу
+- npx playwright click <selector> — кликнуть по элементу
+- npx playwright fill <selector> <text> — заполнить поле
+- npx playwright screenshot — сделать скриншот
 """
         
         skill_file = os.path.join(skills_dir, "SKILL.md")
@@ -1059,14 +1056,8 @@ description: Управление браузером через Playwright CLI. 
         
         await update_status("✅ SKILL.md создан!")
         
-        # Проверяем установку
         if os.path.exists(skill_file):
-            await msg.edit_text(f"✅ Скилл Playwright CLI успешно установлен!\n\n"
-                               f"📁 Папка: `{skills_dir}`\n"
-                               f"📄 Файл: SKILL.md\n\n"
-                               f"📌 Проверьте: /skills_list\n\n"
-                               f"🔄 Теперь Goose может управлять браузером!\n"
-                               f"Попробуйте: /goose открой x.com")
+            await msg.edit_text(f"✅ Скилл Playwright CLI успешно установлен!\n\n📁 Папка: `{skills_dir}`\n📌 Проверьте: /skills_list")
         else:
             await msg.edit_text("❌ Не удалось создать файл скилла")
             
@@ -1074,14 +1065,12 @@ description: Управление браузером через Playwright CLI. 
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def skills_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Устанавливает скилл из URL"""
     if not context.args:
         await update.message.reply_text(
             "🔧 Установка скилла\n\n"
             "Используйте: /skills_add <URL>\n\n"
-            "Примеры:\n"
-            "• /skills_add https://github.com/microsoft/playwright-cli --skill playwright-cli\n"
-            "• /skills_add https://github.com/block/Agent-Skills --skill api-setup"
+            "Пример:\n"
+            "/skills_add https://github.com/microsoft/playwright-cli"
         )
         return
     
@@ -1097,10 +1086,7 @@ async def skills_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stdout, stderr = await process.communicate()
         
         if process.returncode == 0:
-            await msg.edit_text(f"✅ Скилл успешно установлен!\n\n"
-                               f"📌 URL: {url}\n\n"
-                               f"🔄 Включите расширение Skills в Goose:\n"
-                               f"goose configure → Toggle Extensions → включите Skills")
+            await msg.edit_text(f"✅ Скилл успешно установлен!\n\n📌 URL: {url}")
         else:
             error = stderr.decode() if stderr else "Неизвестная ошибка"
             await msg.edit_text(f"❌ Ошибка установки:\n```\n{error[:500]}\n```")
@@ -1118,13 +1104,10 @@ async def goose_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🤖 Goose AI Agent + Agnes\n\n"
             "Используйте: /goose <команда>\n\n"
             "Примеры:\n"
-            "• /goose открой x.com и найди новости про ИИ\n"
-            "• /goose сделай скриншот главной страницы\n"
-            "• /goose найди кнопку Войти и нажми\n"
-            "• /goose прокрути страницу вниз\n\n"
-            "Мозг: Agnes AI\n"
-            "Chrome устанавливается автоматически\n"
-            "Куки передаются в браузер"
+            "• /goose открой x.com\n"
+            "• /goose сделай скриншот\n"
+            "• /goose найди кнопку Tweet и нажми\n\n"
+            "Мозг: Agnes AI"
         )
         return
     
@@ -1133,7 +1116,7 @@ async def goose_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async def update_status(text):
         try:
             timestamp = datetime.now().strftime("%H:%M:%S")
-            await msg.edit_text(f"🔄 Логи выполнения ({timestamp}):\n\n`{text}`")
+            await msg.edit_text(f"🔄 Логи ({timestamp}):\n\n`{text}`")
         except Exception:
             try:
                 await update.message.reply_text(f"📋 {text}")
@@ -1152,16 +1135,19 @@ async def goose_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.edit_text(f"❌ Не удалось инициализировать Goose:\n\n`{error_msg[:200]}`")
                 return
         
-        await update_status("🚀 Запускаю выполнение команды...")
+        await update_status("🚀 Запускаю выполнение...")
         result = await goose_manager.execute_command(command_text, progress_callback=update_status)
         
-        if len(result) > 4000:
-            parts = [result[i:i+4000] for i in range(0, len(result), 4000)]
+        # Форматируем ответ
+        formatted_result = format_goose_response(result)
+        
+        if len(formatted_result) > 4000:
+            parts = [formatted_result[i:i+4000] for i in range(0, len(formatted_result), 4000)]
             await msg.edit_text(f"✅ Результат:\n\n{parts[0]}")
             for part in parts[1:]:
                 await update.message.reply_text(f"📄 Продолжение:\n\n{part}")
         else:
-            await msg.edit_text(f"✅ Результат:\n\n{result}")
+            await msg.edit_text(f"✅ {formatted_result}")
             
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка:\n\n`{str(e)[:200]}`")
