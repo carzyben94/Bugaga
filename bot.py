@@ -67,52 +67,20 @@ login_status = {
 
 # ========== ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ПРОВЕРКИ GOOSE ==========
 async def check_goose_installed() -> tuple:
-    """Проверяет, установлен ли Goose (через goose или goose_ai)"""
-    # Пробуем импортировать goose
+    """Проверяет, установлен ли Goose (через CLI)"""
     try:
         process = await asyncio.create_subprocess_exec(
-            sys.executable, "-c", "import goose; print('goose')",
+            "goose", "--version",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
         stdout, stderr = await process.communicate()
         if process.returncode == 0:
-            return True, 'goose'
-    except:
-        pass
-    
-    # Пробуем импортировать goose_ai
-    try:
-        process = await asyncio.create_subprocess_exec(
-            sys.executable, "-c", "import goose_ai; print('goose_ai')",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await process.communicate()
-        if process.returncode == 0:
-            return True, 'goose_ai'
-    except:
-        pass
-    
-    return False, None
-
-async def get_goose_version() -> str:
-    """Получает версию Goose"""
-    installed, module_name = await check_goose_installed()
-    if not installed:
-        return 'не установлен'
-    
-    try:
-        process = await asyncio.create_subprocess_exec(
-            sys.executable, "-c", f"import {module_name}; print({module_name}.__version__ if hasattr({module_name}, '__version__') else 'unknown')",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await process.communicate()
-        version = stdout.decode().strip()
-        return version if version else 'unknown'
-    except:
-        return 'unknown'
+            version = stdout.decode().strip() or stderr.decode().strip()
+            return True, version
+        return False, None
+    except FileNotFoundError:
+        return False, None
 
 # ========== GOOSE МЕНЕДЖЕР ==========
 class GooseManager:
@@ -121,71 +89,35 @@ class GooseManager:
         self.initialized = False
         self.request_id = 0
         self.init_error = None
-        self.module_name = None
         
     async def initialize(self):
-        """Запускает Goose как MCP-сервер"""
+        """Запускает Goose как MCP-сервер через CLI"""
         if self.initialized:
             return True
             
         try:
             logger.info("🔄 Запускаю Goose MCP сервер...")
             
-            # Проверяем, установлен ли goose
-            installed, module_name = await check_goose_installed()
+            # Проверяем, есть ли команда goose
+            check = await asyncio.create_subprocess_exec(
+                "goose", "--version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            await check.communicate()
             
-            if not installed:
-                logger.warning("⚠️ Goose не найден, пробую установить...")
-                try:
-                    # Устанавливаем goose-ai
-                    process = await asyncio.create_subprocess_exec(
-                        sys.executable, "-m", "pip", "install", "--force-reinstall", "goose-ai",
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE
-                    )
-                    stdout, stderr = await process.communicate()
-                    
-                    if process.returncode != 0:
-                        error = stderr.decode() if stderr else "Неизвестная ошибка"
-                        self.init_error = f"Не удалось установить Goose: {error[:100]}"
-                        return False
-                    
-                    # Проверяем после установки
-                    installed, module_name = await check_goose_installed()
-                    if not installed:
-                        self.init_error = "Установка прошла, но модуль не импортируется"
-                        return False
-                        
-                    logger.info("✅ Goose установлен через pip")
-                except Exception as e:
-                    self.init_error = f"Ошибка установки: {e}"
-                    return False
-            
-            self.module_name = module_name
-            logger.info(f"✅ Goose найден как {module_name}")
-            
-            # Запускаем goose через python -m goose (или goose_ai)
-            try:
-                # Пробуем через goose
-                self.process = await asyncio.create_subprocess_exec(
-                    sys.executable, "-m", "goose", "mcp", "serve",
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                logger.info("✅ Goose запущен через python -m goose mcp serve")
-            except FileNotFoundError:
-                # Пробуем через goose_ai
-                self.process = await asyncio.create_subprocess_exec(
-                    sys.executable, "-m", "goose_ai", "mcp", "serve",
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                logger.info("✅ Goose запущен через python -m goose_ai mcp serve")
-            except Exception as e:
-                self.init_error = f"Не удалось запустить Goose: {e}"
+            if check.returncode != 0:
+                self.init_error = "Команда 'goose' не найдена. Установите Goose."
                 return False
+            
+            # Запускаем goose mcp serve
+            self.process = await asyncio.create_subprocess_exec(
+                "goose", "mcp", "serve",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            logger.info("✅ Goose запущен через CLI: goose mcp serve")
             
             # Даем время на запуск
             await asyncio.sleep(3)
@@ -219,6 +151,9 @@ class GooseManager:
                 self.init_error = str(response)
                 return False
                 
+        except FileNotFoundError:
+            self.init_error = "Команда 'goose' не найдена. Убедитесь, что Goose установлен."
+            return False
         except Exception as e:
             logger.error(f"❌ Ошибка запуска Goose: {e}")
             self.init_error = str(e)
@@ -755,7 +690,10 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             status_msg += "❌ Нет данных (выполните /login)\n"
         
-        status_msg += f"\n🤖 **Goose:** {'✅ Запущен' if goose_manager.initialized else '❌ Не запущен'}\n"
+        # Проверяем Goose CLI
+        installed, version = await check_goose_installed()
+        status_msg += f"\n🤖 **Goose CLI:** {'✅ ' + version if installed else '❌ Не установлен'}\n"
+        status_msg += f"🤖 **Goose MCP:** {'✅ Запущен' if goose_manager.initialized else '❌ Не запущен'}\n"
         if goose_manager.init_error:
             status_msg += f"⚠️ Ошибка: {goose_manager.init_error[:100]}\n"
         status_msg += f"\n🕐 {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
@@ -820,37 +758,40 @@ async def goose_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== КОМАНДЫ УПРАВЛЕНИЯ GOOSE ==========
 
 async def install_goose(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Устанавливает Goose через pip"""
+    """Устанавливает Goose через npm"""
     msg = await update.message.reply_text("🔄 Устанавливаю Goose...")
     
     try:
-        # Устанавливаем goose-ai
+        # Проверяем npm
+        check_npm = await asyncio.create_subprocess_exec(
+            "npm", "--version",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        await check_npm.communicate()
+        
+        if check_npm.returncode != 0:
+            await msg.edit_text("❌ npm не найден! Установите Node.js вручную.")
+            return
+        
+        # Устанавливаем goose
         process = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "pip", "install", "--force-reinstall", "goose-ai",
+            "npm", "install", "-g", "@block/goose",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
         stdout, stderr = await process.communicate()
         
         if process.returncode == 0:
-            # Проверяем установку
-            installed, module_name = await check_goose_installed()
-            
+            # Проверяем
+            installed, version = await check_goose_installed()
             if installed:
-                version = await get_goose_version()
-                await msg.edit_text(f"✅ **Goose успешно установлен!**\n\n"
-                                   f"📦 Модуль: {module_name}\n"
-                                   f"📦 Версия: {version}\n\n"
-                                   f"Теперь выполните `/test_goose` для проверки.")
+                await msg.edit_text(f"✅ **Goose установлен!**\n\n📦 Версия: {version}\n\nТеперь выполните `/restart_goose`")
             else:
-                await msg.edit_text("⚠️ **Установка прошла, но модуль не импортируется.**\n\n"
-                                   "Попробуйте в консоли Railway:\n"
-                                   "`python -c 'import goose; print(\"OK\")'`\n"
-                                   "или\n"
-                                   "`python -c 'import goose_ai; print(\"OK\")'`")
+                await msg.edit_text("⚠️ Установка прошла, но goose не найден. Попробуйте перезапустить бота.")
         else:
             error = stderr.decode() if stderr else "Неизвестная ошибка"
-            await msg.edit_text(f"❌ **Ошибка установки Goose:**\n```\n{error[:500]}\n```")
+            await msg.edit_text(f"❌ Ошибка: {error[:500]}")
             
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
@@ -860,20 +801,15 @@ async def test_goose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔄 Тестирую Goose...")
     
     try:
-        installed, module_name = await check_goose_installed()
+        installed, version = await check_goose_installed()
         
         if installed:
-            version = await get_goose_version()
-            await msg.edit_text(f"✅ **Goose работает!**\n\n"
-                               f"📦 Модуль: {module_name}\n"
-                               f"📦 Версия: {version}\n\n"
-                               f"Теперь можете использовать `/goose <команда>`")
+            await msg.edit_text(f"✅ **Goose работает!**\n\n📦 Версия: {version}\n\nТеперь можете использовать `/goose <команда>`")
         else:
-            await msg.edit_text("❌ **Goose не найден!**\n\n"
-                               "Установите через `/install_goose`")
+            await msg.edit_text("❌ **Goose не найден!**\n\nУстановите через `/install_goose` или в Dockerfile.")
                 
     except Exception as e:
-        await msg.edit_text(f"❌ Ошибка теста: {str(e)[:200]}")
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Полная диагностика"""
@@ -883,13 +819,9 @@ async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         diag = "🔍 **ДИАГНОСТИКА БОТА**\n\n"
         diag += f"🐍 Python: {sys.version.split()[0]}\n"
         
-        # Проверяем Goose
-        installed, module_name = await check_goose_installed()
-        if installed:
-            version = await get_goose_version()
-            diag += f"📦 Goose: ✅ {module_name} (версия: {version})\n"
-        else:
-            diag += "📦 Goose: ❌ не установлен\n"
+        # Проверяем Goose CLI
+        installed, version = await check_goose_installed()
+        diag += f"📦 Goose (CLI): {'✅ ' + version if installed else '❌ не установлен'}\n"
         
         try:
             import playwright
@@ -918,7 +850,7 @@ async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(diag)
         
     except Exception as e:
-        await msg.edit_text(f"❌ Ошибка диагностики: {str(e)[:200]}")
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def restart_goose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Перезапускает Goose"""
@@ -931,8 +863,7 @@ async def restart_goose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         success = await goose_manager.initialize()
         
         if success:
-            await msg.edit_text("✅ **Goose перезапущен!**\n\n"
-                               "Теперь можете использовать `/goose <команда>`")
+            await msg.edit_text("✅ **Goose перезапущен!**\n\nТеперь можете использовать `/goose <команда>`")
         else:
             error_msg = goose_manager.init_error or "Неизвестная ошибка"
             await msg.edit_text(f"❌ **Не удалось перезапустить Goose:**\n```\n{error_msg[:200]}\n```")
