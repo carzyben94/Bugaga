@@ -42,7 +42,7 @@ def check_browser_use():
     """Проверяет, установлен ли browser-use"""
     global BROWSER_USE_AVAILABLE
     try:
-        from browser_use import Agent, Browser
+        from browser_use import Agent
         BROWSER_USE_AVAILABLE = True
         return True
     except ImportError:
@@ -814,18 +814,31 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         from browser_use import Agent
+        from browser_use.browser.browser import Browser, BrowserConfig
+        
+        # Настраиваем браузер
+        browser = Browser(
+            config=BrowserConfig(
+                headless=True,
+                disable_security=True,
+            )
+        )
         
         # Создаем агента с Agnes
         agent = Agent(
             task=task,
             llm=agnes_llm,
-            use_vision=True,
+            browser=browser,
+            use_vision=False,
         )
         
         await msg.edit_text(f"🧠 Agnes думает над задачей: {task[:100]}...")
         
         # Выполняем задачу
         result = await agent.run()
+        
+        # Закрываем браузер
+        await browser.close()
         
         response = f"✅ **Задача выполнена!**\n\n"
         response += f"📋 **Запрос:** {task}\n\n"
@@ -846,6 +859,8 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await msg.edit_text(response, parse_mode='Markdown')
         
+    except ImportError as e:
+        await msg.edit_text(f"❌ Ошибка импорта: {str(e)[:200]}")
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
         logger.error(f"Error in browse: {e}", exc_info=True)
