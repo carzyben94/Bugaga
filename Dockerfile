@@ -1,16 +1,20 @@
-FROM mcr.microsoft.com/playwright/python:v1.40.0
+# Используем легкий официальный образ Python
+FROM python:3.11-slim-bullseye
 
+# Устанавливаем системную зависимость, необходимую для browsy-ai
+RUN apt-get update && apt-get install -y \
+    libssl1.1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Устанавливаем рабочую директорию
 WORKDIR /app
 
-# Устанавливаем зависимости Python
+# Копируем и устанавливаем Python-зависимости
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Устанавливаем браузеры Playwright
-RUN playwright install chromium
+# Копируем код бота
+COPY bot.py .
 
-# Копируем код
-COPY . .
-
-# Запускаем
-CMD ["python", "app.py"]
+# Команда для запуска бота
+CMD ["python", "bot.py"]
