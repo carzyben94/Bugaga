@@ -1,4 +1,4 @@
-# test_bot.py - browser-use + Agnes с автоустановкой
+# test_bot.py - browser-use + Agnes с фиксом screenshot
 import os
 import sys
 import subprocess
@@ -17,19 +17,23 @@ if not TOKEN:
 
 # ========== ФУНКЦИИ УСТАНОВКИ ==========
 
-def install_package(package):
-    """Устанавливает пакет через pip"""
+def install_package(package, version=None):
+    """Устанавливает пакет через pip с указанной версией"""
     try:
-        print(f"⏳ Устанавливаю {package}...")
-        result = subprocess.run([
-            sys.executable, '-m', 'pip', 'install', package
-        ], capture_output=True, text=True)
+        cmd = [sys.executable, '-m', 'pip', 'install']
+        if version:
+            cmd.append(f"{package}=={version}")
+        else:
+            cmd.append(package)
+            
+        print(f"⏳ Устанавливаю {' '.join(cmd)}...")
+        result = subprocess.run(cmd, capture_output=True, text=True)
         
         if result.returncode == 0:
             print(f"✅ {package} установлен")
             return True
         else:
-            print(f"❌ Ошибка установки {package}: {result.stderr}")
+            print(f"❌ Ошибка: {result.stderr}")
             return False
     except Exception as e:
         print(f"❌ Ошибка: {e}")
@@ -57,9 +61,9 @@ def install_playwright():
 
 def check_and_install_dependencies():
     """Проверяет и устанавливает все зависимости"""
+    # Базовые пакеты
     packages = [
         'langchain-openai',
-        'browser-use',
         'playwright'
     ]
     
@@ -69,12 +73,21 @@ def check_and_install_dependencies():
             print(f"✅ {package} уже установлен")
         except ImportError:
             print(f"⚠️ {package} не найден, устанавливаю...")
-            if install_package(package):
-                print(f"✅ {package} установлен")
-            else:
-                print(f"❌ Не удалось установить {package}")
+            install_package(package)
     
-    # Устанавливаем Playwright браузер
+    # Устанавливаем browser-use с фиксом screenshot
+    try:
+        from browser_use import Agent
+        print("✅ browser-use уже установлен")
+    except ImportError:
+        print("⚠️ browser-use не найден, устанавливаю...")
+        # Сначала пробуем последнюю версию
+        if not install_package('browser-use'):
+            # Если не работает, пробуем старую
+            print("⏳ Пробую старую версию...")
+            install_package('browser-use', '0.1.0')
+    
+    # Устанавливаем playwright браузер
     try:
         import playwright
         install_playwright()
@@ -121,13 +134,22 @@ init_agnes()
 
 # ========== BROWSER-USE ==========
 BROWSER_USE_AVAILABLE = False
+BROWSER_USE_VERSION = None
 
 def check_browser_use():
-    global BROWSER_USE_AVAILABLE
+    global BROWSER_USE_AVAILABLE, BROWSER_USE_VERSION
     try:
+        import browser_use
         from browser_use import Agent
+        
+        # Проверяем версию
+        if hasattr(browser_use, '__version__'):
+            BROWSER_USE_VERSION = browser_use.__version__
+        else:
+            BROWSER_USE_VERSION = 'unknown'
+            
         BROWSER_USE_AVAILABLE = True
-        print("✅ browser-use загружен")
+        print(f"✅ browser-use загружен (версия: {BROWSER_USE_VERSION})")
         return True
     except ImportError:
         BROWSER_USE_AVAILABLE = False
@@ -139,10 +161,11 @@ check_browser_use()
 # ========== КОМАНДЫ ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    version_info = f"v{BROWSER_USE_VERSION}" if BROWSER_USE_VERSION else "❌"
     await update.message.reply_text(
         f"🤖 Бот запущен\n"
         f"Agnes: {'✅' if AGNES_AVAILABLE else '❌'}\n"
-        f"browser-use: {'✅' if BROWSER_USE_AVAILABLE else '❌'}\n\n"
+        f"browser-use: {'✅' if BROWSER_USE_AVAILABLE else '❌'} {version_info}\n\n"
         f"/browse <задача> — выполнить в браузере\n"
         f"/agnes — статус Agnes\n"
         f"/install — установить зависимости"
@@ -164,16 +187,26 @@ async def install(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Устанавливаю зависимости...")
     
     try:
-        check_and_install_dependencies()
-        # Перепроверяем browser-use
+        # Переустанавливаем browser-use с фиксом
+        await msg.edit_text("⏳ Переустанавливаю browser-use...")
+        
+        # Удаляем старую версию
+        subprocess.run([
+            sys.executable, '-m', 'pip', 'uninstall', 'browser-use', '-y'
+        ], capture_output=True)
+        
+        # Устанавливаем стабильную версию
+        install_package('browser-use', '0.1.0')
+        
+        # Перепроверяем
         check_browser_use()
-        # Перепроверяем Agnes
         init_agnes()
         
         status = (
             f"✅ Установка завершена!\n\n"
             f"Agnes: {'✅' if AGNES_AVAILABLE else '❌'}\n"
-            f"browser-use: {'✅' if BROWSER_USE_AVAILABLE else '❌'}"
+            f"browser-use: {'✅' if BROWSER_USE_AVAILABLE else '❌'} v{BROWSER_USE_VERSION if BROWSER_USE_VERSION else 'unknown'}\n\n"
+            f"Попробуй: /browse открой google.com"
         )
         await msg.edit_text(status)
         
@@ -202,15 +235,27 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         from browser_use import Agent
         
+        # Используем Agent с правильными параметрами
         agent = Agent(
             task=task,
             llm=agnes_llm,
+            use_vision=False,  # Отключаем vision чтобы избежать ошибки screenshot
         )
         
         await msg.edit_text(f"🧠 Agnes работает...")
         result = await agent.run()
         
-        response = f"✅ **Результат:**\n\n{result[:1500] if result else 'Готово'}"
+        # Извлекаем текст из результата
+        if hasattr(result, 'content'):
+            result_text = result.content[:1500]
+        elif hasattr(result, 'text'):
+            result_text = result.text[:1500]
+        elif isinstance(result, str):
+            result_text = result[:1500]
+        else:
+            result_text = str(result)[:1500]
+        
+        response = f"✅ **Результат:**\n\n{result_text if result_text else 'Готово'}"
         await msg.edit_text(response)
         
     except Exception as e:
@@ -219,8 +264,8 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(
                 "❌ Ошибка screenshot в browser-use\n\n"
                 "Попробуй:\n"
-                "1. /install — обновить зависимости\n"
-                "2. Или понизь версию: pip install browser-use==0.1.0"
+                "1. /install — переустановить зависимости\n"
+                "2. Или используй: pip install browser-use==0.1.0"
             )
         else:
             await msg.edit_text(f"❌ Ошибка: {error_msg[:200]}")
@@ -238,7 +283,7 @@ def main():
     
     print("✅ Бот запущен!")
     print(f"🤖 Agnes: {'✅' if AGNES_AVAILABLE else '❌'}")
-    print(f"🧠 browser-use: {'✅' if BROWSER_USE_AVAILABLE else '❌'}")
+    print(f"🧠 browser-use: {'✅' if BROWSER_USE_AVAILABLE else '❌'} v{BROWSER_USE_VERSION if BROWSER_USE_VERSION else 'unknown'}")
     print("Команды: /start, /agnes, /install, /browse")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
