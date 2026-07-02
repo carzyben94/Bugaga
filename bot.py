@@ -785,7 +785,8 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text(
             "ℹ️ Использование: /browse <задача>\n"
-            "Пример: /browse Найди последние новости про ИИ"
+            "Пример: /browse Найди последние новости про ИИ\n"
+            "Пример: /browse Перейди на x.com"
         )
         return
     
@@ -814,21 +815,11 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         from browser_use import Agent
-        from browser_use.browser.browser import Browser, BrowserConfig
         
-        # Настраиваем браузер
-        browser = Browser(
-            config=BrowserConfig(
-                headless=True,
-                disable_security=True,
-            )
-        )
-        
-        # Создаем агента с Agnes
+        # Создаем агента с Agnes (без явного Browser)
         agent = Agent(
             task=task,
             llm=agnes_llm,
-            browser=browser,
             use_vision=False,
         )
         
@@ -836,9 +827,6 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Выполняем задачу
         result = await agent.run()
-        
-        # Закрываем браузер
-        await browser.close()
         
         response = f"✅ **Задача выполнена!**\n\n"
         response += f"📋 **Запрос:** {task}\n\n"
