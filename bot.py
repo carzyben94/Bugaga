@@ -1,302 +1,415 @@
+# bot.py - Бот с Phantomwright и автоматической установкой браузера
 import os
+import sys
+import subprocess
 import logging
 import asyncio
-import subprocess
-import sys
-import platform
+import importlib
+import shutil
+from datetime import datetime
+from typing import Optional
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# Настройка логирования
+# ========== НАСТРОЙКА ==========
 logging.basicConfig(
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
 
-TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN не установлен!")
+    raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
 
-# Глобальные переменные
-pw = None
-browser_installed = False
+# Путь для Playwright браузеров
+PLAYWRIGHT_DIR = "/root/.cache/ms-playwright"
+os.environ['PLAYWRIGHT_BROWSERS_PATH'] = PLAYWRIGHT_DIR
 
-# Функция установки Chromium
-async def install_browser():
-    global browser_installed
+# ========== ПРОВЕРКА И УСТАНОВКА PHANTOMWRIGHT ==========
+def install_phantomwright():
+    """Устанавливает phantomwright-driver"""
+    try:
+        logger.info("📦 Устанавливаю phantomwright-driver...")
+        subprocess.check_call([
+            sys.executable, '-m', 'pip', 'install', 
+            'phantomwright-driver==1.58.3', '--no-cache-dir'
+        ])
+        logger.info("✅ phantomwright-driver установлен")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Ошибка установки phantomwright: {e}")
+        return False
+
+# Проверяем наличие phantomwright
+PHANTOMWRIGHT_AVAILABLE = False
+try:
+    import importlib.util
+    if importlib.util.find_spec("phantomwright"):
+        from phantomwright import Phantomwright
+        from phantomwright.driver import Driver
+        PHANTOMWRIGHT_AVAILABLE = True
+        logger.info("✅ Phantomwright найден")
+    else:
+        logger.warning("⚠️ Phantomwright не найден, устанавливаю...")
+        if install_phantomwright():
+            from phantomwright import Phantomwright
+            from phantomwright.driver import Driver
+            PHANTOMWRIGHT_AVAILABLE = True
+            logger.info("✅ Phantomwright установлен и загружен")
+except Exception as e:
+    logger.error(f"❌ Ошибка импорта Phantomwright: {e}")
+    PHANTOMWRIGHT_AVAILABLE = False
+
+# ========== УСТАНОВКА БРАУЗЕРА ==========
+def get_chromium_path() -> Optional[str]:
+    """Находит путь к Chromium"""
+    base_dir = PLAYWRIGHT_DIR
+    if not os.path.exists(base_dir):
+        return None
     
-    logger.info("🔄 Начинаем установку браузера...")
+    for item in os.listdir(base_dir):
+        if item.startswith("chromium-") and "headless" not in item:
+            chrome_path = os.path.join(base_dir, item, "chrome-linux", "chrome")
+            if os.path.exists(chrome_path):
+                return chrome_path
+    return None
+
+def install_browser():
+    """Устанавливает браузер через playwright"""
+    if get_chromium_path():
+        logger.info("✅ Браузер уже установлен")
+        return True
+    
+    logger.info("⏳ Устанавливаю браузер...")
     
     try:
-        # Определяем ОС
-        system = platform.system()
-        logger.info(f"📊 ОС: {system}")
+        # Устанавливаем playwright если нет
+        try:
+            import playwright
+        except ImportError:
+            logger.info("📦 Устанавливаю playwright...")
+            subprocess.check_call([
+                sys.executable, '-m', 'pip', 'install', 'playwright'
+            ])
         
-        if system == "Linux":
-            # Для Linux (Railway использует Linux)
-            commands = [
-                ["apt-get", "update"],
-                ["apt-get", "install", "-y", "chromium", "chromium-driver"],
-                ["apt-get", "install", "-y", "fonts-liberation", "libasound2", "libatk-bridge2.0-0"],
-                ["apt-get", "install", "-y", "libatk1.0-0", "libcups2", "libdbus-1-3"],
-                ["apt-get", "install", "-y", "libdrm2", "libgbm1", "libgtk-3-0"],
-                ["apt-get", "install", "-y", "libnspr4", "libnss3", "libx11-xcb1"],
-                ["apt-get", "install", "-y", "libxcomposite1", "libxdamage1", "libxrandr2"],
-                ["apt-get", "install", "-y", "xdg-utils", "wget", "curl"]
-            ]
-            
-            for cmd in commands:
-                logger.info(f"📦 Выполняем: {' '.join(cmd)}")
-                process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                stdout, stderr = await process.communicate()
-                if process.returncode != 0:
-                    logger.warning(f"⚠️ Ошибка в команде: {stderr.decode()}")
-                else:
-                    logger.info(f"✅ Команда выполнена: {stdout.decode()[:200]}")
-            
-            # Проверяем установку
-            process = await asyncio.create_subprocess_exec(
-                "chromium", "--version",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, stderr = await process.communicate()
-            
-            if process.returncode == 0:
-                logger.info(f"✅ Chromium установлен: {stdout.decode().strip()}")
-                browser_installed = True
-                os.environ['CHROME_PATH'] = '/usr/bin/chromium'
-                return True
-            else:
-                logger.error(f"❌ Ошибка проверки Chromium: {stderr.decode()}")
-                return False
-                
-        elif system == "Windows":
-            # Для Windows - используем webdriver_manager
-            logger.info("🪟 Windows: установка через webdriver_manager")
-            try:
-                import webdriver_manager
-                browser_installed = True
-                return True
-            except ImportError:
-                await asyncio.create_subprocess_exec(
-                    sys.executable, "-m", "pip", "install", "webdriver-manager"
-                )
-                browser_installed = True
-                return True
-                
-        else:
-            logger.error(f"❌ Неподдерживаемая ОС: {system}")
-            return False
-            
+        # Устанавливаем браузер
+        subprocess.check_call([
+            sys.executable, '-m', 'playwright', 'install', 'chromium'
+        ])
+        subprocess.check_call([
+            sys.executable, '-m', 'playwright', 'install-deps'
+        ])
+        
+        logger.info("✅ Браузер установлен через Playwright")
+        return True
     except Exception as e:
         logger.error(f"❌ Ошибка установки браузера: {e}")
         return False
 
-# Функция инициализации Phantomwright
-async def init_phantomwright():
-    global pw, browser_installed
+# Устанавливаем браузер при запуске
+if not get_chromium_path():
+    logger.info("🔄 Браузер не найден, устанавливаю...")
+    install_browser()
+
+# ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
+pw_instance = None
+browser_data = None
+login_status = {
+    'is_logged_in': False,
+    'username': None,
+    'last_check': None
+}
+
+# ========== УПРАВЛЕНИЕ БРАУЗЕРОМ ==========
+async def get_browser():
+    """Получает экземпляр браузера"""
+    global pw_instance, browser_data
     
-    try:
-        # Проверяем установку браузера
-        if not browser_installed:
-            logger.info("🔄 Браузер не установлен, начинаем установку...")
-            if not await install_browser():
-                logger.error("❌ Не удалось установить браузер")
-                return False
-        
-        # Импортируем Phantomwright
+    # Проверяем существующий браузер
+    if browser_data:
         try:
-            from phantomwright import Phantomwright
-            from phantomwright.driver import Driver
-            
-            # Создаем экземпляр
-            pw = Phantomwright()
-            logger.info("✅ Phantomwright инициализирован успешно")
-            return True
-            
-        except ImportError as e:
-            logger.error(f"❌ Ошибка импорта Phantomwright: {e}")
-            # Пытаемся установить Phantomwright
-            await asyncio.create_subprocess_exec(
-                sys.executable, "-m", "pip", "install", "phantomwright-driver==1.58.3"
-            )
-            # Повторяем импорт
-            from phantomwright import Phantomwright
-            from phantomwright.driver import Driver
-            pw = Phantomwright()
-            return True
-            
-    except Exception as e:
-        logger.error(f"❌ Ошибка инициализации Phantomwright: {e}")
-        return False
-
-# Команда /start
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🚀 Бот запускается...\n"
-        "Проверяю установку браузера..."
-    )
+            # Проверяем, жив ли браузер
+            await browser_data['page'].evaluate('1')
+            return browser_data
+        except:
+            try:
+                await browser_data['browser'].close()
+            except:
+                pass
+            browser_data = None
+            pw_instance = None
     
-    # Инициализируем в фоне
-    if not pw:
-        success = await init_phantomwright()
-        if success:
-            await update.message.reply_text(
-                "✅ Браузер установлен!\n"
-                "📸 Теперь отправьте URL для скриншота\n"
-                "Пример: https://google.com"
-            )
-        else:
-            await update.message.reply_text(
-                "❌ Не удалось установить браузер\n"
-                "Проверьте логи Railway"
-            )
-
-# Команда /install - принудительная установка
-async def install_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global browser_installed
-    
-    msg = await update.message.reply_text("🔄 Начинаю установку браузера...")
-    
-    browser_installed = False
-    success = await install_browser()
-    
-    if success:
-        await msg.edit_text("✅ Браузер успешно установлен!\n🔄 Инициализирую Phantomwright...")
-        
-        if await init_phantomwright():
-            await msg.edit_text(
-                "✅ Готово!\n"
-                "📸 Отправьте URL для скриншота"
-            )
-        else:
-            await msg.edit_text("❌ Ошибка инициализации Phantomwright")
-    else:
-        await msg.edit_text("❌ Ошибка установки браузера")
-
-# Команда /status
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global pw, browser_installed
-    
-    status_text = "🤖 Статус бота:\n"
-    status_text += f"✅ Бот работает\n"
-    status_text += f"📦 Браузер: {'✅ Установлен' if browser_installed else '❌ Не установлен'}\n"
-    status_text += f"🔧 Phantomwright: {'✅ Готов' if pw else '❌ Не инициализирован'}\n"
-    
-    await update.message.reply_text(status_text)
-
-# Функция скриншота
-async def take_screenshot(update: Update, url: str):
-    global pw
-    
-    if not url.startswith(('http://', 'https://')):
-        url = 'https://' + url
-    
-    # Проверяем инициализацию
-    if not pw:
-        msg = await update.message.reply_text("🔄 Инициализация Phantomwright...")
-        if not await init_phantomwright():
-            await msg.edit_text("❌ Ошибка инициализации. Попробуйте /install")
-            return
-        await msg.delete()
-    
+    # Создаем новый браузер
     try:
-        msg = await update.message.reply_text("📸 Делаю скриншот...")
+        if not PHANTOMWRIGHT_AVAILABLE:
+            raise Exception("Phantomwright не доступен")
         
+        from phantomwright import Phantomwright
         from phantomwright.driver import Driver
         
-        async with pw.start(
+        pw_instance = Phantomwright()
+        
+        # Запускаем браузер
+        app = await pw_instance.start(
             headless=True,
             args=[
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage',
                 '--disable-gpu',
-                '--window-size=1920,1080'
+                '--window-size=1280,720',
+                '--disable-blink-features=AutomationControlled'
             ]
-        ) as app:
-            
-            driver = Driver(app)
-            page = await driver.new_page()
-            
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(2)
-            
-            screenshot = await page.screenshot(full_page=True)
-            
-            await update.message.reply_photo(
-                photo=screenshot,
-                caption=f"✅ {url[:50]}..."
-            )
-            
-            await msg.delete()
-            logger.info(f"✅ Скриншот сделан для {url}")
-            
+        )
+        
+        driver = Driver(app)
+        page = await driver.new_page()
+        
+        # Устанавливаем юзер-агент
+        await page.set_user_agent(
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        )
+        
+        # Анти-детект
+        await page.evaluate('''
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            window.chrome = { runtime: {} };
+        ''')
+        
+        browser_data = {
+            'app': app,
+            'driver': driver,
+            'page': page,
+            'started_at': datetime.now()
+        }
+        
+        logger.info("✅ Браузер запущен через Phantomwright")
+        return browser_data
+        
     except Exception as e:
-        logger.error(f"❌ Ошибка скриншота: {e}")
-        await update.message.reply_text(
-            f"❌ Ошибка: {str(e)[:150]}\n"
-            "Попробуйте /install для переустановки"
-        )
+        logger.error(f"❌ Ошибка запуска браузера: {e}")
+        browser_data = None
+        pw_instance = None
+        
+        # Пробуем через Playwright как запасной вариант
+        try:
+            logger.info("🔄 Пробую запустить через Playwright...")
+            from playwright.async_api import async_playwright
+            
+            p = await async_playwright().start()
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-gpu'
+                ]
+            )
+            page = await browser.new_page()
+            
+            browser_data = {
+                'playwright': p,
+                'browser': browser,
+                'page': page,
+                'started_at': datetime.now(),
+                'using': 'playwright'
+            }
+            
+            logger.info("✅ Браузер запущен через Playwright")
+            return browser_data
+            
+        except Exception as e2:
+            logger.error(f"❌ Ошибка запуска через Playwright: {e2}")
+            raise Exception(f"Не удалось запустить браузер: {e2}")
 
-# Обработка сообщений
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
+async def close_browser():
+    """Закрывает браузер"""
+    global browser_data, pw_instance
     
-    if '.' in text and ' ' not in text:
-        await take_screenshot(update, text)
-    else:
-        await update.message.reply_text(
-            "📸 Отправьте URL для скриншота\n"
-            "Пример: google.com или https://example.com\n\n"
-            "Или используйте команды:\n"
-            "/start - Приветствие\n"
-            "/install - Установить браузер\n"
-            "/status - Статус"
-        )
+    if browser_data:
+        try:
+            if browser_data.get('using') == 'playwright':
+                await browser_data['browser'].close()
+                await browser_data['playwright'].stop()
+            else:
+                await browser_data['app'].stop()
+        except:
+            pass
+        browser_data = None
+        pw_instance = None
+        logger.info("✅ Браузер закрыт")
 
-# Обработка ошибок
+# ========== КОМАНДЫ ==========
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🚀 **Бот с Phantomwright**\n\n"
+        "📸 Команды:\n"
+        "/start - Это меню\n"
+        "/status - Статус бота\n"
+        "/screenshot <url> - Скриншот страницы\n"
+        "/browser - Информация о браузере\n"
+        "/close - Закрыть браузер\n\n"
+        "💡 Пример: /screenshot google.com"
+    )
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает статус"""
+    status_msg = "📊 **СТАТУС БОТА**\n\n"
+    
+    # Phantomwright
+    status_msg += f"📦 Phantomwright: {'✅' if PHANTOMWRIGHT_AVAILABLE else '❌'}\n"
+    
+    # Браузер
+    if browser_data:
+        status_msg += f"🌐 Браузер: ✅ Запущен\n"
+        uptime = (datetime.now() - browser_data['started_at']).total_seconds()
+        hours = int(uptime // 3600)
+        minutes = int((uptime % 3600) // 60)
+        status_msg += f"⏱️ Аптайм: {hours}ч {minutes}м\n"
+        using = browser_data.get('using', 'phantomwright')
+        status_msg += f"🔧 Драйвер: {using}\n"
+    else:
+        status_msg += f"🌐 Браузер: ❌ Не запущен\n"
+    
+    # Путь к Chromium
+    chromium_path = get_chromium_path()
+    if chromium_path:
+        status_msg += f"📁 Chromium: ✅ {chromium_path}\n"
+    else:
+        status_msg += f"📁 Chromium: ❌ Не найден\n"
+    
+    await update.message.reply_text(status_msg, parse_mode='Markdown')
+
+async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Делает скриншот URL"""
+    if not context.args:
+        await update.message.reply_text(
+            "ℹ️ Использование: /screenshot <url>\n"
+            "Пример: /screenshot google.com"
+        )
+        return
+    
+    url = context.args[0]
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+    
+    msg = await update.message.reply_text(f"📸 Делаю скриншот {url}...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        # Переходим по URL
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        await asyncio.sleep(2)
+        
+        # Делаем скриншот
+        screenshot = await page.screenshot(full_page=True)
+        
+        # Отправляем
+        await msg.delete()
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption=f"✅ Скриншот: {url[:50]}..."
+        )
+        
+        logger.info(f"✅ Скриншот сделан для {url}")
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def browser_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Информация о браузере"""
+    msg = await update.message.reply_text("🔍 Проверяю браузер...")
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        # Получаем информацию
+        info = await page.evaluate('''
+            () => {
+                return {
+                    url: window.location.href,
+                    title: document.title,
+                    userAgent: navigator.userAgent,
+                    screenWidth: window.screen.width,
+                    screenHeight: window.screen.height,
+                    language: navigator.language,
+                    platform: navigator.platform
+                }
+            }
+        ''')
+        
+        response = "🌐 **Информация о браузере**\n\n"
+        response += f"📍 URL: {info.get('url', 'Нет')}\n"
+        response += f"📌 Title: {info.get('title', 'Нет')[:50]}\n"
+        response += f"📱 User-Agent: {info.get('userAgent', 'Нет')[:80]}...\n"
+        response += f"🖥️ Размер: {info.get('screenWidth')}x{info.get('screenHeight')}\n"
+        response += f"🌍 Язык: {info.get('language', 'Нет')}\n"
+        response += f"💻 Платформа: {info.get('platform', 'Нет')}\n"
+        
+        await msg.edit_text(response, parse_mode='Markdown')
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Закрывает браузер"""
+    msg = await update.message.reply_text("⏳ Закрываю браузер...")
+    await close_browser()
+    await msg.edit_text("✅ Браузер закрыт!")
+
+async def install_browser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Принудительная установка браузера"""
+    msg = await update.message.reply_text("🔄 Устанавливаю браузер...")
+    
+    # Закрываем старый браузер
+    await close_browser()
+    
+    # Устанавливаем
+    if install_browser():
+        await msg.edit_text("✅ Браузер установлен успешно!")
+    else:
+        await msg.edit_text("❌ Ошибка установки браузера!")
+
+# ========== ОБРАБОТЧИК ОШИБОК ==========
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"❌ Ошибка: {context.error}")
     if update and update.effective_message:
         try:
             await update.effective_message.reply_text(
-                "❌ Ошибка. Попробуйте /install"
+                "❌ Произошла ошибка. Попробуйте /status для проверки."
             )
         except:
             pass
 
+# ========== ЗАПУСК ==========
 def main():
-    if not TOKEN:
-        logger.error("❌ TELEGRAM_BOT_TOKEN не установлен!")
-        return
+    app = Application.builder().token(TOKEN).build()
     
-    try:
-        app = Application.builder().token(TOKEN).build()
-
-        # Регистрируем команды
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("install", install_command))
-        app.add_handler(CommandHandler("status", status_command))
-        
-        # Обработчик текста
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        app.add_error_handler(error_handler)
-
-        logger.info("🚀 Бот запущен!")
-        logger.info("💡 Используйте /install для установки браузера")
-        
-        app.run_polling(allowed_updates=Update.ALL_TYPES)
-        
-    except Exception as e:
-        logger.error(f"❌ Критическая ошибка: {e}")
-        raise
+    # Команды
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("screenshot", screenshot))
+    app.add_handler(CommandHandler("browser", browser_info))
+    app.add_handler(CommandHandler("close", close))
+    app.add_handler(CommandHandler("install_browser", install_browser_cmd))
+    
+    # Обработчик ошибок
+    app.add_error_handler(error_handler)
+    
+    logger.info("🚀 Бот запущен!")
+    logger.info(f"📦 Phantomwright: {'✅' if PHANTOMWRIGHT_AVAILABLE else '❌'}")
+    logger.info(f"🌐 Браузер: {'✅' if get_chromium_path() else '❌'}")
+    logger.info("Команды: /start, /status, /screenshot, /browser, /close, /install_browser")
+    
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
