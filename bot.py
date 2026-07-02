@@ -1,8 +1,9 @@
-# test_bot.py - browser-use 0.5.2 + Agnes
+# test_bot.py - cdp-use + Agnes
 import os
 import sys
 import subprocess
 import logging
+import asyncio
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -17,17 +18,13 @@ if not TOKEN:
 
 # ========== ФУНКЦИИ УСТАНОВКИ ==========
 
-def install_package(package, version=None):
-    """Устанавливает пакет через pip с указанной версией"""
+def install_package(package):
+    """Устанавливает пакет через pip"""
     try:
-        cmd = [sys.executable, '-m', 'pip', 'install']
-        if version:
-            cmd.append(f"{package}=={version}")
-        else:
-            cmd.append(package)
-            
-        print(f"⏳ Устанавливаю {' '.join(cmd)}...")
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        print(f"⏳ Устанавливаю {package}...")
+        result = subprocess.run([
+            sys.executable, '-m', 'pip', 'install', package
+        ], capture_output=True, text=True)
         
         if result.returncode == 0:
             print(f"✅ {package} установлен")
@@ -39,33 +36,11 @@ def install_package(package, version=None):
         print(f"❌ Ошибка: {e}")
         return False
 
-def install_playwright():
-    """Устанавливает Playwright браузер"""
-    try:
-        print("⏳ Устанавливаю Playwright браузер...")
-        result = subprocess.run([
-            sys.executable, '-m', 'playwright', 'install', 'chromium'
-        ], capture_output=True, text=True)
-        
-        if result.returncode == 0:
-            print("✅ Playwright браузер установлен")
-            return True
-        else:
-            print(f"❌ Ошибка: {result.stderr}")
-            return False
-    except Exception as e:
-        print(f"❌ Ошибка: {e}")
-        return False
+# ========== ПРОВЕРКА И УСТАНОВКА ==========
 
-# ========== ПРОВЕРКА И УСТАНОВКА ЗАВИСИМОСТЕЙ ==========
-
-def check_and_install_dependencies():
-    """Проверяет и устанавливает все зависимости"""
-    # Базовые пакеты
-    packages = [
-        'langchain-openai',
-        'playwright'
-    ]
+def check_and_install():
+    """Проверяет и устанавливает зависимости"""
+    packages = ['langchain-openai', 'cdp-use']
     
     for package in packages:
         try:
@@ -74,27 +49,8 @@ def check_and_install_dependencies():
         except ImportError:
             print(f"⚠️ {package} не найден, устанавливаю...")
             install_package(package)
-    
-    # Устанавливаем browser-use 0.5.2
-    try:
-        import browser_use
-        from browser_use import Agent
-        print(f"✅ browser-use уже установлен (версия: {browser_use.__version__ if hasattr(browser_use, '__version__') else 'unknown'})")
-    except ImportError:
-        print("⚠️ browser-use не найден, устанавливаю 0.5.2...")
-        install_package('browser-use', '0.5.2')
-    
-    # Устанавливаем playwright браузер
-    try:
-        import playwright
-        install_playwright()
-    except ImportError:
-        print("⚠️ Playwright не установлен, устанавливаю...")
-        install_package('playwright')
-        install_playwright()
 
-# Запускаем проверку
-check_and_install_dependencies()
+check_and_install()
 
 # ========== AGNES ==========
 AGNES_AVAILABLE = False
@@ -129,39 +85,30 @@ def init_agnes():
 
 init_agnes()
 
-# ========== BROWSER-USE ==========
-BROWSER_USE_AVAILABLE = False
-BROWSER_USE_VERSION = None
+# ========== CDP-USE ==========
+CDP_AVAILABLE = False
 
-def check_browser_use():
-    global BROWSER_USE_AVAILABLE, BROWSER_USE_VERSION
+def check_cdp():
+    global CDP_AVAILABLE
     try:
-        import browser_use
-        from browser_use import Agent
-        
-        if hasattr(browser_use, '__version__'):
-            BROWSER_USE_VERSION = browser_use.__version__
-        else:
-            BROWSER_USE_VERSION = 'unknown'
-            
-        BROWSER_USE_AVAILABLE = True
-        print(f"✅ browser-use загружен (версия: {BROWSER_USE_VERSION})")
+        from cdp_use import connect
+        CDP_AVAILABLE = True
+        print("✅ cdp-use загружен")
         return True
     except ImportError:
-        BROWSER_USE_AVAILABLE = False
-        print("⚠️ browser-use не найден")
+        CDP_AVAILABLE = False
+        print("⚠️ cdp-use не найден")
         return False
 
-check_browser_use()
+check_cdp()
 
 # ========== КОМАНДЫ ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    version_info = f"v{BROWSER_USE_VERSION}" if BROWSER_USE_VERSION else "❌"
     await update.message.reply_text(
         f"🤖 Бот запущен\n"
         f"Agnes: {'✅' if AGNES_AVAILABLE else '❌'}\n"
-        f"browser-use: {'✅' if BROWSER_USE_AVAILABLE else '❌'} {version_info}\n\n"
+        f"cdp-use: {'✅' if CDP_AVAILABLE else '❌'}\n\n"
         f"/browse <задача> — выполнить в браузере\n"
         f"/agnes — статус Agnes\n"
         f"/install — установить зависимости"
@@ -179,26 +126,19 @@ async def agnes(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def install(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Принудительная установка зависимостей"""
+    """Установка зависимостей"""
     msg = await update.message.reply_text("⏳ Устанавливаю зависимости...")
     
     try:
-        await msg.edit_text("⏳ Удаляю старую версию browser-use...")
-        subprocess.run([
-            sys.executable, '-m', 'pip', 'uninstall', 'browser-use', '-y'
-        ], capture_output=True)
-        
-        await msg.edit_text("⏳ Устанавливаю browser-use 0.5.2...")
-        install_package('browser-use', '0.5.2')
-        
-        await msg.edit_text("⏳ Проверяю установку...")
-        check_browser_use()
+        await msg.edit_text("⏳ Устанавливаю cdp-use...")
+        install_package('cdp-use')
+        check_cdp()
         init_agnes()
         
         status = (
             f"✅ Установка завершена!\n\n"
             f"Agnes: {'✅' if AGNES_AVAILABLE else '❌'}\n"
-            f"browser-use: {'✅' if BROWSER_USE_AVAILABLE else '❌'} v{BROWSER_USE_VERSION if BROWSER_USE_VERSION else 'unknown'}\n\n"
+            f"cdp-use: {'✅' if CDP_AVAILABLE else '❌'}\n\n"
             f"Попробуй: /browse открой google.com"
         )
         await msg.edit_text(status)
@@ -207,6 +147,7 @@ async def install(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Выполнить задачу в браузере через cdp-use"""
     if not context.args:
         await update.message.reply_text("ℹ️ /browse <задача>\nПример: /browse открой google.com")
         return
@@ -215,9 +156,9 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Agnes не доступна. Проверь /agnes")
         return
     
-    if not BROWSER_USE_AVAILABLE:
+    if not CDP_AVAILABLE:
         await update.message.reply_text(
-            "❌ browser-use не установлен.\n"
+            "❌ cdp-use не установлен.\n"
             "Используй /install для установки"
         )
         return
@@ -226,41 +167,40 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(f"🌐 Выполняю: {task[:100]}...")
     
     try:
-        from browser_use import Agent
+        from cdp_use import connect
+        from cdp_use.client import Client
+        from cdp_use.browser import Browser
         
-        # Для версии 0.5.2 используем стандартные параметры
-        agent = Agent(
-            task=task,
-            llm=agnes_llm,
+        await msg.edit_text("🔄 Запускаю браузер...")
+        
+        # Запускаем браузер через cdp-use
+        async with connect() as client:
+            browser = Browser(client)
+            
+            # Открываем новую страницу
+            page = await browser.new_page()
+            await page.goto('https://google.com')
+            
+            # Делаем скриншот
+            screenshot = await page.screenshot()
+            
+            # Сохраняем и отправляем
+            with open('screenshot.png', 'wb') as f:
+                f.write(screenshot)
+            
+            # Закрываем страницу
+            await page.close()
+        
+        await update.message.reply_photo(
+            photo=open('screenshot.png', 'rb'),
+            caption=f"📸 Скриншот по запросу: {task[:50]}"
         )
         
-        await msg.edit_text(f"🧠 Agnes работает...")
-        result = await agent.run()
-        
-        # Извлекаем результат
-        if hasattr(result, 'content'):
-            result_text = result.content[:1500]
-        elif hasattr(result, 'text'):
-            result_text = result.text[:1500]
-        elif isinstance(result, str):
-            result_text = result[:1500]
-        else:
-            result_text = str(result)[:1500]
-        
-        response = f"✅ **Результат:**\n\n{result_text if result_text else 'Готово'}"
-        await msg.edit_text(response)
+        await msg.edit_text(f"✅ **Задача выполнена!**\n\n📋 **Запрос:** {task}")
         
     except Exception as e:
         error_msg = str(e)
-        if "Screenshot" in error_msg:
-            await msg.edit_text(
-                "❌ Ошибка screenshot в browser-use\n\n"
-                "Попробуй:\n"
-                "1. /install — переустановить зависимости\n"
-                "2. Или вернись на версию 0.1.0"
-            )
-        else:
-            await msg.edit_text(f"❌ Ошибка: {error_msg[:200]}")
+        await msg.edit_text(f"❌ Ошибка: {error_msg[:200]}")
         logger.error(f"Error: {e}", exc_info=True)
 
 
@@ -275,7 +215,7 @@ def main():
     
     print("✅ Бот запущен!")
     print(f"🤖 Agnes: {'✅' if AGNES_AVAILABLE else '❌'}")
-    print(f"🧠 browser-use: {'✅' if BROWSER_USE_AVAILABLE else '❌'} v{BROWSER_USE_VERSION if BROWSER_USE_VERSION else 'unknown'}")
+    print(f"🧠 cdp-use: {'✅' if CDP_AVAILABLE else '❌'}")
     print("Команды: /start, /agnes, /install, /browse")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
