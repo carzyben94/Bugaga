@@ -4,8 +4,7 @@ import logging
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from cdp_use import CDP
-import requests
+from cdp_use import launch  # Правильный импорт
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -21,21 +20,21 @@ TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 
 # Глобальный экземпляр браузера
 browser = None
-cdp = None
+page = None
 
 async def init_browser():
     """Инициализация браузера через cdp-use"""
-    global browser, cdp
+    global browser, page
     
     try:
         # Запускаем браузер
-        browser = await CDP.launch(
+        browser = await launch(
             headless=True,
-            args=['--no-sandbox', '--disable-dev-shm-usage']  # Важно для Railway
+            args=['--no-sandbox', '--disable-dev-shm-usage']
         )
         
         # Создаём новую вкладку
-        cdp = await browser.new_page()
+        page = await browser.new_page()
         
         logger.info("✅ Браузер успешно запущен")
         return True
@@ -55,7 +54,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /status - проверка статуса"""
-    if cdp and browser:
+    if page and browser:
         await update.message.reply_text("✅ Браузер работает")
     else:
         await update.message.reply_text("❌ Браузер не инициализирован")
@@ -75,10 +74,10 @@ async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         # Переходим по URL
-        await cdp.goto(url, wait_until='networkidle')
+        await page.goto(url, wait_until='networkidle')
         
         # Делаем скриншот
-        screenshot_data = await cdp.screenshot(full_page=True)
+        screenshot_data = await page.screenshot(full_page=True)
         
         # Отправляем фото
         await update.message.reply_photo(
@@ -103,10 +102,10 @@ async def html(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🌐 Загружаю {url}...")
     
     try:
-        await cdp.goto(url, wait_until='networkidle')
+        await page.goto(url, wait_until='networkidle')
         
         # Получаем HTML
-        html_content = await cdp.content()
+        html_content = await page.content()
         
         # Обрезаем если слишком длинный
         if len(html_content) > 4000:
