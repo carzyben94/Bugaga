@@ -1,4 +1,3 @@
-cdp-use
-pyppeteer
-requests
-websockets
+
+python-telegram-bot==20.7
+browsy-ai[all]==0.1.0
