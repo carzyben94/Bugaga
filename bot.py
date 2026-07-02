@@ -1,4 +1,4 @@
-# test_bot.py - cdp-use + Agnes
+# test_bot.py - cdp-use с прямой установкой
 import os
 import sys
 import subprocess
@@ -16,41 +16,54 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
 
-# ========== ФУНКЦИИ УСТАНОВКИ ==========
+# ========== УСТАНОВКА CDP-USE ПРЯМО СЕЙЧАС ==========
 
-def install_package(package):
-    """Устанавливает пакет через pip"""
+def install_cdp_use():
+    """Принудительная установка cdp-use"""
     try:
-        print(f"⏳ Устанавливаю {package}...")
+        print("⏳ Устанавливаю cdp-use...")
+        
+        # Пробуем через pip
         result = subprocess.run([
-            sys.executable, '-m', 'pip', 'install', package
+            sys.executable, '-m', 'pip', 'install', 'cdp-use', '--no-cache-dir'
         ], capture_output=True, text=True)
         
         if result.returncode == 0:
-            print(f"✅ {package} установлен")
+            print("✅ cdp-use установлен")
             return True
         else:
             print(f"❌ Ошибка: {result.stderr}")
-            return False
+            
+            # Пробуем через git если pip не работает
+            print("⏳ Пробую установить через git...")
+            result2 = subprocess.run([
+                sys.executable, '-m', 'pip', 'install', 
+                'git+https://github.com/brilliant-dev/cdp-use.git'
+            ], capture_output=True, text=True)
+            
+            if result2.returncode == 0:
+                print("✅ cdp-use установлен через git")
+                return True
+            else:
+                print(f"❌ Ошибка git: {result2.stderr}")
+                return False
+                
     except Exception as e:
         print(f"❌ Ошибка: {e}")
         return False
 
-# ========== ПРОВЕРКА И УСТАНОВКА ==========
-
-def check_and_install():
-    """Проверяет и устанавливает зависимости"""
-    packages = ['langchain-openai', 'cdp-use']
-    
-    for package in packages:
-        try:
-            __import__(package.replace('-', '_'))
-            print(f"✅ {package} уже установлен")
-        except ImportError:
-            print(f"⚠️ {package} не найден, устанавливаю...")
-            install_package(package)
-
-check_and_install()
+# Устанавливаем при запуске
+print("⏳ Проверка cdp-use...")
+try:
+    import cdp_use
+    print("✅ cdp-use уже установлен")
+    CDP_AVAILABLE = True
+except ImportError:
+    print("⚠️ cdp-use не найден, устанавливаю...")
+    if install_cdp_use():
+        CDP_AVAILABLE = True
+    else:
+        CDP_AVAILABLE = False
 
 # ========== AGNES ==========
 AGNES_AVAILABLE = False
@@ -85,23 +98,6 @@ def init_agnes():
 
 init_agnes()
 
-# ========== CDP-USE ==========
-CDP_AVAILABLE = False
-
-def check_cdp():
-    global CDP_AVAILABLE
-    try:
-        from cdp_use import connect
-        CDP_AVAILABLE = True
-        print("✅ cdp-use загружен")
-        return True
-    except ImportError:
-        CDP_AVAILABLE = False
-        print("⚠️ cdp-use не найден")
-        return False
-
-check_cdp()
-
 # ========== КОМАНДЫ ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -110,8 +106,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Agnes: {'✅' if AGNES_AVAILABLE else '❌'}\n"
         f"cdp-use: {'✅' if CDP_AVAILABLE else '❌'}\n\n"
         f"/browse <задача> — выполнить в браузере\n"
-        f"/agnes — статус Agnes\n"
-        f"/install — установить зависимости"
+        f"/agnes — статус Agnes"
     )
 
 async def agnes(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -125,27 +120,6 @@ async def agnes(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "3. Перезапусти бота"
         )
 
-async def install(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Установка зависимостей"""
-    msg = await update.message.reply_text("⏳ Устанавливаю зависимости...")
-    
-    try:
-        await msg.edit_text("⏳ Устанавливаю cdp-use...")
-        install_package('cdp-use')
-        check_cdp()
-        init_agnes()
-        
-        status = (
-            f"✅ Установка завершена!\n\n"
-            f"Agnes: {'✅' if AGNES_AVAILABLE else '❌'}\n"
-            f"cdp-use: {'✅' if CDP_AVAILABLE else '❌'}\n\n"
-            f"Попробуй: /browse открой google.com"
-        )
-        await msg.edit_text(status)
-        
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
 async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Выполнить задачу в браузере через cdp-use"""
     if not context.args:
@@ -158,8 +132,7 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not CDP_AVAILABLE:
         await update.message.reply_text(
-            "❌ cdp-use не установлен.\n"
-            "Используй /install для установки"
+            "❌ cdp-use не установлен. Перезапусти бота для установки."
         )
         return
     
@@ -168,7 +141,6 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         from cdp_use import connect
-        from cdp_use.client import Client
         from cdp_use.browser import Browser
         
         await msg.edit_text("🔄 Запускаю браузер...")
@@ -179,24 +151,28 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # Открываем новую страницу
             page = await browser.new_page()
+            
+            # Переходим на google.com
             await page.goto('https://google.com')
+            await asyncio.sleep(2)
             
             # Делаем скриншот
             screenshot = await page.screenshot()
             
-            # Сохраняем и отправляем
-            with open('screenshot.png', 'wb') as f:
+            # Сохраняем
+            with open('/tmp/screenshot.png', 'wb') as f:
                 f.write(screenshot)
             
             # Закрываем страницу
             await page.close()
         
+        # Отправляем скриншот
         await update.message.reply_photo(
-            photo=open('screenshot.png', 'rb'),
-            caption=f"📸 Скриншот по запросу: {task[:50]}"
+            photo=open('/tmp/screenshot.png', 'rb'),
+            caption=f"📸 Google.com"
         )
         
-        await msg.edit_text(f"✅ **Задача выполнена!**\n\n📋 **Запрос:** {task}")
+        await msg.edit_text(f"✅ **Задача выполнена!**")
         
     except Exception as e:
         error_msg = str(e)
@@ -210,13 +186,12 @@ def main():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("agnes", agnes))
-    app.add_handler(CommandHandler("install", install))
     app.add_handler(CommandHandler("browse", browse))
     
     print("✅ Бот запущен!")
     print(f"🤖 Agnes: {'✅' if AGNES_AVAILABLE else '❌'}")
     print(f"🧠 cdp-use: {'✅' if CDP_AVAILABLE else '❌'}")
-    print("Команды: /start, /agnes, /install, /browse")
+    print("Команды: /start, /agnes, /browse")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
