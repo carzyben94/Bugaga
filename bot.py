@@ -1,4 +1,4 @@
-# bot.py - X.com бот с Browser-Use
+# bot.py - X.com бот с автоматической установкой Browser-Use
 import os
 import sys
 import subprocess
@@ -35,14 +35,45 @@ except ImportError:
     print("⚠️ Phantomwright не найден, использую Playwright")
     from playwright.async_api import async_playwright
 
-# ========== ПРОВЕРКА BROWSER-USE ==========
-try:
-    from browser_use import Agent, Browser, BrowserConfig
-    BROWSER_USE_AVAILABLE = True
-    print("✅ Browser-Use загружен")
-except ImportError:
-    BROWSER_USE_AVAILABLE = False
-    print("⚠️ Browser-Use не найден")
+# ========== BROWSER-USE ==========
+BROWSER_USE_AVAILABLE = False
+
+def check_browser_use():
+    """Проверяет, установлен ли browser-use"""
+    global BROWSER_USE_AVAILABLE
+    try:
+        from browser_use import Agent, Browser
+        BROWSER_USE_AVAILABLE = True
+        return True
+    except ImportError:
+        BROWSER_USE_AVAILABLE = False
+        return False
+
+def install_browser_use():
+    """Устанавливает browser-use через pip"""
+    global BROWSER_USE_AVAILABLE
+    try:
+        if check_browser_use():
+            return True
+        
+        print("⏳ Устанавливаю browser-use...")
+        result = subprocess.run([
+            sys.executable, '-m', 'pip', 'install', 'browser-use'
+        ], capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            print("✅ browser-use установлен!")
+            check_browser_use()
+            return True
+        else:
+            print(f"❌ Ошибка установки: {result.stderr}")
+            return False
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        return False
+
+# Проверяем при запуске
+check_browser_use()
 
 # ========== КУКИ X.COM ==========
 COOKIES = [
@@ -209,7 +240,7 @@ async def close_browser():
 # ========== КОМАНДЫ ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    status_browser_use = "✅" if BROWSER_USE_AVAILABLE else "❌"
+    status_browser_use = "✅" if BROWSER_USE_AVAILABLE else "⏳ (установится при первом вызове)"
     await update.message.reply_text(
         f"🏠 ОСНОВНЫЕ\n"
         f"/start — Показать меню\n"
@@ -440,7 +471,6 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             status_msg += "🌐 Браузер: ❌ Не запущен\n"
         
-        # Убираем ссылку URL, оставляем только заголовок
         if browser_ok and browser_info.get('title'):
             status_msg += f"📌 Заголовок: {browser_info.get('title', 'Нет')}\n"
         
@@ -707,26 +737,26 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    if not BROWSER_USE_AVAILABLE:
-        await update.message.reply_text("❌ Browser-Use не установлен. Установи: pip install browser-use")
-        return
-    
     task = ' '.join(context.args)
     msg = await update.message.reply_text(f"🌐 Выполняю: {task[:100]}...")
     
+    # Проверяем, установлен ли browser-use
+    if not BROWSER_USE_AVAILABLE:
+        await msg.edit_text("⏳ Browser-Use не найден. Устанавливаю...")
+        
+        # Устанавливаем
+        if not install_browser_use():
+            await msg.edit_text("❌ Не удалось установить browser-use. Проверь интернет и права.")
+            return
+        
+        await msg.edit_text("✅ Browser-Use установлен! Выполняю задачу...")
+    
     try:
-        # Настройка браузера
-        browser = Browser(
-            config=BrowserConfig(
-                headless=False,  # Можно True для продакшена
-                disable_security=True,
-            )
-        )
+        from browser_use import Agent, Browser
         
         # Создаем агента
         agent = Agent(
             task=task,
-            browser=browser,
             use_vision=True,
         )
         
@@ -735,7 +765,6 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Выполняем задачу
         result = await agent.run()
         
-        # Формируем ответ
         response = f"✅ **Задача выполнена!**\n\n"
         response += f"📋 **Запрос:** {task}\n\n"
         
@@ -754,18 +783,6 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         else:
             await msg.edit_text(response, parse_mode='Markdown')
-        
-        # Показываем скриншот
-        try:
-            screenshot = await browser.take_screenshot()
-            await update.message.reply_photo(
-                photo=screenshot,
-                caption=f"📸 Скриншот после выполнения"
-            )
-        except:
-            pass
-        
-        await browser.close()
         
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
@@ -791,6 +808,7 @@ def main():
     app.add_handler(CommandHandler("browse", browse))
     
     print("✅ Бот запущен!")
+    print(f"🧠 Browser-Use: {'✅ Доступен' if BROWSER_USE_AVAILABLE else '❌ Не установлен'}")
     print("Команды:")
     print("  /start, /login, /screen, /status, /close")
     print("  /tweets, /search, /browse")
