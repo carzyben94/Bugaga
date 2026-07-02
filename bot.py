@@ -22,20 +22,22 @@ if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
-CHROME_PATH = None
-CDP_AVAILABLE = False
-AGNES_AVAILABLE = False
-agnes_llm = None
-cdp_client = None
-cdp_session_id = None
-chrome_process = None
-is_connected = False
+class State:
+    chrome_path = None
+    cdp_available = False
+    agnes_available = False
+    agnes_llm = None
+    cdp_client = None
+    cdp_session_id = None
+    chrome_process = None
+    is_connected = False
+
+state = State()
 
 # ========== УСТАНОВКА ЗАВИСИМОСТЕЙ ==========
 
 def install_chrome():
     """Устанавливает Chrome/Chromium через playwright"""
-    global CHROME_PATH
     try:
         print("⏳ Устанавливаю playwright...")
         subprocess.run([sys.executable, '-m', 'pip', 'install', 'playwright'], check=True, capture_output=True)
@@ -47,7 +49,7 @@ def install_chrome():
         chrome_path = shutil.which('chromium') or shutil.which('chrome')
         if chrome_path:
             print(f"✅ Браузер установлен: {chrome_path}")
-            CHROME_PATH = chrome_path
+            state.chrome_path = chrome_path
             return chrome_path
         
         # Ищем в .cache
@@ -61,7 +63,7 @@ def install_chrome():
             matches = glob.glob(pattern)
             if matches:
                 print(f"✅ Браузер найден: {matches[0]}")
-                CHROME_PATH = matches[0]
+                state.chrome_path = matches[0]
                 return matches[0]
         
         return None
@@ -83,22 +85,21 @@ def install_cdp_use():
 # ========== ПРОВЕРКА И УСТАНОВКА ==========
 
 def check_dependencies():
-    global CDP_AVAILABLE, CHROME_PATH
-    
+    """Проверяет и устанавливает зависимости"""
     # Проверяем cdp-use
     try:
         from cdp_use.client import CDPClient
-        CDP_AVAILABLE = True
+        state.cdp_available = True
         print("✅ cdp-use загружен")
     except ImportError:
         print("⚠️ cdp-use не найден, устанавливаю...")
         if install_cdp_use():
             try:
                 from cdp_use.client import CDPClient
-                CDP_AVAILABLE = True
+                state.cdp_available = True
                 print("✅ cdp-use установлен и загружен")
             except ImportError:
-                CDP_AVAILABLE = False
+                state.cdp_available = False
                 print("❌ Не удалось загрузить cdp-use")
     
     # Проверяем Chrome
@@ -110,7 +111,7 @@ def check_dependencies():
         chrome_path = install_chrome()
     
     if chrome_path:
-        CHROME_PATH = chrome_path
+        state.chrome_path = chrome_path
         print(f"✅ Chrome найден: {chrome_path}")
     else:
         print("❌ Chrome не найден")
@@ -120,7 +121,7 @@ check_dependencies()
 # ========== AGNES ==========
 
 def init_agnes():
-    global AGNES_AVAILABLE, agnes_llm
+    """Инициализация Agnes"""
     try:
         from langchain_openai import ChatOpenAI
         
@@ -138,8 +139,8 @@ def init_agnes():
         
         test_response = llm.invoke("Test")
         if test_response:
-            agnes_llm = llm
-            AGNES_AVAILABLE = True
+            state.agnes_llm = llm
+            state.agnes_available = True
             print("✅ Agnes загружена")
             return True
     except Exception as e:
@@ -161,9 +162,7 @@ X_COOKIES = [
 
 def launch_chrome_with_cdp():
     """Запускает Chrome с CDP и возвращает URL для подключения"""
-    global chrome_process, CHROME_PATH
-    
-    if not CHROME_PATH:
+    if not state.chrome_path:
         raise Exception("Chrome не найден. Попробуй перезапустить бота для установки.")
     
     # Ищем свободный порт
@@ -174,7 +173,7 @@ def launch_chrome_with_cdp():
     
     # Запускаем Chrome с CDP
     chrome_cmd = [
-        CHROME_PATH, '--headless=new',
+        state.chrome_path, '--headless=new',
         f'--remote-debugging-port={port}',
         '--no-sandbox', '--disable-gpu',
         '--disable-dev-shm-usage',
@@ -182,7 +181,7 @@ def launch_chrome_with_cdp():
         'about:blank'
     ]
     
-    chrome_process = subprocess.Popen(
+    state.chrome_process = subprocess.Popen(
         chrome_cmd, 
         stdout=subprocess.DEVNULL, 
         stderr=subprocess.DEVNULL
@@ -202,8 +201,8 @@ def launch_chrome_with_cdp():
         except:
             continue
     
-    chrome_process.terminate()
-    chrome_process = None
+    state.chrome_process.terminate()
+    state.chrome_process = None
     raise Exception("Не удалось запустить Chrome с CDP")
 
 # ========== КОМАНДЫ ==========
@@ -211,10 +210,10 @@ def launch_chrome_with_cdp():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🤖 Бот запущен\n"
-        f"Agnes: {'✅' if AGNES_AVAILABLE else '❌'}\n"
-        f"cdp-use: {'✅' if CDP_AVAILABLE else '❌'}\n"
-        f"Chrome: {'✅' if CHROME_PATH else '❌'}\n"
-        f"Браузер: {'✅' if is_connected else '❌'}\n"
+        f"Agnes: {'✅' if state.agnes_available else '❌'}\n"
+        f"cdp-use: {'✅' if state.cdp_available else '❌'}\n"
+        f"Chrome: {'✅' if state.chrome_path else '❌'}\n"
+        f"Браузер: {'✅' if state.is_connected else '❌'}\n"
         f"Куки: {'✅' if X_COOKIES else '❌'}\n\n"
         f"/login — подключиться к браузеру\n"
         f"/browse <задача> — выполнить в браузере\n"
@@ -223,7 +222,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def agnes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if AGNES_AVAILABLE:
+    if state.agnes_available:
         await update.message.reply_text("✅ Agnes готова!")
     else:
         await update.message.reply_text(
@@ -235,20 +234,16 @@ async def agnes(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Подключение к браузеру через CDP"""
-    global cdp_client, cdp_session_id, is_connected, chrome_process
-    
     msg = await update.message.reply_text("🔄 Запускаю браузер и подключаюсь...")
     
-    if not CDP_AVAILABLE:
+    if not state.cdp_available:
         await msg.edit_text("❌ cdp-use не установлен. Перезапусти бота.")
         return
     
-    if not CHROME_PATH:
+    if not state.chrome_path:
         await msg.edit_text("❌ Chrome не найден. Устанавливаю...")
         chrome_path = install_chrome()
         if chrome_path:
-            global CHROME_PATH
-            CHROME_PATH = chrome_path
             await msg.edit_text("✅ Chrome установлен! Повтори /login")
         else:
             await msg.edit_text("❌ Не удалось установить Chrome")
@@ -264,11 +259,11 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text("🔄 Подключаюсь к браузеру...")
         
         # Подключаемся
-        cdp_client = CDPClient(ws_url)
-        await cdp_client.connect()
+        state.cdp_client = CDPClient(ws_url)
+        await state.cdp_client.connect()
         
         # Получаем список целей
-        targets = await cdp_client.send.Target.getTargets()
+        targets = await state.cdp_client.send.Target.getTargets()
         
         # Ищем или создаем страницу
         target_id = None
@@ -278,7 +273,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 break
         
         if not target_id:
-            create_result = await cdp_client.send.Target.createTarget({
+            create_result = await state.cdp_client.send.Target.createTarget({
                 'url': 'about:blank',
                 'width': 1280,
                 'height': 720,
@@ -286,32 +281,32 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
             target_id = create_result.get('targetId')
         
         # Прикрепляемся к странице
-        attach_result = await cdp_client.send.Target.attachToTarget({
+        attach_result = await state.cdp_client.send.Target.attachToTarget({
             'targetId': target_id,
             'flatten': True,
         })
-        cdp_session_id = attach_result.get('sessionId')
+        state.cdp_session_id = attach_result.get('sessionId')
         
         # Включаем домены
-        await cdp_client.send.Page.enable(session_id=cdp_session_id)
-        await cdp_client.send.DOM.enable(session_id=cdp_session_id)
+        await state.cdp_client.send.Page.enable(session_id=state.cdp_session_id)
+        await state.cdp_client.send.DOM.enable(session_id=state.cdp_session_id)
         
         # Добавляем куки если есть
         if X_COOKIES:
             for cookie in X_COOKIES:
                 try:
-                    await cdp_client.send.Network.setCookie(
+                    await state.cdp_client.send.Network.setCookie(
                         name=cookie['name'],
                         value=cookie['value'],
                         domain=cookie['domain'],
                         path=cookie['path'],
-                        session_id=cdp_session_id
+                        session_id=state.cdp_session_id
                     )
                 except Exception as e:
                     print(f"⚠️ Ошибка добавления куки {cookie['name']}: {e}")
             print(f"✅ Добавлено {len(X_COOKIES)} кук")
         
-        is_connected = True
+        state.is_connected = True
         
         await msg.edit_text(
             f"✅ **Подключено к браузеру!**\n\n"
@@ -327,17 +322,15 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Выполнить задачу в браузере"""
-    global cdp_client, cdp_session_id, is_connected
-    
     if not context.args:
         await update.message.reply_text("ℹ️ /browse <задача>\nПример: /browse открой google.com")
         return
     
-    if not AGNES_AVAILABLE:
+    if not state.agnes_available:
         await update.message.reply_text("❌ Agnes не доступна")
         return
     
-    if not is_connected:
+    if not state.is_connected:
         await update.message.reply_text(
             "❌ Нет подключения к браузеру.\n"
             "Используй /login для подключения"
@@ -357,7 +350,7 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         Определи, что нужно сделать и верни только URL или действие.
         """
         
-        response = agnes_llm.invoke(prompt)
+        response = state.agnes_llm.invoke(prompt)
         action = response.content.strip().lower()
         
         await msg.edit_text(f"🧠 Agnes: {action[:100]}...")
@@ -371,14 +364,14 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             url = f"https://{action}"
         
         # Переходим по URL
-        await cdp_client.send.Page.navigate({
+        await state.cdp_client.send.Page.navigate({
             'url': url
-        }, session_id=cdp_session_id)
+        }, session_id=state.cdp_session_id)
         await asyncio.sleep(3)
         
         # Делаем скриншот
-        screenshot_result = await cdp_client.send.Page.captureScreenshot(
-            session_id=cdp_session_id
+        screenshot_result = await state.cdp_client.send.Page.captureScreenshot(
+            session_id=state.cdp_session_id
         )
         
         if screenshot_result.get('data'):
@@ -401,23 +394,21 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Закрыть браузер"""
-    global cdp_client, cdp_session_id, is_connected, chrome_process
-    
-    if not is_connected:
+    if not state.is_connected:
         await update.message.reply_text("❌ Браузер уже закрыт")
         return
     
     try:
-        if cdp_client:
-            await cdp_client.close()
+        if state.cdp_client:
+            await state.cdp_client.close()
         
-        if chrome_process:
-            chrome_process.terminate()
-            chrome_process = None
+        if state.chrome_process:
+            state.chrome_process.terminate()
+            state.chrome_process = None
         
-        cdp_client = None
-        cdp_session_id = None
-        is_connected = False
+        state.cdp_client = None
+        state.cdp_session_id = None
+        state.is_connected = False
         
         await update.message.reply_text("✅ Браузер закрыт!")
         
@@ -437,9 +428,9 @@ def main():
     app.add_handler(CommandHandler("close", close))
     
     print("✅ Бот запущен!")
-    print(f"🤖 Agnes: {'✅' if AGNES_AVAILABLE else '❌'}")
-    print(f"🧠 cdp-use: {'✅' if CDP_AVAILABLE else '❌'}")
-    print(f"🌐 Chrome: {'✅' if CHROME_PATH else '❌'}")
+    print(f"🤖 Agnes: {'✅' if state.agnes_available else '❌'}")
+    print(f"🧠 cdp-use: {'✅' if state.cdp_available else '❌'}")
+    print(f"🌐 Chrome: {'✅' if state.chrome_path else '❌'}")
     print(f"🍪 Куки: {'✅' if X_COOKIES else '❌'}")
     print("Команды: /start, /agnes, /login, /browse, /close")
     
