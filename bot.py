@@ -1,4 +1,4 @@
-# test_bot.py - cdp-use с /login и /browse
+# test_bot.py - cdp-use + автоустановка Chrome + куки
 import os
 import sys
 import subprocess
@@ -8,6 +8,7 @@ import tempfile
 import base64
 import time
 import socket
+import json
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -20,48 +21,94 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
 
-# ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
-cdp_client = None
-cdp_session_id = None
-chrome_process = None
-is_connected = False
+# ========== УСТАНОВКА ЗАВИСИМОСТЕЙ ==========
 
-# ========== УСТАНОВКА CDP-USE ==========
+def install_chrome():
+    """Устанавливает Chrome/Chromium через playwright"""
+    try:
+        print("⏳ Устанавливаю playwright...")
+        subprocess.run([sys.executable, '-m', 'pip', 'install', 'playwright'], check=True, capture_output=True)
+        print("⏳ Устанавливаю chromium...")
+        subprocess.run([sys.executable, '-m', 'playwright', 'install', 'chromium'], check=True, capture_output=True)
+        
+        # Находим путь к chromium
+        import shutil
+        chrome_path = shutil.which('chromium') or shutil.which('chrome')
+        if chrome_path:
+            print(f"✅ Браузер установлен: {chrome_path}")
+            return chrome_path
+        
+        # Ищем в .cache
+        home = os.path.expanduser('~')
+        cache_paths = [
+            f'{home}/.cache/ms-playwright/chromium-*/chrome-linux/chrome',
+            f'{home}/.cache/ms-playwright/chromium-*/chrome-linux/chrome',
+        ]
+        import glob
+        for pattern in cache_paths:
+            matches = glob.glob(pattern)
+            if matches:
+                print(f"✅ Браузер найден: {matches[0]}")
+                return matches[0]
+        
+        return None
+    except Exception as e:
+        print(f"❌ Ошибка установки Chrome: {e}")
+        return None
 
 def install_cdp_use():
+    """Устанавливает cdp-use"""
     try:
         print("⏳ Устанавливаю cdp-use...")
-        result = subprocess.run([
-            sys.executable, '-m', 'pip', 'install', 'cdp-use', '--no-cache-dir'
-        ], capture_output=True, text=True)
-        if result.returncode == 0:
-            print("✅ cdp-use установлен")
-            return True
-        else:
-            print(f"❌ Ошибка: {result.stderr}")
-            return False
+        subprocess.run([sys.executable, '-m', 'pip', 'install', 'cdp-use'], check=True, capture_output=True)
+        print("✅ cdp-use установлен")
+        return True
     except Exception as e:
-        print(f"❌ Ошибка: {e}")
+        print(f"❌ Ошибка установки cdp-use: {e}")
         return False
 
-try:
-    from cdp_use.client import CDPClient
-    print("✅ cdp-use уже установлен")
-    CDP_AVAILABLE = True
-except ImportError:
-    print("⚠️ cdp-use не найден, устанавливаю...")
-    if install_cdp_use():
-        try:
-            from cdp_use.client import CDPClient
-            CDP_AVAILABLE = True
-            print("✅ cdp-use импортирован после установки")
-        except ImportError:
-            CDP_AVAILABLE = False
-            print("❌ Не удалось импортировать cdp-use")
+# ========== ПРОВЕРКА И УСТАНОВКА ==========
+
+CDP_AVAILABLE = False
+CHROME_PATH = None
+
+def check_dependencies():
+    global CDP_AVAILABLE, CHROME_PATH
+    
+    # Проверяем cdp-use
+    try:
+        from cdp_use.client import CDPClient
+        CDP_AVAILABLE = True
+        print("✅ cdp-use загружен")
+    except ImportError:
+        print("⚠️ cdp-use не найден, устанавливаю...")
+        if install_cdp_use():
+            try:
+                from cdp_use.client import CDPClient
+                CDP_AVAILABLE = True
+                print("✅ cdp-use установлен и загружен")
+            except ImportError:
+                CDP_AVAILABLE = False
+                print("❌ Не удалось загрузить cdp-use")
+    
+    # Проверяем Chrome
+    import shutil
+    chrome_path = shutil.which('google-chrome') or shutil.which('chromium') or shutil.which('chrome')
+    
+    if not chrome_path:
+        print("⚠️ Chrome не найден, устанавливаю через playwright...")
+        chrome_path = install_chrome()
+    
+    if chrome_path:
+        CHROME_PATH = chrome_path
+        print(f"✅ Chrome найден: {chrome_path}")
     else:
-        CDP_AVAILABLE = False
+        print("❌ Chrome не найден")
+
+check_dependencies()
 
 # ========== AGNES ==========
+
 AGNES_AVAILABLE = False
 agnes_llm = None
 
@@ -94,11 +141,29 @@ def init_agnes():
 
 init_agnes()
 
-# ========== ЗАПУСК БРАУЗЕРА ==========
+# ========== КУКИ X.COM ==========
+
+X_COOKIES = [
+    {"name": "auth_token", "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936", "domain": ".x.com", "path": "/"},
+    {"name": "ct0", "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb", "domain": ".x.com", "path": "/"},
+    {"name": "guest_id", "value": "v1%3A178267838599411411", "domain": ".x.com", "path": "/"},
+    {"name": "personalization_id", "value": "v1_DKrxLZAC902dMFdd1QrVYg==", "domain": ".x.com", "path": "/"},
+]
+
+# ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
+cdp_client = None
+cdp_session_id = None
+chrome_process = None
+is_connected = False
+
+# ========== ЗАПУСК БРАУЗЕРА С CDP ==========
 
 def launch_chrome_with_cdp():
     """Запускает Chrome с CDP и возвращает URL для подключения"""
-    global chrome_process
+    global chrome_process, CHROME_PATH
+    
+    if not CHROME_PATH:
+        raise Exception("Chrome не найден. Попробуй перезапустить бота для установки.")
     
     # Ищем свободный порт
     sock = socket.socket()
@@ -108,7 +173,7 @@ def launch_chrome_with_cdp():
     
     # Запускаем Chrome с CDP
     chrome_cmd = [
-        'google-chrome', '--headless=new',
+        CHROME_PATH, '--headless=new',
         f'--remote-debugging-port={port}',
         '--no-sandbox', '--disable-gpu',
         '--disable-dev-shm-usage',
@@ -123,7 +188,7 @@ def launch_chrome_with_cdp():
     )
     
     # Ждем запуска
-    for _ in range(10):
+    for _ in range(15):
         time.sleep(0.5)
         try:
             import requests
@@ -132,7 +197,7 @@ def launch_chrome_with_cdp():
                 data = resp.json()
                 ws_url = data.get('webSocketDebuggerUrl')
                 if ws_url:
-                    return ws_url
+                    return ws_url, port
         except:
             continue
     
@@ -147,11 +212,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🤖 Бот запущен\n"
         f"Agnes: {'✅' if AGNES_AVAILABLE else '❌'}\n"
         f"cdp-use: {'✅' if CDP_AVAILABLE else '❌'}\n"
-        f"Браузер: {'✅' if is_connected else '❌'}\n\n"
+        f"Chrome: {'✅' if CHROME_PATH else '❌'}\n"
+        f"Браузер: {'✅' if is_connected else '❌'}\n"
+        f"Куки: {'✅' if X_COOKIES else '❌'}\n\n"
         f"/login — подключиться к браузеру\n"
         f"/browse <задача> — выполнить в браузере\n"
         f"/agnes — статус Agnes\n"
-        f"/install — установить cdp-use\n"
         f"/close — закрыть браузер"
     )
 
@@ -166,16 +232,6 @@ async def agnes(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "3. Перезапусти бота"
         )
 
-async def install(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("⏳ Устанавливаю cdp-use...")
-    try:
-        if install_cdp_use():
-            await msg.edit_text("✅ cdp-use установлен! Перезапусти бота.")
-        else:
-            await msg.edit_text("❌ Ошибка установки. Попробуй вручную: pip install cdp-use")
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Подключение к браузеру через CDP"""
     global cdp_client, cdp_session_id, is_connected, chrome_process
@@ -183,7 +239,18 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔄 Запускаю браузер и подключаюсь...")
     
     if not CDP_AVAILABLE:
-        await msg.edit_text("❌ cdp-use не установлен. Используй /install")
+        await msg.edit_text("❌ cdp-use не установлен. Перезапусти бота.")
+        return
+    
+    if not CHROME_PATH:
+        await msg.edit_text("❌ Chrome не найден. Устанавливаю...")
+        chrome_path = install_chrome()
+        if chrome_path:
+            global CHROME_PATH
+            CHROME_PATH = chrome_path
+            await msg.edit_text("✅ Chrome установлен! Повтори /login")
+        else:
+            await msg.edit_text("❌ Не удалось установить Chrome")
         return
     
     try:
@@ -191,7 +258,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Запускаем браузер
         await msg.edit_text("🔄 Запускаю Chrome...")
-        ws_url = launch_chrome_with_cdp()
+        ws_url, port = launch_chrome_with_cdp()
         
         await msg.edit_text("🔄 Подключаюсь к браузеру...")
         
@@ -228,10 +295,26 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await cdp_client.send.Page.enable(session_id=cdp_session_id)
         await cdp_client.send.DOM.enable(session_id=cdp_session_id)
         
+        # Добавляем куки если есть
+        if X_COOKIES:
+            for cookie in X_COOKIES:
+                try:
+                    await cdp_client.send.Network.setCookie(
+                        name=cookie['name'],
+                        value=cookie['value'],
+                        domain=cookie['domain'],
+                        path=cookie['path'],
+                        session_id=cdp_session_id
+                    )
+                except Exception as e:
+                    print(f"⚠️ Ошибка добавления куки {cookie['name']}: {e}")
+            print(f"✅ Добавлено {len(X_COOKIES)} кук")
+        
         is_connected = True
         
         await msg.edit_text(
             f"✅ **Подключено к браузеру!**\n\n"
+            f"Куки: {'✅' if X_COOKIES else '❌'}\n"
             f"Теперь можно использовать:\n"
             f"/browse <задача> — выполнить действие\n"
             f"/close — закрыть браузер"
@@ -270,12 +353,7 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         Задача пользователя: {task}
         
-        Определи, что нужно сделать:
-        1. Если это переход на сайт — верни только URL
-        2. Если это поиск — верни: search: запрос
-        3. Если это скриншот — верни: screenshot: URL
-        
-        Ответь кратко, только действие.
+        Определи, что нужно сделать и верни только URL или действие.
         """
         
         response = agnes_llm.invoke(prompt)
@@ -284,120 +362,37 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"🧠 Agnes: {action[:100]}...")
         
         # Выполняем действие
-        if action.startswith('http'):
-            # Переход по URL
-            await cdp_client.send.Page.navigate({
-                'url': action
-            }, session_id=cdp_session_id)
-            await asyncio.sleep(2)
-            
-            # Делаем скриншот
-            screenshot_result = await cdp_client.send.Page.captureScreenshot(
-                session_id=cdp_session_id
-            )
-            
-            if screenshot_result.get('data'):
-                image_data = base64.b64decode(screenshot_result['data'])
-                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
-                    f.write(image_data)
-                    screenshot_path = f.name
-                
-                await update.message.reply_photo(
-                    photo=open(screenshot_path, 'rb'),
-                    caption=f"📸 {action}"
-                )
-                os.unlink(screenshot_path)
-            
-            await msg.edit_text(f"✅ **Перешел на: {action}**")
-            
-        elif action.startswith('search:'):
-            # Поиск
-            query = action.replace('search:', '').strip()
-            search_url = f"https://google.com/search?q={query.replace(' ', '+')}"
-            
-            await cdp_client.send.Page.navigate({
-                'url': search_url
-            }, session_id=cdp_session_id)
-            await asyncio.sleep(2)
-            
-            screenshot_result = await cdp_client.send.Page.captureScreenshot(
-                session_id=cdp_session_id
-            )
-            
-            if screenshot_result.get('data'):
-                image_data = base64.b64decode(screenshot_result['data'])
-                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
-                    f.write(image_data)
-                    screenshot_path = f.name
-                
-                await update.message.reply_photo(
-                    photo=open(screenshot_path, 'rb'),
-                    caption=f"🔍 Поиск: {query}"
-                )
-                os.unlink(screenshot_path)
-            
-            await msg.edit_text(f"✅ **Выполнил поиск: {query}**")
-            
-        elif action.startswith('screenshot:'):
-            # Скриншот
-            url = action.replace('screenshot:', '').strip()
-            if not url.startswith('http'):
-                url = f"https://{url}"
-            
-            await cdp_client.send.Page.navigate({
-                'url': url
-            }, session_id=cdp_session_id)
-            await asyncio.sleep(2)
-            
-            screenshot_result = await cdp_client.send.Page.captureScreenshot(
-                session_id=cdp_session_id
-            )
-            
-            if screenshot_result.get('data'):
-                image_data = base64.b64decode(screenshot_result['data'])
-                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
-                    f.write(image_data)
-                    screenshot_path = f.name
-                
-                await update.message.reply_photo(
-                    photo=open(screenshot_path, 'rb'),
-                    caption=f"📸 {url}"
-                )
-                os.unlink(screenshot_path)
-            
-            await msg.edit_text(f"✅ **Скриншот сделан: {url}**")
-            
+        if 'x.com' in action or 'twitter' in action:
+            url = 'https://x.com'
+        elif action.startswith('http'):
+            url = action
         else:
-            # Если Agnes не поняла задачу — пробуем перейти по ссылке
-            if 'google' in task.lower() or 'x.com' in task.lower():
-                url = task.split()[0] if task.split() else 'https://google.com'
-                if not url.startswith('http'):
-                    url = f"https://{url}"
-                
-                await cdp_client.send.Page.navigate({
-                    'url': url
-                }, session_id=cdp_session_id)
-                await asyncio.sleep(2)
-                
-                screenshot_result = await cdp_client.send.Page.captureScreenshot(
-                    session_id=cdp_session_id
-                )
-                
-                if screenshot_result.get('data'):
-                    image_data = base64.b64decode(screenshot_result['data'])
-                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
-                        f.write(image_data)
-                        screenshot_path = f.name
-                    
-                    await update.message.reply_photo(
-                        photo=open(screenshot_path, 'rb'),
-                        caption=f"📸 {url}"
-                    )
-                    os.unlink(screenshot_path)
-                
-                await msg.edit_text(f"✅ **Открыл: {url}**")
-            else:
-                await msg.edit_text(f"⚠️ Agnes не поняла задачу.\nОтвет: {action}")
+            url = f"https://{action}"
+        
+        # Переходим по URL
+        await cdp_client.send.Page.navigate({
+            'url': url
+        }, session_id=cdp_session_id)
+        await asyncio.sleep(3)
+        
+        # Делаем скриншот
+        screenshot_result = await cdp_client.send.Page.captureScreenshot(
+            session_id=cdp_session_id
+        )
+        
+        if screenshot_result.get('data'):
+            image_data = base64.b64decode(screenshot_result['data'])
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
+                f.write(image_data)
+                screenshot_path = f.name
+            
+            await update.message.reply_photo(
+                photo=open(screenshot_path, 'rb'),
+                caption=f"📸 {url}"
+            )
+            os.unlink(screenshot_path)
+        
+        await msg.edit_text(f"✅ **Открыл: {url}**")
         
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
@@ -408,7 +403,7 @@ async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global cdp_client, cdp_session_id, is_connected, chrome_process
     
     if not is_connected:
-        await update.message.reply_text("❌ Браузер уже закрыт или не был подключен")
+        await update.message.reply_text("❌ Браузер уже закрыт")
         return
     
     try:
@@ -436,7 +431,6 @@ def main():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("agnes", agnes))
-    app.add_handler(CommandHandler("install", install))
     app.add_handler(CommandHandler("login", login))
     app.add_handler(CommandHandler("browse", browse))
     app.add_handler(CommandHandler("close", close))
@@ -444,8 +438,9 @@ def main():
     print("✅ Бот запущен!")
     print(f"🤖 Agnes: {'✅' if AGNES_AVAILABLE else '❌'}")
     print(f"🧠 cdp-use: {'✅' if CDP_AVAILABLE else '❌'}")
-    print("Команды:")
-    print("  /start, /agnes, /install, /login, /browse, /close")
+    print(f"🌐 Chrome: {'✅' if CHROME_PATH else '❌'}")
+    print(f"🍪 Куки: {'✅' if X_COOKIES else '❌'}")
+    print("Команды: /start, /agnes, /login, /browse, /close")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
