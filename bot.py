@@ -1,4 +1,4 @@
-# bot.py - X.com бот с одним поиском через Playwright
+# bot.py - X.com бот для парсинга профилей
 import os
 import sys
 import subprocess
@@ -428,8 +428,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             status_msg += "🌐 Браузер: ❌ Не запущен\n"
         
-        if browser_ok and browser_info.get('url'):
-            status_msg += f"🔗 URL: {browser_info['url'][:60]}\n"
+        # Убираем ссылку URL, оставляем только заголовок
+        if browser_ok and browser_info.get('title'):
             status_msg += f"📌 Заголовок: {browser_info.get('title', 'Нет')}\n"
         
         status_msg += "\n🔐 АВТОРИЗАЦИЯ:\n"
@@ -444,8 +444,6 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 status_msg += "\n✅ ВЫ АВТОРИЗОВАНЫ\n"
                 if auth.get('username'):
                     status_msg += f"👤 @{auth['username']}\n"
-                if auth.get('hasTweetBtn'):
-                    status_msg += "   • Кнопка Tweet: ✅\n"
                 if auth.get('hasProfileLink'):
                     status_msg += "   • Профиль: ✅\n"
                 if auth.get('hasHomeLink'):
@@ -579,10 +577,10 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in tweets: {e}", exc_info=True)
 
 
-# ========== ПОИСК ТВИТОВ (PLAYWRIGHT) ==========
+# ========== ПОИСК ТВИТОВ ==========
 
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Поиск твитов через Playwright"""
+    """Поиск твитов"""
     if not context.args:
         await update.message.reply_text(
             "ℹ️ Использование: /search <запрос>\n"
