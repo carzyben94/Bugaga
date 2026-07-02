@@ -4,7 +4,7 @@ import logging
 from typing import Optional
 from playwright.async_api import async_playwright
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters, CallbackQueryHandler
 
 # Настройка логирования
 logging.basicConfig(
@@ -235,7 +235,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     if data.startswith('screenshot_'):
         url = data.replace('screenshot_', '')
-        # Передаём в контекст и вызываем screenshot
         context.args = [url]
         await screenshot(update, context)
     
