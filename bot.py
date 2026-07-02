@@ -1,4 +1,4 @@
-# bot.py - X.com бот для парсинга профилей
+# bot.py - X.com бот с Browser-Use
 import os
 import sys
 import subprocess
@@ -34,6 +34,15 @@ except ImportError:
     PHANTOMWRIGHT_AVAILABLE = False
     print("⚠️ Phantomwright не найден, использую Playwright")
     from playwright.async_api import async_playwright
+
+# ========== ПРОВЕРКА BROWSER-USE ==========
+try:
+    from browser_use import Agent, Browser, BrowserConfig
+    BROWSER_USE_AVAILABLE = True
+    print("✅ Browser-Use загружен")
+except ImportError:
+    BROWSER_USE_AVAILABLE = False
+    print("⚠️ Browser-Use не найден")
 
 # ========== КУКИ X.COM ==========
 COOKIES = [
@@ -200,16 +209,19 @@ async def close_browser():
 # ========== КОМАНДЫ ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status_browser_use = "✅" if BROWSER_USE_AVAILABLE else "❌"
     await update.message.reply_text(
-        "🏠 ОСНОВНЫЕ\n"
-        "/start — Показать меню\n"
-        "/login — Авторизация в X.com\n"
-        "/screen — Скриншот\n"
-        "/status — Статус браузера\n"
-        "/close — Закрыть браузер\n\n"
-        "🤖 XBOT\n"
-        "/tweets <username> — Твиты пользователя\n"
-        "/search <запрос> — Поиск твитов"
+        f"🏠 ОСНОВНЫЕ\n"
+        f"/start — Показать меню\n"
+        f"/login — Авторизация в X.com\n"
+        f"/screen — Скриншот\n"
+        f"/status — Статус браузера\n"
+        f"/close — Закрыть браузер\n\n"
+        f"🤖 XBOT\n"
+        f"/tweets <username> — Твиты пользователя\n"
+        f"/search <запрос> — Поиск твитов\n\n"
+        f"🧠 AI АГЕНТ\n"
+        f"/browse <задача> — Управление браузером через AI {status_browser_use}"
     )
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -458,6 +470,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg += f"\n🕐 {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
         status_msg += f"📦 Драйвер: {'Phantomwright' if PHANTOMWRIGHT_AVAILABLE else 'Playwright'}\n"
         status_msg += f"🍪 Куки загружены: {len(COOKIES)} шт."
+        status_msg += f"\n🧠 Browser-Use: {'✅' if BROWSER_USE_AVAILABLE else '❌'}"
         
         await msg.edit_text(status_msg)
         
@@ -682,6 +695,83 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in search: {e}", exc_info=True)
 
 
+# ========== BROWSER-USE ==========
+
+async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Выполнить задачу в браузере через AI"""
+    if not context.args:
+        await update.message.reply_text(
+            "ℹ️ Использование: /browse <задача>\n"
+            "Пример: /browse Найди последние новости про ИИ\n"
+            "Пример: /browse Перейди на x.com и сделай скриншот"
+        )
+        return
+    
+    if not BROWSER_USE_AVAILABLE:
+        await update.message.reply_text("❌ Browser-Use не установлен. Установи: pip install browser-use")
+        return
+    
+    task = ' '.join(context.args)
+    msg = await update.message.reply_text(f"🌐 Выполняю: {task[:100]}...")
+    
+    try:
+        # Настройка браузера
+        browser = Browser(
+            config=BrowserConfig(
+                headless=False,  # Можно True для продакшена
+                disable_security=True,
+            )
+        )
+        
+        # Создаем агента
+        agent = Agent(
+            task=task,
+            browser=browser,
+            use_vision=True,
+        )
+        
+        await msg.edit_text(f"🤖 AI думает над задачей: {task[:100]}...")
+        
+        # Выполняем задачу
+        result = await agent.run()
+        
+        # Формируем ответ
+        response = f"✅ **Задача выполнена!**\n\n"
+        response += f"📋 **Запрос:** {task}\n\n"
+        
+        if result:
+            response += f"📝 **Результат:**\n{result[:1500]}"
+        else:
+            response += "⚠️ Результат не получен"
+        
+        if len(response) > 4000:
+            filename = f"browse_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(f"Задача: {task}\n\n{result}")
+            await update.message.reply_document(
+                document=open(filename, 'rb'),
+                caption=f"📄 Результат: {task[:50]}"
+            )
+        else:
+            await msg.edit_text(response, parse_mode='Markdown')
+        
+        # Показываем скриншот
+        try:
+            screenshot = await browser.take_screenshot()
+            await update.message.reply_photo(
+                photo=screenshot,
+                caption=f"📸 Скриншот после выполнения"
+            )
+        except:
+            pass
+        
+        await browser.close()
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+        logger.error(f"Error in browse: {e}", exc_info=True)
+
+
 # ========== ЗАПУСК ==========
 def main():
     app = Application.builder().token(TOKEN).build()
@@ -697,10 +787,13 @@ def main():
     app.add_handler(CommandHandler("tweets", tweets))
     app.add_handler(CommandHandler("search", search))
     
+    # Browser-Use
+    app.add_handler(CommandHandler("browse", browse))
+    
     print("✅ Бот запущен!")
     print("Команды:")
     print("  /start, /login, /screen, /status, /close")
-    print("  /tweets, /search")
+    print("  /tweets, /search, /browse")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
