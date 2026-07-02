@@ -1,8 +1,9 @@
 FROM python:3.11-slim-bullseye
 
-# Устанавливаем зависимости для сборки Rust-пакетов
+# Устанавливаем все зависимости для сборки Rust-пакетов с OpenSSL
 RUN apt-get update && apt-get install -y \
     libssl1.1 \
+    libssl-dev \
     build-essential \
     curl \
     pkg-config \
