@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     unzip \
     bzip2 \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Устанавливаем Node.js 20 (нужен для npm и MCP)
@@ -31,20 +32,21 @@ RUN npm install -g @playwright/mcp
 # Добавляем Goose в PATH
 ENV PATH="/root/.local/bin:${PATH}"
 
-# Убедись что git установлен
-RUN apt-get update && apt-get install -y git
-
 WORKDIR /app
 
 # Копируем зависимости и устанавливаем
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
+# Устанавливаем browser-use отдельно (чтобы избежать конфликтов)
+RUN pip install browser-use --no-cache-dir
+
 # Копируем бота
 COPY bot.py .
 
 # Проверяем установку
 RUN goose --version && npx @playwright/mcp --version || echo "Playwright MCP installed"
+RUN python -c "from browser_use import Agent, Browser, BrowserConfig; print('✅ Browser-Use OK')" || echo "⚠️ Browser-Use not installed"
 
 # Команда запуска
 CMD ["python", "bot.py"]
