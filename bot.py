@@ -21,10 +21,21 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
 
+# ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
+CHROME_PATH = None
+CDP_AVAILABLE = False
+AGNES_AVAILABLE = False
+agnes_llm = None
+cdp_client = None
+cdp_session_id = None
+chrome_process = None
+is_connected = False
+
 # ========== УСТАНОВКА ЗАВИСИМОСТЕЙ ==========
 
 def install_chrome():
     """Устанавливает Chrome/Chromium через playwright"""
+    global CHROME_PATH
     try:
         print("⏳ Устанавливаю playwright...")
         subprocess.run([sys.executable, '-m', 'pip', 'install', 'playwright'], check=True, capture_output=True)
@@ -36,6 +47,7 @@ def install_chrome():
         chrome_path = shutil.which('chromium') or shutil.which('chrome')
         if chrome_path:
             print(f"✅ Браузер установлен: {chrome_path}")
+            CHROME_PATH = chrome_path
             return chrome_path
         
         # Ищем в .cache
@@ -49,6 +61,7 @@ def install_chrome():
             matches = glob.glob(pattern)
             if matches:
                 print(f"✅ Браузер найден: {matches[0]}")
+                CHROME_PATH = matches[0]
                 return matches[0]
         
         return None
@@ -68,9 +81,6 @@ def install_cdp_use():
         return False
 
 # ========== ПРОВЕРКА И УСТАНОВКА ==========
-
-CDP_AVAILABLE = False
-CHROME_PATH = None
 
 def check_dependencies():
     global CDP_AVAILABLE, CHROME_PATH
@@ -109,9 +119,6 @@ check_dependencies()
 
 # ========== AGNES ==========
 
-AGNES_AVAILABLE = False
-agnes_llm = None
-
 def init_agnes():
     global AGNES_AVAILABLE, agnes_llm
     try:
@@ -149,12 +156,6 @@ X_COOKIES = [
     {"name": "guest_id", "value": "v1%3A178267838599411411", "domain": ".x.com", "path": "/"},
     {"name": "personalization_id", "value": "v1_DKrxLZAC902dMFdd1QrVYg==", "domain": ".x.com", "path": "/"},
 ]
-
-# ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
-cdp_client = None
-cdp_session_id = None
-chrome_process = None
-is_connected = False
 
 # ========== ЗАПУСК БРАУЗЕРА С CDP ==========
 
