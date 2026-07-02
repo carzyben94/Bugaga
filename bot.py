@@ -1,4 +1,4 @@
-# test_bot.py - browser-use + Agnes с фиксом screenshot
+# test_bot.py - browser-use 0.5.2 + Agnes
 import os
 import sys
 import subprocess
@@ -75,17 +75,14 @@ def check_and_install_dependencies():
             print(f"⚠️ {package} не найден, устанавливаю...")
             install_package(package)
     
-    # Устанавливаем browser-use с фиксом screenshot
+    # Устанавливаем browser-use 0.5.2
     try:
+        import browser_use
         from browser_use import Agent
-        print("✅ browser-use уже установлен")
+        print(f"✅ browser-use уже установлен (версия: {browser_use.__version__ if hasattr(browser_use, '__version__') else 'unknown'})")
     except ImportError:
-        print("⚠️ browser-use не найден, устанавливаю...")
-        # Сначала пробуем последнюю версию
-        if not install_package('browser-use'):
-            # Если не работает, пробуем старую
-            print("⏳ Пробую старую версию...")
-            install_package('browser-use', '0.1.0')
+        print("⚠️ browser-use не найден, устанавливаю 0.5.2...")
+        install_package('browser-use', '0.5.2')
     
     # Устанавливаем playwright браузер
     try:
@@ -142,7 +139,6 @@ def check_browser_use():
         import browser_use
         from browser_use import Agent
         
-        # Проверяем версию
         if hasattr(browser_use, '__version__'):
             BROWSER_USE_VERSION = browser_use.__version__
         else:
@@ -187,18 +183,15 @@ async def install(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Устанавливаю зависимости...")
     
     try:
-        # Переустанавливаем browser-use с фиксом
-        await msg.edit_text("⏳ Переустанавливаю browser-use...")
-        
-        # Удаляем старую версию
+        await msg.edit_text("⏳ Удаляю старую версию browser-use...")
         subprocess.run([
             sys.executable, '-m', 'pip', 'uninstall', 'browser-use', '-y'
         ], capture_output=True)
         
-        # Устанавливаем стабильную версию
-        install_package('browser-use', '0.1.0')
+        await msg.edit_text("⏳ Устанавливаю browser-use 0.5.2...")
+        install_package('browser-use', '0.5.2')
         
-        # Перепроверяем
+        await msg.edit_text("⏳ Проверяю установку...")
         check_browser_use()
         init_agnes()
         
@@ -235,17 +228,16 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         from browser_use import Agent
         
-        # Используем Agent с правильными параметрами
+        # Для версии 0.5.2 используем стандартные параметры
         agent = Agent(
             task=task,
             llm=agnes_llm,
-            use_vision=False,  # Отключаем vision чтобы избежать ошибки screenshot
         )
         
         await msg.edit_text(f"🧠 Agnes работает...")
         result = await agent.run()
         
-        # Извлекаем текст из результата
+        # Извлекаем результат
         if hasattr(result, 'content'):
             result_text = result.content[:1500]
         elif hasattr(result, 'text'):
@@ -265,7 +257,7 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "❌ Ошибка screenshot в browser-use\n\n"
                 "Попробуй:\n"
                 "1. /install — переустановить зависимости\n"
-                "2. Или используй: pip install browser-use==0.1.0"
+                "2. Или вернись на версию 0.1.0"
             )
         else:
             await msg.edit_text(f"❌ Ошибка: {error_msg[:200]}")
