@@ -1,6 +1,5 @@
 import os
 import logging
-import subprocess
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -27,115 +26,41 @@ class Quote(ExtractionModel):
     author: str = Field(selector='.author')
     tags: str = Field(selector='.tag')
 
-# Функция поиска Chrome
-def find_chrome_path():
-    """Ищет установленный Chrome/Chromium по разным путям"""
-    
-    # Список возможных путей
-    possible_paths = [
-        '/usr/bin/chromium',
-        '/usr/bin/chromium-browser',
-        '/usr/bin/google-chrome',
-        '/usr/bin/google-chrome-stable',
-        '/usr/bin/chrome',
-        '/snap/bin/chromium',
-        '/usr/local/bin/chromium',
-        '/usr/lib/chromium/chromium',
-        '/usr/lib/chromium-browser/chromium-browser',
-        '/opt/google/chrome/chrome',
-        '/usr/bin/chromedriver',  # Иногда драйвер тоже работает
-    ]
-    
-    # Проверяем каждый путь
-    for path in possible_paths:
-        if os.path.exists(path) and os.access(path, os.X_OK):
-            logger.info(f"✅ Найден браузер: {path}")
-            return path
-    
-    # Если не нашли - пробуем через which
-    try:
-        for cmd in ['chromium', 'chromium-browser', 'google-chrome', 'google-chrome-stable', 'chrome']:
-            result = subprocess.run(['which', cmd], capture_output=True, text=True)
-            if result.returncode == 0 and result.stdout.strip():
-                path = result.stdout.strip()
-                logger.info(f"✅ Найден браузер через which: {path}")
-                return path
-    except Exception as e:
-        logger.warning(f"Ошибка при поиске через which: {e}")
-    
-    # Пробуем найти через find (медленно, но надежно)
-    try:
-        result = subprocess.run(
-            ['find', '/usr', '-name', '*chrome*', '-o', '-name', '*chromium*'],
-            capture_output=True, 
-            text=True,
-            timeout=5
-        )
-        if result.stdout:
-            for line in result.stdout.split('\n'):
-                if line and os.access(line, os.X_OK):
-                    logger.info(f"✅ Найден браузер через find: {line}")
-                    return line
-    except Exception as e:
-        logger.warning(f"Ошибка при поиске через find: {e}")
-    
-    logger.error("❌ Браузер не найден!")
-    return None
+# Путь к браузеру
+CHROME_PATH = '/usr/bin/chromium'
 
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Привет! Я бот с парсингом.\n"
-        "Используй /parse для получения цитат\n"
-        "Используй /check для проверки браузера"
+        "Используй /parse для получения цитат"
     )
-
-# Команда /check - проверка браузера
-async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Проверяет, найден ли браузер"""
-    chrome_path = find_chrome_path()
-    
-    if chrome_path:
-        await update.message.reply_text(f"✅ Браузер найден:\n`{chrome_path}`")
-    else:
-        await update.message.reply_text(
-            "❌ Браузер не найден!\n"
-            "Проверь установку Chrome в Dockerfile"
-        )
 
 # Команда /parse
 async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Начинаю парсинг...")
     
     try:
-        # Ищем браузер
-        chrome_path = find_chrome_path()
-        
-        if not chrome_path:
-            await update.message.reply_text(
-                "❌ Браузер не найден!\n"
-                "Используй /check для диагностики"
-            )
-            return
-        
         # Настройка браузера
         options = ChromiumOptions()
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--headless=new")
-        options.binary_location = chrome_path
-        
-        await update.message.reply_text(f"🔄 Запускаю браузер: {chrome_path}")
+        options.binary_location = CHROME_PATH
         
         async with Chrome(options=options) as browser:
             tab = await browser.start()
             await tab.go_to('https://quotes.toscrape.com')
             
+            # Ждём загрузки страницы
+            await tab.wait_for_element('.quote', timeout=10)
+            
+            # Извлекаем цитаты
             quotes = await tab.extract_all(Quote, timeout=5)
             
             if quotes:
                 reply = "📚 Цитаты:\n\n"
-                for i, q in enumerate(quotes[:3], 1):
+                for i, q in enumerate(quotes[:5], 1):
                     reply += f"{i}. \"{q.text}\"\n   — {q.author}\n   🏷️ {q.tags}\n\n"
                 await update.message.reply_text(reply)
             else:
@@ -143,7 +68,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
     except Exception as e:
         logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
 # Обработчик ошибок
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -153,16 +78,14 @@ def main():
     application = Application.builder().token(TOKEN).build()
     
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("check", check))  # Новая команда
     application.add_handler(CommandHandler("parse", parse))
     application.add_error_handler(error_handler)
     
-    # При запуске проверяем браузер
-    chrome_path = find_chrome_path()
-    if chrome_path:
-        logger.info(f"✅ Браузер найден: {chrome_path}")
+    # Проверяем наличие браузера
+    if os.path.exists(CHROME_PATH):
+        logger.info(f"✅ Браузер найден: {CHROME_PATH}")
     else:
-        logger.error("❌ Браузер НЕ НАЙДЕН! Проверь Dockerfile")
+        logger.error(f"❌ Браузер не найден: {CHROME_PATH}")
     
     logger.info("🚀 Бот запущен!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
