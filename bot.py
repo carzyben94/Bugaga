@@ -290,11 +290,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_browser_use = "✅" if BROWSER_USE_AVAILABLE else "⏳ (установится при первом вызове)"
     status_agnes = "✅" if AGNES_AVAILABLE else "❌"
     await update.message.reply_text(
+        f"Меню\n"
         f"/login — Авторизация в X.com\n"
         f"/screen — Скриншот\n"
         f"/status — Статус браузера\n"
         f"/close — Закрыть браузер\n\n"
-        f"🤖 XBOT\n"
+        f"Бот\n"
         f"/tweets <username> — Твиты пользователя\n"
         f"/search <запрос> — Поиск твитов\n\n"
     )
