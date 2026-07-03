@@ -13,7 +13,7 @@ from typing import Optional, List, Dict, Any
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
-# ========== НАСТРОЙКА ГЛУБОКОГО ЛОГГИРОВАНИЯ ==========
+# ========== НАСТРОЙКА ЛОГГИРОВАНИЯ ==========
 LOG_FILE = f"bot_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
 logging.basicConfig(
@@ -180,22 +180,79 @@ async def close_pydoll_browser():
 async def get_browser():
     return await get_pydoll_browser()
 
-async def execute_js(script, timeout=10):
+# ========== БЕЗОПАСНОЕ ВЫПОЛНЕНИЕ JS ==========
+
+async def safe_execute_js(script, timeout=10, default_return=None):
+    """
+    Безопасное выполнение JS с обработкой всех ошибок
+    Всегда возвращает простой Python объект (dict, list, str, int, None)
+    """
+    logger.debug(f"  📜 Выполнение JS (таймаут: {timeout}с)")
+    
     page = await get_browser()
     if page is None:
-        return None
+        logger.error("  ❌ Страница не получена")
+        return default_return
+    
     try:
+        # Пробуем выполнить с таймаутом
         result = await asyncio.wait_for(
             page.execute_script(script),
             timeout=timeout
         )
-        return result
+        
+        # Проверяем и преобразуем результат в безопасный формат
+        return safe_convert_result(result)
+        
     except asyncio.TimeoutError:
-        logger.error(f"⏱️ Таймаут {timeout}с при выполнении JS")
-        return None
+        logger.warning(f"  ⏱️ Таймаут {timeout}с")
+        return default_return
+    except TypeError as e:
+        if 'unhashable type' in str(e):
+            logger.warning(f"  ⚠️ Ошибка хеширования: {e}")
+            # Пробуем через return_by_value если доступно
+            try:
+                if hasattr(page, 'execute_script') and hasattr(page.execute_script, 'return_by_value'):
+                    result = await asyncio.wait_for(
+                        page.execute_script(script, return_by_value=True),
+                        timeout=timeout
+                    )
+                    return safe_convert_result(result)
+            except:
+                pass
+            return default_return
+        else:
+            logger.error(f"  ❌ TypeError: {e}")
+            return default_return
     except Exception as e:
-        logger.error(f"❌ Ошибка JS: {e}")
+        logger.error(f"  ❌ Ошибка JS: {str(e)[:100]}")
+        return default_return
+
+def safe_convert_result(data):
+    """Рекурсивно преобразует данные в безопасный формат (хешируемые типы)"""
+    if data is None:
         return None
+    elif isinstance(data, (str, int, float, bool)):
+        return data
+    elif isinstance(data, list):
+        return [safe_convert_result(item) for item in data]
+    elif isinstance(data, dict):
+        # Преобразуем ключи в строки
+        return {str(key): safe_convert_result(value) for key, value in data.items()}
+    elif isinstance(data, tuple):
+        return tuple(safe_convert_result(item) for item in data)
+    elif hasattr(data, '__dict__'):
+        # Для объектов с __dict__ преобразуем в dict
+        try:
+            return {str(k): safe_convert_result(v) for k, v in data.__dict__.items()}
+        except:
+            return str(data)
+    else:
+        # Все остальное преобразуем в строку
+        try:
+            return str(data)
+        except:
+            return None
 
 async def take_screenshot():
     page = await get_browser()
@@ -211,20 +268,19 @@ async def take_screenshot():
         logger.error(f"❌ Ошибка скриншота: {e}")
         return None
 
-# ========== 5 ФУНКЦИЙ SHADOW DOM - КАЖДАЯ С ОБРАБОТКОЙ ОШИБОК ==========
+# ========== 5 ФУНКЦИЙ SHADOW DOM ==========
 
 async def shadow_v1(page):
-    """
-    Вариант 1: Простой поиск shadowRoot
-    Ищет все элементы на странице, у которых есть shadowRoot
-    """
+    """Вариант 1: Простой поиск shadowRoot"""
     logger.info("  🔍 V1: Простой поиск shadowRoot")
     try:
         js = """
-            () => {
+            (function() {
                 try {
-                    const result = [];
-                    document.querySelectorAll('*').forEach(el => {
+                    var result = [];
+                    var elements = document.querySelectorAll('*');
+                    for (var i = 0; i < elements.length; i++) {
+                        var el = elements[i];
                         if (el.shadowRoot) {
                             result.push({
                                 tag: el.tagName.toLowerCase(),
@@ -233,14 +289,14 @@ async def shadow_v1(page):
                                 children: el.shadowRoot.children.length
                             });
                         }
-                    });
+                    }
                     return result;
                 } catch(e) {
                     return {error: e.message};
                 }
-            }
+            })()
         """
-        result = await asyncio.wait_for(page.execute_script(js), timeout=5.0)
+        result = await safe_execute_js(js, timeout=5.0, default_return=[])
         
         if result and isinstance(result, dict) and 'error' in result:
             logger.warning(f"  ⚠️ V1: JS ошибка - {result['error']}")
@@ -250,31 +306,28 @@ async def shadow_v1(page):
         logger.info(f"  ✅ V1: Найдено {count} элементов")
         return result if result else []
         
-    except asyncio.TimeoutError:
-        logger.warning("  ⏱️ V1: Таймаут 5с")
-        return []
     except Exception as e:
         logger.error(f"  ❌ V1: {str(e)[:100]}")
         return []
 
 async def shadow_v2(page):
-    """
-    Вариант 2: Поиск конкретных элементов
-    Ищет конкретные элементы: grok-drawer, video-player, emoji-picker
-    """
+    """Вариант 2: Поиск конкретных элементов"""
     logger.info("  🔍 V2: Поиск конкретных элементов")
     try:
         js = """
-            () => {
+            (function() {
                 try {
-                    const result = [];
-                    const selectors = ['grok-drawer', 'video-player', 'emoji-picker'];
-                    selectors.forEach(sel => {
+                    var result = [];
+                    var selectors = ['grok-drawer', 'video-player', 'emoji-picker'];
+                    for (var s = 0; s < selectors.length; s++) {
+                        var sel = selectors[s];
                         try {
-                            const el = document.querySelector(sel);
+                            var el = document.querySelector(sel);
                             if (el && el.shadowRoot) {
-                                const children = [];
-                                for (let child of el.shadowRoot.children) {
+                                var children = [];
+                                var childNodes = el.shadowRoot.children;
+                                for (var c = 0; c < childNodes.length; c++) {
+                                    var child = childNodes[c];
                                     children.push({
                                         tag: child.tagName.toLowerCase(),
                                         id: child.id || null,
@@ -290,14 +343,14 @@ async def shadow_v2(page):
                         } catch(e) {
                             // Пропускаем ошибки для отдельных селекторов
                         }
-                    });
+                    }
                     return result;
                 } catch(e) {
                     return {error: e.message};
                 }
-            }
+            })()
         """
-        result = await asyncio.wait_for(page.execute_script(js), timeout=5.0)
+        result = await safe_execute_js(js, timeout=5.0, default_return=[])
         
         if result and isinstance(result, dict) and 'error' in result:
             logger.warning(f"  ⚠️ V2: JS ошибка - {result['error']}")
@@ -307,25 +360,19 @@ async def shadow_v2(page):
         logger.info(f"  ✅ V2: Найдено {count} элементов")
         return result if result else []
         
-    except asyncio.TimeoutError:
-        logger.warning("  ⏱️ V2: Таймаут 5с")
-        return []
     except Exception as e:
         logger.error(f"  ❌ V2: {str(e)[:100]}")
         return []
 
 async def shadow_v3(page):
-    """
-    Вариант 3: Рекурсивный обход
-    Обходит всё дерево DOM рекурсивно, находит все shadowRoot
-    """
+    """Вариант 3: Рекурсивный обход"""
     logger.info("  🔍 V3: Рекурсивный обход")
     try:
         js = """
-            () => {
+            (function() {
                 try {
                     function traverse(el, path) {
-                        const data = {
+                        var data = {
                             tag: el.tagName.toLowerCase(),
                             id: el.id || null,
                             class: el.className || null,
@@ -335,16 +382,19 @@ async def shadow_v3(page):
                         };
                         
                         if (el.shadowRoot) {
-                            for (let child of el.shadowRoot.children) {
+                            var shadowChildren = el.shadowRoot.children;
+                            for (var i = 0; i < shadowChildren.length; i++) {
                                 try {
-                                    data.children.push(traverse(child, path + ' > shadow'));
+                                    data.children.push(traverse(shadowChildren[i], path + ' > shadow'));
                                 } catch(e) {
                                     data.children.push({error: e.message});
                                 }
                             }
                         }
                         
-                        for (let child of el.children) {
+                        var domChildren = el.children;
+                        for (var j = 0; j < domChildren.length; j++) {
+                            var child = domChildren[j];
                             if (!child.shadowRoot) {
                                 try {
                                     data.children.push(traverse(child, path + ' > ' + el.tagName));
@@ -361,9 +411,9 @@ async def shadow_v3(page):
                 } catch(e) {
                     return {error: e.message};
                 }
-            }
+            })()
         """
-        result = await asyncio.wait_for(page.execute_script(js), timeout=10.0)
+        result = await safe_execute_js(js, timeout=10.0, default_return={})
         
         if result and isinstance(result, dict) and 'error' in result:
             logger.warning(f"  ⚠️ V3: JS ошибка - {result['error']}")
@@ -372,28 +422,24 @@ async def shadow_v3(page):
         logger.info(f"  ✅ V3: Обход завершен")
         return result if result else {}
         
-    except asyncio.TimeoutError:
-        logger.warning("  ⏱️ V3: Таймаут 10с")
-        return {}
     except Exception as e:
         logger.error(f"  ❌ V3: {str(e)[:100]}")
         return {}
 
 async def shadow_v4(page):
-    """
-    Вариант 4: Хосты с shadowRoot
-    Находит все хосты с shadowRoot и собирает информацию о них
-    """
+    """Вариант 4: Хосты с shadowRoot"""
     logger.info("  🔍 V4: Хосты с shadowRoot")
     try:
         js = """
-            () => {
+            (function() {
                 try {
-                    const hosts = [];
-                    document.querySelectorAll('*').forEach(el => {
+                    var hosts = [];
+                    var elements = document.querySelectorAll('*');
+                    for (var i = 0; i < elements.length; i++) {
+                        var el = elements[i];
                         if (el.shadowRoot) {
                             try {
-                                const info = {
+                                var info = {
                                     tag: el.tagName,
                                     id: el.id || null,
                                     class: el.className || null,
@@ -401,8 +447,8 @@ async def shadow_v4(page):
                                 };
                                 
                                 try {
-                                    const buttons = el.shadowRoot.querySelectorAll('button');
-                                    const inputs = el.shadowRoot.querySelectorAll('input, textarea');
+                                    var buttons = el.shadowRoot.querySelectorAll('button');
+                                    var inputs = el.shadowRoot.querySelectorAll('input, textarea');
                                     info.buttons = buttons.length;
                                     info.inputs = inputs.length;
                                 } catch(e) {
@@ -415,14 +461,14 @@ async def shadow_v4(page):
                                 // Пропускаем ошибки для отдельных элементов
                             }
                         }
-                    });
+                    }
                     return hosts;
                 } catch(e) {
                     return {error: e.message};
                 }
-            }
+            })()
         """
-        result = await asyncio.wait_for(page.execute_script(js), timeout=5.0)
+        result = await safe_execute_js(js, timeout=5.0, default_return=[])
         
         if result and isinstance(result, dict) and 'error' in result:
             logger.warning(f"  ⚠️ V4: JS ошибка - {result['error']}")
@@ -432,18 +478,12 @@ async def shadow_v4(page):
         logger.info(f"  ✅ V4: Найдено {count} хостов")
         return result if result else []
         
-    except asyncio.TimeoutError:
-        logger.warning("  ⏱️ V4: Таймаут 5с")
-        return []
     except Exception as e:
         logger.error(f"  ❌ V4: {str(e)[:100]}")
         return []
 
 async def shadow_v5(page):
-    """
-    Вариант 5: Через Pydoll find + get_shadow_root
-    Использует встроенные методы Pydoll для поиска
-    """
+    """Вариант 5: Через Pydoll find + get_shadow_root"""
     logger.info("  🔍 V5: Pydoll find + get_shadow_root")
     try:
         hosts = []
@@ -506,7 +546,6 @@ async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         times = {}
         errors = {}
         
-        # Запускаем каждый вариант с отдельной обработкой ошибок
         variants = [
             ('V1', shadow_v1, 'Простой поиск'),
             ('V2', shadow_v2, 'Конкретные элементы'),
@@ -522,10 +561,8 @@ async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 result = await func(page)
                 results[name] = result
                 times[name] = time.time() - start
-                if result and len(result) > 0:
-                    logger.info(f"✅ {name}: {len(result)} элементов за {times[name]:.2f}с")
-                else:
-                    logger.info(f"⚠️ {name}: ничего не найдено за {times[name]:.2f}с")
+                count = len(result) if isinstance(result, (list, dict)) else 0
+                logger.info(f"✅ {name}: {count} элементов за {times[name]:.2f}с")
             except Exception as e:
                 errors[name] = str(e)
                 results[name] = []
@@ -552,7 +589,6 @@ async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if count > max_count:
                     max_count = count
                     best = name
-                # Показываем первые 2 элемента
                 for i, item in enumerate(data[:2]):
                     if isinstance(item, dict):
                         tag = item.get('tag', item.get('host', 'unknown'))
@@ -569,14 +605,12 @@ async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if best:
             response += f"🏆 **Лучший вариант: {best}** ({max_count} элементов)\n"
-            response += f"💡 Используйте этот вариант в коде."
         else:
             response += "❌ **Ни один вариант не сработал**\n"
-            response += "💡 Попробуйте обновить страницу или зайти на X.com"
         
         await send_message_safe(update, response, parse_mode='Markdown')
         
-        # Сохраняем данные в JSON
+        # Сохраняем данные
         json_filename = f"shadow_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         with open(json_filename, 'w', encoding='utf-8') as f:
             json.dump({
@@ -590,10 +624,9 @@ async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_document(
             document=open(json_filename, 'rb'),
-            caption=f"📄 Полные данные ({len(results)} вариантов)"
+            caption=f"📄 Полные данные"
         )
         
-        # Скриншот
         screenshot = await take_screenshot()
         if screenshot:
             await send_photo_safe(update, screenshot, "📸 Текущая страница")
@@ -662,36 +695,48 @@ async def emulate_human_login_flow(page):
 async def check_login_status_detailed(page):
     try:
         js_code = """
-            () => {
-                const cookies = document.cookie.split(';').reduce((acc, c) => {
-                    const [key, val] = c.trim().split('=');
-                    if (key && val) acc[key] = val;
-                    return acc;
-                }, {});
+            (function() {
+                var cookies = {};
+                var parts = document.cookie.split(';');
+                for (var i = 0; i < parts.length; i++) {
+                    var pair = parts[i].trim().split('=');
+                    if (pair[0]) {
+                        cookies[pair[0]] = pair[1] || '';
+                    }
+                }
                 
-                const hasAuthToken = !!cookies.auth_token && cookies.auth_token.length > 0;
-                const hasCt0 = !!cookies.ct0 && cookies.ct0.length > 0;
-                const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
-                const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]') || 
+                var hasAuthToken = !!cookies.auth_token && cookies.auth_token.length > 0;
+                var hasCt0 = !!cookies.ct0 && cookies.ct0.length > 0;
+                var hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
+                var hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]') || 
                                     !!document.querySelector('[data-testid="postButton"]');
-                const hasSideNav = !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
-                const hasLoginBtn = !!document.querySelector('[data-testid="loginButton"]');
-                const hasLoginLink = !!document.querySelector('a[href="/login"]');
-                const isOnLoginPage = window.location.href.includes('/login');
+                var hasSideNav = !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
+                var hasLoginBtn = !!document.querySelector('[data-testid="loginButton"]');
+                var hasLoginLink = !!document.querySelector('a[href="/login"]');
+                var isOnLoginPage = window.location.href.indexOf('/login') !== -1;
                 
-                let username = null;
-                const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
+                var username = null;
+                var profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
                 if (profileLink) {
-                    const href = profileLink.getAttribute('href');
+                    var href = profileLink.getAttribute('href');
                     if (href) {
-                        const match = href.match(/^\\/([^\\/]+)/);
+                        var match = href.match(/^\\/([^\\/]+)/);
                         if (match) username = match[1];
                     }
                 }
                 
-                const hasUserElements = hasProfileLink || hasTweetBtn || hasSideNav;
-                const hasLoginElements = hasLoginBtn || hasLoginLink;
-                const isLoggedIn = hasAuthToken && hasUserElements && !hasLoginElements && !isOnLoginPage;
+                if (!username) {
+                    var accountBtn = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
+                    if (accountBtn) {
+                        var text = accountBtn.textContent || '';
+                        var match = text.match(/@([a-zA-Z0-9_]+)/);
+                        if (match) username = match[1];
+                    }
+                }
+                
+                var hasUserElements = hasProfileLink || hasTweetBtn || hasSideNav;
+                var hasLoginElements = hasLoginBtn || hasLoginLink;
+                var isLoggedIn = hasAuthToken && hasUserElements && !hasLoginElements && !isOnLoginPage;
                 
                 return {
                     isLoggedIn: isLoggedIn,
@@ -706,10 +751,11 @@ async def check_login_status_detailed(page):
                     isOnLoginPage: isOnLoginPage,
                     url: window.location.href
                 };
-            }
+            })()
         """
-        return await page.execute_script(js_code)
-    except:
+        return await safe_execute_js(js_code, timeout=10.0, default_return={'isLoggedIn': False})
+    except Exception as e:
+        logger.error(f"❌ Ошибка проверки статуса: {e}")
         return {'isLoggedIn': False}
 
 # ========== КОМАНДА ЛОГИН ==========
@@ -878,24 +924,25 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(1)
         
         js_tweets = f"""
-            () => {{
-                const tweets = [];
-                document.querySelectorAll('[data-testid="tweet"]').forEach((tweet, index) => {{
-                    if (index >= {count}) return;
-                    const textEl = tweet.querySelector('[data-testid="tweetText"]');
-                    const timeEl = tweet.querySelector('time');
-                    const isPinned = !!tweet.querySelector('[data-testid="pinIcon"]');
+            (function() {{
+                var tweets = [];
+                var elements = document.querySelectorAll('[data-testid="tweet"]');
+                for (var i = 0; i < elements.length && i < {count}; i++) {{
+                    var tweet = elements[i];
+                    var textEl = tweet.querySelector('[data-testid="tweetText"]');
+                    var timeEl = tweet.querySelector('time');
+                    var isPinned = !!tweet.querySelector('[data-testid="pinIcon"]');
                     tweets.push({{
                         text: textEl ? textEl.innerText.trim() : '',
                         time: timeEl ? timeEl.getAttribute('datetime') : '',
                         is_pinned: isPinned
                     }});
-                }});
+                }}
                 return tweets;
-            }}
+            }})()
         """
         
-        tweets_data = await execute_js(js_tweets, timeout=10.0)
+        tweets_data = await safe_execute_js(js_tweets, timeout=10.0, default_return=[])
         
         if not tweets_data:
             await send_message_safe(update, f"❌ Твиты @{username} не найдены")
