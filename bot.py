@@ -115,12 +115,9 @@ async def get_browser():
         tab = await browser.start()
         logger.info("✅ Браузер запущен")
         
-        # Переходим на X.com
         await tab.go_to('https://x.com')
         await asyncio.sleep(2)
         
-        # Устанавливаем куки
-        cookies_set = 0
         for cookie in COOKIES:
             try:
                 await tab.set_cookie(
@@ -129,36 +126,14 @@ async def get_browser():
                     domain=cookie.domain,
                     path=cookie.path
                 )
-                cookies_set += 1
-                logger.debug(f"🍪 Кука установлена: {cookie.name}")
+                logger.debug(f"🍪 Кука: {cookie.name}")
             except Exception as e:
-                logger.warning(f"⚠️ Ошибка установки {cookie.name}: {e}")
-                # Пробуем через JS
-                try:
-                    js_cookie = f"document.cookie='{cookie.name}={cookie.value}; domain={cookie.domain}; path={cookie.path}'"
-                    await tab.execute_script(js_cookie)
-                    cookies_set += 1
-                    logger.debug(f"🍪 Кука установлена через JS: {cookie.name}")
-                except Exception as e2:
-                    logger.warning(f"⚠️ Не удалось установить куку {cookie.name}: {e2}")
-        
-        logger.info(f"🍪 Установлено {cookies_set} из {len(COOKIES)} кук")
-        
-        # Проверяем куки
-        try:
-            check_cookies = await tab.execute_script('document.cookie')
-            logger.info(f"📋 Куки в браузере: {check_cookies[:200]}...")
-            if 'auth_token' in check_cookies:
-                logger.info("✅ auth_token найден в куках!")
-            else:
-                logger.warning("⚠️ auth_token НЕ найден в куках!")
-        except Exception as e:
-            logger.error(f"❌ Ошибка проверки кук: {e}")
+                logger.warning(f"⚠️ Ошибка {cookie.name}: {e}")
         
         return tab
         
     except Exception as e:
-        logger.error(f"❌ Ошибка запуска браузера: {e}")
+        logger.error(f"❌ Ошибка: {e}")
         return None
 
 async def close_browser():
@@ -168,7 +143,7 @@ async def close_browser():
             await browser.close()
             logger.info("✅ Браузер закрыт")
         except Exception as e:
-            logger.warning(f"⚠️ Ошибка при закрытии браузера: {e}")
+            logger.warning(f"⚠️ Ошибка: {e}")
         browser = None
         tab = None
 
@@ -181,7 +156,7 @@ async def take_screenshot():
         if screenshot:
             return base64.b64decode(screenshot)
     except Exception as e:
-        logger.error(f"❌ Ошибка скриншота: {e}")
+        logger.error(f"❌ Ошибка: {e}")
     return None
 
 # ========== SHADOW DOM ==========
@@ -195,12 +170,16 @@ async def shadow_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         shadow_elements = await page.execute_script('''
-            () => {
-                const elements = [];
-                document.querySelectorAll('*').forEach(el => {
+            function() {
+                var elements = [];
+                var all = document.querySelectorAll('*');
+                for (var i = 0; i < all.length; i++) {
+                    var el = all[i];
                     if (el.shadowRoot) {
-                        const shadowChildren = [];
-                        el.shadowRoot.childNodes.forEach(child => {
+                        var shadowChildren = [];
+                        var children = el.shadowRoot.childNodes;
+                        for (var j = 0; j < children.length; j++) {
+                            var child = children[j];
                             if (child.nodeType === 1) {
                                 shadowChildren.push({
                                     tag: child.tagName,
@@ -208,7 +187,7 @@ async def shadow_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                     class: child.className || ''
                                 });
                             }
-                        });
+                        }
                         elements.push({
                             tag: el.tagName,
                             id: el.id || '',
@@ -216,31 +195,29 @@ async def shadow_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             shadowChildren: shadowChildren
                         });
                     }
-                });
+                }
                 return elements;
             }
         ''')
         
-        report = "🛡️ **SHADOW DOM - МОЩЬ PYDOLL**\n\n"
+        report = "🛡️ SHADOW DOM - МОЩЬ PYDOLL\n\n"
         
         if shadow_elements and len(shadow_elements) > 0:
             report += f"✅ Найдено {len(shadow_elements)} элементов с Shadow DOM:\n\n"
             for el in shadow_elements[:3]:
-                report += f"📦 **{el.get('tag', '')}**"
+                report += f"📦 {el.get('tag', '')}"
                 if el.get('id'):
-                    report += f" id='{el.get('id')}'"
-                report += f"\n   • Дочерних: {len(el.get('shadowChildren', []))}\n\n"
+                    report += f" id={el.get('id')}"
+                report += f"\n   Дочерних: {len(el.get('shadowChildren', []))}\n\n"
         else:
             report += "ℹ️ На X.com нет Shadow DOM элементов\n\n"
         
-        report += "💡 **Как Pydoll работает с Shadow DOM:**\n"
-        report += "```python\n"
+        report += "💡 Как Pydoll работает с Shadow DOM:\n"
         report += "host = await tab.find('#shadow-host')\n"
         report += "shadow_root = await host.get_shadow_root()\n"
-        report += "inner = await shadow_root.query('.inner-class')\n"
-        report += "```"
+        report += "inner = await shadow_root.query('.inner-class')"
         
-        await msg.edit_text(report, parse_mode='Markdown')
+        await msg.edit_text(report)
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
@@ -257,39 +234,39 @@ async def api_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         api_url = "https://x.com/i/api/1.1/onboarding/task.json"
         
-        js_code = f"""
-            (async () => {{
-                try {{
-                    const response = await fetch('{api_url}', {{
+        js_code = """
+            (async () => {
+                try {
+                    const response = await fetch('""" + api_url + """', {
                         method: 'GET',
                         credentials: 'include',
-                        headers: {{
+                        headers: {
                             'Accept': 'application/json'
-                        }}
-                    }});
+                        }
+                    });
                     
                     const data = await response.json();
-                    return {{
+                    return {
                         status: response.status,
                         ok: response.ok,
                         data: data
-                    }};
-                }} catch (e) {{
-                    return {{
+                    };
+                } catch (e) {
+                    return {
                         error: e.message,
                         status: 0
-                    }};
-                }}
-            }})()
+                    };
+                }
+            })()
         """
         
         result = await page.execute_script(js_code)
         
         cookies_check = await page.execute_script('''
-            () => {
-                const cookies = document.cookie.split(';').reduce((acc, c) => {
-                    const [key, val] = c.trim().split('=');
-                    acc[key] = val;
+            function() {
+                var cookies = document.cookie.split(';').reduce(function(acc, c) {
+                    var parts = c.trim().split('=');
+                    acc[parts[0]] = parts[1];
                     return acc;
                 }, {});
                 return {
@@ -300,26 +277,26 @@ async def api_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
         ''')
         
-        report = "🌐 **API - МОЩЬ PYDOLL**\n\n"
+        report = "🌐 API - МОЩЬ PYDOLL\n\n"
         
-        report += "🍪 **Куки:**\n"
-        report += f"• auth_token: {'✅' if cookies_check.get('has_auth_token') else '❌'}\n"
-        report += f"• ct0: {'✅' if cookies_check.get('has_ct0') else '❌'}\n"
-        report += f"• Всего: {cookies_check.get('cookies_count', 0)}\n\n"
+        report += "🍪 Куки:\n"
+        report += f"  auth_token: {'✅' if cookies_check.get('has_auth_token') else '❌'}\n"
+        report += f"  ct0: {'✅' if cookies_check.get('has_ct0') else '❌'}\n"
+        report += f"  Всего: {cookies_check.get('cookies_count', 0)}\n\n"
         
         if result and not result.get('error'):
-            report += f"📊 **API Запрос:**\n"
-            report += f"• Статус: {result.get('status', 0)}\n"
-            report += f"• Успешно: {'✅' if result.get('ok') else '❌'}\n\n"
+            report += f"📊 API Запрос:\n"
+            report += f"  Статус: {result.get('status', 0)}\n"
+            report += f"  Успешно: {'✅' if result.get('ok') else '❌'}\n\n"
         else:
-            report += "❌ **API не работает**\n"
+            report += "❌ API не работает\n"
         
-        report += "💡 **Преимущества Pydoll:**\n"
-        report += "• Автоматическая авторизация\n"
-        report += "• Перехват запросов\n"
-        report += "• Эмуляция браузера"
+        report += "💡 Преимущества Pydoll:\n"
+        report += "  - Автоматическая авторизация\n"
+        report += "  - Перехват запросов\n"
+        report += "  - Эмуляция браузера"
         
-        await msg.edit_text(report, parse_mode='Markdown')
+        await msg.edit_text(report)
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
@@ -334,9 +311,26 @@ async def extract_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("❌ Браузер не запущен")
             return
         
+        # Сначала проверяем авторизацию
+        check_login = await page.execute_script('''
+            function() {
+                var cookies = document.cookie.split(';').reduce(function(acc, c) {
+                    var parts = c.trim().split('=');
+                    acc[parts[0]] = parts[1];
+                    return acc;
+                }, {});
+                return !!cookies.auth_token;
+            }
+        ''')
+        
+        if not check_login:
+            await msg.edit_text("❌ Вы не авторизованы!\nИспользуйте /login")
+            return
+        
+        # Проверяем твиты
         check_tweets = await page.execute_script('''
-            () => {
-                const tweets = document.querySelectorAll('[data-testid="tweet"]');
+            function() {
+                var tweets = document.querySelectorAll('[data-testid="tweet"]');
                 return {
                     count: tweets.length,
                     hasData: tweets.length > 0
@@ -345,24 +339,26 @@ async def extract_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ''')
         
         if not check_tweets.get('hasData', False):
-            await msg.edit_text("❌ Нет твитов на странице!\nИспользуйте /login")
+            await msg.edit_text("❌ Нет твитов на странице!\nПерейдите на страницу с твитами")
             return
         
         js_extract = """
-            () => {
-                const tweets = [];
-                document.querySelectorAll('[data-testid="tweet"]').forEach(el => {
-                    const textEl = el.querySelector('[data-testid="tweetText"]');
-                    const userEl = el.querySelector('[data-testid="User-Name"]');
-                    const timeEl = el.querySelector('time');
+            function() {
+                var tweets = [];
+                var elements = document.querySelectorAll('[data-testid="tweet"]');
+                for (var i = 0; i < elements.length && i < 10; i++) {
+                    var el = elements[i];
+                    var textEl = el.querySelector('[data-testid="tweetText"]');
+                    var userEl = el.querySelector('[data-testid="User-Name"]');
+                    var timeEl = el.querySelector('time');
                     
                     tweets.push({
                         text: textEl ? textEl.textContent : '',
                         author: userEl ? userEl.textContent : '',
                         time: timeEl ? timeEl.getAttribute('datetime') : ''
                     });
-                });
-                return tweets.slice(0, 10);
+                }
+                return tweets;
             }
         """
         
@@ -372,12 +368,14 @@ async def extract_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("⚠️ Данные не извлечены")
             return
         
-        report = "📊 **EXTRACT - МОЩЬ PYDOLL**\n\n"
+        report = f"📊 EXTRACT - МОЩЬ PYDOLL\n\n"
         report += f"✅ Извлечено {len(extracted)} твитов\n\n"
         
         for i, tweet in enumerate(extracted[:5], 1):
-            report += f"**{i}.** {tweet.get('author', 'Unknown')}\n"
-            report += f"{tweet.get('text', '')[:150]}...\n\n"
+            author = tweet.get('author', 'Unknown')
+            text = tweet.get('text', '')[:150]
+            report += f"{i}. {author}\n"
+            report += f"{text}\n\n"
         
         if len(extracted) > 5:
             report += f"... и еще {len(extracted) - 5} твитов"
@@ -386,7 +384,7 @@ async def extract_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with open(filename, 'w', encoding='utf-8') as f:
             json.dump(extracted, f, indent=2, ensure_ascii=False)
         
-        await msg.edit_text(report, parse_mode='Markdown')
+        await msg.edit_text(report)
         await update.message.reply_document(
             document=open(filename, 'rb'),
             caption=f"📄 {len(extracted)} твитов"
@@ -411,22 +409,22 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(3)
         
         auth_data = await page.execute_script('''
-            () => {
-                const cookies = document.cookie.split(';').reduce((acc, c) => {
-                    const [key, val] = c.trim().split('=');
-                    acc[key] = val;
+            function() {
+                var cookies = document.cookie.split(';').reduce(function(acc, c) {
+                    var parts = c.trim().split('=');
+                    acc[parts[0]] = parts[1];
                     return acc;
                 }, {});
                 
-                const hasAuthToken = !!cookies.auth_token && cookies.auth_token.length > 0;
-                const hasCt0 = !!cookies.ct0 && cookies.ct0.length > 0;
+                var hasAuthToken = !!cookies.auth_token && cookies.auth_token.length > 0;
+                var hasCt0 = !!cookies.ct0 && cookies.ct0.length > 0;
                 
-                let username = null;
-                const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
+                var username = null;
+                var profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
                 if (profileLink) {
-                    const href = profileLink.getAttribute('href');
+                    var href = profileLink.getAttribute('href');
                     if (href) {
-                        const match = href.match(/^\\/([^\\/]+)/);
+                        var match = href.match(/^\\/([^\\/]+)/);
                         if (match) username = match[1];
                     }
                 }
@@ -453,7 +451,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cookies_count=len(COOKIES)
         )
         
-        status_msg = "✅ **X.com**\n\n"
+        status_msg = "✅ X.com\n\n"
         status_msg += f"🍪 auth_token: {'✅' if auth_data.get('hasAuthToken') else '❌'}\n"
         status_msg += f"🍪 ct0: {'✅' if auth_data.get('hasCt0') else '❌'}\n\n"
         
@@ -473,7 +471,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption=f"📸 X.com - {'✅ Авторизован' if login_status.is_logged_in else '❌ Не авторизован'}"
             )
     except Exception as e:
-        logger.error(f"❌ Ошибка login: {e}")
+        logger.error(f"❌ Ошибка: {e}")
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ========== КОМАНДА /start ==========
@@ -491,7 +489,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         users[user.id] = user_data
         logger.info(f"✅ Пользователь: {user_data.first_name}")
     except Exception as e:
-        logger.error(f"❌ Ошибка пользователя: {e}")
+        logger.error(f"❌ Ошибка: {e}")
     
     keyboard = [
         [InlineKeyboardButton("🔐 Авторизация", callback_data="login")],
@@ -509,16 +507,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username_text = f" @{login_status.username}" if login_status.username else ""
     
     await update.message.reply_text(
-        f"🤖 **X.com Бот - Сила Pydoll**\n\n"
+        f"🤖 X.com Бот - Сила Pydoll\n\n"
         f"🔐 Статус: {status_emoji} {login_status.is_logged_in and 'Авторизован' or 'Не авторизован'}{username_text}\n"
         f"🍪 Кук: {login_status.cookies_count}\n"
         f"👤 Пользователей: {len(users)}\n\n"
-        f"⚡ **Сильные стороны Pydoll:**\n"
+        f"⚡ Сильные стороны Pydoll:\n"
         f"🛡️ Shadow DOM - работа с веб-компонентами\n"
         f"🌐 API - перехват и выполнение запросов\n"
         f"📊 Extract - структурированное извлечение\n\n"
         f"📌 Выберите действие:",
-        parse_mode='Markdown',
         reply_markup=reply_markup
     )
 
@@ -570,7 +567,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         msg = await update.message.reply_text("⏳ Проверяю статус...")
     
-    status_msg = "📊 **СТАТУС**\n\n"
+    status_msg = "📊 СТАТУС\n\n"
     status_msg += f"🔐 Авторизован: {'✅' if login_status.is_logged_in else '❌'}\n"
     if login_status.username and login_status.username != 'неизвестно':
         status_msg += f"👤 @{login_status.username}\n"
@@ -581,7 +578,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg += f"⚡ Extractor: {'✅' if EXTRACTOR_AVAILABLE else '❌'}\n"
     status_msg += f"\n🕐 {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
     
-    await msg.edit_text(status_msg, parse_mode='Markdown')
+    await msg.edit_text(status_msg)
 
 async def cookies_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -591,27 +588,24 @@ async def cookies_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text("🍪 **Управление куками**", parse_mode='Markdown', reply_markup=reply_markup)
+    await query.edit_message_text("🍪 Управление куками", reply_markup=reply_markup)
 
 async def show_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    text = "📋 **Текущие куки:**\n\n"
+    text = "📋 Текущие куки:\n\n"
     for cookie in COOKIES[:5]:
-        text += f"• {cookie.name}: {cookie.value[:30]}...\n"
+        text += f"  {cookie.name}: {cookie.value[:30]}...\n"
     if len(COOKIES) > 5:
         text += f"\n... и еще {len(COOKIES) - 5} кук"
-    await query.edit_message_text(text, parse_mode='Markdown')
+    await query.edit_message_text(text)
 
 async def set_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.edit_message_text(
-        "🍪 **Введите новые куки**\n\n"
+        "🍪 Введите новые куки\n\n"
         "JSON формат:\n"
-        "```json\n"
-        "[{\"name\":\"auth_token\",\"value\":\"токен\"}]\n"
-        "```\n"
-        "Или /cancel для отмены",
-        parse_mode='Markdown'
+        '[{"name":"auth_token","value":"токен"}]\n\n'
+        "Или /cancel для отмены"
     )
     context.user_data['waiting_for_cookies'] = True
 
@@ -688,13 +682,13 @@ def main():
     app.add_handler(CallbackQueryHandler(cookies_menu, pattern="^cookies_menu$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_cookies_input))
     
-    print("\n⚡ **БОТ ЗАПУЩЕН - СИЛА PYDOLL!**")
+    print("\n⚡ БОТ ЗАПУЩЕН - СИЛА PYDOLL!")
     print(f"🍪 Кук: {len(COOKIES)}")
     print(f"📦 Extractor: {'✅' if EXTRACTOR_AVAILABLE else '❌'}")
     print("\n🔥 СИЛЬНЫЕ СТОРОНЫ:")
-    print("  🛡️ /shadow - Shadow DOM")
-    print("  🌐 /api - API запросы")
-    print("  📊 /extract - Извлечение данных")
+    print("  /shadow - Shadow DOM")
+    print("  /api - API запросы")
+    print("  /extract - Извлечение данных")
     print("\n📌 Остальные команды:")
     print("  /start - меню")
     print("  /login - авторизация")
