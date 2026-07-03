@@ -40,7 +40,6 @@ def check_chromium():
     global CHROMIUM_INSTALLED, CHROMIUM_PATH
     logger.info("🔍 Проверяю наличие Chromium в системе...")
     
-    # Правильные пути для Chromium в Debian/Ubuntu
     chromium_paths = [
         '/usr/bin/chromium',
         '/usr/bin/chromium-browser',
@@ -55,19 +54,8 @@ def check_chromium():
             logger.info(f"✅ Chromium найден по пути: {path}")
             return True
     
-    # Пробуем через команду which
     try:
         result = subprocess.run(['which', 'chromium'], capture_output=True, text=True)
-        if result.returncode == 0 and result.stdout.strip():
-            CHROMIUM_PATH = result.stdout.strip()
-            CHROMIUM_INSTALLED = True
-            logger.info(f"✅ Chromium найден через which: {CHROMIUM_PATH}")
-            return True
-    except:
-        pass
-    
-    try:
-        result = subprocess.run(['which', 'chromium-browser'], capture_output=True, text=True)
         if result.returncode == 0 and result.stdout.strip():
             CHROMIUM_PATH = result.stdout.strip()
             CHROMIUM_INSTALLED = True
@@ -148,7 +136,6 @@ def install_chromium():
     logger.info("📦 Начинаю установку Chromium...")
     
     try:
-        # Проверяем, есть ли apt-get
         result = subprocess.run(['which', 'apt-get'], capture_output=True, text=True)
         if result.returncode == 0:
             logger.info("⏳ Установка через apt-get...")
@@ -174,7 +161,6 @@ def install_chromium():
                 'xdg-utils'
             ], check=True, capture_output=True)
             
-            # Проверяем установку
             check_chromium()
             if CHROMIUM_INSTALLED:
                 logger.info(f"✅ Chromium установлен через apt! Путь: {CHROMIUM_PATH}")
@@ -239,12 +225,10 @@ async def get_pydoll_browser():
         
         options = ChromiumOptions()
         
-        # ✅ ЯВНО УКАЗЫВАЕМ ПУТЬ К CHROMIUM
         if CHROMIUM_PATH and os.path.exists(CHROMIUM_PATH):
             options.binary_location = CHROMIUM_PATH
             logger.info(f"📍 Использую Chromium по пути: {CHROMIUM_PATH}")
         else:
-            # Пробуем найти заново
             check_chromium()
             if CHROMIUM_PATH and os.path.exists(CHROMIUM_PATH):
                 options.binary_location = CHROMIUM_PATH
@@ -253,7 +237,6 @@ async def get_pydoll_browser():
                 logger.error("❌ Chromium не найден в системе!")
                 raise Exception("Chromium не найден в системе")
         
-        # Добавляем аргументы для Railway/контейнеров
         args = [
             "--no-sandbox",
             "--disable-dev-shm-usage",
@@ -470,10 +453,13 @@ async def take_screenshot():
     if page is None:
         return None
     
-    if hasattr(page, 'screenshot'):
+    # ✅ ИСПРАВЛЕНО: используем правильное название метода
+    if hasattr(page, 'take_screenshot'):
+        return await page.take_screenshot()
+    elif hasattr(page, 'screenshot'):
         return await page.screenshot()
     else:
-        logger.error(f"Неизвестный тип страницы: {type(page)}")
+        logger.error(f"Неизвестный тип страницы или метод скриншота: {type(page)}")
         return None
 
 # ========== ДИАГНОСТИЧЕСКАЯ КОМАНДА ==========
@@ -494,7 +480,6 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if not found:
             await msg.edit_text("❌ Chromium НЕ НАЙДЕН!")
-            # Показываем содержимое /usr/bin
             try:
                 files = os.listdir('/usr/bin')
                 chrome_files = [f for f in files if 'chrome' in f.lower() or 'chromium' in f.lower()]
@@ -517,7 +502,6 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text("3️⃣ Создаю опции...")
         try:
             options = ChromiumOptions()
-            # Явно указываем путь
             options.binary_location = found
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
@@ -542,11 +526,19 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await tab.go_to('https://www.google.com')
             await msg.edit_text("✅ Переход на Google выполнен!")
             
-            # 6. Скриншот
-            screenshot = await tab.screenshot()
-            await msg.edit_text(f"✅ Скриншот сделан ({len(screenshot)} байт)")
+            # 6. Скриншот - ✅ ИСПРАВЛЕНО
+            await msg.edit_text("6️⃣ Делаю скриншот...")
+            if hasattr(tab, 'take_screenshot'):
+                screenshot = await tab.take_screenshot()
+                await msg.edit_text(f"✅ Скриншот сделан через take_screenshot() ({len(screenshot)} байт)")
+            elif hasattr(tab, 'screenshot'):
+                screenshot = await tab.screenshot()
+                await msg.edit_text(f"✅ Скриншот сделан через screenshot() ({len(screenshot)} байт)")
+            else:
+                await msg.edit_text("⚠️ Метод скриншота не найден")
             
             # 7. Закрытие
+            await msg.edit_text("7️⃣ Закрываю браузер...")
             await browser.close()
             await msg.edit_text("✅ Браузер закрыт! Всё работает!")
             
