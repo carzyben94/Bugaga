@@ -11,13 +11,6 @@ from typing import Optional, List, Dict, Any
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
-# ========== PYDANTIC ==========
-try:
-    from pydantic import BaseModel, Field, ValidationError
-    PYDANTIC_AVAILABLE = True
-except ImportError:
-    PYDANTIC_AVAILABLE = False
-
 # ========== НАСТРОЙКА ЛОГГИРОВАНИЯ ==========
 logging.basicConfig(
     level=logging.INFO,
@@ -62,162 +55,20 @@ try:
 except ImportError as e:
     logger.warning(f"⚠️ Pydoll не найден: {e}")
 
-# ========== PYDANTIC МОДЕЛИ ==========
-if PYDANTIC_AVAILABLE:
-    class TweetModel(BaseModel):
-        text: str = Field(..., description="Текст твита")
-        author: Optional[str] = Field(None, description="Автор")
-        time: Optional[str] = Field(None, description="Время")
-        is_pinned: bool = Field(False, description="Закреплен")
-        likes: Optional[int] = Field(0, description="Лайки")
-        retweets: Optional[int] = Field(0, description="Ретвиты")
-        
-    class ApiResponseModel(BaseModel):
-        url: str = Field(..., description="URL запроса")
-        status: int = Field(..., description="Статус ответа")
-        ok: bool = Field(..., description="Успешно")
-        data: Dict[str, Any] = Field(default_factory=dict, description="Данные")
-        
-    class ShadowElementModel(BaseModel):
-        tag: str = Field(..., description="Тег элемента")
-        id: Optional[str] = Field(None, description="ID")
-        class_name: Optional[str] = Field(None, description="Класс")
-        children_count: int = Field(0, description="Количество детей")
-
 # ========== КУКИ X.COM ==========
 COOKIES = [
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "__cuid",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "__cuid",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "lang",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "ru"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "dnt",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "1"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "guest_id",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "v1%3A178267838599411411"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "guest_id_marketing",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "v1%3A178267838599411411"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "guest_id_ads",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "v1%3A178267838599411411"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "personalization_id",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "\"v1_DKrxLZAC902dMFdd1QrVYg==\""
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "twid",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "u%3D2067347503503052800"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "auth_token",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "ct0",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "__cf_bm",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "3PHty0MUYSrud60gKo41iFni0wDB5uFEa.TAyF3eWFQ-1783076730.4783854-1.0.1.1-tIYvV5IeAbbckRKhliuQ8DI9NYoY6JmPZJdARb6ixRKFjmT7KZAh51b0nLs.b7Luev2xSanCGZe_nfRDp8grfYUFb86myqghHqcGrGpymnU2..9obAQIOtsQQ7mUYWo0"
-    }
+    {"domain": ".x.com", "name": "__cuid", "path": "/", "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"},
+    {"domain": ".x.com", "name": "__cuid", "path": "/", "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"},
+    {"domain": ".x.com", "name": "lang", "path": "/", "value": "ru"},
+    {"domain": ".x.com", "name": "dnt", "path": "/", "value": "1"},
+    {"domain": ".x.com", "name": "guest_id", "path": "/", "value": "v1%3A178267838599411411"},
+    {"domain": ".x.com", "name": "guest_id_marketing", "path": "/", "value": "v1%3A178267838599411411"},
+    {"domain": ".x.com", "name": "guest_id_ads", "path": "/", "value": "v1%3A178267838599411411"},
+    {"domain": ".x.com", "name": "personalization_id", "path": "/", "value": "\"v1_DKrxLZAC902dMFdd1QrVYg==\""},
+    {"domain": ".x.com", "name": "twid", "path": "/", "value": "u%3D2067347503503052800"},
+    {"domain": ".x.com", "name": "auth_token", "path": "/", "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936"},
+    {"domain": ".x.com", "name": "ct0", "path": "/", "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb"},
+    {"domain": ".x.com", "name": "__cf_bm", "path": "/", "value": "3PHty0MUYSrud60gKo41iFni0wDB5uFEa.TAyF3eWFQ-1783076730.4783854-1.0.1.1-tIYvV5IeAbbckRKhliuQ8DI9NYoY6JmPZJdARb6ixRKFjmT7KZAh51b0nLs.b7Luev2xSanCGZe_nfRDp8grfYUFb86myqghHqcGrGpymnU2..9obAQIOtsQQ7mUYWo0"}
 ]
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
@@ -327,128 +178,272 @@ async def take_screenshot():
         logger.error(f"❌ Ошибка скриншота: {e}")
         return None
 
-# ========== ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ВАЛИДАЦИИ ==========
+# ========== SHADOW DOM - МНОЖЕСТВО ВАРИАНТОВ ==========
 
-def safe_validate(model_class, data):
-    """Безопасная валидация данных через Pydantic"""
-    if not PYDANTIC_AVAILABLE:
-        return data
-    
-    # Если строка - пробуем парсить JSON
-    if isinstance(data, str):
-        try:
-            data = json.loads(data)
-        except:
-            return data
-    
-    # Если список - валидируем каждый элемент
-    if isinstance(data, list):
-        validated = []
-        for item in data:
-            if isinstance(item, dict):
-                try:
-                    validated.append(model_class(**item).model_dump())
-                except Exception as e:
-                    logger.warning(f"⚠️ Ошибка валидации: {e}")
-                    validated.append(item)
-            else:
-                validated.append(item)
-        return validated
-    
-    # Если словарь - валидируем один объект
-    if isinstance(data, dict):
-        try:
-            return model_class(**data).model_dump()
-        except Exception as e:
-            logger.warning(f"⚠️ Ошибка валидации: {e}")
-            return data
-    
-    return data
-
-# ========== SHADOW DOM ==========
-
-async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Работа с Shadow DOM - поиск веб-компонентов"""
-    logger.info(f"📩 /shadow от {update.effective_user.username}")
-    
-    await send_message_safe(update, "🛡️ Исследую Shadow DOM...")
-    
+async def shadow_v1(page):
+    """Вариант 1: Простой поиск shadowRoot"""
     try:
-        page = await get_browser()
-        if page is None:
-            await send_message_safe(update, "❌ Браузер не запущен. Используйте /login")
-            return
-        
-        # Находим все элементы с shadowRoot
-        js_find = """
+        js = """
             () => {
                 const result = [];
                 document.querySelectorAll('*').forEach(el => {
                     if (el.shadowRoot) {
-                        const children = el.shadowRoot.children.length;
                         result.push({
                             tag: el.tagName.toLowerCase(),
                             id: el.id || null,
-                            class_name: el.className || null,
-                            children_count: children
+                            class: el.className || null,
+                            children: el.shadowRoot.children.length
                         });
                     }
                 });
                 return result;
             }
         """
+        return await page.execute_script(js)
+    except Exception as e:
+        logger.error(f"Shadow V1 error: {e}")
+        return None
+
+async def shadow_v2(page):
+    """Вариант 2: С поиском конкретных элементов"""
+    try:
+        js = """
+            () => {
+                const result = [];
+                const selectors = ['grok-drawer', 'video-player', 'emoji-picker'];
+                selectors.forEach(sel => {
+                    const el = document.querySelector(sel);
+                    if (el && el.shadowRoot) {
+                        const children = [];
+                        for (let child of el.shadowRoot.children) {
+                            children.push({
+                                tag: child.tagName.toLowerCase(),
+                                id: child.id || null,
+                                text: child.textContent ? child.textContent.slice(0, 50) : null
+                            });
+                        }
+                        result.push({
+                            host: sel,
+                            id: el.id || null,
+                            children: children
+                        });
+                    }
+                });
+                return result;
+            }
+        """
+        return await page.execute_script(js)
+    except Exception as e:
+        logger.error(f"Shadow V2 error: {e}")
+        return None
+
+async def shadow_v3(page):
+    """Вариант 3: Рекурсивный обход"""
+    try:
+        js = """
+            () => {
+                function traverse(el, path) {
+                    const data = {
+                        tag: el.tagName.toLowerCase(),
+                        id: el.id || null,
+                        class: el.className || null,
+                        path: path,
+                        hasShadow: !!el.shadowRoot,
+                        children: []
+                    };
+                    
+                    if (el.shadowRoot) {
+                        for (let child of el.shadowRoot.children) {
+                            data.children.push(traverse(child, path + ' > shadow'));
+                        }
+                    }
+                    
+                    for (let child of el.children) {
+                        if (!child.shadowRoot) {
+                            data.children.push(traverse(child, path + ' > ' + el.tagName));
+                        }
+                    }
+                    
+                    return data;
+                }
+                
+                return traverse(document.body, 'body');
+            }
+        """
+        return await page.execute_script(js)
+    except Exception as e:
+        logger.error(f"Shadow V3 error: {e}")
+        return None
+
+async def shadow_v4(page):
+    """Вариант 4: Только хосты с shadowRoot"""
+    try:
+        js = """
+            () => {
+                const hosts = [];
+                document.querySelectorAll('*').forEach(el => {
+                    if (el.shadowRoot) {
+                        const info = {
+                            tag: el.tagName,
+                            id: el.id || null,
+                            class: el.className || null,
+                            childCount: el.shadowRoot.children.length
+                        };
+                        
+                        // Пробуем найти интерактивные элементы внутри
+                        const buttons = el.shadowRoot.querySelectorAll('button');
+                        const inputs = el.shadowRoot.querySelectorAll('input, textarea');
+                        
+                        info.buttons = buttons.length;
+                        info.inputs = inputs.length;
+                        
+                        hosts.push(info);
+                    }
+                });
+                return hosts;
+            }
+        """
+        return await page.execute_script(js)
+    except Exception as e:
+        logger.error(f"Shadow V4 error: {e}")
+        return None
+
+async def shadow_v5(page):
+    """Вариант 5: Через find + get_shadow_root (Pydoll метод)"""
+    try:
+        # Пробуем найти через Pydoll
+        hosts = []
+        selectors = ['grok-drawer', '[data-testid="GrokDrawer"]', 'video-player']
         
-        shadow_elements = await page.execute_script(js_find)
+        for sel in selectors:
+            try:
+                el = await page.find(sel, timeout=2000)
+                if el and hasattr(el, 'get_shadow_root'):
+                    shadow = await el.get_shadow_root()
+                    if shadow:
+                        children = []
+                        # Пробуем получить детей
+                        try:
+                            inner = await shadow.find_all('*')
+                            for child in inner[:5]:
+                                text = await child.text() if hasattr(child, 'text') else None
+                                children.append({
+                                    'tag': await child.tag_name() if hasattr(child, 'tag_name') else 'unknown',
+                                    'text': text[:50] if text else None
+                                })
+                        except:
+                            pass
+                        hosts.append({
+                            'selector': sel,
+                            'children': children
+                        })
+            except:
+                pass
         
-        if not shadow_elements or len(shadow_elements) == 0:
-            await send_message_safe(update, "⚠️ Shadow DOM элементы не найдены на странице.")
+        return hosts
+    except Exception as e:
+        logger.error(f"Shadow V5 error: {e}")
+        return None
+
+# ========== /SHADOW - ВСЕ ВАРИАНТЫ ==========
+
+async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Shadow DOM - тестирование всех вариантов"""
+    logger.info(f"📩 /shadow от {update.effective_user.username}")
+    
+    await send_message_safe(update, "🛡️ Тестирую Shadow DOM (5 вариантов)...")
+    
+    try:
+        page = await get_browser()
+        if page is None:
+            await send_message_safe(update, "❌ Браузер не запущен. Используйте /login")
             return
         
-        # Валидация
-        validated_elements = safe_validate(ShadowElementModel, shadow_elements)
+        results = {}
         
-        # Формируем ответ
-        response = f"🛡️ **SHADOW DOM**\n\n"
-        response += f"📦 Найдено элементов: {len(validated_elements)}\n\n"
+        # Вариант 1
+        await send_message_safe(update, "🔄 Вариант 1: Простой поиск...")
+        results['v1'] = await shadow_v1(page)
         
-        for i, el in enumerate(validated_elements[:5], 1):
-            if isinstance(el, dict):
-                response += f"**{i}.** `{el.get('tag', 'unknown')}`"
-                if el.get('id'):
-                    response += f" id=\"{el['id']}\""
-                if el.get('class_name'):
-                    response += f" class=\"{el['class_name']}\""
-                response += f"\n   📄 Детей: {el.get('children_count', 0)}\n\n"
+        # Вариант 2
+        await send_message_safe(update, "🔄 Вариант 2: Конкретные элементы...")
+        results['v2'] = await shadow_v2(page)
         
-        response += "💡 **Как использовать:**\n"
-        response += "```python\n"
-        response += "host = await tab.find('#shadow-host')\n"
-        response += "shadow_root = await host.get_shadow_root()\n"
-        response += "inner = await shadow_root.query('.inner-class')\n"
-        response += "```"
+        # Вариант 3
+        await send_message_safe(update, "🔄 Вариант 3: Рекурсивный обход...")
+        results['v3'] = await shadow_v3(page)
+        
+        # Вариант 4
+        await send_message_safe(update, "🔄 Вариант 4: Хосты с shadowRoot...")
+        results['v4'] = await shadow_v4(page)
+        
+        # Вариант 5
+        await send_message_safe(update, "🔄 Вариант 5: Pydoll find + get_shadow_root...")
+        results['v5'] = await shadow_v5(page)
+        
+        # Формируем отчет
+        response = f"🛡️ **SHADOW DOM - РЕЗУЛЬТАТЫ**\n\n"
+        
+        for key, data in results.items():
+            if data and len(data) > 0:
+                response += f"✅ **{key.upper()}** - Найдено: {len(data)} элементов\n"
+                # Показываем первые 2 элемента
+                for i, item in enumerate(data[:2]):
+                    if isinstance(item, dict):
+                        tag = item.get('tag', item.get('host', 'unknown'))
+                        response += f"  └─ {i+1}. {tag}"
+                        if item.get('id'):
+                            response += f" (id: {item['id']})"
+                        if item.get('childCount') or item.get('children'):
+                            count = item.get('childCount', len(item.get('children', [])))
+                            response += f" - детей: {count}"
+                        response += "\n"
+            else:
+                response += f"❌ **{key.upper()}** - Ничего не найдено\n"
+            response += "\n"
+        
+        # Определяем лучший вариант
+        best = None
+        max_count = 0
+        for key, data in results.items():
+            if data and len(data) > max_count:
+                max_count = len(data)
+                best = key
+        
+        if best:
+            response += f"🏆 **Лучший вариант: {best.upper()}** ({max_count} элементов)\n"
+            response += f"💡 Используйте этот вариант в коде."
+        else:
+            response += "❌ **Ни один вариант не сработал**\n"
+            response += "💡 Попробуйте обновить страницу или зайти на X.com"
+        
+        # Сохраняем полные данные в JSON
+        filename = f"shadow_test_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(results, f, indent=2, ensure_ascii=False)
         
         await send_message_safe(update, response, parse_mode='Markdown')
+        await update.message.reply_document(
+            document=open(filename, 'rb'),
+            caption=f"📄 Полные результаты ({len(results)} вариантов)"
+        )
+        
+        # Скриншот
+        screenshot = await take_screenshot()
+        if screenshot:
+            await send_photo_safe(update, screenshot, "📸 Текущая страница")
         
     except Exception as e:
         logger.error(f"❌ Ошибка shadow: {e}", exc_info=True)
         await send_message_safe(update, f"❌ Ошибка: {str(e)[:200]}")
 
-# ========== API - ПЕРЕХВАТ И ВЫПОЛНЕНИЕ ЗАПРОСОВ ==========
+# ========== /TEST - ТЕСТ ВСЕХ ФУНКЦИЙ ==========
 
-async def api(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Выполнение API запросов через браузер с сессией"""
-    logger.info(f"📩 /api от {update.effective_user.username}")
+async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Полное тестирование всех функций"""
+    logger.info(f"📩 /test от {update.effective_user.username}")
     
-    if not context.args:
-        await update.message.reply_text(
-            "🌐 **API запрос с сессией браузера**\n\n"
-            "Использование: `/api <url>`\n"
-            "Пример: `/api https://x.com/i/api/1.1/onboarding/task.json`"
-        )
-        return
-    
-    url = context.args[0]
-    await send_message_safe(update, f"🌐 Выполняю запрос к {url[:80]}...")
+    await send_message_safe(update, "🧪 Запускаю полное тестирование...")
     
     try:
         page = await get_browser()
@@ -456,151 +451,163 @@ async def api(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_message_safe(update, "❌ Браузер не запущен. Используйте /login")
             return
         
-        js_code = f"""
-            (async () => {{
-                try {{
-                    const response = await fetch('{url}', {{
-                        method: 'GET',
-                        credentials: 'include',
-                        headers: {{ 'Accept': 'application/json' }}
-                    }});
-                    const data = await response.json();
-                    return {{
-                        status: response.status,
-                        ok: response.ok,
-                        data: data
-                    }};
-                }} catch (e) {{
-                    return {{ error: e.message, status: 0 }};
-                }}
-            }})()
-        """
+        results = {
+            'status': 'running',
+            'timestamp': datetime.now().isoformat(),
+            'tests': {}
+        }
         
-        result = await page.execute_script(js_code)
+        # 1. Тест execute_js
+        try:
+            await send_message_safe(update, "🔄 Тест 1: execute_js...")
+            result = await page.execute_script('return document.title;')
+            results['tests']['execute_js'] = {'status': '✅', 'result': result}
+        except Exception as e:
+            results['tests']['execute_js'] = {'status': '❌', 'error': str(e)}
         
-        if result.get('error'):
-            await send_message_safe(update, f"❌ Ошибка: {result['error']}")
-            return
+        # 2. Тест Shadow DOM (все варианты)
+        await send_message_safe(update, "🔄 Тест 2: Shadow DOM...")
+        results['tests']['shadow'] = {}
         
-        validated = safe_validate(ApiResponseModel, result)
+        try:
+            data = await shadow_v1(page)
+            results['tests']['shadow']['v1'] = {'status': '✅' if data else '⚠️', 'count': len(data) if data else 0}
+        except Exception as e:
+            results['tests']['shadow']['v1'] = {'status': '❌', 'error': str(e)}
         
-        response_text = f"✅ **API ЗАПРОС ВЫПОЛНЕН**\n\n"
-        response_text += f"📍 {url[:80]}\n"
-        response_text += f"📊 Статус: {validated.get('status', 0)}\n"
-        response_text += f"📊 Успешно: {'✅' if validated.get('ok') else '❌'}\n\n"
+        try:
+            data = await shadow_v2(page)
+            results['tests']['shadow']['v2'] = {'status': '✅' if data else '⚠️', 'count': len(data) if data else 0}
+        except Exception as e:
+            results['tests']['shadow']['v2'] = {'status': '❌', 'error': str(e)}
         
-        data = validated.get('data', {})
-        if data:
-            data_str = json.dumps(data, indent=2, ensure_ascii=False)[:1500]
-            response_text += f"📝 **Данные:**\n```json\n{data_str}\n```"
+        try:
+            data = await shadow_v3(page)
+            results['tests']['shadow']['v3'] = {'status': '✅' if data else '⚠️', 'count': len(data) if data else 0}
+        except Exception as e:
+            results['tests']['shadow']['v3'] = {'status': '❌', 'error': str(e)}
         
-        await send_message_safe(update, response_text, parse_mode='Markdown')
-            
-    except Exception as e:
-        logger.error(f"❌ Ошибка API: {e}", exc_info=True)
-        await send_message_safe(update, f"❌ Ошибка: {str(e)[:200]}")
-
-# ========== EXTRACT - СТРУКТУРИРОВАННОЕ ИЗВЛЕЧЕНИЕ ==========
-
-async def extract(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Структурированное извлечение данных со страницы"""
-    logger.info(f"📩 /extract от {update.effective_user.username}")
-    
-    await send_message_safe(update, "📊 Извлекаю структурированные данные...")
-    
-    try:
-        page = await get_browser()
-        if page is None:
-            await send_message_safe(update, "❌ Браузер не запущен. Используйте /login")
-            return
+        try:
+            data = await shadow_v4(page)
+            results['tests']['shadow']['v4'] = {'status': '✅' if data else '⚠️', 'count': len(data) if data else 0}
+        except Exception as e:
+            results['tests']['shadow']['v4'] = {'status': '❌', 'error': str(e)}
         
-        js_extract = """
-            () => {
-                const tweets = [];
-                document.querySelectorAll('[data-testid="tweet"]').forEach(el => {
-                    const textEl = el.querySelector('[data-testid="tweetText"]');
-                    const timeEl = el.querySelector('time');
-                    const isPinned = !!el.querySelector('[data-testid="pinIcon"]');
-                    
-                    const likeBtn = el.querySelector('[data-testid="like"]');
-                    let likes = 0;
-                    if (likeBtn) {
-                        const likeText = likeBtn.getAttribute('aria-label') || '';
-                        const match = likeText.match(/(\\d+)/);
-                        if (match) likes = parseInt(match[1]);
-                    }
-                    
-                    let author = null;
-                    const userEl = el.querySelector('[data-testid="User-Name"]');
-                    if (userEl) {
-                        const link = userEl.querySelector('a');
-                        if (link) {
-                            const href = link.getAttribute('href');
-                            if (href) {
-                                const match = href.match(/^\\/([^\\/]+)/);
-                                if (match) author = match[1];
-                            }
-                        }
-                    }
-                    
-                    let text = textEl ? textEl.innerText : '';
-                    text = text.replace(/https?:\\/\\/[^\\s]*/g, '');
-                    text = text.replace(/\\s{2,}/g, ' ');
-                    text = text.trim();
-                    
-                    if (text) {
-                        tweets.push({
-                            text: text,
-                            author: author,
-                            time: timeEl ? timeEl.getAttribute('datetime') : null,
-                            is_pinned: isPinned,
-                            likes: likes
-                        });
-                    }
-                });
-                return tweets.slice(0, 20);
-            }
-        """
+        try:
+            data = await shadow_v5(page)
+            results['tests']['shadow']['v5'] = {'status': '✅' if data else '⚠️', 'count': len(data) if data else 0}
+        except Exception as e:
+            results['tests']['shadow']['v5'] = {'status': '❌', 'error': str(e)}
         
-        extracted_data = await page.execute_script(js_extract)
+        # 3. Тест скриншота
+        await send_message_safe(update, "🔄 Тест 3: Скриншот...")
+        try:
+            screenshot = await take_screenshot()
+            results['tests']['screenshot'] = {'status': '✅' if screenshot else '❌', 'size': len(screenshot) if screenshot else 0}
+            if screenshot:
+                await send_photo_safe(update, screenshot, "📸 Тестовый скриншот")
+        except Exception as e:
+            results['tests']['screenshot'] = {'status': '❌', 'error': str(e)}
         
-        if not extracted_data or len(extracted_data) == 0:
-            await send_message_safe(update, "⚠️ Нет данных для извлечения.")
-            return
+        # 4. Тест кук
+        await send_message_safe(update, "🔄 Тест 4: Куки...")
+        try:
+            cookies = await page.execute_script('return document.cookie;')
+            results['tests']['cookies'] = {'status': '✅' if cookies else '⚠️', 'length': len(cookies) if cookies else 0}
+        except Exception as e:
+            results['tests']['cookies'] = {'status': '❌', 'error': str(e)}
         
-        validated_tweets = safe_validate(TweetModel, extracted_data)
+        # 5. Тест URL
+        await send_message_safe(update, "🔄 Тест 5: URL...")
+        try:
+            url = await page.execute_script('return window.location.href;')
+            results['tests']['url'] = {'status': '✅', 'url': url}
+        except Exception as e:
+            results['tests']['url'] = {'status': '❌', 'error': str(e)}
         
-        response = f"📊 **ИЗВЛЕЧЕНИЕ ДАННЫХ**\n\n"
-        response += f"📌 Найдено: {len(validated_tweets)} твитов\n"
-        response += f"🕐 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
+        # 6. Тест элементов X.com
+        await send_message_safe(update, "🔄 Тест 6: Элементы X.com...")
+        try:
+            js = """
+                () => {
+                    const elements = {
+                        tweets: document.querySelectorAll('[data-testid="tweet"]').length,
+                        profile: !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]'),
+                        tweetBtn: !!document.querySelector('[data-testid="tweetButton"]'),
+                        loginBtn: !!document.querySelector('[data-testid="loginButton"]')
+                    };
+                    return elements;
+                }
+            """
+            x_elements = await page.execute_script(js)
+            results['tests']['x_elements'] = {'status': '✅', 'data': x_elements}
+        except Exception as e:
+            results['tests']['x_elements'] = {'status': '❌', 'error': str(e)}
         
-        for i, tweet in enumerate(validated_tweets[:3], 1):
-            if isinstance(tweet, dict):
-                text = tweet.get('text', '')[:150]
-                if len(tweet.get('text', '')) > 150:
-                    text += "..."
-                response += f"**{i}.** {text}\n"
-                if tweet.get('author'):
-                    response += f"   👤 @{tweet['author']}"
-                if tweet.get('likes', 0) > 0:
-                    response += f" ❤️ {tweet['likes']}"
-                if tweet.get('is_pinned'):
-                    response += " 📌 ЗАКРЕПЛЕН"
-                response += "\n\n"
+        # Итоговый отчет
+        results['status'] = 'completed'
         
-        # Сохраняем в JSON
-        filename = f"extracted_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        total = len(results['tests'])
+        success = sum(1 for t in results['tests'].values() if t.get('status') == '✅')
+        warning = sum(1 for t in results['tests'].values() if t.get('status') == '⚠️')
+        error = sum(1 for t in results['tests'].values() if t.get('status') == '❌')
+        
+        response = f"🧪 **РЕЗУЛЬТАТЫ ТЕСТИРОВАНИЯ**\n\n"
+        response += f"📊 Всего тестов: {total}\n"
+        response += f"✅ Успешно: {success}\n"
+        response += f"⚠️ Предупреждений: {warning}\n"
+        response += f"❌ Ошибок: {error}\n\n"
+        
+        response += f"📋 **Детали:**\n"
+        for name, data in results['tests'].items():
+            status = data.get('status', '❌')
+            if name == 'shadow':
+                response += f"\n  🛡️ **Shadow DOM:**\n"
+                for v, d in data.items():
+                    if v != 'status':
+                        response += f"    {v.upper()}: {d.get('status', '❌')}"
+                        if d.get('count') is not None:
+                            response += f" ({d['count']} элементов)"
+                        response += "\n"
+            else:
+                response += f"  {name}: {status}"
+                if data.get('result'):
+                    response += f" → {data['result'][:50]}"
+                elif data.get('url'):
+                    response += f" → {data['url'][:50]}"
+                elif data.get('data'):
+                    response += f" → {json.dumps(data['data'])[:50]}"
+                elif data.get('length'):
+                    response += f" → {data['length']} байт"
+                response += "\n"
+        
+        # Сохраняем JSON
+        filename = f"test_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(validated_tweets, f, indent=2, ensure_ascii=False)
+            json.dump(results, f, indent=2, ensure_ascii=False)
         
-        await send_message_safe(update, response)
+        await send_message_safe(update, response, parse_mode='Markdown')
         await update.message.reply_document(
             document=open(filename, 'rb'),
-            caption=f"📄 Полные данные ({len(validated_tweets)} твитов)"
+            caption=f"📄 Полные результаты тестирования"
         )
         
+        # Определяем лучший Shadow вариант
+        best_shadow = None
+        best_count = 0
+        if 'shadow' in results['tests']:
+            for v, d in results['tests']['shadow'].items():
+                if v != 'status' and d.get('count', 0) > best_count:
+                    best_count = d['count']
+                    best_shadow = v
+        
+        if best_shadow:
+            await send_message_safe(update, 
+                f"🏆 **Лучший Shadow DOM вариант: {best_shadow.upper()}** ({best_count} элементов)"
+            )
+        
     except Exception as e:
-        logger.error(f"❌ Ошибка extract: {e}", exc_info=True)
+        logger.error(f"❌ Ошибка test: {e}", exc_info=True)
         await send_message_safe(update, f"❌ Ошибка: {str(e)[:200]}")
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
@@ -792,8 +799,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📊 Статус", callback_data="status")],
         [InlineKeyboardButton("📝 Твиты", callback_data="tweets")],
         [InlineKeyboardButton("🛡️ Shadow DOM", callback_data="shadow")],
-        [InlineKeyboardButton("🌐 API Запрос", callback_data="api")],
-        [InlineKeyboardButton("📊 Extract", callback_data="extract")],
+        [InlineKeyboardButton("🧪 Тест", callback_data="test")],
         [InlineKeyboardButton("❌ Закрыть", callback_data="close")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -805,7 +811,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🤖 **X.com Бот**\n\n"
         f"🔐 Статус: {status_emoji} {login_status['is_logged_in'] and 'Авторизован' or 'Не авторизован'}{username_text}\n"
         f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}\n"
-        f"📦 Pydantic: {'✅' if PYDANTIC_AVAILABLE else '❌'}\n"
         f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}\n\n"
         f"📌 **Нажмите кнопку:**",
         parse_mode='Markdown',
@@ -829,13 +834,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     elif query.data == "shadow":
         await shadow(update, context)
-    elif query.data == "api":
-        await query.edit_message_text(
-            "🌐 **Введите URL для API запроса:**\n\n"
-            "Пример: `/api https://x.com/i/api/1.1/onboarding/task.json`"
-        )
-    elif query.data == "extract":
-        await extract(update, context)
+    elif query.data == "test":
+        await test(update, context)
     elif query.data == "close":
         await close(update, context)
 
@@ -857,7 +857,6 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_text += f"👤 @{login_status['username']}\n"
     status_text += f"🕐 {login_status['last_check'] or 'Никогда'}\n\n"
     status_text += f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}\n"
-    status_text += f"📦 Pydantic: {'✅' if PYDANTIC_AVAILABLE else '❌'}\n"
     status_text += f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}\n"
     status_text += f"🌐 Браузер: {'✅' if pydoll_browser else '❌'}\n"
     status_text += f"🍪 Кук: {len(COOKIES)}"
@@ -913,10 +912,8 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_message_safe(update, f"❌ Твиты @{username} не найдены")
             return
         
-        validated_tweets = safe_validate(TweetModel, tweets_data)
-        
-        response = f"📊 **ТВИТЫ @{username}**\n📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n📌 {len(validated_tweets)}\n\n"
-        for i, tweet in enumerate(validated_tweets[:5], 1):
+        response = f"📊 **ТВИТЫ @{username}**\n📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n📌 {len(tweets_data)}\n\n"
+        for i, tweet in enumerate(tweets_data[:5], 1):
             if isinstance(tweet, dict):
                 response += f"**{i}.** {tweet.get('text', '')[:200]}\n"
                 if tweet.get('is_pinned'):
@@ -975,8 +972,7 @@ def main():
     app.add_handler(CommandHandler("login", login))
     app.add_handler(CommandHandler("tweets", tweets))
     app.add_handler(CommandHandler("shadow", shadow))
-    app.add_handler(CommandHandler("api", api))
-    app.add_handler(CommandHandler("extract", extract))
+    app.add_handler(CommandHandler("test", test))
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("close", close))
@@ -988,15 +984,13 @@ def main():
     
     print("\n✅ Бот запущен!")
     print(f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}")
-    print(f"📦 Pydantic: {'✅' if PYDANTIC_AVAILABLE else '❌'}")
     print(f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}")
     print("\nКоманды:")
     print("  /start - Главное меню")
     print("  /login - Авторизация")
     print("  /tweets <username> - Твиты")
-    print("  /shadow - Shadow DOM")
-    print("  /api <url> - API запрос")
-    print("  /extract - Извлечение данных")
+    print("  /shadow - Shadow DOM (5 вариантов)")
+    print("  /test - Полное тестирование")
     print("  /screen - Скриншот")
     print("  /status - Статус")
     print("  /close - Закрыть браузер")
