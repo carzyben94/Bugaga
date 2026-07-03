@@ -3,9 +3,9 @@ import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# Правильные импорты для Pydoll
+# Правильные импорты Pydoll (согласно документации)
 from pydoll.browser import Chrome
-from pydoll.browser.chrome import Options  # <--- Изменено!
+from pydoll.browser.options import ChromiumOptions  # ← Ключевое исправление!
 from pydoll.extractor import ExtractionModel, Field
 
 # Настройка логирования
@@ -20,8 +20,8 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен!")
 
-# Модель данных
-class Quote( ExtractionModel):
+# Модель данных для парсинга
+class Quote(ExtractionModel):
     text: str = Field(selector='.text')
     author: str = Field(selector='.author')
     tags: str = Field(selector='.tag')
@@ -38,16 +38,23 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Начинаю парсинг...")
     
     try:
-        # Создаем опции браузера
-        options = Options()
+        # Создаём настройки браузера для Railway
+        options = ChromiumOptions()  # ← Используем ChromiumOptions!
+        
+        # Обязательные флаги для Docker/Railway
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--headless=new")
         
+        # Явно указываем путь к Chrome (для надёжности)
+        options.binary_location = "/usr/bin/google-chrome-stable"
+        
+        # Запускаем браузер
         async with Chrome(options=options) as browser:
             tab = await browser.start()
             await tab.go_to('https://quotes.toscrape.com')
             
+            # Извлекаем все цитаты
             quotes = await tab.extract_all(Quote, timeout=5)
             
             if quotes:
@@ -73,7 +80,7 @@ def main():
     application.add_handler(CommandHandler("parse", parse))
     application.add_error_handler(error_handler)
     
-    logger.info("Бот запущен!")
+    logger.info("🚀 Бот запущен!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
