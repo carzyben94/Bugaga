@@ -194,75 +194,30 @@ async def take_screenshot():
         logger.error(f"❌ Ошибка скриншота: {e}")
         return None
 
-# ========== МНОЖЕСТВО СПОСОБОВ ВЫПОЛНЕНИЯ JS ==========
+# ========== ЛУЧШИЙ МЕТОД (ИЗ ТЕСТОВ) ==========
 
-async def exec_method_1(page, script):
-    """Метод 1: Прямой execute_script"""
-    try:
-        return await asyncio.wait_for(page.execute_script(script), timeout=5.0)
-    except Exception as e:
-        logger.warning(f"M1 error: {e}")
-        return None
-
-async def exec_method_2(page, script):
-    """Метод 2: С try/catch внутри JS"""
-    wrapped = f"try {{ return ({script}); }} catch(e) {{ return {{'error': e.message}}; }}"
-    try:
-        return await asyncio.wait_for(page.execute_script(wrapped), timeout=5.0)
-    except Exception as e:
-        logger.warning(f"M2 error: {e}")
-        return None
-
-async def exec_method_3(page, script):
-    """Метод 3: JSON.stringify + JSON.parse"""
+async def exec_js(page, script, timeout=10):
+    """
+    Лучший метод выполнения JS (M3 - JSON.stringify + parse)
+    Найден в результате тестирования 18 комбинаций
+    """
     wrapped = f"JSON.stringify((function() {{ try {{ return {script}; }} catch(e) {{ return {{'error': e.message}}; }} }})())"
     try:
-        result = await asyncio.wait_for(page.execute_script(wrapped), timeout=5.0)
+        result = await asyncio.wait_for(page.execute_script(wrapped), timeout=timeout)
         if isinstance(result, str):
             return json.loads(result)
         return result
+    except asyncio.TimeoutError:
+        logger.warning(f"⏱️ Таймаут {timeout}с")
+        return None
     except Exception as e:
-        logger.warning(f"M3 error: {e}")
+        logger.warning(f"⚠️ Ошибка JS: {e}")
         return None
 
-async def exec_method_4(page, script):
-    """Метод 4: Через return_by_value (если есть)"""
-    try:
-        if hasattr(page.execute_script, 'return_by_value'):
-            return await asyncio.wait_for(
-                page.execute_script(script, return_by_value=True),
-                timeout=5.0
-            )
-        return await asyncio.wait_for(page.execute_script(script), timeout=5.0)
-    except Exception as e:
-        logger.warning(f"M4 error: {e}")
-        return None
+# ========== SHADOW DOM ФУНКЦИИ ==========
 
-async def exec_method_5(page, script):
-    """Метод 5: eval + JSON.stringify"""
-    wrapped = f"JSON.stringify(eval('({script})'))"
-    try:
-        result = await asyncio.wait_for(page.execute_script(wrapped), timeout=5.0)
-        if isinstance(result, str):
-            return json.loads(result)
-        return result
-    except Exception as e:
-        logger.warning(f"M5 error: {e}")
-        return None
-
-async def exec_method_6(page, script):
-    """Метод 6: function + return"""
-    wrapped = f"(function() {{ try {{ return {script}; }} catch(e) {{ return {{error: e.message}}; }} }})()"
-    try:
-        return await asyncio.wait_for(page.execute_script(wrapped), timeout=5.0)
-    except Exception as e:
-        logger.warning(f"M6 error: {e}")
-        return None
-
-# ========== ПОИСК SHADOW DOM (ТОЛЬКО JS) ==========
-
-async def find_shadow_simple(page):
-    """Простой поиск shadowRoot"""
+async def find_shadow_root(page):
+    """Найти все элементы с shadowRoot на странице"""
     script = """
         (function() {
             var result = [];
@@ -272,6 +227,7 @@ async def find_shadow_simple(page):
                     result.push({
                         tag: els[i].tagName,
                         id: els[i].id || '',
+                        class: els[i].className || '',
                         children: els[i].shadowRoot.children.length
                     });
                 }
@@ -279,31 +235,38 @@ async def find_shadow_simple(page):
             return result;
         })()
     """
-    return script
+    return await exec_js(page, script)
 
-async def find_shadow_by_tags(page):
-    """Поиск по конкретным тегам"""
-    script = """
-        (function() {
-            var result = [];
-            var tags = ['grok-drawer', 'video-player', 'emoji-picker'];
-            for (var i = 0; i < tags.length; i++) {
-                var el = document.querySelector(tags[i]);
-                if (el && el.shadowRoot) {
-                    result.push({
-                        tag: tags[i],
-                        id: el.id || '',
-                        children: el.shadowRoot.children.length
-                    });
-                }
-            }
-            return result;
-        })()
+async def get_shadow_content(page, selector):
+    """Получить содержимое shadowRoot конкретного элемента"""
+    script = f"""
+        (function() {{
+            var el = document.querySelector('{selector}');
+            if (el && el.shadowRoot) {{
+                var children = [];
+                for (var i = 0; i < el.shadowRoot.children.length; i++) {{
+                    var child = el.shadowRoot.children[i];
+                    children.push({{
+                        tag: child.tagName,
+                        id: child.id || '',
+                        class: child.className || '',
+                        text: child.textContent ? child.textContent.slice(0, 100) : ''
+                    }});
+                }}
+                return {{
+                    host: el.tagName,
+                    id: el.id || '',
+                    children: children,
+                    html: el.shadowRoot.innerHTML.slice(0, 500)
+                }};
+            }}
+            return null;
+        }})()
     """
-    return script
+    return await exec_js(page, script)
 
 async def find_shadow_deep(page):
-    """Глубокий рекурсивный поиск"""
+    """Глубокий поиск shadowRoot (рекурсивно)"""
     script = """
         (function() {
             function find(el, depth) {
@@ -325,208 +288,75 @@ async def find_shadow_deep(page):
             return find(document.body, 0);
         })()
     """
-    return script
+    return await exec_js(page, script)
 
-# ========== /SHADOW С ТЕСТИРОВАНИЕМ ВСЕХ МЕТОДОВ ==========
+# ========== /SHADOW ==========
 
 async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Shadow DOM - тестирование всех методов выполнения JS"""
+    """Поиск Shadow DOM элементов на странице"""
     logger.info(f"📩 /shadow от {update.effective_user.username}")
     
-    # Создаем лог-файл для этой команды
-    log_filename = f"shadow_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-    log_file = open(log_filename, 'w', encoding='utf-8')
-    
-    def write_log(msg):
-        log_file.write(f"{datetime.now().strftime('%H:%M:%S')} - {msg}\n")
-        log_file.flush()
-    
-    write_log("=" * 60)
-    write_log(f"SHADOW DOM ТЕСТ - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    write_log("=" * 60)
-    
-    msg = await update.message.reply_text("🛡️ Тестирую Shadow DOM...\n⏳ Проверяю 6 методов выполнения JS")
-    write_log("🛡️ Начало тестирования")
+    msg = await update.message.reply_text("🛡️ Ищу Shadow DOM элементы...")
     
     try:
         page = await get_browser()
         if page is None:
             await msg.edit_text("❌ Браузер не запущен. Используйте /login")
-            write_log("❌ Браузер не запущен")
-            log_file.close()
             return
         
-        # Все методы выполнения
-        exec_methods = [
-            ('M1', exec_method_1, 'Прямой execute_script'),
-            ('M2', exec_method_2, 'try/catch в JS'),
-            ('M3', exec_method_3, 'JSON.stringify + parse'),
-            ('M4', exec_method_4, 'return_by_value'),
-            ('M5', exec_method_5, 'eval + JSON.stringify'),
-            ('M6', exec_method_6, 'function + return'),
-        ]
+        # Ищем shadowRoot
+        shadow_data = await find_shadow_root(page)
         
-        # Все скрипты для поиска shadow
-        shadow_scripts = [
-            ('S1', await find_shadow_simple(page), 'Простой поиск'),
-            ('S2', await find_shadow_by_tags(page), 'Поиск по тегам'),
-            ('S3', await find_shadow_deep(page), 'Глубокий рекурсивный'),
-        ]
+        if not shadow_data or len(shadow_data) == 0:
+            await msg.edit_text("❌ Shadow DOM элементы не найдены на странице")
+            return
         
-        results = {}
-        working_methods = []
-        found_elements = []
+        # Формируем ответ
+        response = f"🛡️ **SHADOW DOM НАЙДЕН!**\n\n"
+        response += f"📦 Найдено элементов: {len(shadow_data)}\n\n"
         
-        # Тестируем каждую комбинацию
-        total_tests = len(exec_methods) * len(shadow_scripts)
-        current = 0
+        for i, item in enumerate(shadow_data[:5], 1):
+            response += f"**{i}.** `{item.get('tag', 'unknown')}`"
+            if item.get('id'):
+                response += f" id=\"{item['id']}\""
+            if item.get('class'):
+                response += f" class=\"{item['class'][:30]}\""
+            response += f"\n   📄 Детей в shadowRoot: {item.get('children', 0)}\n\n"
         
-        for m_name, m_func, m_desc in exec_methods:
-            for s_name, s_script, s_desc in shadow_scripts:
-                current += 1
-                key = f"{m_name}_{s_name}"
-                
-                status_text = f"🔄 [{current}/{total_tests}] {m_name}+{s_name}..."
-                await msg.edit_text(f"🛡️ Тестирую Shadow DOM...\n{status_text}")
-                write_log(f"🔄 Тест {current}/{total_tests}: {m_name}+{s_name}")
-                
-                start = time.time()
-                try:
-                    result = await m_func(page, s_script)
-                    elapsed = time.time() - start
-                    
-                    # Проверяем результат
-                    is_working = False
-                    count = 0
-                    
-                    if isinstance(result, list):
-                        count = len(result)
-                        is_working = count > 0
-                    elif isinstance(result, dict):
-                        if 'error' not in result:
-                            count = 1
-                            is_working = True
-                    elif result is not None:
-                        count = 1
-                        is_working = True
-                    
-                    results[key] = {
-                        'method': m_name,
-                        'script': s_name,
-                        'working': is_working,
-                        'count': count,
-                        'time': elapsed,
-                        'result': result
-                    }
-                    
-                    if is_working:
-                        working_methods.append(key)
-                        if isinstance(result, list):
-                            found_elements.extend(result[:3])
-                        write_log(f"✅ {m_name}+{s_name}: РАБОТАЕТ ({count} элементов) за {elapsed:.2f}с")
-                    else:
-                        write_log(f"⚠️ {m_name}+{s_name}: не найдено за {elapsed:.2f}с")
-                        
-                except Exception as e:
-                    results[key] = {
-                        'method': m_name,
-                        'script': s_name,
-                        'working': False,
-                        'error': str(e),
-                        'time': time.time() - start
-                    }
-                    write_log(f"❌ {m_name}+{s_name}: ошибка - {str(e)[:100]}")
-        
-        # Формируем отчет
-        write_log("\n" + "=" * 60)
-        write_log("📊 ФОРМИРОВАНИЕ ОТЧЕТА")
-        write_log("=" * 60)
-        
-        response = "🛡️ **SHADOW DOM - РЕЗУЛЬТАТЫ ТЕСТИРОВАНИЯ**\n\n"
-        response += f"📊 Всего тестов: {total_tests}\n"
-        response += f"✅ Работающих методов: {len(working_methods)}\n"
-        response += f"⏱️ Общее время: {sum(r.get('time', 0) for r in results.values()):.2f}с\n\n"
-        
-        # Показываем работающие методы
-        if working_methods:
-            response += "✅ **РАБОТАЮЩИЕ МЕТОДЫ:**\n"
-            for key in working_methods[:5]:
-                data = results[key]
-                response += f"  • {key} - {data.get('count', 0)} элементов ({data.get('time', 0):.2f}с)\n"
-                write_log(f"✅ {key} - {data.get('count', 0)} элементов")
-            
-            # Показываем найденные элементы
-            if found_elements:
-                response += "\n📋 **НАЙДЕННЫЕ ЭЛЕМЕНТЫ:**\n"
-                for item in found_elements[:3]:
-                    if isinstance(item, dict):
-                        tag = item.get('tag', 'unknown')
-                        response += f"  • {tag}"
-                        if item.get('id'):
-                            response += f" (id: {item['id']})"
-                        if item.get('children'):
-                            response += f" - детей: {item['children']}"
+        # Получаем детали первого элемента
+        if shadow_data:
+            first = shadow_data[0]
+            selector = f"#{first['id']}" if first.get('id') else first.get('tag', '').lower()
+            if selector:
+                details = await get_shadow_content(page, selector)
+                if details:
+                    response += f"📋 **Содержимое {selector}:**\n"
+                    for child in details.get('children', [])[:3]:
+                        response += f"  └─ {child.get('tag', '')}"
+                        if child.get('id'):
+                            response += f" (id: {child['id']})"
                         response += "\n"
-                        write_log(f"  • {tag} - {item}")
-        else:
-            response += "❌ **НИ ОДИН МЕТОД НЕ СРАБОТАЛ**\n"
-            response += "💡 Проверьте:\n"
-            response += "1. Авторизованы ли вы (/login)\n"
-            response += "2. На странице есть shadowRoot элементы\n"
-            response += "3. Попробуйте обновить страницу\n"
-            write_log("❌ Ни один метод не сработал")
         
-        # Рекомендация
-        if working_methods:
-            best = working_methods[0]
-            best_data = results[best]
-            response += f"\n🏆 **Лучший метод: {best}**\n"
-            response += f"📊 Найдено: {best_data.get('count', 0)} элементов\n"
-            response += f"⏱️ Время: {best_data.get('time', 0):.2f}с\n"
-            
-            # Показываем пример кода
-            response += "\n💡 **Используйте этот код:**\n"
-            response += "```python\n"
-            response += f"# Лучший метод: {best}\n"
-            response += f"result = await {best.split('_')[0]}(page, script)\n"
-            response += "```"
-            write_log(f"🏆 Лучший метод: {best}")
+        response += "\n💡 **Как использовать:**\n"
+        response += "```python\n"
+        response += "# Найти хост\n"
+        response += "host = await tab.find('#shadow-host')\n\n"
+        response += "# Получить shadowRoot\n"
+        response += "shadow = await host.get_shadow_root()\n\n"
+        response += "# Искать внутри\n"
+        response += "inner = await shadow.query('.inner-class')\n"
+        response += "```"
         
         await msg.edit_text(response, parse_mode='Markdown')
-        write_log("✅ Отчет сформирован")
         
-        # Сохраняем полные результаты в JSON
-        json_filename = f"shadow_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        with open(json_filename, 'w', encoding='utf-8') as f:
-            # Очищаем результаты от больших данных
-            clean_results = {}
-            for k, v in results.items():
-                clean_results[k] = {
-                    'method': v.get('method'),
-                    'script': v.get('script'),
-                    'working': v.get('working'),
-                    'count': v.get('count', 0),
-                    'time': v.get('time', 0)
-                }
-                if 'error' in v:
-                    clean_results[k]['error'] = v['error']
-            
-            json.dump({
-                'results': clean_results,
-                'working_methods': working_methods,
-                'best': working_methods[0] if working_methods else None,
-                'timestamp': datetime.now().isoformat()
-            }, f, indent=2, ensure_ascii=False)
+        # Сохраняем данные
+        filename = f"shadow_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(shadow_data, f, indent=2, ensure_ascii=False)
         
-        # Отправляем логи в чат
-        log_file.close()
         await update.message.reply_document(
-            document=open(log_filename, 'rb'),
-            caption="📋 Полный лог выполнения"
-        )
-        await update.message.reply_document(
-            document=open(json_filename, 'rb'),
-            caption="📄 Результаты тестирования (JSON)"
+            document=open(filename, 'rb'),
+            caption=f"📄 Данные Shadow DOM ({len(shadow_data)} элементов)"
         )
         
         # Скриншот
@@ -536,9 +366,117 @@ async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         logger.error(f"❌ Ошибка shadow: {e}", exc_info=True)
-        write_log(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
-        write_log(traceback.format_exc())
-        log_file.close()
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+# ========== /SHADOW_DEEP - ГЛУБОКИЙ ПОИСК ==========
+
+async def shadow_deep(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Глубокий рекурсивный поиск Shadow DOM"""
+    logger.info(f"📩 /shadow_deep от {update.effective_user.username}")
+    
+    msg = await update.message.reply_text("🛡️ Глубокий поиск Shadow DOM...")
+    
+    try:
+        page = await get_browser()
+        if page is None:
+            await msg.edit_text("❌ Браузер не запущен. Используйте /login")
+            return
+        
+        shadow_data = await find_shadow_deep(page)
+        
+        if not shadow_data or len(shadow_data) == 0:
+            await msg.edit_text("❌ Shadow DOM элементы не найдены")
+            return
+        
+        response = f"🛡️ **ГЛУБОКИЙ ПОИСК SHADOW DOM**\n\n"
+        response += f"📦 Найдено: {len(shadow_data)} элементов\n\n"
+        
+        for i, item in enumerate(shadow_data[:5], 1):
+            response += f"**{i}.** `{item.get('tag', 'unknown')}`"
+            if item.get('id'):
+                response += f" id=\"{item['id']}\""
+            response += f"\n   📊 Глубина: {item.get('depth', 0)}"
+            response += f"\n   📄 Детей: {item.get('children', 0)}\n\n"
+        
+        await msg.edit_text(response, parse_mode='Markdown')
+        
+        filename = f"shadow_deep_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(shadow_data, f, indent=2, ensure_ascii=False)
+        
+        await update.message.reply_document(
+            document=open(filename, 'rb'),
+            caption=f"📄 Глубокий поиск ({len(shadow_data)} элементов)"
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка shadow_deep: {e}", exc_info=True)
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+# ========== /SHADOW_CONTENT - ПОЛУЧИТЬ СОДЕРЖИМОЕ ==========
+
+async def shadow_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Получить содержимое shadowRoot по селектору"""
+    logger.info(f"📩 /shadow_content от {update.effective_user.username}")
+    
+    if not context.args:
+        await update.message.reply_text(
+            "ℹ️ Использование: /shadow_content <селектор>\n"
+            "Пример: /shadow_content grok-drawer\n"
+            "Пример: /shadow_content #grok-drawer\n"
+            "Пример: /shadow_content [data-testid='GrokDrawer']"
+        )
+        return
+    
+    selector = ' '.join(context.args)
+    msg = await update.message.reply_text(f"🛡️ Получаю содержимое {selector}...")
+    
+    try:
+        page = await get_browser()
+        if page is None:
+            await msg.edit_text("❌ Браузер не запущен. Используйте /login")
+            return
+        
+        details = await get_shadow_content(page, selector)
+        
+        if not details:
+            await msg.edit_text(f"❌ Элемент '{selector}' не найден или не имеет shadowRoot")
+            return
+        
+        response = f"🛡️ **SHADOW ROOT: {selector}**\n\n"
+        response += f"🏷️ Хост: {details.get('host', 'unknown')}\n"
+        if details.get('id'):
+            response += f"🆔 ID: {details['id']}\n"
+        response += f"📄 Детей: {len(details.get('children', []))}\n\n"
+        
+        if details.get('children'):
+            response += "📋 **Дети:**\n"
+            for child in details['children'][:5]:
+                response += f"  • {child.get('tag', '')}"
+                if child.get('id'):
+                    response += f" (id: {child['id']})"
+                if child.get('text'):
+                    text = child['text'][:50]
+                    response += f"\n    \"{text}...\""
+                response += "\n"
+        
+        if details.get('html'):
+            response += f"\n📝 **HTML (первые 300 символов):**\n"
+            response += f"```html\n{details['html'][:300]}...\n```"
+        
+        await msg.edit_text(response, parse_mode='Markdown')
+        
+        filename = f"shadow_content_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(details, f, indent=2, ensure_ascii=False)
+        
+        await update.message.reply_document(
+            document=open(filename, 'rb'),
+            caption=f"📄 Содержимое {selector}"
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка shadow_content: {e}", exc_info=True)
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
@@ -600,7 +538,7 @@ async def emulate_human_login_flow(page):
 
 async def check_login_status_detailed(page):
     try:
-        js_code = """
+        script = """
             (function() {
                 var cookies = {};
                 var parts = document.cookie.split(';');
@@ -659,9 +597,7 @@ async def check_login_status_detailed(page):
                 };
             })()
         """
-        # Используем exec_method_3 как самый надежный
-        result = await exec_method_3(page, js_code)
-        return result if isinstance(result, dict) else {'isLoggedIn': False}
+        return await exec_js(page, script)
     except Exception as e:
         logger.error(f"❌ Ошибка проверки статуса: {e}")
         return {'isLoggedIn': False}
@@ -745,6 +681,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📊 Статус", callback_data="status")],
         [InlineKeyboardButton("📝 Твиты", callback_data="tweets")],
         [InlineKeyboardButton("🛡️ Shadow DOM", callback_data="shadow")],
+        [InlineKeyboardButton("🔍 Shadow Deep", callback_data="shadow_deep")],
+        [InlineKeyboardButton("📄 Shadow Content", callback_data="shadow_content")],
         [InlineKeyboardButton("❌ Закрыть", callback_data="close")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -779,6 +717,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     elif query.data == "shadow":
         await shadow(update, context)
+    elif query.data == "shadow_deep":
+        await shadow_deep(update, context)
+    elif query.data == "shadow_content":
+        await query.edit_message_text(
+            "📄 **Введите селектор для получения содержимого shadowRoot:**\n\n"
+            "Пример: `/shadow_content grok-drawer`\n"
+            "Пример: `/shadow_content #grok-drawer`\n"
+            "Пример: `/shadow_content [data-testid='GrokDrawer']`"
+        )
     elif query.data == "close":
         await close(update, context)
 
@@ -850,7 +797,7 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }})()
         """
         
-        tweets_data = await exec_method_3(page, script)
+        tweets_data = await exec_js(page, script)
         
         if not tweets_data or not isinstance(tweets_data, list):
             await send_message_safe(update, f"❌ Твиты @{username} не найдены")
@@ -916,6 +863,8 @@ def main():
     app.add_handler(CommandHandler("login", login))
     app.add_handler(CommandHandler("tweets", tweets))
     app.add_handler(CommandHandler("shadow", shadow))
+    app.add_handler(CommandHandler("shadow_deep", shadow_deep))
+    app.add_handler(CommandHandler("shadow_content", shadow_content))
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("close", close))
@@ -932,7 +881,9 @@ def main():
     print("  /start - Главное меню")
     print("  /login - Авторизация")
     print("  /tweets <username> - Твиты")
-    print("  /shadow - Shadow DOM (тест 6 методов)")
+    print("  /shadow - Поиск Shadow DOM")
+    print("  /shadow_deep - Глубокий поиск")
+    print("  /shadow_content <селектор> - Содержимое shadowRoot")
     print("  /screen - Скриншот")
     print("  /status - Статус")
     print("  /close - Закрыть браузер")
