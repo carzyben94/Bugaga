@@ -234,7 +234,7 @@ login_status = {
     'cookies_valid': False
 }
 
-# ========== PYDOLL БРАУЗЕР ==========
+# ========== PYDOLL БРАУЗЕР (ОБНОВЛЕННЫЙ) ==========
 async def get_pydoll_browser():
     """Получает Pydoll браузер с человеческим поведением"""
     global pydoll_browser, pydoll_tab
@@ -250,7 +250,7 @@ async def get_pydoll_browser():
         from pydoll.browser import Chrome
         from pydoll.browser.options import ChromiumOptions
         
-        print("🚀 Запускаю Pydoll браузер с ChromiumOptions...")
+        print("🚀 Запускаю Pydoll браузер...")
         
         # Создаем объект с настройками
         options = ChromiumOptions()
@@ -262,9 +262,7 @@ async def get_pydoll_browser():
         options.add_argument("--disable-setuid-sandbox")
         options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_argument("--window-size=1280,720")
-        
-        # Включаем новый headless-режим
-        options.headless = True
+        options.add_argument("--headless=new")
         
         # Если Chromium установлен, указываем путь
         if CHROMIUM_INSTALLED:
@@ -275,10 +273,41 @@ async def get_pydoll_browser():
                     print(f"📍 Использую Chromium по пути: {path}")
                     break
         
-        # Запускаем браузер с этими опциями
+        # Запускаем браузер
         pydoll_browser = await Chrome(options=options).start()
         
-        pydoll_tab = await pydoll_browser.get_current_tab()
+        # Получаем вкладку (универсальный способ)
+        pydoll_tab = None
+        
+        # Пробуем получить текущую вкладку
+        if hasattr(pydoll_browser, 'tabs') and pydoll_browser.tabs:
+            pydoll_tab = pydoll_browser.tabs[0]
+            print("✅ Вкладка получена через tabs")
+        elif hasattr(pydoll_browser, 'current_tab'):
+            pydoll_tab = pydoll_browser.current_tab
+            print("✅ Вкладка получена через current_tab")
+        elif hasattr(pydoll_browser, 'active_tab'):
+            pydoll_tab = pydoll_browser.active_tab
+            print("✅ Вкладка получена через active_tab")
+        else:
+            # Пробуем методы
+            try:
+                pydoll_tab = await pydoll_browser.get_tab()
+                print("✅ Вкладка получена через get_tab()")
+            except:
+                try:
+                    pydoll_tab = await pydoll_browser.get_current_tab()
+                    print("✅ Вкладка получена через get_current_tab()")
+                except:
+                    try:
+                        pydoll_tab = await pydoll_browser.new_tab()
+                        print("✅ Создана новая вкладка через new_tab()")
+                    except Exception as e:
+                        print(f"⚠️ Не удалось получить вкладку: {e}")
+                        return None
+        
+        if not pydoll_tab:
+            raise Exception("Не удалось получить вкладку браузера")
         
         # Устанавливаем куки
         for cookie in COOKIES:
@@ -417,7 +446,7 @@ async def close_playwright_browser():
             'cookies_valid': False
         }
 
-# ========== УНИВЕРСАЛЬНЫЙ БРАУЗЕР (ТОЛЬКО ТЕКУЩИЙ ДВИЖОК) ==========
+# ========== УНИВЕРСАЛЬНЫЙ БРАУЗЕР ==========
 async def get_browser():
     """Получает браузер согласно выбранному движку"""
     global engine_mode
