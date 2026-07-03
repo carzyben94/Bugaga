@@ -20,17 +20,20 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен!")
 
+# Модель для парсинга цитат
 class Quote(ExtractionModel):
     text: str = Field(selector='.text')
     author: str = Field(selector='.author')
     tags: str = Field(selector='.tag')
 
+# Путь к браузеру
 CHROME_PATH = '/usr/bin/chromium'
 
-# Храним активную вкладку для каждого пользователя
-user_tabs = {}
+# Храним браузер и вкладку для каждого пользователя
+user_browsers = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Приветственное меню"""
     await update.message.reply_text(
         "📋 Доступные команды:\n"
         "/parse - Получить цитаты\n"
@@ -62,8 +65,8 @@ async def go(update: Update, context: ContextTypes.DEFAULT_TYPE):
         options.binary_location = CHROME_PATH
         
         # Если у пользователя уже есть браузер - используем его
-        if user_id in user_tabs and user_tabs[user_id] is not None:
-            tab = user_tabs[user_id]
+        if user_id in user_browsers:
+            browser, tab = user_browsers[user_id]
             await tab.go_to(url)
             await asyncio.sleep(2)
             await update.message.reply_text(f"✅ Перешёл на {url}")
@@ -73,10 +76,7 @@ async def go(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tab = await browser.start()
             await tab.go_to(url)
             await asyncio.sleep(2)
-            user_tabs[user_id] = tab
-            # Сохраняем браузер в контексте
-            context.user_data['browser'] = browser
-            context.user_data['tab'] = tab
+            user_browsers[user_id] = (browser, tab)
             await update.message.reply_text(f"✅ Открыл: {url}")
             
     except Exception as e:
@@ -88,25 +88,22 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
     try:
-        # Проверяем, есть ли активная вкладка
-        if user_id not in user_tabs or user_tabs[user_id] is None:
+        # Проверяем, есть ли активный браузер
+        if user_id not in user_browsers:
             await update.message.reply_text("❌ Сначала открой сайт командой /go")
             return
         
         await update.message.reply_text("📸 Делаю скриншот...")
         
-        tab = user_tabs[user_id]
+        _, tab = user_browsers[user_id]
         
-        # Делаем скриншот (возвращает base64)
-        screenshot = await tab.screenshot()
+        # Делаем скриншот в формате base64
+        screenshot_base64 = await tab.take_screenshot(as_base64=True)
         
-        # Если пришла строка - декодируем base64
-        if isinstance(screenshot, str):
-            screenshot_bytes = base64.b64decode(screenshot)
-        else:
-            screenshot_bytes = screenshot
+        # Декодируем base64 в байты для отправки
+        screenshot_bytes = base64.b64decode(screenshot_base64)
         
-        # Отправляем фото
+        # Отправляем фото в Telegram
         await update.message.reply_photo(
             photo=screenshot_bytes,
             caption="🖼️ Скриншот страницы"
@@ -117,6 +114,7 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
 async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Парсит цитаты с quotes.toscrape.com"""
     await update.message.reply_text("⏳ Начинаю парсинг...")
     
     try:
@@ -151,16 +149,25 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик ошибок"""
     logger.error(f"Ошибка: {context.error}")
 
 def main():
+    """Запуск бота"""
     application = Application.builder().token(TOKEN).build()
     
+    # Регистрируем команды
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("go", go))
     application.add_handler(CommandHandler("screen", screen))
     application.add_handler(CommandHandler("parse", parse))
     application.add_error_handler(error_handler)
+    
+    # Проверяем наличие браузера
+    if os.path.exists(CHROME_PATH):
+        logger.info(f"✅ Браузер найден: {CHROME_PATH}")
+    else:
+        logger.error(f"❌ Браузер не найден: {CHROME_PATH}")
     
     logger.info("🚀 Бот запущен!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
