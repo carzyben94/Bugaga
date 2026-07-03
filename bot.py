@@ -1,4 +1,4 @@
-# bot.py - X.com бот с Pydoll + Playwright (исправленный)
+# bot.py - X.com бот с Pydoll + Playwright (полная версия)
 import os
 import sys
 import subprocess
@@ -616,163 +616,344 @@ async def take_screenshot():
         logger.error(f"Неизвестный тип страницы: {type(page)}")
         return None
 
-# ========== НОВЫЕ ФУНКЦИИ Pydoll ==========
-
-async def api_request(method='get', url='', data=None, headers=None):
-    """Гибридная автоматизация: API-запрос с сессией браузера"""
-    global current_session
-    logger.info(f"🌐 API запрос: {method.upper()} {url}")
+# ========== ДИАГНОСТИЧЕСКАЯ КОМАНДА ==========
+async def diagnos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Диагностика команд: Shadow DOM, API, Extract, Search, Tweets"""
+    msg = await update.message.reply_text(
+        "🔬 **ДИАГНОСТИКА КОМАНД**\n\n"
+        "⏳ Проверка: Shadow DOM, API, Extract, Search, Tweets\n"
+        "Это займет 2-4 минуты."
+    )
     
-    if engine_mode != "pydoll":
-        return {"error": "API запросы доступны только в режиме Pydoll"}
+    log_file = f"diagnos_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    diagnostic_log = []
     
-    tab = await get_pydoll_browser()
-    if tab is None:
-        return {"error": "Браузер не запущен"}
+    def log_diag(text, level="INFO"):
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        log_entry = f"[{timestamp}] [{level}] {text}"
+        diagnostic_log.append(log_entry)
+        logger.info(log_entry)
+    
+    def log_section(title):
+        log_diag(f"\n{'='*60}")
+        log_diag(f"📌 {title}")
+        log_diag(f"{'='*60}")
+    
+    def log_error(command, error):
+        log_diag(f"❌ ОШИБКА: {str(error)[:300]}", "ERROR")
+        logger.error(f"Error in {command}: {error}", exc_info=True)
+    
+    results = {}
     
     try:
-        if hasattr(tab, 'request'):
-            if method.lower() == 'get':
-                response = await tab.request.get(url, headers=headers)
-            elif method.lower() == 'post':
-                response = await tab.request.post(url, data=data, headers=headers)
-            elif method.lower() == 'put':
-                response = await tab.request.put(url, data=data, headers=headers)
+        # Проверка браузера
+        log_section("1️⃣ ПРОВЕРКА БРАУЗЕРА")
+        await msg.edit_text("🔬 1/6: Проверка браузера...")
+        
+        page = await get_browser()
+        if page is None:
+            log_diag("❌ Браузер не запущен", "ERROR")
+            await msg.edit_text("❌ Браузер не запущен. Используйте /login")
+            return
+        log_diag("✅ Браузер запущен")
+        
+        # Проверка авторизации
+        if not login_status['is_logged_in']:
+            log_diag("⚠️ Пользователь не авторизован", "WARNING")
+        
+        # ============================================================
+        # 2. SHADOW DOM
+        # ============================================================
+        log_section("2️⃣ SHADOW DOM")
+        await msg.edit_text("🔬 2/6: Проверка Shadow DOM...")
+        
+        try:
+            log_diag("🔍 Поиск Shadow DOM...")
+            shadow_selectors = [
+                ('GrokDrawer', '[data-testid="GrokDrawer"]'),
+                ('GrokDrawerHeader', '[data-testid="GrokDrawerHeader"]'),
+                ('chat-drawer-root', '[data-testid="chat-drawer-root"]'),
+            ]
+            
+            found = False
+            for name, selector in shadow_selectors:
+                try:
+                    host = await page.find(selector, timeout=3000)
+                    if host:
+                        if hasattr(host, 'get_shadow_root'):
+                            shadow = await host.get_shadow_root()
+                            if shadow:
+                                log_diag(f"  ✅ {name}: Shadow DOM найден")
+                                found = True
+                            else:
+                                log_diag(f"  ⚠️ {name}: элемент есть, Shadow Root пуст")
+                        else:
+                            log_diag(f"  ⚠️ {name}: нет метода get_shadow_root")
+                except Exception as e:
+                    log_diag(f"  ❌ {name}: {str(e)[:50]}")
+            
+            if found:
+                log_diag("✅ Shadow DOM доступен")
+                results["shadow"] = "✅ Работает"
             else:
-                return {"error": f"Неподдерживаемый метод: {method}"}
+                log_diag("⚠️ Shadow DOM элементы не найдены")
+                results["shadow"] = "⚠️ Не найдены"
+                
+        except Exception as e:
+            log_error("Shadow DOM", e)
+            results["shadow"] = f"❌ {str(e)[:50]}"
+        
+        # ============================================================
+        # 3. API ЗАПРОС
+        # ============================================================
+        log_section("3️⃣ API ЗАПРОС")
+        await msg.edit_text("🔬 3/6: Проверка API запроса...")
+        
+        try:
+            test_url = "https://x.com/i/api/1.1/onboarding/task.json"
+            log_diag(f"🌐 Тестовый API запрос: {test_url}")
             
-            try:
-                response_data = response.json()
-            except:
-                response_data = {"text": response.text}
-            
-            return {
-                "status": response.status,
-                "data": response_data,
-                "headers": dict(response.headers)
-            }
-        else:
             js_code = f"""
-                const resp = await fetch('{url}', {{
-                    method: '{method.upper()}',
-                    headers: {json.dumps(headers or {})},
-                    body: {json.dumps(data) if data else 'undefined'}
-                }});
-                return {{
-                    status: resp.status,
-                    data: await resp.json()
-                }};
+                (async () => {{
+                    try {{
+                        const response = await fetch('{test_url}', {{
+                            method: 'GET',
+                            credentials: 'include',
+                            headers: {{ 'Accept': 'application/json' }}
+                        }});
+                        return {{
+                            status: response.status,
+                            ok: response.ok,
+                            statusText: response.statusText
+                        }};
+                    }} catch (e) {{
+                        return {{ error: e.message }};
+                    }}
+                }})()
             """
-            result = await tab.execute_script(js_code)
-            return result
-    except Exception as e:
-        logger.error(f"❌ Ошибка API запроса: {e}")
-        return {"error": str(e)}
-
-async def extract_structured_data(selector=None):
-    """Извлечение структурированных данных с помощью Pydantic"""
-    global PYDANTIC_AVAILABLE
-    logger.info(f"📊 Извлечение структурированных данных")
-    
-    if not PYDANTIC_AVAILABLE:
-        return {"error": "Pydantic не установлен. Используйте /install_pydantic"}
-    
-    if engine_mode != "pydoll":
-        return {"error": "Структурированное извлечение доступно только в режиме Pydoll"}
-    
-    tab = await get_pydoll_browser()
-    if tab is None:
-        return {"error": "Браузер не запущен"}
-    
-    try:
-        # Пробуем использовать extractor из Pydoll
-        from pydoll.extractor import ExtractionModel, Field
-        
-        class TweetExtract(ExtractionModel):
-            text: str = Field(selector='[data-testid="tweetText"]', description='Текст твита')
-            author: str = Field(selector='[data-testid="User-Name"]', description='Автор')
-        
-        # ✅ ИСПРАВЛЕНО: добавляем scope
-        if selector:
-            tweets = await tab.extract_all(TweetExtract, scope=selector)
-        else:
-            # По умолчанию ищем все твиты
-            tweets = await tab.extract_all(TweetExtract, scope='[data-testid="tweet"]')
-        
-        return {
-            "count": len(tweets),
-            "data": [t.model_dump() for t in tweets]
-        }
-    except ImportError:
-        # Fallback через JS
-        js_code = """
-            () => {
-                const tweets = [];
-                document.querySelectorAll('[data-testid="tweet"]').forEach(tweet => {
-                    const textEl = tweet.querySelector('[data-testid="tweetText"]');
-                    const userEl = tweet.querySelector('[data-testid="User-Name"]');
-                    tweets.push({
-                        text: textEl ? textEl.textContent : '',
-                        author: userEl ? userEl.textContent : ''
-                    });
-                });
-                return tweets.slice(0, 10);
-            }
-        """
-        result = await tab.execute_script(js_code)
-        return {
-            "count": len(result) if result else 0,
-            "data": result
-        }
-    except Exception as e:
-        logger.error(f"❌ Ошибка извлечения данных: {e}")
-        return {"error": str(e)}
-
-async def shadow_dom_example():
-    """Демонстрация работы с Shadow DOM"""
-    logger.info("🛡️ Работа с Shadow DOM")
-    
-    if engine_mode != "pydoll":
-        return {"error": "Shadow DOM доступен только в режиме Pydoll"}
-    
-    tab = await get_pydoll_browser()
-    if tab is None:
-        return {"error": "Браузер не запущен"}
-    
-    try:
-        # ✅ ИСПРАВЛЕНО: проверяем наличие shadow root
-        host = await tab.find('[data-testid="GrokDrawer"]')
-        if host:
-            # Проверяем, есть ли shadow root
-            if hasattr(host, 'get_shadow_root'):
-                shadow_root = await host.get_shadow_root()
-                if shadow_root:
-                    return {
-                        "status": "success",
-                        "message": "Shadow DOM найден и доступен!",
-                        "has_shadow": True
-                    }
-                else:
-                    return {
-                        "status": "warning",
-                        "message": "Shadow Root пустой или закрытый",
-                        "has_shadow": False
-                    }
+            
+            result = await page.execute_script(js_code)
+            
+            if result and result.get('error'):
+                log_diag(f"❌ Ошибка API: {result['error']}")
+                results["api"] = f"❌ {result['error'][:50]}"
+            elif result and result.get('ok'):
+                log_diag(f"✅ API запрос успешен (статус: {result.get('status')})")
+                results["api"] = "✅ Работает"
             else:
-                return {
-                    "status": "warning",
-                    "message": "Элемент не содержит Shadow DOM",
-                    "has_shadow": False
+                log_diag(f"⚠️ API ответ: статус {result.get('status', 'unknown')}")
+                results["api"] = f"⚠️ Статус {result.get('status', 'unknown')}"
+                
+        except Exception as e:
+            log_error("API запрос", e)
+            results["api"] = f"❌ {str(e)[:50]}"
+        
+        # ============================================================
+        # 4. EXTRACT
+        # ============================================================
+        log_section("4️⃣ EXTRACT")
+        await msg.edit_text("🔬 4/6: Проверка Extract...")
+        
+        try:
+            if not PYDANTIC_AVAILABLE:
+                log_diag("❌ Pydantic не установлен", "ERROR")
+                results["extract"] = "❌ Pydantic не установлен"
+            else:
+                log_diag("🔍 Извлечение данных...")
+                
+                js_extract = """
+                    () => {
+                        const tweets = [];
+                        const elements = document.querySelectorAll('[data-testid="tweet"]');
+                        elements.forEach((el, i) => {
+                            if (i >= 3) return;
+                            const textEl = el.querySelector('[data-testid="tweetText"]');
+                            const userEl = el.querySelector('[data-testid="User-Name"]');
+                            tweets.push({
+                                text: textEl ? textEl.textContent : '',
+                                author: userEl ? userEl.textContent : ''
+                            });
+                        });
+                        return tweets;
+                    }
+                """
+                
+                extracted = await page.execute_script(js_extract)
+                
+                if extracted and len(extracted) > 0:
+                    log_diag(f"✅ Извлечено {len(extracted)} элементов")
+                    for i, item in enumerate(extracted[:2]):
+                        log_diag(f"  📄 {i+1}. {item.get('author', '')[:30]}: {item.get('text', '')[:50]}...")
+                    results["extract"] = f"✅ {len(extracted)} элементов"
+                else:
+                    log_diag("⚠️ Данные не извлечены (нет твитов на странице)")
+                    results["extract"] = "⚠️ Нет данных"
+                    
+        except Exception as e:
+            log_error("Extract", e)
+            results["extract"] = f"❌ {str(e)[:50]}"
+        
+        # ============================================================
+        # 5. ПОИСК
+        # ============================================================
+        log_section("5️⃣ ПОИСК")
+        await msg.edit_text("🔬 5/6: Проверка Поиска...")
+        
+        try:
+            test_query = "python"
+            search_url = f"https://x.com/search?q={test_query}&src=typed_query"
+            log_diag(f"🔍 Тестовый поиск: {test_query}")
+            
+            await page.go_to(search_url)
+            await asyncio.sleep(3)
+            
+            js_search = """
+                () => {
+                    const tweets = [];
+                    const elements = document.querySelectorAll('[data-testid="tweet"]');
+                    elements.forEach((el, i) => {
+                        if (i >= 5) return;
+                        const textEl = el.querySelector('[data-testid="tweetText"]');
+                        if (textEl) {
+                            tweets.push(textEl.textContent);
+                        }
+                    });
+                    return tweets;
                 }
+            """
+            
+            search_results = await page.execute_script(js_search)
+            
+            if search_results and len(search_results) > 0:
+                log_diag(f"✅ Найдено {len(search_results)} твитов по запросу '{test_query}'")
+                for i, text in enumerate(search_results[:2]):
+                    log_diag(f"  📄 {i+1}. {text[:60]}...")
+                results["search"] = f"✅ {len(search_results)} результатов"
+            else:
+                log_diag(f"⚠️ По запросу '{test_query}' ничего не найдено")
+                results["search"] = "⚠️ Нет результатов"
+                
+        except Exception as e:
+            log_error("Поиск", e)
+            results["search"] = f"❌ {str(e)[:50]}"
+        
+        # ============================================================
+        # 6. ТВИТЫ
+        # ============================================================
+        log_section("6️⃣ ТВИТЫ")
+        await msg.edit_text("🔬 6/6: Проверка Твитов...")
+        
+        try:
+            test_user = "elonmusk"
+            log_diag(f"📊 Тестовый парсинг твитов: @{test_user}")
+            
+            await page.go_to(f"https://x.com/{test_user}")
+            await asyncio.sleep(3)
+            
+            js_tweets = f"""
+                () => {{
+                    const tweets = [];
+                    const elements = document.querySelectorAll('[data-testid="tweet"]');
+                    elements.forEach((el, i) => {{
+                        if (i >= 5) return;
+                        const textEl = el.querySelector('[data-testid="tweetText"]');
+                        if (textEl) {{
+                            tweets.push(textEl.textContent);
+                        }}
+                    }});
+                    return tweets;
+                }}
+            """
+            
+            tweets_data = await page.execute_script(js_tweets)
+            
+            if tweets_data and len(tweets_data) > 0:
+                log_diag(f"✅ Найдено {len(tweets_data)} твитов от @{test_user}")
+                for i, text in enumerate(tweets_data[:2]):
+                    log_diag(f"  📄 {i+1}. {text[:60]}...")
+                results["tweets"] = f"✅ {len(tweets_data)} твитов"
+            else:
+                log_diag(f"⚠️ Твиты от @{test_user} не найдены")
+                results["tweets"] = "⚠️ Нет твитов"
+                
+        except Exception as e:
+            log_error("Твиты", e)
+            results["tweets"] = f"❌ {str(e)[:50]}"
+        
+        # ============================================================
+        # 7. ИТОГИ
+        # ============================================================
+        log_section("7️⃣ ИТОГИ ДИАГНОСТИКИ")
+        
+        log_diag("\n📊 РЕЗУЛЬТАТЫ:")
+        for cmd, status in results.items():
+            log_diag(f"  {cmd.upper()}: {status}")
+        
+        # Подсчет успехов
+        success_count = sum(1 for s in results.values() if "✅" in str(s))
+        total = len(results)
+        
+        log_diag(f"\n✅ Успешно: {success_count}/{total}")
+        
+        if success_count == total:
+            log_diag("🎉 ВСЕ КОМАНДЫ РАБОТАЮТ!")
+        elif success_count >= total // 2:
+            log_diag("⚠️ НЕКОТОРЫЕ КОМАНДЫ НЕ РАБОТАЮТ")
         else:
-            return {
-                "status": "info",
-                "message": "Элемент с Shadow DOM не найден. Попробуйте найти другой элемент.",
-                "has_shadow": False
-            }
+            log_diag("❌ БОЛЬШИНСТВО КОМАНД НЕ РАБОТАЮТ")
+        
+        # ============================================================
+        # 8. ОТПРАВКА РЕЗУЛЬТАТОВ
+        # ============================================================
+        
+        # Сохраняем лог
+        with open(log_file, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(diagnostic_log))
+        
+        # Формируем отчет
+        report = "🔬 **ДИАГНОСТИКА ЗАВЕРШЕНА**\n\n"
+        report += f"📊 **Результаты:**\n"
+        for cmd, status in results.items():
+            emoji = "✅" if "✅" in str(status) else ("⚠️" if "⚠️" in str(status) else "❌")
+            report += f"  {emoji} {cmd.upper()}: {status}\n"
+        
+        report += f"\n✅ Успешно: {success_count}/{total}"
+        
+        if success_count == total:
+            report += "\n\n🎉 **ВСЕ КОМАНДЫ РАБОТАЮТ!**"
+        elif success_count >= total // 2:
+            report += "\n\n⚠️ **НЕКОТОРЫЕ КОМАНДЫ НЕ РАБОТАЮТ**"
+            report += "\n📋 Проверьте лог-файл для деталей"
+        else:
+            report += "\n\n❌ **БОЛЬШИНСТВО КОМАНД НЕ РАБОТАЮТ**"
+            report += "\n📋 Проверьте лог-файл для деталей"
+        
+        await msg.edit_text(report)
+        
+        # Отправляем лог-файл
+        await update.message.reply_document(
+            document=open(log_file, 'rb'),
+            caption=f"📋 Лог диагностики\n{datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
+        )
+        
+        # Если есть ошибки - показываем их отдельно
+        errors = [f"{cmd}: {status}" for cmd, status in results.items() if "❌" in str(status) or "⚠️" in str(status)]
+        if errors:
+            error_msg = "⚠️ **Обнаружены проблемы:**\n\n" + "\n".join(errors)
+            await update.message.reply_text(error_msg)
+        
     except Exception as e:
-        logger.error(f"❌ Ошибка Shadow DOM: {e}")
-        return {"error": str(e)}
+        log_diag(f"❌ Критическая ошибка: {e}", "ERROR")
+        logger.error(f"Critical error: {e}", exc_info=True)
+        
+        with open(log_file, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(diagnostic_log))
+        
+        await msg.edit_text(f"❌ Ошибка диагностики: {str(e)[:200]}")
+        await update.message.reply_document(
+            document=open(log_file, 'rb'),
+            caption="📋 Лог ошибки"
+        )
 
 # ========== КОМАНДЫ ==========
 
@@ -803,6 +984,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ],
         [
             InlineKeyboardButton("🍪 Обновить куки", callback_data="setcookies"),
+        ],
+        [
+            InlineKeyboardButton("🔬 Диагностика", callback_data="diagnos"),
         ],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -864,6 +1048,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await close(update, context)
     elif callback_data == "setcookies":
         await setcookies(update, context)
+    elif callback_data == "diagnos":
+        await diagnos(update, context)
 
 async def engine_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Меню выбора движка"""
@@ -1293,15 +1479,15 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def api(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """API-запрос с сессией браузера (гибридная автоматизация)"""
+    """API-запрос с сессией браузера"""
     logger.info(f"📩 Команда /api от {update.effective_user.username} с аргументами: {context.args}")
     
     if not context.args:
         await update.message.reply_text(
             "ℹ️ **API запрос с сессией браузера**\n\n"
             "Использование: `/api <url>`\n"
-            "Пример: `/api https://x.com/api/graphql/...`\n\n"
-            "Запрос автоматически использует куки и заголовки от авторизованной сессии."
+            "Пример: `/api https://x.com/i/api/1.1/onboarding/task.json`\n\n"
+            "⚠️ Запрос использует сессию браузера с вашими куками."
         )
         return
     
@@ -1309,16 +1495,57 @@ async def api(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(f"🌐 Выполняю API запрос: {url[:80]}...")
     
     try:
-        result = await api_request('get', url)
+        # Проверяем браузер
+        page = await get_browser()
+        if page is None:
+            await msg.edit_text("❌ Браузер не запущен. Используйте /login")
+            return
+        
+        # Проверяем авторизацию
+        if not login_status['is_logged_in']:
+            await msg.edit_text("❌ Вы не авторизованы. Используйте /login")
+            return
+        
+        # Выполняем API запрос через fetch с куками
+        js_code = f"""
+            (async () => {{
+                try {{
+                    const response = await fetch('{url}', {{
+                        method: 'GET',
+                        credentials: 'include',
+                        headers: {{
+                            'Accept': 'application/json',
+                        }}
+                    }});
+                    
+                    const data = await response.json();
+                    return {{
+                        status: response.status,
+                        ok: response.ok,
+                        data: data
+                    }};
+                }} catch (e) {{
+                    return {{
+                        error: e.message,
+                        status: 0
+                    }};
+                }}
+            }})()
+        """
+        
+        result = await page.execute_script(js_code)
         
         if result.get('error'):
             await msg.edit_text(f"❌ Ошибка: {result['error']}")
             return
         
-        response_text = f"✅ **API запрос выполнен!**\n\n"
-        response_text += f"📊 Статус: {result.get('status')}\n\n"
+        status = result.get('status', 0)
+        data = result.get('data', {})
         
-        data = result.get('data')
+        response_text = f"✅ **API запрос выполнен!**\n\n"
+        response_text += f"📊 Статус: {status}\n"
+        response_text += f"📊 Успешно: {'✅' if result.get('ok') else '❌'}\n\n"
+        
         if data:
             if isinstance(data, dict):
                 data_str = json.dumps(data, indent=2, ensure_ascii=False)[:1500]
@@ -1331,7 +1558,7 @@ async def api(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(response_text) > 4000:
             filename = f"api_response_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
             with open(filename, 'w', encoding='utf-8') as f:
-                json.dump(result, f, indent=2, ensure_ascii=False)
+                json.dump(data, f, indent=2, ensure_ascii=False)
             await update.message.reply_document(
                 document=open(filename, 'rb'),
                 caption=f"📄 API ответ: {url[:50]}"
@@ -1397,7 +1624,7 @@ async def extract(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Демонстрация работы с Shadow DOM"""
+    """Работа с Shadow DOM"""
     logger.info(f"📩 Команда /shadow от {update.effective_user.username}")
     
     if hasattr(update, 'callback_query'):
@@ -1406,51 +1633,115 @@ async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = await update.message.reply_text("🛡️ Исследую Shadow DOM...")
     
     try:
-        result = await shadow_dom_example()
-        
-        if result.get('error'):
-            await msg.edit_text(f"❌ Ошибка: {result['error']}")
+        page = await get_browser()
+        if page is None:
+            await msg.edit_text("❌ Браузер не запущен. Используйте /login")
             return
         
-        if result.get('status') == 'success':
-            await msg.edit_text(
-                "✅ **Shadow DOM найден!**\n\n"
-                "Теперь вы можете:\n"
-                "1. Получить shadow_root через `host.get_shadow_root()`\n"
-                "2. Искать элементы внутри через `shadow_root.query()`\n"
-                "3. Взаимодействовать с элементами внутри Shadow DOM"
-            )
-        elif result.get('status') == 'warning':
-            await msg.edit_text(
-                f"⚠️ {result.get('message')}\n\n"
-                "Попробуйте найти другой элемент с Shadow DOM."
-            )
+        log_diag = "🔍 Ищу элементы с Shadow DOM...\n\n"
+        
+        shadow_selectors = [
+            ('GrokDrawer', '[data-testid="GrokDrawer"]'),
+            ('GrokDrawerHeader', '[data-testid="GrokDrawerHeader"]'),
+            ('chat-drawer-root', '[data-testid="chat-drawer-root"]'),
+        ]
+        
+        found_shadow = False
+        for name, selector in shadow_selectors:
+            try:
+                host = await page.find(selector, timeout=3000)
+                if host:
+                    if hasattr(host, 'get_shadow_root'):
+                        shadow_root = await host.get_shadow_root()
+                        if shadow_root:
+                            found_shadow = True
+                            log_diag += f"✅ {name}: Shadow DOM найден!\n"
+                            try:
+                                inner_elements = await shadow_root.query_all('*')
+                                if inner_elements:
+                                    log_diag += f"   📦 Внутри найдено элементов: {len(inner_elements)}\n"
+                            except:
+                                pass
+                        else:
+                            log_diag += f"⚠️ {name}: Элемент найден, но Shadow Root пуст\n"
+                    else:
+                        log_diag += f"⚠️ {name}: Элемент не содержит Shadow DOM\n"
+            except Exception as e:
+                log_diag += f"❌ {name}: Ошибка - {str(e)[:50]}\n"
+        
+        if not found_shadow:
+            log_diag += "\n⚠️ Shadow DOM элементы не найдены.\n"
+            log_diag += "💡 Возможно, вы не на странице X.com или элемент не загружен.\n\n"
+            log_diag += "📌 **Как использовать Shadow DOM в коде:**\n"
+            log_diag += "```python\n"
+            log_diag += "host = await tab.find('#shadow-host')\n"
+            log_diag += "shadow_root = await host.get_shadow_root()\n"
+            log_diag += "inner = await shadow_root.query('.inner-class')\n"
+            log_diag += "```"
         else:
-            await msg.edit_text(
-                f"ℹ️ {result.get('message')}\n\n"
-                "Пример использования Shadow DOM:\n"
-                "```python\n"
-                "host = await tab.find('#shadow-host')\n"
-                "shadow_root = await host.get_shadow_root()\n"
-                "inner = await shadow_root.query('.inner-class')\n"
-                "```"
-            )
+            log_diag += "\n✅ Shadow DOM доступен!\n"
+            log_diag += "💡 Используйте host.get_shadow_root() для доступа к элементам."
+        
+        await msg.edit_text(log_diag)
         
     except Exception as e:
         logger.error(f"❌ Ошибка Shadow DOM: {e}", exc_info=True)
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
-async def install_pydantic(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Установка Pydantic"""
+async def extract_structured_data(selector=None):
+    """Извлечение структурированных данных с помощью Pydantic"""
     global PYDANTIC_AVAILABLE
-    logger.info(f"📩 Команда /install_pydantic от {update.effective_user.username}")
+    logger.info(f"📊 Извлечение структурированных данных")
     
-    msg = await update.message.reply_text("⏳ Устанавливаю Pydantic...")
+    if not PYDANTIC_AVAILABLE:
+        return {"error": "Pydantic не установлен. Используйте /install_pydantic"}
     
-    if install_pydantic():
-        await msg.edit_text("✅ Pydantic установлен успешно!\n\nТеперь доступны структурированные данные через /extract")
-    else:
-        await msg.edit_text("❌ Не удалось установить Pydantic")
+    if engine_mode != "pydoll":
+        return {"error": "Структурированное извлечение доступно только в режиме Pydoll"}
+    
+    tab = await get_pydoll_browser()
+    if tab is None:
+        return {"error": "Браузер не запущен"}
+    
+    try:
+        from pydoll.extractor import ExtractionModel, Field
+        
+        class TweetExtract(ExtractionModel):
+            text: str = Field(selector='[data-testid="tweetText"]', description='Текст твита')
+            author: str = Field(selector='[data-testid="User-Name"]', description='Автор')
+        
+        if selector:
+            tweets = await tab.extract_all(TweetExtract, scope=selector)
+        else:
+            tweets = await tab.extract_all(TweetExtract, scope='[data-testid="tweet"]')
+        
+        return {
+            "count": len(tweets),
+            "data": [t.model_dump() for t in tweets]
+        }
+    except ImportError:
+        js_code = """
+            () => {
+                const tweets = [];
+                document.querySelectorAll('[data-testid="tweet"]').forEach(tweet => {
+                    const textEl = tweet.querySelector('[data-testid="tweetText"]');
+                    const userEl = tweet.querySelector('[data-testid="User-Name"]');
+                    tweets.push({
+                        text: textEl ? textEl.textContent : '',
+                        author: userEl ? userEl.textContent : ''
+                    });
+                });
+                return tweets.slice(0, 10);
+            }
+        """
+        result = await tab.execute_script(js_code)
+        return {
+            "count": len(result) if result else 0,
+            "data": result
+        }
+    except Exception as e:
+        logger.error(f"❌ Ошибка извлечения данных: {e}")
+        return {"error": str(e)}
 
 async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Скриншот"""
@@ -1650,13 +1941,16 @@ def main():
     app.add_handler(CommandHandler("shadow", shadow))
     app.add_handler(CommandHandler("install_pydantic", install_pydantic))
     
+    # Диагностика
+    app.add_handler(CommandHandler("diagnos", diagnos))
+    
     # Управление куками
     app.add_handler(CommandHandler("setcookies", setcookies))
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_cookies_input))
     
     # Обработчики кнопок
-    app.add_handler(CallbackQueryHandler(button_callback, pattern="^(login|screen|status|engine|tweets_menu|search_menu|api_menu|extract|shadow|close|setcookies)$"))
+    app.add_handler(CallbackQueryHandler(button_callback, pattern="^(login|screen|status|engine|tweets_menu|search_menu|api_menu|extract|shadow|close|setcookies|diagnos)$"))
     app.add_handler(CallbackQueryHandler(engine_switch, pattern="^engine_(pydoll|playwright)$"))
     app.add_handler(CallbackQueryHandler(back_to_menu, pattern="^back_to_menu$"))
     
@@ -1669,6 +1963,7 @@ def main():
     print("\nКоманды:")
     print("  Основные: /start, /login, /tweets, /search, /screen, /status, /engine, /close")
     print("  Расширенные: /api <url>, /extract, /shadow, /install_pydantic")
+    print("  Диагностика: /diagnos")
     print("  Куки: /setcookies, /cancel")
     print("\n💡 Нажмите /start для открытия меню с кнопками!")
     
