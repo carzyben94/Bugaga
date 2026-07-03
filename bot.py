@@ -1,4 +1,4 @@
-# bot.py - X.com бот
+# bot.py - X.com бот с Agnes (бесплатная LLM)
 import os
 import sys
 import subprocess
@@ -34,6 +34,93 @@ except ImportError:
     PHANTOMWRIGHT_AVAILABLE = False
     print("⚠️ Phantomwright не найден, использую Playwright")
     from playwright.async_api import async_playwright
+
+# ========== BROWSER-USE ==========
+BROWSER_USE_AVAILABLE = False
+
+def check_browser_use():
+    """Проверяет, установлен ли browser-use"""
+    global BROWSER_USE_AVAILABLE
+    try:
+        from browser_use import Agent
+        BROWSER_USE_AVAILABLE = True
+        return True
+    except ImportError:
+        BROWSER_USE_AVAILABLE = False
+        return False
+
+def install_browser_use():
+    """Устанавливает browser-use через pip"""
+    global BROWSER_USE_AVAILABLE
+    try:
+        if check_browser_use():
+            return True
+        
+        print("⏳ Устанавливаю browser-use...")
+        result = subprocess.run([
+            sys.executable, '-m', 'pip', 'install', 'browser-use'
+        ], capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            print("✅ browser-use установлен!")
+            check_browser_use()
+            return True
+        else:
+            print(f"❌ Ошибка установки: {result.stderr}")
+            return False
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        return False
+
+# Проверяем при запуске
+check_browser_use()
+
+# ========== AGNES (БЕСПЛАТНАЯ LLM) ==========
+AGNES_AVAILABLE = False
+agnes_llm = None
+
+def init_agnes():
+    """Инициализация Agnes через прямой API"""
+    global AGNES_AVAILABLE, agnes_llm
+    try:
+        # Проверяем наличие langchain-openai
+        try:
+            from langchain_openai import ChatOpenAI
+        except ImportError:
+            print("⏳ Устанавливаю langchain-openai...")
+            subprocess.run([
+                sys.executable, '-m', 'pip', 'install', 'langchain-openai'
+            ], capture_output=True, text=True)
+            from langchain_openai import ChatOpenAI
+        
+        # Agnes API напрямую
+        # Регистрируйся на https://agnes-ai.com/ и получи API ключ
+        # Бесплатные модели: agnes-2.0-flash
+        
+        llm = ChatOpenAI(
+            base_url="https://apihub.agnes-ai.com/v1",
+            model="agnes-2.0-flash",  # Бесплатная модель
+            temperature=0.7,
+            api_key=os.environ.get("AGNES_API_KEY", ""),
+        )
+        
+        # Проверяем, работает ли
+        test_response = llm.invoke("Test")
+        if test_response:
+            agnes_llm = llm
+            AGNES_AVAILABLE = True
+            print("✅ Agnes (LLM) загружена через прямой API")
+            return True
+        else:
+            print("⚠️ Agnes не отвечает")
+            return False
+            
+    except Exception as e:
+        print(f"⚠️ Ошибка Agnes: {e}")
+        return False
+
+# Инициализируем при запуске
+init_agnes()
 
 # ========== КУКИ X.COM ==========
 COOKIES = [
@@ -200,15 +287,24 @@ async def close_browser():
 # ========== КОМАНДЫ ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status_browser_use = "✅" if BROWSER_USE_AVAILABLE else "⏳ (установится при первом вызове)"
+    status_agnes = "✅" if AGNES_AVAILABLE else "❌"
     await update.message.reply_text(
         f"🏠 ОСНОВНЫЕ\n"
+        f"/start — Показать меню\n"
         f"/login — Авторизация в X.com\n"
         f"/screen — Скриншот\n"
         f"/status — Статус браузера\n"
         f"/close — Закрыть браузер\n\n"
         f"🤖 XBOT\n"
         f"/tweets <username> — Твиты пользователя\n"
-        f"/search <запрос> — Поиск твитов"
+        f"/search <запрос> — Поиск твитов\n\n"
+        f"🧠 AI АГЕНТ (Agnes {status_agnes})\n"
+        f"/browse <задача> — Управление браузером через AI\n"
+        f"/agnes — Проверить статус Agnes\n\n"
+        f"💡 Для работы /browse нужно:\n"
+        f"1. Установить AGNES_API_KEY в переменные окружения\n"
+        f"2. Ключ получить на https://agnes-ai.com/"
     )
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -456,6 +552,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg += f"\n🕐 {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
         status_msg += f"📦 Драйвер: {'Phantomwright' if PHANTOMWRIGHT_AVAILABLE else 'Playwright'}\n"
         status_msg += f"🍪 Куки загружены: {len(COOKIES)} шт."
+        status_msg += f"\n🧠 Browser-Use: {'✅' if BROWSER_USE_AVAILABLE else '❌'}"
+        status_msg += f"\n🤖 Agnes: {'✅' if AGNES_AVAILABLE else '❌'}"
         
         await msg.edit_text(status_msg)
         
@@ -679,6 +777,108 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
         logger.error(f"Error in search: {e}", exc_info=True)
 
+
+# ========== BROWSER-USE ==========
+
+async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Выполнить задачу в браузере через AI"""
+    if not context.args:
+        await update.message.reply_text(
+            "ℹ️ Использование: /browse <задача>\n"
+            "Пример: /browse Найди последние новости про ИИ\n"
+            "Пример: /browse Перейди на x.com"
+        )
+        return
+    
+    task = ' '.join(context.args)
+    msg = await update.message.reply_text(f"🌐 Выполняю: {task[:100]}...")
+    
+    # Проверяем, установлен ли browser-use
+    if not BROWSER_USE_AVAILABLE:
+        await msg.edit_text("⏳ Browser-Use не найден. Устанавливаю...")
+        if not install_browser_use():
+            await msg.edit_text("❌ Не удалось установить browser-use.")
+            return
+        await msg.edit_text("✅ Browser-Use установлен! Выполняю задачу...")
+    
+    # Проверяем Agnes
+    if not AGNES_AVAILABLE:
+        await msg.edit_text("⏳ Инициализирую Agnes...")
+        init_agnes()
+        if not AGNES_AVAILABLE:
+            await msg.edit_text(
+                "❌ Agnes не доступна. Установи AGNES_API_KEY в переменные окружения.\n"
+                "Ключ можно получить на https://agnes-ai.com/"
+            )
+            return
+        await msg.edit_text("✅ Agnes готова! Выполняю задачу...")
+    
+    try:
+        from browser_use import Agent
+        
+        # Создаем агента с Agnes (без явного Browser)
+        agent = Agent(
+            task=task,
+            llm=agnes_llm,
+            use_vision=False,
+        )
+        
+        await msg.edit_text(f"🧠 Agnes думает над задачей: {task[:100]}...")
+        
+        # Выполняем задачу
+        result = await agent.run()
+        
+        response = f"✅ **Задача выполнена!**\n\n"
+        response += f"📋 **Запрос:** {task}\n\n"
+        
+        if result:
+            response += f"📝 **Результат:**\n{result[:1500]}"
+        else:
+            response += "⚠️ Результат не получен"
+        
+        if len(response) > 4000:
+            filename = f"browse_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(f"Задача: {task}\n\n{result}")
+            await update.message.reply_document(
+                document=open(filename, 'rb'),
+                caption=f"📄 Результат: {task[:50]}"
+            )
+        else:
+            await msg.edit_text(response, parse_mode='Markdown')
+        
+    except ImportError as e:
+        await msg.edit_text(f"❌ Ошибка импорта: {str(e)[:200]}")
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+        logger.error(f"Error in browse: {e}", exc_info=True)
+
+
+async def agnes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Проверка статуса Agnes"""
+    global AGNES_AVAILABLE, agnes_llm
+    
+    if AGNES_AVAILABLE:
+        await update.message.reply_text(
+            "✅ **Agnes готова к работе!**\n\n"
+            f"Модель: agnes-2.0-flash\n"
+            f"Провайдер: Agnes AI (https://agnes-ai.com/)\n\n"
+            "Используй /browse <задача> для выполнения задач."
+        )
+    else:
+        await update.message.reply_text(
+            "❌ **Agnes не доступна**\n\n"
+            "Возможные причины:\n"
+            "1. Не установлен AGNES_API_KEY в переменные окружения\n"
+            "2. Проблемы с подключением к API\n"
+            "3. Не установлены зависимости (langchain-openai)\n\n"
+            "Для настройки:\n"
+            "1. Получи ключ на https://agnes-ai.com/\n"
+            "2. Добавь в переменные окружения: AGNES_API_KEY=твой_ключ\n"
+            "3. Перезапусти бота"
+        )
+
+
 # ========== ЗАПУСК ==========
 def main():
     app = Application.builder().token(TOKEN).build()
@@ -694,12 +894,19 @@ def main():
     app.add_handler(CommandHandler("tweets", tweets))
     app.add_handler(CommandHandler("search", search))
     
+    # Browser-Use + Agnes
+    app.add_handler(CommandHandler("browse", browse))
+    app.add_handler(CommandHandler("agnes", agnes))
+    
     print("✅ Бот запущен!")
+    print(f"🧠 Browser-Use: {'✅ Доступен' if BROWSER_USE_AVAILABLE else '❌ Не установлен'}")
+    print(f"🤖 Agnes: {'✅ Доступна' if AGNES_AVAILABLE else '❌ Не доступна'}")
     print("Команды:")
     print("  /start, /login, /screen, /status, /close")
-    print("  /tweets, /search")
+    print("  /tweets, /search, /browse, /agnes")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
+
