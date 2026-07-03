@@ -296,8 +296,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/status — Статус браузера\n"
         f"/close — Закрыть браузер\n"
         f"Бот\n"
-        f"/tweets <username> — Твиты пользователя\n"
-        f"/search <запрос> — Поиск твитов\n\n"
+        f"/tweets <username>\n"
+        f"/search <запрос>\n\n"
     )
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
