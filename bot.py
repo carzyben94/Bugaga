@@ -1,4 +1,4 @@
-# bot.py - X.com бот с Pydoll (с куками)
+# bot.py - X.com бот с Pydoll (куки через команду)
 import os
 import logging
 import asyncio
@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Optional, List
 from pydantic import BaseModel
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -51,130 +51,8 @@ class APIResponse(BaseModel):
     ok: bool
     data: dict
 
-# ========== КУКИ X.COM (ПОЛНЫЙ СПИСОК) ==========
-COOKIES = [
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "__cuid",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "lang",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "ru"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "dnt",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "1"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "guest_id",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "v1%3A178267838599411411"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "guest_id_marketing",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "v1%3A178267838599411411"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "guest_id_ads",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "v1%3A178267838599411411"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "personalization_id",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "\"v1_DKrxLZAC902dMFdd1QrVYg==\""
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "twid",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "u%3D2067347503503052800"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "auth_token",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "ct0",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "__cf_bm",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "2ku2oJe0Gfg05gUB2fEh0b3jU9kiEobTZUNq2OLAZvQ-1783074057.6785293-1.0.1.1-f3HYKsWH7RaLPfRVib1mioDjCy4hFVGk5ATKiOfVeQgHghivv2.i9DeLep5fhXPi6.dIRT6FDZsaMuGgPKzUJtG6793WLbUt6AzN06.CiGHiLlgfgCb7wWVjtZ3lnkSE"
-    }
-]
+# ========== КУКИ (ПУСТЫЕ, БУДУТ ЗАГРУЖАТЬСЯ ЧЕРЕЗ КОМАНДУ) ==========
+COOKIES = []
 
 # ========== ЭМУЛЯЦИЯ ЧЕЛОВЕКА ==========
 def random_delay(min_sec=0.5, max_sec=2.0):
@@ -281,22 +159,23 @@ async def get_browser():
         
         logger.info("✅ Браузер запущен!")
         
-        # Сначала устанавливаем куки
-        logger.info("🍪 Устанавливаю куки...")
-        for cookie in COOKIES:
-            try:
-                await pydoll_tab.set_cookie(
-                    name=cookie['name'],
-                    value=cookie['value'],
-                    domain=cookie['domain'],
-                    path=cookie['path']
-                )
-                logger.debug(f"🍪 Кука установлена: {cookie['name']}")
-            except Exception as e:
-                logger.warning(f"Cookie error {cookie['name']}: {e}")
+        # Устанавливаем куки если есть
+        if COOKIES:
+            logger.info(f"🍪 Устанавливаю {len(COOKIES)} кук...")
+            for cookie in COOKIES:
+                try:
+                    await pydoll_tab.set_cookie(
+                        name=cookie['name'],
+                        value=cookie['value'],
+                        domain=cookie.get('domain', '.x.com'),
+                        path=cookie.get('path', '/')
+                    )
+                    logger.debug(f"🍪 Кука установлена: {cookie['name']}")
+                except Exception as e:
+                    logger.warning(f"Cookie error {cookie['name']}: {e}")
+        else:
+            logger.warning("⚠️ Куки не загружены! Используй /setcookies")
         
-        # Потом переходим на X.com
-        logger.info("🌐 Перехожу на X.com...")
         await human_goto(pydoll_tab, 'https://x.com')
         
         logger.info("✅ Браузер готов!")
@@ -386,6 +265,7 @@ async def send_document(update: Update, file, caption=None):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
+        [InlineKeyboardButton("🍪 Добавить куки", callback_data="setcookies")],
         [InlineKeyboardButton("🔐 Логин", callback_data="login")],
         [InlineKeyboardButton("🛡️ Shadow DOM", callback_data="shadow")],
         [InlineKeyboardButton("🌐 API запрос", callback_data="api")],
@@ -394,10 +274,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📊 Статус", callback_data="status")],
         [InlineKeyboardButton("❌ Закрыть браузер", callback_data="close")],
     ]
+    
+    cookie_count = len(COOKIES)
     await update.message.reply_text(
         f"🤖 **X.com Бот**\n"
+        f"🍪 Куки: {'✅ Загружены' if cookie_count > 0 else '❌ Не загружены'} ({cookie_count} шт.)\n"
         f"🔐 Статус: {'✅ Авторизован' if login_status['is_logged_in'] else '❌ Не авторизован'}\n\n"
-        f"Выбери действие:",
+        f"📌 Сначала добавь куки через /setcookies\n"
+        f"📌 Потом выполни /login",
         parse_mode='Markdown',
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
@@ -406,7 +290,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    if query.data == "login":
+    if query.data == "setcookies":
+        await setcookies(update, context)
+    elif query.data == "login":
         await login(update, context)
     elif query.data == "shadow":
         await shadow_dom(update, context)
@@ -421,26 +307,133 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "close":
         await close(update, context)
 
-# ---------- ЛОГИН (куки → вход → скриншот) ----------
+# ---------- УСТАНОВКА КУК ----------
+async def setcookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для загрузки кук"""
+    global COOKIES
+    
+    if hasattr(update, 'callback_query'):
+        await update.callback_query.edit_message_text(
+            "🍪 **Отправь куки в JSON формате**\n\n"
+            "Пример:\n"
+            "```json\n"
+            "[\n"
+            '  {"name": "auth_token", "value": "токен", "domain": ".x.com", "path": "/"},\n'
+            '  {"name": "ct0", "value": "токен", "domain": ".x.com", "path": "/"}\n'
+            "]\n"
+            "```\n\n"
+            "Или отправь /cancel для отмены",
+            parse_mode='Markdown'
+        )
+    else:
+        await update.message.reply_text(
+            "🍪 **Отправь куки в JSON формате**\n\n"
+            "Пример:\n"
+            "```json\n"
+            "[\n"
+            '  {"name": "auth_token", "value": "токен", "domain": ".x.com", "path": "/"},\n'
+            '  {"name": "ct0", "value": "токен", "domain": ".x.com", "path": "/"}\n'
+            "]\n"
+            "```\n\n"
+            "Или отправь /cancel для отмены",
+            parse_mode='Markdown'
+        )
+    
+    context.user_data['waiting_for_cookies'] = True
+
+async def handle_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка введенных кук"""
+    global COOKIES
+    
+    if not context.user_data.get('waiting_for_cookies'):
+        return
+    
+    text = update.message.text.strip()
+    
+    if text.lower() == '/cancel':
+        context.user_data['waiting_for_cookies'] = False
+        await update.message.reply_text("❌ Отменено")
+        return
+    
+    try:
+        data = json.loads(text)
+        new_cookies = []
+        
+        if isinstance(data, list):
+            for cookie in data:
+                if 'name' in cookie and 'value' in cookie:
+                    new_cookies.append({
+                        "name": cookie['name'],
+                        "value": cookie['value'],
+                        "domain": cookie.get('domain', '.x.com'),
+                        "path": cookie.get('path', '/')
+                    })
+        elif isinstance(data, dict):
+            # Если прислали объект {name: value}
+            for name, value in data.items():
+                if value:
+                    new_cookies.append({
+                        "name": name,
+                        "value": value,
+                        "domain": ".x.com",
+                        "path": "/"
+                    })
+        else:
+            await update.message.reply_text("❌ Неверный формат. Отправь JSON массив.")
+            return
+        
+        if new_cookies:
+            COOKIES = new_cookies
+            context.user_data['waiting_for_cookies'] = False
+            
+            # Закрываем браузер чтобы перезагрузить с новыми куками
+            await close_browser()
+            
+            # Сбрасываем статус
+            global login_status
+            login_status = {'is_logged_in': False, 'username': None}
+            
+            # Показываем список кук
+            cookie_names = [c['name'] for c in COOKIES]
+            await update.message.reply_text(
+                f"✅ **Куки загружены!**\n\n"
+                f"📦 Всего: {len(COOKIES)} кук\n"
+                f"🍪 Список: {', '.join(cookie_names)}\n\n"
+                f"🔐 Теперь используй /login для авторизации"
+            )
+        else:
+            await update.message.reply_text("❌ Не удалось распознать куки")
+            
+    except json.JSONDecodeError as e:
+        await update.message.reply_text(f"❌ Ошибка JSON: {e}\n\nОтправь валидный JSON массив.")
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отмена"""
+    context.user_data['waiting_for_cookies'] = False
+    await update.message.reply_text("✅ Отменено")
+
+# ---------- ЛОГИН ----------
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global login_status
     
     if hasattr(update, 'callback_query'):
-        msg = await update.callback_query.edit_message_text("⏳ Устанавливаю куки и захожу на X.com...")
+        msg = await update.callback_query.edit_message_text("⏳ Авторизация...")
     else:
-        msg = await update.message.reply_text("⏳ Устанавливаю куки и захожу на X.com...")
+        msg = await update.message.reply_text("⏳ Авторизация...")
     
     try:
-        # 1. Запускаем браузер (куки устанавливаются внутри)
+        # Проверяем есть ли куки
+        if not COOKIES:
+            await msg.edit_text("❌ Куки не загружены!\n\nИспользуй /setcookies для загрузки кук.")
+            return
+        
         page = await get_browser()
         if page is None:
             await msg.edit_text("❌ Не удалось запустить браузер")
             return
         
-        # 2. Ждем загрузки страницы
         await asyncio.sleep(random_delay(2.0, 4.0))
         
-        # 3. Проверяем авторизацию
         auth = await execute_js('''
             () => {
                 const cookies = document.cookie.split(';').reduce((acc, c) => {
@@ -480,7 +473,6 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         login_status['is_logged_in'] = auth.get('isLoggedIn', False)
         login_status['username'] = auth.get('username')
         
-        # 4. Текстовый статус
         status_msg = f"✅ X.com\n\n"
         status_msg += f"🍪 auth_token: {'✅' if auth.get('hasAuthToken') else '❌'}\n"
         status_msg += f"🍪 ct0: {'✅' if auth.get('hasCt0') else '❌'}\n\n"
@@ -491,11 +483,10 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 status_msg += f"👤 @{auth['username']}\n"
         else:
             status_msg += "❌ НЕ АВТОРИЗОВАН\n"
-            status_msg += "\n💡 Обнови куки через /setcookies"
+            status_msg += "\n💡 Проверь куки через /setcookies"
         
         await msg.edit_text(status_msg)
         
-        # 5. Скриншот
         await asyncio.sleep(random_delay(0.5, 1.0))
         screenshot = await take_screenshot()
         if screenshot:
@@ -707,6 +698,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await msg.edit_text(
             f"📊 **Статус**\n\n"
+            f"🍪 Куки: {'✅ Загружены' if COOKIES else '❌ Не загружены'} ({len(COOKIES)} шт.)\n"
             f"🌐 Браузер: {'✅ Запущен' if page else '❌ Не запущен'}\n"
             f"🔐 Авторизация: {'✅' if login_status['is_logged_in'] else '❌'}\n"
             f"👤 Пользователь: {login_status['username'] or 'Нет'}\n"
@@ -731,6 +723,7 @@ def main():
     app = Application.builder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("setcookies", setcookies))
     app.add_handler(CommandHandler("login", login))
     app.add_handler(CommandHandler("shadow", shadow_dom))
     app.add_handler(CommandHandler("api", api_request))
@@ -738,6 +731,10 @@ def main():
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("close", close))
+    app.add_handler(CommandHandler("cancel", cancel))
+    
+    # Обработчик для кук
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_cookies))
     
     app.add_handler(CallbackQueryHandler(button_callback))
     
@@ -749,7 +746,7 @@ def main():
     else:
         print("❌ Chromium не найден! Установи: apt-get install chromium")
     
-    print(f"🔐 Куки загружены: {len(COOKIES)} шт.")
+    print(f"🍪 Куки не загружены. Используй /setcookies")
     app.run_polling()
 
 if __name__ == "__main__":
