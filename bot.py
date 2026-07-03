@@ -182,6 +182,36 @@ async def get_browser():
 
 # ========== БЕЗОПАСНОЕ ВЫПОЛНЕНИЕ JS ==========
 
+def safe_convert_result(data):
+    """Рекурсивно преобразует данные в безопасный формат (хешируемые типы)"""
+    if data is None:
+        return None
+    # slice — специальная обработка
+    elif isinstance(data, slice):
+        return {'slice_start': data.start, 'slice_stop': data.stop, 'slice_step': data.step}
+    elif isinstance(data, (str, int, float, bool)):
+        return data
+    elif isinstance(data, list):
+        return [safe_convert_result(item) for item in data]
+    elif isinstance(data, dict):
+        try:
+            return {str(key): safe_convert_result(value) for key, value in data.items()}
+        except Exception:
+            return {str(k): str(v) for k, v in data.items()}
+    elif isinstance(data, tuple):
+        return tuple(safe_convert_result(item) for item in data)
+    elif hasattr(data, '__dict__'):
+        try:
+            return {str(k): safe_convert_result(v) for k, v in data.__dict__.items()}
+        except:
+            return str(data)
+    else:
+        # Все остальное преобразуем в строку
+        try:
+            return str(data)
+        except:
+            return None
+
 async def safe_execute_js(script, timeout=10, default_return=None):
     """
     Безопасное выполнение JS с обработкой всех ошибок
@@ -195,13 +225,10 @@ async def safe_execute_js(script, timeout=10, default_return=None):
         return default_return
     
     try:
-        # Пробуем выполнить с таймаутом
         result = await asyncio.wait_for(
             page.execute_script(script),
             timeout=timeout
         )
-        
-        # Проверяем и преобразуем результат в безопасный формат
         return safe_convert_result(result)
         
     except asyncio.TimeoutError:
@@ -210,16 +237,6 @@ async def safe_execute_js(script, timeout=10, default_return=None):
     except TypeError as e:
         if 'unhashable type' in str(e):
             logger.warning(f"  ⚠️ Ошибка хеширования: {e}")
-            # Пробуем через return_by_value если доступно
-            try:
-                if hasattr(page, 'execute_script') and hasattr(page.execute_script, 'return_by_value'):
-                    result = await asyncio.wait_for(
-                        page.execute_script(script, return_by_value=True),
-                        timeout=timeout
-                    )
-                    return safe_convert_result(result)
-            except:
-                pass
             return default_return
         else:
             logger.error(f"  ❌ TypeError: {e}")
@@ -227,32 +244,6 @@ async def safe_execute_js(script, timeout=10, default_return=None):
     except Exception as e:
         logger.error(f"  ❌ Ошибка JS: {str(e)[:100]}")
         return default_return
-
-def safe_convert_result(data):
-    """Рекурсивно преобразует данные в безопасный формат (хешируемые типы)"""
-    if data is None:
-        return None
-    elif isinstance(data, (str, int, float, bool)):
-        return data
-    elif isinstance(data, list):
-        return [safe_convert_result(item) for item in data]
-    elif isinstance(data, dict):
-        # Преобразуем ключи в строки
-        return {str(key): safe_convert_result(value) for key, value in data.items()}
-    elif isinstance(data, tuple):
-        return tuple(safe_convert_result(item) for item in data)
-    elif hasattr(data, '__dict__'):
-        # Для объектов с __dict__ преобразуем в dict
-        try:
-            return {str(k): safe_convert_result(v) for k, v in data.__dict__.items()}
-        except:
-            return str(data)
-    else:
-        # Все остальное преобразуем в строку
-        try:
-            return str(data)
-        except:
-            return None
 
 async def take_screenshot():
     page = await get_browser()
@@ -302,9 +293,9 @@ async def shadow_v1(page):
             logger.warning(f"  ⚠️ V1: JS ошибка - {result['error']}")
             return []
         
-        count = len(result) if result else 0
+        count = len(result) if isinstance(result, list) else 0
         logger.info(f"  ✅ V1: Найдено {count} элементов")
-        return result if result else []
+        return result if isinstance(result, list) else []
         
     except Exception as e:
         logger.error(f"  ❌ V1: {str(e)[:100]}")
@@ -356,9 +347,9 @@ async def shadow_v2(page):
             logger.warning(f"  ⚠️ V2: JS ошибка - {result['error']}")
             return []
         
-        count = len(result) if result else 0
+        count = len(result) if isinstance(result, list) else 0
         logger.info(f"  ✅ V2: Найдено {count} элементов")
-        return result if result else []
+        return result if isinstance(result, list) else []
         
     except Exception as e:
         logger.error(f"  ❌ V2: {str(e)[:100]}")
@@ -420,7 +411,7 @@ async def shadow_v3(page):
             return {}
         
         logger.info(f"  ✅ V3: Обход завершен")
-        return result if result else {}
+        return result if isinstance(result, dict) else {}
         
     except Exception as e:
         logger.error(f"  ❌ V3: {str(e)[:100]}")
@@ -474,9 +465,9 @@ async def shadow_v4(page):
             logger.warning(f"  ⚠️ V4: JS ошибка - {result['error']}")
             return []
         
-        count = len(result) if result else 0
+        count = len(result) if isinstance(result, list) else 0
         logger.info(f"  ✅ V4: Найдено {count} хостов")
-        return result if result else []
+        return result if isinstance(result, list) else []
         
     except Exception as e:
         logger.error(f"  ❌ V4: {str(e)[:100]}")
