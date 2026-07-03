@@ -405,7 +405,6 @@ async def goto_url(url):
     if page is None:
         raise Exception("Не удалось получить страницу")
     
-    # Проверяем наличие метода go_to или goto
     if hasattr(page, 'go_to'):
         await page.go_to(url)
     elif hasattr(page, 'goto'):
@@ -443,6 +442,79 @@ async def take_screenshot():
         logger.error(f"Неизвестный тип страницы: {type(page)}")
         return None
 
+# ========== ДИАГНОСТИЧЕСКАЯ КОМАНДА ==========
+async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Тестовая команда для диагностики Pydoll"""
+    msg = await update.message.reply_text("🔍 Диагностика Pydoll...")
+    
+    try:
+        # 1. Проверка Chromium
+        await msg.edit_text("1️⃣ Проверяю Chromium...")
+        chromium_paths = ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome']
+        found = False
+        for path in chromium_paths:
+            if os.path.exists(path):
+                await msg.edit_text(f"✅ Chromium найден: {path}")
+                found = True
+                break
+        
+        if not found:
+            await msg.edit_text("❌ Chromium НЕ НАЙДЕН!")
+            return
+        
+        # 2. Проверка импорта
+        await msg.edit_text("2️⃣ Проверяю импорт Pydoll...")
+        try:
+            from pydoll.browser import Chrome
+            from pydoll.browser.options import ChromiumOptions
+            await msg.edit_text("✅ Pydoll импортирован успешно")
+        except Exception as e:
+            await msg.edit_text(f"❌ Ошибка импорта: {e}")
+            return
+        
+        # 3. Проверка опций
+        await msg.edit_text("3️⃣ Создаю опции...")
+        try:
+            options = ChromiumOptions()
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-gpu")
+            options.add_argument("--headless=new")
+            await msg.edit_text("✅ Опции созданы")
+        except Exception as e:
+            await msg.edit_text(f"❌ Ошибка опций: {e}")
+            return
+        
+        # 4. Запуск браузера
+        await msg.edit_text("4️⃣ Запускаю браузер (10-30 сек)...")
+        try:
+            browser = Chrome(options=options)
+            await msg.edit_text("✅ Экземпляр создан, запускаю...")
+            
+            tab = await browser.start()
+            await msg.edit_text("✅ Браузер запущен, вкладка получена!")
+            
+            # 5. Проверка работы
+            await msg.edit_text("5️⃣ Проверяю работу...")
+            await tab.go_to('https://www.google.com')
+            await msg.edit_text("✅ Переход на Google выполнен!")
+            
+            # 6. Скриншот
+            screenshot = await tab.screenshot()
+            await msg.edit_text(f"✅ Скриншот сделан ({len(screenshot)} байт)")
+            
+            # 7. Закрытие
+            await browser.close()
+            await msg.edit_text("✅ Браузер закрыт! Всё работает!")
+            
+        except Exception as e:
+            await msg.edit_text(f"❌ Ошибка при запуске: {str(e)[:300]}")
+            logger.error(f"Test error: {e}", exc_info=True)
+            
+    except Exception as e:
+        await msg.edit_text(f"❌ Критическая ошибка: {str(e)[:200]}")
+        logger.error(f"Critical test error: {e}", exc_info=True)
+
 # ========== КОМАНДЫ ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -460,7 +532,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/login - Авторизация в X.com\n"
         f"/screen - Скриншот\n"
         f"/status - Статус браузера\n"
-        f"/close - Закрыть браузер",
+        f"/close - Закрыть браузер\n"
+        f"/test - Диагностика Pydoll",
         parse_mode='Markdown'
     )
 
@@ -697,6 +770,7 @@ def main():
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("engine", engine))
     app.add_handler(CommandHandler("close", close))
+    app.add_handler(CommandHandler("test", test))  # Диагностическая команда
     
     logger.info("✅ Бот запущен и готов к работе!")
     print("\n✅ Бот запущен!")
@@ -705,7 +779,7 @@ def main():
     print(f"📦 Playwright: {'✅' if PLAYWRIGHT_AVAILABLE else '❌'}")
     print(f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}")
     print("\nКоманды:")
-    print("  /start, /engine, /login, /screen, /status, /close")
+    print("  /start, /engine, /login, /screen, /status, /close, /test")
     print("\n📋 Подробные логи пишутся в bot.log")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
