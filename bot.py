@@ -194,15 +194,16 @@ async def take_screenshot():
         logger.error(f"❌ Ошибка скриншота: {e}")
         return None
 
-# ========== БЕЗОПАСНОЕ ВЫПОЛНЕНИЕ JS (ВСЕ .slice ЗАМЕНЕНЫ НА .substring) ==========
+# ========== ИСПРАВЛЕННАЯ exec_js - ГАРАНТИРОВАННО ВОЗВРАЩАЕТ JSON ==========
 
 async def exec_js(page, script, timeout=10):
     """
-    Безопасное выполнение JS с return_by_value=True
-    Полностью исключает ошибку slice(None, 5, None)
+    Выполняет JS и возвращает результат в виде JSON.
+    Полностью исключает ошибку slice(None, 5, None).
     """
     try:
-        wrapped = f"""
+        # Полностью оборачиваем скрипт, чтобы он ВСЕГДА возвращал JSON-строку
+        wrapped_script = f"""
             (function() {{
                 try {{
                     var result = {script};
@@ -213,24 +214,28 @@ async def exec_js(page, script, timeout=10):
             }})()
         """
         
-        # return_by_value=True гарантирует простые типы
+        # Выполняем без return_by_value, просто получаем строку
         result_str = await asyncio.wait_for(
-            page.execute_script(wrapped, return_by_value=True),
+            page.execute_script(wrapped_script),
             timeout=timeout
         )
-        
+
+        # Если результат - строка, парсим её в Python-объект
         if isinstance(result_str, str):
             try:
                 return json.loads(result_str)
             except json.JSONDecodeError:
+                # Если это не JSON, возвращаем как есть
                 return result_str
+
+        # Если вдруг пришло не строкой, возвращаем как есть
         return result_str
-        
+
     except asyncio.TimeoutError:
-        logger.warning(f"⏱️ Таймаут {timeout}с")
+        logger.warning(f"⏱️ Таймаут {timeout}с при выполнении JS")
         return None
     except Exception as e:
-        logger.warning(f"⚠️ Ошибка: {e}")
+        logger.warning(f"⚠️ Ошибка выполнения JS: {e}")
         return None
 
 # ========== SHADOW DOM ФУНКЦИИ (ВСЕ .slice ЗАМЕНЕНЫ НА .substring) ==========
