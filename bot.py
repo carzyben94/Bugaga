@@ -1,4 +1,4 @@
-# bot.py - X.com бот с Agnes (бесплатная LLM)
+# bot.py - X.com бот с Pydoll + Playwright
 import os
 import sys
 import subprocess
@@ -6,7 +6,7 @@ import logging
 import asyncio
 import re
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Union
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -22,84 +22,48 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
 
-PLAYWRIGHT_DIR = "/root/.cache/ms-playwright"
-os.environ['PLAYWRIGHT_BROWSERS_PATH'] = PLAYWRIGHT_DIR
-
-# ========== ПРОВЕРКА PHANTOMWRIGHT ==========
-try:
-    from phantomwright_driver.async_api import async_playwright
-    PHANTOMWRIGHT_AVAILABLE = True
-    print("✅ Phantomwright загружен")
-except ImportError:
-    PHANTOMWRIGHT_AVAILABLE = False
-    print("⚠️ Phantomwright не найден, использую Playwright")
-    from playwright.async_api import async_playwright
-
-# ========== BROWSER-USE ==========
+# ========== ПРОВЕРКА БИБЛИОТЕК ==========
+PYDOLL_AVAILABLE = False
+PLAYWRIGHT_AVAILABLE = False
 BROWSER_USE_AVAILABLE = False
+AGNES_AVAILABLE = False
 
-def check_browser_use():
-    """Проверяет, установлен ли browser-use"""
-    global BROWSER_USE_AVAILABLE
+def check_libraries():
+    """Проверка всех библиотек"""
+    global PYDOLL_AVAILABLE, PLAYWRIGHT_AVAILABLE
+    
+    # Проверка Pydoll
     try:
-        from browser_use import Agent
-        BROWSER_USE_AVAILABLE = True
-        return True
+        import pydoll
+        PYDOLL_AVAILABLE = True
+        print("✅ Pydoll загружен")
     except ImportError:
-        BROWSER_USE_AVAILABLE = False
-        return False
-
-def install_browser_use():
-    """Устанавливает browser-use через pip"""
-    global BROWSER_USE_AVAILABLE
+        PYDOLL_AVAILABLE = False
+        print("⚠️ Pydoll не найден")
+    
+    # Проверка Playwright
     try:
-        if check_browser_use():
-            return True
-        
-        print("⏳ Устанавливаю browser-use...")
-        result = subprocess.run([
-            sys.executable, '-m', 'pip', 'install', 'browser-use'
-        ], capture_output=True, text=True)
-        
-        if result.returncode == 0:
-            print("✅ browser-use установлен!")
-            check_browser_use()
-            return True
-        else:
-            print(f"❌ Ошибка установки: {result.stderr}")
-            return False
-    except Exception as e:
-        print(f"❌ Ошибка: {e}")
-        return False
+        from playwright.async_api import async_playwright
+        PLAYWRIGHT_AVAILABLE = True
+        print("✅ Playwright загружен")
+    except ImportError:
+        PLAYWRIGHT_AVAILABLE = False
+        print("⚠️ Playwright не найден")
 
-# Проверяем при запуске
-check_browser_use()
+check_libraries()
 
 # ========== AGNES (БЕСПЛАТНАЯ LLM) ==========
-AGNES_AVAILABLE = False
 agnes_llm = None
 
 def init_agnes():
     """Инициализация Agnes через прямой API"""
     global AGNES_AVAILABLE, agnes_llm
     try:
-        # Проверяем наличие langchain-openai
-        try:
-            from langchain_openai import ChatOpenAI
-        except ImportError:
-            print("⏳ Устанавливаю langchain-openai...")
-            subprocess.run([
-                sys.executable, '-m', 'pip', 'install', 'langchain-openai'
-            ], capture_output=True, text=True)
-            from langchain_openai import ChatOpenAI
-        
-        # Agnes API напрямую
-        # Регистрируйся на https://agnes-ai.com/ и получи API ключ
-        # Бесплатные модели: agnes-2.0-flash
+        from langchain_openai import ChatOpenAI
         
         llm = ChatOpenAI(
             base_url="https://apihub.agnes-ai.com/v1",
-            model="agnes-2.0-flash",  # Бесплатная модель
+            model="agnes-2.0-flash",
             temperature=0.7,
             api_key=os.environ.get("AGNES_API_KEY", ""),
         )
@@ -109,17 +73,12 @@ def init_agnes():
         if test_response:
             agnes_llm = llm
             AGNES_AVAILABLE = True
-            print("✅ Agnes (LLM) загружена через прямой API")
+            print("✅ Agnes загружена")
             return True
-        else:
-            print("⚠️ Agnes не отвечает")
-            return False
-            
     except Exception as e:
         print(f"⚠️ Ошибка Agnes: {e}")
         return False
 
-# Инициализируем при запуске
 init_agnes()
 
 # ========== КУКИ X.COM ==========
@@ -140,7 +99,10 @@ COOKIES = [
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 browser_data = None
+pydoll_browser = None
+pydoll_tab = None
 browser_lock = False
+use_pydoll = False  # По умолчанию Playwright
 login_status = {
     'is_logged_in': False,
     'username': None,
@@ -148,46 +110,68 @@ login_status = {
     'cookies_valid': False
 }
 
-# ========== УСТАНОВКА БРАУЗЕРА ==========
-def get_chromium_path() -> Optional[str]:
-    base_dir = PLAYWRIGHT_DIR
-    if not os.path.exists(base_dir):
-        return None
-    for item in os.listdir(base_dir):
-        if item.startswith("chromium-") and "headless" not in item:
-            chrome_path = os.path.join(base_dir, item, "chrome-linux", "chrome")
-            if os.path.exists(chrome_path):
-                return chrome_path
-    return None
-
-def install_browser():
-    if get_chromium_path():
-        print("✅ Браузер уже установлен")
-        return True
+# ========== PYDOLL БРАУЗЕР ==========
+async def get_pydoll_browser():
+    """Получает Pydoll браузер с человеческим поведением"""
+    global pydoll_browser, pydoll_tab
     
-    print("⏳ Устанавливаю браузер...")
-    
-    if PHANTOMWRIGHT_AVAILABLE:
+    if pydoll_browser and pydoll_tab:
         try:
-            subprocess.run([sys.executable, "-m", "phantomwright_driver", "install", "chromium"], check=True)
-            print("✅ Браузер установлен через Phantomwright")
-            return True
-        except Exception as e:
-            print(f"⚠️ Ошибка Phantomwright: {e}")
+            await pydoll_tab.evaluate('1')
+            return pydoll_tab
+        except:
+            await close_pydoll_browser()
     
     try:
-        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
-        subprocess.run([sys.executable, "-m", "playwright", "install-deps"], check=True)
-        print("✅ Браузер установлен через Playwright")
-        return True
+        from pydoll.browser import Chrome
+        
+        # Важные флаги для Railway/контейнеров
+        pydoll_browser = await Chrome(
+            headless=True,
+            options=[
+                '--no-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--disable-setuid-sandbox',
+                '--disable-blink-features=AutomationControlled',
+                '--window-size=1280,720',
+                '--headless=new',
+            ]
+        ).start()
+        
+        pydoll_tab = await pydoll_browser.get_current_tab()
+        
+        # Устанавливаем куки
+        for cookie in COOKIES:
+            try:
+                await pydoll_tab.set_cookie(
+                    name=cookie['name'],
+                    value=cookie['value'],
+                    domain=cookie['domain'],
+                    path=cookie['path']
+                )
+            except Exception as e:
+                logger.warning(f"Pydoll cookie error {cookie['name']}: {e}")
+        
+        logger.info("✅ Pydoll браузер запущен")
+        return pydoll_tab
     except Exception as e:
-        print(f"❌ Ошибка установки: {e}")
-        return False
+        logger.error(f"Pydoll ошибка: {e}")
+        return None
 
-install_browser()
+async def close_pydoll_browser():
+    global pydoll_browser, pydoll_tab
+    if pydoll_browser:
+        try:
+            await pydoll_browser.stop()
+        except:
+            pass
+        pydoll_browser = None
+        pydoll_tab = None
 
-# ========== УПРАВЛЕНИЕ БРАУЗЕРОМ ==========
-async def get_browser():
+# ========== PLAYWRIGHT БРАУЗЕР ==========
+async def get_playwright_browser():
+    """Получает Playwright браузер"""
     global browser_data, browser_lock
     
     if browser_data:
@@ -207,16 +191,13 @@ async def get_browser():
     browser_lock = True
     
     try:
+        from playwright.async_api import async_playwright
+        
         p = await async_playwright().start()
         
-        chromium_path = get_chromium_path()
-        if not chromium_path:
-            install_browser()
-            chromium_path = get_chromium_path()
-        
-        launch_args = {
-            'headless': True,
-            'args': [
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--disable-blink-features=AutomationControlled',
@@ -225,11 +206,7 @@ async def get_browser():
                 '--window-size=1280,720',
                 '--headless=new',
             ]
-        }
-        if chromium_path:
-            launch_args['executable_path'] = chromium_path
-        
-        browser = await p.chromium.launch(**launch_args)
+        )
         
         context = await browser.new_context(
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -248,12 +225,21 @@ async def get_browser():
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
             Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-            Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
-            Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 4 });
-            window.chrome = { runtime: { connect: () => {}, sendMessage: () => {} }, app: { isInstalled: false } };
-            Object.defineProperty(document, 'hidden', { get: () => false });
-            Object.defineProperty(document, 'visibilityState', { get: () => 'visible' });
+            window.chrome = { runtime: { connect: () => {}, sendMessage: () => {} } };
         """)
+        
+        for cookie in COOKIES:
+            try:
+                await context.add_cookies([{
+                    'name': cookie['name'],
+                    'value': cookie['value'],
+                    'domain': '.x.com',
+                    'path': '/',
+                    'secure': True,
+                    'httpOnly': False
+                }])
+            except Exception as e:
+                logger.warning(f"Cookie error {cookie['name']}: {e}")
         
         browser_data = {
             'playwright': p,
@@ -263,12 +249,12 @@ async def get_browser():
             'started_at': datetime.now()
         }
         
-        logger.info("✅ Браузер запущен")
+        logger.info("✅ Playwright браузер запущен")
         return browser_data
     finally:
         browser_lock = False
 
-async def close_browser():
+async def close_playwright_browser():
     global browser_data, login_status
     if browser_data:
         try:
@@ -284,62 +270,191 @@ async def close_browser():
             'cookies_valid': False
         }
 
+# ========== УНИВЕРСАЛЬНЫЙ БРАУЗЕР С FALLBACK ==========
+async def get_browser():
+    """Универсальное получение браузера с автоматическим fallback"""
+    global use_pydoll
+    
+    if use_pydoll and PYDOLL_AVAILABLE:
+        try:
+            # Пробуем Pydoll
+            browser = await get_pydoll_browser()
+            if browser:
+                logger.info("✅ Использую Pydoll")
+                return browser
+        except Exception as e:
+            logger.error(f"❌ Pydoll failed: {e}, falling back to Playwright")
+            use_pydoll = False
+            await close_pydoll_browser()
+    
+    # Fallback на Playwright
+    logger.info("🔄 Использую Playwright")
+    browser_data = await get_playwright_browser()
+    return browser_data['page'] if browser_data else None
+
+async def close_browser():
+    """Универсальное закрытие браузера"""
+    if use_pydoll:
+        await close_pydoll_browser()
+    else:
+        await close_playwright_browser()
+
+async def get_page():
+    """Универсальное получение страницы"""
+    return await get_browser()
+
+async def take_screenshot():
+    """Универсальный скриншот"""
+    if use_pydoll and PYDOLL_AVAILABLE:
+        try:
+            page = await get_pydoll_browser()
+            if page:
+                return await page.screenshot()
+        except:
+            pass
+    
+    # Fallback на Playwright
+    browser = await get_playwright_browser()
+    if browser:
+        page = browser['page']
+        return await page.screenshot(type='jpeg', quality=80)
+    return None
+
+async def goto_url(url):
+    """Универсальный переход по URL"""
+    if use_pydoll and PYDOLL_AVAILABLE:
+        try:
+            page = await get_pydoll_browser()
+            if page:
+                await page.go_to(url)
+                return
+        except:
+            pass
+    
+    # Fallback на Playwright
+    browser = await get_playwright_browser()
+    if browser:
+        page = browser['page']
+        await page.goto(url, wait_until='domcontentloaded')
+
+async def evaluate_js(script):
+    """Универсальное выполнение JS"""
+    if use_pydoll and PYDOLL_AVAILABLE:
+        try:
+            page = await get_pydoll_browser()
+            if page:
+                return await page.evaluate(script)
+        except:
+            pass
+    
+    # Fallback на Playwright
+    browser = await get_playwright_browser()
+    if browser:
+        page = browser['page']
+        return await page.evaluate(script)
+    return None
+
+async def wait_for_selector(selector, timeout=15000):
+    """Универсальное ожидание элемента"""
+    if use_pydoll and PYDOLL_AVAILABLE:
+        try:
+            page = await get_pydoll_browser()
+            if page:
+                await page.wait_for_element(selector, timeout=timeout/1000)
+                return
+        except:
+            pass
+    
+    # Fallback на Playwright
+    browser = await get_playwright_browser()
+    if browser:
+        page = browser['page']
+        await page.wait_for_selector(selector, timeout=timeout)
+
 # ========== КОМАНДЫ ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    status_browser_use = "✅" if BROWSER_USE_AVAILABLE else "⏳ (установится при первом вызове)"
-    status_agnes = "✅" if AGNES_AVAILABLE else "❌"
     await update.message.reply_text(
-        f"/login Авторизация в X.com\n"
-        f"/screen Скриншот\n"
-        f"/status Статус браузера\n"
-        f"/close Закрыть браузер\n"
-        f"/tweets <username>\n"
-        f"/search <запрос>\n\n"
+        f"🤖 **X.com Бот**\n\n"
+        f"🎮 Движок: {'Pydoll' if use_pydoll else 'Playwright'}\n"
+        f"🧠 Agnes: {'✅' if AGNES_AVAILABLE else '❌'}\n\n"
+        f"📌 Команды:\n"
+        f"/login - Авторизация в X.com\n"
+        f"/screen - Скриншот\n"
+        f"/status - Статус браузера\n"
+        f"/engine - Переключить движок\n"
+        f"/close - Закрыть браузер\n"
+        f"/tweets <username> - Твиты пользователя\n"
+        f"/search <запрос> - Поиск твитов\n"
+        f"/browse <задача> - AI задача в браузере\n"
+        f"/agnes - Статус Agnes",
+        parse_mode='Markdown'
     )
+
+async def engine(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Переключение между движками браузера"""
+    global use_pydoll
+    
+    if not context.args:
+        current = "Pydoll" if use_pydoll else "Playwright"
+        status = ""
+        if use_pydoll and not PYDOLL_AVAILABLE:
+            status = " (⚠️ Pydoll не установлен!)"
+        
+        await update.message.reply_text(
+            f"🔧 Текущий движок: **{current}**{status}\n\n"
+            f"Доступные движки:\n"
+            f"  /engine playwright - Playwright (стабильный)\n"
+            f"  /engine pydoll - Pydoll (человеческое поведение)\n\n"
+            f"ℹ️ Pydoll лучше для обхода антибот-систем"
+        )
+        return
+    
+    engine_type = context.args[0].lower()
+    
+    if engine_type == "pydoll":
+        if not PYDOLL_AVAILABLE:
+            await update.message.reply_text(
+                "❌ Pydoll не установлен!\n\n"
+                "Установите вручную: pip install pydoll-python\n"
+                "Или перезапустите бота"
+            )
+            return
+        
+        await close_browser()
+        use_pydoll = True
+        await update.message.reply_text(
+            "✅ Переключено на **Pydoll**\n"
+            "Теперь браузер будет с человеческим поведением!"
+        )
+        
+    elif engine_type == "playwright":
+        await close_browser()
+        use_pydoll = False
+        await update.message.reply_text(
+            "✅ Переключено на **Playwright**"
+        )
+    else:
+        await update.message.reply_text(
+            f"❌ Неизвестный движок: {engine_type}\n"
+            f"Доступно: playwright, pydoll"
+        )
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Захожу в X.com...")
     
     try:
-        browser = await get_browser()
-        page = browser['page']
+        await goto_url('https://x.com')
+        await asyncio.sleep(3)
         
-        await browser['context'].clear_cookies()
-        await page.goto('about:blank')
-        await page.wait_for_timeout(2000)
-        
-        for cookie in COOKIES:
-            try:
-                await browser['context'].add_cookies([{
-                    'name': cookie['name'],
-                    'value': cookie['value'],
-                    'domain': '.x.com',
-                    'path': '/',
-                    'secure': True,
-                    'httpOnly': False
-                }])
-            except Exception as e:
-                logger.warning(f"Cookie error {cookie['name']}: {e}")
-        
-        await msg.edit_text("🔄 Загружаю X.com...")
-        await page.goto('https://x.com', wait_until='domcontentloaded', timeout=30000)
-        
-        try:
-            await page.wait_for_selector('[data-testid="primaryColumn"]', timeout=15000)
-        except:
-            await page.wait_for_timeout(5000)
-        
-        await page.wait_for_timeout(3000)
-        
-        auth_status = await page.evaluate('''
+        # Проверка авторизации
+        auth_status = await evaluate_js('''
             () => {
                 const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]');
                 const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
                 const hasHomeLink = !!document.querySelector('[data-testid="AppTabBar_Home_Link"]');
                 const hasSideNav = !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
                 const hasLoginForm = !!document.querySelector('[data-testid="loginForm"]');
-                const hasPrimaryColumn = !!document.querySelector('[data-testid="primaryColumn"]');
                 
                 const cookies = document.cookie.split(';').reduce((acc, c) => {
                     const [key, val] = c.trim().split('=');
@@ -363,7 +478,6 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     hasHomeLink,
                     hasSideNav,
                     hasLoginForm,
-                    hasPrimaryColumn,
                     hasAuthToken: !!cookies.auth_token,
                     hasCt0: !!cookies.ct0,
                     username: username,
@@ -386,12 +500,6 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status_msg += "✅ ВЫ АВТОРИЗОВАНЫ!\n"
             if auth_status.get('username'):
                 status_msg += f"👤 @{auth_status['username']}\n"
-            if auth_status['hasTweetBtn']:
-                status_msg += "   • Кнопка Tweet: ✅\n"
-            if auth_status['hasProfileLink']:
-                status_msg += "   • Профиль: ✅\n"
-            if auth_status['hasHomeLink']:
-                status_msg += "   • Домой: ✅\n"
         elif auth_status['hasLoginForm']:
             status_msg += "❌ НЕ АВТОРИЗОВАН (форма входа)\n"
         else:
@@ -399,11 +507,12 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await msg.edit_text(status_msg)
         
-        screenshot = await page.screenshot(type='jpeg', quality=80)
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption=f"📸 X.com - {'✅ Авторизован' if auth_status['isLoggedIn'] else '❌ Не авторизован'}"
-        )
+        screenshot = await take_screenshot()
+        if screenshot:
+            await update.message.reply_photo(
+                photo=screenshot,
+                caption=f"📸 X.com - {'✅ Авторизован' if auth_status['isLoggedIn'] else '❌ Не авторизован'}"
+            )
         
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
@@ -412,19 +521,15 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Делаю скриншот...")
     
     try:
-        browser = await get_browser()
-        page = browser['page']
-        
-        screenshot = await page.screenshot(type='jpeg', quality=80)
-        await msg.delete()
-        
-        url = page.url
-        title = await page.title()
-        
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption=f"📸 {title[:40] if title else 'X.com'}\n🔗 {url[:50]}"
-        )
+        screenshot = await take_screenshot()
+        if screenshot:
+            await msg.delete()
+            await update.message.reply_photo(
+                photo=screenshot,
+                caption=f"📸 Скриншот X.com\n🎮 Движок: {'Pydoll' if use_pydoll else 'Playwright'}"
+            )
+        else:
+            await msg.edit_text("❌ Не удалось сделать скриншот")
         
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:100]}")
@@ -433,120 +538,47 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Проверяю статус...")
     
     try:
-        browser_ok = False
-        browser_info = {}
+        status_msg = "📊 **СТАТУС БОТА**\n\n"
         
-        if browser_data:
-            try:
-                page = browser_data['page']
-                await page.evaluate('1')
-                browser_ok = True
-                
-                url = page.url
-                title = await page.title()
-                started_at = browser_data.get('started_at')
-                uptime = (datetime.now() - started_at).total_seconds() if started_at else 0
-                
-                auth_check = await page.evaluate('''
-                    () => {
-                        const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]');
-                        const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
-                        const hasHomeLink = !!document.querySelector('[data-testid="AppTabBar_Home_Link"]');
-                        const hasSideNav = !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
-                        const hasLoginForm = !!document.querySelector('[data-testid="loginForm"]');
-                        
-                        const cookies = document.cookie.split(';').reduce((acc, c) => {
-                            const [key, val] = c.trim().split('=');
-                            acc[key] = val;
-                            return acc;
-                        }, {});
-                        
-                        let username = null;
-                        const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
-                        if (profileLink) {
-                            const href = profileLink.getAttribute('href');
-                            if (href) {
-                                const match = href.match(/^\\/([^\\/]+)/);
-                                if (match) username = match[1];
-                            }
-                        }
-                        
-                        return {
-                            hasTweetBtn,
-                            hasProfileLink,
-                            hasHomeLink,
-                            hasSideNav,
-                            hasLoginForm,
-                            hasAuthToken: !!cookies.auth_token,
-                            hasCt0: !!cookies.ct0,
-                            username: username,
-                            isLoggedIn: hasTweetBtn || hasProfileLink || hasHomeLink || hasSideNav
-                        };
-                    }
-                ''')
-                
-                browser_info = {
-                    'url': url,
-                    'title': title[:60] if title else 'Нет',
-                    'uptime': uptime,
-                    'auth': auth_check
-                }
-                
-                login_status['is_logged_in'] = auth_check['isLoggedIn']
-                login_status['username'] = auth_check.get('username')
-                login_status['last_check'] = datetime.now()
-                login_status['cookies_valid'] = auth_check['hasAuthToken'] and auth_check['hasCt0']
-                
-            except Exception as e:
-                browser_ok = False
-                browser_info['error'] = str(e)[:50]
-        else:
-            browser_info = {'error': 'Браузер не запущен'}
+        # Движки
+        status_msg += f"🎮 Текущий движок: **{'Pydoll' if use_pydoll else 'Playwright'}**\n"
+        status_msg += f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}\n"
+        status_msg += f"📦 Playwright: {'✅' if PLAYWRIGHT_AVAILABLE else '❌'}\n"
+        status_msg += f"🧠 Agnes: {'✅' if AGNES_AVAILABLE else '❌'}\n\n"
         
-        status_msg = "📊 СТАТУС БОТА\n\n"
-        
-        if browser_ok:
-            status_msg += "🌐 Браузер: ✅ Запущен\n"
-            if browser_info.get('uptime'):
-                hours = int(browser_info['uptime'] // 3600)
-                minutes = int((browser_info['uptime'] % 3600) // 60)
-                status_msg += f"⏱️ Аптайм: {hours}ч {minutes}м\n"
-        else:
+        # Статус браузера
+        try:
+            if use_pydoll and PYDOLL_AVAILABLE:
+                page = await get_pydoll_browser()
+                if page:
+                    status_msg += "🌐 Браузер: ✅ Запущен (Pydoll)\n"
+                    try:
+                        url = await page.evaluate('window.location.href')
+                        status_msg += f"🔗 URL: {url[:50]}\n"
+                    except:
+                        pass
+            else:
+                browser = await get_playwright_browser()
+                if browser:
+                    status_msg += "🌐 Браузер: ✅ Запущен (Playwright)\n"
+                    page = browser['page']
+                    url = page.url
+                    status_msg += f"🔗 URL: {url[:50]}\n"
+        except:
             status_msg += "🌐 Браузер: ❌ Не запущен\n"
         
-        if browser_ok and browser_info.get('title'):
-            status_msg += f"📌 Заголовок: {browser_info.get('title', 'Нет')}\n"
-        
-        status_msg += "\n🔐 АВТОРИЗАЦИЯ:\n"
-        
-        if browser_ok and browser_info.get('auth'):
-            auth = browser_info['auth']
-            
-            status_msg += f"🍪 auth_token: {'✅' if auth.get('hasAuthToken') else '❌'}\n"
-            status_msg += f"🍪 ct0: {'✅' if auth.get('hasCt0') else '❌'}\n"
-            
-            if auth.get('isLoggedIn'):
-                status_msg += "\n✅ ВЫ АВТОРИЗОВАНЫ\n"
-                if auth.get('username'):
-                    status_msg += f"👤 @{auth['username']}\n"
-                if auth.get('hasProfileLink'):
-                    status_msg += "   • Профиль: ✅\n"
-                if auth.get('hasHomeLink'):
-                    status_msg += "   • Домой: ✅\n"
-            elif auth.get('hasLoginForm'):
-                status_msg += "\n❌ НЕ АВТОРИЗОВАН (форма входа)\n"
-            else:
-                status_msg += "\n⚠️ НЕ ОПРЕДЕЛЕНО\n"
+        # Авторизация
+        status_msg += "\n🔐 **АВТОРИЗАЦИЯ:**\n"
+        if login_status['is_logged_in']:
+            status_msg += f"✅ Авторизован\n"
+            if login_status['username']:
+                status_msg += f"👤 @{login_status['username']}\n"
         else:
-            status_msg += "❌ Нет данных (выполните /login)\n"
+            status_msg += "❌ Не авторизован\n"
         
-        status_msg += f"\n🕐 {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
-        status_msg += f"📦 Драйвер: {'Phantomwright' if PHANTOMWRIGHT_AVAILABLE else 'Playwright'}\n"
-        status_msg += f"🍪 Куки загружены: {len(COOKIES)} шт."
-        status_msg += f"\n🧠 Browser-Use: {'✅' if BROWSER_USE_AVAILABLE else '❌'}"
-        status_msg += f"\n🤖 Agnes: {'✅' if AGNES_AVAILABLE else '❌'}"
+        status_msg += f"\n🕐 {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
         
-        await msg.edit_text(status_msg)
+        await msg.edit_text(status_msg, parse_mode='Markdown')
         
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
@@ -555,8 +587,6 @@ async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Закрываю браузер...")
     await close_browser()
     await msg.edit_text("✅ Браузер закрыт!")
-
-# ========== ТВИТЫ ПОЛЬЗОВАТЕЛЯ ==========
 
 async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Парсинг твитов пользователя"""
@@ -572,15 +602,12 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(f"📊 Парсю твиты @{username}...")
     
     try:
-        browser = await get_browser()
-        page = browser['page']
+        await goto_url(f"https://x.com/{username}")
+        await asyncio.sleep(3)
         
-        await page.goto(f"https://x.com/{username}", wait_until='domcontentloaded')
-        await page.wait_for_timeout(3000)
+        await wait_for_selector('[data-testid="tweet"]', timeout=10000)
         
-        await page.wait_for_selector('[data-testid="tweet"]', timeout=10000)
-        
-        tweets_data = await page.evaluate(f'''
+        tweets_data = await evaluate_js(f'''
             () => {{
                 const tweets = [];
                 const tweetElements = document.querySelectorAll('[data-testid="tweet"]');
@@ -595,14 +622,6 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     let text = textEl ? textEl.innerText : '';
                     text = text.replace(/https?:\\/\\/[^\\s]*/g, '');
-                    text = text.replace(/http?:\\/\\/[^\\s]*/g, '');
-                    text = text.replace(/ftp?:\\/\\/[^\\s]*/g, '');
-                    text = text.replace(/www\\.[^\\s]*/g, '');
-                    text = text.replace(/[a-zA-Z0-9.-]+\\.[a-zA-Z]{{2,}}\\S*/g, '');
-                    text = text.replace(/\\b[a-zA-Z0-9.-]+\\.[a-zA-Z]{{2,}}\\b/g, '');
-                    text = text.replace(/[a-zA-Z0-9]+-[a-zA-Z0-9]+-[a-zA-Z0-9]+/g, '');
-                    text = text.replace(/[a-zA-Z0-9]+\\.[a-zA-Z]{{2,}}\\b/g, '');
-                    text = text.replace(/\\n\\s*\\n/g, '\\n');
                     text = text.replace(/\\s{{2,}}/g, ' ');
                     text = text.trim();
                     
@@ -653,18 +672,16 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await msg.edit_text(report, parse_mode='Markdown')
         
-        screenshot = await page.screenshot(type='jpeg', quality=80)
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption=f"📸 Твиты @{username}"
-        )
+        screenshot = await take_screenshot()
+        if screenshot:
+            await update.message.reply_photo(
+                photo=screenshot,
+                caption=f"📸 Твиты @{username}"
+            )
         
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
         logger.error(f"Error in tweets: {e}", exc_info=True)
-
-
-# ========== ПОИСК ТВИТОВ ==========
 
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Поиск твитов"""
@@ -679,16 +696,13 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(f"🔍 Ищу: {query}...")
     
     try:
-        browser = await get_browser()
-        page = browser['page']
-        
         search_url = f"https://x.com/search?q={query.replace(' ', '%20')}&src=typed_query"
-        await page.goto(search_url, wait_until='domcontentloaded')
-        await page.wait_for_timeout(3000)
+        await goto_url(search_url)
+        await asyncio.sleep(3)
         
-        await page.wait_for_selector('[data-testid="tweet"]', timeout=10000)
+        await wait_for_selector('[data-testid="tweet"]', timeout=10000)
         
-        tweets_data = await page.evaluate('''
+        tweets_data = await evaluate_js('''
             () => {
                 const tweets = [];
                 const tweetElements = document.querySelectorAll('[data-testid="tweet"]');
@@ -701,14 +715,6 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     let text = textEl ? textEl.innerText : '';
                     text = text.replace(/https?:\\/\\/[^\\s]*/g, '');
-                    text = text.replace(/http?:\\/\\/[^\\s]*/g, '');
-                    text = text.replace(/ftp?:\\/\\/[^\\s]*/g, '');
-                    text = text.replace(/www\\.[^\\s]*/g, '');
-                    text = text.replace(/[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}\\S*/g, '');
-                    text = text.replace(/\\b[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}\\b/g, '');
-                    text = text.replace(/[a-zA-Z0-9]+-[a-zA-Z0-9]+-[a-zA-Z0-9]+/g, '');
-                    text = text.replace(/[a-zA-Z0-9]+\\.[a-zA-Z]{2,}\\b/g, '');
-                    text = text.replace(/\\n\\s*\\n/g, '\\n');
                     text = text.replace(/\\s{2,}/g, ' ');
                     text = text.trim();
                     
@@ -758,56 +764,40 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await msg.edit_text(report, parse_mode='Markdown')
         
-        screenshot = await page.screenshot(type='jpeg', quality=80)
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption=f"🔍 Поиск: {query}"
-        )
+        screenshot = await take_screenshot()
+        if screenshot:
+            await update.message.reply_photo(
+                photo=screenshot,
+                caption=f"🔍 Поиск: {query}"
+            )
         
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
         logger.error(f"Error in search: {e}", exc_info=True)
-
-
-# ========== BROWSER-USE ==========
 
 async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Выполнить задачу в браузере через AI"""
     if not context.args:
         await update.message.reply_text(
             "ℹ️ Использование: /browse <задача>\n"
-            "Пример: /browse Найди последние новости про ИИ\n"
-            "Пример: /browse Перейди на x.com"
+            "Пример: /browse Найди последние новости про ИИ"
         )
         return
     
     task = ' '.join(context.args)
     msg = await update.message.reply_text(f"🌐 Выполняю: {task[:100]}...")
     
-    # Проверяем, установлен ли browser-use
-    if not BROWSER_USE_AVAILABLE:
-        await msg.edit_text("⏳ Browser-Use не найден. Устанавливаю...")
-        if not install_browser_use():
-            await msg.edit_text("❌ Не удалось установить browser-use.")
-            return
-        await msg.edit_text("✅ Browser-Use установлен! Выполняю задачу...")
-    
-    # Проверяем Agnes
     if not AGNES_AVAILABLE:
-        await msg.edit_text("⏳ Инициализирую Agnes...")
-        init_agnes()
-        if not AGNES_AVAILABLE:
-            await msg.edit_text(
-                "❌ Agnes не доступна. Установи AGNES_API_KEY в переменные окружения.\n"
-                "Ключ можно получить на https://agnes-ai.com/"
-            )
-            return
-        await msg.edit_text("✅ Agnes готова! Выполняю задачу...")
+        await msg.edit_text(
+            "❌ Agnes не доступна. Установи AGNES_API_KEY в переменные окружения.\n"
+            "Ключ можно получить на https://agnes-ai.com/"
+        )
+        return
     
     try:
         from browser_use import Agent
         
-        # Создаем агента с Agnes (без явного Browser)
+        # Создаем агента с Agnes
         agent = Agent(
             task=task,
             llm=agnes_llm,
@@ -816,14 +806,13 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await msg.edit_text(f"🧠 Agnes думает над задачей: {task[:100]}...")
         
-        # Выполняем задачу
         result = await agent.run()
         
         response = f"✅ **Задача выполнена!**\n\n"
         response += f"📋 **Запрос:** {task}\n\n"
         
         if result:
-            response += f"📝 **Результат:**\n{result[:1500]}"
+            response += f"📝 **Результат:**\n{str(result)[:1500]}"
         else:
             response += "⚠️ Результат не получен"
         
@@ -844,11 +833,8 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
         logger.error(f"Error in browse: {e}", exc_info=True)
 
-
 async def agnes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Проверка статуса Agnes"""
-    global AGNES_AVAILABLE, agnes_llm
-    
     if AGNES_AVAILABLE:
         await update.message.reply_text(
             "✅ **Agnes готова к работе!**\n\n"
@@ -859,41 +845,37 @@ async def agnes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(
             "❌ **Agnes не доступна**\n\n"
-            "Возможные причины:\n"
-            "1. Не установлен AGNES_API_KEY в переменные окружения\n"
-            "2. Проблемы с подключением к API\n"
-            "3. Не установлены зависимости (langchain-openai)\n\n"
             "Для настройки:\n"
             "1. Получи ключ на https://agnes-ai.com/\n"
             "2. Добавь в переменные окружения: AGNES_API_KEY=твой_ключ\n"
             "3. Перезапусти бота"
         )
 
-
 # ========== ЗАПУСК ==========
 def main():
     app = Application.builder().token(TOKEN).build()
     
-    # Основные
+    # Основные команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("login", login))
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("engine", engine))
     app.add_handler(CommandHandler("close", close))
     
-    # XBOT
+    # X.com команды
     app.add_handler(CommandHandler("tweets", tweets))
     app.add_handler(CommandHandler("search", search))
     
-    # Browser-Use + Agnes
+    # AI команды
     app.add_handler(CommandHandler("browse", browse))
     app.add_handler(CommandHandler("agnes", agnes))
     
     print("✅ Бот запущен!")
-    print(f"🧠 Browser-Use: {'✅ Доступен' if BROWSER_USE_AVAILABLE else '❌ Не установлен'}")
-    print(f"🤖 Agnes: {'✅ Доступна' if AGNES_AVAILABLE else '❌ Не доступна'}")
-    print("Команды:")
-    print("  /start, /login, /screen, /status, /close")
+    print(f"🎮 Движок: {'Pydoll' if use_pydoll else 'Playwright'}")
+    print(f"🧠 Agnes: {'✅' if AGNES_AVAILABLE else '❌'}")
+    print("\nКоманды:")
+    print("  /start, /login, /screen, /status, /engine, /close")
     print("  /tweets, /search, /browse, /agnes")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
