@@ -1,4 +1,4 @@
-# bot.py - X.com бот с Pydoll + Playwright (с эмуляцией и меню)
+# bot.py - X.com бот с Pydoll + Playwright (исправленный)
 import os
 import sys
 import subprocess
@@ -685,22 +685,26 @@ async def extract_structured_data(selector=None):
         return {"error": "Браузер не запущен"}
     
     try:
+        # Пробуем использовать extractor из Pydoll
         from pydoll.extractor import ExtractionModel, Field
         
         class TweetExtract(ExtractionModel):
             text: str = Field(selector='[data-testid="tweetText"]', description='Текст твита')
             author: str = Field(selector='[data-testid="User-Name"]', description='Автор')
         
+        # ✅ ИСПРАВЛЕНО: добавляем scope
         if selector:
             tweets = await tab.extract_all(TweetExtract, scope=selector)
         else:
-            tweets = await tab.extract_all(TweetExtract)
+            # По умолчанию ищем все твиты
+            tweets = await tab.extract_all(TweetExtract, scope='[data-testid="tweet"]')
         
         return {
             "count": len(tweets),
             "data": [t.model_dump() for t in tweets]
         }
     except ImportError:
+        # Fallback через JS
         js_code = """
             () => {
                 const tweets = [];
@@ -736,19 +740,36 @@ async def shadow_dom_example():
         return {"error": "Браузер не запущен"}
     
     try:
+        # ✅ ИСПРАВЛЕНО: проверяем наличие shadow root
         host = await tab.find('[data-testid="GrokDrawer"]')
         if host:
-            shadow_root = await host.get_shadow_root()
-            if shadow_root:
-                inner_elem = await shadow_root.query('.some-class')
-                if inner_elem:
-                    text = await inner_elem.text
-                    return {"found": True, "text": text}
-        
-        return {
-            "status": "Shadow DOM доступен",
-            "message": "Используйте host.get_shadow_root() для доступа к закрытым shadow roots"
-        }
+            # Проверяем, есть ли shadow root
+            if hasattr(host, 'get_shadow_root'):
+                shadow_root = await host.get_shadow_root()
+                if shadow_root:
+                    return {
+                        "status": "success",
+                        "message": "Shadow DOM найден и доступен!",
+                        "has_shadow": True
+                    }
+                else:
+                    return {
+                        "status": "warning",
+                        "message": "Shadow Root пустой или закрытый",
+                        "has_shadow": False
+                    }
+            else:
+                return {
+                    "status": "warning",
+                    "message": "Элемент не содержит Shadow DOM",
+                    "has_shadow": False
+                }
+        else:
+            return {
+                "status": "info",
+                "message": "Элемент с Shadow DOM не найден. Попробуйте найти другой элемент.",
+                "has_shadow": False
+            }
     except Exception as e:
         logger.error(f"❌ Ошибка Shadow DOM: {e}")
         return {"error": str(e)}
@@ -759,7 +780,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Стартовое меню с кнопками"""
     logger.info(f"📩 Команда /start от {update.effective_user.username}")
     
-    # Создаем клавиатуру с кнопками
     keyboard = [
         [
             InlineKeyboardButton("🔐 Авторизация", callback_data="login"),
@@ -787,7 +807,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # Определяем статус
     status_emoji = "✅" if login_status['is_logged_in'] else "❌"
     username_text = f" @{login_status['username']}" if login_status['username'] else ""
     
@@ -1393,10 +1412,29 @@ async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"❌ Ошибка: {result['error']}")
             return
         
-        response_text = f"✅ **Shadow DOM**\n\n"
-        response_text += f"📊 Результат: {json.dumps(result, indent=2, ensure_ascii=False)[:1000]}"
-        
-        await msg.edit_text(response_text)
+        if result.get('status') == 'success':
+            await msg.edit_text(
+                "✅ **Shadow DOM найден!**\n\n"
+                "Теперь вы можете:\n"
+                "1. Получить shadow_root через `host.get_shadow_root()`\n"
+                "2. Искать элементы внутри через `shadow_root.query()`\n"
+                "3. Взаимодействовать с элементами внутри Shadow DOM"
+            )
+        elif result.get('status') == 'warning':
+            await msg.edit_text(
+                f"⚠️ {result.get('message')}\n\n"
+                "Попробуйте найти другой элемент с Shadow DOM."
+            )
+        else:
+            await msg.edit_text(
+                f"ℹ️ {result.get('message')}\n\n"
+                "Пример использования Shadow DOM:\n"
+                "```python\n"
+                "host = await tab.find('#shadow-host')\n"
+                "shadow_root = await host.get_shadow_root()\n"
+                "inner = await shadow_root.query('.inner-class')\n"
+                "```"
+            )
         
     except Exception as e:
         logger.error(f"❌ Ошибка Shadow DOM: {e}", exc_info=True)
@@ -1603,7 +1641,7 @@ def main():
     app.add_handler(CommandHandler("search", search))
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("engine", engine))  # ✅ ДОБАВЛЕНА КОМАНДА
+    app.add_handler(CommandHandler("engine", engine))
     app.add_handler(CommandHandler("close", close))
     
     # Расширенные команды Pydoll
