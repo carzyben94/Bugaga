@@ -4,6 +4,7 @@ import sys
 import subprocess
 import logging
 import asyncio
+import base64
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -446,16 +447,39 @@ async def evaluate_js(script):
         return None
 
 async def take_screenshot():
-    """Скриншот"""
+    """Скриншот - возвращает bytes или None"""
     logger.info("📸 Создание скриншота")
     
     page = await get_browser()
     if page is None:
         return None
     
-    # ✅ ИСПРАВЛЕНО: используем правильное название метода
+    # ✅ ИСПРАВЛЕНО: используем правильные параметры
     if hasattr(page, 'take_screenshot'):
-        return await page.take_screenshot()
+        # Для Pydoll используем as_base64=True
+        try:
+            screenshot_base64 = await page.take_screenshot(as_base64=True)
+            if screenshot_base64:
+                return base64.b64decode(screenshot_base64)
+        except Exception as e:
+            logger.error(f"Ошибка take_screenshot(as_base64=True): {e}")
+            # Пробуем другой вариант
+            try:
+                screenshot_base64 = await page.take_screenshot(as_base64=True, full_page=False)
+                if screenshot_base64:
+                    return base64.b64decode(screenshot_base64)
+            except Exception as e2:
+                logger.error(f"Ошибка take_screenshot с full_page: {e2}")
+                # Пробуем сохранить во временный файл
+                try:
+                    temp_file = '/tmp/screenshot.png'
+                    await page.take_screenshot(path=temp_file)
+                    if os.path.exists(temp_file):
+                        with open(temp_file, 'rb') as f:
+                            return f.read()
+                except Exception as e3:
+                    logger.error(f"Ошибка сохранения скриншота: {e3}")
+                    return None
     elif hasattr(page, 'screenshot'):
         return await page.screenshot()
     else:
@@ -528,9 +552,25 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # 6. Скриншот - ✅ ИСПРАВЛЕНО
             await msg.edit_text("6️⃣ Делаю скриншот...")
+            import base64
             if hasattr(tab, 'take_screenshot'):
-                screenshot = await tab.take_screenshot()
-                await msg.edit_text(f"✅ Скриншот сделан через take_screenshot() ({len(screenshot)} байт)")
+                try:
+                    # Пробуем с as_base64=True
+                    screenshot_b64 = await tab.take_screenshot(as_base64=True)
+                    if screenshot_b64:
+                        screenshot = base64.b64decode(screenshot_b64)
+                        await msg.edit_text(f"✅ Скриншот сделан через take_screenshot(as_base64=True) ({len(screenshot)} байт)")
+                    else:
+                        await msg.edit_text("⚠️ Скриншот вернул пустой результат")
+                except Exception as e:
+                    await msg.edit_text(f"⚠️ Ошибка take_screenshot: {e}")
+                    # Пробуем сохранить в файл
+                    try:
+                        await tab.take_screenshot(path='/tmp/test_screenshot.png')
+                        if os.path.exists('/tmp/test_screenshot.png'):
+                            await msg.edit_text(f"✅ Скриншот сохранен в файл")
+                    except Exception as e2:
+                        await msg.edit_text(f"⚠️ Ошибка сохранения в файл: {e2}")
             elif hasattr(tab, 'screenshot'):
                 screenshot = await tab.screenshot()
                 await msg.edit_text(f"✅ Скриншот сделан через screenshot() ({len(screenshot)} байт)")
