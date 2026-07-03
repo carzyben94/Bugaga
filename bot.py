@@ -1,12 +1,11 @@
 import os
 import logging
-from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # Правильные импорты для Pydoll
 from pydoll.browser import Chrome
-from pydoll.browser.options import Options
+from pydoll.browser.chrome import Options  # <--- Изменено!
 from pydoll.extractor import ExtractionModel, Field
 
 # Настройка логирования
@@ -22,7 +21,7 @@ if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен!")
 
 # Модель данных
-class Quote(ExtractionModel):
+class Quote( ExtractionModel):
     text: str = Field(selector='.text')
     author: str = Field(selector='.author')
     tags: str = Field(selector='.tag')
@@ -39,6 +38,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Начинаю парсинг...")
     
     try:
+        # Создаем опции браузера
         options = Options()
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
