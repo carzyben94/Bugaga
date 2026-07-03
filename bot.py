@@ -8,6 +8,7 @@ import json
 import random
 import time
 import traceback
+import re
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -180,73 +181,51 @@ async def close_pydoll_browser():
 async def get_browser():
     return await get_pydoll_browser()
 
-# ========== БЕЗОПАСНОЕ ВЫПОЛНЕНИЕ JS ЧЕРЕЗ JSON ==========
+# ========== ПРОСТОЙ ВЫПОЛНИТЕЛЬ JS (ВОЗВРАЩАЕТ СТРОКУ) ==========
 
-async def safe_execute_js(page, script, timeout=10, default_return=None):
-    """
-    Безопасное выполнение JS через JSON сериализацию.
-    Полностью устраняет ошибку unhashable type: 'slice'
-    """
-    logger.debug(f"  📜 Выполнение JS (таймаут: {timeout}с)")
-    
-    if page is None:
-        logger.error("  ❌ Страница не получена")
-        return default_return
-    
-    # Оборачиваем скрипт в JSON сериализацию
-    wrapped_script = f"""
-        (function() {{
-            try {{
-                var result = {script};
-                return JSON.stringify(result);
-            }} catch(e) {{
-                return JSON.stringify({{error: e.message, stack: e.stack}});
-            }}
-        }})()
-    """
-    
+async def exec_js_simple(page, script, timeout=10):
+    """Простое выполнение JS — возвращает сырой результат как есть"""
     try:
-        result_str = await asyncio.wait_for(
-            page.execute_script(wrapped_script),
+        result = await asyncio.wait_for(
+            page.execute_script(script),
             timeout=timeout
         )
-        
-        # Парсим JSON
-        if isinstance(result_str, str):
-            data = json.loads(result_str)
-        else:
-            # Если вдруг вернулся не строкой
-            data = result_str
-        
-        # Проверяем на ошибку в JS
-        if isinstance(data, dict) and 'error' in data:
-            logger.warning(f"  ⚠️ JS ошибка: {data['error']}")
-            return default_return
-        
-        return data
-        
-    except json.JSONDecodeError as e:
-        logger.error(f"  ❌ Ошибка парсинга JSON: {e}")
-        return default_return
+        return result
     except asyncio.TimeoutError:
-        logger.warning(f"  ⏱️ Таймаут {timeout}с")
-        return default_return
+        logger.warning(f"⏱️ Таймаут {timeout}с")
+        return None
     except Exception as e:
-        logger.error(f"  ❌ Ошибка выполнения: {str(e)[:100]}")
-        return default_return
+        logger.error(f"❌ Ошибка JS: {e}")
+        return None
 
-async def take_screenshot():
-    page = await get_browser()
-    if page is None:
-        return None
+async def exec_js_as_string(page, script, timeout=10):
+    """Выполняет JS и возвращает результат как JSON строку (самый надежный)"""
     try:
-        if hasattr(page, 'take_screenshot'):
-            screenshot_base64 = await page.take_screenshot(as_base64=True)
-            if screenshot_base64:
-                return base64.b64decode(screenshot_base64)
+        wrapped = f"""
+            (function() {{
+                try {{
+                    var result = {script};
+                    return JSON.stringify(result);
+                }} catch(e) {{
+                    return JSON.stringify({{"error": e.message}});
+                }}
+            }})()
+        """
+        result = await asyncio.wait_for(
+            page.execute_script(wrapped),
+            timeout=timeout
+        )
+        if isinstance(result, str):
+            try:
+                return json.loads(result)
+            except:
+                return result
+        return result
+    except asyncio.TimeoutError:
+        logger.warning(f"⏱️ Таймаут {timeout}с")
         return None
     except Exception as e:
-        logger.error(f"❌ Ошибка скриншота: {e}")
+        logger.error(f"❌ Ошибка JS: {e}")
         return None
 
 # ========== 5 ФУНКЦИЙ SHADOW DOM ==========
@@ -273,10 +252,12 @@ async def shadow_v1(page):
                 return result;
             })()
         """
-        result = await safe_execute_js(page, script, timeout=5.0, default_return=[])
-        count = len(result) if isinstance(result, list) else 0
-        logger.info(f"  ✅ V1: Найдено {count} элементов")
-        return result if isinstance(result, list) else []
+        result = await exec_js_as_string(page, script, timeout=5.0)
+        if isinstance(result, list):
+            logger.info(f"  ✅ V1: Найдено {len(result)} элементов")
+            return result
+        logger.warning(f"  ⚠️ V1: Неожиданный результат: {type(result)}")
+        return []
     except Exception as e:
         logger.error(f"  ❌ V1: {str(e)[:100]}")
         return []
@@ -311,16 +292,17 @@ async def shadow_v2(page):
                             });
                         }
                     } catch(e) {
-                        // Пропускаем ошибки
+                        // Пропускаем
                     }
                 }
                 return result;
             })()
         """
-        result = await safe_execute_js(page, script, timeout=5.0, default_return=[])
-        count = len(result) if isinstance(result, list) else 0
-        logger.info(f"  ✅ V2: Найдено {count} элементов")
-        return result if isinstance(result, list) else []
+        result = await exec_js_as_string(page, script, timeout=5.0)
+        if isinstance(result, list):
+            logger.info(f"  ✅ V2: Найдено {len(result)} элементов")
+            return result
+        return []
     except Exception as e:
         logger.error(f"  ❌ V2: {str(e)[:100]}")
         return []
@@ -370,9 +352,11 @@ async def shadow_v3(page):
                 return traverse(document.body, 'body');
             })()
         """
-        result = await safe_execute_js(page, script, timeout=10.0, default_return={})
-        logger.info(f"  ✅ V3: Обход завершен")
-        return result if isinstance(result, dict) else {}
+        result = await exec_js_as_string(page, script, timeout=10.0)
+        if isinstance(result, dict):
+            logger.info(f"  ✅ V3: Обход завершен")
+            return result
+        return {}
     except Exception as e:
         logger.error(f"  ❌ V3: {str(e)[:100]}")
         return {}
@@ -408,17 +392,18 @@ async def shadow_v4(page):
                             
                             hosts.push(info);
                         } catch(e) {
-                            // Пропускаем ошибки
+                            // Пропускаем
                         }
                     }
                 }
                 return hosts;
             })()
         """
-        result = await safe_execute_js(page, script, timeout=5.0, default_return=[])
-        count = len(result) if isinstance(result, list) else 0
-        logger.info(f"  ✅ V4: Найдено {count} хостов")
-        return result if isinstance(result, list) else []
+        result = await exec_js_as_string(page, script, timeout=5.0)
+        if isinstance(result, list):
+            logger.info(f"  ✅ V4: Найдено {len(result)} хостов")
+            return result
+        return []
     except Exception as e:
         logger.error(f"  ❌ V4: {str(e)[:100]}")
         return []
@@ -575,6 +560,20 @@ async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ Ошибка shadow: {e}", exc_info=True)
         await send_message_safe(update, f"❌ Ошибка: {str(e)[:200]}")
 
+async def take_screenshot():
+    page = await get_browser()
+    if page is None:
+        return None
+    try:
+        if hasattr(page, 'take_screenshot'):
+            screenshot_base64 = await page.take_screenshot(as_base64=True)
+            if screenshot_base64:
+                return base64.b64decode(screenshot_base64)
+        return None
+    except Exception as e:
+        logger.error(f"❌ Ошибка скриншота: {e}")
+        return None
+
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 
 async def send_photo_safe(update, photo, caption=""):
@@ -693,8 +692,10 @@ async def check_login_status_detailed(page):
                 };
             })()
         """
-        result = await safe_execute_js(page, script, timeout=10.0, default_return={'isLoggedIn': False})
-        return result if isinstance(result, dict) else {'isLoggedIn': False}
+        result = await exec_js_as_string(page, script, timeout=10.0)
+        if isinstance(result, dict):
+            return result
+        return {'isLoggedIn': False}
     except Exception as e:
         logger.error(f"❌ Ошибка проверки статуса: {e}")
         return {'isLoggedIn': False}
@@ -883,9 +884,9 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }})()
         """
         
-        tweets_data = await safe_execute_js(page, script, timeout=10.0, default_return=[])
+        tweets_data = await exec_js_as_string(page, script, timeout=10.0)
         
-        if not tweets_data:
+        if not tweets_data or not isinstance(tweets_data, list):
             await send_message_safe(update, f"❌ Твиты @{username} не найдены")
             return
         
