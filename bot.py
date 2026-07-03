@@ -229,7 +229,6 @@ async def check_login_status():
     
     js_code = """
         () => {
-            // Проверяем куки
             const cookies = document.cookie.split(';').reduce((acc, c) => {
                 const [key, val] = c.trim().split('=');
                 acc[key] = val;
@@ -238,13 +237,11 @@ async def check_login_status():
             
             const hasAuthToken = !!cookies.auth_token && cookies.auth_token.length > 0;
             
-            // Проверяем элементы интерфейса
             const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
             const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]') || 
                                 !!document.querySelector('[data-testid="postButton"]');
             const hasSideNav = !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
             
-            // Ищем username
             let username = null;
             const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
             if (profileLink) {
@@ -278,6 +275,32 @@ async def check_login_status():
     
     result = await page.execute_script(js_code)
     return result
+
+# ========== ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ==========
+
+async def send_photo_safe(update, photo, caption=""):
+    """Безопасная отправка фото (работает и из callback)"""
+    try:
+        if update.callback_query:
+            await update.callback_query.message.reply_photo(photo=photo, caption=caption)
+        elif update.message:
+            await update.message.reply_photo(photo=photo, caption=caption)
+        else:
+            logger.error("❌ Нет способа отправить фото")
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки фото: {e}")
+
+async def send_message_safe(update, text, parse_mode=None, reply_markup=None):
+    """Безопасная отправка сообщения"""
+    try:
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+        elif update.message:
+            await update.message.reply_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+        else:
+            logger.error("❌ Нет способа отправить сообщение")
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки сообщения: {e}")
 
 # ========== КОМАНДЫ ТЕЛЕГРАМ ==========
 
@@ -322,24 +345,21 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Авторизация в X.com"""
     logger.info(f"📩 /login от {update.effective_user.username}")
     
-    if hasattr(update, 'callback_query'):
-        msg = await update.callback_query.edit_message_text("⏳ Запускаю браузер...")
-    else:
-        msg = await update.message.reply_text("⏳ Запускаю браузер...")
+    await send_message_safe(update, "⏳ Запускаю браузер...")
     
     try:
         # Запускаем браузер
         page = await get_browser()
         if page is None:
-            await msg.edit_text("❌ Не удалось запустить браузер. Проверьте установку Pydoll и Chromium.")
+            await send_message_safe(update, "❌ Не удалось запустить браузер. Проверьте установку Pydoll и Chromium.")
             return
         
-        await msg.edit_text("🌐 Захожу на X.com...")
+        await send_message_safe(update, "🌐 Захожу на X.com...")
         await human_goto(page, 'https://x.com')
         await asyncio.sleep(2)
         
         # Проверяем авторизацию
-        await msg.edit_text("🔍 Проверяю авторизацию...")
+        await send_message_safe(update, "🔍 Проверяю авторизацию...")
         status_data = await check_login_status()
         
         global login_status
@@ -363,52 +383,41 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
             response += f"📌 Обновите куки через /setcookies\n"
             response += f"📌 Или установите актуальные значения в COOKIES"
         
-        await msg.edit_text(response)
+        await send_message_safe(update, response)
         
         # Делаем скриншот
-        await msg.edit_text("📸 Делаю скриншот...")
+        await send_message_safe(update, "📸 Делаю скриншот...")
         screenshot = await take_screenshot()
         if screenshot:
-            await update.message.reply_photo(
-                photo=screenshot,
-                caption=f"📸 X.com - {'✅ Авторизован' if status_data.get('isLoggedIn') else '❌ Не авторизован'}"
+            await send_photo_safe(
+                update,
+                screenshot,
+                f"📸 X.com - {'✅ Авторизован' if status_data.get('isLoggedIn') else '❌ Не авторизован'}"
             )
         
     except Exception as e:
         logger.error(f"❌ Ошибка login: {e}", exc_info=True)
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+        await send_message_safe(update, f"❌ Ошибка: {str(e)[:200]}")
 
 async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Скриншот"""
     logger.info(f"📩 /screen от {update.effective_user.username}")
     
-    if hasattr(update, 'callback_query'):
-        msg = await update.callback_query.edit_message_text("📸 Делаю скриншот...")
-    else:
-        msg = await update.message.reply_text("📸 Делаю скриншот...")
+    await send_message_safe(update, "📸 Делаю скриншот...")
     
     try:
         screenshot = await take_screenshot()
         if screenshot:
-            await msg.delete()
-            await update.message.reply_photo(
-                photo=screenshot,
-                caption=f"📸 Скриншот X.com"
-            )
+            await send_photo_safe(update, screenshot, "📸 Скриншот X.com")
         else:
-            await msg.edit_text("❌ Не удалось сделать скриншот")
+            await send_message_safe(update, "❌ Не удалось сделать скриншот")
     except Exception as e:
         logger.error(f"❌ Ошибка screen: {e}")
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:100]}")
+        await send_message_safe(update, f"❌ Ошибка: {str(e)[:100]}")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Статус бота"""
     logger.info(f"📩 /status от {update.effective_user.username}")
-    
-    if hasattr(update, 'callback_query'):
-        msg = await update.callback_query.edit_message_text("⏳ Проверяю статус...")
-    else:
-        msg = await update.message.reply_text("⏳ Проверяю статус...")
     
     status_text = f"📊 **СТАТУС БОТА**\n\n"
     status_text += f"🔐 Авторизация: {'✅' if login_status['is_logged_in'] else '❌'}\n"
@@ -421,19 +430,15 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_text += f"📄 Вкладка: {'✅' if pydoll_tab else '❌'}\n\n"
     status_text += f"🍪 Кук загружено: {len(COOKIES)}"
     
-    await msg.edit_text(status_text, parse_mode='Markdown')
+    await send_message_safe(update, status_text, parse_mode='Markdown')
 
 async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Закрытие браузера"""
     logger.info(f"📩 /close от {update.effective_user.username}")
     
-    if hasattr(update, 'callback_query'):
-        msg = await update.callback_query.edit_message_text("⏳ Закрываю браузер...")
-    else:
-        msg = await update.message.reply_text("⏳ Закрываю браузер...")
-    
+    await send_message_safe(update, "⏳ Закрываю браузер...")
     await close_pydoll_browser()
-    await msg.edit_text("✅ Браузер закрыт!")
+    await send_message_safe(update, "✅ Браузер закрыт!")
 
 async def setcookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обновление кук"""
@@ -443,7 +448,8 @@ async def setcookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🍪 **Обновление кук X.com**\n\n"
         "Отправьте новые куки в JSON формате:\n"
         "`[{\"name\":\"auth_token\",\"value\":\"...\",\"domain\":\".x.com\",\"path\":\"/\"}]`\n\n"
-        "Или отправьте /cancel для отмены"
+        "Или отправьте /cancel для отмены",
+        parse_mode='Markdown'
     )
     context.user_data['waiting_for_cookies'] = True
 
@@ -487,7 +493,7 @@ async def handle_cookies_input(update: Update, context: ContextTypes.DEFAULT_TYP
         if new_cookies:
             COOKIES = new_cookies
             context.user_data['waiting_for_cookies'] = False
-            await close_pydoll_browser()  # Перезапускаем браузер с новыми куками
+            await close_pydoll_browser()
             await update.message.reply_text(
                 f"✅ **Куки обновлены!**\n\n"
                 f"📦 Всего: {len(COOKIES)} кук\n"
