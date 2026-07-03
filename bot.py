@@ -392,17 +392,23 @@ async def get_browser():
     
     if engine_mode == "pydoll":
         if not PYDOLL_AVAILABLE:
-            raise Exception("Pydoll не установлен!")
+            logger.error("❌ Pydoll не установлен")
+            return None
         result = await get_pydoll_browser()
         if result is None:
-            raise Exception("Не удалось получить Pydoll браузер")
+            logger.error("❌ Не удалось получить Pydoll браузер")
+            return None
+        logger.info("✅ Pydoll браузер получен")
         return result
     else:
         if not PLAYWRIGHT_AVAILABLE:
-            raise Exception("Playwright не установлен!")
+            logger.error("❌ Playwright не установлен")
+            return None
         browser_data = await get_playwright_browser()
         if browser_data is None:
-            raise Exception("Не удалось получить Playwright браузер")
+            logger.error("❌ Не удалось получить Playwright браузер")
+            return None
+        logger.info("✅ Playwright браузер получен")
         return browser_data['page']
 
 async def close_browser():
@@ -452,38 +458,29 @@ async def take_screenshot():
     
     page = await get_browser()
     if page is None:
+        logger.error("❌ Страница не получена для скриншота")
         return None
     
-    # ✅ ИСПРАВЛЕНО: используем правильные параметры
     if hasattr(page, 'take_screenshot'):
-        # Для Pydoll используем as_base64=True
         try:
             screenshot_base64 = await page.take_screenshot(as_base64=True)
             if screenshot_base64:
                 return base64.b64decode(screenshot_base64)
         except Exception as e:
             logger.error(f"Ошибка take_screenshot(as_base64=True): {e}")
-            # Пробуем другой вариант
             try:
-                screenshot_base64 = await page.take_screenshot(as_base64=True, full_page=False)
-                if screenshot_base64:
-                    return base64.b64decode(screenshot_base64)
+                temp_file = '/tmp/screenshot.png'
+                await page.take_screenshot(path=temp_file)
+                if os.path.exists(temp_file):
+                    with open(temp_file, 'rb') as f:
+                        return f.read()
             except Exception as e2:
-                logger.error(f"Ошибка take_screenshot с full_page: {e2}")
-                # Пробуем сохранить во временный файл
-                try:
-                    temp_file = '/tmp/screenshot.png'
-                    await page.take_screenshot(path=temp_file)
-                    if os.path.exists(temp_file):
-                        with open(temp_file, 'rb') as f:
-                            return f.read()
-                except Exception as e3:
-                    logger.error(f"Ошибка сохранения скриншота: {e3}")
-                    return None
+                logger.error(f"Ошибка сохранения скриншота: {e2}")
+                return None
     elif hasattr(page, 'screenshot'):
         return await page.screenshot()
     else:
-        logger.error(f"Неизвестный тип страницы или метод скриншота: {type(page)}")
+        logger.error(f"Неизвестный тип страницы: {type(page)}")
         return None
 
 # ========== ДИАГНОСТИЧЕСКАЯ КОМАНДА ==========
@@ -550,32 +547,17 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await tab.go_to('https://www.google.com')
             await msg.edit_text("✅ Переход на Google выполнен!")
             
-            # 6. Скриншот - ✅ ИСПРАВЛЕНО
+            # 6. Скриншот
             await msg.edit_text("6️⃣ Делаю скриншот...")
-            import base64
-            if hasattr(tab, 'take_screenshot'):
-                try:
-                    # Пробуем с as_base64=True
-                    screenshot_b64 = await tab.take_screenshot(as_base64=True)
-                    if screenshot_b64:
-                        screenshot = base64.b64decode(screenshot_b64)
-                        await msg.edit_text(f"✅ Скриншот сделан через take_screenshot(as_base64=True) ({len(screenshot)} байт)")
-                    else:
-                        await msg.edit_text("⚠️ Скриншот вернул пустой результат")
-                except Exception as e:
-                    await msg.edit_text(f"⚠️ Ошибка take_screenshot: {e}")
-                    # Пробуем сохранить в файл
-                    try:
-                        await tab.take_screenshot(path='/tmp/test_screenshot.png')
-                        if os.path.exists('/tmp/test_screenshot.png'):
-                            await msg.edit_text(f"✅ Скриншот сохранен в файл")
-                    except Exception as e2:
-                        await msg.edit_text(f"⚠️ Ошибка сохранения в файл: {e2}")
-            elif hasattr(tab, 'screenshot'):
-                screenshot = await tab.screenshot()
-                await msg.edit_text(f"✅ Скриншот сделан через screenshot() ({len(screenshot)} байт)")
-            else:
-                await msg.edit_text("⚠️ Метод скриншота не найден")
+            try:
+                screenshot_b64 = await tab.take_screenshot(as_base64=True)
+                if screenshot_b64:
+                    screenshot = base64.b64decode(screenshot_b64)
+                    await msg.edit_text(f"✅ Скриншот сделан ({len(screenshot)} байт)")
+                else:
+                    await msg.edit_text("⚠️ Скриншот вернул пустой результат")
+            except Exception as e:
+                await msg.edit_text(f"⚠️ Ошибка скриншота: {e}")
             
             # 7. Закрытие
             await msg.edit_text("7️⃣ Закрываю браузер...")
@@ -679,9 +661,17 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(f"⏳ Захожу в X.com через {engine_mode}...")
     
     try:
+        # Получаем браузер
+        page = await get_browser()
+        if page is None:
+            await msg.edit_text(f"❌ Не удалось запустить {engine_mode} браузер")
+            return
+        
+        # Переходим на X.com
         await goto_url('https://x.com')
         await asyncio.sleep(3)
         
+        # Проверяем авторизацию
         auth_status = await evaluate_js('''
             () => {
                 const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]');
@@ -720,6 +710,10 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
         ''')
         
+        if auth_status is None:
+            await msg.edit_text("❌ Не удалось проверить авторизацию")
+            return
+        
         global login_status
         login_status['is_logged_in'] = auth_status['isLoggedIn']
         login_status['username'] = auth_status.get('username')
@@ -741,6 +735,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await msg.edit_text(status_msg)
         
+        # Делаем скриншот
         screenshot = await take_screenshot()
         if screenshot:
             await update.message.reply_photo(
@@ -786,25 +781,27 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg += f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}\n"
         status_msg += f"📍 Путь: {CHROMIUM_PATH or 'не найден'}\n\n"
         
-        try:
-            if engine_mode == "pydoll":
-                page = await get_pydoll_browser()
-                if page:
-                    status_msg += "🌐 Браузер: ✅ Запущен (Pydoll)\n"
-                    try:
-                        url = await page.evaluate('window.location.href')
-                        status_msg += f"🔗 URL: {url[:50]}\n"
-                    except:
-                        pass
-            else:
-                browser = await get_playwright_browser()
-                if browser:
-                    status_msg += "🌐 Браузер: ✅ Запущен (Playwright)\n"
-                    page = browser['page']
-                    url = page.url
+        # Проверяем статус браузера
+        if engine_mode == "pydoll":
+            page = await get_pydoll_browser()
+            if page:
+                status_msg += "🌐 Браузер: ✅ Запущен (Pydoll)\n"
+                try:
+                    url = await page.evaluate('window.location.href')
                     status_msg += f"🔗 URL: {url[:50]}\n"
-        except:
-            status_msg += "🌐 Браузер: ❌ Не запущен\n"
+                except:
+                    pass
+            else:
+                status_msg += "🌐 Браузер: ❌ Не запущен\n"
+        else:
+            browser = await get_playwright_browser()
+            if browser:
+                status_msg += "🌐 Браузер: ✅ Запущен (Playwright)\n"
+                page = browser['page']
+                url = page.url
+                status_msg += f"🔗 URL: {url[:50]}\n"
+            else:
+                status_msg += "🌐 Браузер: ❌ Не запущен\n"
         
         status_msg += "\n🔐 **АВТОРИЗАЦИЯ:**\n"
         if login_status['is_logged_in']:
