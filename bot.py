@@ -33,27 +33,48 @@ if not TOKEN:
 PYDOLL_AVAILABLE = False
 PLAYWRIGHT_AVAILABLE = False
 CHROMIUM_INSTALLED = False
+CHROMIUM_PATH = None
 
 def check_chromium():
-    """Проверяет, установлен ли Chromium в системе"""
-    global CHROMIUM_INSTALLED
+    """Проверяет, установлен ли Chromium в системе и находит путь"""
+    global CHROMIUM_INSTALLED, CHROMIUM_PATH
     logger.info("🔍 Проверяю наличие Chromium в системе...")
     
-    try:
-        result = subprocess.run(['chromium', '--version'], capture_output=True, text=True)
-        if result.returncode == 0:
-            CHROMIUM_INSTALLED = True
-            logger.info(f"✅ Chromium установлен: {result.stdout.strip()}")
-            return True
-    except Exception as e:
-        logger.debug(f"Команда chromium --version не найдена: {e}")
+    # Правильные пути для Chromium в Debian/Ubuntu
+    chromium_paths = [
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser',
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable'
+    ]
     
-    chromium_paths = ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome']
     for path in chromium_paths:
         if os.path.exists(path):
+            CHROMIUM_PATH = path
             CHROMIUM_INSTALLED = True
             logger.info(f"✅ Chromium найден по пути: {path}")
             return True
+    
+    # Пробуем через команду which
+    try:
+        result = subprocess.run(['which', 'chromium'], capture_output=True, text=True)
+        if result.returncode == 0 and result.stdout.strip():
+            CHROMIUM_PATH = result.stdout.strip()
+            CHROMIUM_INSTALLED = True
+            logger.info(f"✅ Chromium найден через which: {CHROMIUM_PATH}")
+            return True
+    except:
+        pass
+    
+    try:
+        result = subprocess.run(['which', 'chromium-browser'], capture_output=True, text=True)
+        if result.returncode == 0 and result.stdout.strip():
+            CHROMIUM_PATH = result.stdout.strip()
+            CHROMIUM_INSTALLED = True
+            logger.info(f"✅ Chromium найден через which: {CHROMIUM_PATH}")
+            return True
+    except:
+        pass
     
     CHROMIUM_INSTALLED = False
     logger.warning("⚠️ Chromium не найден в системе")
@@ -123,10 +144,11 @@ def install_pydoll():
 
 def install_chromium():
     """Устанавливает Chromium в системе"""
-    global CHROMIUM_INSTALLED
+    global CHROMIUM_INSTALLED, CHROMIUM_PATH
     logger.info("📦 Начинаю установку Chromium...")
     
     try:
+        # Проверяем, есть ли apt-get
         result = subprocess.run(['which', 'apt-get'], capture_output=True, text=True)
         if result.returncode == 0:
             logger.info("⏳ Установка через apt-get...")
@@ -152,11 +174,16 @@ def install_chromium():
                 'xdg-utils'
             ], check=True, capture_output=True)
             
-            CHROMIUM_INSTALLED = True
-            logger.info("✅ Chromium установлен через apt!")
-            return True
+            # Проверяем установку
+            check_chromium()
+            if CHROMIUM_INSTALLED:
+                logger.info(f"✅ Chromium установлен через apt! Путь: {CHROMIUM_PATH}")
+                return True
+            else:
+                logger.error("❌ Chromium не найден после установки")
+                return False
         else:
-            logger.warning("⚠️ apt-get не найден")
+            logger.warning("⚠️ apt-get не найден, пропускаю установку Chromium")
             return False
     except Exception as e:
         logger.error(f"❌ Ошибка установки Chromium: {e}", exc_info=True)
@@ -190,7 +217,7 @@ logger.info(f"🎮 Начальный движок: {engine_mode}")
 # ========== PYDOLL БРАУЗЕР ==========
 async def get_pydoll_browser():
     """Получает Pydoll браузер и возвращает Tab (вкладку)"""
-    global pydoll_browser, pydoll_tab
+    global pydoll_browser, pydoll_tab, CHROMIUM_PATH
     logger.info("🚀 Запрос на получение Pydoll браузера")
     
     if pydoll_browser and pydoll_tab:
@@ -212,6 +239,21 @@ async def get_pydoll_browser():
         
         options = ChromiumOptions()
         
+        # ✅ ЯВНО УКАЗЫВАЕМ ПУТЬ К CHROMIUM
+        if CHROMIUM_PATH and os.path.exists(CHROMIUM_PATH):
+            options.binary_location = CHROMIUM_PATH
+            logger.info(f"📍 Использую Chromium по пути: {CHROMIUM_PATH}")
+        else:
+            # Пробуем найти заново
+            check_chromium()
+            if CHROMIUM_PATH and os.path.exists(CHROMIUM_PATH):
+                options.binary_location = CHROMIUM_PATH
+                logger.info(f"📍 Использую Chromium по пути: {CHROMIUM_PATH}")
+            else:
+                logger.error("❌ Chromium не найден в системе!")
+                raise Exception("Chromium не найден в системе")
+        
+        # Добавляем аргументы для Railway/контейнеров
         args = [
             "--no-sandbox",
             "--disable-dev-shm-usage",
@@ -224,14 +266,6 @@ async def get_pydoll_browser():
         for arg in args:
             options.add_argument(arg)
             logger.debug(f"📌 Добавлен аргумент: {arg}")
-        
-        if CHROMIUM_INSTALLED:
-            chromium_paths = ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome']
-            for path in chromium_paths:
-                if os.path.exists(path):
-                    options.binary_location = path
-                    logger.info(f"📍 Использую Chromium по пути: {path}")
-                    break
         
         logger.info("⏳ Создание экземпляра браузера...")
         pydoll_browser = Chrome(options=options)
@@ -450,16 +484,23 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         # 1. Проверка Chromium
         await msg.edit_text("1️⃣ Проверяю Chromium...")
-        chromium_paths = ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome']
-        found = False
+        chromium_paths = ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable']
+        found = None
         for path in chromium_paths:
             if os.path.exists(path):
+                found = path
                 await msg.edit_text(f"✅ Chromium найден: {path}")
-                found = True
                 break
         
         if not found:
             await msg.edit_text("❌ Chromium НЕ НАЙДЕН!")
+            # Показываем содержимое /usr/bin
+            try:
+                files = os.listdir('/usr/bin')
+                chrome_files = [f for f in files if 'chrome' in f.lower() or 'chromium' in f.lower()]
+                await msg.edit_text(f"❌ Chromium не найден. Найдены похожие файлы: {chrome_files[:10]}")
+            except:
+                pass
             return
         
         # 2. Проверка импорта
@@ -472,15 +513,17 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"❌ Ошибка импорта: {e}")
             return
         
-        # 3. Проверка опций
+        # 3. Проверка опций с указанием пути
         await msg.edit_text("3️⃣ Создаю опции...")
         try:
             options = ChromiumOptions()
+            # Явно указываем путь
+            options.binary_location = found
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
             options.add_argument("--disable-gpu")
             options.add_argument("--headless=new")
-            await msg.edit_text("✅ Опции созданы")
+            await msg.edit_text(f"✅ Опции созданы, путь к Chromium: {found}")
         except Exception as e:
             await msg.edit_text(f"❌ Ошибка опций: {e}")
             return
@@ -525,7 +568,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🎮 Движок: {'Pydoll' if engine_mode == 'pydoll' else 'Playwright'}\n"
         f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}\n"
         f"📦 Playwright: {'✅' if PLAYWRIGHT_AVAILABLE else '❌'}\n"
-        f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}\n\n"
+        f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}\n"
+        f"📍 Путь: {CHROMIUM_PATH or 'не найден'}\n\n"
         f"📌 Команды:\n"
         f"/engine pydoll - Переключиться на Pydoll\n"
         f"/engine playwright - Переключиться на Playwright\n"
@@ -707,7 +751,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg += f"🎮 Текущий движок: **{engine_mode}**\n"
         status_msg += f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}\n"
         status_msg += f"📦 Playwright: {'✅' if PLAYWRIGHT_AVAILABLE else '❌'}\n"
-        status_msg += f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}\n\n"
+        status_msg += f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}\n"
+        status_msg += f"📍 Путь: {CHROMIUM_PATH or 'не найден'}\n\n"
         
         try:
             if engine_mode == "pydoll":
@@ -761,6 +806,7 @@ def main():
     logger.info(f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}")
     logger.info(f"📦 Playwright: {'✅' if PLAYWRIGHT_AVAILABLE else '❌'}")
     logger.info(f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}")
+    logger.info(f"📍 Путь к Chromium: {CHROMIUM_PATH or 'не найден'}")
     
     app = Application.builder().token(TOKEN).build()
     
@@ -770,7 +816,7 @@ def main():
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("engine", engine))
     app.add_handler(CommandHandler("close", close))
-    app.add_handler(CommandHandler("test", test))  # Диагностическая команда
+    app.add_handler(CommandHandler("test", test))
     
     logger.info("✅ Бот запущен и готов к работе!")
     print("\n✅ Бот запущен!")
@@ -778,6 +824,7 @@ def main():
     print(f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}")
     print(f"📦 Playwright: {'✅' if PLAYWRIGHT_AVAILABLE else '❌'}")
     print(f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}")
+    print(f"📍 Путь к Chromium: {CHROMIUM_PATH or 'не найден'}")
     print("\nКоманды:")
     print("  /start, /engine, /login, /screen, /status, /close, /test")
     print("\n📋 Подробные логи пишутся в bot.log")
