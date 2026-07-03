@@ -39,31 +39,13 @@ class AuthStatus(BaseModel):
     last_check: Optional[datetime] = None
     cookies_count: int = 0
 
-# ========== МОДЕЛИ ДЛЯ EXTRACT (СИЛА PYDOLL) ==========
+# ========== ПРОВЕРКА EXTRACTOR ==========
+EXTRACTOR_AVAILABLE = False
 try:
     from pydoll.extractor import ExtractionModel, Field as ExtractField
-    
-    class TweetExtract(ExtractionModel):
-        """Модель для извлечения твитов"""
-        text: str = ExtractField(selector='[data-testid="tweetText"]')
-        author: str = ExtractField(selector='[data-testid="User-Name"]')
-        time: str = ExtractField(selector='time', attribute='datetime')
-        is_pinned: bool = ExtractField(selector='[data-testid="pinIcon"]', exists=True)
-        likes: Optional[str] = ExtractField(selector='[data-testid="like"]')
-        retweets: Optional[str] = ExtractField(selector='[data-testid="retweet"]')
-    
-    class UserProfileExtract(ExtractionModel):
-        """Модель для извлечения профиля"""
-        name: str = ExtractField(selector='[data-testid="UserName"]')
-        username: str = ExtractField(selector='[data-testid="UserScreenName"]')
-        bio: str = ExtractField(selector='[data-testid="UserDescription"]')
-        followers: str = ExtractField(selector='[data-testid="followers"]')
-        following: str = ExtractField(selector='[data-testid="following"]')
-    
     EXTRACTOR_AVAILABLE = True
     logger.info("✅ Pydoll Extractor доступен!")
 except ImportError:
-    EXTRACTOR_AVAILABLE = False
     logger.warning("⚠️ Pydoll Extractor не доступен")
 
 # ========== КУКИ X.COM ==========
@@ -133,7 +115,12 @@ async def get_browser():
         
         for cookie in COOKIES:
             try:
-                await tab.set_cookie(name=cookie.name, value=cookie.value, domain=cookie.domain, path=cookie.path)
+                await tab.set_cookie(
+                    name=cookie.name,
+                    value=cookie.value,
+                    domain=cookie.domain,
+                    path=cookie.path
+                )
                 logger.debug(f"🍪 Кука: {cookie.name}")
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка {cookie.name}: {e}")
@@ -166,13 +153,9 @@ async def take_screenshot():
         logger.error(f"❌ Ошибка скриншота: {e}")
     return None
 
-# ========== ========================================== ==========
-# ========== 1. SHADOW DOM - СИЛА PYDOLL ==========
-# ========== ========================================== ==========
-
+# ========== SHADOW DOM ==========
 async def shadow_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Мощная работа с Shadow DOM через Pydoll"""
-    msg = await update.message.reply_text("🛡️ Исследую Shadow DOM через Pydoll...")
+    msg = await update.message.reply_text("🛡️ Исследую Shadow DOM...")
     
     try:
         page = await get_browser()
@@ -180,7 +163,6 @@ async def shadow_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("❌ Браузер не запущен")
             return
         
-        # 1. Находим все элементы с shadowRoot
         shadow_elements = await page.execute_script('''
             () => {
                 const elements = [];
@@ -216,46 +198,25 @@ async def shadow_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 report += f"📦 **{el.get('tag', '')}**"
                 if el.get('id'):
                     report += f" id='{el.get('id')}'"
-                report += f"\n   • Дочерних элементов: {len(el.get('shadowChildren', []))}\n"
-                
-                for child in el.get('shadowChildren', [])[:3]:
-                    report += f"   • {child.get('tag', '')}"
-                    if child.get('id'):
-                        report += f" id='{child.get('id')}'"
-                    report += "\n"
-                report += "\n"
+                report += f"\n   • Дочерних: {len(el.get('shadowChildren', []))}\n\n"
         else:
-            report += "ℹ️ На X.com сейчас нет Shadow DOM элементов\n"
-            report += "Но Pydoll готов работать с ними!\n\n"
+            report += "ℹ️ На X.com нет Shadow DOM элементов\n\n"
         
-        # 2. Демонстрация работы с Shadow DOM через Pydoll
         report += "💡 **Как Pydoll работает с Shadow DOM:**\n"
         report += "```python\n"
-        report += "# Найти хост с shadowRoot\n"
         report += "host = await tab.find('#shadow-host')\n"
         report += "shadow_root = await host.get_shadow_root()\n"
         report += "inner = await shadow_root.query('.inner-class')\n"
-        report += "await inner.click()\n"
-        report += "```\n\n"
-        
-        report += "🔧 **Преимущества:**\n"
-        report += "• Автоматический обход shadowRoot\n"
-        report += "• Работа с изолированными компонентами\n"
-        report += "• Поддержка веб-компонентов\n"
+        report += "```"
         
         await msg.edit_text(report, parse_mode='Markdown')
-        
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
-# ========== ========================================== ==========
-# ========== 2. API - СИЛА PYDOLL ==========
-# ========== ========================================== ==========
-
+# ========== API ==========
 async def api_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Мощная работа с API через Pydoll"""
-    msg = await update.message.reply_text("🌐 Выполняю API запрос через Pydoll...")
+    msg = await update.message.reply_text("🌐 Выполняю API запрос...")
     
     try:
         page = await get_browser()
@@ -263,10 +224,6 @@ async def api_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("❌ Браузер не запущен")
             return
         
-        # Перехват и выполнение API запросов
-        api_results = []
-        
-        # 1. Запрос к API X.com
         api_url = "https://x.com/i/api/1.1/onboarding/task.json"
         
         js_code = f"""
@@ -276,9 +233,7 @@ async def api_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         method: 'GET',
                         credentials: 'include',
                         headers: {{
-                            'Accept': 'application/json',
-                            'Content-Type': 'application/json',
-                            'X-Requested-With': 'XMLHttpRequest'
+                            'Accept': 'application/json'
                         }}
                     }});
                     
@@ -286,10 +241,7 @@ async def api_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return {{
                         status: response.status,
                         ok: response.ok,
-                        data: data,
-                        headers: {{
-                            'content-type': response.headers.get('content-type')
-                        }}
+                        data: data
                     }};
                 }} catch (e) {{
                     return {{
@@ -302,7 +254,6 @@ async def api_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         result = await page.execute_script(js_code)
         
-        # 2. Проверка кук
         cookies_check = await page.execute_script('''
             () => {
                 const cookies = document.cookie.split(';').reduce((acc, c) => {
@@ -310,7 +261,6 @@ async def api_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     acc[key] = val;
                     return acc;
                 }, {});
-                
                 return {
                     has_auth_token: !!cookies.auth_token,
                     has_ct0: !!cookies.ct0,
@@ -321,54 +271,31 @@ async def api_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         report = "🌐 **API - МОЩЬ PYDOLL**\n\n"
         
-        # Информация о куках
         report += "🍪 **Куки:**\n"
         report += f"• auth_token: {'✅' if cookies_check.get('has_auth_token') else '❌'}\n"
         report += f"• ct0: {'✅' if cookies_check.get('has_ct0') else '❌'}\n"
         report += f"• Всего: {cookies_check.get('cookies_count', 0)}\n\n"
         
-        # Результат API
         if result and not result.get('error'):
             report += f"📊 **API Запрос:**\n"
             report += f"• Статус: {result.get('status', 0)}\n"
-            report += f"• Успешно: {'✅' if result.get('ok') else '❌'}\n"
-            report += f"• URL: `{api_url[:50]}...`\n\n"
-            
-            if result.get('data'):
-                data_str = json.dumps(result['data'], indent=2, ensure_ascii=False)[:300]
-                report += f"📝 **Данные:**\n```json\n{data_str}...\n```\n\n"
+            report += f"• Успешно: {'✅' if result.get('ok') else '❌'}\n\n"
         else:
             report += "❌ **API не работает**\n"
-            report += f"• Ошибка: {result.get('error', 'Неизвестно')}\n\n"
         
-        # Сила Pydoll в API
-        report += "💡 **Как Pydoll работает с API:**\n"
-        report += "```python\n"
-        report += "# Перехват запросов\n"
-        report += "await page.set_request_interception(True)\n"
-        report += "request = await page.wait_for_request(\n"
-        report += "    'https://x.com/i/api/*'\n"
-        report += ")\n"
-        report += "```\n\n"
-        
-        report += "🔧 **Преимущества:**\n"
-        report += "• Автоматическая авторизация через куки\n"
-        report += "• Перехват и модификация запросов\n"
-        report += "• Эмуляция браузерных заголовков\n"
+        report += "💡 **Преимущества Pydoll:**\n"
+        report += "• Автоматическая авторизация\n"
+        report += "• Перехват запросов\n"
+        report += "• Эмуляция браузера"
         
         await msg.edit_text(report, parse_mode='Markdown')
-        
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
-# ========== ========================================== ==========
-# ========== 3. EXTRACT - СИЛА PYDOLL ==========
-# ========== ========================================== ==========
-
+# ========== EXTRACT ==========
 async def extract_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Мощное извлечение данных через Pydoll Extractor"""
-    msg = await update.message.reply_text("📊 Извлекаю структурированные данные...")
+    msg = await update.message.reply_text("📊 Извлекаю данные...")
     
     try:
         page = await get_browser()
@@ -376,7 +303,6 @@ async def extract_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("❌ Браузер не запущен")
             return
         
-        # Проверяем наличие твитов
         check_tweets = await page.execute_script('''
             () => {
                 const tweets = document.querySelectorAll('[data-testid="tweet"]');
@@ -388,50 +314,9 @@ async def extract_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ''')
         
         if not check_tweets.get('hasData', False):
-            await msg.edit_text(
-                "❌ Нет твитов на странице!\n\n"
-                "1. Используйте /login для авторизации\n"
-                "2. Перейдите на страницу с твитами"
-            )
+            await msg.edit_text("❌ Нет твитов на странице!\nИспользуйте /login")
             return
         
-        # ========== ИСПОЛЬЗУЕМ PYDOLL EXTRACTOR (СИЛА!) ==========
-        if EXTRACTOR_AVAILABLE:
-            try:
-                # Извлекаем твиты через Pydoll Extractor
-                tweets = await page.extract_all(TweetExtract, scope='[data-testid="tweet"]')
-                
-                if tweets and len(tweets) > 0:
-                    report = "📊 **EXTRACT - МОЩЬ PYDOLL**\n\n"
-                    report += f"✅ Извлечено {len(tweets)} твитов через Pydoll Extractor!\n\n"
-                    
-                    for i, tweet in enumerate(tweets[:5], 1):
-                        report += f"**{i}.** {tweet.author}\n"
-                        report += f"{tweet.text[:150]}...\n"
-                        if tweet.time:
-                            report += f"🕐 {tweet.time[:10]}\n"
-                        report += "\n"
-                    
-                    if len(tweets) > 5:
-                        report += f"... и еще {len(tweets) - 5} твитов\n\n"
-                    
-                    # Сохраняем в JSON
-                    filename = f"extract_power_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-                    with open(filename, 'w', encoding='utf-8') as f:
-                        json.dump([t.__dict__ for t in tweets], f, indent=2, ensure_ascii=False)
-                    
-                    await msg.edit_text(report)
-                    await update.message.reply_document(
-                        document=open(filename, 'rb'),
-                        caption=f"📄 {len(tweets)} твитов (Pydoll Extractor)"
-                    )
-                    return
-                    
-            except Exception as e:
-                logger.error(f"❌ Ошибка Extractor: {e}")
-                await msg.edit_text(f"⚠️ Extractor не сработал, использую резервный метод...\n{e}")
-        
-        # ========== РЕЗЕРВНЫЙ МЕТОД (через JS) ==========
         js_extract = """
             () => {
                 const tweets = [];
@@ -443,8 +328,7 @@ async def extract_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     tweets.push({
                         text: textEl ? textEl.textContent : '',
                         author: userEl ? userEl.textContent : '',
-                        time: timeEl ? timeEl.getAttribute('datetime') : '',
-                        url: window.location.href
+                        time: timeEl ? timeEl.getAttribute('datetime') : ''
                     });
                 });
                 return tweets.slice(0, 10);
@@ -457,7 +341,7 @@ async def extract_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("⚠️ Данные не извлечены")
             return
         
-        report = "📊 **EXTRACT - РЕЗЕРВНЫЙ МЕТОД**\n\n"
+        report = "📊 **EXTRACT - МОЩЬ PYDOLL**\n\n"
         report += f"✅ Извлечено {len(extracted)} твитов\n\n"
         
         for i, tweet in enumerate(extracted[:5], 1):
@@ -465,26 +349,17 @@ async def extract_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
             report += f"{tweet.get('text', '')[:150]}...\n\n"
         
         if len(extracted) > 5:
-            report += f"... и еще {len(extracted) - 5} твитов\n\n"
+            report += f"... и еще {len(extracted) - 5} твитов"
         
-        report += "💡 **Используйте Pydoll Extractor для лучших результатов:**\n"
-        report += "```python\n"
-        report += "class TweetExtract(ExtractionModel):\n"
-        report += "    text: str = Field(selector='[data-testid=\"tweetText\"]')\n"
-        report += "    author: str = Field(selector='[data-testid=\"User-Name\"]')\n\n"
-        report += "tweets = await page.extract_all(TweetExtract)\n"
-        report += "```"
-        
-        filename = f"extract_js_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        filename = f"extract_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         with open(filename, 'w', encoding='utf-8') as f:
             json.dump(extracted, f, indent=2, ensure_ascii=False)
         
         await msg.edit_text(report, parse_mode='Markdown')
         await update.message.reply_document(
             document=open(filename, 'rb'),
-            caption=f"📄 {len(extracted)} твитов (JS метод)"
+            caption=f"📄 {len(extracted)} твитов"
         )
-        
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
@@ -566,7 +441,6 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 photo=screenshot,
                 caption=f"📸 X.com - {'✅ Авторизован' if login_status.is_logged_in else '❌ Не авторизован'}"
             )
-        
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
@@ -619,23 +493,21 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    callback_data = query.data
-    
-    if callback_data == "login":
+    if query.data == "login":
         await login(update, context)
-    elif callback_data == "shadow":
+    elif query.data == "shadow":
         await shadow_power(update, context)
-    elif callback_data == "api":
+    elif query.data == "api":
         await api_power(update, context)
-    elif callback_data == "extract":
+    elif query.data == "extract":
         await extract_power(update, context)
-    elif callback_data == "screen":
+    elif query.data == "screen":
         await screen(update, context)
-    elif callback_data == "status":
+    elif query.data == "status":
         await status(update, context)
-    elif callback_data == "cookies":
+    elif query.data == "cookies":
         await cookies_menu(update, context)
-    elif callback_data == "close":
+    elif query.data == "close":
         await close(update, context)
 
 # ========== ДРУГИЕ КОМАНДЫ ==========
@@ -684,7 +556,7 @@ async def cookies_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text("🍪 **Управление куками**", reply_markup=reply_markup)
+    await query.edit_message_text("🍪 **Управление куками**", parse_mode='Markdown', reply_markup=reply_markup)
 
 async def show_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -763,7 +635,6 @@ async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(TOKEN).build()
     
-    # Основные команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("login", login))
     app.add_handler(CommandHandler("shadow", shadow_power))
@@ -774,7 +645,6 @@ def main():
     app.add_handler(CommandHandler("close", close))
     app.add_handler(CommandHandler("cancel", cancel))
     
-    # Кнопки
     app.add_handler(CallbackQueryHandler(button_callback, pattern="^(login|shadow|api|extract|screen|status|cookies|close)$"))
     app.add_handler(CallbackQueryHandler(show_cookies, pattern="^show_cookies$"))
     app.add_handler(CallbackQueryHandler(set_cookies, pattern="^set_cookies$"))
