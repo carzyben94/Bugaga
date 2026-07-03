@@ -1,4 +1,4 @@
-# bot.py - X.com бот с Pydoll (с эмуляцией человека)
+# bot.py - X.com бот с Pydoll (финальная версия)
 import os
 import logging
 import asyncio
@@ -53,11 +53,9 @@ class APIResponse(BaseModel):
 
 # ========== ЭМУЛЯЦИЯ ЧЕЛОВЕКА ==========
 def random_delay(min_sec=0.5, max_sec=2.0):
-    """Случайная задержка для имитации человека"""
     return random.uniform(min_sec, max_sec)
 
 async def human_goto(page, url):
-    """Переход с эмуляцией человеческого поведения"""
     try:
         if hasattr(page, 'go_to'):
             await page.go_to(url, humanize=True)
@@ -69,7 +67,6 @@ async def human_goto(page, url):
         await page.go_to(url)
 
 async def human_scroll(page, amount=300):
-    """Прокрутка с эмуляцией человеческого поведения"""
     try:
         if hasattr(page, 'scroll_by'):
             await page.scroll_by(amount, humanize=True)
@@ -157,7 +154,6 @@ login_status = {'is_logged_in': False, 'username': None}
 
 # ========== ПОИСК CHROMIUM ==========
 def find_chromium():
-    """Поиск Chromium в системе"""
     chromium_paths = [
         '/usr/bin/chromium',
         '/usr/bin/chromium-browser',
@@ -272,7 +268,6 @@ async def execute_js(script):
         return None
 
 async def take_screenshot():
-    """Скриншот - возвращает bytes или None"""
     page = await get_browser()
     if page is None:
         return None
@@ -295,6 +290,41 @@ async def take_screenshot():
         logger.error(f"Screenshot error: {e}")
     
     return None
+
+# ========== УНИВЕРСАЛЬНЫЕ ФУНКЦИИ ОТПРАВКИ ==========
+async def send_photo(update: Update, photo_bytes, caption=None):
+    """Отправляет фото через update.message или update.callback_query"""
+    try:
+        if update.message:
+            await update.message.reply_photo(photo=photo_bytes, caption=caption)
+        elif update.callback_query and update.callback_query.message:
+            await update.callback_query.message.reply_photo(photo=photo_bytes, caption=caption)
+        else:
+            logger.error("❌ Нет способа отправить фото")
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки фото: {e}")
+
+async def send_message(update: Update, text, parse_mode='Markdown'):
+    """Отправляет текст через update.message или update.callback_query"""
+    try:
+        if update.message:
+            await update.message.reply_text(text, parse_mode=parse_mode)
+        elif update.callback_query and update.callback_query.message:
+            await update.callback_query.message.reply_text(text, parse_mode=parse_mode)
+        else:
+            logger.error("❌ Нет способа отправить сообщение")
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки сообщения: {e}")
+
+async def send_document(update: Update, file, caption=None):
+    """Отправляет документ"""
+    try:
+        if update.message:
+            await update.message.reply_document(document=file, caption=caption)
+        elif update.callback_query and update.callback_query.message:
+            await update.callback_query.message.reply_document(document=file, caption=caption)
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки документа: {e}")
 
 # ========== КОМАНДЫ ==========
 
@@ -335,7 +365,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "close":
         await close(update, context)
 
-# ---------- ЛОГИН (с эмуляцией) ----------
+# ---------- ЛОГИН ----------
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global login_status
     
@@ -350,11 +380,9 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("❌ Не удалось запустить браузер")
             return
         
-        # Переход с эмуляцией
         await human_goto(page, 'https://x.com')
         await asyncio.sleep(random_delay(2.0, 4.0))
         
-        # Проверка авторизации
         auth = await execute_js('''
             () => {
                 const cookies = document.cookie.split(';').reduce((acc, c) => {
@@ -375,7 +403,6 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 const hasLoginLink = !!document.querySelector('a[href="/login"]');
                 const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
-                const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]');
                 
                 const isLoggedIn = hasAuth || (hasProfileLink && !hasLoginLink);
                 
@@ -395,7 +422,6 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         login_status['is_logged_in'] = auth.get('isLoggedIn', False)
         login_status['username'] = auth.get('username')
         
-        # Формируем статус
         status_msg = f"✅ X.com\n\n"
         status_msg += f"🍪 auth_token: {'✅' if auth.get('hasAuthToken') else '❌'}\n"
         status_msg += f"🍪 ct0: {'✅' if auth.get('hasCt0') else '❌'}\n\n"
@@ -406,18 +432,16 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 status_msg += f"👤 @{auth['username']}\n"
         else:
             status_msg += "❌ НЕ АВТОРИЗОВАН\n"
-            status_msg += "\nИспользуй /setcookies для обновления кук"
         
         await msg.edit_text(status_msg)
         
-        # Скриншот с подписью
         await asyncio.sleep(random_delay(0.5, 1.0))
         screenshot = await take_screenshot()
         if screenshot:
             caption = f"📸 X.com - {'✅ Авторизован' if auth.get('isLoggedIn') else '❌ Не авторизован'}"
             if auth.get('isLoggedIn') and auth.get('username') and auth.get('username') != 'неизвестно':
                 caption += f" @{auth['username']}"
-            await update.message.reply_photo(photo=screenshot, caption=caption)
+            await send_photo(update, screenshot, caption)
         
         logger.info(f"✅ Логин выполнен: {login_status['username']}")
             
@@ -473,7 +497,7 @@ async def shadow_dom(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(random_delay(0.5, 1.0))
         img = await take_screenshot()
         if img:
-            await update.message.reply_photo(photo=img, caption="📸 Текущая страница")
+            await send_photo(update, img, "📸 Текущая страница")
         
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
@@ -485,7 +509,7 @@ async def api_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if not context.args:
-        await update.message.reply_text("🌐 Использование: /api <url>\nПример: /api https://x.com/i/api/1.1/onboarding/task.json")
+        await send_message(update, "🌐 Использование: /api <url>\nПример: /api https://x.com/i/api/1.1/onboarding/task.json")
         return
     
     url = context.args[0]
@@ -534,7 +558,6 @@ async def extract_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = await update.message.reply_text("📊 Извлечение данных...")
     
     try:
-        # Скроллим для загрузки контента
         page = await get_browser()
         if page:
             await human_scroll(page, 300)
@@ -582,10 +605,7 @@ async def extract_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
             json.dump([t.model_dump() for t in tweets], f, indent=2, ensure_ascii=False)
         
         await msg.edit_text(response)
-        await update.message.reply_document(
-            document=open(filename, 'rb'),
-            caption=f"📄 {len(tweets)} твитов в JSON"
-        )
+        await send_document(update, open(filename, 'rb'), f"📄 {len(tweets)} твитов в JSON")
         
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
@@ -602,7 +622,7 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         img = await take_screenshot()
         if img:
             await msg.delete()
-            await update.message.reply_photo(photo=img, caption="📸 Скриншот")
+            await send_photo(update, img, "📸 Скриншот")
         else:
             await msg.edit_text("❌ Не удалось сделать скриншот")
     except Exception as e:
