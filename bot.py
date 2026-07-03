@@ -1,14 +1,14 @@
 import os
 import logging
+import asyncio
+import base64
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# Правильные импорты Pydoll
 from pydoll.browser import Chrome
 from pydoll.browser.options import ChromiumOptions
 from pydoll.extractor import ExtractionModel, Field
 
-# Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -20,28 +20,106 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен!")
 
-# Модель данных
 class Quote(ExtractionModel):
     text: str = Field(selector='.text')
     author: str = Field(selector='.author')
     tags: str = Field(selector='.tag')
 
-# Путь к браузеру
 CHROME_PATH = '/usr/bin/chromium'
 
-# Команда /start
+# Храним активную вкладку для каждого пользователя
+user_tabs = {}
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Привет! Я бот с парсингом.\n"
-        "Используй /parse для получения цитат"
+        "📋 Доступные команды:\n"
+        "/parse - Получить цитаты\n"
+        "/go <url> - Открыть любой сайт\n"
+        "/screen - Сделать скриншот текущей страницы"
     )
 
-# Команда /parse
+async def go(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Открывает любой сайт"""
+    if not context.args:
+        await update.message.reply_text("❌ Укажи URL после команды\nПример: /go https://example.com")
+        return
+    
+    url = context.args[0]
+    
+    # Добавляем https:// если нет протокола
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+    
+    user_id = update.effective_user.id
+    
+    try:
+        await update.message.reply_text(f"🌐 Открываю: {url}")
+        
+        options = ChromiumOptions()
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--headless=new")
+        options.binary_location = CHROME_PATH
+        
+        # Если у пользователя уже есть браузер - используем его
+        if user_id in user_tabs and user_tabs[user_id] is not None:
+            tab = user_tabs[user_id]
+            await tab.go_to(url)
+            await asyncio.sleep(2)
+            await update.message.reply_text(f"✅ Перешёл на {url}")
+        else:
+            # Создаём новый браузер
+            browser = Chrome(options=options)
+            tab = await browser.start()
+            await tab.go_to(url)
+            await asyncio.sleep(2)
+            user_tabs[user_id] = tab
+            # Сохраняем браузер в контексте
+            context.user_data['browser'] = browser
+            context.user_data['tab'] = tab
+            await update.message.reply_text(f"✅ Открыл: {url}")
+            
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+
+async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Делает скриншот текущей страницы"""
+    user_id = update.effective_user.id
+    
+    try:
+        # Проверяем, есть ли активная вкладка
+        if user_id not in user_tabs or user_tabs[user_id] is None:
+            await update.message.reply_text("❌ Сначала открой сайт командой /go")
+            return
+        
+        await update.message.reply_text("📸 Делаю скриншот...")
+        
+        tab = user_tabs[user_id]
+        
+        # Делаем скриншот (возвращает base64)
+        screenshot = await tab.screenshot()
+        
+        # Если пришла строка - декодируем base64
+        if isinstance(screenshot, str):
+            screenshot_bytes = base64.b64decode(screenshot)
+        else:
+            screenshot_bytes = screenshot
+        
+        # Отправляем фото
+        await update.message.reply_photo(
+            photo=screenshot_bytes,
+            caption="🖼️ Скриншот страницы"
+        )
+            
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+
 async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Начинаю парсинг...")
     
     try:
-        # Настройка браузера
         options = ChromiumOptions()
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
@@ -52,14 +130,11 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tab = await browser.start()
             await tab.go_to('https://quotes.toscrape.com')
             
-            # Ждём загрузки страницы
-            import asyncio
             await asyncio.sleep(3)
             
-            # ПРАВИЛЬНЫЙ СПОСОБ: передаём scope
             quotes = await tab.extract_all(
                 Quote,
-                scope=".quote",  # scope - это селектор для всех элементов
+                scope=".quote",
                 timeout=10
             )
             
@@ -75,7 +150,6 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
-# Обработчик ошибок
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Ошибка: {context.error}")
 
@@ -83,14 +157,10 @@ def main():
     application = Application.builder().token(TOKEN).build()
     
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("go", go))
+    application.add_handler(CommandHandler("screen", screen))
     application.add_handler(CommandHandler("parse", parse))
     application.add_error_handler(error_handler)
-    
-    # Проверяем наличие браузера
-    if os.path.exists(CHROME_PATH):
-        logger.info(f"✅ Браузер найден: {CHROME_PATH}")
-    else:
-        logger.error(f"❌ Браузер не найден: {CHROME_PATH}")
     
     logger.info("🚀 Бот запущен!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
