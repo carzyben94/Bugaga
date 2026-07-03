@@ -608,52 +608,13 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await asyncio.sleep(3)
             log_diag("✅ Переход выполнен")
             
-            # 5. Проверка кук - ТОЛЬКО ПО auth_token
-            await msg.edit_text("5️⃣ Проверяю куки...")
-            log_diag("=== ПРОВЕРКА КУК ===")
-            
-            try:
-                cookies_js = await tab.execute_script('document.cookie')
-                log_diag(f"📋 Куки из браузера: {cookies_js[:500] if cookies_js else 'пусто'}...")
-                
-                cookie_list = []
-                if cookies_js:
-                    for cookie in cookies_js.split(';'):
-                        cookie = cookie.strip()
-                        if '=' in cookie:
-                            parts = cookie.split('=', 1)
-                            if len(parts) == 2:
-                                name = parts[0].strip()
-                                value = parts[1].strip()
-                                if len(value) > 30:
-                                    value = value[:30] + '...'
-                                cookie_list.append({'name': name, 'value': value})
-                
-                log_diag(f"📦 Всего кук: {len(cookie_list)}")
-                
-                # Проверяем только auth_token
-                has_auth_token = any(c['name'] == 'auth_token' for c in cookie_list)
-                has_ct0 = any(c['name'] == 'ct0' for c in cookie_list)
-                has_twid = any(c['name'] == 'twid' for c in cookie_list)
-                
-                log_diag(f"✅ auth_token: {'✅' if has_auth_token else '❌'}")
-                log_diag(f"✅ ct0: {'✅' if has_ct0 else '❌'}")
-                log_diag(f"✅ twid: {'✅' if has_twid else '❌'}")
-                
-                if has_auth_token:
-                    log_diag("✅ АВТОРИЗАЦИЯ ПОДТВЕРЖДЕНА (auth_token найден)!")
-                else:
-                    log_diag("❌ auth_token НЕ НАЙДЕН - авторизация не подтверждена")
-                    
-            except Exception as e:
-                log_diag(f"❌ Ошибка при получении кук: {e}")
-            
-            # 6. Проверка авторизации
-            await msg.edit_text("6️⃣ Проверяю авторизацию...")
+            # 5. Проверка авторизации - комбинированный метод
+            await msg.edit_text("5️⃣ Проверяю авторизацию...")
             log_diag("=== ПРОВЕРКА АВТОРИЗАЦИИ ===")
             
             auth_check = await tab.execute_script('''
                 () => {
+                    // 1. Проверка кук
                     const cookies = document.cookie.split(';').reduce((acc, c) => {
                         const [key, val] = c.trim().split('=');
                         acc[key] = val;
@@ -663,6 +624,18 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     const hasAuthToken = !!cookies.auth_token && cookies.auth_token.length > 0;
                     const hasCt0 = !!cookies.ct0 && cookies.ct0.length > 0;
                     
+                    // 2. Проверка отсутствия кнопки входа
+                    const hasLoginLink = !!document.querySelector('a[href="/login"]');
+                    const hasSignupLink = !!document.querySelector('a[href="/signup"]');
+                    const hasLoginButton = !!document.querySelector('[data-testid="loginButton"]');
+                    
+                    // 3. Проверка наличия элементов авторизованного пользователя
+                    const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
+                    const hasSideNav = !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
+                    const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]') || 
+                                        !!document.querySelector('[data-testid="postButton"]');
+                    
+                    // Ищем username
                     let username = null;
                     const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
                     if (profileLink) {
@@ -682,16 +655,39 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         }
                     }
                     
+                    // КОМБИНИРОВАННАЯ ПРОВЕРКА:
+                    // Авторизован если: есть auth_token ИЛИ (нет кнопки входа И есть элементы профиля)
+                    const hasNoLoginButtons = !hasLoginLink && !hasSignupLink && !hasLoginButton;
+                    const hasUserElements = hasProfileLink || hasSideNav || hasTweetBtn;
+                    
+                    const isLoggedIn = hasAuthToken || (hasNoLoginButtons && hasUserElements);
+                    
                     return {
                         hasAuthToken: hasAuthToken,
                         hasCt0: hasCt0,
+                        hasLoginLink: hasLoginLink,
+                        hasSignupLink: hasSignupLink,
+                        hasLoginButton: hasLoginButton,
+                        hasProfileLink: hasProfileLink,
+                        hasSideNav: hasSideNav,
+                        hasTweetBtn: hasTweetBtn,
+                        hasNoLoginButtons: hasNoLoginButtons,
+                        hasUserElements: hasUserElements,
                         username: username || 'неизвестно',
-                        isLoggedIn: hasAuthToken
+                        isLoggedIn: isLoggedIn
                     };
                 }
             ''')
             
-            log_diag(f"📊 Результат: {auth_check}")
+            log_diag(f"📊 Результат проверки:")
+            log_diag(f"  auth_token: {'✅' if auth_check.get('hasAuthToken') else '❌'}")
+            log_diag(f"  ct0: {'✅' if auth_check.get('hasCt0') else '❌'}")
+            log_diag(f"  Кнопка входа: {'❌' if auth_check.get('hasLoginLink') else '✅ (отсутствует)'}")
+            log_diag(f"  Кнопка регистрации: {'❌' if auth_check.get('hasSignupLink') else '✅ (отсутствует)'}")
+            log_diag(f"  Ссылка на профиль: {'✅' if auth_check.get('hasProfileLink') else '❌'}")
+            log_diag(f"  Боковое меню: {'✅' if auth_check.get('hasSideNav') else '❌'}")
+            log_diag(f"  Кнопка твита: {'✅' if auth_check.get('hasTweetBtn') else '❌'}")
+            log_diag(f"  username: {auth_check.get('username')}")
             
             if auth_check and auth_check.get('isLoggedIn'):
                 log_diag(f"✅ ВЫ АВТОРИЗОВАНЫ! (@{auth_check.get('username')})")
@@ -700,7 +696,7 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 log_diag("❌ НЕ АВТОРИЗОВАН")
                 await msg.edit_text("✅ **Диагностика завершена!**\n\n❌ НЕ АВТОРИЗОВАН\nКуки не работают или истекли.\n\nИспользуйте /setcookies для обновления кук.")
             
-            # 7. Скриншот для диагностики
+            # 6. Скриншот для диагностики
             log_diag("📸 Делаю скриншот...")
             screenshot_b64 = await tab.take_screenshot(as_base64=True)
             if screenshot_b64:
@@ -887,7 +883,7 @@ async def engine(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Неизвестный движок: {engine_type}")
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Авторизация в X.com - проверка только по кукам"""
+    """Авторизация в X.com - комбинированная проверка"""
     logger.info(f"📩 Команда /login от {update.effective_user.username}")
     msg = await update.message.reply_text(f"⏳ Захожу в X.com через {engine_mode}...")
     
@@ -900,39 +896,41 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await goto_url('https://x.com')
         await asyncio.sleep(5)
         
-        # ✅ ПРОВЕРКА ТОЛЬКО ПО КУКАМ
+        # Комбинированная проверка авторизации
         auth_status = await execute_js('''
             () => {
+                // 1. Проверка кук
                 const cookies = document.cookie.split(';').reduce((acc, c) => {
                     const [key, val] = c.trim().split('=');
                     acc[key] = val;
                     return acc;
                 }, {});
                 
-                // ГЛАВНЫЙ ПРИЗНАК АВТОРИЗАЦИИ - есть auth_token
                 const hasAuthToken = !!cookies.auth_token && cookies.auth_token.length > 0;
                 const hasCt0 = !!cookies.ct0 && cookies.ct0.length > 0;
                 
-                // Ищем username из кук
-                let username = null;
-                if (cookies.twid) {
-                    const match = cookies.twid.match(/u%3D(\d+)/);
-                    if (match) username = 'user_' + match[1];
-                }
+                // 2. Проверка отсутствия кнопок входа
+                const hasLoginLink = !!document.querySelector('a[href="/login"]');
+                const hasSignupLink = !!document.querySelector('a[href="/signup"]');
+                const hasLoginButton = !!document.querySelector('[data-testid="loginButton"]');
                 
-                // Ищем username из DOM (если не нашли в куках)
-                if (!username) {
-                    const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
-                    if (profileLink) {
-                        const href = profileLink.getAttribute('href');
-                        if (href) {
-                            const match = href.match(/^\\/([^\\/]+)/);
-                            if (match) username = match[1];
-                        }
+                // 3. Проверка наличия элементов авторизованного пользователя
+                const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
+                const hasSideNav = !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
+                const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]') || 
+                                    !!document.querySelector('[data-testid="postButton"]');
+                
+                // Ищем username
+                let username = null;
+                const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
+                if (profileLink) {
+                    const href = profileLink.getAttribute('href');
+                    if (href) {
+                        const match = href.match(/^\\/([^\\/]+)/);
+                        if (match) username = match[1];
                     }
                 }
                 
-                // Если все еще нет username, пробуем через боковое меню
                 if (!username) {
                     const accountBtn = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
                     if (accountBtn) {
@@ -942,11 +940,26 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     }
                 }
                 
+                // КОМБИНИРОВАННАЯ ПРОВЕРКА:
+                // Авторизован если: есть auth_token ИЛИ (нет кнопки входа И есть элементы профиля)
+                const hasNoLoginButtons = !hasLoginLink && !hasSignupLink && !hasLoginButton;
+                const hasUserElements = hasProfileLink || hasSideNav || hasTweetBtn;
+                
+                const isLoggedIn = hasAuthToken || (hasNoLoginButtons && hasUserElements);
+                
                 return {
                     hasAuthToken: hasAuthToken,
                     hasCt0: hasCt0,
+                    hasLoginLink: hasLoginLink,
+                    hasSignupLink: hasSignupLink,
+                    hasLoginButton: hasLoginButton,
+                    hasNoLoginButtons: hasNoLoginButtons,
+                    hasProfileLink: hasProfileLink,
+                    hasSideNav: hasSideNav,
+                    hasTweetBtn: hasTweetBtn,
+                    hasUserElements: hasUserElements,
                     username: username || 'неизвестно',
-                    isLoggedIn: hasAuthToken  // ✅ ТОЛЬКО ПО КУКЕ auth_token
+                    isLoggedIn: isLoggedIn
                 };
             }
         ''')
@@ -964,6 +977,8 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg = f"✅ X.com ({engine_mode})\n\n"
         status_msg += f"🍪 auth_token: {'✅' if auth_status.get('hasAuthToken') else '❌'}\n"
         status_msg += f"🍪 ct0: {'✅' if auth_status.get('hasCt0') else '❌'}\n\n"
+        status_msg += f"🔍 Кнопка входа: {'❌ (отсутствует)' if auth_status.get('hasNoLoginButtons') else '✅ (присутствует)'}\n"
+        status_msg += f"🔍 Элементы профиля: {'✅' if auth_status.get('hasUserElements') else '❌'}\n\n"
         
         if auth_status.get('isLoggedIn'):
             status_msg += "✅ ВЫ АВТОРИЗОВАНЫ!\n"
@@ -971,8 +986,13 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 status_msg += f"👤 @{auth_status['username']}\n"
         else:
             status_msg += "❌ НЕ АВТОРИЗОВАН\n"
-            status_msg += "⚠️ Кука auth_token отсутствует или истекла\n\n"
-            status_msg += "Используйте /setcookies для обновления кук"
+            if not auth_status.get('hasAuthToken'):
+                status_msg += "⚠️ Кука auth_token отсутствует или истекла\n"
+            if not auth_status.get('hasNoLoginButtons'):
+                status_msg += "⚠️ Найдена кнопка входа\n"
+            if not auth_status.get('hasUserElements'):
+                status_msg += "⚠️ Нет элементов авторизованного пользователя\n"
+            status_msg += "\nИспользуйте /setcookies для обновления кук"
         
         await msg.edit_text(status_msg)
         
