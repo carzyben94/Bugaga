@@ -1,4 +1,4 @@
-# bot.py - X.com бот с Pydoll + Playwright
+# bot.py - X.com бот с Pydoll + Playwright (расширенная версия)
 import os
 import sys
 import subprocess
@@ -7,8 +7,17 @@ import asyncio
 import base64
 import json
 from datetime import datetime
+from typing import Optional, List
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+
+# Pydantic для структурированных данных
+try:
+    from pydantic import BaseModel, Field
+    PYDANTIC_AVAILABLE = True
+except ImportError:
+    PYDANTIC_AVAILABLE = False
+    logging.warning("⚠️ Pydantic не установлен")
 
 # ========== НАСТРОЙКА ЛОГГИРОВАНИЯ ==========
 logging.basicConfig(
@@ -177,6 +186,26 @@ def install_chromium():
         logger.error(f"❌ Ошибка установки Chromium: {e}", exc_info=True)
         return False
 
+def install_pydantic():
+    """Устанавливает Pydantic через pip"""
+    global PYDANTIC_AVAILABLE
+    try:
+        result = subprocess.run([
+            sys.executable, '-m', 'pip', 'install', 'pydantic'
+        ], capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            from pydantic import BaseModel, Field
+            PYDANTIC_AVAILABLE = True
+            logger.info("✅ Pydantic установлен!")
+            return True
+        else:
+            logger.error(f"❌ Ошибка установки Pydantic: {result.stderr}")
+            return False
+    except Exception as e:
+        logger.error(f"❌ Ошибка: {e}")
+        return False
+
 # ========== КУКИ X.COM ==========
 COOKIES = [
     {"name": "__cuid", "value": "55d2d7c5-4888-430a-b024-dd785da46ef4", "domain": ".x.com", "path": "/"},
@@ -194,6 +223,28 @@ COOKIES = [
 
 logger.info(f"🍪 Загружено {len(COOKIES)} кук для X.com")
 
+# ========== PYDANTIC МОДЕЛИ ДЛЯ СТРУКТУРИРОВАННЫХ ДАННЫХ ==========
+if PYDANTIC_AVAILABLE:
+    class TweetModel(BaseModel):
+        """Модель твита для структурированного извлечения"""
+        text: str = Field(description="Текст твита")
+        author: Optional[str] = Field(default=None, description="Автор твита")
+        username: Optional[str] = Field(default=None, description="Username автора")
+        time: Optional[str] = Field(default=None, description="Время публикации")
+        likes: Optional[str] = Field(default=None, description="Количество лайков")
+        retweets: Optional[str] = Field(default=None, description="Количество ретвитов")
+        replies: Optional[str] = Field(default=None, description="Количество ответов")
+        
+    class UserProfileModel(BaseModel):
+        """Модель профиля пользователя"""
+        name: Optional[str] = Field(default=None, description="Имя пользователя")
+        username: Optional[str] = Field(default=None, description="Username")
+        bio: Optional[str] = Field(default=None, description="Биография")
+        followers: Optional[str] = Field(default=None, description="Количество подписчиков")
+        following: Optional[str] = Field(default=None, description="Количество подписок")
+        location: Optional[str] = Field(default=None, description="Местоположение")
+        joined: Optional[str] = Field(default=None, description="Дата регистрации")
+
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 browser_data = None
 pydoll_browser = None
@@ -206,13 +257,15 @@ login_status = {
     'last_check': None,
     'cookies_valid': False
 }
+# Для гибридной автоматизации храним сессию
+current_session = None
 
 logger.info(f"🎮 Начальный движок: {engine_mode}")
 
 # ========== PYDOLL БРАУЗЕР ==========
 async def get_pydoll_browser():
     """Получает Pydoll браузер и возвращает Tab (вкладку)"""
-    global pydoll_browser, pydoll_tab, CHROMIUM_PATH
+    global pydoll_browser, pydoll_tab, CHROMIUM_PATH, current_session
     logger.info("🚀 Запрос на получение Pydoll браузера")
     
     if pydoll_browser and pydoll_tab:
@@ -220,6 +273,7 @@ async def get_pydoll_browser():
         try:
             await pydoll_tab.execute_script('1')
             logger.info("✅ Существующий браузер работает")
+            current_session = pydoll_tab
             return pydoll_tab
         except Exception as e:
             logger.warning(f"⚠️ Существующий браузер не отвечает: {e}")
@@ -313,6 +367,7 @@ async def get_pydoll_browser():
         except Exception as e:
             logger.error(f"❌ Ошибка проверки кук: {e}")
         
+        current_session = pydoll_tab
         logger.info("✅ Pydoll браузер полностью готов!")
         return pydoll_tab
         
@@ -325,7 +380,7 @@ async def get_pydoll_browser():
 
 async def close_pydoll_browser():
     """Закрывает Pydoll браузер"""
-    global pydoll_browser, pydoll_tab
+    global pydoll_browser, pydoll_tab, current_session
     logger.info("📌 Закрываю Pydoll браузер...")
     
     if pydoll_browser:
@@ -336,6 +391,7 @@ async def close_pydoll_browser():
             logger.warning(f"⚠️ Ошибка при закрытии Pydoll: {e}")
         pydoll_browser = None
         pydoll_tab = None
+        current_session = None
 
 # ========== PLAYWRIGHT БРАУЗЕР ==========
 async def get_playwright_browser():
@@ -536,270 +592,153 @@ async def take_screenshot():
         logger.error(f"Неизвестный тип страницы: {type(page)}")
         return None
 
-# ========== ДИАГНОСТИЧЕСКАЯ КОМАНДА ==========
-async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Диагностика Pydoll с проверкой кук"""
-    msg = await update.message.reply_text("🔍 Запуск диагностики Pydoll...")
+# ========== НОВЫЕ ФУНКЦИИ Pydoll ==========
+
+async def api_request(method='get', url='', data=None, headers=None):
+    """Гибридная автоматизация: API-запрос с сессией браузера"""
+    global current_session
+    logger.info(f"🌐 API запрос: {method.upper()} {url}")
     
-    log_file = f"diagnostic_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-    diagnostic_log = []
+    if engine_mode != "pydoll":
+        return {"error": "API запросы доступны только в режиме Pydoll"}
     
-    def log_diag(text):
-        diagnostic_log.append(f"[{datetime.now().strftime('%H:%M:%S')}] {text}")
-        logger.info(text)
+    tab = await get_pydoll_browser()
+    if tab is None:
+        return {"error": "Браузер не запущен"}
     
     try:
-        # 1. Проверка Chromium
-        await msg.edit_text("1️⃣ Проверяю Chromium...")
-        log_diag("=== ПРОВЕРКА CHROMIUM ===")
-        
-        chromium_paths = [
-            '/usr/bin/chromium', 
-            '/usr/bin/chromium-browser', 
-            '/usr/bin/google-chrome', 
-            '/usr/bin/google-chrome-stable'
-        ]
-        found = None
-        for path in chromium_paths:
-            exists = os.path.exists(path)
-            log_diag(f"  Проверка {path}: {'✅' if exists else '❌'}")
-            if exists:
-                found = path
-                break
-        
-        if not found:
-            log_diag("❌ Chromium НЕ НАЙДЕН!")
-            await msg.edit_text("❌ Chromium не найден!")
-            return
-        
-        log_diag(f"✅ Chromium найден: {found}")
-        await msg.edit_text(f"✅ Chromium найден\n\n2️⃣ Проверяю Pydoll...")
-        
-        # 2. Проверка импорта
-        try:
-            from pydoll.browser import Chrome
-            from pydoll.browser.options import ChromiumOptions
-            log_diag("✅ Pydoll импортирован")
-        except Exception as e:
-            log_diag(f"❌ Ошибка импорта: {e}")
-            await msg.edit_text(f"❌ Ошибка: {e}")
-            return
-        
-        # 3. Запуск браузера
-        await msg.edit_text("3️⃣ Запускаю браузер...")
-        log_diag("=== ЗАПУСК БРАУЗЕРА ===")
-        
-        try:
-            options = ChromiumOptions()
-            options.binary_location = found
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("--disable-gpu")
-            options.add_argument("--headless=new")
-            
-            browser = Chrome(options=options)
-            tab = await browser.start()
-            log_diag("✅ Браузер запущен!")
-            
-            # 4. Переход на X.com
-            await msg.edit_text("4️⃣ Перехожу на X.com...")
-            log_diag("🌐 Переход на X.com...")
-            await tab.go_to('https://x.com')
-            await asyncio.sleep(3)
-            log_diag("✅ Переход выполнен")
-            
-            # 5. Проверка авторизации - комбинированный метод
-            await msg.edit_text("5️⃣ Проверяю авторизацию...")
-            log_diag("=== ПРОВЕРКА АВТОРИЗАЦИИ ===")
-            
-            auth_check = await tab.execute_script('''
-                () => {
-                    // 1. Проверка кук
-                    const cookies = document.cookie.split(';').reduce((acc, c) => {
-                        const [key, val] = c.trim().split('=');
-                        acc[key] = val;
-                        return acc;
-                    }, {});
-                    
-                    const hasAuthToken = !!cookies.auth_token && cookies.auth_token.length > 0;
-                    const hasCt0 = !!cookies.ct0 && cookies.ct0.length > 0;
-                    
-                    // 2. Проверка отсутствия кнопки входа
-                    const hasLoginLink = !!document.querySelector('a[href="/login"]');
-                    const hasSignupLink = !!document.querySelector('a[href="/signup"]');
-                    const hasLoginButton = !!document.querySelector('[data-testid="loginButton"]');
-                    
-                    // 3. Проверка наличия элементов авторизованного пользователя
-                    const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
-                    const hasSideNav = !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
-                    const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]') || 
-                                        !!document.querySelector('[data-testid="postButton"]');
-                    
-                    // Ищем username
-                    let username = null;
-                    const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
-                    if (profileLink) {
-                        const href = profileLink.getAttribute('href');
-                        if (href) {
-                            const match = href.match(/^\\/([^\\/]+)/);
-                            if (match) username = match[1];
-                        }
-                    }
-                    
-                    if (!username) {
-                        const accountBtn = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
-                        if (accountBtn) {
-                            const text = accountBtn.textContent || '';
-                            const match = text.match(/@([a-zA-Z0-9_]+)/);
-                            if (match) username = match[1];
-                        }
-                    }
-                    
-                    // КОМБИНИРОВАННАЯ ПРОВЕРКА:
-                    // Авторизован если: есть auth_token ИЛИ (нет кнопки входа И есть элементы профиля)
-                    const hasNoLoginButtons = !hasLoginLink && !hasSignupLink && !hasLoginButton;
-                    const hasUserElements = hasProfileLink || hasSideNav || hasTweetBtn;
-                    
-                    const isLoggedIn = hasAuthToken || (hasNoLoginButtons && hasUserElements);
-                    
-                    return {
-                        hasAuthToken: hasAuthToken,
-                        hasCt0: hasCt0,
-                        hasLoginLink: hasLoginLink,
-                        hasSignupLink: hasSignupLink,
-                        hasLoginButton: hasLoginButton,
-                        hasProfileLink: hasProfileLink,
-                        hasSideNav: hasSideNav,
-                        hasTweetBtn: hasTweetBtn,
-                        hasNoLoginButtons: hasNoLoginButtons,
-                        hasUserElements: hasUserElements,
-                        username: username || 'неизвестно',
-                        isLoggedIn: isLoggedIn
-                    };
-                }
-            ''')
-            
-            log_diag(f"📊 Результат проверки:")
-            log_diag(f"  auth_token: {'✅' if auth_check.get('hasAuthToken') else '❌'}")
-            log_diag(f"  ct0: {'✅' if auth_check.get('hasCt0') else '❌'}")
-            log_diag(f"  Кнопка входа: {'❌' if auth_check.get('hasLoginLink') else '✅ (отсутствует)'}")
-            log_diag(f"  Кнопка регистрации: {'❌' if auth_check.get('hasSignupLink') else '✅ (отсутствует)'}")
-            log_diag(f"  Ссылка на профиль: {'✅' if auth_check.get('hasProfileLink') else '❌'}")
-            log_diag(f"  Боковое меню: {'✅' if auth_check.get('hasSideNav') else '❌'}")
-            log_diag(f"  Кнопка твита: {'✅' if auth_check.get('hasTweetBtn') else '❌'}")
-            log_diag(f"  username: {auth_check.get('username')}")
-            
-            if auth_check and auth_check.get('isLoggedIn'):
-                log_diag(f"✅ ВЫ АВТОРИЗОВАНЫ! (@{auth_check.get('username')})")
-                await msg.edit_text(f"✅ **Диагностика завершена!**\n\n✅ ВЫ АВТОРИЗОВАНЫ! (@{auth_check.get('username')})\nPydoll работает корректно.")
+        # Используем request из Pydoll
+        if hasattr(tab, 'request'):
+            if method.lower() == 'get':
+                response = await tab.request.get(url, headers=headers)
+            elif method.lower() == 'post':
+                response = await tab.request.post(url, data=data, headers=headers)
+            elif method.lower() == 'put':
+                response = await tab.request.put(url, data=data, headers=headers)
             else:
-                log_diag("❌ НЕ АВТОРИЗОВАН")
-                await msg.edit_text("✅ **Диагностика завершена!**\n\n❌ НЕ АВТОРИЗОВАН\nКуки не работают или истекли.\n\nИспользуйте /setcookies для обновления кук.")
+                return {"error": f"Неподдерживаемый метод: {method}"}
             
-            # 6. Скриншот для диагностики
-            log_diag("📸 Делаю скриншот...")
-            screenshot_b64 = await tab.take_screenshot(as_base64=True)
-            if screenshot_b64:
-                screenshot = base64.b64decode(screenshot_b64)
-                await update.message.reply_photo(
-                    photo=screenshot,
-                    caption=f"📸 Диагностический скриншот X.com\n{'✅ Авторизован' if auth_check and auth_check.get('isLoggedIn') else '❌ Не авторизован'}"
-                )
-                log_diag("✅ Скриншот отправлен")
+            # Парсим ответ
+            try:
+                response_data = response.json()
+            except:
+                response_data = {"text": response.text}
             
-            # Закрываем браузер
-            await browser.close()
-            log_diag("✅ Браузер закрыт")
-            
-        except Exception as e:
-            log_diag(f"❌ Ошибка: {e}")
-            await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-        
-        # Отправляем лог
-        with open(log_file, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(diagnostic_log))
-        await update.message.reply_document(
-            document=open(log_file, 'rb'), 
-            caption="📋 Лог диагностики"
-        )
-            
+            return {
+                "status": response.status,
+                "data": response_data,
+                "headers": dict(response.headers)
+            }
+        else:
+            # Fallback через JS
+            js_code = f"""
+                const resp = await fetch('{url}', {{
+                    method: '{method.upper()}',
+                    headers: {json.dumps(headers or {})},
+                    body: {json.dumps(data) if data else 'undefined'}
+                }});
+                return {{
+                    status: resp.status,
+                    data: await resp.json()
+                }};
+            """
+            result = await tab.execute_script(js_code)
+            return result
     except Exception as e:
-        logger.error(f"Critical test error: {e}", exc_info=True)
-        await msg.edit_text(f"❌ Критическая ошибка: {str(e)[:200]}")
-        
-        with open(log_file, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(diagnostic_log))
-        await update.message.reply_document(document=open(log_file, 'rb'), caption="📋 Лог диагностики")
+        logger.error(f"❌ Ошибка API запроса: {e}")
+        return {"error": str(e)}
 
-# ========== КОМАНДА ДЛЯ ОБНОВЛЕНИЯ КУК ==========
-async def setcookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обновление кук через Telegram"""
-    global COOKIES
-    await update.message.reply_text(
-        "🍪 **Обновление кук X.com**\n\n"
-        "Отправьте куки в JSON формате:\n"
-        "`[{\"name\":\"auth_token\",\"value\":\"...\",\"domain\":\".x.com\",\"path\":\"/\"}]`\n\n"
-        "Или отправьте /cancel для отмены"
-    )
-    context.user_data['waiting_for_cookies'] = True
-
-async def handle_cookies_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка введенных кук"""
-    global COOKIES
+async def extract_structured_data(selector=None):
+    """Извлечение структурированных данных с помощью Pydantic"""
+    global PYDANTIC_AVAILABLE
+    logger.info(f"📊 Извлечение структурированных данных")
     
-    if not context.user_data.get('waiting_for_cookies'):
-        return
+    if not PYDANTIC_AVAILABLE:
+        return {"error": "Pydantic не установлен. Используйте /install_pydantic"}
     
-    text = update.message.text.strip()
+    if engine_mode != "pydoll":
+        return {"error": "Структурированное извлечение доступно только в режиме Pydoll"}
     
-    if text.lower() == '/cancel':
-        context.user_data['waiting_for_cookies'] = False
-        await update.message.reply_text("❌ Отменено")
-        return
+    tab = await get_pydoll_browser()
+    if tab is None:
+        return {"error": "Браузер не запущен"}
     
     try:
-        data = json.loads(text)
-        new_cookies = []
+        # Пробуем использовать extractor из Pydoll
+        from pydoll.extractor import ExtractionModel, Field
         
-        if isinstance(data, list):
-            for cookie in data:
-                if 'name' in cookie and 'value' in cookie:
-                    new_cookies.append({
-                        "name": cookie['name'],
-                        "value": cookie['value'],
-                        "domain": cookie.get('domain', '.x.com'),
-                        "path": cookie.get('path', '/')
-                    })
-        elif isinstance(data, dict):
-            for name, value in data.items():
-                if value:
-                    new_cookies.append({
-                        "name": name,
-                        "value": value,
-                        "domain": ".x.com",
-                        "path": "/"
-                    })
+        # Динамически создаем модель для извлечения твитов
+        class TweetExtract(ExtractionModel):
+            text: str = Field(selector='[data-testid="tweetText"]', description='Текст твита')
+            author: str = Field(selector='[data-testid="User-Name"]', description='Автор')
         
-        if new_cookies:
-            COOKIES = new_cookies
-            context.user_data['waiting_for_cookies'] = False
-            await close_browser()
-            await update.message.reply_text(
-                f"✅ **Куки обновлены!**\n\n"
-                f"📦 Всего: {len(COOKIES)} кук\n"
-                f"🍪 Включены: {', '.join([c['name'] for c in COOKIES])}\n\n"
-                f"Используйте /login для авторизации"
-            )
+        # Извлекаем данные
+        if selector:
+            tweets = await tab.extract_all(TweetExtract, scope=selector)
         else:
-            await update.message.reply_text("❌ Не удалось распознать куки")
-            
-    except json.JSONDecodeError as e:
-        await update.message.reply_text(f"❌ Ошибка JSON: {e}")
+            tweets = await tab.extract_all(TweetExtract)
+        
+        return {
+            "count": len(tweets),
+            "data": [t.model_dump() for t in tweets]
+        }
+    except ImportError:
+        # Fallback: ручной парсинг через JS
+        js_code = """
+            () => {
+                const tweets = [];
+                document.querySelectorAll('[data-testid="tweet"]').forEach(tweet => {
+                    const textEl = tweet.querySelector('[data-testid="tweetText"]');
+                    const userEl = tweet.querySelector('[data-testid="User-Name"]');
+                    tweets.push({
+                        text: textEl ? textEl.textContent : '',
+                        author: userEl ? userEl.textContent : ''
+                    });
+                });
+                return tweets.slice(0, 10);
+            }
+        """
+        result = await tab.execute_script(js_code)
+        return {
+            "count": len(result) if result else 0,
+            "data": result
+        }
+    except Exception as e:
+        logger.error(f"❌ Ошибка извлечения данных: {e}")
+        return {"error": str(e)}
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отмена"""
-    context.user_data['waiting_for_cookies'] = False
-    await update.message.reply_text("✅ Отменено")
+async def shadow_dom_example():
+    """Демонстрация работы с Shadow DOM"""
+    logger.info("🛡️ Работа с Shadow DOM")
+    
+    if engine_mode != "pydoll":
+        return {"error": "Shadow DOM доступен только в режиме Pydoll"}
+    
+    tab = await get_pydoll_browser()
+    if tab is None:
+        return {"error": "Браузер не запущен"}
+    
+    try:
+        # Ищем элемент с shadow root
+        # Пример для X.com - ищем кнопку Grok
+        host = await tab.find('[data-testid="GrokDrawer"]')
+        if host:
+            shadow_root = await host.get_shadow_root()
+            if shadow_root:
+                # Ищем элемент внутри shadow root
+                inner_elem = await shadow_root.query('.some-class')
+                if inner_elem:
+                    text = await inner_elem.text
+                    return {"found": True, "text": text}
+        
+        # Если не нашли конкретный shadow root, демонстрируем возможность
+        return {
+            "status": "Shadow DOM доступен",
+            "message": "Используйте host.get_shadow_root() для доступа к закрытым shadow roots"
+        }
+    except Exception as e:
+        logger.error(f"❌ Ошибка Shadow DOM: {e}")
+        return {"error": str(e)}
 
 # ========== КОМАНДЫ ==========
 
@@ -807,19 +746,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"📩 Команда /start от {update.effective_user.username}")
     
     await update.message.reply_text(
-        f"🤖 **X.com Бот**\n\n"
+        f"🤖 **X.com Бот - Расширенная версия**\n\n"
         f"🎮 Движок: {'Pydoll' if engine_mode == 'pydoll' else 'Playwright'}\n"
         f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}\n"
         f"📦 Playwright: {'✅' if PLAYWRIGHT_AVAILABLE else '❌'}\n"
+        f"📦 Pydantic: {'✅' if PYDANTIC_AVAILABLE else '❌'}\n"
         f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}\n\n"
-        f"📌 Команды:\n"
-        f"/engine - Переключить движок\n"
+        f"📌 **Основные команды:**\n"
         f"/login - Авторизация в X.com\n"
         f"/screen - Скриншот\n"
         f"/status - Статус браузера\n"
         f"/close - Закрыть браузер\n"
-        f"/test - Диагностика Pydoll\n"
-        f"/setcookies - Обновить куки",
+        f"/engine - Переключить движок\n\n"
+        f"📌 **Расширенные команды (Pydoll):**\n"
+        f"/api <url> - API-запрос с сессией браузера\n"
+        f"/extract - Извлечь структурированные данные\n"
+        f"/shadow - Работа с Shadow DOM\n"
+        f"/install_pydantic - Установить Pydantic",
         parse_mode='Markdown'
     )
 
@@ -899,7 +842,6 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Комбинированная проверка авторизации
         auth_status = await execute_js('''
             () => {
-                // 1. Проверка кук
                 const cookies = document.cookie.split(';').reduce((acc, c) => {
                     const [key, val] = c.trim().split('=');
                     acc[key] = val;
@@ -909,18 +851,15 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 const hasAuthToken = !!cookies.auth_token && cookies.auth_token.length > 0;
                 const hasCt0 = !!cookies.ct0 && cookies.ct0.length > 0;
                 
-                // 2. Проверка отсутствия кнопок входа
                 const hasLoginLink = !!document.querySelector('a[href="/login"]');
                 const hasSignupLink = !!document.querySelector('a[href="/signup"]');
                 const hasLoginButton = !!document.querySelector('[data-testid="loginButton"]');
                 
-                // 3. Проверка наличия элементов авторизованного пользователя
                 const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
                 const hasSideNav = !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
                 const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]') || 
                                     !!document.querySelector('[data-testid="postButton"]');
                 
-                // Ищем username
                 let username = null;
                 const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
                 if (profileLink) {
@@ -940,11 +879,8 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     }
                 }
                 
-                // КОМБИНИРОВАННАЯ ПРОВЕРКА:
-                // Авторизован если: есть auth_token ИЛИ (нет кнопки входа И есть элементы профиля)
                 const hasNoLoginButtons = !hasLoginLink && !hasSignupLink && !hasLoginButton;
                 const hasUserElements = hasProfileLink || hasSideNav || hasTweetBtn;
-                
                 const isLoggedIn = hasAuthToken || (hasNoLoginButtons && hasUserElements);
                 
                 return {
@@ -984,14 +920,14 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status_msg += "✅ ВЫ АВТОРИЗОВАНЫ!\n"
             if auth_status.get('username') and auth_status.get('username') != 'неизвестно':
                 status_msg += f"👤 @{auth_status['username']}\n"
+            status_msg += "\n💡 Теперь доступны расширенные функции:\n"
+            status_msg += "  /api <url> - API-запросы\n"
+            status_msg += "  /extract - Извлечение данных\n"
+            status_msg += "  /shadow - Shadow DOM"
         else:
             status_msg += "❌ НЕ АВТОРИЗОВАН\n"
             if not auth_status.get('hasAuthToken'):
                 status_msg += "⚠️ Кука auth_token отсутствует или истекла\n"
-            if not auth_status.get('hasNoLoginButtons'):
-                status_msg += "⚠️ Найдена кнопка входа\n"
-            if not auth_status.get('hasUserElements'):
-                status_msg += "⚠️ Нет элементов авторизованного пользователя\n"
             status_msg += "\nИспользуйте /setcookies для обновления кук"
         
         await msg.edit_text(status_msg)
@@ -1006,6 +942,141 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"❌ Ошибка в login: {e}", exc_info=True)
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def api(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """API-запрос с сессией браузера (гибридная автоматизация)"""
+    logger.info(f"📩 Команда /api от {update.effective_user.username} с аргументами: {context.args}")
+    
+    if not context.args:
+        await update.message.reply_text(
+            "ℹ️ **API запрос с сессией браузера**\n\n"
+            "Использование: `/api <url>`\n"
+            "Пример: `/api https://x.com/api/graphql/...`\n\n"
+            "Запрос автоматически использует куки и заголовки от авторизованной сессии."
+        )
+        return
+    
+    url = context.args[0]
+    msg = await update.message.reply_text(f"🌐 Выполняю API запрос: {url[:80]}...")
+    
+    try:
+        result = await api_request('get', url)
+        
+        if result.get('error'):
+            await msg.edit_text(f"❌ Ошибка: {result['error']}")
+            return
+        
+        response_text = f"✅ **API запрос выполнен!**\n\n"
+        response_text += f"📊 Статус: {result.get('status')}\n\n"
+        
+        data = result.get('data')
+        if data:
+            if isinstance(data, dict):
+                data_str = json.dumps(data, indent=2, ensure_ascii=False)[:1500]
+            else:
+                data_str = str(data)[:1500]
+            response_text += f"📝 **Данные:**\n```json\n{data_str}\n```"
+        else:
+            response_text += "⚠️ Данные не получены"
+        
+        if len(response_text) > 4000:
+            filename = f"api_response_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(result, f, indent=2, ensure_ascii=False)
+            await update.message.reply_document(
+                document=open(filename, 'rb'),
+                caption=f"📄 API ответ: {url[:50]}"
+            )
+            await msg.delete()
+        else:
+            await msg.edit_text(response_text, parse_mode='Markdown')
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка API: {e}", exc_info=True)
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def extract(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Извлечение структурированных данных"""
+    logger.info(f"📩 Команда /extract от {update.effective_user.username}")
+    
+    if not PYDANTIC_AVAILABLE:
+        await update.message.reply_text(
+            "❌ Pydantic не установлен.\n\n"
+            "Используйте `/install_pydantic` для установки."
+        )
+        return
+    
+    msg = await update.message.reply_text("📊 Извлекаю структурированные данные...")
+    
+    try:
+        result = await extract_structured_data()
+        
+        if result.get('error'):
+            await msg.edit_text(f"❌ Ошибка: {result['error']}")
+            return
+        
+        count = result.get('count', 0)
+        data = result.get('data', [])
+        
+        response_text = f"✅ **Извлечено {count} элементов**\n\n"
+        
+        for i, item in enumerate(data[:5], 1):
+            if isinstance(item, dict):
+                text = item.get('text', '')[:100]
+                author = item.get('author', 'Неизвестно')
+                response_text += f"**{i}.** {author}: {text}...\n\n"
+        
+        if count > 5:
+            response_text += f"... и еще {count - 5} элементов\n\n"
+        
+        if data and len(data) > 0:
+            filename = f"extracted_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            await update.message.reply_document(
+                document=open(filename, 'rb'),
+                caption=f"📄 Извлеченные данные ({count} элементов)"
+            )
+        
+        await msg.edit_text(response_text)
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка извлечения: {e}", exc_info=True)
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Демонстрация работы с Shadow DOM"""
+    logger.info(f"📩 Команда /shadow от {update.effective_user.username}")
+    
+    msg = await update.message.reply_text("🛡️ Исследую Shadow DOM...")
+    
+    try:
+        result = await shadow_dom_example()
+        
+        if result.get('error'):
+            await msg.edit_text(f"❌ Ошибка: {result['error']}")
+            return
+        
+        response_text = f"✅ **Shadow DOM**\n\n"
+        response_text += f"📊 Результат: {json.dumps(result, indent=2, ensure_ascii=False)[:1000]}"
+        
+        await msg.edit_text(response_text)
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка Shadow DOM: {e}", exc_info=True)
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def install_pydantic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Установка Pydantic"""
+    global PYDANTIC_AVAILABLE
+    logger.info(f"📩 Команда /install_pydantic от {update.effective_user.username}")
+    
+    msg = await update.message.reply_text("⏳ Устанавливаю Pydantic...")
+    
+    if install_pydantic():
+        await msg.edit_text("✅ Pydantic установлен успешно!\n\nТеперь доступны структурированные данные через /extract")
+    else:
+        await msg.edit_text("❌ Не удалось установить Pydantic")
 
 async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Скриншот"""
@@ -1037,6 +1108,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg += f"🎮 Движок: **{engine_mode}**\n"
         status_msg += f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}\n"
         status_msg += f"📦 Playwright: {'✅' if PLAYWRIGHT_AVAILABLE else '❌'}\n"
+        status_msg += f"📦 Pydantic: {'✅' if PYDANTIC_AVAILABLE else '❌'}\n"
         status_msg += f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}\n\n"
         
         if engine_mode == "pydoll":
@@ -1083,19 +1155,97 @@ async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await close_browser()
     await msg.edit_text("✅ Браузер закрыт!")
 
+# ========== КОМАНДА ДЛЯ ОБНОВЛЕНИЯ КУК ==========
+async def setcookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обновление кук через Telegram"""
+    global COOKIES
+    await update.message.reply_text(
+        "🍪 **Обновление кук X.com**\n\n"
+        "Отправьте куки в JSON формате:\n"
+        "`[{\"name\":\"auth_token\",\"value\":\"...\",\"domain\":\".x.com\",\"path\":\"/\"}]`\n\n"
+        "Или отправьте /cancel для отмены"
+    )
+    context.user_data['waiting_for_cookies'] = True
+
+async def handle_cookies_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка введенных кук"""
+    global COOKIES
+    
+    if not context.user_data.get('waiting_for_cookies'):
+        return
+    
+    text = update.message.text.strip()
+    
+    if text.lower() == '/cancel':
+        context.user_data['waiting_for_cookies'] = False
+        await update.message.reply_text("❌ Отменено")
+        return
+    
+    try:
+        data = json.loads(text)
+        new_cookies = []
+        
+        if isinstance(data, list):
+            for cookie in data:
+                if 'name' in cookie and 'value' in cookie:
+                    new_cookies.append({
+                        "name": cookie['name'],
+                        "value": cookie['value'],
+                        "domain": cookie.get('domain', '.x.com'),
+                        "path": cookie.get('path', '/')
+                    })
+        elif isinstance(data, dict):
+            for name, value in data.items():
+                if value:
+                    new_cookies.append({
+                        "name": name,
+                        "value": value,
+                        "domain": ".x.com",
+                        "path": "/"
+                    })
+        
+        if new_cookies:
+            COOKIES = new_cookies
+            context.user_data['waiting_for_cookies'] = False
+            await close_browser()
+            await update.message.reply_text(
+                f"✅ **Куки обновлены!**\n\n"
+                f"📦 Всего: {len(COOKIES)} кук\n"
+                f"🍪 Включены: {', '.join([c['name'] for c in COOKIES])}\n\n"
+                f"Используйте /login для авторизации"
+            )
+        else:
+            await update.message.reply_text("❌ Не удалось распознать куки")
+            
+    except json.JSONDecodeError as e:
+        await update.message.reply_text(f"❌ Ошибка JSON: {e}")
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отмена"""
+    context.user_data['waiting_for_cookies'] = False
+    await update.message.reply_text("✅ Отменено")
+
 # ========== ЗАПУСК ==========
 def main():
     logger.info("🚀 Запуск бота...")
     
     app = Application.builder().token(TOKEN).build()
     
+    # Основные команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("login", login))
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("engine", engine))
     app.add_handler(CommandHandler("close", close))
-    app.add_handler(CommandHandler("test", test))
+    
+    # Расширенные команды Pydoll
+    app.add_handler(CommandHandler("api", api))
+    app.add_handler(CommandHandler("extract", extract))
+    app.add_handler(CommandHandler("shadow", shadow))
+    app.add_handler(CommandHandler("install_pydantic", install_pydantic))
+    
+    # Управление куками
     app.add_handler(CommandHandler("setcookies", setcookies))
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_cookies_input))
@@ -1103,8 +1253,13 @@ def main():
     print("\n✅ Бот запущен!")
     print(f"🎮 Движок: {engine_mode}")
     print(f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}")
+    print(f"📦 Playwright: {'✅' if PLAYWRIGHT_AVAILABLE else '❌'}")
+    print(f"📦 Pydantic: {'✅' if PYDANTIC_AVAILABLE else '❌'}")
     print(f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}")
-    print("\nКоманды: /start, /engine, /login, /screen, /status, /close, /test, /setcookies")
+    print("\nКоманды:")
+    print("  Основные: /start, /login, /screen, /status, /engine, /close")
+    print("  Расширенные: /api <url>, /extract, /shadow, /install_pydantic")
+    print("  Куки: /setcookies, /cancel")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
