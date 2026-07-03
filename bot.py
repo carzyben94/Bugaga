@@ -7,7 +7,7 @@ import base64
 import json
 import random
 import time
-import traceback
+import re
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -78,13 +78,22 @@ except ImportError as e:
 except Exception as e:
     logger.error(f"❌ Ошибка загрузки Pydoll: {e}")
 
-# ========== PYDOLL EXTRACTOR (РЕШЕНИЕ ПРОБЛЕМЫ SLICE) ==========
+# ========== PYDANTIC ==========
+PYDANTIC_AVAILABLE = False
 try:
-    from pydoll.extractor import ExtractionModel, Field
+    from pydantic import BaseModel, Field
+    PYDANTIC_AVAILABLE = True
+    logger.info("✅ Pydantic загружен")
+except ImportError:
+    logger.warning("⚠️ Pydantic не установлен")
+
+# ========== PYDOLL EXTRACTOR ==========
+PYDOLL_EXTRACTOR_AVAILABLE = False
+try:
+    from pydoll.extractor import ExtractionModel, Field as ExtractorField
     PYDOLL_EXTRACTOR_AVAILABLE = True
     logger.info("✅ Pydoll Extractor загружен")
 except ImportError as e:
-    PYDOLL_EXTRACTOR_AVAILABLE = False
     logger.warning(f"⚠️ Pydoll Extractor не найден: {e}")
 
 # ========== КУКИ X.COM ==========
@@ -203,89 +212,13 @@ async def take_screenshot():
         logger.error(f"❌ Ошибка скриншота: {e}")
         return None
 
-# ========== РЕШЕНИЕ: PYDANTIC МОДЕЛИ ДЛЯ SHADOW DOM ==========
+# ========== МЕТОД 1: EXEC_JS С return_by_value=True ==========
 
-if PYDOLL_EXTRACTOR_AVAILABLE:
-    class ShadowHostModel(ExtractionModel):
-        """Модель для элемента-хоста с shadowRoot"""
-        tag: str = Field(selector=':host', default='unknown')
-        id: str = Field(selector=':host', attribute='id', default='')
-        class_name: str = Field(selector=':host', attribute='className', default='')
-        children_count: int = Field(selector='*', count=True, default=0)
-
-    class ShadowChildModel(ExtractionModel):
-        """Модель для ребенка внутри shadowRoot"""
-        tag: str = Field(selector=':host', default='unknown')
-        id: str = Field(selector=':host', attribute='id', default='')
-        class_name: str = Field(selector=':host', attribute='className', default='')
-        text: str = Field(selector=':host', default='')
-
-    class TweetModel(ExtractionModel):
-        """Модель для твита"""
-        text: str = Field(selector='[data-testid="tweetText"]', default='')
-        author: str = Field(selector='[data-testid="User-Name"]', default='')
-        time: str = Field(selector='time', attribute='datetime', default='')
-        likes: int = Field(selector='[data-testid="like"]', attribute='aria-label', transform=lambda x: int(re.search(r'(\d+)', x or '').group(1)) if x and re.search(r'(\d+)', x) else 0)
-
-async def find_shadow_with_extractor(tab):
-    """Поиск shadowRoot через Pydoll Extractor (без JS)"""
-    if not PYDOLL_EXTRACTOR_AVAILABLE:
-        logger.warning("⚠️ Pydoll Extractor не доступен")
-        return []
-    
-    try:
-        # Ищем все элементы с shadowRoot на странице
-        # Используем XPath, чтобы найти элементы, у которых есть shadowRoot
-        # К сожалению, Pydoll не имеет прямого селектора для shadowRoot,
-        # поэтому пробуем найти через конкретные теги
-        shadow_hosts = await tab.extract_all(
-            ShadowHostModel,
-            scope='grok-drawer, video-player, emoji-picker',
-            timeout=5
-        )
-        
-        if shadow_hosts:
-            return shadow_hosts
-        
-        # Если ничего не найдено, пробуем найти все элементы с атрибутами,
-        # которые могут указывать на shadowRoot
-        shadow_hosts = await tab.extract_all(
-            ShadowHostModel,
-            scope='[data-testid*="drawer"], [data-testid*="player"], [data-testid*="picker"]',
-            timeout=5
-        )
-        
-        return shadow_hosts
-    except Exception as e:
-        logger.error(f"❌ Ошибка extractor: {e}")
-        return []
-
-async def get_shadow_children_with_extractor(tab, selector):
-    """Получение детей shadowRoot через Extractor"""
-    if not PYDOLL_EXTRACTOR_AVAILABLE:
-        return None
-    
-    try:
-        # Сначала находим хост
-        host_scope = f"{selector} > *"
-        children = await tab.extract_all(
-            ShadowChildModel,
-            scope=host_scope,
-            timeout=5
-        )
-        
-        return {
-            'host': selector,
-            'children': children
-        }
-    except Exception as e:
-        logger.error(f"❌ Ошибка получения детей: {e}")
-        return None
-
-# ========== ВСПОМОГАТЕЛЬНЫЙ JS МЕТОД (FALLBACK) ==========
-
-async def exec_js_fallback(page, script, timeout=10):
-    """Fallback метод через JS (с return_by_value=True)"""
+async def exec_js(page, script, timeout=10):
+    """
+    Выполнение JS с return_by_value=True.
+    Это гарантирует, что результат будет сериализован в JSON.
+    """
     try:
         wrapped_script = f"""
             (function() {{
@@ -318,74 +251,31 @@ async def exec_js_fallback(page, script, timeout=10):
         logger.warning(f"⚠️ Ошибка: {e}")
         return None
 
+# ========== МЕТОД 2: EXTRACTOR (ЕСЛИ ДОСТУПЕН) ==========
+
+if PYDOLL_EXTRACTOR_AVAILABLE:
+    class ShadowHostModel(ExtractionModel):
+        tag: str = ExtractorField(selector=':host', default='unknown')
+        id: str = ExtractorField(selector=':host', attribute='id', default='')
+        class_name: str = ExtractorField(selector=':host', attribute='className', default='')
+        children_count: int = ExtractorField(selector='*', count=True, default=0)
+
+    class TweetModel(ExtractionModel):
+        text: str = ExtractorField(selector='[data-testid="tweetText"]', default='')
+        author: str = ExtractorField(selector='[data-testid="User-Name"]', default='')
+        time: str = ExtractorField(selector='time', attribute='datetime', default='')
+
 # ========== /SHADOW ==========
 
 async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Поиск Shadow DOM через Extractor"""
+    """Поиск Shadow DOM через JS с return_by_value=True"""
     logger.info(f"📩 /shadow от {update.effective_user.username}")
     
-    msg = await update.message.reply_text("🛡️ Поиск Shadow DOM через Extractor...")
+    msg = await update.message.reply_text("🛡️ Поиск Shadow DOM...")
     
     try:
-        tab = await get_browser()
-        if tab is None:
-            await msg.edit_text("❌ Браузер не запущен. Используйте /login")
-            return
-        
-        if not PYDOLL_EXTRACTOR_AVAILABLE:
-            await msg.edit_text("❌ Pydoll Extractor не доступен. Используйте /shadow_js")
-            return
-        
-        # Пробуем через Extractor
-        data = await find_shadow_with_extractor(tab)
-        
-        if data and len(data) > 0:
-            response = f"🛡️ **SHADOW DOM (Extractor)**\n\n"
-            response += f"📦 Всего элементов: {len(data)}\n\n"
-            
-            for i, item in enumerate(data[:5], 1):
-                response += f"**{i}.** `{item.tag}`"
-                if item.id:
-                    response += f" id=\"{item.id}\""
-                if item.class_name:
-                    response += f" class=\"{item.class_name[:30]}\""
-                response += f"\n   📄 Детей: {item.children_count}\n\n"
-            
-            await msg.edit_text(response, parse_mode='Markdown')
-            
-            # Сохраняем JSON
-            filename = f"shadow_extractor_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            with open(filename, 'w', encoding='utf-8') as f:
-                json.dump([item.model_dump() for item in data], f, indent=2, ensure_ascii=False)
-            
-            await update.message.reply_document(
-                document=open(filename, 'rb'),
-                caption=f"📄 Данные Shadow DOM (Extractor)"
-            )
-        else:
-            # Fallback на JS
-            await msg.edit_text("⚠️ Extractor ничего не нашел, пробую через JS...")
-            await shadow_js(update, context)
-        
-        screenshot = await take_screenshot()
-        if screenshot:
-            await send_photo_safe(update, screenshot, "📸 Текущая страница")
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка: {e}", exc_info=True)
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-# ========== /SHADOW_JS (FALLBACK С return_by_value=True) ==========
-
-async def shadow_js(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Поиск Shadow DOM через JS с return_by_value=True"""
-    logger.info(f"📩 /shadow_js от {update.effective_user.username}")
-    
-    msg = await update.message.reply_text("🛡️ Поиск Shadow DOM через JS (return_by_value=True)...")
-    
-    try:
-        tab = await get_browser()
-        if tab is None:
+        page = await get_browser()
+        if page is None:
             await msg.edit_text("❌ Браузер не запущен. Используйте /login")
             return
         
@@ -407,13 +297,13 @@ async def shadow_js(update: Update, context: ContextTypes.DEFAULT_TYPE):
             })()
         """
         
-        data = await exec_js_fallback(tab, script)
+        data = await exec_js(page, script)
         
         if not data or len(data) == 0:
             await msg.edit_text("❌ Shadow DOM не найден на странице")
             return
         
-        response = f"🛡️ **SHADOW DOM (JS)**\n\n"
+        response = f"🛡️ **SHADOW DOM**\n\n"
         response += f"📦 Всего элементов: {len(data)}\n\n"
         
         for i, item in enumerate(data[:5], 1):
@@ -422,17 +312,17 @@ async def shadow_js(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 response += f" id=\"{item['id']}\""
             if item.get('class'):
                 response += f" class=\"{item['class'][:30]}\""
-            response += f"\n   📄 Детей: {item.get('children', 0)}\n\n"
+            response += f"\n   📄 Детей в shadowRoot: {item.get('children', 0)}\n\n"
         
         await msg.edit_text(response, parse_mode='Markdown')
         
-        filename = f"shadow_js_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        filename = f"shadow_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         with open(filename, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
         
         await update.message.reply_document(
             document=open(filename, 'rb'),
-            caption=f"📄 Данные Shadow DOM (JS)"
+            caption=f"📄 Данные Shadow DOM ({len(data)} элементов)"
         )
         
         screenshot = await take_screenshot()
@@ -443,71 +333,125 @@ async def shadow_js(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ Ошибка: {e}", exc_info=True)
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
-# ========== /TWEETS_EXTRACT (ИСПОЛЬЗУЕТ EXTRACTOR) ==========
+# ========== /SHADOW_EXTRACTOR ==========
 
-async def tweets_extract(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Парсинг твитов через Extractor"""
-    if not context.args:
-        await update.message.reply_text(
-            "ℹ️ Использование: /tweets_extract <username>\n"
-            "Пример: /tweets_extract elonmusk"
-        )
-        return
+async def shadow_extractor(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Поиск Shadow DOM через Extractor (если доступен)"""
+    logger.info(f"📩 /shadow_extractor от {update.effective_user.username}")
     
-    username = context.args[0].replace('@', '').strip()
-    msg = await update.message.reply_text(f"📊 Парсю твиты @{username} через Extractor...")
+    msg = await update.message.reply_text("🛡️ Поиск Shadow DOM через Extractor...")
     
     try:
-        tab = await get_browser()
-        if tab is None:
-            await msg.edit_text("❌ Браузер не запущен")
-            return
-        
         if not PYDOLL_EXTRACTOR_AVAILABLE:
-            await msg.edit_text("❌ Pydoll Extractor не доступен")
+            await msg.edit_text("❌ Pydoll Extractor не доступен. Используйте /shadow")
             return
         
-        await human_goto(tab, f"https://x.com/{username}")
-        await asyncio.sleep(2)
-        await human_scroll(tab, 500)
-        await asyncio.sleep(1)
+        page = await get_browser()
+        if page is None:
+            await msg.edit_text("❌ Браузер не запущен. Используйте /login")
+            return
         
-        # Извлекаем твиты через Extractor
-        tweets = await tab.extract_all(
-            TweetModel,
-            scope='[data-testid="tweet"]',
-            timeout=10
+        # Пробуем найти shadowRoot элементы
+        data = await page.extract_all(
+            ShadowHostModel,
+            scope='grok-drawer, [data-testid*="drawer"], video-player',
+            timeout=5
         )
         
-        if not tweets:
-            await msg.edit_text(f"❌ Твиты @{username} не найдены")
+        if not data or len(data) == 0:
+            await msg.edit_text("❌ Shadow DOM не найден через Extractor")
             return
         
-        response = f"📊 **ТВИТЫ @{username} (Extractor)**\n"
-        response += f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
-        response += f"📌 Всего: {len(tweets)}\n\n"
+        response = f"🛡️ **SHADOW DOM (Extractor)**\n\n"
+        response += f"📦 Всего элементов: {len(data)}\n\n"
         
-        for i, tweet in enumerate(tweets[:5], 1):
-            response += f"**{i}.** {tweet.text[:200]}\n"
-            response += f"   👤 {tweet.author}"
-            if tweet.likes > 0:
-                response += f" ❤️ {tweet.likes}"
-            response += "\n\n"
+        for i, item in enumerate(data[:5], 1):
+            response += f"**{i}.** `{item.tag}`"
+            if item.id:
+                response += f" id=\"{item.id}\""
+            if item.class_name:
+                response += f" class=\"{item.class_name[:30]}\""
+            response += f"\n   📄 Детей: {item.children_count}\n\n"
         
         await msg.edit_text(response, parse_mode='Markdown')
         
-        filename = f"tweets_extractor_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        filename = f"shadow_extractor_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         with open(filename, 'w', encoding='utf-8') as f:
-            json.dump([tweet.model_dump() for tweet in tweets], f, indent=2, ensure_ascii=False)
+            json.dump([item.model_dump() for item in data], f, indent=2, ensure_ascii=False)
         
         await update.message.reply_document(
             document=open(filename, 'rb'),
-            caption=f"📄 {len(tweets)} твитов @{username}"
+            caption=f"📄 Данные Shadow DOM (Extractor)"
         )
         
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}", exc_info=True)
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+# ========== /TWEETS ==========
+
+async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Парсинг твитов"""
+    if not context.args:
+        await update.message.reply_text(
+            "ℹ️ Использование: /tweets <username> [count]\n"
+            "Пример: /tweets elonmusk 5"
+        )
+        return
+    
+    username = context.args[0].replace('@', '').strip()
+    count = int(context.args[1]) if len(context.args) > 1 else 10
+    
+    await send_message_safe(update, f"📊 Парсю твиты @{username}...")
+    
+    try:
+        page = await get_browser()
+        if page is None:
+            await send_message_safe(update, "❌ Браузер не запущен")
+            return
+        
+        await human_goto(page, f"https://x.com/{username}")
+        await asyncio.sleep(2)
+        await human_scroll(page, 500)
+        await asyncio.sleep(1)
+        
+        script = f"""
+            (function() {{
+                var tweets = [];
+                var elements = document.querySelectorAll('[data-testid="tweet"]');
+                for (var i = 0; i < elements.length && i < {count}; i++) {{
+                    var tweet = elements[i];
+                    var textEl = tweet.querySelector('[data-testid="tweetText"]');
+                    var timeEl = tweet.querySelector('time');
+                    var isPinned = !!tweet.querySelector('[data-testid="pinIcon"]');
+                    tweets.push({{
+                        text: textEl ? textEl.innerText.trim() : '',
+                        time: timeEl ? timeEl.getAttribute('datetime') : '',
+                        is_pinned: isPinned
+                    }});
+                }}
+                return tweets;
+            }})()
+        """
+        
+        tweets_data = await exec_js(page, script)
+        
+        if not tweets_data or not isinstance(tweets_data, list):
+            await send_message_safe(update, f"❌ Твиты @{username} не найдены")
+            return
+        
+        response = f"📊 **ТВИТЫ @{username}**\n📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n📌 {len(tweets_data)}\n\n"
+        for i, tweet in enumerate(tweets_data[:5], 1):
+            if isinstance(tweet, dict):
+                response += f"**{i}.** {tweet.get('text', '')[:200]}\n"
+                if tweet.get('is_pinned'):
+                    response += "📌 ЗАКРЕПЛЕН\n"
+                response += "\n"
+        
+        await send_message_safe(update, response)
+        
+    except Exception as e:
+        await send_message_safe(update, f"❌ Ошибка: {str(e)[:200]}")
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 
@@ -627,7 +571,7 @@ async def check_login_status_detailed(page):
                 };
             })()
         """
-        return await exec_js_fallback(page, script)
+        return await exec_js(page, script)
     except Exception as e:
         logger.error(f"❌ Ошибка проверки статуса: {e}")
         return {'isLoggedIn': False}
@@ -709,10 +653,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🔐 Авторизация", callback_data="login")],
         [InlineKeyboardButton("📸 Скриншот", callback_data="screen")],
         [InlineKeyboardButton("📊 Статус", callback_data="status")],
-        [InlineKeyboardButton("📝 Твиты (JS)", callback_data="tweets")],
-        [InlineKeyboardButton("📝 Твиты (Extractor)", callback_data="tweets_extract")],
+        [InlineKeyboardButton("📝 Твиты", callback_data="tweets")],
         [InlineKeyboardButton("🛡️ Shadow DOM", callback_data="shadow")],
-        [InlineKeyboardButton("🔍 Shadow DOM (JS)", callback_data="shadow_js")],
+        [InlineKeyboardButton("🔍 Shadow Extractor", callback_data="shadow_extractor")],
         [InlineKeyboardButton("❌ Закрыть", callback_data="close")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -724,6 +667,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🤖 **X.com Бот**\n\n"
         f"🔐 Статус: {status_emoji} {login_status['is_logged_in'] and 'Авторизован' or 'Не авторизован'}{username_text}\n"
         f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}\n"
+        f"📦 Pydantic: {'✅' if PYDANTIC_AVAILABLE else '❌'}\n"
         f"📦 Extractor: {'✅' if PYDOLL_EXTRACTOR_AVAILABLE else '❌'}\n"
         f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}\n\n"
         f"📌 **Нажмите кнопку:**",
@@ -743,18 +687,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status(update, context)
     elif query.data == "tweets":
         await query.edit_message_text(
-            "📝 **Введите username для парсинга твитов (JS):**\n\n"
+            "📝 **Введите username для парсинга твитов:**\n\n"
             "Пример: `/tweets elonmusk 5`"
-        )
-    elif query.data == "tweets_extract":
-        await query.edit_message_text(
-            "📝 **Введите username для парсинга твитов (Extractor):**\n\n"
-            "Пример: `/tweets_extract elonmusk`"
         )
     elif query.data == "shadow":
         await shadow(update, context)
-    elif query.data == "shadow_js":
-        await shadow_js(update, context)
+    elif query.data == "shadow_extractor":
+        await shadow_extractor(update, context)
     elif query.data == "close":
         await close(update, context)
 
@@ -776,6 +715,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_text += f"👤 @{login_status['username']}\n"
     status_text += f"🕐 {login_status['last_check'] or 'Никогда'}\n\n"
     status_text += f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}\n"
+    status_text += f"📦 Pydantic: {'✅' if PYDANTIC_AVAILABLE else '❌'}\n"
     status_text += f"📦 Extractor: {'✅' if PYDOLL_EXTRACTOR_AVAILABLE else '❌'}\n"
     status_text += f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}\n"
     status_text += f"🌐 Браузер: {'✅' if pydoll_browser else '❌'}\n"
@@ -786,65 +726,6 @@ async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_message_safe(update, "⏳ Закрываю браузер...")
     await close_pydoll_browser()
     await send_message_safe(update, "✅ Браузер закрыт!")
-
-async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("ℹ️ Использование: /tweets <username> [count]")
-        return
-    
-    username = context.args[0].replace('@', '').strip()
-    count = int(context.args[1]) if len(context.args) > 1 else 10
-    
-    await send_message_safe(update, f"📊 Парсю твиты @{username} (JS)...")
-    
-    try:
-        page = await get_browser()
-        if page is None:
-            await send_message_safe(update, "❌ Браузер не запущен")
-            return
-        
-        await human_goto(page, f"https://x.com/{username}")
-        await asyncio.sleep(2)
-        await human_scroll(page, 500)
-        await asyncio.sleep(1)
-        
-        script = f"""
-            (function() {{
-                var tweets = [];
-                var elements = document.querySelectorAll('[data-testid="tweet"]');
-                for (var i = 0; i < elements.length && i < {count}; i++) {{
-                    var tweet = elements[i];
-                    var textEl = tweet.querySelector('[data-testid="tweetText"]');
-                    var timeEl = tweet.querySelector('time');
-                    var isPinned = !!tweet.querySelector('[data-testid="pinIcon"]');
-                    tweets.push({{
-                        text: textEl ? textEl.innerText.trim() : '',
-                        time: timeEl ? timeEl.getAttribute('datetime') : '',
-                        is_pinned: isPinned
-                    }});
-                }}
-                return tweets;
-            }})()
-        """
-        
-        tweets_data = await exec_js_fallback(page, script)
-        
-        if not tweets_data or not isinstance(tweets_data, list):
-            await send_message_safe(update, f"❌ Твиты @{username} не найдены")
-            return
-        
-        response = f"📊 **ТВИТЫ @{username} (JS)**\n📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n📌 {len(tweets_data)}\n\n"
-        for i, tweet in enumerate(tweets_data[:5], 1):
-            if isinstance(tweet, dict):
-                response += f"**{i}.** {tweet.get('text', '')[:200]}\n"
-                if tweet.get('is_pinned'):
-                    response += "📌 ЗАКРЕПЛЕН\n"
-                response += "\n"
-        
-        await send_message_safe(update, response)
-        
-    except Exception as e:
-        await send_message_safe(update, f"❌ Ошибка: {str(e)[:200]}")
 
 async def setcookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -892,9 +773,8 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("login", login))
     app.add_handler(CommandHandler("tweets", tweets))
-    app.add_handler(CommandHandler("tweets_extract", tweets_extract))
     app.add_handler(CommandHandler("shadow", shadow))
-    app.add_handler(CommandHandler("shadow_js", shadow_js))
+    app.add_handler(CommandHandler("shadow_extractor", shadow_extractor))
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("close", close))
@@ -906,15 +786,15 @@ def main():
     
     print("\n✅ Бот запущен!")
     print(f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}")
+    print(f"📦 Pydantic: {'✅' if PYDANTIC_AVAILABLE else '❌'}")
     print(f"📦 Extractor: {'✅' if PYDOLL_EXTRACTOR_AVAILABLE else '❌'}")
     print(f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}")
     print("\nКоманды:")
     print("  /start - Главное меню")
     print("  /login - Авторизация")
-    print("  /tweets <username> - Твиты (JS)")
-    print("  /tweets_extract <username> - Твиты (Extractor)")
-    print("  /shadow - Shadow DOM (Extractor)")
-    print("  /shadow_js - Shadow DOM (JS)")
+    print("  /tweets <username> - Твиты")
+    print("  /shadow - Shadow DOM (JS + return_by_value)")
+    print("  /shadow_extractor - Shadow DOM (Extractor)")
     print("  /screen - Скриншот")
     print("  /status - Статус")
     print("  /close - Закрыть браузер")
