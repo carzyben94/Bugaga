@@ -5,6 +5,7 @@ import subprocess
 import logging
 import asyncio
 import base64
+import tempfile
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -518,116 +519,200 @@ async def take_screenshot():
         logger.error(f"Неизвестный тип страницы: {type(page)}")
         return None
 
-# ========== ДИАГНОСТИЧЕСКАЯ КОМАНДА ==========
+# ========== РАСШИРЕННАЯ ДИАГНОСТИЧЕСКАЯ КОМАНДА ==========
 async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Тестовая команда для диагностики Pydoll с множеством вариантов"""
-    msg = await update.message.reply_text("🔍 Диагностика Pydoll...")
+    """Расширенная диагностика Pydoll с множеством вариантов"""
+    msg = await update.message.reply_text("🔍 Запуск расширенной диагностики Pydoll...\nЭто может занять 2-3 минуты.")
+    
+    # Собираем лог в файл
+    log_file = f"diagnostic_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    diagnostic_log = []
+    
+    def log_diag(text):
+        diagnostic_log.append(f"[{datetime.now().strftime('%H:%M:%S')}] {text}")
+        logger.info(text)
     
     try:
         # 1. Проверка Chromium
         await msg.edit_text("1️⃣ Проверяю Chromium...")
+        log_diag("=== ПРОВЕРКА CHROMIUM ===")
+        
         chromium_paths = [
             '/usr/bin/chromium', 
             '/usr/bin/chromium-browser', 
             '/usr/bin/google-chrome', 
-            '/usr/bin/google-chrome-stable'
+            '/usr/bin/google-chrome-stable',
+            '/snap/bin/chromium',
+            '/usr/lib/chromium-browser/chromium-browser'
         ]
         found = None
         for path in chromium_paths:
-            if os.path.exists(path):
+            exists = os.path.exists(path)
+            log_diag(f"  Проверка {path}: {'✅' if exists else '❌'}")
+            if exists:
                 found = path
-                await msg.edit_text(f"✅ Chromium найден: {path}")
                 break
         
         if not found:
-            await msg.edit_text("❌ Chromium НЕ НАЙДЕН!")
+            log_diag("❌ Chromium НЕ НАЙДЕН!")
             try:
                 files = os.listdir('/usr/bin')
                 chrome_files = [f for f in files if 'chrome' in f.lower() or 'chromium' in f.lower()]
-                await msg.edit_text(f"❌ Chromium не найден. Найдены похожие файлы: {chrome_files[:10]}")
+                log_diag(f"Найдены похожие файлы: {chrome_files[:10]}")
             except:
                 pass
+            await msg.edit_text("❌ Chromium не найден! Невозможно продолжить.")
+            # Отправляем лог
+            with open(log_file, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(diagnostic_log))
+            await update.message.reply_document(document=open(log_file, 'rb'), caption="📋 Лог диагностики")
             return
         
+        log_diag(f"✅ Chromium найден: {found}")
+        await msg.edit_text(f"✅ Chromium найден: {found}\n\n2️⃣ Проверяю импорт Pydoll...")
+        
         # 2. Проверка импорта
-        await msg.edit_text("2️⃣ Проверяю импорт Pydoll...")
+        log_diag("=== ПРОВЕРКА ИМПОРТА ===")
         try:
             from pydoll.browser import Chrome
             from pydoll.browser.options import ChromiumOptions
-            await msg.edit_text("✅ Pydoll импортирован успешно")
+            log_diag("✅ Pydoll импортирован успешно")
         except Exception as e:
+            log_diag(f"❌ Ошибка импорта: {e}")
             await msg.edit_text(f"❌ Ошибка импорта: {e}")
+            with open(log_file, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(diagnostic_log))
+            await update.message.reply_document(document=open(log_file, 'rb'), caption="📋 Лог диагностики")
             return
         
-        # 3. ВАРИАНТ 1: Стандартный запуск
-        await msg.edit_text("3️⃣ Вариант 1: Стандартный запуск...")
-        try:
-            options = ChromiumOptions()
-            options.binary_location = found
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("--disable-gpu")
-            options.add_argument("--headless=new")
-            
-            browser = Chrome(options=options)
-            tab = await browser.start()
-            await tab.go_to('https://www.google.com')
-            await browser.close()
-            await msg.edit_text("✅ Вариант 1: Стандартный запуск - РАБОТАЕТ!")
-        except Exception as e:
-            await msg.edit_text(f"⚠️ Вариант 1: {str(e)[:100]}")
-            logger.error(f"Variant 1 error: {e}", exc_info=True)
+        await msg.edit_text("✅ Pydoll импортирован\n\n3️⃣ Запуск всех вариантов...")
         
-        # 4. ВАРИАНТ 2: С дополнительными аргументами
-        await msg.edit_text("4️⃣ Вариант 2: Расширенные аргументы...")
-        try:
-            options = ChromiumOptions()
-            options.binary_location = found
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("--disable-gpu")
-            options.add_argument("--headless=new")
-            options.add_argument("--disable-setuid-sandbox")
-            options.add_argument("--disable-blink-features=AutomationControlled")
-            options.add_argument("--window-size=1280,720")
-            
-            browser = Chrome(options=options)
-            tab = await browser.start()
-            await tab.go_to('https://www.google.com')
-            await browser.close()
-            await msg.edit_text("✅ Вариант 2: Расширенные аргументы - РАБОТАЕТ!")
-        except Exception as e:
-            await msg.edit_text(f"⚠️ Вариант 2: {str(e)[:100]}")
-            logger.error(f"Variant 2 error: {e}", exc_info=True)
+        # 3. Тестируем все варианты
+        variants = [
+            {"name": "Стандартный запуск", "args": ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--headless=new"]},
+            {"name": "Расширенные аргументы", "args": ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--headless=new", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled", "--window-size=1280,720"]},
+            {"name": "С user-data-dir", "args": ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--headless=new", "--user-data-dir=/tmp/chromium-profile"]},
+            {"name": "С remote-debugging-port", "args": ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--headless=new", "--remote-debugging-port=9222"]},
+            {"name": "Без headless", "args": ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]},
+            {"name": "Только --no-sandbox", "args": ["--no-sandbox"]},
+            {"name": "Минимальный набор", "args": ["--no-sandbox", "--headless=new"]},
+        ]
         
-        # 5. ВАРИАНТ 3: Через контекстный менеджер
-        await msg.edit_text("5️⃣ Вариант 3: Контекстный менеджер...")
-        try:
-            options = ChromiumOptions()
-            options.binary_location = found
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("--disable-gpu")
-            options.add_argument("--headless=new")
+        working_variant = None
+        variant_results = []
+        
+        for i, variant in enumerate(variants, 1):
+            variant_name = variant["name"]
+            log_diag(f"\n=== ВАРИАНТ {i}: {variant_name} ===")
+            log_diag(f"Аргументы: {variant['args']}")
+            await msg.edit_text(f"🔄 Вариант {i}/{len(variants)}: {variant_name}...")
             
-            async with Chrome(options=options) as browser:
+            try:
+                options = ChromiumOptions()
+                options.binary_location = found
+                for arg in variant["args"]:
+                    options.add_argument(arg)
+                
+                browser = Chrome(options=options)
                 tab = await browser.start()
+                log_diag("✅ Браузер запущен!")
+                
+                # Переход на Google
+                log_diag("🌐 Переход на google.com...")
                 await tab.go_to('https://www.google.com')
-                await msg.edit_text("✅ Вариант 3: Контекстный менеджер - РАБОТАЕТ!")
-        except Exception as e:
-            await msg.edit_text(f"⚠️ Вариант 3: {str(e)[:100]}")
-            logger.error(f"Variant 3 error: {e}", exc_info=True)
+                await asyncio.sleep(2)
+                title = await tab.evaluate('document.title')
+                log_diag(f"📄 Заголовок: {title}")
+                
+                # Скриншот Google
+                log_diag("📸 Скриншот Google...")
+                screenshot_b64 = await tab.take_screenshot(as_base64=True)
+                if screenshot_b64:
+                    screenshot = base64.b64decode(screenshot_b64)
+                    log_diag(f"✅ Скриншот Google: {len(screenshot)} байт")
+                    # Отправляем скриншот
+                    await update.message.reply_photo(photo=screenshot, caption=f"📸 Вариант {i}: {variant_name} - Google")
+                else:
+                    log_diag("⚠️ Скриншот Google не удался")
+                
+                # Переход на X.com
+                log_diag("🌐 Переход на x.com...")
+                await tab.go_to('https://x.com')
+                await asyncio.sleep(3)
+                title_x = await tab.evaluate('document.title')
+                log_diag(f"📄 Заголовок X.com: {title_x}")
+                
+                # Скриншот X.com
+                log_diag("📸 Скриншот X.com...")
+                screenshot_b64_x = await tab.take_screenshot(as_base64=True)
+                if screenshot_b64_x:
+                    screenshot_x = base64.b64decode(screenshot_b64_x)
+                    log_diag(f"✅ Скриншот X.com: {len(screenshot_x)} байт")
+                    await update.message.reply_photo(photo=screenshot_x, caption=f"📸 Вариант {i}: {variant_name} - X.com")
+                else:
+                    log_diag("⚠️ Скриншот X.com не удался")
+                
+                # Закрытие
+                await browser.close()
+                log_diag("✅ Браузер закрыт")
+                
+                variant_results.append(f"✅ Вариант {i} ({variant_name}) - РАБОТАЕТ!")
+                if working_variant is None:
+                    working_variant = variant
+                    log_diag(f"🎯 РАБОЧИЙ ВАРИАНТ: {variant_name}")
+                
+            except Exception as e:
+                log_diag(f"❌ Ошибка: {str(e)[:200]}")
+                variant_results.append(f"❌ Вариант {i} ({variant_name}) - НЕ РАБОТАЕТ: {str(e)[:100]}")
+                try:
+                    await browser.close()
+                except:
+                    pass
         
-        # 6. Итог
-        await msg.edit_text(
-            "✅ **Диагностика завершена!**\n\n"
-            "Если какие-то варианты работают - используйте их настройки.\n"
-            "Проверьте логи для деталей."
+        # 4. Итог
+        await msg.edit_text("📊 Диагностика завершена! Формирую отчет...")
+        log_diag("\n=== РЕЗУЛЬТАТЫ ===")
+        for result in variant_results:
+            log_diag(result)
+        
+        if working_variant:
+            log_diag(f"\n🎯 РАБОЧИЙ ВАРИАНТ: {working_variant['name']}")
+            log_diag(f"Аргументы: {working_variant['args']}")
+        else:
+            log_diag("\n❌ НЕ ОДИН ВАРИАНТ НЕ СРАБОТАЛ!")
+        
+        # Отправляем лог-файл
+        with open(log_file, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(diagnostic_log))
+        
+        await update.message.reply_document(
+            document=open(log_file, 'rb'), 
+            caption=f"📋 Лог диагностики\n{'✅ Найден рабочий вариант!' if working_variant else '❌ Рабочий вариант не найден'}"
         )
+        
+        if working_variant:
+            await msg.edit_text(
+                f"✅ **Диагностика завершена!**\n\n"
+                f"🎯 Найден рабочий вариант: **{working_variant['name']}**\n"
+                f"Аргументы: `{' '.join(working_variant['args'])}`\n\n"
+                f"📋 Полный лог отправлен файлом."
+            )
+        else:
+            await msg.edit_text(
+                f"❌ **Диагностика завершена!**\n\n"
+                f"Ни один вариант не сработал.\n"
+                f"📋 Полный лог отправлен файлом для анализа."
+            )
             
     except Exception as e:
-        await msg.edit_text(f"❌ Критическая ошибка: {str(e)[:200]}")
+        log_diag(f"❌ Критическая ошибка: {e}")
         logger.error(f"Critical test error: {e}", exc_info=True)
+        await msg.edit_text(f"❌ Критическая ошибка: {str(e)[:200]}")
+        
+        # Отправляем лог
+        with open(log_file, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(diagnostic_log))
+        await update.message.reply_document(document=open(log_file, 'rb'), caption="📋 Лог диагностики (с ошибкой)")
 
 # ========== КОМАНДЫ ==========
 
@@ -648,7 +733,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/screen - Скриншот\n"
         f"/status - Статус браузера\n"
         f"/close - Закрыть браузер\n"
-        f"/test - Диагностика Pydoll",
+        f"/test - Расширенная диагностика Pydoll",
         parse_mode='Markdown'
     )
 
@@ -718,7 +803,6 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(f"⏳ Захожу в X.com через {engine_mode}...")
     
     try:
-        # Получаем браузер
         page = await get_browser()
         if page is None:
             await msg.edit_text(f"❌ Не удалось запустить {engine_mode} браузер")
@@ -726,21 +810,17 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         logger.info("✅ Браузер получен, перехожу на X.com...")
         
-        # Переходим на X.com с ожиданием загрузки
         await goto_url('https://x.com')
         
-        # Ждем загрузки страницы
         logger.info("⏳ Ожидание загрузки страницы...")
         await asyncio.sleep(5)
         
-        # Проверяем, что страница загрузилась
         try:
             title = await page.evaluate('document.title')
             logger.info(f"📄 Заголовок страницы: {title}")
         except Exception as e:
             logger.error(f"❌ Не удалось получить заголовок: {e}")
         
-        # Проверяем авторизацию с повторными попытками
         auth_status = None
         for attempt in range(3):
             logger.info(f"🔄 Попытка проверки авторизации {attempt + 1}/3...")
@@ -832,7 +912,6 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await msg.edit_text(status_msg)
         
-        # Делаем скриншот
         logger.info("📸 Создание скриншота...")
         screenshot = await take_screenshot()
         if screenshot:
