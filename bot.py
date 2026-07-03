@@ -87,27 +87,14 @@ try:
 except ImportError:
     logger.warning("⚠️ Pydantic не установлен")
 
-# ========== PYDOLL EXTRACTOR (ПРОВЕРЯЕМ РАЗНЫЕ ВЕРСИИ) ==========
+# ========== PYDOLL EXTRACTOR (Pydoll 2.23.0+) ==========
 PYDOLL_EXTRACTOR_AVAILABLE = False
-EXTRACTOR_FIELD = None
-
 try:
-    # Пробуем импортировать разными способами
-    try:
-        from pydoll.extractor import ExtractionModel, Field as ExtractorField
-        EXTRACTOR_FIELD = ExtractorField
-        PYDOLL_EXTRACTOR_AVAILABLE = True
-        logger.info("✅ Pydoll Extractor загружен (версия: Field)")
-    except ImportError:
-        try:
-            from pydoll.extraction import ExtractionModel, Field as ExtractorField
-            EXTRACTOR_FIELD = ExtractorField
-            PYDOLL_EXTRACTOR_AVAILABLE = True
-            logger.info("✅ Pydoll Extractor загружен (версия: extraction)")
-        except ImportError:
-            logger.warning("⚠️ Pydoll Extractor не найден")
-except Exception as e:
-    logger.warning(f"⚠️ Ошибка загрузки Extractor: {e}")
+    from pydoll.extractor import ExtractionModel, Field as ExtractorField
+    PYDOLL_EXTRACTOR_AVAILABLE = True
+    logger.info("✅ Pydoll Extractor загружен")
+except ImportError as e:
+    logger.warning(f"⚠️ Pydoll Extractor не найден: {e}")
 
 # ========== КУКИ X.COM ==========
 COOKIES = [
@@ -225,7 +212,7 @@ async def take_screenshot():
         logger.error(f"❌ Ошибка скриншота: {e}")
         return None
 
-# ========== БЕЗОПАСНОЕ ВЫПОЛНЕНИЕ JS ==========
+# ========== EXEC_JS С return_by_value=True ==========
 
 async def exec_js(page, script, timeout=10):
     """Выполнение JS с return_by_value=True"""
@@ -260,13 +247,94 @@ async def exec_js(page, script, timeout=10):
         logger.warning(f"⚠️ Ошибка: {e}")
         return None
 
-# ========== /SHADOW (ОСНОВНОЙ) ==========
+# ========== PYDANTIC МОДЕЛИ ДЛЯ EXTRACTOR ==========
+
+if PYDOLL_EXTRACTOR_AVAILABLE:
+    class ShadowElement(ExtractionModel):
+        """Модель для элемента с shadowRoot"""
+        tag: str = ExtractorField(selector=':host', default='unknown')
+        id: str = ExtractorField(selector=':host', attribute='id', default='')
+        class_name: str = ExtractorField(selector=':host', attribute='className', default='')
+        children_count: int = ExtractorField(selector='*', count=True, default=0)
+
+    class TweetElement(ExtractionModel):
+        """Модель для твита"""
+        text: str = ExtractorField(selector='[data-testid="tweetText"]', default='')
+        author: str = ExtractorField(selector='[data-testid="User-Name"]', default='')
+        time: str = ExtractorField(selector='time', attribute='datetime', default='')
+        likes: int = ExtractorField(
+            selector='[data-testid="like"]',
+            attribute='aria-label',
+            default=0,
+            transform=lambda x: int(re.search(r'(\d+)', x or '').group(1)) if x and re.search(r'(\d+)', x) else 0
+        )
+
+# ========== /SHADOW (ЧЕРЕЗ EXTRACTOR) ==========
 
 async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Поиск Shadow DOM через JS"""
+    """Поиск Shadow DOM через Extractor (Pydoll 2.23.0+)"""
     logger.info(f"📩 /shadow от {update.effective_user.username}")
     
-    msg = await update.message.reply_text("🛡️ Поиск Shadow DOM...")
+    msg = await update.message.reply_text("🛡️ Поиск Shadow DOM через Extractor...")
+    
+    try:
+        if not PYDOLL_EXTRACTOR_AVAILABLE:
+            await msg.edit_text("❌ Pydoll Extractor не доступен. Обновите pydoll-python до 2.23.0+")
+            return
+        
+        page = await get_browser()
+        if page is None:
+            await msg.edit_text("❌ Браузер не запущен. Используйте /login")
+            return
+        
+        # Ищем элементы с shadowRoot
+        elements = await page.extract_all(
+            ShadowElement,
+            scope='grok-drawer, video-player, emoji-picker, [data-testid*="drawer"], [data-testid*="player"]',
+            timeout=5
+        )
+        
+        if not elements or len(elements) == 0:
+            await msg.edit_text("❌ Shadow DOM не найден на странице")
+            return
+        
+        response = f"🛡️ **SHADOW DOM (Extractor)**\n\n"
+        response += f"📦 Всего элементов: {len(elements)}\n\n"
+        
+        for i, item in enumerate(elements[:5], 1):
+            response += f"**{i}.** `{item.tag}`"
+            if item.id:
+                response += f" id=\"{item.id}\""
+            if item.class_name:
+                response += f" class=\"{item.class_name[:30]}\""
+            response += f"\n   📄 Детей: {item.children_count}\n\n"
+        
+        await msg.edit_text(response, parse_mode='Markdown')
+        
+        filename = f"shadow_extractor_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump([item.model_dump() for item in elements], f, indent=2, ensure_ascii=False)
+        
+        await update.message.reply_document(
+            document=open(filename, 'rb'),
+            caption=f"📄 Данные Shadow DOM ({len(elements)} элементов)"
+        )
+        
+        screenshot = await take_screenshot()
+        if screenshot:
+            await send_photo_safe(update, screenshot, "📸 Текущая страница")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка: {e}", exc_info=True)
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+# ========== /SHADOW_JS (FALLBACK) ==========
+
+async def shadow_js(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Поиск Shadow DOM через JS (fallback)"""
+    logger.info(f"📩 /shadow_js от {update.effective_user.username}")
+    
+    msg = await update.message.reply_text("🛡️ Поиск Shadow DOM через JS...")
     
     try:
         page = await get_browser()
@@ -298,7 +366,7 @@ async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("❌ Shadow DOM не найден на странице")
             return
         
-        response = f"🛡️ **SHADOW DOM**\n\n"
+        response = f"🛡️ **SHADOW DOM (JS)**\n\n"
         response += f"📦 Всего элементов: {len(data)}\n\n"
         
         for i, item in enumerate(data[:5], 1):
@@ -311,13 +379,13 @@ async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await msg.edit_text(response, parse_mode='Markdown')
         
-        filename = f"shadow_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        filename = f"shadow_js_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         with open(filename, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
         
         await update.message.reply_document(
             document=open(filename, 'rb'),
-            caption=f"📄 Данные Shadow DOM ({len(data)} элементов)"
+            caption=f"📄 Данные Shadow DOM (JS)"
         )
         
         screenshot = await take_screenshot()
@@ -331,7 +399,7 @@ async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== /TWEETS ==========
 
 async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Парсинг твитов"""
+    """Парсинг твитов через JS"""
     if not context.args:
         await update.message.reply_text(
             "ℹ️ Использование: /tweets <username> [count]\n"
@@ -391,6 +459,71 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_message_safe(update, response)
         
     except Exception as e:
+        await send_message_safe(update, f"❌ Ошибка: {str(e)[:200]}")
+
+# ========== /TWEETS_EXTRACT (ЧЕРЕЗ EXTRACTOR) ==========
+
+async def tweets_extract(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Парсинг твитов через Extractor"""
+    if not context.args:
+        await update.message.reply_text(
+            "ℹ️ Использование: /tweets_extract <username>\n"
+            "Пример: /tweets_extract elonmusk"
+        )
+        return
+    
+    if not PYDOLL_EXTRACTOR_AVAILABLE:
+        await update.message.reply_text("❌ Extractor не доступен. Используйте /tweets")
+        return
+    
+    username = context.args[0].replace('@', '').strip()
+    await send_message_safe(update, f"📊 Парсю твиты @{username} через Extractor...")
+    
+    try:
+        page = await get_browser()
+        if page is None:
+            await send_message_safe(update, "❌ Браузер не запущен")
+            return
+        
+        await human_goto(page, f"https://x.com/{username}")
+        await asyncio.sleep(2)
+        await human_scroll(page, 500)
+        await asyncio.sleep(1)
+        
+        tweets_data = await page.extract_all(
+            TweetElement,
+            scope='[data-testid="tweet"]',
+            timeout=10
+        )
+        
+        if not tweets_data:
+            await send_message_safe(update, f"❌ Твиты @{username} не найдены")
+            return
+        
+        response = f"📊 **ТВИТЫ @{username} (Extractor)**\n"
+        response += f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
+        response += f"📌 Всего: {len(tweets_data)}\n\n"
+        
+        for i, tweet in enumerate(tweets_data[:5], 1):
+            response += f"**{i}.** {tweet.text[:200]}\n"
+            response += f"   👤 {tweet.author}"
+            if tweet.likes > 0:
+                response += f" ❤️ {tweet.likes}"
+            response += "\n\n"
+        
+        await send_message_safe(update, response, parse_mode='Markdown')
+        
+        filename = f"tweets_extractor_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump([tweet.model_dump() for tweet in tweets_data], f, indent=2, ensure_ascii=False)
+        
+        await update.message.reply_document(
+            document=open(filename, 'rb'),
+            caption=f"📄 {len(tweets_data)} твитов @{username}"
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка: {e}", exc_info=True)
         await send_message_safe(update, f"❌ Ошибка: {str(e)[:200]}")
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
@@ -594,7 +727,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📸 Скриншот", callback_data="screen")],
         [InlineKeyboardButton("📊 Статус", callback_data="status")],
         [InlineKeyboardButton("📝 Твиты", callback_data="tweets")],
+        [InlineKeyboardButton("📝 Твиты (Extractor)", callback_data="tweets_extract")],
         [InlineKeyboardButton("🛡️ Shadow DOM", callback_data="shadow")],
+        [InlineKeyboardButton("🔍 Shadow DOM (JS)", callback_data="shadow_js")],
         [InlineKeyboardButton("❌ Закрыть", callback_data="close")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -605,8 +740,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🤖 **X.com Бот**\n\n"
         f"🔐 Статус: {status_emoji} {login_status['is_logged_in'] and 'Авторизован' or 'Не авторизован'}{username_text}\n"
-        f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}\n"
-        f"📦 Pydantic: {'✅' if PYDANTIC_AVAILABLE else '❌'}\n"
+        f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'} (v{PYDOLL_VERSION})\n"
+        f"📦 Extractor: {'✅' if PYDOLL_EXTRACTOR_AVAILABLE else '❌'}\n"
         f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}\n\n"
         f"📌 **Нажмите кнопку:**",
         parse_mode='Markdown',
@@ -625,11 +760,18 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status(update, context)
     elif query.data == "tweets":
         await query.edit_message_text(
-            "📝 **Введите username для парсинга твитов:**\n\n"
+            "📝 **Введите username для парсинга твитов (JS):**\n\n"
             "Пример: `/tweets elonmusk 5`"
+        )
+    elif query.data == "tweets_extract":
+        await query.edit_message_text(
+            "📝 **Введите username для парсинга твитов (Extractor):**\n\n"
+            "Пример: `/tweets_extract elonmusk`"
         )
     elif query.data == "shadow":
         await shadow(update, context)
+    elif query.data == "shadow_js":
+        await shadow_js(update, context)
     elif query.data == "close":
         await close(update, context)
 
@@ -650,8 +792,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if login_status['username']:
         status_text += f"👤 @{login_status['username']}\n"
     status_text += f"🕐 {login_status['last_check'] or 'Никогда'}\n\n"
-    status_text += f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}\n"
-    status_text += f"📦 Pydantic: {'✅' if PYDANTIC_AVAILABLE else '❌'}\n"
+    status_text += f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'} (v{PYDOLL_VERSION})\n"
+    status_text += f"📦 Extractor: {'✅' if PYDOLL_EXTRACTOR_AVAILABLE else '❌'}\n"
     status_text += f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}\n"
     status_text += f"🌐 Браузер: {'✅' if pydoll_browser else '❌'}\n"
     status_text += f"🍪 Кук: {len(COOKIES)}"
@@ -708,7 +850,9 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("login", login))
     app.add_handler(CommandHandler("tweets", tweets))
+    app.add_handler(CommandHandler("tweets_extract", tweets_extract))
     app.add_handler(CommandHandler("shadow", shadow))
+    app.add_handler(CommandHandler("shadow_js", shadow_js))
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("close", close))
@@ -719,14 +863,16 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_cookies_input))
     
     print("\n✅ Бот запущен!")
-    print(f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}")
-    print(f"📦 Pydantic: {'✅' if PYDANTIC_AVAILABLE else '❌'}")
+    print(f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'} (v{PYDOLL_VERSION})")
+    print(f"📦 Extractor: {'✅' if PYDOLL_EXTRACTOR_AVAILABLE else '❌'}")
     print(f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}")
     print("\nКоманды:")
     print("  /start - Главное меню")
     print("  /login - Авторизация")
-    print("  /tweets <username> - Твиты")
-    print("  /shadow - Shadow DOM")
+    print("  /tweets <username> - Твиты (JS)")
+    print("  /tweets_extract <username> - Твиты (Extractor)")
+    print("  /shadow - Shadow DOM (Extractor)")
+    print("  /shadow_js - Shadow DOM (JS)")
     print("  /screen - Скриншот")
     print("  /status - Статус")
     print("  /close - Закрыть браузер")
