@@ -9,6 +9,8 @@ from datetime import datetime
 from typing import Optional
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+import asyncio
+from asyncio import TimeoutError
 
 # ========== НАСТРОЙКА ==========
 logging.basicConfig(
@@ -105,7 +107,7 @@ async def get_browser():
     
     if browser_data:
         try:
-            await browser_data['page'].evaluate('1')
+            await asyncio.wait_for(browser_data['page'].evaluate('1'), timeout=5.0)
             return browser_data
         except:
             try:
@@ -196,6 +198,53 @@ async def close_browser():
             'last_check': None,
             'cookies_valid': False
         }
+
+# ========== ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ==========
+async def safe_goto(page, url, timeout=15000, retries=2):
+    """Безопасный переход с повторными попытками"""
+    for attempt in range(retries):
+        try:
+            await asyncio.wait_for(
+                page.goto(url, wait_until='domcontentloaded', timeout=timeout),
+                timeout=timeout/1000 + 5
+            )
+            return True
+        except asyncio.TimeoutError:
+            if attempt < retries - 1:
+                await asyncio.sleep(2)
+                continue
+            else:
+                raise TimeoutError(f"Не удалось загрузить {url} после {retries} попыток")
+        except Exception as e:
+            if attempt < retries - 1:
+                await asyncio.sleep(2)
+                continue
+            else:
+                raise e
+    return False
+
+async def safe_wait_for_selector(page, selector, timeout=15000, retries=2):
+    """Безопасное ожидание селектора"""
+    for attempt in range(retries):
+        try:
+            await asyncio.wait_for(
+                page.wait_for_selector(selector, timeout=timeout),
+                timeout=timeout/1000 + 5
+            )
+            return True
+        except asyncio.TimeoutError:
+            if attempt < retries - 1:
+                await asyncio.sleep(2)
+                continue
+            else:
+                return False
+        except Exception:
+            if attempt < retries - 1:
+                await asyncio.sleep(2)
+                continue
+            else:
+                return False
+    return False
 
 # ========== КОМАНДЫ ==========
 
@@ -328,17 +377,19 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         browser = await get_browser()
         page = browser['page']
         
-        screenshot = await page.screenshot(type='jpeg', quality=80)
+        screenshot = await asyncio.wait_for(page.screenshot(type='jpeg', quality=80), timeout=30.0)
         await msg.delete()
         
         url = page.url
-        title = await page.title()
+        title = await asyncio.wait_for(page.title(), timeout=10.0)
         
         await update.message.reply_photo(
             photo=screenshot,
             caption=f"📸 {title[:40] if title else 'X.com'}\n🔗 {url[:50]}"
         )
         
+    except asyncio.TimeoutError:
+        await msg.edit_text("❌ Превышено время ожидания скриншота")
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:100]}")
 
@@ -352,15 +403,15 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if browser_data:
             try:
                 page = browser_data['page']
-                await page.evaluate('1')
+                await asyncio.wait_for(page.evaluate('1'), timeout=5.0)
                 browser_ok = True
                 
                 url = page.url
-                title = await page.title()
+                title = await asyncio.wait_for(page.title(), timeout=10.0)
                 started_at = browser_data.get('started_at')
                 uptime = (datetime.now() - started_at).total_seconds() if started_at else 0
                 
-                auth_check = await page.evaluate('''
+                auth_check = await asyncio.wait_for(page.evaluate('''
                     () => {
                         const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]');
                         const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
@@ -396,7 +447,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             isLoggedIn: hasTweetBtn || hasProfileLink || hasHomeLink || hasSideNav
                         };
                     }
-                ''')
+                '''), timeout=10.0)
                 
                 browser_info = {
                     'url': url,
@@ -410,6 +461,9 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 login_status['last_check'] = datetime.now()
                 login_status['cookies_valid'] = auth_check['hasAuthToken'] and auth_check['hasCt0']
                 
+            except asyncio.TimeoutError:
+                browser_ok = False
+                browser_info['error'] = 'Таймаут проверки'
             except Exception as e:
                 browser_ok = False
                 browser_info['error'] = str(e)[:50]
@@ -459,6 +513,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await msg.edit_text(status_msg)
         
+    except asyncio.TimeoutError:
+        await msg.edit_text("❌ Превышено время ожидания при проверке статуса")
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
@@ -483,50 +539,115 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(f"📊 Парсю твиты @{username}...")
     
     try:
-        browser = await get_browser()
+        # Проверяем браузер с таймаутом
+        try:
+            browser = await asyncio.wait_for(get_browser(), timeout=30.0)
+        except asyncio.TimeoutError:
+            await msg.edit_text("❌ Превышено время ожидания браузера")
+            return
+            
         page = browser['page']
         
-        await page.goto(f"https://x.com/{username}", wait_until='domcontentloaded')
-        await page.wait_for_timeout(3000)
+        # Переход с таймаутом
+        try:
+            await asyncio.wait_for(
+                page.goto(f"https://x.com/{username}", wait_until='domcontentloaded', timeout=15000),
+                timeout=20.0
+            )
+        except asyncio.TimeoutError:
+            await msg.edit_text(f"❌ Превышено время загрузки страницы @{username}")
+            return
+        except Exception as e:
+            await msg.edit_text(f"❌ Ошибка загрузки: {str(e)[:100]}")
+            return
         
-        await page.wait_for_selector('[data-testid="tweet"]', timeout=10000)
+        # Ждем загрузки
+        await asyncio.sleep(3)
         
-        tweets_data = await page.evaluate(f'''
-            () => {{
-                const tweets = [];
-                const tweetElements = document.querySelectorAll('[data-testid="tweet"]');
-                const count = {count};
-                
-                tweetElements.forEach((tweet, index) => {{
-                    if (index >= count) return;
+        # Прокручиваем
+        try:
+            await asyncio.wait_for(page.evaluate('window.scrollTo(0, document.body.scrollHeight)'), timeout=5.0)
+            await asyncio.sleep(2)
+        except:
+            pass
+        
+        # Ищем твиты с таймаутом
+        tweets_found = False
+        try:
+            tweets_found = await asyncio.wait_for(
+                page.wait_for_selector('[data-testid="tweet"]', timeout=10000),
+                timeout=12.0
+            )
+        except asyncio.TimeoutError:
+            # Проверяем, есть ли вообще контент
+            try:
+                content = await asyncio.wait_for(page.content(), timeout=5.0)
+                if "login" in content.lower() or "sign in" in content.lower():
+                    await msg.edit_text(
+                        f"❌ Требуется авторизация!\n"
+                        f"Выполните /login для авторизации в X.com"
+                    )
+                    return
+                elif "account suspended" in content.lower():
+                    await msg.edit_text(f"❌ Аккаунт @{username} заблокирован!")
+                    return
+                elif "doesn't exist" in content.lower() or "not found" in content.lower():
+                    await msg.edit_text(f"❌ Аккаунт @{username} не существует!")
+                    return
+            except:
+                pass
+            
+            # Если ничего не нашли
+            await msg.edit_text(f"⚠️ Не удалось найти твиты @{username}\n\n"
+                              f"Возможные причины:\n"
+                              f"• Аккаунт приватный\n"
+                              f"• Нет твитов\n"
+                              f"• Страница не загрузилась")
+            return
+        
+        # Собираем твиты с таймаутом
+        try:
+            tweets_data = await asyncio.wait_for(page.evaluate(f'''
+                () => {{
+                    const tweets = [];
+                    const tweetElements = document.querySelectorAll('[data-testid="tweet"]');
+                    const count = {count};
                     
-                    const textEl = tweet.querySelector('[data-testid="tweetText"]');
-                    const timeEl = tweet.querySelector('time');
-                    const isPinned = !!tweet.querySelector('[data-testid="pinIcon"]');
-                    
-                    let text = textEl ? textEl.innerText : '';
-                    text = text.replace(/https?:\\/\\/[^\\s]*/g, '');
-                    text = text.replace(/http?:\\/\\/[^\\s]*/g, '');
-                    text = text.replace(/ftp?:\\/\\/[^\\s]*/g, '');
-                    text = text.replace(/www\\.[^\\s]*/g, '');
-                    text = text.replace(/[a-zA-Z0-9.-]+\\.[a-zA-Z]{{2,}}\\S*/g, '');
-                    text = text.replace(/\\b[a-zA-Z0-9.-]+\\.[a-zA-Z]{{2,}}\\b/g, '');
-                    text = text.replace(/[a-zA-Z0-9]+-[a-zA-Z0-9]+-[a-zA-Z0-9]+/g, '');
-                    text = text.replace(/[a-zA-Z0-9]+\\.[a-zA-Z]{{2,}}\\b/g, '');
-                    text = text.replace(/\\n\\s*\\n/g, '\\n');
-                    text = text.replace(/\\s{{2,}}/g, ' ');
-                    text = text.trim();
-                    
-                    tweets.push({{
-                        text: text,
-                        time: timeEl ? timeEl.getAttribute('datetime') : '',
-                        is_pinned: isPinned
+                    tweetElements.forEach((tweet, index) => {{
+                        if (index >= count) return;
+                        
+                        const textEl = tweet.querySelector('[data-testid="tweetText"]');
+                        const timeEl = tweet.querySelector('time');
+                        const isPinned = !!tweet.querySelector('[data-testid="pinIcon"]');
+                        
+                        let text = textEl ? textEl.innerText : '';
+                        text = text.replace(/https?:\\/\\/[^\\s]*/g, '');
+                        text = text.replace(/http?:\\/\\/[^\\s]*/g, '');
+                        text = text.replace(/ftp?:\\/\\/[^\\s]*/g, '');
+                        text = text.replace(/www\\.[^\\s]*/g, '');
+                        text = text.replace(/[a-zA-Z0-9.-]+\\.[a-zA-Z]{{2,}}\\S*/g, '');
+                        text = text.replace(/\\b[a-zA-Z0-9.-]+\\.[a-zA-Z]{{2,}}\\b/g, '');
+                        text = text.replace(/[a-zA-Z0-9]+-[a-zA-Z0-9]+-[a-zA-Z0-9]+/g, '');
+                        text = text.replace(/[a-zA-Z0-9]+\\.[a-zA-Z]{{2,}}\\b/g, '');
+                        text = text.replace(/\\n\\s*\\n/g, '\\n');
+                        text = text.replace(/\\s{{2,}}/g, ' ');
+                        text = text.trim();
+                        
+                        if (text) {{
+                            tweets.push({{
+                                text: text,
+                                time: timeEl ? timeEl.getAttribute('datetime') : '',
+                                is_pinned: isPinned
+                            }});
+                        }}
                     }});
-                }});
-                
-                return tweets;
-            }}
-        ''')
+                    
+                    return tweets;
+                }}
+            '''), timeout=10.0)
+        except asyncio.TimeoutError:
+            await msg.edit_text("❌ Превышено время сбора твитов")
+            return
         
         if not tweets_data:
             await msg.edit_text(f"❌ Твиты @{username} не найдены!")
@@ -537,7 +658,7 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
         report += f"📌 Всего: {len(tweets_data)}\n\n"
         
         for i, tweet in enumerate(tweets_data, 1):
-            if tweet['is_pinned']:
+            if tweet.get('is_pinned', False):
                 report += f"📌 **{i}. ЗАКРЕПЛЕН**\n"
             else:
                 report += f"**{i}.** "
@@ -547,9 +668,9 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text += "..."
             report += f"{text}\n"
             
-            if tweet['time']:
+            if tweet.get('time'):
                 time_str = tweet['time'][:16].replace('T', ' ')
-                report += f"\n🕐 {time_str}"
+                report += f"🕐 {time_str}"
             
             report += "\n\n"
         
@@ -561,17 +682,25 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 document=open(filename, 'rb'),
                 caption=f"📄 {len(tweets_data)} твитов @{username}"
             )
+            os.remove(filename)
         else:
             await msg.edit_text(report, parse_mode='Markdown')
         
-        screenshot = await page.screenshot(type='jpeg', quality=80)
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption=f"📸 Твиты @{username}"
-        )
+        # Скриншот с таймаутом
+        try:
+            screenshot = await asyncio.wait_for(page.screenshot(type='jpeg', quality=80), timeout=30.0)
+            await update.message.reply_photo(
+                photo=screenshot,
+                caption=f"📸 Твиты @{username}"
+            )
+        except:
+            pass
         
+    except asyncio.TimeoutError:
+        await msg.edit_text("❌ Превышено общее время выполнения")
     except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+        error_msg = str(e)[:200]
+        await msg.edit_text(f"❌ Ошибка: {error_msg}")
         logger.error(f"Error in tweets: {e}", exc_info=True)
 
 
@@ -590,48 +719,76 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(f"🔍 Ищу: {query}...")
     
     try:
-        browser = await get_browser()
+        # Проверяем браузер с таймаутом
+        try:
+            browser = await asyncio.wait_for(get_browser(), timeout=30.0)
+        except asyncio.TimeoutError:
+            await msg.edit_text("❌ Превышено время ожидания браузера")
+            return
+            
         page = browser['page']
         
         search_url = f"https://x.com/search?q={query.replace(' ', '%20')}&src=typed_query"
-        await page.goto(search_url, wait_until='domcontentloaded')
-        await page.wait_for_timeout(3000)
         
-        await page.wait_for_selector('[data-testid="tweet"]', timeout=10000)
+        # Переход с таймаутом
+        try:
+            await asyncio.wait_for(
+                page.goto(search_url, wait_until='domcontentloaded', timeout=15000),
+                timeout=20.0
+            )
+        except asyncio.TimeoutError:
+            await msg.edit_text("❌ Превышено время загрузки страницы поиска")
+            return
         
-        tweets_data = await page.evaluate('''
-            () => {
-                const tweets = [];
-                const tweetElements = document.querySelectorAll('[data-testid="tweet"]');
-                
-                tweetElements.forEach((tweet, index) => {
-                    if (index >= 10) return;
+        await asyncio.sleep(3)
+        
+        # Ищем твиты
+        try:
+            await asyncio.wait_for(page.wait_for_selector('[data-testid="tweet"]', timeout=10000), timeout=12.0)
+        except:
+            await msg.edit_text(f"❌ По запросу '{query}' ничего не найдено!")
+            return
+        
+        # Собираем твиты
+        try:
+            tweets_data = await asyncio.wait_for(page.evaluate('''
+                () => {
+                    const tweets = [];
+                    const tweetElements = document.querySelectorAll('[data-testid="tweet"]');
                     
-                    const textEl = tweet.querySelector('[data-testid="tweetText"]');
-                    const timeEl = tweet.querySelector('time');
-                    
-                    let text = textEl ? textEl.innerText : '';
-                    text = text.replace(/https?:\\/\\/[^\\s]*/g, '');
-                    text = text.replace(/http?:\\/\\/[^\\s]*/g, '');
-                    text = text.replace(/ftp?:\\/\\/[^\\s]*/g, '');
-                    text = text.replace(/www\\.[^\\s]*/g, '');
-                    text = text.replace(/[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}\\S*/g, '');
-                    text = text.replace(/\\b[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}\\b/g, '');
-                    text = text.replace(/[a-zA-Z0-9]+-[a-zA-Z0-9]+-[a-zA-Z0-9]+/g, '');
-                    text = text.replace(/[a-zA-Z0-9]+\\.[a-zA-Z]{2,}\\b/g, '');
-                    text = text.replace(/\\n\\s*\\n/g, '\\n');
-                    text = text.replace(/\\s{2,}/g, ' ');
-                    text = text.trim();
-                    
-                    tweets.push({
-                        text: text,
-                        time: timeEl ? timeEl.getAttribute('datetime') : ''
+                    tweetElements.forEach((tweet, index) => {
+                        if (index >= 10) return;
+                        
+                        const textEl = tweet.querySelector('[data-testid="tweetText"]');
+                        const timeEl = tweet.querySelector('time');
+                        
+                        let text = textEl ? textEl.innerText : '';
+                        text = text.replace(/https?:\\/\\/[^\\s]*/g, '');
+                        text = text.replace(/http?:\\/\\/[^\\s]*/g, '');
+                        text = text.replace(/ftp?:\\/\\/[^\\s]*/g, '');
+                        text = text.replace(/www\\.[^\\s]*/g, '');
+                        text = text.replace(/[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}\\S*/g, '');
+                        text = text.replace(/\\b[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}\\b/g, '');
+                        text = text.replace(/[a-zA-Z0-9]+-[a-zA-Z0-9]+-[a-zA-Z0-9]+/g, '');
+                        text = text.replace(/[a-zA-Z0-9]+\\.[a-zA-Z]{2,}\\b/g, '');
+                        text = text.replace(/\\n\\s*\\n/g, '\\n');
+                        text = text.replace(/\\s{2,}/g, ' ');
+                        text = text.trim();
+                        
+                        if (text) {
+                            tweets.push({
+                                text: text,
+                                time: timeEl ? timeEl.getAttribute('datetime') : ''
+                            });
+                        }
                     });
-                });
-                
-                return tweets;
-            }
-        ''')
+                    
+                    return tweets;
+                }
+            '''), timeout=10.0)
+        except asyncio.TimeoutError:
+            await msg.edit_text("❌ Превышено время сбора результатов")
+            return
         
         if not tweets_data:
             await msg.edit_text(f"❌ По запросу '{query}' ничего не найдено!")
@@ -652,9 +809,9 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if text.strip():
                 report += f"{text}\n"
             
-            if tweet['time']:
+            if tweet.get('time'):
                 time_str = tweet['time'][:16].replace('T', ' ')
-                report += f"\n🕐 {time_str}"
+                report += f"🕐 {time_str}"
             
             report += "\n\n"
         
@@ -666,15 +823,21 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 document=open(filename, 'rb'),
                 caption=f"📄 Результаты поиска: {query}"
             )
+            os.remove(filename)
         else:
             await msg.edit_text(report, parse_mode='Markdown')
         
-        screenshot = await page.screenshot(type='jpeg', quality=80)
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption=f"🔍 Поиск: {query}"
-        )
+        try:
+            screenshot = await asyncio.wait_for(page.screenshot(type='jpeg', quality=80), timeout=30.0)
+            await update.message.reply_photo(
+                photo=screenshot,
+                caption=f"🔍 Поиск: {query}"
+            )
+        except:
+            pass
         
+    except asyncio.TimeoutError:
+        await msg.edit_text("❌ Превышено общее время выполнения")
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
         logger.error(f"Error in search: {e}", exc_info=True)
