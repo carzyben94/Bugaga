@@ -275,7 +275,6 @@ async def get_pydoll_browser():
         # Устанавливаем куки
         logger.info(f"🍪 Устанавливаю {len(COOKIES)} кук для X.com...")
         
-        # Сначала переходим на X.com
         logger.info("🌐 Переход на X.com для установки кук...")
         await pydoll_tab.go_to('https://x.com')
         await asyncio.sleep(3)
@@ -306,7 +305,11 @@ async def get_pydoll_browser():
         # Проверяем куки
         try:
             check_cookies = await pydoll_tab.execute_script('document.cookie')
-            logger.info(f"📋 Куки в браузере: {check_cookies[:200]}...")
+            logger.info(f"📋 Куки в браузере: {check_cookies[:500]}...")
+            if 'auth_token' in check_cookies:
+                logger.info("✅ auth_token найден в куках!")
+            else:
+                logger.warning("⚠️ auth_token НЕ найден в куках!")
         except Exception as e:
             logger.error(f"❌ Ошибка проверки кук: {e}")
         
@@ -605,7 +608,7 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await asyncio.sleep(3)
             log_diag("✅ Переход выполнен")
             
-            # 5. Проверка кук
+            # 5. Проверка кук - ТОЛЬКО ПО auth_token
             await msg.edit_text("5️⃣ Проверяю куки...")
             log_diag("=== ПРОВЕРКА КУК ===")
             
@@ -628,17 +631,19 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 log_diag(f"📦 Всего кук: {len(cookie_list)}")
                 
-                important = ['auth_token', 'ct0', 'twid']
-                found_cookies = []
-                for c in cookie_list:
-                    if c['name'] in important:
-                        found_cookies.append(c)
-                        log_diag(f"✅ Найдена кука: {c['name']} = {c['value']}")
+                # Проверяем только auth_token
+                has_auth_token = any(c['name'] == 'auth_token' for c in cookie_list)
+                has_ct0 = any(c['name'] == 'ct0' for c in cookie_list)
+                has_twid = any(c['name'] == 'twid' for c in cookie_list)
                 
-                if found_cookies:
-                    log_diag(f"✅ Найдены важные куки: {', '.join([c['name'] for c in found_cookies])}")
+                log_diag(f"✅ auth_token: {'✅' if has_auth_token else '❌'}")
+                log_diag(f"✅ ct0: {'✅' if has_ct0 else '❌'}")
+                log_diag(f"✅ twid: {'✅' if has_twid else '❌'}")
+                
+                if has_auth_token:
+                    log_diag("✅ АВТОРИЗАЦИЯ ПОДТВЕРЖДЕНА (auth_token найден)!")
                 else:
-                    log_diag("❌ Важные куки НЕ НАЙДЕНЫ!")
+                    log_diag("❌ auth_token НЕ НАЙДЕН - авторизация не подтверждена")
                     
             except Exception as e:
                 log_diag(f"❌ Ошибка при получении кук: {e}")
@@ -649,28 +654,48 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             auth_check = await tab.execute_script('''
                 () => {
-                    const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]');
-                    const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
-                    const hasHomeLink = !!document.querySelector('[data-testid="AppTabBar_Home_Link"]');
-                    const hasSideNav = !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
-                    const hasLoginForm = !!document.querySelector('[data-testid="loginForm"]');
+                    const cookies = document.cookie.split(';').reduce((acc, c) => {
+                        const [key, val] = c.trim().split('=');
+                        acc[key] = val;
+                        return acc;
+                    }, {});
+                    
+                    const hasAuthToken = !!cookies.auth_token && cookies.auth_token.length > 0;
+                    const hasCt0 = !!cookies.ct0 && cookies.ct0.length > 0;
+                    
+                    let username = null;
+                    const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
+                    if (profileLink) {
+                        const href = profileLink.getAttribute('href');
+                        if (href) {
+                            const match = href.match(/^\\/([^\\/]+)/);
+                            if (match) username = match[1];
+                        }
+                    }
+                    
+                    if (!username) {
+                        const accountBtn = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
+                        if (accountBtn) {
+                            const text = accountBtn.textContent || '';
+                            const match = text.match(/@([a-zA-Z0-9_]+)/);
+                            if (match) username = match[1];
+                        }
+                    }
                     
                     return {
-                        hasTweetBtn: hasTweetBtn || false,
-                        hasProfileLink: hasProfileLink || false,
-                        hasHomeLink: hasHomeLink || false,
-                        hasSideNav: hasSideNav || false,
-                        hasLoginForm: hasLoginForm || false,
-                        isLoggedIn: !!(hasTweetBtn || hasProfileLink || hasHomeLink || hasSideNav)
+                        hasAuthToken: hasAuthToken,
+                        hasCt0: hasCt0,
+                        username: username || 'неизвестно',
+                        isLoggedIn: hasAuthToken
                     };
                 }
             ''')
             
-            log_diag(f"📊 Результат проверки авторизации: {auth_check}")
+            log_diag(f"📊 Результат: {auth_check}")
             
             if auth_check and auth_check.get('isLoggedIn'):
-                log_diag("✅ ВЫ АВТОРИЗОВАНЫ!")
-                await msg.edit_text("✅ **Диагностика завершена!**\n\n✅ ВЫ АВТОРИЗОВАНЫ!\nPydoll работает корректно.")
+                log_diag(f"✅ ВЫ АВТОРИЗОВАНЫ! (@{auth_check.get('username')})")
+                await msg.edit_text(f"✅ **Диагностика завершена!**\n\n✅ ВЫ АВТОРИЗОВАНЫ! (@{auth_check.get('username')})\nPydoll работает корректно.")
             else:
                 log_diag("❌ НЕ АВТОРИЗОВАН")
                 await msg.edit_text("✅ **Диагностика завершена!**\n\n❌ НЕ АВТОРИЗОВАН\nКуки не работают или истекли.\n\nИспользуйте /setcookies для обновления кук.")
@@ -862,7 +887,7 @@ async def engine(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Неизвестный движок: {engine_type}")
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Авторизация в X.com"""
+    """Авторизация в X.com - проверка только по кукам"""
     logger.info(f"📩 Команда /login от {update.effective_user.username}")
     msg = await update.message.reply_text(f"⏳ Захожу в X.com через {engine_mode}...")
     
@@ -875,40 +900,39 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await goto_url('https://x.com')
         await asyncio.sleep(5)
         
-        # Проверяем авторизацию через больше селекторов
+        # ✅ ПРОВЕРКА ТОЛЬКО ПО КУКАМ
         auth_status = await execute_js('''
             () => {
-                // Проверяем куки
                 const cookies = document.cookie.split(';').reduce((acc, c) => {
                     const [key, val] = c.trim().split('=');
                     acc[key] = val;
                     return acc;
                 }, {});
                 
-                // Проверяем наличие auth_token (главный признак авторизации)
-                const hasAuthToken = !!cookies.auth_token;
-                const hasCt0 = !!cookies.ct0;
+                // ГЛАВНЫЙ ПРИЗНАК АВТОРИЗАЦИИ - есть auth_token
+                const hasAuthToken = !!cookies.auth_token && cookies.auth_token.length > 0;
+                const hasCt0 = !!cookies.ct0 && cookies.ct0.length > 0;
                 
-                // Проверяем наличие элементов интерфейса
-                const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]') || 
-                                    !!document.querySelector('[data-testid="postButton"]');
-                const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
-                const hasHomeLink = !!document.querySelector('[data-testid="AppTabBar_Home_Link"]');
-                const hasSideNav = !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
-                const hasLoginForm = !!document.querySelector('[data-testid="loginForm"]');
-                
-                // Пытаемся найти username
+                // Ищем username из кук
                 let username = null;
-                const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
-                if (profileLink) {
-                    const href = profileLink.getAttribute('href');
-                    if (href) {
-                        const match = href.match(/^\\/([^\\/]+)/);
-                        if (match) username = match[1];
+                if (cookies.twid) {
+                    const match = cookies.twid.match(/u%3D(\d+)/);
+                    if (match) username = 'user_' + match[1];
+                }
+                
+                // Ищем username из DOM (если не нашли в куках)
+                if (!username) {
+                    const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
+                    if (profileLink) {
+                        const href = profileLink.getAttribute('href');
+                        if (href) {
+                            const match = href.match(/^\\/([^\\/]+)/);
+                            if (match) username = match[1];
+                        }
                     }
                 }
                 
-                // Если не нашли через профиль, пробуем другие способы
+                // Если все еще нет username, пробуем через боковое меню
                 if (!username) {
                     const accountBtn = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
                     if (accountBtn) {
@@ -918,21 +942,11 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     }
                 }
                 
-                // ОПРЕДЕЛЯЕМ АВТОРИЗАЦИЮ: если есть auth_token ИЛИ элементы интерфейса
-                const isLoggedIn = hasAuthToken || hasTweetBtn || hasProfileLink || hasHomeLink || hasSideNav;
-                
                 return {
                     hasAuthToken: hasAuthToken,
                     hasCt0: hasCt0,
-                    hasTweetBtn: hasTweetBtn,
-                    hasProfileLink: hasProfileLink,
-                    hasHomeLink: hasHomeLink,
-                    hasSideNav: hasSideNav,
-                    hasLoginForm: hasLoginForm,
-                    username: username,
-                    isLoggedIn: isLoggedIn,
-                    url: window.location.href,
-                    title: document.title || ''
+                    username: username || 'неизвестно',
+                    isLoggedIn: hasAuthToken  // ✅ ТОЛЬКО ПО КУКЕ auth_token
                 };
             }
         ''')
@@ -945,22 +959,20 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         login_status['is_logged_in'] = auth_status.get('isLoggedIn', False)
         login_status['username'] = auth_status.get('username')
         login_status['last_check'] = datetime.now()
-        login_status['cookies_valid'] = auth_status.get('hasAuthToken', False) and auth_status.get('hasCt0', False)
+        login_status['cookies_valid'] = auth_status.get('hasAuthToken', False)
         
         status_msg = f"✅ X.com ({engine_mode})\n\n"
-        status_msg += f"📍 URL: {auth_status.get('url', 'неизвестно')}\n"
-        status_msg += f"📄 Заголовок: {auth_status.get('title', 'неизвестно')}\n\n"
         status_msg += f"🍪 auth_token: {'✅' if auth_status.get('hasAuthToken') else '❌'}\n"
         status_msg += f"🍪 ct0: {'✅' if auth_status.get('hasCt0') else '❌'}\n\n"
         
         if auth_status.get('isLoggedIn'):
             status_msg += "✅ ВЫ АВТОРИЗОВАНЫ!\n"
-            if auth_status.get('username'):
+            if auth_status.get('username') and auth_status.get('username') != 'неизвестно':
                 status_msg += f"👤 @{auth_status['username']}\n"
-        elif auth_status.get('hasLoginForm'):
-            status_msg += "❌ НЕ АВТОРИЗОВАН (форма входа)\n"
         else:
-            status_msg += "⚠️ НЕ ОПРЕДЕЛЕНО\n"
+            status_msg += "❌ НЕ АВТОРИЗОВАН\n"
+            status_msg += "⚠️ Кука auth_token отсутствует или истекла\n\n"
+            status_msg += "Используйте /setcookies для обновления кук"
         
         await msg.edit_text(status_msg)
         
@@ -1031,7 +1043,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg += "\n🔐 **АВТОРИЗАЦИЯ:**\n"
         if login_status['is_logged_in']:
             status_msg += f"✅ Авторизован\n"
-            if login_status['username']:
+            if login_status['username'] and login_status['username'] != 'неизвестно':
                 status_msg += f"👤 @{login_status['username']}\n"
         else:
             status_msg += "❌ Не авторизован\n"
