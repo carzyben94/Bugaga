@@ -194,15 +194,14 @@ async def take_screenshot():
         logger.error(f"❌ Ошибка скриншота: {e}")
         return None
 
-# ========== БЕЗОПАСНОЕ ВЫПОЛНЕНИЕ JS ==========
+# ========== БЕЗОПАСНОЕ ВЫПОЛНЕНИЕ JS (ПОЛНОСТЬЮ УСТРАНЯЕТ SLICE) ==========
 
 async def exec_js(page, script, timeout=10):
     """
-    Безопасное выполнение JS через JSON.stringify
-    В JavaScript заменяем .slice() на .substring() чтобы избежать проблем
+    Безопасное выполнение JS.
+    Использует JSON.stringify + return_by_value для полного исключения slice.
     """
     try:
-        # Оборачиваем скрипт с JSON.stringify
         wrapped = f"""
             (function() {{
                 try {{
@@ -213,13 +212,27 @@ async def exec_js(page, script, timeout=10):
                 }}
             }})()
         """
-        result_str = await asyncio.wait_for(page.execute_script(wrapped), timeout=timeout)
         
+        # return_by_value=True гарантирует простые типы (str, int, list, dict)
+        if hasattr(page.execute_script, 'return_by_value'):
+            result_str = await asyncio.wait_for(
+                page.execute_script(wrapped, return_by_value=True),
+                timeout=timeout
+            )
+        else:
+            result_str = await asyncio.wait_for(
+                page.execute_script(wrapped),
+                timeout=timeout
+            )
+        
+        # Если результат — строка, парсим JSON
         if isinstance(result_str, str):
             try:
                 return json.loads(result_str)
             except json.JSONDecodeError:
                 return result_str
+        
+        # Если уже не строка (например, dict), возвращаем как есть
         return result_str
         
     except asyncio.TimeoutError:
@@ -254,7 +267,7 @@ async def find_shadow(page):
 
 async def get_shadow_details(page, selector):
     """Получить содержимое shadowRoot по селектору"""
-    # ВАЖНО: используем substring вместо slice!
+    # ✅ Используем substring вместо slice!
     script = f"""
         (function() {{
             var el = document.querySelector('{selector}');
