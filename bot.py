@@ -88,7 +88,6 @@ async def human_scroll(page, amount=300):
         if hasattr(page, 'scroll_by'):
             await page.scroll_by(amount, humanize=True)
         else:
-            # Fallback через JS
             await page.execute_script(f'window.scrollBy(0, {amount})')
         await asyncio.sleep(random_delay(0.3, 1.0))
     except Exception as e:
@@ -812,7 +811,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     callback_data = query.data
     
-    # Имитация команд
     if callback_data == "login":
         await login(update, context)
     elif callback_data == "screen":
@@ -902,11 +900,69 @@ async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     await start(update, context)
 
+async def engine(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Переключение между движками браузера через команду"""
+    global engine_mode, PYDOLL_AVAILABLE, PLAYWRIGHT_AVAILABLE, CHROMIUM_INSTALLED
+    logger.info(f"📩 Команда /engine от {update.effective_user.username} с аргументами: {context.args}")
+    
+    if not context.args:
+        current = "Pydoll" if engine_mode == "pydoll" else "Playwright"
+        await update.message.reply_text(
+            f"🔧 Текущий движок: **{current}**\n\n"
+            f"Использование: /engine <pydoll|playwright>\n"
+            f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}\n"
+            f"📦 Playwright: {'✅' if PLAYWRIGHT_AVAILABLE else '❌'}"
+        )
+        return
+    
+    engine_type = context.args[0].lower()
+    msg = await update.message.reply_text(f"⏳ Переключаю на {engine_type}...")
+    
+    if engine_type == "pydoll":
+        if not CHROMIUM_INSTALLED:
+            await msg.edit_text("📦 Устанавливаю Chromium...")
+            if install_chromium():
+                CHROMIUM_INSTALLED = True
+                await msg.edit_text("✅ Chromium установлен!")
+            else:
+                await msg.edit_text("⚠️ Не удалось установить Chromium")
+        
+        if not PYDOLL_AVAILABLE:
+            await msg.edit_text("📦 Устанавливаю Pydoll...")
+            if install_pydoll():
+                PYDOLL_AVAILABLE = True
+                await msg.edit_text("✅ Pydoll установлен!")
+            else:
+                await msg.edit_text("❌ Не удалось установить Pydoll")
+                return
+        
+        await close_browser()
+        engine_mode = "pydoll"
+        await msg.edit_text("✅ **Переключено на Pydoll!**")
+        
+    elif engine_type == "playwright":
+        if not PLAYWRIGHT_AVAILABLE:
+            await msg.edit_text("📦 Устанавливаю Playwright...")
+            try:
+                subprocess.run([
+                    sys.executable, '-m', 'pip', 'install', 'playwright'
+                ], check=True, capture_output=True)
+                PLAYWRIGHT_AVAILABLE = True
+                await msg.edit_text("✅ Playwright установлен!")
+            except Exception as e:
+                await msg.edit_text(f"❌ Ошибка: {e}")
+                return
+        
+        await close_browser()
+        engine_mode = "playwright"
+        await msg.edit_text("✅ **Переключено на Playwright!**")
+    else:
+        await msg.edit_text(f"❌ Неизвестный движок: {engine_type}")
+
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Авторизация в X.com с эмуляцией"""
     logger.info(f"📩 Команда /login от {update.effective_user.username}")
     
-    # Проверяем, откуда пришел вызов
     if hasattr(update, 'callback_query'):
         msg = await update.callback_query.edit_message_text("⏳ Захожу в X.com...")
     else:
@@ -918,13 +974,9 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"❌ Не удалось запустить {engine_mode} браузер")
             return
         
-        # Эмуляция перехода
         await human_goto(page, 'https://x.com')
-        
-        # Эмуляция ожидания
         await asyncio.sleep(random_delay(2.0, 4.0))
         
-        # Проверка авторизации
         auth_status = await execute_js('''
             () => {
                 const cookies = document.cookie.split(';').reduce((acc, c) => {
@@ -1037,15 +1089,12 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(f"📊 Парсю твиты @{username}...")
     
     try:
-        # Эмуляция перехода с задержкой
         await goto_url(f"https://x.com/{username}")
         await asyncio.sleep(random_delay(2.0, 3.5))
         
-        # Эмуляция прокрутки для загрузки твитов
         await human_scroll(await get_browser(), 500)
         await asyncio.sleep(random_delay(1.0, 2.0))
         
-        # Парсим твиты
         tweets_data = await execute_js(f'''
             () => {{
                 const tweets = [];
@@ -1111,7 +1160,6 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await msg.edit_text(report, parse_mode='Markdown')
         
-        # Эмуляция скриншота
         await asyncio.sleep(random_delay(0.5, 1.0))
         screenshot = await take_screenshot()
         if screenshot:
@@ -1143,11 +1191,9 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         search_url = f"https://x.com/search?q={query.replace(' ', '%20')}&src=typed_query"
         
-        # Эмуляция перехода
         await goto_url(search_url)
         await asyncio.sleep(random_delay(2.0, 3.5))
         
-        # Эмуляция прокрутки
         await human_scroll(await get_browser(), 400)
         await asyncio.sleep(random_delay(1.0, 2.0))
         
@@ -1378,7 +1424,6 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = await update.message.reply_text("⏳ Делаю скриншот...")
     
     try:
-        # Эмуляция задержки перед скриншотом
         await asyncio.sleep(random_delay(0.5, 1.5))
         screenshot = await take_screenshot()
         if screenshot:
@@ -1558,7 +1603,7 @@ def main():
     app.add_handler(CommandHandler("search", search))
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("engine", engine))
+    app.add_handler(CommandHandler("engine", engine))  # ✅ ДОБАВЛЕНА КОМАНДА
     app.add_handler(CommandHandler("close", close))
     
     # Расширенные команды Pydoll
