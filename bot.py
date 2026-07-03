@@ -299,12 +299,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🤖 XBOT\n"
         f"/tweets <username> — Твиты пользователя\n"
         f"/search <запрос> — Поиск твитов\n\n"
-        f"🧠 AI АГЕНТ (Agnes {status_agnes})\n"
-        f"/browse <задача> — Управление браузером через AI\n"
-        f"/agnes — Проверить статус Agnes\n\n"
-        f"💡 Для работы /browse нужно:\n"
-        f"1. Установить AGNES_API_KEY в переменные окружения\n"
-        f"2. Ключ получить на https://agnes-ai.com/"
     )
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
