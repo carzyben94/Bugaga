@@ -177,7 +177,7 @@ browser_data = None
 pydoll_browser = None
 pydoll_tab = None
 browser_lock = False
-engine_mode = "pydoll"  # По умолчанию Pydoll
+engine_mode = "pydoll"
 login_status = {
     'is_logged_in': False,
     'username': None,
@@ -187,7 +187,7 @@ login_status = {
 
 logger.info(f"🎮 Начальный движок: {engine_mode}")
 
-# ========== PYDOLL БРАУЗЕР (ПРАВИЛЬНЫЙ СПОСОБ ДЛЯ 2.23.0) ==========
+# ========== PYDOLL БРАУЗЕР ==========
 async def get_pydoll_browser():
     """Получает Pydoll браузер и возвращает Tab (вкладку)"""
     global pydoll_browser, pydoll_tab
@@ -212,7 +212,6 @@ async def get_pydoll_browser():
         
         options = ChromiumOptions()
         
-        # Добавляем аргументы для Railway/контейнеров
         args = [
             "--no-sandbox",
             "--disable-dev-shm-usage",
@@ -234,18 +233,14 @@ async def get_pydoll_browser():
                     logger.info(f"📍 Использую Chromium по пути: {path}")
                     break
         
-        # ✅ ПРАВИЛЬНЫЙ СПОСОБ для Pydoll 2.23.0
-        # Создаем экземпляр браузера
         logger.info("⏳ Создание экземпляра браузера...")
         pydoll_browser = Chrome(options=options)
         logger.info("✅ Экземпляр браузера создан")
         
-        # Запускаем и получаем вкладку (Tab)
         logger.info("⏳ Запуск браузера и получение вкладки...")
         pydoll_tab = await pydoll_browser.start()
         logger.info("✅ Браузер запущен, вкладка получена!")
         
-        # Устанавливаем куки
         logger.info("🍪 Устанавливаю куки для X.com...")
         for cookie in COOKIES:
             try:
@@ -282,8 +277,6 @@ async def close_pydoll_browser():
             logger.warning(f"⚠️ Ошибка при закрытии Pydoll: {e}")
         pydoll_browser = None
         pydoll_tab = None
-    else:
-        logger.info("📌 Браузер уже закрыт")
 
 # ========== PLAYWRIGHT БРАУЗЕР ==========
 async def get_playwright_browser():
@@ -292,13 +285,10 @@ async def get_playwright_browser():
     logger.info("🚀 Запрос на получение Playwright браузера")
     
     if browser_data:
-        logger.info("🔄 Проверка существующего браузера...")
         try:
             await browser_data['page'].evaluate('1')
-            logger.info("✅ Существующий браузер работает")
             return browser_data
-        except Exception as e:
-            logger.warning(f"⚠️ Существующий браузер не отвечает: {e}")
+        except:
             try:
                 await browser_data['browser'].close()
             except:
@@ -306,7 +296,6 @@ async def get_playwright_browser():
             browser_data = None
     
     while browser_lock:
-        logger.debug("⏳ Ожидание освобождения блокировки...")
         await asyncio.sleep(0.5)
     
     browser_lock = True
@@ -316,7 +305,6 @@ async def get_playwright_browser():
         
         logger.info("🚀 Запускаю Playwright браузер...")
         p = await async_playwright().start()
-        logger.debug("✅ Playwright запущен")
         
         browser = await p.chromium.launch(
             headless=True,
@@ -330,14 +318,12 @@ async def get_playwright_browser():
                 '--headless=new',
             ]
         )
-        logger.info("✅ Chromium запущен")
         
         context = await browser.new_context(
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             viewport={'width': 1280, 'height': 720},
         )
         page = await context.new_page()
-        logger.info("✅ Создана новая страница")
         
         for cookie in COOKIES:
             try:
@@ -347,7 +333,6 @@ async def get_playwright_browser():
                     'domain': '.x.com',
                     'path': '/',
                 }])
-                logger.debug(f"🍪 Установлена кука: {cookie['name']}")
             except Exception as e:
                 logger.warning(f"Cookie error {cookie['name']}: {e}")
         
@@ -371,9 +356,8 @@ async def close_playwright_browser():
         try:
             await browser_data['browser'].close()
             await browser_data['playwright'].stop()
-            logger.info("✅ Playwright браузер закрыт")
-        except Exception as e:
-            logger.warning(f"⚠️ Ошибка при закрытии Playwright: {e}")
+        except:
+            pass
         browser_data = None
         login_status = {
             'is_logged_in': False,
@@ -381,8 +365,6 @@ async def close_playwright_browser():
             'last_check': None,
             'cookies_valid': False
         }
-    else:
-        logger.info("📌 Браузер уже закрыт")
 
 # ========== УНИВЕРСАЛЬНЫЕ ФУНКЦИИ ==========
 async def get_browser():
@@ -393,12 +375,17 @@ async def get_browser():
     if engine_mode == "pydoll":
         if not PYDOLL_AVAILABLE:
             raise Exception("Pydoll не установлен!")
-        return await get_pydoll_browser()
+        result = await get_pydoll_browser()
+        if result is None:
+            raise Exception("Не удалось получить Pydoll браузер")
+        return result
     else:
         if not PLAYWRIGHT_AVAILABLE:
             raise Exception("Playwright не установлен!")
         browser_data = await get_playwright_browser()
-        return browser_data['page'] if browser_data else None
+        if browser_data is None:
+            raise Exception("Не удалось получить Playwright браузер")
+        return browser_data['page']
 
 async def close_browser():
     """Закрывает браузер согласно выбранному движку"""
@@ -415,10 +402,10 @@ async def goto_url(url):
     logger.info(f"🌐 Переход по URL: {url}")
     
     page = await get_browser()
-    if not page:
-        raise Exception("Страница не получена")
+    if page is None:
+        raise Exception("Не удалось получить страницу")
     
-    # Универсальный метод - у Pydoll Tab и Playwright Page одинаковый метод
+    # Проверяем наличие метода go_to или goto
     if hasattr(page, 'go_to'):
         await page.go_to(url)
     elif hasattr(page, 'goto'):
@@ -433,7 +420,7 @@ async def evaluate_js(script):
     logger.debug(f"📜 Выполнение JS")
     
     page = await get_browser()
-    if not page:
+    if page is None:
         return None
     
     if hasattr(page, 'evaluate'):
@@ -447,7 +434,7 @@ async def take_screenshot():
     logger.info("📸 Создание скриншота")
     
     page = await get_browser()
-    if not page:
+    if page is None:
         return None
     
     if hasattr(page, 'screenshot'):
