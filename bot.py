@@ -3,7 +3,9 @@ import logging
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from pydoll.browser.chrome import Chrome
+
+# Правильные импорты для Pydoll
+from pydoll.browser import Chrome
 from pydoll.browser.options import Options
 from pydoll.extractor import ExtractionModel, Field
 
@@ -19,7 +21,7 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен!")
 
-# Модель данных (Pydantic + Pydoll)
+# Модель данных
 class Quote(ExtractionModel):
     text: str = Field(selector='.text')
     author: str = Field(selector='.author')
@@ -27,14 +29,16 @@ class Quote(ExtractionModel):
 
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Привет! Используй /parse для парсинга цитат")
+    await update.message.reply_text(
+        "👋 Привет! Я бот с парсингом.\n"
+        "Используй /parse для получения цитат"
+    )
 
-# Команда /parse — пример парсинга
+# Команда /parse
 async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Начинаю парсинг...")
     
     try:
-        # Настройка браузера для Railway
         options = Options()
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
@@ -44,7 +48,6 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tab = await browser.start()
             await tab.go_to('https://quotes.toscrape.com')
             
-            # Извлекаем данные
             quotes = await tab.extract_all(Quote, timeout=5)
             
             if quotes:
