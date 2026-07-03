@@ -1,4 +1,4 @@
-# bot.py - X.com бот с Pydoll + Playwright
+# bot.py - X.com бот с Pydoll + Playwright (автоустановка)
 import os
 import sys
 import subprocess
@@ -27,6 +27,31 @@ PYDOLL_AVAILABLE = False
 PLAYWRIGHT_AVAILABLE = False
 BROWSER_USE_AVAILABLE = False
 AGNES_AVAILABLE = False
+CHROMIUM_INSTALLED = False
+
+def check_chromium():
+    """Проверяет, установлен ли Chromium в системе"""
+    global CHROMIUM_INSTALLED
+    try:
+        result = subprocess.run(['chromium', '--version'], capture_output=True, text=True)
+        if result.returncode == 0:
+            CHROMIUM_INSTALLED = True
+            print(f"✅ Chromium установлен: {result.stdout.strip()}")
+            return True
+    except:
+        pass
+    
+    # Проверяем альтернативные пути
+    chromium_paths = ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome']
+    for path in chromium_paths:
+        if os.path.exists(path):
+            CHROMIUM_INSTALLED = True
+            print(f"✅ Chromium найден по пути: {path}")
+            return True
+    
+    CHROMIUM_INSTALLED = False
+    print("⚠️ Chromium не найден в системе")
+    return False
 
 def check_libraries():
     """Проверка всех библиотек"""
@@ -49,8 +74,99 @@ def check_libraries():
     except ImportError:
         PLAYWRIGHT_AVAILABLE = False
         print("⚠️ Playwright не найден")
+    
+    # Проверка Chromium
+    check_chromium()
 
 check_libraries()
+
+# ========== ФУНКЦИИ УСТАНОВКИ ==========
+def install_pydoll():
+    """Устанавливает Pydoll через pip"""
+    global PYDOLL_AVAILABLE
+    try:
+        print("⏳ Устанавливаю Pydoll...")
+        result = subprocess.run([
+            sys.executable, '-m', 'pip', 'install', 'pydoll-python', '--upgrade'
+        ], capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            print("✅ Pydoll установлен!")
+            # Проверяем установку
+            try:
+                import pydoll
+                PYDOLL_AVAILABLE = True
+                return True
+            except ImportError:
+                PYDOLL_AVAILABLE = False
+                return False
+        else:
+            print(f"❌ Ошибка установки Pydoll: {result.stderr}")
+            return False
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        return False
+
+def install_chromium():
+    """Устанавливает Chromium в системе (для Docker/Ubuntu/Debian)"""
+    global CHROMIUM_INSTALLED
+    try:
+        print("⏳ Устанавливаю Chromium...")
+        
+        # Проверяем, есть ли apt (Debian/Ubuntu)
+        result = subprocess.run(['which', 'apt-get'], capture_output=True, text=True)
+        if result.returncode == 0:
+            # Установка через apt
+            subprocess.run(['apt-get', 'update'], check=True, capture_output=True)
+            subprocess.run([
+                'apt-get', 'install', '-y',
+                'chromium',
+                'chromium-driver',
+                'fonts-liberation',
+                'libasound2',
+                'libatk-bridge2.0-0',
+                'libatk1.0-0',
+                'libcups2',
+                'libdbus-1-3',
+                'libgbm1',
+                'libgtk-3-0',
+                'libnspr4',
+                'libnss3',
+                'libx11-xcb1',
+                'libxcomposite1',
+                'libxdamage1',
+                'libxrandr2',
+                'xdg-utils'
+            ], check=True, capture_output=True)
+            
+            CHROMIUM_INSTALLED = True
+            print("✅ Chromium установлен через apt!")
+            return True
+        else:
+            print("⚠️ apt-get не найден, пропускаю установку Chromium")
+            return False
+            
+    except Exception as e:
+        print(f"⚠️ Ошибка установки Chromium: {e}")
+        return False
+
+def install_playwright_browser():
+    """Устанавливает браузер для Playwright"""
+    try:
+        print("⏳ Устанавливаю Playwright браузер...")
+        result = subprocess.run([
+            sys.executable, '-m', 'playwright', 'install', 'chromium'
+        ], capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            print("✅ Playwright браузер установлен!")
+            return True
+        else:
+            print(f"⚠️ Ошибка установки Playwright: {result.stderr}")
+            return False
+    except Exception as e:
+        print(f"⚠️ Ошибка: {e}")
+        return False
 
 # ========== AGNES (БЕСПЛАТНАЯ LLM) ==========
 agnes_llm = None
@@ -59,7 +175,15 @@ def init_agnes():
     """Инициализация Agnes через прямой API"""
     global AGNES_AVAILABLE, agnes_llm
     try:
-        from langchain_openai import ChatOpenAI
+        # Проверяем langchain-openai
+        try:
+            from langchain_openai import ChatOpenAI
+        except ImportError:
+            print("⏳ Устанавливаю langchain-openai...")
+            subprocess.run([
+                sys.executable, '-m', 'pip', 'install', 'langchain-openai'
+            ], capture_output=True, text=True)
+            from langchain_openai import ChatOpenAI
         
         llm = ChatOpenAI(
             base_url="https://apihub.agnes-ai.com/v1",
@@ -124,22 +248,35 @@ async def get_pydoll_browser():
     
     try:
         from pydoll.browser import Chrome
+        from pydoll.browser.options import ChromiumOptions
         
-        print("🚀 Запускаю Pydoll браузер...")
+        print("🚀 Запускаю Pydoll браузер с ChromiumOptions...")
         
-        # Важные флаги для Railway/контейнеров
-        pydoll_browser = await Chrome(
-            headless=True,
-            options=[
-                '--no-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--disable-setuid-sandbox',
-                '--disable-blink-features=AutomationControlled',
-                '--window-size=1280,720',
-                '--headless=new',
-            ]
-        ).start()
+        # Создаем объект с настройками
+        options = ChromiumOptions()
+        
+        # Добавляем критически важные аргументы для Railway/контейнеров
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-setuid-sandbox")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--window-size=1280,720")
+        
+        # Включаем новый headless-режим
+        options.headless = True
+        
+        # Если Chromium установлен, указываем путь
+        if CHROMIUM_INSTALLED:
+            chromium_paths = ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome']
+            for path in chromium_paths:
+                if os.path.exists(path):
+                    options.binary_location = path
+                    print(f"📍 Использую Chromium по пути: {path}")
+                    break
+        
+        # Запускаем браузер с этими опциями
+        pydoll_browser = await Chrome(options=options).start()
         
         pydoll_tab = await pydoll_browser.get_current_tab()
         
@@ -160,7 +297,7 @@ async def get_pydoll_browser():
         print("✅ Pydoll браузер готов!")
         return pydoll_tab
     except Exception as e:
-        logger.error(f"Pydoll ошибка: {e}")
+        logger.error(f"Pydoll ошибка: {e}", exc_info=True)
         print(f"❌ Pydoll ошибка: {e}")
         return None
 
@@ -287,7 +424,7 @@ async def get_browser():
     
     if engine_mode == "pydoll":
         if not PYDOLL_AVAILABLE:
-            raise Exception("Pydoll не установлен!")
+            raise Exception("Pydoll не установлен! Используйте /engine pydoll для установки")
         return await get_pydoll_browser()
     elif engine_mode == "playwright":
         if not PLAYWRIGHT_AVAILABLE:
@@ -368,12 +505,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🤖 **X.com Бот**\n\n"
         f"🎮 Движок: {'Pydoll' if engine_mode == 'pydoll' else 'Playwright'}\n"
+        f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}\n"
+        f"📦 Playwright: {'✅' if PLAYWRIGHT_AVAILABLE else '❌'}\n"
         f"🧠 Agnes: {'✅' if AGNES_AVAILABLE else '❌'}\n\n"
         f"📌 Команды:\n"
+        f"/engine - Переключить движок (автоустановка)\n"
         f"/login - Авторизация в X.com\n"
         f"/screen - Скриншот\n"
         f"/status - Статус браузера\n"
-        f"/engine - Переключить движок\n"
         f"/close - Закрыть браузер\n"
         f"/tweets <username> - Твиты пользователя\n"
         f"/search <запрос> - Поиск твитов\n"
@@ -383,8 +522,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def engine(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Переключение между движками браузера"""
-    global engine_mode
+    """Переключение между движками браузера с автоустановкой"""
+    global engine_mode, PYDOLL_AVAILABLE, PLAYWRIGHT_AVAILABLE, CHROMIUM_INSTALLED
     
     if not context.args:
         current = "Pydoll" if engine_mode == "pydoll" else "Playwright"
@@ -401,19 +540,33 @@ async def engine(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"  /engine pydoll - Pydoll (человеческое поведение)\n\n"
             f"ℹ️ Pydoll лучше для обхода антибот-систем\n"
             f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}\n"
-            f"📦 Playwright: {'✅' if PLAYWRIGHT_AVAILABLE else '❌'}"
+            f"📦 Playwright: {'✅' if PLAYWRIGHT_AVAILABLE else '❌'}\n"
+            f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}"
         )
         return
     
     engine_type = context.args[0].lower()
+    msg = await update.message.reply_text(f"⏳ Переключаю на {engine_type}...")
     
     if engine_type == "pydoll":
+        # Проверяем и устанавливаем Chromium
+        if not CHROMIUM_INSTALLED:
+            await msg.edit_text("📦 Chromium не найден. Устанавливаю...")
+            if install_chromium():
+                CHROMIUM_INSTALLED = True
+                await msg.edit_text("✅ Chromium установлен!")
+            else:
+                await msg.edit_text("⚠️ Не удалось установить Chromium автоматически. Продолжаю...")
+        
+        # Проверяем и устанавливаем Pydoll
         if not PYDOLL_AVAILABLE:
-            await update.message.reply_text(
-                "❌ Pydoll не установлен!\n\n"
-                "Установите: pip install pydoll-python"
-            )
-            return
+            await msg.edit_text("📦 Устанавливаю Pydoll...")
+            if install_pydoll():
+                PYDOLL_AVAILABLE = True
+                await msg.edit_text("✅ Pydoll установлен!")
+            else:
+                await msg.edit_text("❌ Не удалось установить Pydoll")
+                return
         
         # Закрываем текущий браузер
         await close_browser()
@@ -421,19 +574,32 @@ async def engine(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Переключаем движок
         engine_mode = "pydoll"
         
-        await update.message.reply_text(
-            "✅ Переключено на **Pydoll**\n"
+        await msg.edit_text(
+            "✅ **Переключено на Pydoll!**\n"
             "Теперь браузер будет с человеческим поведением!\n\n"
             "Используй /login для авторизации"
         )
         
     elif engine_type == "playwright":
+        # Проверяем и устанавливаем Playwright
         if not PLAYWRIGHT_AVAILABLE:
-            await update.message.reply_text(
-                "❌ Playwright не установлен!\n\n"
-                "Установите: pip install playwright && playwright install chromium"
-            )
-            return
+            await msg.edit_text("📦 Устанавливаю Playwright...")
+            try:
+                subprocess.run([
+                    sys.executable, '-m', 'pip', 'install', 'playwright'
+                ], check=True, capture_output=True)
+                PLAYWRIGHT_AVAILABLE = True
+                await msg.edit_text("✅ Playwright установлен!")
+            except Exception as e:
+                await msg.edit_text(f"❌ Не удалось установить Playwright: {e}")
+                return
+        
+        # Устанавливаем браузер для Playwright
+        await msg.edit_text("📦 Устанавливаю браузер для Playwright...")
+        if install_playwright_browser():
+            await msg.edit_text("✅ Браузер для Playwright установлен!")
+        else:
+            await msg.edit_text("⚠️ Не удалось установить браузер, но попробуем...")
         
         # Закрываем текущий браузер
         await close_browser()
@@ -441,12 +607,12 @@ async def engine(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Переключаем движок
         engine_mode = "playwright"
         
-        await update.message.reply_text(
-            "✅ Переключено на **Playwright**\n\n"
+        await msg.edit_text(
+            "✅ **Переключено на Playwright!**\n\n"
             "Используй /login для авторизации"
         )
     else:
-        await update.message.reply_text(
+        await msg.edit_text(
             f"❌ Неизвестный движок: {engine_type}\n"
             f"Доступно: playwright, pydoll"
         )
@@ -570,6 +736,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg += f"🎮 Текущий движок: **{engine_mode}**\n"
         status_msg += f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}\n"
         status_msg += f"📦 Playwright: {'✅' if PLAYWRIGHT_AVAILABLE else '❌'}\n"
+        status_msg += f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}\n"
         status_msg += f"🧠 Agnes: {'✅' if AGNES_AVAILABLE else '❌'}\n\n"
         
         # Статус браузера
@@ -900,6 +1067,9 @@ def main():
     
     print("✅ Бот запущен!")
     print(f"🎮 Движок: {engine_mode}")
+    print(f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}")
+    print(f"📦 Playwright: {'✅' if PLAYWRIGHT_AVAILABLE else '❌'}")
+    print(f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}")
     print(f"🧠 Agnes: {'✅' if AGNES_AVAILABLE else '❌'}")
     print("\nКоманды:")
     print("  /start, /login, /screen, /status, /engine, /close")
