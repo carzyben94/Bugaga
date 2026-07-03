@@ -16,6 +16,10 @@ logger = logging.getLogger(__name__)
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
+if not TOKEN:
+    logger.error("❌ TELEGRAM_BOT_TOKEN не задан!")
+    raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
+
 # ========== PYDAВТИК МОДЕЛИ ==========
 class CookieData(BaseModel):
     name: str = Field(..., min_length=1)
@@ -80,6 +84,7 @@ tab = None
 # ========== PYDOLL БРАУЗЕР ==========
 async def get_browser():
     global browser, tab
+    
     if tab:
         try:
             await tab.execute_script('1')
@@ -110,9 +115,12 @@ async def get_browser():
         tab = await browser.start()
         logger.info("✅ Браузер запущен")
         
+        # Переходим на X.com
         await tab.go_to('https://x.com')
         await asyncio.sleep(2)
         
+        # Устанавливаем куки
+        cookies_set = 0
         for cookie in COOKIES:
             try:
                 await tab.set_cookie(
@@ -121,13 +129,36 @@ async def get_browser():
                     domain=cookie.domain,
                     path=cookie.path
                 )
-                logger.debug(f"🍪 Кука: {cookie.name}")
+                cookies_set += 1
+                logger.debug(f"🍪 Кука установлена: {cookie.name}")
             except Exception as e:
-                logger.warning(f"⚠️ Ошибка {cookie.name}: {e}")
+                logger.warning(f"⚠️ Ошибка установки {cookie.name}: {e}")
+                # Пробуем через JS
+                try:
+                    js_cookie = f"document.cookie='{cookie.name}={cookie.value}; domain={cookie.domain}; path={cookie.path}'"
+                    await tab.execute_script(js_cookie)
+                    cookies_set += 1
+                    logger.debug(f"🍪 Кука установлена через JS: {cookie.name}")
+                except Exception as e2:
+                    logger.warning(f"⚠️ Не удалось установить куку {cookie.name}: {e2}")
+        
+        logger.info(f"🍪 Установлено {cookies_set} из {len(COOKIES)} кук")
+        
+        # Проверяем куки
+        try:
+            check_cookies = await tab.execute_script('document.cookie')
+            logger.info(f"📋 Куки в браузере: {check_cookies[:200]}...")
+            if 'auth_token' in check_cookies:
+                logger.info("✅ auth_token найден в куках!")
+            else:
+                logger.warning("⚠️ auth_token НЕ найден в куках!")
+        except Exception as e:
+            logger.error(f"❌ Ошибка проверки кук: {e}")
         
         return tab
+        
     except Exception as e:
-        logger.error(f"❌ Ошибка: {e}")
+        logger.error(f"❌ Ошибка запуска браузера: {e}")
         return None
 
 async def close_browser():
@@ -136,8 +167,8 @@ async def close_browser():
         try:
             await browser.close()
             logger.info("✅ Браузер закрыт")
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка при закрытии браузера: {e}")
         browser = None
         tab = None
 
@@ -442,6 +473,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption=f"📸 X.com - {'✅ Авторизован' if login_status.is_logged_in else '❌ Не авторизован'}"
             )
     except Exception as e:
+        logger.error(f"❌ Ошибка login: {e}")
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ========== КОМАНДА /start ==========
@@ -457,8 +489,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             language_code=user.language_code
         )
         users[user.id] = user_data
+        logger.info(f"✅ Пользователь: {user_data.first_name}")
     except Exception as e:
-        logger.error(f"❌ Ошибка: {e}")
+        logger.error(f"❌ Ошибка пользователя: {e}")
     
     keyboard = [
         [InlineKeyboardButton("🔐 Авторизация", callback_data="login")],
@@ -473,10 +506,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     status_emoji = "✅" if login_status.is_logged_in else "❌"
+    username_text = f" @{login_status.username}" if login_status.username else ""
     
     await update.message.reply_text(
         f"🤖 **X.com Бот - Сила Pydoll**\n\n"
-        f"🔐 Статус: {status_emoji} {login_status.is_logged_in and 'Авторизован' or 'Не авторизован'}\n"
+        f"🔐 Статус: {status_emoji} {login_status.is_logged_in and 'Авторизован' or 'Не авторизован'}{username_text}\n"
         f"🍪 Кук: {login_status.cookies_count}\n"
         f"👤 Пользователей: {len(users)}\n\n"
         f"⚡ **Сильные стороны Pydoll:**\n"
@@ -540,7 +574,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg += f"🔐 Авторизован: {'✅' if login_status.is_logged_in else '❌'}\n"
     if login_status.username and login_status.username != 'неизвестно':
         status_msg += f"👤 @{login_status.username}\n"
-    status_msg += f"🍪 Куки валидны: {'✅' if login_status.has_auth_token else '❌'}\n"
+    status_msg += f"🍪 auth_token: {'✅' if login_status.has_auth_token else '❌'}\n"
+    status_msg += f"🍪 ct0: {'✅' if login_status.has_ct0 else '❌'}\n"
     status_msg += f"🍪 Всего кук: {login_status.cookies_count}\n"
     status_msg += f"👤 Пользователей: {len(users)}\n"
     status_msg += f"⚡ Extractor: {'✅' if EXTRACTOR_AVAILABLE else '❌'}\n"
@@ -604,11 +639,12 @@ async def handle_cookies_input(update: Update, context: ContextTypes.DEFAULT_TYP
                     new_cookies.append(CookieData(name=name, value=value))
         
         if new_cookies:
-            global COOKIES
+            global COOKIES, login_status
             COOKIES = new_cookies
+            login_status.cookies_count = len(COOKIES)
             context.user_data['waiting_for_cookies'] = False
             await close_browser()
-            await update.message.reply_text(f"✅ Обновлено {len(COOKIES)} кук!")
+            await update.message.reply_text(f"✅ Обновлено {len(COOKIES)} кук!\nИспользуйте /login")
         else:
             await update.message.reply_text("❌ Не удалось распознать куки")
     except Exception as e:
