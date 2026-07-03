@@ -3,6 +3,7 @@ import os
 import logging
 import asyncio
 import json
+import subprocess
 from datetime import datetime
 from typing import Optional, List
 from pydantic import BaseModel
@@ -123,6 +124,45 @@ pydoll_browser = None
 pydoll_tab = None
 login_status = {'is_logged_in': False, 'username': None}
 
+# ========== ПОИСК CHROMIUM ==========
+def find_chromium():
+    """Поиск Chromium в системе"""
+    chromium_paths = [
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser',
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
+        '/snap/bin/chromium',
+        '/usr/lib/chromium-browser/chromium-browser',
+    ]
+    
+    for path in chromium_paths:
+        if os.path.exists(path):
+            logger.info(f"✅ Chromium найден: {path}")
+            return path
+    
+    # Пробуем через which
+    try:
+        result = subprocess.run(['which', 'chromium'], capture_output=True, text=True)
+        if result.returncode == 0 and result.stdout.strip():
+            path = result.stdout.strip()
+            logger.info(f"✅ Chromium найден через which: {path}")
+            return path
+    except:
+        pass
+    
+    try:
+        result = subprocess.run(['which', 'chromium-browser'], capture_output=True, text=True)
+        if result.returncode == 0 and result.stdout.strip():
+            path = result.stdout.strip()
+            logger.info(f"✅ Chromium найден через which: {path}")
+            return path
+    except:
+        pass
+    
+    logger.error("❌ Chromium не найден в системе!")
+    return None
+
 # ========== БРАУЗЕР ==========
 async def get_browser():
     global pydoll_browser, pydoll_tab
@@ -138,18 +178,34 @@ async def get_browser():
         from pydoll.browser import Chrome
         from pydoll.browser.options import ChromiumOptions
         
+        # Находим Chromium
+        chromium_path = find_chromium()
+        if not chromium_path:
+            raise Exception("Chromium не найден. Установи: apt-get install chromium")
+        
+        # Настройка браузера
         options = ChromiumOptions()
+        options.binary_location = chromium_path
+        
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--headless=new')
         options.add_argument('--disable-gpu')
+        options.add_argument('--disable-setuid-sandbox')
+        options.add_argument('--disable-blink-features=AutomationControlled')
+        options.add_argument('--window-size=1280,720')
+        
+        logger.info(f"🚀 Запуск браузера: {chromium_path}")
         
         pydoll_browser = Chrome(options=options)
         pydoll_tab = await pydoll_browser.start()
         
+        logger.info("✅ Браузер запущен!")
+        
         await pydoll_tab.go_to('https://x.com')
         await asyncio.sleep(2)
         
+        # Установка кук
         for cookie in COOKIES:
             try:
                 await pydoll_tab.set_cookie(
@@ -158,13 +214,15 @@ async def get_browser():
                     domain=cookie['domain'],
                     path=cookie['path']
                 )
+                logger.debug(f"🍪 Кука установлена: {cookie['name']}")
             except Exception as e:
                 logger.warning(f"Cookie error {cookie['name']}: {e}")
         
+        logger.info("✅ Браузер готов!")
         return pydoll_tab
         
     except Exception as e:
-        logger.error(f"❌ Ошибка браузера: {e}")
+        logger.error(f"❌ Ошибка браузера: {e}", exc_info=True)
         return None
 
 async def close_browser():
@@ -236,7 +294,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "close":
         await close(update, context)
 
-# ---------- ЛОГИН (только скриншот) ----------
+# ---------- ЛОГИН ----------
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global login_status
     
@@ -254,7 +312,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await page.go_to('https://x.com')
         await asyncio.sleep(3)
         
-        # Проверка авторизации (фоновая)
+        # Проверка авторизации
         auth = await execute_js('''
             () => {
                 const cookies = document.cookie.split(';').reduce((acc, c) => {
@@ -278,10 +336,8 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         login_status['is_logged_in'] = auth.get('logged', False)
         login_status['username'] = auth.get('username')
         
-        # Удаляем текстовое сообщение
         await msg.delete()
         
-        # Отправляем только скриншот
         img = await screenshot()
         if img:
             await update.message.reply_photo(photo=img)
@@ -336,7 +392,6 @@ async def shadow_dom(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await msg.edit_text(response, parse_mode='Markdown')
         
-        # Скриншот для наглядности
         img = await screenshot()
         if img:
             await update.message.reply_photo(photo=img, caption="📸 Текущая страница")
@@ -437,7 +492,6 @@ async def extract_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(tweets) > 5:
             response += f"... и еще {len(tweets) - 5} твитов\n\n"
         
-        # Сохраняем JSON
         filename = f"extract_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         with open(filename, 'w', encoding='utf-8') as f:
             json.dump([t.model_dump() for t in tweets], f, indent=2, ensure_ascii=False)
@@ -521,6 +575,14 @@ def main():
     app.add_handler(CallbackQueryHandler(button_callback))
     
     print("✅ Бот запущен!")
+    
+    # Проверка Chromium при старте
+    chromium_path = find_chromium()
+    if chromium_path:
+        print(f"✅ Chromium найден: {chromium_path}")
+    else:
+        print("❌ Chromium не найден! Установи: apt-get install chromium")
+    
     print(f"🔐 Куки загружены: {len(COOKIES)} шт.")
     app.run_polling()
 
