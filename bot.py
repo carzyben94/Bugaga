@@ -1,4 +1,4 @@
-# bot.py - X.com бот с Pydoll + Playwright (расширенная версия)
+# bot.py - X.com бот с Pydoll + Playwright (с эмуляцией и меню)
 import os
 import sys
 import subprocess
@@ -6,10 +6,11 @@ import logging
 import asyncio
 import base64
 import json
+import random
 from datetime import datetime
 from typing import Optional, List
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
 # Pydantic для структурированных данных
 try:
@@ -39,6 +40,60 @@ logging.getLogger('urllib3').setLevel(logging.WARNING)
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
+
+# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ЭМУЛЯЦИИ ==========
+def random_delay(min_sec=0.5, max_sec=2.0):
+    """Случайная задержка для имитации человека"""
+    return random.uniform(min_sec, max_sec)
+
+async def human_click(element):
+    """Клик с эмуляцией человеческого поведения"""
+    try:
+        if hasattr(element, 'click'):
+            await element.click(humanize=True)
+        else:
+            await element.click()
+        await asyncio.sleep(random_delay(0.2, 0.8))
+    except Exception as e:
+        logger.warning(f"Human click error: {e}")
+        await element.click()
+
+async def human_type(element, text):
+    """Ввод текста с эмуляцией человеческого поведения"""
+    try:
+        if hasattr(element, 'type_text'):
+            await element.type_text(text, humanize=True)
+        else:
+            await element.fill(text)
+        await asyncio.sleep(random_delay(0.1, 0.5))
+    except Exception as e:
+        logger.warning(f"Human type error: {e}")
+        await element.fill(text)
+
+async def human_goto(page, url):
+    """Переход с эмуляцией человеческого поведения"""
+    try:
+        if hasattr(page, 'go_to'):
+            await page.go_to(url, humanize=True)
+        else:
+            await page.go_to(url)
+        await asyncio.sleep(random_delay(1.5, 3.5))
+    except Exception as e:
+        logger.warning(f"Human goto error: {e}")
+        await page.go_to(url)
+
+async def human_scroll(page, amount=300):
+    """Прокрутка с эмуляцией человеческого поведения"""
+    try:
+        if hasattr(page, 'scroll_by'):
+            await page.scroll_by(amount, humanize=True)
+        else:
+            # Fallback через JS
+            await page.execute_script(f'window.scrollBy(0, {amount})')
+        await asyncio.sleep(random_delay(0.3, 1.0))
+    except Exception as e:
+        logger.warning(f"Human scroll error: {e}")
+        await page.execute_script(f'window.scrollBy(0, {amount})')
 
 # ========== ПРОВЕРКА БИБЛИОТЕК ==========
 PYDOLL_AVAILABLE = False
@@ -223,28 +278,6 @@ COOKIES = [
 
 logger.info(f"🍪 Загружено {len(COOKIES)} кук для X.com")
 
-# ========== PYDANTIC МОДЕЛИ ДЛЯ СТРУКТУРИРОВАННЫХ ДАННЫХ ==========
-if PYDANTIC_AVAILABLE:
-    class TweetModel(BaseModel):
-        """Модель твита для структурированного извлечения"""
-        text: str = Field(description="Текст твита")
-        author: Optional[str] = Field(default=None, description="Автор твита")
-        username: Optional[str] = Field(default=None, description="Username автора")
-        time: Optional[str] = Field(default=None, description="Время публикации")
-        likes: Optional[str] = Field(default=None, description="Количество лайков")
-        retweets: Optional[str] = Field(default=None, description="Количество ретвитов")
-        replies: Optional[str] = Field(default=None, description="Количество ответов")
-        
-    class UserProfileModel(BaseModel):
-        """Модель профиля пользователя"""
-        name: Optional[str] = Field(default=None, description="Имя пользователя")
-        username: Optional[str] = Field(default=None, description="Username")
-        bio: Optional[str] = Field(default=None, description="Биография")
-        followers: Optional[str] = Field(default=None, description="Количество подписчиков")
-        following: Optional[str] = Field(default=None, description="Количество подписок")
-        location: Optional[str] = Field(default=None, description="Местоположение")
-        joined: Optional[str] = Field(default=None, description="Дата регистрации")
-
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 browser_data = None
 pydoll_browser = None
@@ -257,7 +290,6 @@ login_status = {
     'last_check': None,
     'cookies_valid': False
 }
-# Для гибридной автоматизации храним сессию
 current_session = None
 
 logger.info(f"🎮 Начальный движок: {engine_mode}")
@@ -519,21 +551,14 @@ async def close_browser():
         await close_playwright_browser()
 
 async def goto_url(url):
-    """Переход по URL"""
+    """Переход по URL с эмуляцией"""
     logger.info(f"🌐 Переход по URL: {url}")
     
     page = await get_browser()
     if page is None:
         raise Exception("Не удалось получить страницу")
     
-    if hasattr(page, 'go_to'):
-        await page.go_to(url)
-    elif hasattr(page, 'goto'):
-        await page.goto(url, wait_until='domcontentloaded')
-    else:
-        raise Exception(f"Неизвестный тип страницы: {type(page)}")
-    
-    await asyncio.sleep(3)
+    await human_goto(page, url)
     logger.info(f"✅ Переход выполнен: {url}")
 
 async def execute_js(script):
@@ -607,7 +632,6 @@ async def api_request(method='get', url='', data=None, headers=None):
         return {"error": "Браузер не запущен"}
     
     try:
-        # Используем request из Pydoll
         if hasattr(tab, 'request'):
             if method.lower() == 'get':
                 response = await tab.request.get(url, headers=headers)
@@ -618,7 +642,6 @@ async def api_request(method='get', url='', data=None, headers=None):
             else:
                 return {"error": f"Неподдерживаемый метод: {method}"}
             
-            # Парсим ответ
             try:
                 response_data = response.json()
             except:
@@ -630,7 +653,6 @@ async def api_request(method='get', url='', data=None, headers=None):
                 "headers": dict(response.headers)
             }
         else:
-            # Fallback через JS
             js_code = f"""
                 const resp = await fetch('{url}', {{
                     method: '{method.upper()}',
@@ -664,15 +686,12 @@ async def extract_structured_data(selector=None):
         return {"error": "Браузер не запущен"}
     
     try:
-        # Пробуем использовать extractor из Pydoll
         from pydoll.extractor import ExtractionModel, Field
         
-        # Динамически создаем модель для извлечения твитов
         class TweetExtract(ExtractionModel):
             text: str = Field(selector='[data-testid="tweetText"]', description='Текст твита')
             author: str = Field(selector='[data-testid="User-Name"]', description='Автор')
         
-        # Извлекаем данные
         if selector:
             tweets = await tab.extract_all(TweetExtract, scope=selector)
         else:
@@ -683,7 +702,6 @@ async def extract_structured_data(selector=None):
             "data": [t.model_dump() for t in tweets]
         }
     except ImportError:
-        # Fallback: ручной парсинг через JS
         js_code = """
             () => {
                 const tweets = [];
@@ -719,19 +737,15 @@ async def shadow_dom_example():
         return {"error": "Браузер не запущен"}
     
     try:
-        # Ищем элемент с shadow root
-        # Пример для X.com - ищем кнопку Grok
         host = await tab.find('[data-testid="GrokDrawer"]')
         if host:
             shadow_root = await host.get_shadow_root()
             if shadow_root:
-                # Ищем элемент внутри shadow root
                 inner_elem = await shadow_root.query('.some-class')
                 if inner_elem:
                     text = await inner_elem.text
                     return {"found": True, "text": text}
         
-        # Если не нашли конкретный shadow root, демонстрируем возможность
         return {
             "status": "Shadow DOM доступен",
             "message": "Используйте host.get_shadow_root() для доступа к закрытым shadow roots"
@@ -743,92 +757,160 @@ async def shadow_dom_example():
 # ========== КОМАНДЫ ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Стартовое меню с кнопками"""
     logger.info(f"📩 Команда /start от {update.effective_user.username}")
     
+    # Создаем клавиатуру с кнопками
+    keyboard = [
+        [
+            InlineKeyboardButton("🔐 Авторизация", callback_data="login"),
+            InlineKeyboardButton("📸 Скриншот", callback_data="screen"),
+        ],
+        [
+            InlineKeyboardButton("📊 Статус", callback_data="status"),
+            InlineKeyboardButton("🔧 Движок", callback_data="engine"),
+        ],
+        [
+            InlineKeyboardButton("📝 Твиты", callback_data="tweets_menu"),
+            InlineKeyboardButton("🔍 Поиск", callback_data="search_menu"),
+        ],
+        [
+            InlineKeyboardButton("🌐 API Запрос", callback_data="api_menu"),
+            InlineKeyboardButton("📊 Extract", callback_data="extract"),
+        ],
+        [
+            InlineKeyboardButton("🛡️ Shadow DOM", callback_data="shadow"),
+            InlineKeyboardButton("❌ Закрыть", callback_data="close"),
+        ],
+        [
+            InlineKeyboardButton("🍪 Обновить куки", callback_data="setcookies"),
+        ],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # Определяем статус
+    status_emoji = "✅" if login_status['is_logged_in'] else "❌"
+    username_text = f" @{login_status['username']}" if login_status['username'] else ""
+    
     await update.message.reply_text(
-        f"🤖 **X.com Бот - Расширенная версия**\n\n"
+        f"🤖 **X.com Бот - Главное меню**\n\n"
         f"🎮 Движок: {'Pydoll' if engine_mode == 'pydoll' else 'Playwright'}\n"
+        f"🔐 Статус: {status_emoji} {login_status['is_logged_in'] and 'Авторизован' or 'Не авторизован'}{username_text}\n"
         f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}\n"
         f"📦 Playwright: {'✅' if PLAYWRIGHT_AVAILABLE else '❌'}\n"
-        f"📦 Pydantic: {'✅' if PYDANTIC_AVAILABLE else '❌'}\n"
-        f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}\n\n"
-        f"📌 **Основные команды:**\n"
-        f"/login - Авторизация в X.com\n"
-        f"/screen - Скриншот\n"
-        f"/status - Статус браузера\n"
-        f"/close - Закрыть браузер\n"
-        f"/engine - Переключить движок\n\n"
-        f"📌 **Расширенные команды (Pydoll):**\n"
-        f"/api <url> - API-запрос с сессией браузера\n"
-        f"/extract - Извлечь структурированные данные\n"
-        f"/shadow - Работа с Shadow DOM\n"
-        f"/install_pydantic - Установить Pydantic",
-        parse_mode='Markdown'
+        f"📦 Pydantic: {'✅' if PYDANTIC_AVAILABLE else '❌'}\n\n"
+        f"🕐 {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n\n"
+        f"📌 **Нажмите кнопку для выполнения команды:**",
+        parse_mode='Markdown',
+        reply_markup=reply_markup
     )
 
-async def engine(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Переключение между движками браузера"""
-    global engine_mode, PYDOLL_AVAILABLE, PLAYWRIGHT_AVAILABLE, CHROMIUM_INSTALLED
-    logger.info(f"📩 Команда /engine от {update.effective_user.username} с аргументами: {context.args}")
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка нажатий кнопок"""
+    query = update.callback_query
+    await query.answer()
     
-    if not context.args:
-        current = "Pydoll" if engine_mode == "pydoll" else "Playwright"
-        await update.message.reply_text(
-            f"🔧 Текущий движок: **{current}**\n\n"
-            f"Использование: /engine <pydoll|playwright>\n"
-            f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}\n"
-            f"📦 Playwright: {'✅' if PLAYWRIGHT_AVAILABLE else '❌'}"
+    callback_data = query.data
+    
+    # Имитация команд
+    if callback_data == "login":
+        await login(update, context)
+    elif callback_data == "screen":
+        await screen(update, context)
+    elif callback_data == "status":
+        await status(update, context)
+    elif callback_data == "engine":
+        await engine_menu(update, context)
+    elif callback_data == "tweets_menu":
+        await query.edit_message_text(
+            "📝 **Введите username для парсинга твитов:**\n\n"
+            "Пример: `/tweets elonmusk 5`\n\n"
+            "Или просто введите команду в чате."
         )
-        return
+    elif callback_data == "search_menu":
+        await query.edit_message_text(
+            "🔍 **Введите запрос для поиска:**\n\n"
+            "Пример: `/search биткоин`\n\n"
+            "Или просто введите команду в чате."
+        )
+    elif callback_data == "api_menu":
+        await query.edit_message_text(
+            "🌐 **Введите URL для API запроса:**\n\n"
+            "Пример: `/api https://x.com/api/graphql/...`\n\n"
+            "Запрос использует сессию браузера с вашими куками."
+        )
+    elif callback_data == "extract":
+        await extract(update, context)
+    elif callback_data == "shadow":
+        await shadow(update, context)
+    elif callback_data == "close":
+        await close(update, context)
+    elif callback_data == "setcookies":
+        await setcookies(update, context)
+
+async def engine_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Меню выбора движка"""
+    query = update.callback_query
+    await query.answer()
     
-    engine_type = context.args[0].lower()
-    msg = await update.message.reply_text(f"⏳ Переключаю на {engine_type}...")
+    keyboard = [
+        [
+            InlineKeyboardButton("🎮 Pydoll", callback_data="engine_pydoll"),
+            InlineKeyboardButton("🎭 Playwright", callback_data="engine_playwright"),
+        ],
+        [
+            InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu"),
+        ],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        f"🔧 **Выбор движка браузера**\n\n"
+        f"Текущий: **{engine_mode}**\n\n"
+        f"Pydoll - человеческое поведение, обход антибот\n"
+        f"Playwright - стабильный, проверенный",
+        parse_mode='Markdown',
+        reply_markup=reply_markup
+    )
+
+async def engine_switch(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Переключение движка через кнопки"""
+    global engine_mode
+    query = update.callback_query
+    await query.answer()
+    
+    engine_type = query.data.replace("engine_", "")
     
     if engine_type == "pydoll":
-        if not CHROMIUM_INSTALLED:
-            await msg.edit_text("📦 Устанавливаю Chromium...")
-            if install_chromium():
-                CHROMIUM_INSTALLED = True
-                await msg.edit_text("✅ Chromium установлен!")
-            else:
-                await msg.edit_text("⚠️ Не удалось установить Chromium")
-        
         if not PYDOLL_AVAILABLE:
-            await msg.edit_text("📦 Устанавливаю Pydoll...")
-            if install_pydoll():
-                PYDOLL_AVAILABLE = True
-                await msg.edit_text("✅ Pydoll установлен!")
-            else:
-                await msg.edit_text("❌ Не удалось установить Pydoll")
-                return
-        
-        await close_browser()
+            await query.edit_message_text("❌ Pydoll не установлен. Используйте /engine pydoll для установки.")
+            return
         engine_mode = "pydoll"
-        await msg.edit_text("✅ **Переключено на Pydoll!**")
-        
+        await query.edit_message_text("✅ Переключено на Pydoll!\n\nИспользуйте /login для авторизации.")
     elif engine_type == "playwright":
         if not PLAYWRIGHT_AVAILABLE:
-            await msg.edit_text("📦 Устанавливаю Playwright...")
-            try:
-                subprocess.run([
-                    sys.executable, '-m', 'pip', 'install', 'playwright'
-                ], check=True, capture_output=True)
-                PLAYWRIGHT_AVAILABLE = True
-                await msg.edit_text("✅ Playwright установлен!")
-            except Exception as e:
-                await msg.edit_text(f"❌ Ошибка: {e}")
-                return
-        
-        await close_browser()
+            await query.edit_message_text("❌ Playwright не установлен.")
+            return
         engine_mode = "playwright"
-        await msg.edit_text("✅ **Переключено на Playwright!**")
-    else:
-        await msg.edit_text(f"❌ Неизвестный движок: {engine_type}")
+        await query.edit_message_text("✅ Переключено на Playwright!\n\nИспользуйте /login для авторизации.")
+    
+    await close_browser()
+
+async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Возврат в главное меню"""
+    query = update.callback_query
+    await query.answer()
+    await start(update, context)
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Авторизация в X.com - комбинированная проверка"""
+    """Авторизация в X.com с эмуляцией"""
     logger.info(f"📩 Команда /login от {update.effective_user.username}")
-    msg = await update.message.reply_text(f"⏳ Захожу в X.com через {engine_mode}...")
+    
+    # Проверяем, откуда пришел вызов
+    if hasattr(update, 'callback_query'):
+        msg = await update.callback_query.edit_message_text("⏳ Захожу в X.com...")
+    else:
+        msg = await update.message.reply_text(f"⏳ Захожу в X.com через {engine_mode}...")
     
     try:
         page = await get_browser()
@@ -836,10 +918,13 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"❌ Не удалось запустить {engine_mode} браузер")
             return
         
-        await goto_url('https://x.com')
-        await asyncio.sleep(5)
+        # Эмуляция перехода
+        await human_goto(page, 'https://x.com')
         
-        # Комбинированная проверка авторизации
+        # Эмуляция ожидания
+        await asyncio.sleep(random_delay(2.0, 4.0))
+        
+        # Проверка авторизации
         auth_status = await execute_js('''
             () => {
                 const cookies = document.cookie.split(';').reduce((acc, c) => {
@@ -886,13 +971,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return {
                     hasAuthToken: hasAuthToken,
                     hasCt0: hasCt0,
-                    hasLoginLink: hasLoginLink,
-                    hasSignupLink: hasSignupLink,
-                    hasLoginButton: hasLoginButton,
                     hasNoLoginButtons: hasNoLoginButtons,
-                    hasProfileLink: hasProfileLink,
-                    hasSideNav: hasSideNav,
-                    hasTweetBtn: hasTweetBtn,
                     hasUserElements: hasUserElements,
                     username: username || 'неизвестно',
                     isLoggedIn: isLoggedIn
@@ -913,34 +992,239 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg = f"✅ X.com ({engine_mode})\n\n"
         status_msg += f"🍪 auth_token: {'✅' if auth_status.get('hasAuthToken') else '❌'}\n"
         status_msg += f"🍪 ct0: {'✅' if auth_status.get('hasCt0') else '❌'}\n\n"
-        status_msg += f"🔍 Кнопка входа: {'❌ (отсутствует)' if auth_status.get('hasNoLoginButtons') else '✅ (присутствует)'}\n"
-        status_msg += f"🔍 Элементы профиля: {'✅' if auth_status.get('hasUserElements') else '❌'}\n\n"
         
         if auth_status.get('isLoggedIn'):
             status_msg += "✅ ВЫ АВТОРИЗОВАНЫ!\n"
             if auth_status.get('username') and auth_status.get('username') != 'неизвестно':
                 status_msg += f"👤 @{auth_status['username']}\n"
-            status_msg += "\n💡 Теперь доступны расширенные функции:\n"
-            status_msg += "  /api <url> - API-запросы\n"
-            status_msg += "  /extract - Извлечение данных\n"
-            status_msg += "  /shadow - Shadow DOM"
+            status_msg += "\n💡 Теперь доступны расширенные функции:"
         else:
             status_msg += "❌ НЕ АВТОРИЗОВАН\n"
-            if not auth_status.get('hasAuthToken'):
-                status_msg += "⚠️ Кука auth_token отсутствует или истекла\n"
             status_msg += "\nИспользуйте /setcookies для обновления кук"
         
         await msg.edit_text(status_msg)
         
         screenshot = await take_screenshot()
         if screenshot:
-            await update.message.reply_photo(
-                photo=screenshot,
-                caption=f"📸 X.com - {'✅ Авторизован' if auth_status.get('isLoggedIn') else '❌ Не авторизован'}"
-            )
+            if hasattr(update, 'callback_query'):
+                await update.callback_query.message.reply_photo(
+                    photo=screenshot,
+                    caption=f"📸 X.com - {'✅ Авторизован' if auth_status.get('isLoggedIn') else '❌ Не авторизован'}"
+                )
+            else:
+                await update.message.reply_photo(
+                    photo=screenshot,
+                    caption=f"📸 X.com - {'✅ Авторизован' if auth_status.get('isLoggedIn') else '❌ Не авторизован'}"
+                )
         
     except Exception as e:
         logger.error(f"❌ Ошибка в login: {e}", exc_info=True)
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Парсинг твитов пользователя с эмуляцией"""
+    logger.info(f"📩 Команда /tweets от {update.effective_user.username} с аргументами: {context.args}")
+    
+    if not context.args:
+        await update.message.reply_text(
+            "ℹ️ Использование: /tweets <username> [count]\n"
+            "Пример: /tweets elonmusk 5"
+        )
+        return
+    
+    username = context.args[0].replace('@', '').strip()
+    count = int(context.args[1]) if len(context.args) > 1 else 10
+    msg = await update.message.reply_text(f"📊 Парсю твиты @{username}...")
+    
+    try:
+        # Эмуляция перехода с задержкой
+        await goto_url(f"https://x.com/{username}")
+        await asyncio.sleep(random_delay(2.0, 3.5))
+        
+        # Эмуляция прокрутки для загрузки твитов
+        await human_scroll(await get_browser(), 500)
+        await asyncio.sleep(random_delay(1.0, 2.0))
+        
+        # Парсим твиты
+        tweets_data = await execute_js(f'''
+            () => {{
+                const tweets = [];
+                const tweetElements = document.querySelectorAll('[data-testid="tweet"]');
+                const count = {count};
+                
+                tweetElements.forEach((tweet, index) => {{
+                    if (index >= count) return;
+                    
+                    const textEl = tweet.querySelector('[data-testid="tweetText"]');
+                    const timeEl = tweet.querySelector('time');
+                    const isPinned = !!tweet.querySelector('[data-testid="pinIcon"]');
+                    
+                    let text = textEl ? textEl.innerText : '';
+                    text = text.replace(/https?:\\/\\/[^\\s]*/g, '');
+                    text = text.replace(/\\s{{2,}}/g, ' ');
+                    text = text.trim();
+                    
+                    tweets.push({{
+                        text: text,
+                        time: timeEl ? timeEl.getAttribute('datetime') : '',
+                        is_pinned: isPinned
+                    }});
+                }});
+                
+                return tweets;
+            }}
+        ''')
+        
+        if not tweets_data:
+            await msg.edit_text(f"❌ Твиты @{username} не найдены!")
+            return
+        
+        report = f"📊 **ТВИТЫ @{username}**\n"
+        report += f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
+        report += f"📌 Всего: {len(tweets_data)}\n\n"
+        
+        for i, tweet in enumerate(tweets_data, 1):
+            if tweet['is_pinned']:
+                report += f"📌 **{i}. ЗАКРЕПЛЕН**\n"
+            else:
+                report += f"**{i}.** "
+            
+            text = tweet['text'][:250]
+            if len(tweet['text']) > 250:
+                text += "..."
+            report += f"{text}\n"
+            
+            if tweet['time']:
+                time_str = tweet['time'][:16].replace('T', ' ')
+                report += f"\n🕐 {time_str}"
+            
+            report += "\n\n"
+        
+        if len(report) > 4000:
+            filename = f"tweets_{username}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(report)
+            await update.message.reply_document(
+                document=open(filename, 'rb'),
+                caption=f"📄 {len(tweets_data)} твитов @{username}"
+            )
+        else:
+            await msg.edit_text(report, parse_mode='Markdown')
+        
+        # Эмуляция скриншота
+        await asyncio.sleep(random_delay(0.5, 1.0))
+        screenshot = await take_screenshot()
+        if screenshot:
+            await update.message.reply_photo(
+                photo=screenshot,
+                caption=f"📸 Твиты @{username}"
+            )
+        
+        logger.info(f"✅ Твиты @{username} спарсены, найдено: {len(tweets_data)}")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в tweets: {e}", exc_info=True)
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Поиск твитов с эмуляцией"""
+    logger.info(f"📩 Команда /search от {update.effective_user.username} с аргументами: {context.args}")
+    
+    if not context.args:
+        await update.message.reply_text(
+            "ℹ️ Использование: /search <запрос>\n"
+            "Пример: /search биткоин"
+        )
+        return
+    
+    query = ' '.join(context.args)
+    msg = await update.message.reply_text(f"🔍 Ищу: {query}...")
+    
+    try:
+        search_url = f"https://x.com/search?q={query.replace(' ', '%20')}&src=typed_query"
+        
+        # Эмуляция перехода
+        await goto_url(search_url)
+        await asyncio.sleep(random_delay(2.0, 3.5))
+        
+        # Эмуляция прокрутки
+        await human_scroll(await get_browser(), 400)
+        await asyncio.sleep(random_delay(1.0, 2.0))
+        
+        tweets_data = await execute_js('''
+            () => {
+                const tweets = [];
+                const tweetElements = document.querySelectorAll('[data-testid="tweet"]');
+                
+                tweetElements.forEach((tweet, index) => {
+                    if (index >= 10) return;
+                    
+                    const textEl = tweet.querySelector('[data-testid="tweetText"]');
+                    const timeEl = tweet.querySelector('time');
+                    
+                    let text = textEl ? textEl.innerText : '';
+                    text = text.replace(/https?:\\/\\/[^\\s]*/g, '');
+                    text = text.replace(/\\s{2,}/g, ' ');
+                    text = text.trim();
+                    
+                    tweets.push({
+                        text: text,
+                        time: timeEl ? timeEl.getAttribute('datetime') : ''
+                    });
+                });
+                
+                return tweets;
+            }
+        ''')
+        
+        if not tweets_data:
+            await msg.edit_text(f"❌ По запросу '{query}' ничего не найдено!")
+            return
+        
+        report = f"🔍 **РЕЗУЛЬТАТЫ ПО ЗАПРОСУ**\n"
+        report += f"📌 `{query}`\n"
+        report += f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
+        report += f"📊 Найдено: {len(tweets_data)}\n\n"
+        
+        for i, tweet in enumerate(tweets_data, 1):
+            report += f"**{i}.** "
+            
+            text = tweet['text'][:280]
+            if len(tweet['text']) > 280:
+                text += "..."
+            
+            if text.strip():
+                report += f"{text}\n"
+            
+            if tweet['time']:
+                time_str = tweet['time'][:16].replace('T', ' ')
+                report += f"\n🕐 {time_str}"
+            
+            report += "\n\n"
+        
+        if len(report) > 4000:
+            filename = f"search_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(report)
+            await update.message.reply_document(
+                document=open(filename, 'rb'),
+                caption=f"📄 Результаты поиска: {query}"
+            )
+        else:
+            await msg.edit_text(report, parse_mode='Markdown')
+        
+        await asyncio.sleep(random_delay(0.5, 1.0))
+        screenshot = await take_screenshot()
+        if screenshot:
+            await update.message.reply_photo(
+                photo=screenshot,
+                caption=f"🔍 Поиск: {query}"
+            )
+        
+        logger.info(f"✅ Поиск '{query}' выполнен, найдено: {len(tweets_data)}")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в search: {e}", exc_info=True)
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def api(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1006,7 +1290,10 @@ async def extract(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    msg = await update.message.reply_text("📊 Извлекаю структурированные данные...")
+    if hasattr(update, 'callback_query'):
+        msg = await update.callback_query.edit_message_text("📊 Извлекаю структурированные данные...")
+    else:
+        msg = await update.message.reply_text("📊 Извлекаю структурированные данные...")
     
     try:
         result = await extract_structured_data()
@@ -1048,7 +1335,10 @@ async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Демонстрация работы с Shadow DOM"""
     logger.info(f"📩 Команда /shadow от {update.effective_user.username}")
     
-    msg = await update.message.reply_text("🛡️ Исследую Shadow DOM...")
+    if hasattr(update, 'callback_query'):
+        msg = await update.callback_query.edit_message_text("🛡️ Исследую Shadow DOM...")
+    else:
+        msg = await update.message.reply_text("🛡️ Исследую Shadow DOM...")
     
     try:
         result = await shadow_dom_example()
@@ -1081,16 +1371,28 @@ async def install_pydantic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Скриншот"""
     logger.info(f"📩 Команда /screen от {update.effective_user.username}")
-    msg = await update.message.reply_text("⏳ Делаю скриншот...")
+    
+    if hasattr(update, 'callback_query'):
+        msg = await update.callback_query.edit_message_text("⏳ Делаю скриншот...")
+    else:
+        msg = await update.message.reply_text("⏳ Делаю скриншот...")
     
     try:
+        # Эмуляция задержки перед скриншотом
+        await asyncio.sleep(random_delay(0.5, 1.5))
         screenshot = await take_screenshot()
         if screenshot:
             await msg.delete()
-            await update.message.reply_photo(
-                photo=screenshot,
-                caption=f"📸 Скриншот X.com\n🎮 Движок: {engine_mode}"
-            )
+            if hasattr(update, 'callback_query'):
+                await update.callback_query.message.reply_photo(
+                    photo=screenshot,
+                    caption=f"📸 Скриншот X.com\n🎮 Движок: {engine_mode}"
+                )
+            else:
+                await update.message.reply_photo(
+                    photo=screenshot,
+                    caption=f"📸 Скриншот X.com\n🎮 Движок: {engine_mode}"
+                )
         else:
             await msg.edit_text("❌ Не удалось сделать скриншот")
         
@@ -1101,7 +1403,11 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Статус"""
     logger.info(f"📩 Команда /status от {update.effective_user.username}")
-    msg = await update.message.reply_text("⏳ Проверяю статус...")
+    
+    if hasattr(update, 'callback_query'):
+        msg = await update.callback_query.edit_message_text("⏳ Проверяю статус...")
+    else:
+        msg = await update.message.reply_text("⏳ Проверяю статус...")
     
     try:
         status_msg = "📊 **СТАТУС БОТА**\n\n"
@@ -1151,7 +1457,12 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Закрывает браузер"""
     logger.info(f"📩 Команда /close от {update.effective_user.username}")
-    msg = await update.message.reply_text("⏳ Закрываю браузер...")
+    
+    if hasattr(update, 'callback_query'):
+        msg = await update.callback_query.edit_message_text("⏳ Закрываю браузер...")
+    else:
+        msg = await update.message.reply_text("⏳ Закрываю браузер...")
+    
     await close_browser()
     await msg.edit_text("✅ Браузер закрыт!")
 
@@ -1159,12 +1470,21 @@ async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def setcookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обновление кук через Telegram"""
     global COOKIES
-    await update.message.reply_text(
-        "🍪 **Обновление кук X.com**\n\n"
-        "Отправьте куки в JSON формате:\n"
-        "`[{\"name\":\"auth_token\",\"value\":\"...\",\"domain\":\".x.com\",\"path\":\"/\"}]`\n\n"
-        "Или отправьте /cancel для отмены"
-    )
+    
+    if hasattr(update, 'callback_query'):
+        await update.callback_query.edit_message_text(
+            "🍪 **Обновление кук X.com**\n\n"
+            "Отправьте куки в JSON формате:\n"
+            "`[{\"name\":\"auth_token\",\"value\":\"...\",\"domain\":\".x.com\",\"path\":\"/\"}]`\n\n"
+            "Или отправьте /cancel для отмены"
+        )
+    else:
+        await update.message.reply_text(
+            "🍪 **Обновление кук X.com**\n\n"
+            "Отправьте куки в JSON формате:\n"
+            "`[{\"name\":\"auth_token\",\"value\":\"...\",\"domain\":\".x.com\",\"path\":\"/\"}]`\n\n"
+            "Или отправьте /cancel для отмены"
+        )
     context.user_data['waiting_for_cookies'] = True
 
 async def handle_cookies_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1234,6 +1554,8 @@ def main():
     # Основные команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("login", login))
+    app.add_handler(CommandHandler("tweets", tweets))
+    app.add_handler(CommandHandler("search", search))
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("engine", engine))
@@ -1250,6 +1572,11 @@ def main():
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_cookies_input))
     
+    # Обработчики кнопок
+    app.add_handler(CallbackQueryHandler(button_callback, pattern="^(login|screen|status|engine|tweets_menu|search_menu|api_menu|extract|shadow|close|setcookies)$"))
+    app.add_handler(CallbackQueryHandler(engine_switch, pattern="^engine_(pydoll|playwright)$"))
+    app.add_handler(CallbackQueryHandler(back_to_menu, pattern="^back_to_menu$"))
+    
     print("\n✅ Бот запущен!")
     print(f"🎮 Движок: {engine_mode}")
     print(f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}")
@@ -1257,9 +1584,10 @@ def main():
     print(f"📦 Pydantic: {'✅' if PYDANTIC_AVAILABLE else '❌'}")
     print(f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}")
     print("\nКоманды:")
-    print("  Основные: /start, /login, /screen, /status, /engine, /close")
+    print("  Основные: /start, /login, /tweets, /search, /screen, /status, /engine, /close")
     print("  Расширенные: /api <url>, /extract, /shadow, /install_pydantic")
     print("  Куки: /setcookies, /cancel")
+    print("\n💡 Нажмите /start для открытия меню с кнопками!")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
