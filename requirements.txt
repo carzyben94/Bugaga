@@ -1,4 +1,4 @@
 python-telegram-bot>=21.0
 phantomwright-driver==1.58.3
 pydoll-python>=0.1.0
-asyncio>=3.4.3
+asyncio>=3.4.3 
