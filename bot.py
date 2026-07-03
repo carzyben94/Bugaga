@@ -2,6 +2,7 @@ import os
 import logging
 import asyncio
 import base64
+import traceback
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
@@ -9,7 +10,11 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 # Pydantic для структуры
 from pydantic import BaseModel
 
-logging.basicConfig(level=logging.INFO)
+# Настройка логирования
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -19,7 +24,6 @@ if not TOKEN:
 
 # ========== PYDAВТИК МОДЕЛЬ ==========
 class AuthResult(BaseModel):
-    """Результат проверки авторизации"""
     is_logged_in: bool
     username: str | None = None
     has_auth_token: bool = False
@@ -41,48 +45,90 @@ browser = None
 tab = None
 last_auth: AuthResult | None = None
 
-# ========== БРАУЗЕР ==========
+# ========== БРАУЗЕР С ДЕТАЛЬНЫМ ЛОГИРОВАНИЕМ ==========
 async def get_browser():
     global browser, tab
+    logger.info("🔄 get_browser() вызван")
+    
     if tab:
         try:
+            logger.info("🔄 Проверка существующей вкладки...")
             await tab.execute_script('return 1')
+            logger.info("✅ Существующая вкладка работает")
             return tab
-        except:
+        except Exception as e:
+            logger.warning(f"⚠️ Вкладка не работает: {e}")
             await close_browser()
     
     try:
+        logger.info("🚀 Импорт Pydoll...")
         from pydoll.browser import Chrome
         from pydoll.browser.options import ChromiumOptions
+        logger.info("✅ Pydoll импортирован")
         
+        logger.info("🔧 Создание опций...")
         options = ChromiumOptions()
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--headless=new")
+        options.add_argument("--disable-gpu")
+        logger.info("✅ Опции созданы")
         
+        # Проверка Chromium
+        chromium_paths = ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome']
+        found = False
+        for path in chromium_paths:
+            if os.path.exists(path):
+                logger.info(f"📍 Найден Chromium: {path}")
+                options.binary_location = path
+                found = True
+                break
+        
+        if not found:
+            logger.warning("⚠️ Chromium не найден в стандартных путях")
+        
+        logger.info("🚀 Создание браузера...")
         browser = Chrome(options=options)
+        logger.info("✅ Браузер создан")
+        
+        logger.info("🚀 Запуск браузера...")
         tab = await browser.start()
+        logger.info("✅ Браузер запущен")
+        
+        logger.info("🌐 Переход на X.com...")
         await tab.go_to('https://x.com')
         await asyncio.sleep(2)
+        logger.info("✅ Переход выполнен")
         
+        logger.info(f"🍪 Установка {len(COOKIES)} кук...")
         for cookie in COOKIES:
             try:
                 await tab.set_cookie(**cookie)
-            except:
-                pass
+                logger.debug(f"🍪 Кука установлена: {cookie['name']}")
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка установки {cookie['name']}: {e}")
         
+        logger.info("✅ Браузер готов!")
         return tab
+        
+    except ImportError as e:
+        logger.error(f"❌ Ошибка импорта Pydoll: {e}")
+        logger.error(traceback.format_exc())
+        return None
     except Exception as e:
-        logger.error(f"❌ Ошибка: {e}")
+        logger.error(f"❌ Ошибка запуска браузера: {e}")
+        logger.error(traceback.format_exc())
         return None
 
 async def close_browser():
     global browser, tab
+    logger.info("🔄 Закрытие браузера...")
     if browser:
         try:
             await browser.close()
-        except:
-            pass
+            logger.info("✅ Браузер закрыт")
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка закрытия: {e}")
         browser = None
         tab = None
 
@@ -120,51 +166,70 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await close_browser()
         await query.edit_message_text("✅ Браузер закрыт")
 
-# ========== LOGIN ==========
+# ========== LOGIN С ДЕТАЛЬНЫМИ ОШИБКАМИ ==========
 async def cmd_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global last_auth
     query = update.callback_query
     await query.edit_message_text("⏳ Захожу...")
     
     try:
+        logger.info("🔐 Команда /login")
+        
         page = await get_browser()
         if not page:
-            await query.edit_message_text("❌ Ошибка браузера")
+            error_msg = "❌ Ошибка браузера\n\n"
+            error_msg += "Возможные причины:\n"
+            error_msg += "1. Pydoll не установлен\n"
+            error_msg += "2. Chromium не найден\n"
+            error_msg += "3. Ошибка в коде\n\n"
+            error_msg += "Проверь логи в консоли"
+            await query.edit_message_text(error_msg)
             return
         
+        logger.info("🌐 Переход на X.com...")
         await page.go_to('https://x.com')
         await asyncio.sleep(3)
         
-        # Проверка через JS
+        logger.info("📊 Проверка авторизации...")
         result = await page.execute_script('''
             function() {
-                var cookies = document.cookie.split(';').reduce(function(acc, c) {
-                    var parts = c.trim().split('=');
-                    acc[parts[0]] = parts[1];
-                    return acc;
-                }, {});
-                
-                var hasAuth = !!cookies.auth_token && cookies.auth_token.length > 0;
-                var hasCt0 = !!cookies.ct0 && cookies.ct0.length > 0;
-                
-                var username = null;
-                var profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
-                if (profileLink) {
-                    var href = profileLink.getAttribute('href');
-                    if (href) {
-                        var match = href.match(/^\\/([^\\/]+)/);
-                        if (match) username = match[1];
+                try {
+                    var cookies = document.cookie.split(';').reduce(function(acc, c) {
+                        var parts = c.trim().split('=');
+                        acc[parts[0]] = parts[1];
+                        return acc;
+                    }, {});
+                    
+                    var hasAuth = !!cookies.auth_token && cookies.auth_token.length > 0;
+                    var hasCt0 = !!cookies.ct0 && cookies.ct0.length > 0;
+                    
+                    var username = null;
+                    var profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
+                    if (profileLink) {
+                        var href = profileLink.getAttribute('href');
+                        if (href) {
+                            var match = href.match(/^\\/([^\\/]+)/);
+                            if (match) username = match[1];
+                        }
                     }
+                    
+                    return {
+                        isLoggedIn: hasAuth,
+                        username: username,
+                        hasAuthToken: hasAuth,
+                        hasCt0: hasCt0
+                    };
+                } catch(e) {
+                    return {error: e.message};
                 }
-                
-                return {
-                    isLoggedIn: hasAuth,
-                    username: username,
-                    hasAuthToken: hasAuth,
-                    hasCt0: hasCt0
-                };
             }
         ''')
+        
+        logger.info(f"📊 Результат: {result}")
+        
+        if result and result.get('error'):
+            await query.edit_message_text(f"❌ Ошибка JS: {result['error']}")
+            return
         
         # Сохраняем через Pydantic
         last_auth = AuthResult(**result)
@@ -172,12 +237,18 @@ async def cmd_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(last_auth.get_status())
         
         # Скриншот
+        logger.info("📸 Делаю скриншот...")
         screenshot = await page.take_screenshot(as_base64=True)
         if screenshot:
-            await query.message.reply_photo(photo=base64.b64decode(screenshot))
+            await query.message.reply_photo(photo=base64.b64decode(screenshot), caption="📸 X.com")
+            logger.info("✅ Скриншот отправлен")
+        else:
+            logger.warning("⚠️ Скриншот не удался")
             
     except Exception as e:
-        await query.edit_message_text(f"❌ {str(e)[:100]}")
+        logger.error(f"❌ Ошибка: {e}")
+        logger.error(traceback.format_exc())
+        await query.edit_message_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ========== API ==========
 async def cmd_api(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -209,6 +280,7 @@ async def cmd_api(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"❌ API не работает\n{result}")
             
     except Exception as e:
+        logger.error(f"❌ Ошибка: {e}")
         await query.edit_message_text(f"❌ {str(e)[:100]}")
 
 # ========== SHADOW ==========
@@ -241,6 +313,7 @@ async def cmd_shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Shadow DOM элементов НЕ найдено")
             
     except Exception as e:
+        logger.error(f"❌ Ошибка: {e}")
         await query.edit_message_text(f"❌ {str(e)[:100]}")
 
 # ========== EXTRACT ==========
@@ -254,7 +327,6 @@ async def cmd_extract(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Браузер не запущен")
             return
         
-        # Проверка авторизации через Pydantic модель
         if not last_auth or not last_auth.is_logged_in:
             await query.edit_message_text("❌ Сначала авторизуйся! /login")
             return
@@ -284,6 +356,7 @@ async def cmd_extract(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Нет твитов на странице\nПерейди на страницу с твитами")
             
     except Exception as e:
+        logger.error(f"❌ Ошибка: {e}")
         await query.edit_message_text(f"❌ {str(e)[:100]}")
 
 # ========== SCREEN ==========
@@ -305,6 +378,7 @@ async def cmd_screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Не удалось")
             
     except Exception as e:
+        logger.error(f"❌ Ошибка: {e}")
         await query.edit_message_text(f"❌ {str(e)[:100]}")
 
 # ========== ЗАПУСК ==========
@@ -314,9 +388,12 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_callback))
     
-    print("\n✅ БОТ ЗАПУЩЕН")
-    print("📦 Pydantic: ✅")
-    print("📦 Asyncio: ✅")
+    print("\n" + "="*50)
+    print("✅ БОТ ЗАПУЩЕН")
+    print("="*50)
+    print(f"📦 Pydantic: ✅")
+    print(f"📦 Asyncio: ✅")
+    print(f"🍪 Кук: {len(COOKIES)}")
     print("\n📌 /start - меню")
     print("\nКнопки:")
     print("  🔐 LOGIN - проверить авторизацию")
@@ -325,6 +402,8 @@ def main():
     print("  📊 EXTRACT - извлечь твиты")
     print("  📸 SCREEN - скриншот")
     print("  ❌ CLOSE - закрыть браузер")
+    print("="*50)
+    print("\n📋 Смотри логи выше для отладки!")
     
     app.run_polling()
 
