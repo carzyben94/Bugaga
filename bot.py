@@ -1,4 +1,4 @@
-# bot.py - X.com бот с Agnes (бесплатная LLM)
+# bot.py - X.com бот с эмуляцией человеческого поведения
 import os
 import sys
 import subprocess
@@ -187,46 +187,108 @@ def install_browser():
 
 install_browser()
 
-# ========== УНИВЕРСАЛЬНЫЕ ФУНКЦИИ ДЛЯ ВСЕХ КОМАНД ==========
+# ========== ЭМУЛЯЦИЯ ЧЕЛОВЕЧЕСКОГО ПОВЕДЕНИЯ ==========
 
-async def safe_goto(page, url: str, timeout: int = 30000, retries: int = 3) -> bool:
+class HumanEmulator:
     """
-    Безопасная загрузка страницы с повторными попытками
-    Используется для ВСЕХ команд
+    Класс для эмуляции человеческого поведения в браузере
     """
-    logger.info(f"🌐 Загрузка: {url[:80]}...")
     
-    for attempt in range(retries):
+    @staticmethod
+    async def random_delay(min_seconds: float = 0.5, max_seconds: float = 3.0):
+        """Случайная задержка как у человека"""
+        delay = random.uniform(min_seconds, max_seconds)
+        await asyncio.sleep(delay)
+        return delay
+    
+    @staticmethod
+    async def human_like_scroll(page, times: int = None):
+        """Эмуляция скролла как у человека"""
+        if times is None:
+            times = random.randint(1, 3)
+        
+        for i in range(times):
+            # Случайное расстояние скролла
+            distance = random.randint(200, 800)
+            # Случайная скорость (мс)
+            duration = random.randint(500, 1500)
+            
+            await page.evaluate(f'''
+                window.scrollBy({{
+                    top: {distance},
+                    behavior: 'smooth'
+                }});
+            ''')
+            
+            # Пауза между скроллами
+            await HumanEmulator.random_delay(0.3, 1.0)
+            
+            # Иногда скроллим вверх
+            if random.random() < 0.2:
+                await page.evaluate(f'''
+                    window.scrollBy({{
+                        top: -{random.randint(50, 200)},
+                        behavior: 'smooth'
+                    }});
+                ''')
+                await HumanEmulator.random_delay(0.2, 0.5)
+    
+    @staticmethod
+    async def human_like_mouse_movement(page):
+        """Эмуляция движения мыши"""
         try:
-            await page.goto(url, wait_until='domcontentloaded', timeout=timeout)
-            await page.wait_for_timeout(2000)
-            logger.info(f"✅ Страница загружена (попытка {attempt+1})")
-            return True
-        except Exception as e:
-            logger.warning(f"⚠️ Попытка {attempt+1}/{retries} не удалась: {str(e)[:100]}")
-            if attempt < retries - 1:
-                wait_time = (attempt + 1) * 2
-                logger.info(f"⏳ Ожидание {wait_time}с перед следующей попыткой...")
-                await page.wait_for_timeout(wait_time * 1000)
-            else:
-                logger.error(f"❌ Не удалось загрузить страницу после {retries} попыток")
-                return False
-    return False
-
-async def wait_for_content(page, selector: str = 'article', timeout: int = 10000, retries: int = 2) -> bool:
-    """
-    Универсальная функция ожидания контента
-    """
-    for attempt in range(retries):
-        try:
-            await page.wait_for_selector(selector, timeout=timeout)
-            logger.info(f"✅ Контент найден: {selector}")
-            return True
-        except Exception as e:
-            logger.warning(f"⚠️ Ожидание контента, попытка {attempt+1}: {str(e)[:50]}")
-            if attempt < retries - 1:
-                await page.wait_for_timeout(3000)
-    return False
+            # Случайные координаты
+            x = random.randint(100, 1000)
+            y = random.randint(100, 600)
+            
+            # Плавное движение
+            await page.mouse.move(x, y, steps=random.randint(5, 15))
+            await HumanEmulator.random_delay(0.1, 0.3)
+            
+            # Иногда кликаем
+            if random.random() < 0.1:
+                await page.mouse.click(x, y)
+                await HumanEmulator.random_delay(0.2, 0.5)
+        except:
+            pass
+    
+    @staticmethod
+    async def human_like_typing(page, text: str, delay_ms: int = None):
+        """Эмуляция печати как у человека"""
+        if delay_ms is None:
+            delay_ms = random.randint(50, 150)
+        
+        for char in text:
+            await page.keyboard.type(char, delay=delay_ms)
+            # Иногда случайная задержка между символами
+            if random.random() < 0.05:
+                await asyncio.sleep(random.uniform(0.1, 0.3))
+    
+    @staticmethod
+    async def random_mouse_movement(page):
+        """Случайное движение мыши (как будто пользователь читает)"""
+        for _ in range(random.randint(1, 3)):
+            x = random.randint(50, 1200)
+            y = random.randint(50, 650)
+            await page.mouse.move(x, y, steps=random.randint(3, 10))
+            await HumanEmulator.random_delay(0.1, 0.5)
+    
+    @staticmethod
+    async def emulate_reading(page, seconds: int = None):
+        """Эмуляция чтения страницы"""
+        if seconds is None:
+            seconds = random.randint(3, 8)
+        
+        # Несколько случайных движений мыши во время "чтения"
+        for _ in range(random.randint(2, 4)):
+            await HumanEmulator.random_mouse_movement(page)
+            await HumanEmulator.random_delay(0.5, 1.5)
+        
+        # Скролл во время чтения
+        if random.random() < 0.3:
+            await HumanEmulator.human_like_scroll(page, 1)
+        
+        await asyncio.sleep(seconds)
 
 # ========== УПРАВЛЕНИЕ БРАУЗЕРОМ ==========
 async def get_browser():
@@ -326,7 +388,7 @@ async def close_browser():
             'cookies_valid': False
         }
 
-# ========== КЛАСС BEAUTYBOT ==========
+# ========== КЛАСС BEAUTYBOT С ЭМУЛЯЦИЕЙ ==========
 
 class BeautyBot:
     def __init__(self):
@@ -343,6 +405,9 @@ class BeautyBot:
         self.total_attempts = 0
         self.successful_finds = 0
         self.max_history = 50
+        
+        # Инициализируем эмулятор
+        self.human = HumanEmulator()
         
     def reset_history(self):
         """Сбрасывает историю отправленных постов"""
@@ -364,9 +429,72 @@ class BeautyBot:
             url = url + '?format=jpg&name=large'
         
         return url
+    
+    async def safe_goto_with_human(self, page, url: str, timeout: int = 30000, retries: int = 3) -> bool:
+        """
+        Загрузка страницы с эмуляцией человеческого поведения
+        """
+        logger.info(f"🌐 Загрузка: {url[:80]}...")
         
+        for attempt in range(retries):
+            try:
+                if attempt == 0:
+                    # Первая попытка - обычная загрузка
+                    await page.goto(url, wait_until='domcontentloaded', timeout=timeout)
+                else:
+                    # Повторные попытки с эмуляцией
+                    logger.info(f"🔄 Повторная попытка {attempt+1}/{retries}")
+                    
+                    # Эмуляция поведения человека перед повторной загрузкой
+                    await self.human.random_delay(1.0, 3.0)
+                    
+                    # Пробуем разные способы обновления
+                    try:
+                        # Способ 1: Кнопка обновления в браузере
+                        await page.keyboard.press('Control+R')
+                        await self.human.random_delay(0.5, 1.5)
+                    except:
+                        try:
+                            # Способ 2: Переход на about:blank и обратно
+                            current_url = page.url
+                            await page.goto('about:blank')
+                            await self.human.random_delay(0.5, 1.0)
+                            await page.goto(url, wait_until='domcontentloaded', timeout=timeout)
+                        except:
+                            # Способ 3: Обычный переход
+                            await page.goto(url, wait_until='domcontentloaded', timeout=timeout)
+                
+                # После загрузки - эмулируем чтение
+                await self.human.emulate_reading(page, random.randint(2, 5))
+                
+                # Случайное движение мыши
+                await self.human.random_mouse_movement(page)
+                
+                logger.info(f"✅ Страница загружена (попытка {attempt+1})")
+                return True
+                
+            except Exception as e:
+                logger.warning(f"⚠️ Попытка {attempt+1}/{retries} не удалась: {str(e)[:100]}")
+                
+                if attempt < retries - 1:
+                    wait_time = random.uniform(3, 8)
+                    logger.info(f"⏳ Ожидание {wait_time:.1f}с перед следующей попыткой...")
+                    await asyncio.sleep(wait_time)
+                    
+                    # Очистка кэша с эмуляцией
+                    try:
+                        await page.evaluate('localStorage.clear()')
+                        await page.evaluate('sessionStorage.clear()')
+                        logger.info("🧹 Кэш очищен")
+                    except:
+                        pass
+                else:
+                    logger.error(f"❌ Не удалось загрузить страницу после {retries} попыток")
+                    return False
+        return False
+    
     async def get_random_photo_url(self, page) -> Optional[str]:
-        """Получает случайное фото из случайного паблика"""
+        """Получает случайное фото с эмуляцией человеческого поведения"""
         self.total_attempts += 1
         logger.info(f"🔍 Попытка #{self.total_attempts} найти фото")
         logger.info(f"📊 В истории: {len(self.sent_posts)} уникальных ID")
@@ -383,14 +511,17 @@ class BeautyBot:
             logger.info(f"📄 Проверяю паблик @{username}")
             
             try:
-                # Используем safe_goto
-                if not await safe_goto(page, f"https://x.com/{username}"):
+                # Загружаем страницу с эмуляцией
+                if not await self.safe_goto_with_human(page, f"https://x.com/{username}"):
                     continue
                 
-                # Используем wait_for_content
-                if not await wait_for_content(page, 'article'):
-                    continue
+                # Эмуляция скролла перед поиском
+                await self.human.human_like_scroll(page, random.randint(1, 2))
                 
+                # Эмуляция чтения
+                await self.human.emulate_reading(page, random.randint(2, 4))
+                
+                # Ищем твиты с фото
                 tweets_data = await page.evaluate('''
                     () => {
                         const tweets = [];
@@ -446,6 +577,9 @@ class BeautyBot:
                 logger.info(f"  ✅ Найдено {len(tweets_data)} твитов с фото")
                 random.shuffle(tweets_data)
                 
+                # Эмуляция выбора (как будто человек выбирает)
+                await self.human.random_delay(0.5, 1.5)
+                
                 for tweet in tweets_data:
                     if tweet['id'] and tweet['id'] in self.sent_posts:
                         continue
@@ -495,10 +629,11 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         browser = await get_browser()
         page = browser['page']
+        human = HumanEmulator()
         
         await browser['context'].clear_cookies()
         await page.goto('about:blank')
-        await page.wait_for_timeout(2000)
+        await human.random_delay(1.0, 2.0)
         
         for cookie in COOKIES:
             try:
@@ -515,14 +650,11 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await msg.edit_text("🔄 Загружаю X.com...")
         
-        # Используем safe_goto
-        if not await safe_goto(page, 'https://x.com'):
+        # Используем эмуляцию
+        beauty_bot = BeautyBot()
+        if not await beauty_bot.safe_goto_with_human(page, 'https://x.com'):
             await msg.edit_text("❌ Не удалось загрузить X.com")
             return
-        
-        # Используем wait_for_content
-        if not await wait_for_content(page, '[data-testid="primaryColumn"]', timeout=15000):
-            await page.wait_for_timeout(3000)
         
         auth_status = await page.evaluate('''
             () => {
@@ -734,16 +866,15 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         browser = await get_browser()
         page = browser['page']
+        beauty_bot = BeautyBot()
         
-        # Используем safe_goto
-        if not await safe_goto(page, f"https://x.com/{username}"):
+        # Используем эмуляцию
+        if not await beauty_bot.safe_goto_with_human(page, f"https://x.com/{username}"):
             await msg.edit_text(f"❌ Не удалось загрузить страницу @{username}")
             return
         
-        # Используем wait_for_content
-        if not await wait_for_content(page, '[data-testid="tweet"]'):
-            await msg.edit_text("❌ Твиты не найдены")
-            return
+        # Эмуляция скролла
+        await beauty_bot.human.human_like_scroll(page, random.randint(1, 2))
         
         tweets_data = await page.evaluate('''
             () => {
@@ -793,18 +924,20 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         browser = await get_browser()
         page = browser['page']
+        beauty_bot = BeautyBot()
         
         search_url = f"https://x.com/search?q={query.replace(' ', '%20')}&src=typed_query"
         
-        # Используем safe_goto
-        if not await safe_goto(page, search_url):
+        # Используем эмуляцию
+        if not await beauty_bot.safe_goto_with_human(page, search_url):
             await msg.edit_text("❌ Не удалось загрузить страницу поиска")
             return
         
-        # Используем wait_for_content
-        if not await wait_for_content(page, '[data-testid="tweet"]'):
-            await msg.edit_text("❌ Ничего не найдено")
-            return
+        # Эмуляция чтения
+        await beauty_bot.human.emulate_reading(page, random.randint(2, 5))
+        
+        # Скролл как человек
+        await beauty_bot.human.human_like_scroll(page, random.randint(1, 2))
         
         tweets_data = await page.evaluate('''
             () => {
@@ -844,7 +977,7 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== /GETGIRL ==========
 
 async def getgirl(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отправляет случайное фото из пабликов с красивыми девушками"""
+    """Отправляет случайное фото с эмуляцией человеческого поведения"""
     chat_id = update.effective_chat.id
     user = update.effective_user
     logger.info(f"🌸 /getgirl вызван пользователем @{user.username}")
@@ -856,19 +989,22 @@ async def getgirl(update: Update, context: ContextTypes.DEFAULT_TYPE):
         browser = await get_browser()
         page = browser['page']
         
+        # Создаем экземпляр с эмуляцией
         beauty_bot = BeautyBot()
         
         # Поиск фото с повторными попытками
         photo_url = None
         for attempt in range(3):
             logger.info(f"Попытка {attempt+1}/3")
+            
             try:
                 photo_url = await beauty_bot.get_random_photo_url(page)
                 if photo_url:
                     break
             except Exception as e:
                 logger.error(f"Ошибка в попытке {attempt+1}: {e}")
-                await page.wait_for_timeout(2000)
+                # Эмуляция ожидания человека
+                await asyncio.sleep(random.uniform(2, 5))
         
         if photo_url:
             try:
@@ -950,6 +1086,7 @@ def main():
     app.add_handler(CommandHandler("agnes", agnes))
     
     print("✅ Бот запущен!")
+    print("🎭 Эмуляция человеческого поведения ВКЛЮЧЕНА")
     print("Команды: /start, /login, /screen, /status, /close, /tweets, /search, /getgirl, /browse, /agnes")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
