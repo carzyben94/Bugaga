@@ -175,7 +175,7 @@ logger.info(f"🍪 Загружено {len(COOKIES)} кук для X.com")
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 browser_data = None
 pydoll_browser = None
-pydoll_page = None
+pydoll_tab = None
 browser_lock = False
 engine_mode = "pydoll"  # По умолчанию Pydoll
 login_status = {
@@ -187,18 +187,18 @@ login_status = {
 
 logger.info(f"🎮 Начальный движок: {engine_mode}")
 
-# ========== PYDOLL БРАУЗЕР ==========
+# ========== PYDOLL БРАУЗЕР (ПРАВИЛЬНЫЙ СПОСОБ ДЛЯ 2.23.0) ==========
 async def get_pydoll_browser():
-    """Получает Pydoll браузер и возвращает страницу"""
-    global pydoll_browser, pydoll_page
+    """Получает Pydoll браузер и возвращает Tab (вкладку)"""
+    global pydoll_browser, pydoll_tab
     logger.info("🚀 Запрос на получение Pydoll браузера")
     
-    if pydoll_browser and pydoll_page:
+    if pydoll_browser and pydoll_tab:
         logger.info("🔄 Проверка существующего браузера...")
         try:
-            await pydoll_page.evaluate('1')
+            await pydoll_tab.evaluate('1')
             logger.info("✅ Существующий браузер работает")
-            return pydoll_page
+            return pydoll_tab
         except Exception as e:
             logger.warning(f"⚠️ Существующий браузер не отвечает: {e}")
             await close_pydoll_browser()
@@ -208,10 +208,11 @@ async def get_pydoll_browser():
         from pydoll.browser.options import ChromiumOptions
         logger.info("✅ Модули Pydoll импортированы")
         
-        logger.info("🚀 Запускаю Pydoll браузер...")
+        logger.info("🚀 Создаю Pydoll браузер с настройками...")
         
         options = ChromiumOptions()
         
+        # Добавляем аргументы для Railway/контейнеров
         args = [
             "--no-sandbox",
             "--disable-dev-shm-usage",
@@ -233,83 +234,22 @@ async def get_pydoll_browser():
                     logger.info(f"📍 Использую Chromium по пути: {path}")
                     break
         
-        logger.info("⏳ Запуск браузера (может занять 10-30 секунд)...")
-        pydoll_browser = await Chrome(options=options).start()
-        logger.info("✅ Браузер запущен успешно!")
+        # ✅ ПРАВИЛЬНЫЙ СПОСОБ для Pydoll 2.23.0
+        # Создаем экземпляр браузера
+        logger.info("⏳ Создание экземпляра браузера...")
+        pydoll_browser = Chrome(options=options)
+        logger.info("✅ Экземпляр браузера создан")
         
-        # Получаем страницу
-        pydoll_page = None
-        logger.info("🔍 Пытаюсь получить страницу...")
-        
-        # Способ 1: get_pages()
-        if hasattr(pydoll_browser, 'get_pages'):
-            try:
-                pages = await pydoll_browser.get_pages()
-                if pages and len(pages) > 0:
-                    pydoll_page = pages[0]
-                    logger.info("✅ Страница получена через get_pages()[0]")
-            except Exception as e:
-                logger.error(f"⚠️ Ошибка при get_pages(): {e}")
-        
-        # Способ 2: pages как свойство
-        if not pydoll_page and hasattr(pydoll_browser, 'pages'):
-            try:
-                if callable(pydoll_browser.pages):
-                    pages = await pydoll_browser.pages()
-                    if pages and len(pages) > 0:
-                        pydoll_page = pages[0]
-                        logger.info("✅ Страница получена через pages()[0]")
-                elif isinstance(pydoll_browser.pages, list) and len(pydoll_browser.pages) > 0:
-                    pydoll_page = pydoll_browser.pages[0]
-                    logger.info("✅ Страница получена через pages[0]")
-            except Exception as e:
-                logger.error(f"⚠️ Ошибка при получении pages: {e}")
-        
-        # Способ 3: get_page()
-        if not pydoll_page and hasattr(pydoll_browser, 'get_page'):
-            try:
-                if callable(pydoll_browser.get_page):
-                    pydoll_page = await pydoll_browser.get_page()
-                else:
-                    pydoll_page = pydoll_browser.get_page
-                if pydoll_page:
-                    logger.info("✅ Страница получена через get_page()")
-            except Exception as e:
-                logger.error(f"⚠️ Ошибка при get_page(): {e}")
-        
-        # Способ 4: current_page
-        if not pydoll_page and hasattr(pydoll_browser, 'current_page'):
-            try:
-                if callable(pydoll_browser.current_page):
-                    pydoll_page = await pydoll_browser.current_page()
-                else:
-                    pydoll_page = pydoll_browser.current_page
-                if pydoll_page:
-                    logger.info("✅ Страница получена через current_page")
-            except Exception as e:
-                logger.error(f"⚠️ Ошибка при получении current_page: {e}")
-        
-        # Способ 5: new_page()
-        if not pydoll_page and hasattr(pydoll_browser, 'new_page'):
-            try:
-                if callable(pydoll_browser.new_page):
-                    pydoll_page = await pydoll_browser.new_page()
-                else:
-                    pydoll_page = pydoll_browser.new_page
-                if pydoll_page:
-                    logger.info("✅ Страница создана через new_page()")
-            except Exception as e:
-                logger.error(f"⚠️ Ошибка при new_page(): {e}")
-        
-        if not pydoll_page:
-            logger.error("❌ Не удалось получить страницу браузера!")
-            raise Exception("Не удалось получить страницу браузера")
+        # Запускаем и получаем вкладку (Tab)
+        logger.info("⏳ Запуск браузера и получение вкладки...")
+        pydoll_tab = await pydoll_browser.start()
+        logger.info("✅ Браузер запущен, вкладка получена!")
         
         # Устанавливаем куки
         logger.info("🍪 Устанавливаю куки для X.com...")
         for cookie in COOKIES:
             try:
-                await pydoll_page.set_cookie(
+                await pydoll_tab.set_cookie(
                     name=cookie['name'],
                     value=cookie['value'],
                     domain=cookie['domain'],
@@ -320,25 +260,30 @@ async def get_pydoll_browser():
                 logger.warning(f"⚠️ Ошибка установки куки {cookie['name']}: {e}")
         
         logger.info("✅ Pydoll браузер полностью готов!")
-        return pydoll_page
+        return pydoll_tab
         
+    except ImportError as e:
+        logger.error(f"❌ Ошибка импорта Pydoll: {e}", exc_info=True)
+        return None
     except Exception as e:
         logger.error(f"❌ Pydoll ошибка: {e}", exc_info=True)
         return None
 
 async def close_pydoll_browser():
     """Закрывает Pydoll браузер"""
-    global pydoll_browser, pydoll_page
+    global pydoll_browser, pydoll_tab
     logger.info("📌 Закрываю Pydoll браузер...")
     
     if pydoll_browser:
         try:
-            await pydoll_browser.stop()
+            await pydoll_browser.close()
             logger.info("✅ Pydoll браузер закрыт")
         except Exception as e:
             logger.warning(f"⚠️ Ошибка при закрытии Pydoll: {e}")
         pydoll_browser = None
-        pydoll_page = None
+        pydoll_tab = None
+    else:
+        logger.info("📌 Браузер уже закрыт")
 
 # ========== PLAYWRIGHT БРАУЗЕР ==========
 async def get_playwright_browser():
@@ -347,10 +292,13 @@ async def get_playwright_browser():
     logger.info("🚀 Запрос на получение Playwright браузера")
     
     if browser_data:
+        logger.info("🔄 Проверка существующего браузера...")
         try:
             await browser_data['page'].evaluate('1')
+            logger.info("✅ Существующий браузер работает")
             return browser_data
-        except:
+        except Exception as e:
+            logger.warning(f"⚠️ Существующий браузер не отвечает: {e}")
             try:
                 await browser_data['browser'].close()
             except:
@@ -358,6 +306,7 @@ async def get_playwright_browser():
             browser_data = None
     
     while browser_lock:
+        logger.debug("⏳ Ожидание освобождения блокировки...")
         await asyncio.sleep(0.5)
     
     browser_lock = True
@@ -367,6 +316,7 @@ async def get_playwright_browser():
         
         logger.info("🚀 Запускаю Playwright браузер...")
         p = await async_playwright().start()
+        logger.debug("✅ Playwright запущен")
         
         browser = await p.chromium.launch(
             headless=True,
@@ -380,12 +330,14 @@ async def get_playwright_browser():
                 '--headless=new',
             ]
         )
+        logger.info("✅ Chromium запущен")
         
         context = await browser.new_context(
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             viewport={'width': 1280, 'height': 720},
         )
         page = await context.new_page()
+        logger.info("✅ Создана новая страница")
         
         for cookie in COOKIES:
             try:
@@ -395,6 +347,7 @@ async def get_playwright_browser():
                     'domain': '.x.com',
                     'path': '/',
                 }])
+                logger.debug(f"🍪 Установлена кука: {cookie['name']}")
             except Exception as e:
                 logger.warning(f"Cookie error {cookie['name']}: {e}")
         
@@ -418,8 +371,9 @@ async def close_playwright_browser():
         try:
             await browser_data['browser'].close()
             await browser_data['playwright'].stop()
-        except:
-            pass
+            logger.info("✅ Playwright браузер закрыт")
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка при закрытии Playwright: {e}")
         browser_data = None
         login_status = {
             'is_logged_in': False,
@@ -427,10 +381,12 @@ async def close_playwright_browser():
             'last_check': None,
             'cookies_valid': False
         }
+    else:
+        logger.info("📌 Браузер уже закрыт")
 
 # ========== УНИВЕРСАЛЬНЫЕ ФУНКЦИИ ==========
 async def get_browser():
-    """Получает браузер и возвращает страницу"""
+    """Получает браузер и возвращает страницу/вкладку"""
     global engine_mode
     logger.info(f"🎮 Получение браузера для движка: {engine_mode}")
     
@@ -445,6 +401,7 @@ async def get_browser():
         return browser_data['page'] if browser_data else None
 
 async def close_browser():
+    """Закрывает браузер согласно выбранному движку"""
     global engine_mode
     logger.info(f"📌 Закрытие браузера для движка: {engine_mode}")
     
@@ -461,6 +418,7 @@ async def goto_url(url):
     if not page:
         raise Exception("Страница не получена")
     
+    # Универсальный метод - у Pydoll Tab и Playwright Page одинаковый метод
     if hasattr(page, 'go_to'):
         await page.go_to(url)
     elif hasattr(page, 'goto'):
@@ -520,6 +478,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def engine(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Переключение между движками браузера"""
     global engine_mode, PYDOLL_AVAILABLE, PLAYWRIGHT_AVAILABLE, CHROMIUM_INSTALLED
     logger.info(f"📩 Команда /engine от {update.effective_user.username} с аргументами: {context.args}")
     
@@ -579,6 +538,7 @@ async def engine(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Неизвестный движок: {engine_type}")
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Авторизация в X.com через выбранный движок"""
     logger.info(f"📩 Команда /login от {update.effective_user.username}")
     msg = await update.message.reply_text(f"⏳ Захожу в X.com через {engine_mode}...")
     
@@ -657,6 +617,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Login error: {e}", exc_info=True)
 
 async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Скриншот текущей страницы"""
     logger.info(f"📩 Команда /screen от {update.effective_user.username}")
     msg = await update.message.reply_text("⏳ Делаю скриншот...")
     
@@ -668,6 +629,7 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 photo=screenshot,
                 caption=f"📸 Скриншот X.com\n🎮 Движок: {engine_mode}"
             )
+            logger.info("✅ Скриншот отправлен")
         else:
             await msg.edit_text("❌ Не удалось сделать скриншот")
         
@@ -676,6 +638,7 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:100]}")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Статус бота"""
     logger.info(f"📩 Команда /status от {update.effective_user.username}")
     msg = await update.message.reply_text("⏳ Проверяю статус...")
     
@@ -717,16 +680,19 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg += f"\n🕐 {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
         
         await msg.edit_text(status_msg, parse_mode='Markdown')
+        logger.info("✅ Статус отправлен")
         
     except Exception as e:
         logger.error(f"❌ Ошибка в status: {e}", exc_info=True)
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Закрывает браузер"""
     logger.info(f"📩 Команда /close от {update.effective_user.username}")
     msg = await update.message.reply_text("⏳ Закрываю браузер...")
     await close_browser()
     await msg.edit_text("✅ Браузер закрыт!")
+    logger.info("✅ Браузер закрыт по команде")
 
 # ========== ЗАПУСК ==========
 def main():
@@ -753,6 +719,7 @@ def main():
     print(f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}")
     print("\nКоманды:")
     print("  /start, /engine, /login, /screen, /status, /close")
+    print("\n📋 Подробные логи пишутся в bot.log")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
