@@ -78,24 +78,26 @@ except ImportError as e:
 except Exception as e:
     logger.error(f"❌ Ошибка загрузки Pydoll: {e}")
 
-# ========== ПРОВЕРКА EXTRACTOR ==========
-PYDOLL_EXTRACTOR_AVAILABLE = False
-EXTRACTION_MODEL = None
-EXTRACTOR_FIELD = None
-
+# ========== PYDANTIC МОДЕЛИ ==========
 try:
-    from pydoll.extractor import ExtractionModel, Field
-    EXTRACTION_MODEL = ExtractionModel
-    EXTRACTOR_FIELD = Field
+    from pydantic import BaseModel, Field
+    PYDANTIC_AVAILABLE = True
+    logger.info("✅ Pydantic загружен")
+except ImportError:
+    PYDANTIC_AVAILABLE = False
+    logger.warning("⚠️ Pydantic не установлен")
+
+# ========== PYDOLL EXTRACTOR ==========
+PYDOLL_EXTRACTOR_AVAILABLE = False
+try:
+    from pydoll.extractor import ExtractionModel, Field as ExtractorField
     PYDOLL_EXTRACTOR_AVAILABLE = True
-    logger.info("✅ Pydoll Extractor загружен (pydoll.extractor)")
+    logger.info("✅ Pydoll Extractor загружен")
 except ImportError:
     try:
-        from pydoll.extraction import ExtractionModel, Field
-        EXTRACTION_MODEL = ExtractionModel
-        EXTRACTOR_FIELD = Field
+        from pydoll.extraction import ExtractionModel, Field as ExtractorField
         PYDOLL_EXTRACTOR_AVAILABLE = True
-        logger.info("✅ Pydoll Extractor загружен (pydoll.extraction)")
+        logger.info("✅ Pydoll Extractor загружен (extraction)")
     except ImportError:
         logger.warning("⚠️ Pydoll Extractor не найден")
 
@@ -215,109 +217,78 @@ async def take_screenshot():
         logger.error(f"❌ Ошибка скриншота: {e}")
         return None
 
-# ========== БЕЗОПАСНОЕ ВЫПОЛНЕНИЕ JS (САМЫЙ ПРОСТОЙ СПОСОБ) ==========
+# ========== PYDANTIC МОДЕЛИ ДЛЯ EXTRACTOR ==========
 
-async def safe_execute_js(page, script, timeout=10):
-    """Самый простой и безопасный способ выполнения JS"""
-    try:
-        # Просто выполняем скрипт и получаем результат как есть
-        result = await asyncio.wait_for(
-            page.execute_script(script, return_by_value=True),
-            timeout=timeout
+if PYDOLL_EXTRACTOR_AVAILABLE:
+    class ShadowElement(ExtractionModel):
+        """Модель для элемента с shadowRoot"""
+        tag: str = ExtractorField(selector=':host', default='')
+        element_id: str = ExtractorField(selector=':host', attribute='id', default='')
+        class_name: str = ExtractorField(selector=':host', attribute='className', default='')
+        children_count: int = ExtractorField(selector='*', count=True, default=0)
+
+    class TweetModel(ExtractionModel):
+        """Модель для твита"""
+        text: str = ExtractorField(selector='[data-testid="tweetText"]', default='')
+        author: str = ExtractorField(selector='[data-testid="User-Name"]', default='')
+        time: str = ExtractorField(selector='time', attribute='datetime', default='')
+        likes: int = ExtractorField(
+            selector='[data-testid="like"]',
+            attribute='aria-label',
+            default=0,
+            transform=lambda x: int(re.search(r'(\d+)', x or '').group(1)) if x and re.search(r'(\d+)', x) else 0
         )
-        return result
-    except asyncio.TimeoutError:
-        logger.warning(f"⏱️ Таймаут {timeout}с")
-        return None
-    except Exception as e:
-        logger.warning(f"⚠️ Ошибка: {e}")
-        return None
 
-# ========== /SHADOW (РАБОТАЕТ БЕЗ ОШИБОК) ==========
+# ========== /SHADOW (ЧЕРЕЗ EXTRACTOR) ==========
 
 async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Поиск Shadow DOM через простой JS"""
+    """Поиск Shadow DOM через Pydantic Extractor"""
     logger.info(f"📩 /shadow от {update.effective_user.username}")
     
-    msg = await update.message.reply_text("🛡️ Поиск Shadow DOM...")
+    msg = await update.message.reply_text("🛡️ Поиск Shadow DOM через Pydantic Extractor...")
     
     try:
+        if not PYDOLL_EXTRACTOR_AVAILABLE:
+            await msg.edit_text("❌ Pydoll Extractor не доступен. Используйте /shadow_js")
+            return
+        
         page = await get_browser()
         if page is None:
             await msg.edit_text("❌ Браузер не запущен. Используйте /login")
             return
         
-        # Самый простой скрипт - возвращает только количество элементов
-        script = """
-            (function() {
-                var count = 0;
-                var els = document.querySelectorAll('*');
-                for (var i = 0; i < els.length; i++) {
-                    if (els[i].shadowRoot) {
-                        count++;
-                    }
-                }
-                return count;
-            })()
-        """
+        # Ищем элементы с shadowRoot через Pydantic
+        elements = await page.extract_all(
+            ShadowElement,
+            scope='grok-drawer, video-player, emoji-picker, [data-testid*="drawer"], [data-testid*="player"]',
+            timeout=5
+        )
         
-        count = await safe_execute_js(page, script)
-        
-        if count is None:
-            await msg.edit_text("❌ Ошибка выполнения")
-            return
-        
-        if count == 0:
+        if not elements or len(elements) == 0:
             await msg.edit_text("❌ Shadow DOM не найден на странице")
             return
         
-        # Получаем детали
-        detail_script = """
-            (function() {
-                var result = [];
-                var els = document.querySelectorAll('*');
-                for (var i = 0; i < els.length; i++) {
-                    if (els[i].shadowRoot) {
-                        var item = {
-                            tag: els[i].tagName,
-                            id: els[i].id || ''
-                        };
-                        try {
-                            item.children = els[i].shadowRoot.children.length;
-                        } catch(e) {
-                            item.children = 0;
-                        }
-                        result.push(item);
-                    }
-                }
-                return result;
-            })()
-        """
+        response = f"🛡️ **SHADOW DOM (Pydantic)**\n\n"
+        response += f"📦 Всего элементов: {len(elements)}\n\n"
         
-        data = await safe_execute_js(page, detail_script)
-        
-        if not data:
-            await msg.edit_text("❌ Не удалось получить данные")
-            return
-        
-        response = f"🛡️ **SHADOW DOM**\n\n"
-        response += f"📦 Всего элементов: {len(data)}\n\n"
-        
-        for i, item in enumerate(data[:5], 1):
-            response += f"**{i}.** `{item.get('tag', 'unknown')}`"
-            if item.get('id'):
-                response += f" id=\"{item['id']}\""
-            response += f"\n   📄 Детей: {item.get('children', 0)}\n\n"
+        for i, item in enumerate(elements[:5], 1):
+            response += f"**{i}.** `{item.tag}`"
+            if item.element_id:
+                response += f" id=\"{item.element_id}\""
+            if item.class_name:
+                response += f" class=\"{item.class_name[:30]}\""
+            response += f"\n   📄 Детей: {item.children_count}\n\n"
         
         await msg.edit_text(response, parse_mode='Markdown')
         
+        # Сохраняем в JSON через Pydantic
         filename = f"shadow_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+            json.dump([item.model_dump() for item in elements], f, indent=2, ensure_ascii=False)
         
         await update.message.reply_document(
             document=open(filename, 'rb'),
-            caption=f"📄 Данные Shadow DOM ({len(data)} элементов)"
+            caption=f"📄 Данные Shadow DOM ({len(elements)} элементов)"
         )
         
         screenshot = await take_screenshot()
@@ -328,21 +299,23 @@ async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ Ошибка: {e}", exc_info=True)
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
-# ========== /TWEETS ==========
+# ========== /TWEETS (ЧЕРЕЗ EXTRACTOR) ==========
 
 async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Парсинг твитов"""
+    """Парсинг твитов через Pydantic Extractor"""
     if not context.args:
         await update.message.reply_text(
-            "ℹ️ Использование: /tweets <username> [count]\n"
-            "Пример: /tweets elonmusk 5"
+            "ℹ️ Использование: /tweets <username>\n"
+            "Пример: /tweets elonmusk"
         )
         return
     
-    username = context.args[0].replace('@', '').strip()
-    count = int(context.args[1]) if len(context.args) > 1 else 10
+    if not PYDOLL_EXTRACTOR_AVAILABLE:
+        await update.message.reply_text("❌ Pydoll Extractor не доступен")
+        return
     
-    await send_message_safe(update, f"📊 Парсю твиты @{username}...")
+    username = context.args[0].replace('@', '').strip()
+    await send_message_safe(update, f"📊 Парсю твиты @{username} через Pydantic...")
     
     try:
         page = await get_browser()
@@ -355,43 +328,42 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await human_scroll(page, 500)
         await asyncio.sleep(1)
         
-        script = f"""
-            (function() {{
-                var tweets = [];
-                var elements = document.querySelectorAll('[data-testid="tweet"]');
-                for (var i = 0; i < elements.length && i < {count}; i++) {{
-                    var tweet = elements[i];
-                    var textEl = tweet.querySelector('[data-testid="tweetText"]');
-                    var timeEl = tweet.querySelector('time');
-                    var isPinned = !!tweet.querySelector('[data-testid="pinIcon"]');
-                    var text = textEl ? textEl.innerText.trim() : '';
-                    tweets.push({{
-                        text: text.substring(0, 200),
-                        time: timeEl ? timeEl.getAttribute('datetime') : '',
-                        is_pinned: isPinned
-                    }});
-                }}
-                return tweets;
-            }})()
-        """
+        # Извлекаем твиты через Pydantic
+        tweets_data = await page.extract_all(
+            TweetModel,
+            scope='[data-testid="tweet"]',
+            timeout=10
+        )
         
-        tweets_data = await safe_execute_js(page, script)
-        
-        if not tweets_data or not isinstance(tweets_data, list):
+        if not tweets_data:
             await send_message_safe(update, f"❌ Твиты @{username} не найдены")
             return
         
-        response = f"📊 **ТВИТЫ @{username}**\n📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n📌 {len(tweets_data)}\n\n"
-        for i, tweet in enumerate(tweets_data[:5], 1):
-            if isinstance(tweet, dict):
-                response += f"**{i}.** {tweet.get('text', '')[:200]}\n"
-                if tweet.get('is_pinned'):
-                    response += "📌 ЗАКРЕПЛЕН\n"
-                response += "\n"
+        response = f"📊 **ТВИТЫ @{username}**\n"
+        response += f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
+        response += f"📌 Всего: {len(tweets_data)}\n\n"
         
-        await send_message_safe(update, response)
+        for i, tweet in enumerate(tweets_data[:5], 1):
+            response += f"**{i}.** {tweet.text[:200]}\n"
+            response += f"   👤 {tweet.author}"
+            if tweet.likes > 0:
+                response += f" ❤️ {tweet.likes}"
+            response += "\n\n"
+        
+        await send_message_safe(update, response, parse_mode='Markdown')
+        
+        # Сохраняем через Pydantic
+        filename = f"tweets_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump([tweet.model_dump() for tweet in tweets_data], f, indent=2, ensure_ascii=False)
+        
+        await update.message.reply_document(
+            document=open(filename, 'rb'),
+            caption=f"📄 {len(tweets_data)} твитов @{username}"
+        )
         
     except Exception as e:
+        logger.error(f"❌ Ошибка: {e}", exc_info=True)
         await send_message_safe(update, f"❌ Ошибка: {str(e)[:200]}")
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
@@ -453,7 +425,7 @@ async def emulate_human_login_flow(page):
 
 async def check_login_status_detailed(page):
     try:
-        script = """
+        js_code = """
             (function() {
                 var cookies = {};
                 var parts = document.cookie.split(';');
@@ -512,10 +484,25 @@ async def check_login_status_detailed(page):
                 };
             })()
         """
-        return await safe_execute_js(page, script)
+        result = await safe_execute_js(page, js_code)
+        return result if isinstance(result, dict) else {'isLoggedIn': False}
     except Exception as e:
         logger.error(f"❌ Ошибка проверки статуса: {e}")
         return {'isLoggedIn': False}
+
+async def safe_execute_js(page, script, timeout=10):
+    """Безопасное выполнение JS с return_by_value=True"""
+    try:
+        return await asyncio.wait_for(
+            page.execute_script(script, return_by_value=True),
+            timeout=timeout
+        )
+    except asyncio.TimeoutError:
+        logger.warning(f"⏱️ Таймаут {timeout}с")
+        return None
+    except Exception as e:
+        logger.warning(f"⚠️ Ошибка: {e}")
+        return None
 
 # ========== КОМАНДА ЛОГИН ==========
 
@@ -627,7 +614,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "tweets":
         await query.edit_message_text(
             "📝 **Введите username для парсинга твитов:**\n\n"
-            "Пример: `/tweets elonmusk 5`"
+            "Пример: `/tweets elonmusk`"
         )
     elif query.data == "shadow":
         await shadow(update, context)
@@ -726,8 +713,8 @@ def main():
     print("\nКоманды:")
     print("  /start - Главное меню")
     print("  /login - Авторизация")
-    print("  /tweets <username> - Твиты")
-    print("  /shadow - Shadow DOM")
+    print("  /tweets <username> - Твиты через Pydantic")
+    print("  /shadow - Shadow DOM через Pydantic")
     print("  /screen - Скриншот")
     print("  /status - Статус")
     print("  /close - Закрыть браузер")
