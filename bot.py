@@ -31,22 +31,12 @@ class AuthStatusModel(BaseModel):
 
 # ========== МОДЕЛИ ДЛЯ EXTRACT ==========
 class TweetExtract(BaseModel):
-    """Модель для извлечения твита"""
     text: str = ""
     author: str = ""
     time: str = ""
     likes: str = ""
     retweets: str = ""
     url: str = ""
-
-class ProfileExtract(BaseModel):
-    """Модель для извлечения профиля"""
-    name: str = ""
-    username: str = ""
-    bio: str = ""
-    followers: str = ""
-    following: str = ""
-    joined: str = ""
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 engine_mode = "pydoll"
@@ -187,7 +177,7 @@ async def take_screenshot():
     return None
 
 # ============================================================
-# 1. SHADOW DOM - РАБОТА С ВЕБ-КОМПОНЕНТАМИ
+# 1. SHADOW DOM - БЕЗ ПРОВЕРКИ АВТОРИЗАЦИИ
 # ============================================================
 async def shadow_dom(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Исследование Shadow DOM на странице"""
@@ -199,10 +189,9 @@ async def shadow_dom(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         page = await get_browser()
         if not page:
-            await msg.edit_text("❌ Браузер не запущен")
+            await msg.edit_text("❌ Браузер не запущен. Используй /login")
             return
         
-        # Находим все элементы с shadowRoot
         result = await page.execute_script('''
             () => {
                 const elements = [];
@@ -242,11 +231,8 @@ async def shadow_dom(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             report += "💡 **Как использовать:**\n"
             report += "```python\n"
-            report += "# Найти хост\n"
             report += "host = await tab.find('#shadow-host')\n"
-            report += "# Получить shadowRoot\n"
             report += "shadow = await host.get_shadow_root()\n"
-            report += "# Найти внутри shadow\n"
             report += "element = await shadow.query('.inner-class')\n"
             report += "```"
         else:
@@ -256,11 +242,7 @@ async def shadow_dom(update: Update, context: ContextTypes.DEFAULT_TYPE):
             report += "**Где искать:**\n"
             report += "1. Веб-компоненты\n"
             report += "2. Сложные UI элементы\n"
-            report += "3. Сторонние виджеты\n\n"
-            report += "**Как найти:**\n"
-            report += "1. Открой DevTools (F12)\n"
-            report += "2. Включи 'Show user agent shadow DOM'\n"
-            report += "3. Ищи элементы с #shadow-root"
+            report += "3. Сторонние виджеты"
         
         await msg.edit_text(report, parse_mode='Markdown')
         
@@ -269,7 +251,7 @@ async def shadow_dom(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
-# 2. API - ПЕРЕХВАТ И ВЫПОЛНЕНИЕ ЗАПРОСОВ
+# 2. API - БЕЗ ПРОВЕРКИ АВТОРИЗАЦИИ
 # ============================================================
 async def api_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Выполнение API запросов с сессией браузера"""
@@ -281,59 +263,39 @@ async def api_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         page = await get_browser()
         if not page:
-            await msg.edit_text("❌ Браузер не запущен")
-            return
-        
-        # Проверка авторизации
-        if not login_status['is_logged_in']:
-            await msg.edit_text("❌ Сначала авторизуйся! Используй /login")
+            await msg.edit_text("❌ Браузер не запущен. Используй /login")
             return
         
         # Тестовый API запрос к X.com
         api_url = "https://x.com/i/api/1.1/onboarding/task.json"
         
-        # Используем Pydoll request (UI + API гибрид)
-        try:
-            # Метод через fetch в браузере
-            result = await page.execute_script(f'''
-                (async () => {{
-                    try {{
-                        const response = await fetch('{api_url}', {{
-                            method: 'GET',
-                            credentials: 'include',
-                            headers: {{
-                                'Accept': 'application/json',
-                                'Content-Type': 'application/json'
-                            }}
-                        }});
-                        
-                        const data = await response.json();
-                        return {{
-                            status: response.status,
-                            ok: response.ok,
-                            data: data,
-                            url: response.url
-                        }};
-                    }} catch (e) {{
-                        return {{
-                            error: e.message,
-                            status: 0
-                        }};
-                    }}
-                }})()
-            ''')
-        except:
-            # Альтернативный метод
-            result = await page.execute_script(f'''
-                function() {{
-                    return fetch('{api_url}', {{
-                        credentials: 'include'
-                    }})
-                    .then(r => r.json())
-                    .then(data => ({{status: 200, ok: true, data: data}}))
-                    .catch(e => ({{error: e.message, status: 0}}));
+        result = await page.execute_script(f'''
+            (async () => {{
+                try {{
+                    const response = await fetch('{api_url}', {{
+                        method: 'GET',
+                        credentials: 'include',
+                        headers: {{
+                            'Accept': 'application/json',
+                            'Content-Type': 'application/json'
+                        }}
+                    }});
+                    
+                    const data = await response.json();
+                    return {{
+                        status: response.status,
+                        ok: response.ok,
+                        data: data,
+                        url: response.url
+                    }};
+                }} catch (e) {{
+                    return {{
+                        error: e.message,
+                        status: 0
+                    }};
                 }}
-            ''')
+            }})()
+        ''')
         
         # Проверка кук
         cookies_check = await page.execute_script('''
@@ -371,8 +333,8 @@ async def api_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
             report += "❌ **API не отвечает**\n"
             report += f"  Ошибка: {result.get('error', 'Неизвестно')}\n\n"
             report += "💡 **Возможные причины:**\n"
-            report += "1. Неправильные куки\n"
-            report += "2. Требуется обновление токена\n"
+            report += "1. Нет авторизации\n"
+            report += "2. Неправильные куки\n"
             report += "3. Блокировка со стороны X.com"
         
         report += "\n💡 **Как работает гибридная автоматизация:**\n"
@@ -387,7 +349,7 @@ async def api_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
-# 3. EXTRACT - СТРУКТУРИРОВАННОЕ ИЗВЛЕЧЕНИЕ
+# 3. EXTRACT - БЕЗ ПРОВЕРКИ АВТОРИЗАЦИИ
 # ============================================================
 async def extract_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Извлечение структурированных данных со страницы"""
@@ -399,15 +361,10 @@ async def extract_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         page = await get_browser()
         if not page:
-            await msg.edit_text("❌ Браузер не запущен")
+            await msg.edit_text("❌ Браузер не запущен. Используй /login")
             return
         
-        # Проверка авторизации
-        if not login_status['is_logged_in']:
-            await msg.edit_text("❌ Сначала авторизуйся! Используй /login")
-            return
-        
-        # Извлекаем твиты
+        # Извлекаем твиты (даже если не авторизован - просто покажет что есть)
         tweets_data = await page.execute_script('''
             () => {
                 const tweets = [];
@@ -416,7 +373,6 @@ async def extract_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     const userEl = el.querySelector('[data-testid="User-Name"]');
                     const timeEl = el.querySelector('time');
                     
-                    // Ищем лайки и ретвиты
                     const likeEl = el.querySelector('[data-testid="like"]');
                     const retweetEl = el.querySelector('[data-testid="retweet"]');
                     
@@ -433,7 +389,7 @@ async def extract_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ''')
         
         if not tweets_data or len(tweets_data) == 0:
-            await msg.edit_text("❌ Нет твитов для извлечения!\n\nПерейди на страницу с твитами или проверь авторизацию.")
+            await msg.edit_text("❌ Нет твитов для извлечения!\n\nПерейди на страницу с твитами или проверь /login")
             return
         
         # Конвертируем в Pydantic модели
@@ -442,9 +398,8 @@ async def extract_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 extracted_tweets.append(TweetExtract(**tweet))
             except Exception as e:
-                logger.warning(f"Ошибка валидации твита: {e}")
+                logger.warning(f"Ошибка валидации: {e}")
         
-        # Формируем отчет
         report = f"📊 **EXTRACT - СТРУКТУРИРОВАННЫЕ ДАННЫЕ**\n\n"
         report += f"✅ Извлечено {len(extracted_tweets)} твитов\n\n"
         
@@ -478,7 +433,7 @@ async def extract_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
-# КОМАНДА /login (РАБОЧАЯ ВЕРСИЯ)
+# КОМАНДА /login
 # ============================================================
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Авторизация в X.com с эмуляцией"""
@@ -714,7 +669,7 @@ def main():
     print("  🛡️ Shadow DOM - работа с веб-компонентами")
     print("  🌐 API - гибридная автоматизация")
     print("  📊 Extract - структурированное извлечение")
-    print("\n📌 Команды:")
+    print("\n📌 Команды (все работают без проверки авторизации):")
     print("  /start - главное меню")
     print("  /login - авторизация в X.com")
     print("  /shadow - исследование Shadow DOM")
