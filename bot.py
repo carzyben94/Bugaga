@@ -5,6 +5,7 @@ import subprocess
 import logging
 import asyncio
 import base64
+import json
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -302,6 +303,13 @@ async def get_pydoll_browser():
         
         logger.info(f"🍪 Установлено {cookies_set} из {len(COOKIES)} кук")
         
+        # Проверяем куки
+        try:
+            check_cookies = await pydoll_tab.execute_script('document.cookie')
+            logger.info(f"📋 Куки в браузере: {check_cookies[:200]}...")
+        except Exception as e:
+            logger.error(f"❌ Ошибка проверки кук: {e}")
+        
         logger.info("✅ Pydoll браузер полностью готов!")
         return pydoll_tab
         
@@ -597,7 +605,7 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await asyncio.sleep(3)
             log_diag("✅ Переход выполнен")
             
-            # 5. Проверка кук - ИСПРАВЛЕНО
+            # 5. Проверка кук
             await msg.edit_text("5️⃣ Проверяю куки...")
             log_diag("=== ПРОВЕРКА КУК ===")
             
@@ -605,13 +613,11 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 cookies_js = await tab.execute_script('document.cookie')
                 log_diag(f"📋 Куки из браузера: {cookies_js[:500] if cookies_js else 'пусто'}...")
                 
-                # Разбираем куки правильно
                 cookie_list = []
                 if cookies_js:
                     for cookie in cookies_js.split(';'):
                         cookie = cookie.strip()
                         if '=' in cookie:
-                            # Разделяем только по первому '='
                             parts = cookie.split('=', 1)
                             if len(parts) == 2:
                                 name = parts[0].strip()
@@ -622,7 +628,6 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 log_diag(f"📦 Всего кук: {len(cookie_list)}")
                 
-                # Проверяем важные куки
                 important = ['auth_token', 'ct0', 'twid']
                 found_cookies = []
                 for c in cookie_list:
@@ -732,7 +737,6 @@ async def handle_cookies_input(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     
     try:
-        import json
         data = json.loads(text)
         new_cookies = []
         
@@ -869,22 +873,31 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         await goto_url('https://x.com')
-        await asyncio.sleep(3)
+        await asyncio.sleep(5)
         
+        # Проверяем авторизацию через больше селекторов
         auth_status = await execute_js('''
             () => {
-                const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]');
-                const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
-                const hasHomeLink = !!document.querySelector('[data-testid="AppTabBar_Home_Link"]');
-                const hasSideNav = !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
-                const hasLoginForm = !!document.querySelector('[data-testid="loginForm"]');
-                
+                // Проверяем куки
                 const cookies = document.cookie.split(';').reduce((acc, c) => {
                     const [key, val] = c.trim().split('=');
                     acc[key] = val;
                     return acc;
                 }, {});
                 
+                // Проверяем наличие auth_token (главный признак авторизации)
+                const hasAuthToken = !!cookies.auth_token;
+                const hasCt0 = !!cookies.ct0;
+                
+                // Проверяем наличие элементов интерфейса
+                const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]') || 
+                                    !!document.querySelector('[data-testid="postButton"]');
+                const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
+                const hasHomeLink = !!document.querySelector('[data-testid="AppTabBar_Home_Link"]');
+                const hasSideNav = !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
+                const hasLoginForm = !!document.querySelector('[data-testid="loginForm"]');
+                
+                // Пытаемся найти username
                 let username = null;
                 const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
                 if (profileLink) {
@@ -895,16 +908,31 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     }
                 }
                 
+                // Если не нашли через профиль, пробуем другие способы
+                if (!username) {
+                    const accountBtn = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
+                    if (accountBtn) {
+                        const text = accountBtn.textContent || '';
+                        const match = text.match(/@([a-zA-Z0-9_]+)/);
+                        if (match) username = match[1];
+                    }
+                }
+                
+                // ОПРЕДЕЛЯЕМ АВТОРИЗАЦИЮ: если есть auth_token ИЛИ элементы интерфейса
+                const isLoggedIn = hasAuthToken || hasTweetBtn || hasProfileLink || hasHomeLink || hasSideNav;
+                
                 return {
-                    hasTweetBtn: hasTweetBtn || false,
-                    hasProfileLink: hasProfileLink || false,
-                    hasHomeLink: hasHomeLink || false,
-                    hasSideNav: hasSideNav || false,
-                    hasLoginForm: hasLoginForm || false,
-                    hasAuthToken: !!cookies.auth_token,
-                    hasCt0: !!cookies.ct0,
+                    hasAuthToken: hasAuthToken,
+                    hasCt0: hasCt0,
+                    hasTweetBtn: hasTweetBtn,
+                    hasProfileLink: hasProfileLink,
+                    hasHomeLink: hasHomeLink,
+                    hasSideNav: hasSideNav,
+                    hasLoginForm: hasLoginForm,
                     username: username,
-                    isLoggedIn: !!(hasTweetBtn || hasProfileLink || hasHomeLink || hasSideNav)
+                    isLoggedIn: isLoggedIn,
+                    url: window.location.href,
+                    title: document.title || ''
                 };
             }
         ''')
@@ -920,6 +948,8 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         login_status['cookies_valid'] = auth_status.get('hasAuthToken', False) and auth_status.get('hasCt0', False)
         
         status_msg = f"✅ X.com ({engine_mode})\n\n"
+        status_msg += f"📍 URL: {auth_status.get('url', 'неизвестно')}\n"
+        status_msg += f"📄 Заголовок: {auth_status.get('title', 'неизвестно')}\n\n"
         status_msg += f"🍪 auth_token: {'✅' if auth_status.get('hasAuthToken') else '❌'}\n"
         status_msg += f"🍪 ct0: {'✅' if auth_status.get('hasCt0') else '❌'}\n\n"
         
