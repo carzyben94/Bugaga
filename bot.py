@@ -3,12 +3,14 @@ import logging
 import asyncio
 import base64
 import random
+import json
 from datetime import datetime
+from typing import Optional, List
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 # Pydantic для структуры
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -18,7 +20,7 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
 
-# ========== PYDAВТИК МОДЕЛЬ ==========
+# ========== PYDAВТИК МОДЕЛИ ==========
 class AuthStatusModel(BaseModel):
     is_logged_in: bool = False
     username: str | None = None
@@ -26,6 +28,25 @@ class AuthStatusModel(BaseModel):
     has_ct0: bool = False
     last_check: datetime | None = None
     cookies_valid: bool = False
+
+# ========== МОДЕЛИ ДЛЯ EXTRACT ==========
+class TweetExtract(BaseModel):
+    """Модель для извлечения твита"""
+    text: str = ""
+    author: str = ""
+    time: str = ""
+    likes: str = ""
+    retweets: str = ""
+    url: str = ""
+
+class ProfileExtract(BaseModel):
+    """Модель для извлечения профиля"""
+    name: str = ""
+    username: str = ""
+    bio: str = ""
+    followers: str = ""
+    following: str = ""
+    joined: str = ""
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 engine_mode = "pydoll"
@@ -36,7 +57,7 @@ login_status = {
     'cookies_valid': False
 }
 
-# ========== ПОЛНЫЕ КУКИ X.COM (ИЗ ПРИМЕРА) ==========
+# ========== ПОЛНЫЕ КУКИ X.COM ==========
 COOKIES = [
     {"name": "__cuid", "value": "55d2d7c5-4888-430a-b024-dd785da46ef4", "domain": ".x.com", "path": "/"},
     {"name": "lang", "value": "ru", "domain": ".x.com", "path": "/"},
@@ -51,7 +72,7 @@ COOKIES = [
     {"name": "__cf_bm", "value": "nTs3wcXdCJEOwWzrJyjIg_huVdfck44vXhCJEXi.WuM-1783057691.7981694-1.0.1.1-pPPuXat31U4x5zNib67xLk9EFfH73h1ZdJPU8GvpXVu3pQ6TVu_rRHHpSZZMRRlzToQCMmjHQmaxoa_A4lwaYonLGPxEPsBIDig2wlei1L210t._g0yt.3n7XxfTQzrP", "domain": ".x.com", "path": "/"}
 ]
 
-logger.info(f"🍪 Загружено {len(COOKIES)} кук для X.com")
+logger.info(f"🍪 Загружено {len(COOKIES)} кук")
 
 browser = None
 tab = None
@@ -107,7 +128,6 @@ async def get_browser():
         options.add_argument("--disable-gpu")
         options.add_argument("--headless=new")
         
-        # Путь к Chromium для Railway
         chromium_paths = ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome']
         for path in chromium_paths:
             if os.path.exists(path):
@@ -119,7 +139,6 @@ async def get_browser():
         tab = await browser.start()
         logger.info("✅ Браузер запущен")
         
-        # Устанавливаем куки
         await tab.go_to('https://x.com')
         await asyncio.sleep(2)
         
@@ -128,31 +147,16 @@ async def get_browser():
             try:
                 await tab.set_cookie(**cookie)
                 cookies_set += 1
-                logger.debug(f"🍪 Кука установлена: {cookie['name']}")
             except Exception as e:
-                logger.warning(f"⚠️ Ошибка установки {cookie['name']}: {e}")
-                # Пробуем через JS
+                logger.warning(f"⚠️ Ошибка {cookie['name']}: {e}")
                 try:
                     js_cookie = f"document.cookie='{cookie['name']}={cookie['value']}; domain={cookie.get('domain', '.x.com')}; path={cookie.get('path', '/')}'"
                     await tab.execute_script(js_cookie)
                     cookies_set += 1
-                    logger.debug(f"🍪 Кука установлена через JS: {cookie['name']}")
-                except Exception as e2:
-                    logger.warning(f"⚠️ Не удалось установить куку {cookie['name']}: {e2}")
+                except:
+                    pass
         
         logger.info(f"🍪 Установлено {cookies_set} из {len(COOKIES)} кук")
-        
-        # Проверяем куки
-        try:
-            check_cookies = await tab.execute_script('document.cookie')
-            logger.info(f"📋 Куки в браузере: {check_cookies[:200]}...")
-            if 'auth_token' in check_cookies:
-                logger.info("✅ auth_token найден в куках!")
-            else:
-                logger.warning("⚠️ auth_token НЕ найден в куках!")
-        except Exception as e:
-            logger.error(f"❌ Ошибка проверки кук: {e}")
-        
         return tab
         
     except Exception as e:
@@ -183,33 +187,319 @@ async def take_screenshot():
     return None
 
 # ============================================================
+# 1. SHADOW DOM - РАБОТА С ВЕБ-КОМПОНЕНТАМИ
+# ============================================================
+async def shadow_dom(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Исследование Shadow DOM на странице"""
+    if hasattr(update, 'callback_query'):
+        msg = await update.callback_query.edit_message_text("🛡️ Исследую Shadow DOM...")
+    else:
+        msg = await update.message.reply_text("🛡️ Исследую Shadow DOM...")
+    
+    try:
+        page = await get_browser()
+        if not page:
+            await msg.edit_text("❌ Браузер не запущен")
+            return
+        
+        # Находим все элементы с shadowRoot
+        result = await page.execute_script('''
+            () => {
+                const elements = [];
+                document.querySelectorAll('*').forEach(el => {
+                    if (el.shadowRoot) {
+                        const shadowChildren = [];
+                        el.shadowRoot.childNodes.forEach(child => {
+                            if (child.nodeType === 1) {
+                                shadowChildren.push({
+                                    tag: child.tagName,
+                                    id: child.id || '',
+                                    class: child.className || ''
+                                });
+                            }
+                        });
+                        elements.push({
+                            tag: el.tagName,
+                            id: el.id || '',
+                            class: el.className || '',
+                            shadowChildren: shadowChildren
+                        });
+                    }
+                });
+                return elements;
+            }
+        ''')
+        
+        report = "🛡️ **SHADOW DOM**\n\n"
+        
+        if result and len(result) > 0:
+            report += f"✅ Найдено {len(result)} элементов с Shadow DOM:\n\n"
+            for el in result[:3]:
+                report += f"📦 {el.get('tag', '')}"
+                if el.get('id'):
+                    report += f" id='{el.get('id')}'"
+                report += f"\n   Дочерних: {len(el.get('shadowChildren', []))}\n\n"
+            
+            report += "💡 **Как использовать:**\n"
+            report += "```python\n"
+            report += "# Найти хост\n"
+            report += "host = await tab.find('#shadow-host')\n"
+            report += "# Получить shadowRoot\n"
+            report += "shadow = await host.get_shadow_root()\n"
+            report += "# Найти внутри shadow\n"
+            report += "element = await shadow.query('.inner-class')\n"
+            report += "```"
+        else:
+            report += "❌ Shadow DOM элементы НЕ найдены\n\n"
+            report += "💡 **Что такое Shadow DOM?**\n"
+            report += "Это изолированная часть DOM, скрытая от основного документа.\n\n"
+            report += "**Где искать:**\n"
+            report += "1. Веб-компоненты\n"
+            report += "2. Сложные UI элементы\n"
+            report += "3. Сторонние виджеты\n\n"
+            report += "**Как найти:**\n"
+            report += "1. Открой DevTools (F12)\n"
+            report += "2. Включи 'Show user agent shadow DOM'\n"
+            report += "3. Ищи элементы с #shadow-root"
+        
+        await msg.edit_text(report, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка: {e}")
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+# ============================================================
+# 2. API - ПЕРЕХВАТ И ВЫПОЛНЕНИЕ ЗАПРОСОВ
+# ============================================================
+async def api_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Выполнение API запросов с сессией браузера"""
+    if hasattr(update, 'callback_query'):
+        msg = await update.callback_query.edit_message_text("🌐 Выполняю API запрос...")
+    else:
+        msg = await update.message.reply_text("🌐 Выполняю API запрос...")
+    
+    try:
+        page = await get_browser()
+        if not page:
+            await msg.edit_text("❌ Браузер не запущен")
+            return
+        
+        # Проверка авторизации
+        if not login_status['is_logged_in']:
+            await msg.edit_text("❌ Сначала авторизуйся! Используй /login")
+            return
+        
+        # Тестовый API запрос к X.com
+        api_url = "https://x.com/i/api/1.1/onboarding/task.json"
+        
+        # Используем Pydoll request (UI + API гибрид)
+        try:
+            # Метод через fetch в браузере
+            result = await page.execute_script(f'''
+                (async () => {{
+                    try {{
+                        const response = await fetch('{api_url}', {{
+                            method: 'GET',
+                            credentials: 'include',
+                            headers: {{
+                                'Accept': 'application/json',
+                                'Content-Type': 'application/json'
+                            }}
+                        }});
+                        
+                        const data = await response.json();
+                        return {{
+                            status: response.status,
+                            ok: response.ok,
+                            data: data,
+                            url: response.url
+                        }};
+                    }} catch (e) {{
+                        return {{
+                            error: e.message,
+                            status: 0
+                        }};
+                    }}
+                }})()
+            ''')
+        except:
+            # Альтернативный метод
+            result = await page.execute_script(f'''
+                function() {{
+                    return fetch('{api_url}', {{
+                        credentials: 'include'
+                    }})
+                    .then(r => r.json())
+                    .then(data => ({{status: 200, ok: true, data: data}}))
+                    .catch(e => ({{error: e.message, status: 0}}));
+                }}
+            ''')
+        
+        # Проверка кук
+        cookies_check = await page.execute_script('''
+            () => {
+                const cookies = document.cookie.split(';').reduce((acc, c) => {
+                    const [key, val] = c.trim().split('=');
+                    acc[key] = val;
+                    return acc;
+                }, {});
+                return {
+                    has_auth_token: !!cookies.auth_token,
+                    has_ct0: !!cookies.ct0,
+                    cookies_count: Object.keys(cookies).length
+                };
+            }
+        ''')
+        
+        report = "🌐 **API - ГИБРИДНАЯ АВТОМАТИЗАЦИЯ**\n\n"
+        
+        report += "🍪 **Куки в сессии:**\n"
+        report += f"  auth_token: {'✅' if cookies_check.get('has_auth_token') else '❌'}\n"
+        report += f"  ct0: {'✅' if cookies_check.get('has_ct0') else '❌'}\n"
+        report += f"  Всего: {cookies_check.get('cookies_count', 0)}\n\n"
+        
+        if result and not result.get('error'):
+            report += f"📊 **API Запрос:**\n"
+            report += f"  URL: {api_url[:50]}...\n"
+            report += f"  Статус: {result.get('status', 0)}\n"
+            report += f"  Успешно: {'✅' if result.get('ok') else '❌'}\n\n"
+            
+            if result.get('data'):
+                data_str = json.dumps(result['data'], indent=2, ensure_ascii=False)[:300]
+                report += f"📝 **Данные:**\n```json\n{data_str}...\n```\n"
+        else:
+            report += "❌ **API не отвечает**\n"
+            report += f"  Ошибка: {result.get('error', 'Неизвестно')}\n\n"
+            report += "💡 **Возможные причины:**\n"
+            report += "1. Неправильные куки\n"
+            report += "2. Требуется обновление токена\n"
+            report += "3. Блокировка со стороны X.com"
+        
+        report += "\n💡 **Как работает гибридная автоматизация:**\n"
+        report += "1. UI авторизация через браузер\n"
+        report += "2. API запросы с той же сессией\n"
+        report += "3. Куки и заголовки наследуются автоматически"
+        
+        await msg.edit_text(report, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка: {e}")
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+# ============================================================
+# 3. EXTRACT - СТРУКТУРИРОВАННОЕ ИЗВЛЕЧЕНИЕ
+# ============================================================
+async def extract_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Извлечение структурированных данных со страницы"""
+    if hasattr(update, 'callback_query'):
+        msg = await update.callback_query.edit_message_text("📊 Извлекаю структурированные данные...")
+    else:
+        msg = await update.message.reply_text("📊 Извлекаю структурированные данные...")
+    
+    try:
+        page = await get_browser()
+        if not page:
+            await msg.edit_text("❌ Браузер не запущен")
+            return
+        
+        # Проверка авторизации
+        if not login_status['is_logged_in']:
+            await msg.edit_text("❌ Сначала авторизуйся! Используй /login")
+            return
+        
+        # Извлекаем твиты
+        tweets_data = await page.execute_script('''
+            () => {
+                const tweets = [];
+                document.querySelectorAll('[data-testid="tweet"]').forEach(el => {
+                    const textEl = el.querySelector('[data-testid="tweetText"]');
+                    const userEl = el.querySelector('[data-testid="User-Name"]');
+                    const timeEl = el.querySelector('time');
+                    
+                    // Ищем лайки и ретвиты
+                    const likeEl = el.querySelector('[data-testid="like"]');
+                    const retweetEl = el.querySelector('[data-testid="retweet"]');
+                    
+                    tweets.push({
+                        text: textEl ? textEl.textContent : '',
+                        author: userEl ? userEl.textContent : '',
+                        time: timeEl ? timeEl.getAttribute('datetime') : '',
+                        likes: likeEl ? likeEl.textContent : '0',
+                        retweets: retweetEl ? retweetEl.textContent : '0'
+                    });
+                });
+                return tweets.slice(0, 10);
+            }
+        ''')
+        
+        if not tweets_data or len(tweets_data) == 0:
+            await msg.edit_text("❌ Нет твитов для извлечения!\n\nПерейди на страницу с твитами или проверь авторизацию.")
+            return
+        
+        # Конвертируем в Pydantic модели
+        extracted_tweets = []
+        for tweet in tweets_data:
+            try:
+                extracted_tweets.append(TweetExtract(**tweet))
+            except Exception as e:
+                logger.warning(f"Ошибка валидации твита: {e}")
+        
+        # Формируем отчет
+        report = f"📊 **EXTRACT - СТРУКТУРИРОВАННЫЕ ДАННЫЕ**\n\n"
+        report += f"✅ Извлечено {len(extracted_tweets)} твитов\n\n"
+        
+        for i, tweet in enumerate(extracted_tweets[:5], 1):
+            report += f"**{i}.** {tweet.author}\n"
+            report += f"   {tweet.text[:100]}...\n"
+            if tweet.time:
+                report += f"   🕐 {tweet.time[:10]}\n"
+            if tweet.likes and tweet.likes != '0':
+                report += f"   ❤️ {tweet.likes} | 🔄 {tweet.retweets or '0'}\n"
+            report += "\n"
+        
+        if len(extracted_tweets) > 5:
+            report += f"... и еще {len(extracted_tweets) - 5} твитов\n\n"
+        
+        # Сохраняем в JSON
+        filename = f"extract_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump([t.dict() for t in extracted_tweets], f, indent=2, ensure_ascii=False)
+        
+        report += f"📁 Данные сохранены в `{filename}`"
+        
+        await msg.edit_text(report, parse_mode='Markdown')
+        await update.message.reply_document(
+            document=open(filename, 'rb'),
+            caption=f"📄 {len(extracted_tweets)} твитов"
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка: {e}")
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+# ============================================================
 # КОМАНДА /login (РАБОЧАЯ ВЕРСИЯ)
 # ============================================================
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Авторизация в X.com с эмуляцией"""
     logger.info(f"📩 Команда /login от {update.effective_user.username}")
     
-    # Определяем откуда пришел вызов (из кнопки или из чата)
     if hasattr(update, 'callback_query'):
         msg = await update.callback_query.edit_message_text("⏳ Захожу в X.com...")
     else:
         msg = await update.message.reply_text(f"⏳ Захожу в X.com через {engine_mode}...")
     
     try:
-        # 1. Получаем браузер
         page = await get_browser()
         if page is None:
             await msg.edit_text(f"❌ Не удалось запустить {engine_mode} браузер")
             return
         
-        # 2. Переходим на X.com с эмуляцией
         await human_goto(page, 'https://x.com')
         await asyncio.sleep(random_delay(2.0, 4.0))
         
-        # 3. Проверяем авторизацию через JS
         auth_status = await execute_js('''
             () => {
-                // Проверяем куки
                 const cookies = document.cookie.split(';').reduce((acc, c) => {
                     const [key, val] = c.trim().split('=');
                     acc[key] = val;
@@ -219,18 +509,15 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 const hasAuthToken = !!cookies.auth_token && cookies.auth_token.length > 0;
                 const hasCt0 = !!cookies.ct0 && cookies.ct0.length > 0;
                 
-                // Проверяем наличие кнопок входа
                 const hasLoginLink = !!document.querySelector('a[href="/login"]');
                 const hasSignupLink = !!document.querySelector('a[href="/signup"]');
                 const hasLoginButton = !!document.querySelector('[data-testid="loginButton"]');
                 
-                // Проверяем элементы авторизованного пользователя
                 const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
                 const hasSideNav = !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
                 const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]') || 
                                     !!document.querySelector('[data-testid="postButton"]');
                 
-                // Ищем username
                 let username = null;
                 const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
                 if (profileLink) {
@@ -269,14 +556,12 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("❌ Не удалось проверить авторизацию")
             return
         
-        # 4. Обновляем глобальный статус
         global login_status
         login_status['is_logged_in'] = auth_status.get('isLoggedIn', False)
         login_status['username'] = auth_status.get('username')
         login_status['last_check'] = datetime.now()
         login_status['cookies_valid'] = auth_status.get('hasAuthToken', False)
         
-        # 5. Формируем ответ
         status_msg = f"✅ X.com ({engine_mode})\n\n"
         status_msg += f"🍪 auth_token: {'✅' if auth_status.get('hasAuthToken') else '❌'}\n"
         status_msg += f"🍪 ct0: {'✅' if auth_status.get('hasCt0') else '❌'}\n\n"
@@ -288,11 +573,10 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status_msg += "\n💡 Теперь доступны расширенные функции:"
         else:
             status_msg += "❌ НЕ АВТОРИЗОВАН\n"
-            status_msg += "\nИспользуйте /setcookies для обновления кук"
+            status_msg += "\nОбновите куки в коде"
         
         await msg.edit_text(status_msg)
         
-        # 6. Делаем скриншот
         screenshot = await take_screenshot()
         if screenshot:
             if hasattr(update, 'callback_query'):
@@ -314,6 +598,9 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🔐 LOGIN", callback_data="login")],
+        [InlineKeyboardButton("🛡️ SHADOW DOM", callback_data="shadow")],
+        [InlineKeyboardButton("🌐 API", callback_data="api")],
+        [InlineKeyboardButton("📊 EXTRACT", callback_data="extract")],
         [InlineKeyboardButton("📸 SCREEN", callback_data="screen")],
         [InlineKeyboardButton("📊 STATUS", callback_data="status")],
         [InlineKeyboardButton("❌ CLOSE", callback_data="close")],
@@ -324,22 +611,47 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username_text = f" @{login_status['username']}" if login_status['username'] else ""
     
     await update.message.reply_text(
-        f"🤖 X.com Бот\n\n"
-        f"Статус: {status_emoji} {login_status['is_logged_in'] and 'Авторизован' or 'Не авторизован'}{username_text}\n"
-        f"Движок: {engine_mode}\n"
-        f"🍪 Кук: {len(COOKIES)}\n\n"
-        f"Нажми кнопку:",
+        f"🤖 **X.com Бот - Сила Pydoll**\n\n"
+        f"🔐 Статус: {status_emoji} {login_status['is_logged_in'] and 'Авторизован' or 'Не авторизован'}{username_text}\n"
+        f"🍪 Кук: {len(COOKIES)}\n"
+        f"🎮 Движок: {engine_mode}\n\n"
+        f"⚡ **Доступные функции:**\n"
+        f"🛡️ **Shadow DOM** - работа с веб-компонентами\n"
+        f"🌐 **API** - перехват и выполнение запросов\n"
+        f"📊 **Extract** - структурированное извлечение\n\n"
+        f"📌 Нажми кнопку:",
+        parse_mode='Markdown',
         reply_markup=reply_markup
     )
 
-# ========== КОМАНДА /status ==========
+# ========== ОБРАБОТЧИК КНОПОК ==========
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "login":
+        await login(update, context)
+    elif query.data == "shadow":
+        await shadow_dom(update, context)
+    elif query.data == "api":
+        await api_request(update, context)
+    elif query.data == "extract":
+        await extract_data(update, context)
+    elif query.data == "screen":
+        await screen_cmd(update, context)
+    elif query.data == "status":
+        await status_cmd(update, context)
+    elif query.data == "close":
+        await close_cmd(update, context)
+
+# ========== КОМАНДЫ /status, /screen, /close ==========
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if hasattr(update, 'callback_query'):
         msg = await update.callback_query.edit_message_text("⏳ Статус...")
     else:
         msg = await update.message.reply_text("⏳ Статус...")
     
-    status_msg = "📊 СТАТУС\n\n"
+    status_msg = "📊 **СТАТУС**\n\n"
     status_msg += f"🔐 Авторизован: {'✅' if login_status['is_logged_in'] else '❌'}\n"
     if login_status['username'] and login_status['username'] != 'неизвестно':
         status_msg += f"👤 @{login_status['username']}\n"
@@ -347,9 +659,8 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg += f"🍪 Всего кук: {len(COOKIES)}\n"
     status_msg += f"🕐 Проверка: {login_status['last_check'].strftime('%d.%m.%Y %H:%M:%S') if login_status['last_check'] else 'Никогда'}"
     
-    await msg.edit_text(status_msg)
+    await msg.edit_text(status_msg, parse_mode='Markdown')
 
-# ========== КОМАНДА /screen ==========
 async def screen_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if hasattr(update, 'callback_query'):
         msg = await update.callback_query.edit_message_text("⏳ Делаю скриншот...")
@@ -369,7 +680,6 @@ async def screen_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await msg.edit_text(f"❌ {str(e)[:100]}")
 
-# ========== КОМАНДА /close ==========
 async def close_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if hasattr(update, 'callback_query'):
         msg = await update.callback_query.edit_message_text("⏳ Закрываю браузер...")
@@ -379,44 +689,37 @@ async def close_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await close_browser()
     await msg.edit_text("✅ Браузер закрыт!")
 
-# ========== ОБРАБОТЧИК КНОПОК ==========
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    if query.data == "login":
-        await login(update, context)
-    elif query.data == "screen":
-        await screen_cmd(update, context)
-    elif query.data == "status":
-        await status_cmd(update, context)
-    elif query.data == "close":
-        await close_cmd(update, context)
-
 # ========== ЗАПУСК ==========
 def main():
     app = Application.builder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("login", login))
+    app.add_handler(CommandHandler("shadow", shadow_dom))
+    app.add_handler(CommandHandler("api", api_request))
+    app.add_handler(CommandHandler("extract", extract_data))
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("screen", screen_cmd))
     app.add_handler(CommandHandler("close", close_cmd))
     app.add_handler(CallbackQueryHandler(button_callback))
     
     print("\n" + "="*50)
-    print("✅ БОТ ЗАПУЩЕН")
+    print("✅ БОТ ЗАПУЩЕН - СИЛА PYDOLL")
     print("="*50)
     print(f"📦 Pydantic: ✅")
     print(f"📦 Asyncio: ✅")
     print(f"🎮 Движок: {engine_mode}")
-    print(f"🍪 Кук загружено: {len(COOKIES)}")
-    print("\n📋 КУКИ:")
-    for cookie in COOKIES:
-        print(f"  • {cookie['name']}: {cookie['value'][:30]}...")
+    print(f"🍪 Кук: {len(COOKIES)}")
+    print("\n🔥 СИЛЬНЫЕ СТОРОНЫ PYDOLL:")
+    print("  🛡️ Shadow DOM - работа с веб-компонентами")
+    print("  🌐 API - гибридная автоматизация")
+    print("  📊 Extract - структурированное извлечение")
     print("\n📌 Команды:")
     print("  /start - главное меню")
     print("  /login - авторизация в X.com")
+    print("  /shadow - исследование Shadow DOM")
+    print("  /api - выполнение API запросов")
+    print("  /extract - извлечение структурированных данных")
     print("  /status - статус авторизации")
     print("  /screen - скриншот")
     print("  /close - закрыть браузер")
