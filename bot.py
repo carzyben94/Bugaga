@@ -226,18 +226,28 @@ async def get_pydoll_browser():
         
         options = ChromiumOptions()
         
-        if CHROMIUM_PATH and os.path.exists(CHROMIUM_PATH):
-            options.binary_location = CHROMIUM_PATH
-            logger.info(f"📍 Использую Chromium по пути: {CHROMIUM_PATH}")
-        else:
-            check_chromium()
-            if CHROMIUM_PATH and os.path.exists(CHROMIUM_PATH):
-                options.binary_location = CHROMIUM_PATH
-                logger.info(f"📍 Использую Chromium по пути: {CHROMIUM_PATH}")
-            else:
-                logger.error("❌ Chromium не найден в системе!")
-                raise Exception("Chromium не найден в системе")
+        # Находим Chromium
+        chromium_paths = [
+            '/usr/bin/chromium', 
+            '/usr/bin/chromium-browser', 
+            '/usr/bin/google-chrome', 
+            '/usr/bin/google-chrome-stable'
+        ]
+        found_path = None
+        for path in chromium_paths:
+            if os.path.exists(path):
+                found_path = path
+                break
         
+        if found_path:
+            options.binary_location = found_path
+            logger.info(f"📍 Использую Chromium по пути: {found_path}")
+            CHROMIUM_PATH = found_path
+        else:
+            logger.error("❌ Chromium не найден в системе!")
+            raise Exception("Chromium не найден в системе")
+        
+        # Добавляем все необходимые аргументы
         args = [
             "--no-sandbox",
             "--disable-dev-shm-usage",
@@ -246,6 +256,14 @@ async def get_pydoll_browser():
             "--disable-blink-features=AutomationControlled",
             "--window-size=1280,720",
             "--headless=new",
+            "--disable-infobars",
+            "--disable-notifications",
+            "--disable-extensions",
+            "--disable-background-networking",
+            "--disable-default-apps",
+            "--disable-sync",
+            "--disable-translate",
+            "--no-first-run",
         ]
         for arg in args:
             options.add_argument(arg)
@@ -422,34 +440,51 @@ async def close_browser():
         await close_playwright_browser()
 
 async def goto_url(url):
-    """Переход по URL"""
+    """Переход по URL с повторными попытками"""
     logger.info(f"🌐 Переход по URL: {url}")
     
     page = await get_browser()
     if page is None:
         raise Exception("Не удалось получить страницу")
     
-    if hasattr(page, 'go_to'):
-        await page.go_to(url)
-    elif hasattr(page, 'goto'):
-        await page.goto(url, wait_until='domcontentloaded')
-    else:
-        raise Exception(f"Неизвестный тип страницы: {type(page)}")
-    
-    logger.info(f"✅ Переход выполнен: {url}")
+    for attempt in range(3):
+        try:
+            if hasattr(page, 'go_to'):
+                await page.go_to(url)
+            elif hasattr(page, 'goto'):
+                await page.goto(url, wait_until='domcontentloaded')
+            else:
+                raise Exception(f"Неизвестный тип страницы: {type(page)}")
+            
+            await asyncio.sleep(3)
+            logger.info(f"✅ Переход выполнен: {url}")
+            return
+        except Exception as e:
+            logger.error(f"❌ Попытка {attempt + 1} перехода failed: {e}")
+            if attempt < 2:
+                await asyncio.sleep(2)
+            else:
+                raise
 
 async def evaluate_js(script):
-    """Выполнение JS"""
+    """Выполнение JS с повторными попытками"""
     logger.debug(f"📜 Выполнение JS")
     
     page = await get_browser()
     if page is None:
+        logger.error("❌ Страница не получена для выполнения JS")
         return None
     
-    if hasattr(page, 'evaluate'):
-        return await page.evaluate(script)
-    else:
-        logger.error(f"Неизвестный тип страницы: {type(page)}")
+    try:
+        if hasattr(page, 'evaluate'):
+            result = await page.evaluate(script)
+            logger.debug(f"✅ JS выполнен успешно")
+            return result
+        else:
+            logger.error(f"❌ Нет метода evaluate у {type(page)}")
+            return None
+    except Exception as e:
+        logger.error(f"❌ Ошибка при выполнении JS: {e}")
         return None
 
 async def take_screenshot():
@@ -485,13 +520,18 @@ async def take_screenshot():
 
 # ========== ДИАГНОСТИЧЕСКАЯ КОМАНДА ==========
 async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Тестовая команда для диагностики Pydoll"""
+    """Тестовая команда для диагностики Pydoll с множеством вариантов"""
     msg = await update.message.reply_text("🔍 Диагностика Pydoll...")
     
     try:
         # 1. Проверка Chromium
         await msg.edit_text("1️⃣ Проверяю Chromium...")
-        chromium_paths = ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable']
+        chromium_paths = [
+            '/usr/bin/chromium', 
+            '/usr/bin/chromium-browser', 
+            '/usr/bin/google-chrome', 
+            '/usr/bin/google-chrome-stable'
+        ]
         found = None
         for path in chromium_paths:
             if os.path.exists(path):
@@ -519,8 +559,8 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"❌ Ошибка импорта: {e}")
             return
         
-        # 3. Проверка опций с указанием пути
-        await msg.edit_text("3️⃣ Создаю опции...")
+        # 3. ВАРИАНТ 1: Стандартный запуск
+        await msg.edit_text("3️⃣ Вариант 1: Стандартный запуск...")
         try:
             options = ChromiumOptions()
             options.binary_location = found
@@ -528,45 +568,62 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
             options.add_argument("--disable-dev-shm-usage")
             options.add_argument("--disable-gpu")
             options.add_argument("--headless=new")
-            await msg.edit_text(f"✅ Опции созданы, путь к Chromium: {found}")
-        except Exception as e:
-            await msg.edit_text(f"❌ Ошибка опций: {e}")
-            return
-        
-        # 4. Запуск браузера
-        await msg.edit_text("4️⃣ Запускаю браузер (10-30 сек)...")
-        try:
+            
             browser = Chrome(options=options)
-            await msg.edit_text("✅ Экземпляр создан, запускаю...")
-            
             tab = await browser.start()
-            await msg.edit_text("✅ Браузер запущен, вкладка получена!")
-            
-            # 5. Проверка работы
-            await msg.edit_text("5️⃣ Проверяю работу...")
             await tab.go_to('https://www.google.com')
-            await msg.edit_text("✅ Переход на Google выполнен!")
-            
-            # 6. Скриншот
-            await msg.edit_text("6️⃣ Делаю скриншот...")
-            try:
-                screenshot_b64 = await tab.take_screenshot(as_base64=True)
-                if screenshot_b64:
-                    screenshot = base64.b64decode(screenshot_b64)
-                    await msg.edit_text(f"✅ Скриншот сделан ({len(screenshot)} байт)")
-                else:
-                    await msg.edit_text("⚠️ Скриншот вернул пустой результат")
-            except Exception as e:
-                await msg.edit_text(f"⚠️ Ошибка скриншота: {e}")
-            
-            # 7. Закрытие
-            await msg.edit_text("7️⃣ Закрываю браузер...")
             await browser.close()
-            await msg.edit_text("✅ Браузер закрыт! Всё работает!")
-            
+            await msg.edit_text("✅ Вариант 1: Стандартный запуск - РАБОТАЕТ!")
         except Exception as e:
-            await msg.edit_text(f"❌ Ошибка при запуске: {str(e)[:300]}")
-            logger.error(f"Test error: {e}", exc_info=True)
+            await msg.edit_text(f"⚠️ Вариант 1: {str(e)[:100]}")
+            logger.error(f"Variant 1 error: {e}", exc_info=True)
+        
+        # 4. ВАРИАНТ 2: С дополнительными аргументами
+        await msg.edit_text("4️⃣ Вариант 2: Расширенные аргументы...")
+        try:
+            options = ChromiumOptions()
+            options.binary_location = found
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-gpu")
+            options.add_argument("--headless=new")
+            options.add_argument("--disable-setuid-sandbox")
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            options.add_argument("--window-size=1280,720")
+            
+            browser = Chrome(options=options)
+            tab = await browser.start()
+            await tab.go_to('https://www.google.com')
+            await browser.close()
+            await msg.edit_text("✅ Вариант 2: Расширенные аргументы - РАБОТАЕТ!")
+        except Exception as e:
+            await msg.edit_text(f"⚠️ Вариант 2: {str(e)[:100]}")
+            logger.error(f"Variant 2 error: {e}", exc_info=True)
+        
+        # 5. ВАРИАНТ 3: Через контекстный менеджер
+        await msg.edit_text("5️⃣ Вариант 3: Контекстный менеджер...")
+        try:
+            options = ChromiumOptions()
+            options.binary_location = found
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-gpu")
+            options.add_argument("--headless=new")
+            
+            async with Chrome(options=options) as browser:
+                tab = await browser.start()
+                await tab.go_to('https://www.google.com')
+                await msg.edit_text("✅ Вариант 3: Контекстный менеджер - РАБОТАЕТ!")
+        except Exception as e:
+            await msg.edit_text(f"⚠️ Вариант 3: {str(e)[:100]}")
+            logger.error(f"Variant 3 error: {e}", exc_info=True)
+        
+        # 6. Итог
+        await msg.edit_text(
+            "✅ **Диагностика завершена!**\n\n"
+            "Если какие-то варианты работают - используйте их настройки.\n"
+            "Проверьте логи для деталей."
+        )
             
     except Exception as e:
         await msg.edit_text(f"❌ Критическая ошибка: {str(e)[:200]}")
@@ -667,68 +724,108 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"❌ Не удалось запустить {engine_mode} браузер")
             return
         
-        # Переходим на X.com
-        await goto_url('https://x.com')
-        await asyncio.sleep(3)
+        logger.info("✅ Браузер получен, перехожу на X.com...")
         
-        # Проверяем авторизацию
-        auth_status = await evaluate_js('''
-            () => {
-                const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]');
-                const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
-                const hasHomeLink = !!document.querySelector('[data-testid="AppTabBar_Home_Link"]');
-                const hasSideNav = !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
-                const hasLoginForm = !!document.querySelector('[data-testid="loginForm"]');
-                
-                const cookies = document.cookie.split(';').reduce((acc, c) => {
-                    const [key, val] = c.trim().split('=');
-                    acc[key] = val;
-                    return acc;
-                }, {});
-                
-                let username = null;
-                const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
-                if (profileLink) {
-                    const href = profileLink.getAttribute('href');
-                    if (href) {
-                        const match = href.match(/^\\/([^\\/]+)/);
-                        if (match) username = match[1];
+        # Переходим на X.com с ожиданием загрузки
+        await goto_url('https://x.com')
+        
+        # Ждем загрузки страницы
+        logger.info("⏳ Ожидание загрузки страницы...")
+        await asyncio.sleep(5)
+        
+        # Проверяем, что страница загрузилась
+        try:
+            title = await page.evaluate('document.title')
+            logger.info(f"📄 Заголовок страницы: {title}")
+        except Exception as e:
+            logger.error(f"❌ Не удалось получить заголовок: {e}")
+        
+        # Проверяем авторизацию с повторными попытками
+        auth_status = None
+        for attempt in range(3):
+            logger.info(f"🔄 Попытка проверки авторизации {attempt + 1}/3...")
+            try:
+                auth_status = await evaluate_js('''
+                    () => {
+                        const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]');
+                        const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
+                        const hasHomeLink = !!document.querySelector('[data-testid="AppTabBar_Home_Link"]');
+                        const hasSideNav = !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
+                        const hasLoginForm = !!document.querySelector('[data-testid="loginForm"]');
+                        
+                        const cookies = document.cookie.split(';').reduce((acc, c) => {
+                            const [key, val] = c.trim().split('=');
+                            acc[key] = val;
+                            return acc;
+                        }, {});
+                        
+                        let username = null;
+                        const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
+                        if (profileLink) {
+                            const href = profileLink.getAttribute('href');
+                            if (href) {
+                                const match = href.match(/^\\/([^\\/]+)/);
+                                if (match) username = match[1];
+                            }
+                        }
+                        
+                        return {
+                            hasTweetBtn: hasTweetBtn || false,
+                            hasProfileLink: hasProfileLink || false,
+                            hasHomeLink: hasHomeLink || false,
+                            hasSideNav: hasSideNav || false,
+                            hasLoginForm: hasLoginForm || false,
+                            hasAuthToken: !!cookies.auth_token,
+                            hasCt0: !!cookies.ct0,
+                            username: username,
+                            isLoggedIn: !!(hasTweetBtn || hasProfileLink || hasHomeLink || hasSideNav),
+                            url: window.location.href,
+                            title: document.title || ''
+                        };
                     }
-                }
+                ''')
                 
-                return {
-                    hasTweetBtn,
-                    hasProfileLink,
-                    hasHomeLink,
-                    hasSideNav,
-                    hasLoginForm,
-                    hasAuthToken: !!cookies.auth_token,
-                    hasCt0: !!cookies.ct0,
-                    username: username,
-                    isLoggedIn: hasTweetBtn || hasProfileLink || hasHomeLink || hasSideNav
-                };
-            }
-        ''')
+                if auth_status is not None:
+                    logger.info(f"✅ Авторизация проверена")
+                    break
+                else:
+                    logger.warning(f"⚠️ Попытка {attempt + 1} вернула None")
+                    await asyncio.sleep(2)
+            except Exception as e:
+                logger.error(f"❌ Ошибка при попытке {attempt + 1}: {e}")
+                await asyncio.sleep(2)
         
         if auth_status is None:
-            await msg.edit_text("❌ Не удалось проверить авторизацию")
+            logger.error("❌ Не удалось проверить авторизацию после 3 попыток")
+            try:
+                screenshot = await take_screenshot()
+                if screenshot:
+                    await update.message.reply_photo(
+                        photo=screenshot,
+                        caption="📸 Диагностический скриншот страницы"
+                    )
+            except:
+                pass
+            await msg.edit_text("❌ Не удалось проверить авторизацию. Попробуйте позже.")
             return
         
         global login_status
-        login_status['is_logged_in'] = auth_status['isLoggedIn']
+        login_status['is_logged_in'] = auth_status.get('isLoggedIn', False)
         login_status['username'] = auth_status.get('username')
         login_status['last_check'] = datetime.now()
-        login_status['cookies_valid'] = auth_status['hasAuthToken'] and auth_status['hasCt0']
+        login_status['cookies_valid'] = auth_status.get('hasAuthToken', False) and auth_status.get('hasCt0', False)
         
         status_msg = f"✅ X.com ({engine_mode})\n\n"
-        status_msg += f"🍪 auth_token: {'✅' if auth_status['hasAuthToken'] else '❌'}\n"
-        status_msg += f"🍪 ct0: {'✅' if auth_status['hasCt0'] else '❌'}\n\n"
+        status_msg += f"📍 URL: {auth_status.get('url', 'неизвестно')}\n"
+        status_msg += f"📄 Заголовок: {auth_status.get('title', 'неизвестно')}\n\n"
+        status_msg += f"🍪 auth_token: {'✅' if auth_status.get('hasAuthToken') else '❌'}\n"
+        status_msg += f"🍪 ct0: {'✅' if auth_status.get('hasCt0') else '❌'}\n\n"
         
-        if auth_status['isLoggedIn']:
+        if auth_status.get('isLoggedIn'):
             status_msg += "✅ ВЫ АВТОРИЗОВАНЫ!\n"
             if auth_status.get('username'):
                 status_msg += f"👤 @{auth_status['username']}\n"
-        elif auth_status['hasLoginForm']:
+        elif auth_status.get('hasLoginForm'):
             status_msg += "❌ НЕ АВТОРИЗОВАН (форма входа)\n"
         else:
             status_msg += "⚠️ НЕ ОПРЕДЕЛЕНО\n"
@@ -736,16 +833,20 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(status_msg)
         
         # Делаем скриншот
+        logger.info("📸 Создание скриншота...")
         screenshot = await take_screenshot()
         if screenshot:
             await update.message.reply_photo(
                 photo=screenshot,
-                caption=f"📸 X.com - {'✅ Авторизован' if auth_status['isLoggedIn'] else '❌ Не авторизован'}"
+                caption=f"📸 X.com - {'✅ Авторизован' if auth_status.get('isLoggedIn') else '❌ Не авторизован'}"
             )
+            logger.info("✅ Скриншот отправлен")
+        else:
+            logger.warning("⚠️ Не удалось сделать скриншот")
         
     except Exception as e:
+        logger.error(f"❌ Ошибка в login: {e}", exc_info=True)
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-        logger.error(f"Login error: {e}", exc_info=True)
 
 async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Скриншот текущей страницы"""
@@ -781,7 +882,6 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg += f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}\n"
         status_msg += f"📍 Путь: {CHROMIUM_PATH or 'не найден'}\n\n"
         
-        # Проверяем статус браузера
         if engine_mode == "pydoll":
             page = await get_pydoll_browser()
             if page:
