@@ -15,8 +15,11 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 try:
     from pydantic import BaseModel, Field, ValidationError
     PYDANTIC_AVAILABLE = True
+    logger = logging.getLogger(__name__)
+    logger.info("✅ Pydantic загружен")
 except ImportError:
     PYDANTIC_AVAILABLE = False
+    logging.warning("⚠️ Pydantic не установлен")
 
 # ========== НАСТРОЙКА ЛОГГИРОВАНИЯ ==========
 logging.basicConfig(
@@ -311,7 +314,8 @@ async def execute_js(script):
         return None
     try:
         if hasattr(page, 'execute_script'):
-            return await page.execute_script(script)
+            result = await page.execute_script(script)
+            return result
         return None
     except Exception as e:
         logger.error(f"❌ Ошибка JS: {e}")
@@ -330,6 +334,40 @@ async def take_screenshot():
     except Exception as e:
         logger.error(f"❌ Ошибка скриншота: {e}")
         return None
+
+# ========== ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ВАЛИДАЦИИ ==========
+
+def safe_validate(model_class, data):
+    """Безопасная валидация данных через Pydantic"""
+    if not PYDANTIC_AVAILABLE:
+        return data
+    
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except:
+            return data
+    
+    if isinstance(data, list):
+        validated = []
+        for item in data:
+            if isinstance(item, dict):
+                try:
+                    validated.append(model_class(**item).model_dump())
+                except ValidationError as e:
+                    logger.warning(f"⚠️ Ошибка валидации: {e}")
+                    validated.append(item)
+            else:
+                validated.append(item)
+        return validated
+    elif isinstance(data, dict):
+        try:
+            return model_class(**data).model_dump()
+        except ValidationError as e:
+            logger.warning(f"⚠️ Ошибка валидации: {e}")
+            return data
+    else:
+        return data
 
 # ========== SHADOW DOM ==========
 
@@ -371,17 +409,7 @@ async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         # Валидация через Pydantic
-        validated_elements = []
-        if PYDANTIC_AVAILABLE:
-            for el in shadow_elements:
-                try:
-                    validated = ShadowElementModel(**el)
-                    validated_elements.append(validated.model_dump())
-                except ValidationError as e:
-                    logger.warning(f"⚠️ Ошибка валидации: {e}")
-                    validated_elements.append(el)
-        else:
-            validated_elements = shadow_elements
+        validated_elements = safe_validate(ShadowElementModel, shadow_elements)
         
         # 2. Пробуем получить содержимое первого shadowRoot
         js_get_content = """
@@ -554,24 +582,14 @@ async def api(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         # Валидация через Pydantic
-        if PYDANTIC_AVAILABLE:
-            try:
-                validated = ApiResponseModel(
-                    url=url,
-                    status=result.get('status', 0),
-                    ok=result.get('ok', False),
-                    data=result.get('data', {})
-                )
-                result = validated.model_dump()
-            except ValidationError as e:
-                logger.warning(f"⚠️ Ошибка валидации API: {e}")
+        validated_result = safe_validate(ApiResponseModel, result)
         
         response_text = f"✅ **API ЗАПРОС ВЫПОЛНЕН**\n\n"
         response_text += f"📍 {url[:80]}\n"
-        response_text += f"📊 Статус: {result.get('status', 0)}\n"
-        response_text += f"📊 Успешно: {'✅' if result.get('ok') else '❌'}\n\n"
+        response_text += f"📊 Статус: {validated_result.get('status', 0)}\n"
+        response_text += f"📊 Успешно: {'✅' if validated_result.get('ok') else '❌'}\n\n"
         
-        data = result.get('data', {})
+        data = validated_result.get('data', {})
         if data:
             if isinstance(data, dict):
                 data_str = json.dumps(data, indent=2, ensure_ascii=False)[:1500]
@@ -678,17 +696,7 @@ async def extract(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         # Валидация через Pydantic
-        validated_tweets = []
-        if PYDANTIC_AVAILABLE:
-            for tweet in extracted_data:
-                try:
-                    validated = TweetModel(**tweet)
-                    validated_tweets.append(validated.model_dump())
-                except ValidationError as e:
-                    logger.warning(f"⚠️ Ошибка валидации твита: {e}")
-                    validated_tweets.append(tweet)
-        else:
-            validated_tweets = extracted_data
+        validated_tweets = safe_validate(TweetModel, extracted_data)
         
         # Формируем структурированный вывод
         response = f"📊 **ИЗВЛЕЧЕНИЕ ДАННЫХ**\n\n"
@@ -697,9 +705,9 @@ async def extract(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Статистика
         if PYDANTIC_AVAILABLE:
-            total_likes = sum([t.get('likes', 0) for t in validated_tweets])
-            total_retweets = sum([t.get('retweets', 0) for t in validated_tweets])
-            pinned = [t for t in validated_tweets if t.get('is_pinned')]
+            total_likes = sum([t.get('likes', 0) for t in validated_tweets if isinstance(t, dict)])
+            total_retweets = sum([t.get('retweets', 0) for t in validated_tweets if isinstance(t, dict)])
+            pinned = [t for t in validated_tweets if isinstance(t, dict) and t.get('is_pinned')]
             
             response += f"❤️ Всего лайков: {total_likes}\n"
             response += f"🔄 Всего ретвитов: {total_retweets}\n"
@@ -708,19 +716,20 @@ async def extract(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Показываем первые 3 твита
         response += "📝 **Примеры:**\n\n"
         for i, tweet in enumerate(validated_tweets[:3], 1):
-            text = tweet.get('text', '')[:150]
-            if len(tweet.get('text', '')) > 150:
-                text += "..."
-            response += f"**{i}.** {text}\n"
-            if tweet.get('author'):
-                response += f"   👤 @{tweet['author']}"
-            if tweet.get('likes', 0) > 0:
-                response += f" ❤️ {tweet['likes']}"
-            if tweet.get('retweets', 0) > 0:
-                response += f" 🔄 {tweet['retweets']}"
-            if tweet.get('is_pinned'):
-                response += " 📌 ЗАКРЕПЛЕН"
-            response += "\n\n"
+            if isinstance(tweet, dict):
+                text = tweet.get('text', '')[:150]
+                if len(tweet.get('text', '')) > 150:
+                    text += "..."
+                response += f"**{i}.** {text}\n"
+                if tweet.get('author'):
+                    response += f"   👤 @{tweet['author']}"
+                if tweet.get('likes', 0) > 0:
+                    response += f" ❤️ {tweet['likes']}"
+                if tweet.get('retweets', 0) > 0:
+                    response += f" 🔄 {tweet['retweets']}"
+                if tweet.get('is_pinned'):
+                    response += " 📌 ЗАКРЕПЛЕН"
+                response += "\n\n"
         
         # Сохраняем в JSON
         filename = f"extracted_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
@@ -1055,18 +1064,22 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_message_safe(update, f"❌ Твиты @{username} не найдены")
             return
         
-        response = f"📊 **ТВИТЫ @{username}**\n📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n📌 {len(tweets_data)}\n\n"
-        for i, tweet in enumerate(tweets_data[:5], 1):
-            response += f"**{i}.** {tweet.get('text', '')[:200]}\n"
-            if tweet.get('is_pinned'):
-                response += "📌 ЗАКРЕПЛЕН\n"
-            response += "\n"
+        # Валидация через Pydantic
+        validated_tweets = safe_validate(TweetModel, tweets_data)
+        
+        response = f"📊 **ТВИТЫ @{username}**\n📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n📌 {len(validated_tweets)}\n\n"
+        for i, tweet in enumerate(validated_tweets[:5], 1):
+            if isinstance(tweet, dict):
+                response += f"**{i}.** {tweet.get('text', '')[:200]}\n"
+                if tweet.get('is_pinned'):
+                    response += "📌 ЗАКРЕПЛЕН\n"
+                response += "\n"
         
         if len(response) > 4000:
-            filename = f"tweets_{username}.txt"
+            filename = f"tweets_{username}.json"
             with open(filename, 'w', encoding='utf-8') as f:
-                f.write(str(tweets_data))
-            await update.message.reply_document(document=open(filename, 'rb'))
+                json.dump(validated_tweets, f, indent=2, ensure_ascii=False)
+            await update.message.reply_document(document=open(filename, 'rb'), caption=f"📄 {len(validated_tweets)} твитов")
         else:
             await send_message_safe(update, response)
         
