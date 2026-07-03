@@ -199,7 +199,7 @@ async def take_screenshot():
     return None
 
 # ============================================================
-# SHADOW DOM - С ПОЛНОЙ ДИАГНОСТИКОЙ
+# SHADOW DOM
 # ============================================================
 async def shadow_dom(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if hasattr(update, 'callback_query'):
@@ -215,7 +215,6 @@ async def shadow_dom(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("❌ Браузер не запущен. Используй /login")
             return
         
-        # Ищем элементы с shadowRoot
         result = await page.execute_script('''
             function() {
                 var elements = [];
@@ -247,9 +246,8 @@ async def shadow_dom(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
         ''')
         
-        log_diagnostic(f"📊 Найдено элементов с Shadow DOM: {len(result) if result else 0}")
+        log_diagnostic(f"📊 Найдено элементов: {len(result) if result else 0}")
         
-        # Формируем отчет
         report = "🛡️ SHADOW DOM\n\n"
         
         if result and len(result) > 0:
@@ -261,28 +259,18 @@ async def shadow_dom(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if el.get('class'):
                     report += f" class={el.get('class')}"
                 report += f"\n   Дочерних в shadow: {len(el.get('shadowChildren', []))}\n\n"
-                
-                # Логируем каждый элемент
-                log_diagnostic(f"  📦 {el.get('tag', '')} id={el.get('id', '')} shadow_children={len(el.get('shadowChildren', []))}")
         else:
-            report += "❌ Shadow DOM элементы НЕ найдены\n\n"
-            report += "💡 Что такое Shadow DOM?\n"
-            report += "Это изолированная часть DOM, скрытая от основного документа.\n\n"
-            report += "Где искать:\n"
-            report += "1. Веб-компоненты\n"
-            report += "2. Сложные UI элементы\n"
-            report += "3. Сторонние виджеты"
+            report += "❌ Shadow DOM элементы НЕ найдены"
         
         log_diagnostic("🛡️ === SHADOW DOM END ===")
         await msg.edit_text(report)
         
     except Exception as e:
         log_diagnostic(f"❌ Ошибка SHADOW: {e}")
-        logger.error(traceback.format_exc())
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
-# API - С ПОЛНОЙ ДИАГНОСТИКОЙ
+# API
 # ============================================================
 async def api_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if hasattr(update, 'callback_query'):
@@ -320,7 +308,7 @@ async def api_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log_diagnostic(f"🍪 ct0: {'✅' if has_ct0 else '❌'}")
         log_diagnostic(f"🍪 Всего кук: {len(cookies_data)}")
         
-        # Пробуем сделать API запрос если есть авторизация
+        # Пробуем API запрос
         api_result = None
         if has_auth_token:
             try:
@@ -348,28 +336,20 @@ async def api_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         }
                     }
                 ''')
-                log_diagnostic(f"📊 API запрос: статус {api_result.get('status') if api_result else 'None'}")
+                log_diagnostic(f"📊 API статус: {api_result.get('status') if api_result else 'None'}")
             except Exception as e:
-                log_diagnostic(f"⚠️ API запрос не удался: {e}")
+                log_diagnostic(f"⚠️ API ошибка: {e}")
         
-        # Формируем отчет
-        report = "🌐 API - ГИБРИДНАЯ АВТОМАТИЗАЦИЯ\n\n"
-        
-        report += "🍪 Куки в сессии:\n"
-        report += f"  auth_token: {'✅' if has_auth_token else '❌'}\n"
-        report += f"  ct0: {'✅' if has_ct0 else '❌'}\n"
-        report += f"  Всего: {len(cookies_data)}\n\n"
+        report = "🌐 API\n\n"
+        report += f"🍪 auth_token: {'✅' if has_auth_token else '❌'}\n"
+        report += f"🍪 ct0: {'✅' if has_ct0 else '❌'}\n"
+        report += f"🍪 Всего кук: {len(cookies_data)}\n\n"
         
         if api_result and not api_result.get('error'):
-            report += f"📊 API Запрос:\n"
-            report += f"  Статус: {api_result.get('status', 0)}\n"
-            report += f"  Успешно: {'✅' if api_result.get('ok') else '❌'}\n"
-            if api_result.get('data'):
-                data_str = json.dumps(api_result['data'], indent=2, ensure_ascii=False)[:200]
-                report += f"\n📝 Данные:\n{data_str}..."
+            report += f"📊 Статус: {api_result.get('status', 0)}\n"
+            report += f"✅ Успешно"
         elif has_auth_token:
-            report += "⚠️ API запрос не удался\n"
-            report += f"  Ошибка: {api_result.get('error', 'Неизвестно') if api_result else 'Нет ответа'}"
+            report += "⚠️ API не ответил"
         else:
             report += "❌ Нет авторизации. Используй /login"
         
@@ -378,11 +358,10 @@ async def api_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         log_diagnostic(f"❌ Ошибка API: {e}")
-        logger.error(traceback.format_exc())
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
-# EXTRACT - С ПОЛНОЙ ДИАГНОСТИКОЙ
+# EXTRACT
 # ============================================================
 async def extract_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if hasattr(update, 'callback_query'):
@@ -398,7 +377,6 @@ async def extract_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("❌ Браузер не запущен. Используй /login")
             return
         
-        # Извлекаем твиты с полной информацией
         tweets = await page.execute_script('''
             function() {
                 var items = document.querySelectorAll('[data-testid="tweet"]');
@@ -410,22 +388,18 @@ async def extract_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     var textEl = el.querySelector('[data-testid="tweetText"]');
                     var userEl = el.querySelector('[data-testid="User-Name"]');
                     var timeEl = el.querySelector('time');
-                    var likeEl = el.querySelector('[data-testid="like"]');
-                    var retweetEl = el.querySelector('[data-testid="retweet"]');
                     
                     var text = textEl ? textEl.textContent : '';
                     var author = userEl ? userEl.textContent : '';
                     var time = timeEl ? timeEl.getAttribute('datetime') : '';
-                    var likes = likeEl ? likeEl.textContent : '0';
-                    var retweets = retweetEl ? retweetEl.textContent : '0';
                     
                     if (text || author) {
                         result.push({
                             text: text.substring(0, 500),
                             author: author,
                             time: time,
-                            likes: likes,
-                            retweets: retweets
+                            likes: '0',
+                            retweets: '0'
                         });
                     }
                 }
@@ -439,42 +413,38 @@ async def extract_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("❌ Нет твитов на странице\n\nПерейди на страницу с твитами")
             return
         
-        # Конвертируем в Pydantic модели
-        extracted_tweets = []
+        # Конвертируем в Pydantic
+        extracted = []
         for tweet in tweets:
             try:
-                extracted_tweets.append(TweetExtract(**tweet))
-                log_diagnostic(f"  ✅ Твит от {tweet.get('author', 'unknown')[:30]}")
+                extracted.append(TweetExtract(**tweet))
             except Exception as e:
-                log_diagnostic(f"  ⚠️ Ошибка валидации: {e}")
+                log_diagnostic(f"⚠️ Ошибка валидации: {e}")
         
-        # Формируем отчет
-        report = f"📊 EXTRACT - СТРУКТУРИРОВАННЫЕ ДАННЫЕ\n\n"
-        report += f"✅ Извлечено {len(extracted_tweets)} твитов\n\n"
+        report = f"📊 EXTRACT\n\n"
+        report += f"✅ Извлечено {len(extracted)} твитов\n\n"
         
-        for i, tweet in enumerate(extracted_tweets[:5], 1):
+        for i, tweet in enumerate(extracted[:5], 1):
             report += f"{i}. {tweet.author}\n"
             report += f"   {tweet.text[:100]}...\n"
             if tweet.time:
                 report += f"   🕐 {tweet.time[:10]}\n"
-            if tweet.likes != '0':
-                report += f"   ❤️ {tweet.likes} | 🔄 {tweet.retweets}\n"
             report += "\n"
         
-        if len(extracted_tweets) > 5:
-            report += f"... и еще {len(extracted_tweets) - 5} твитов"
+        if len(extracted) > 5:
+            report += f"... и еще {len(extracted) - 5} твитов"
         
-        # Сохраняем в JSON
-        if extracted_tweets:
+        # Сохраняем
+        if extracted:
             filename = f"extract_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
             with open(filename, 'w', encoding='utf-8') as f:
-                json.dump([t.dict() for t in extracted_tweets], f, indent=2, ensure_ascii=False)
-            log_diagnostic(f"📁 Сохранено в {filename}")
+                json.dump([t.dict() for t in extracted], f, indent=2, ensure_ascii=False)
+            log_diagnostic(f"📁 Сохранено {filename}")
             
             await msg.edit_text(report)
             await update.message.reply_document(
                 document=open(filename, 'rb'),
-                caption=f"📄 {len(extracted_tweets)} твитов"
+                caption=f"📄 {len(extracted)} твитов"
             )
         else:
             await msg.edit_text(report)
@@ -483,11 +453,10 @@ async def extract_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         log_diagnostic(f"❌ Ошибка EXTRACT: {e}")
-        logger.error(traceback.format_exc())
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
-# КОМАНДА /login
+# LOGIN
 # ============================================================
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global login_status
@@ -508,29 +477,34 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await page.go_to('https://x.com')
         await asyncio.sleep(3)
         
-        # Проверяем куки
-        cookies_data = await page.execute_script('''
+        # Проверяем куки - ПРОСТОЙ СПОСОБ
+        cookies_check = await page.execute_script('''
             function() {
                 var c = document.cookie.split(';');
-                var result = {};
+                var hasAuth = false;
+                var hasCt0 = false;
+                var count = 0;
                 for (var i = 0; i < c.length; i++) {
                     var parts = c[i].trim().split('=');
                     if (parts.length >= 2) {
-                        result[parts[0]] = parts[1];
+                        count++;
+                        if (parts[0] === 'auth_token' && parts[1] && parts[1].length > 0) {
+                            hasAuth = true;
+                        }
+                        if (parts[0] === 'ct0' && parts[1] && parts[1].length > 0) {
+                            hasCt0 = true;
+                        }
                     }
                 }
-                return result;
+                return {
+                    hasAuth: hasAuth,
+                    hasCt0: hasCt0,
+                    count: count
+                };
             }
         ''')
         
-        has_auth_token = 'auth_token' in cookies_data and cookies_data['auth_token'] and len(cookies_data['auth_token']) > 0
-        has_ct0 = 'ct0' in cookies_data and cookies_data['ct0'] and len(cookies_data['ct0']) > 0
-        
-        log_diagnostic(f"🍪 auth_token: {'✅' if has_auth_token else '❌'}")
-        log_diagnostic(f"🍪 ct0: {'✅' if has_ct0 else '❌'}")
-        log_diagnostic(f"🍪 Всего кук: {len(cookies_data)}")
-        
-        # Ищем username
+        # Ищем username - ПРОСТОЙ СПОСОБ
         username = await page.execute_script('''
             function() {
                 var link = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
@@ -545,24 +519,29 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
         ''')
         
+        has_auth = cookies_check.get('hasAuth', False)
+        has_ct0 = cookies_check.get('hasCt0', False)
+        cookies_count = cookies_check.get('count', 0)
+        
+        log_diagnostic(f"🍪 auth_token: {'✅' if has_auth else '❌'}")
+        log_diagnostic(f"🍪 ct0: {'✅' if has_ct0 else '❌'}")
+        log_diagnostic(f"🍪 Всего кук: {cookies_count}")
         log_diagnostic(f"👤 Username: {username or 'не найден'}")
         
-        # Обновляем статус через Pydantic
+        # Сохраняем статус
         login_status = AuthStatus(
-            is_logged_in=has_auth_token,
-            username=username,
-            has_auth_token=has_auth_token,
+            is_logged_in=has_auth,
+            username=username if username else None,
+            has_auth_token=has_auth,
             has_ct0=has_ct0,
-            cookies_count=len(cookies_data),
+            cookies_count=cookies_count,
             last_check=datetime.now()
         )
         
-        if has_auth_token:
+        if has_auth:
             await msg.edit_text(f"✅ АВТОРИЗОВАН!\n👤 @{username or 'unknown'}")
-            log_diagnostic("✅ АВТОРИЗОВАН")
         else:
             await msg.edit_text("❌ НЕ АВТОРИЗОВАН\n\nОбнови куки в коде")
-            log_diagnostic("❌ НЕ АВТОРИЗОВАН")
         
         # Скриншот
         screenshot = await take_screenshot()
@@ -571,7 +550,6 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.callback_query.message.reply_photo(photo=screenshot)
             else:
                 await update.message.reply_photo(photo=screenshot)
-            log_diagnostic("📸 Скриншот отправлен")
         
         log_diagnostic("🔐 === LOGIN END ===")
         
@@ -581,7 +559,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
-# КОМАНДА /start
+# START
 # ============================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
@@ -603,13 +581,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Статус: {status}{username}\n"
         f"Кук: {login_status.cookies_count}\n"
         f"Движок: {engine_mode}\n\n"
-        f"📋 Нажми /test для логов\n\n"
+        f"📋 Нажми TEST для логов\n\n"
         f"Нажми кнопку:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 # ============================================================
-# ОБРАБОТЧИК КНОПОК
+# ОБРАБОТЧИК
 # ============================================================
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -633,7 +611,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_diagnostic(update, context)
 
 # ============================================================
-# ВСПОМОГАТЕЛЬНЫЕ КОМАНДЫ
+# ВСПОМОГАТЕЛЬНЫЕ
 # ============================================================
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if hasattr(update, 'callback_query'):
@@ -666,7 +644,6 @@ async def screen_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.callback_query.message.reply_photo(photo=screenshot)
             else:
                 await update.message.reply_photo(photo=screenshot)
-            log_diagnostic("📸 Скриншот отправлен")
         else:
             await msg.edit_text("❌ Не удалось")
     except Exception as e:
@@ -699,7 +676,7 @@ def main():
     app.add_handler(CallbackQueryHandler(button_callback))
     
     print("\n" + "="*50)
-    print("✅ БОТ ЗАПУЩЕН С PYDAВТИК")
+    print("✅ БОТ ЗАПУЩЕН")
     print("="*50)
     print(f"🍪 Кук: {len(COOKIES)}")
     print(f"📦 Pydantic: ✅")
