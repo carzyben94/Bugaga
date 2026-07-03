@@ -1,4 +1,4 @@
- # bot.py - X.com бот с Agnes (бесплатная LLM)
+# bot.py - X.com бот с Agnes (бесплатная LLM)
 import os
 import sys
 import subprocess
@@ -187,6 +187,47 @@ def install_browser():
 
 install_browser()
 
+# ========== УНИВЕРСАЛЬНЫЕ ФУНКЦИИ ДЛЯ ВСЕХ КОМАНД ==========
+
+async def safe_goto(page, url: str, timeout: int = 30000, retries: int = 3) -> bool:
+    """
+    Безопасная загрузка страницы с повторными попытками
+    Используется для ВСЕХ команд
+    """
+    logger.info(f"🌐 Загрузка: {url[:80]}...")
+    
+    for attempt in range(retries):
+        try:
+            await page.goto(url, wait_until='domcontentloaded', timeout=timeout)
+            await page.wait_for_timeout(2000)
+            logger.info(f"✅ Страница загружена (попытка {attempt+1})")
+            return True
+        except Exception as e:
+            logger.warning(f"⚠️ Попытка {attempt+1}/{retries} не удалась: {str(e)[:100]}")
+            if attempt < retries - 1:
+                wait_time = (attempt + 1) * 2
+                logger.info(f"⏳ Ожидание {wait_time}с перед следующей попыткой...")
+                await page.wait_for_timeout(wait_time * 1000)
+            else:
+                logger.error(f"❌ Не удалось загрузить страницу после {retries} попыток")
+                return False
+    return False
+
+async def wait_for_content(page, selector: str = 'article', timeout: int = 10000, retries: int = 2) -> bool:
+    """
+    Универсальная функция ожидания контента
+    """
+    for attempt in range(retries):
+        try:
+            await page.wait_for_selector(selector, timeout=timeout)
+            logger.info(f"✅ Контент найден: {selector}")
+            return True
+        except Exception as e:
+            logger.warning(f"⚠️ Ожидание контента, попытка {attempt+1}: {str(e)[:50]}")
+            if attempt < retries - 1:
+                await page.wait_for_timeout(3000)
+    return False
+
 # ========== УПРАВЛЕНИЕ БРАУЗЕРОМ ==========
 async def get_browser():
     global browser_data, browser_lock
@@ -301,51 +342,68 @@ class BeautyBot:
         self.sent_history = []
         self.total_attempts = 0
         self.successful_finds = 0
+        self.max_history = 50
+        
+    def reset_history(self):
+        """Сбрасывает историю отправленных постов"""
+        self.sent_posts.clear()
+        self.sent_history.clear()
+        logger.info(f"🔄 История сброшена!")
+    
+    def fix_photo_url(self, url: str) -> str:
+        """Исправляет URL фото для Telegram"""
+        if not url:
+            return url
+        
+        url = url.split('?')[0]
+        url = url.split('&')[0]
+        
+        if 'pbs.twimg.com/media/' in url:
+            if not url.endswith('.jpg') and not url.endswith('.png') and not url.endswith('.jpeg'):
+                url = url + '.jpg'
+            url = url + '?format=jpg&name=large'
+        
+        return url
         
     async def get_random_photo_url(self, page) -> Optional[str]:
-        """Получает случайное фото из случайного паблика с логированием"""
+        """Получает случайное фото из случайного паблика"""
         self.total_attempts += 1
         logger.info(f"🔍 Попытка #{self.total_attempts} найти фото")
+        logger.info(f"📊 В истории: {len(self.sent_posts)} уникальных ID")
         
-        # Выбираем все паблики и перемешиваем
+        if len(self.sent_posts) >= self.max_history:
+            logger.info(f"⚠️ Достигнут лимит истории, сбрасываю...")
+            self.reset_history()
+        
         selected_pages = self.beauty_pages.copy()
         random.shuffle(selected_pages)
         logger.info(f"📋 Паблики для проверки: {', '.join(selected_pages)}")
         
-        page_index = 0
         for username in selected_pages:
-            page_index += 1
-            logger.info(f"📄 [{page_index}/{len(selected_pages)}] Проверяю паблик @{username}")
+            logger.info(f"📄 Проверяю паблик @{username}")
             
             try:
-                # Переходим на страницу паблика
-                logger.info(f"  ⏳ Загрузка страницы @{username}...")
-                page_load_start = datetime.now()
-                
-                try:
-                    await page.goto(f"https://x.com/{username}", wait_until='domcontentloaded', timeout=30000)
-                    await page.wait_for_timeout(3000)
-                    load_time = (datetime.now() - page_load_start).total_seconds()
-                    logger.info(f"  ✅ Страница @{username} загружена за {load_time:.2f}с")
-                except Exception as e:
-                    logger.error(f"  ❌ Ошибка загрузки страницы @{username}: {e}")
+                # Используем safe_goto
+                if not await safe_goto(page, f"https://x.com/{username}"):
                     continue
                 
-                # Ждем загрузки твитов
-                try:
-                    logger.info(f"  ⏳ Ожидание твитов...")
-                    await page.wait_for_selector('[data-testid="tweet"]', timeout=10000)
-                    logger.info(f"  ✅ Твиты найдены")
-                except Exception as e:
-                    logger.warning(f"  ⚠️ Твиты не загрузились на @{username}: {e}")
+                # Используем wait_for_content
+                if not await wait_for_content(page, 'article'):
                     continue
                 
-                # Получаем все твиты с фото
-                logger.info(f"  ⏳ Извлечение твитов с фото...")
                 tweets_data = await page.evaluate('''
                     () => {
                         const tweets = [];
-                        const tweetElements = document.querySelectorAll('[data-testid="tweet"]');
+                        const selectors = ['[data-testid="tweet"]', 'article'];
+                        let tweetElements = [];
+                        
+                        for (const selector of selectors) {
+                            const elements = document.querySelectorAll(selector);
+                            if (elements.length > 0) {
+                                tweetElements = elements;
+                                break;
+                            }
+                        }
                         
                         tweetElements.forEach((tweet) => {
                             const images = tweet.querySelectorAll('img');
@@ -353,21 +411,26 @@ class BeautyBot:
                             
                             images.forEach(img => {
                                 const src = img.getAttribute('src');
-                                if (src && src.includes('pbs.twimg.com/media/')) {
-                                    if (!src.includes('profile_images') && !src.includes('emoji')) {
-                                        imageUrls.push(src);
-                                    }
+                                if (src && !src.includes('profile_images') && 
+                                    !src.includes('emoji') && !src.includes('default_profile')) {
+                                    imageUrls.push(src);
                                 }
                             });
                             
                             if (imageUrls.length > 0) {
-                                const link = tweet.querySelector('a[href*="/status/"]');
-                                const tweetUrl = link ? link.getAttribute('href') : '';
+                                let tweetId = tweet.getAttribute('data-tweet-id') || '';
+                                if (!tweetId) {
+                                    const link = tweet.querySelector('a[href*="/status/"]');
+                                    if (link) {
+                                        const href = link.getAttribute('href');
+                                        const match = href.match(/\\/status\\/(\\d+)/);
+                                        if (match) tweetId = match[1];
+                                    }
+                                }
                                 
                                 tweets.push({
-                                    id: tweet.getAttribute('data-tweet-id') || '',
-                                    photo_urls: imageUrls,
-                                    url: tweetUrl
+                                    id: tweetId,
+                                    photo_urls: imageUrls
                                 });
                             }
                         });
@@ -377,55 +440,39 @@ class BeautyBot:
                 ''')
                 
                 if not tweets_data:
-                    logger.warning(f"  ⚠️ Нет фото в твитах @{username}")
+                    logger.warning(f"  ⚠️ Нет фото в @{username}")
                     continue
                 
-                logger.info(f"  ✅ Найдено {len(tweets_data)} твитов с фото в @{username}")
-                
-                # Перемешиваем твиты
+                logger.info(f"  ✅ Найдено {len(tweets_data)} твитов с фото")
                 random.shuffle(tweets_data)
                 
-                # Проверяем твиты на дубли
-                checked = 0
                 for tweet in tweets_data:
-                    checked += 1
-                    
-                    # Проверяем дубли
                     if tweet['id'] and tweet['id'] in self.sent_posts:
-                        logger.info(f"  🔄 Твит {tweet['id']} уже отправлен (пропускаем)")
                         continue
                     
                     if tweet['photo_urls']:
-                        photo_url = tweet['photo_urls'][0]
-                        logger.info(f"  ✅ Найдено новое фото в твите {tweet['id']}")
-                        logger.info(f"  🖼️ URL: {photo_url[:80]}...")
+                        raw_url = tweet['photo_urls'][0]
+                        photo_url = self.fix_photo_url(raw_url)
                         
-                        # Добавляем в историю
                         if tweet['id']:
                             self.sent_posts.add(tweet['id'])
                             self.sent_history.append(tweet['id'])
                             self.successful_finds += 1
                             
-                            # Ограничиваем историю
-                            if len(self.sent_history) > 100:
+                            if len(self.sent_history) > self.max_history:
                                 old_id = self.sent_history.pop(0)
                                 self.sent_posts.remove(old_id)
-                                logger.info(f"  🗑️ Удален старый ID из истории: {old_id}")
                             
                             logger.info(f"  📊 Отправлено фото #{self.successful_finds}")
-                            logger.info(f"  📊 В истории: {len(self.sent_posts)} уникальных ID")
                         
                         return photo_url
                 
-                logger.warning(f"  ⚠️ Все {checked} твитов в @{username} уже отправлены")
-                
             except Exception as e:
-                logger.error(f"  ❌ Ошибка при обработке @{username}: {e}", exc_info=True)
+                logger.error(f"  ❌ Ошибка @{username}: {e}")
                 continue
         
-        logger.warning(f"❌ Фото не найдено ни в одном из {len(selected_pages)} пабликов")
-        logger.warning(f"📊 Всего попыток: {self.total_attempts}, успешно: {self.successful_finds}")
-        return None
+        self.reset_history()
+        return await self.get_random_photo_url(page)
 
 # ========== КОМАНДЫ ==========
 
@@ -467,14 +514,15 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.warning(f"Cookie error {cookie['name']}: {e}")
         
         await msg.edit_text("🔄 Загружаю X.com...")
-        await page.goto('https://x.com', wait_until='domcontentloaded', timeout=30000)
         
-        try:
-            await page.wait_for_selector('[data-testid="primaryColumn"]', timeout=15000)
-        except:
-            await page.wait_for_timeout(5000)
+        # Используем safe_goto
+        if not await safe_goto(page, 'https://x.com'):
+            await msg.edit_text("❌ Не удалось загрузить X.com")
+            return
         
-        await page.wait_for_timeout(3000)
+        # Используем wait_for_content
+        if not await wait_for_content(page, '[data-testid="primaryColumn"]', timeout=15000):
+            await page.wait_for_timeout(3000)
         
         auth_status = await page.evaluate('''
             () => {
@@ -483,7 +531,6 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 const hasHomeLink = !!document.querySelector('[data-testid="AppTabBar_Home_Link"]');
                 const hasSideNav = !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
                 const hasLoginForm = !!document.querySelector('[data-testid="loginForm"]');
-                const hasPrimaryColumn = !!document.querySelector('[data-testid="primaryColumn"]');
                 
                 const cookies = document.cookie.split(';').reduce((acc, c) => {
                     const [key, val] = c.trim().split('=');
@@ -507,7 +554,6 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     hasHomeLink,
                     hasSideNav,
                     hasLoginForm,
-                    hasPrimaryColumn,
                     hasAuthToken: !!cookies.auth_token,
                     hasCt0: !!cookies.ct0,
                     username: username,
@@ -530,24 +576,10 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status_msg += "✅ ВЫ АВТОРИЗОВАНЫ!\n"
             if auth_status.get('username'):
                 status_msg += f"👤 @{auth_status['username']}\n"
-            if auth_status['hasTweetBtn']:
-                status_msg += "   • Кнопка Tweet: ✅\n"
-            if auth_status['hasProfileLink']:
-                status_msg += "   • Профиль: ✅\n"
-            if auth_status['hasHomeLink']:
-                status_msg += "   • Домой: ✅\n"
-        elif auth_status['hasLoginForm']:
-            status_msg += "❌ НЕ АВТОРИЗОВАН (форма входа)\n"
         else:
-            status_msg += "⚠️ НЕ ОПРЕДЕЛЕНО\n"
+            status_msg += "❌ НЕ АВТОРИЗОВАН\n"
         
         await msg.edit_text(status_msg)
-        
-        screenshot = await page.screenshot(type='jpeg', quality=80)
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption=f"📸 X.com - {'✅ Авторизован' if auth_status['isLoggedIn'] else '❌ Не авторизован'}"
-        )
         
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
@@ -658,9 +690,6 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             status_msg += "🌐 Браузер: ❌ Не запущен\n"
         
-        if browser_ok and browser_info.get('title'):
-            status_msg += f"📌 Заголовок: {browser_info.get('title', 'Нет')}\n"
-        
         status_msg += "\n🔐 АВТОРИЗАЦИЯ:\n"
         
         if browser_ok and browser_info.get('auth'):
@@ -673,10 +702,6 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 status_msg += "\n✅ ВЫ АВТОРИЗОВАНЫ\n"
                 if auth.get('username'):
                     status_msg += f"👤 @{auth['username']}\n"
-                if auth.get('hasProfileLink'):
-                    status_msg += "   • Профиль: ✅\n"
-                if auth.get('hasHomeLink'):
-                    status_msg += "   • Домой: ✅\n"
             elif auth.get('hasLoginForm'):
                 status_msg += "\n❌ НЕ АВТОРИЗОВАН (форма входа)\n"
             else:
@@ -684,11 +709,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             status_msg += "❌ Нет данных (выполните /login)\n"
         
-        status_msg += f"\n🕐 {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
-        status_msg += f"📦 Драйвер: {'Phantomwright' if PHANTOMWRIGHT_AVAILABLE else 'Playwright'}\n"
-        status_msg += f"🍪 Куки загружены: {len(COOKIES)} шт."
-        status_msg += f"\n🧠 Browser-Use: {'✅' if BROWSER_USE_AVAILABLE else '❌'}"
-        status_msg += f"\n🤖 Agnes: {'✅' if AGNES_AVAILABLE else '❌'}"
+        status_msg += f"\n🕐 {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
         
         await msg.edit_text(status_msg)
         
@@ -700,203 +721,70 @@ async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await close_browser()
     await msg.edit_text("✅ Браузер закрыт!")
 
-# ========== /GETGIRL - КРАСИВЫЕ ДЕВУШКИ С ЛОГАМИ ==========
-
-async def getgirl(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отправляет случайное фото из пабликов с красивыми девушками"""
-    chat_id = update.effective_chat.id
-    user = update.effective_user
-    logger.info(f"🌸 /getgirl вызван пользователем @{user.username} (id: {user.id}) в чате {chat_id}")
-    
-    msg = await update.message.reply_text("🌸 Ищу красивую девушку...")
-    start_time = datetime.now()
-    
-    try:
-        # Шаг 1: Получение браузера
-        logger.info(f"📱 Шаг 1: Получение браузера...")
-        browser_start = datetime.now()
-        
-        try:
-            browser = await get_browser()
-            page = browser['page']
-            logger.info(f"✅ Браузер получен за {(datetime.now() - browser_start).total_seconds():.2f}с")
-        except Exception as e:
-            logger.error(f"❌ Ошибка получения браузера: {e}", exc_info=True)
-            await msg.edit_text("❌ Ошибка: не удалось запустить браузер")
-            return
-        
-        # Шаг 2: Создание экземпляра BeautyBot
-        logger.info(f"📱 Шаг 2: Инициализация BeautyBot...")
-        beauty_bot = BeautyBot()
-        logger.info(f"✅ BeautyBot инициализирован. Пабликов: {len(beauty_bot.beauty_pages)}")
-        logger.info(f"📋 Список пабликов: {', '.join(beauty_bot.beauty_pages)}")
-        
-        # Шаг 3: Поиск фото
-        logger.info(f"📱 Шаг 3: Поиск фото...")
-        photo_start = datetime.now()
-        
-        try:
-            photo_url = await beauty_bot.get_random_photo_url(page)
-            search_time = (datetime.now() - photo_start).total_seconds()
-            
-            if photo_url:
-                logger.info(f"✅ Фото найдено за {search_time:.2f}с")
-                logger.info(f"🖼️ URL фото: {photo_url[:100]}...")
-                
-                # Шаг 4: Отправка фото
-                logger.info(f"📱 Шаг 4: Отправка фото...")
-                send_start = datetime.now()
-                
-                try:
-                    await msg.delete()
-                    await update.message.reply_photo(photo=photo_url)
-                    send_time = (datetime.now() - send_start).total_seconds()
-                    total_time = (datetime.now() - start_time).total_seconds()
-                    
-                    logger.info(f"✅ Фото отправлено за {send_time:.2f}с")
-                    logger.info(f"✅ ВСЕГО: {total_time:.2f}с")
-                    logger.info(f"✅ Статус: УСПЕШНО")
-                    
-                except Exception as e:
-                    logger.error(f"❌ Ошибка отправки фото: {e}", exc_info=True)
-                    await msg.edit_text("❌ Ошибка отправки фото, попробуйте ещё раз")
-                    
-            else:
-                logger.warning(f"⚠️ Фото не найдено. Время поиска: {search_time:.2f}с")
-                logger.warning(f"⚠️ Причина: нет фото в пабликах или все фото уже отправлены")
-                await msg.edit_text("😔 Не удалось найти фото, попробуйте позже")
-                
-        except Exception as e:
-            logger.error(f"❌ Ошибка поиска фото: {e}", exc_info=True)
-            await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-            
-    except Exception as e:
-        logger.error(f"❌ Критическая ошибка в getgirl: {e}", exc_info=True)
-        try:
-            await msg.edit_text(f"❌ Критическая ошибка: {str(e)[:200]}")
-        except:
-            await update.message.reply_text(f"❌ Критическая ошибка: {str(e)[:200]}")
-    
-    finally:
-        total_time = (datetime.now() - start_time).total_seconds()
-        logger.info(f"🏁 Завершение /getgirl. Общее время: {total_time:.2f}с")
-
-# ========== ТВИТЫ ПОЛЬЗОВАТЕЛЯ ==========
+# ========== /TWEETS ==========
 
 async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Парсинг твитов пользователя"""
     if not context.args:
-        await update.message.reply_text(
-            "ℹ️ Использование: /tweets <username> [count]\n"
-            "Пример: /tweets elonmusk 10"
-        )
+        await update.message.reply_text("ℹ️ Использование: /tweets <username>")
         return
     
     username = context.args[0].replace('@', '').strip()
-    count = int(context.args[1]) if len(context.args) > 1 else 10
     msg = await update.message.reply_text(f"📊 Парсю твиты @{username}...")
     
     try:
         browser = await get_browser()
         page = browser['page']
         
-        await page.goto(f"https://x.com/{username}", wait_until='domcontentloaded')
-        await page.wait_for_timeout(3000)
+        # Используем safe_goto
+        if not await safe_goto(page, f"https://x.com/{username}"):
+            await msg.edit_text(f"❌ Не удалось загрузить страницу @{username}")
+            return
         
-        await page.wait_for_selector('[data-testid="tweet"]', timeout=10000)
+        # Используем wait_for_content
+        if not await wait_for_content(page, '[data-testid="tweet"]'):
+            await msg.edit_text("❌ Твиты не найдены")
+            return
         
-        tweets_data = await page.evaluate(f'''
-            () => {{
+        tweets_data = await page.evaluate('''
+            () => {
                 const tweets = [];
                 const tweetElements = document.querySelectorAll('[data-testid="tweet"]');
-                const count = {count};
                 
-                tweetElements.forEach((tweet, index) => {{
-                    if (index >= count) return;
+                tweetElements.forEach((tweet, index) => {
+                    if (index >= 5) return;
                     
                     const textEl = tweet.querySelector('[data-testid="tweetText"]');
-                    const timeEl = tweet.querySelector('time');
-                    const isPinned = !!tweet.querySelector('[data-testid="pinIcon"]');
-                    
                     let text = textEl ? textEl.innerText : '';
                     text = text.replace(/https?:\\/\\/[^\\s]*/g, '');
-                    text = text.replace(/http?:\\/\\/[^\\s]*/g, '');
-                    text = text.replace(/ftp?:\\/\\/[^\\s]*/g, '');
-                    text = text.replace(/www\\.[^\\s]*/g, '');
-                    text = text.replace(/[a-zA-Z0-9.-]+\\.[a-zA-Z]{{2,}}\\S*/g, '');
-                    text = text.replace(/\\b[a-zA-Z0-9.-]+\\.[a-zA-Z]{{2,}}\\b/g, '');
-                    text = text.replace(/[a-zA-Z0-9]+-[a-zA-Z0-9]+-[a-zA-Z0-9]+/g, '');
-                    text = text.replace(/[a-zA-Z0-9]+\\.[a-zA-Z]{{2,}}\\b/g, '');
-                    text = text.replace(/\\n\\s*\\n/g, '\\n');
-                    text = text.replace(/\\s{{2,}}/g, ' ');
                     text = text.trim();
                     
-                    tweets.push({{
-                        text: text,
-                        time: timeEl ? timeEl.getAttribute('datetime') : '',
-                        is_pinned: isPinned
-                    }});
-                }});
+                    if (text) {
+                        tweets.push({text: text});
+                    }
+                });
                 
                 return tweets;
-            }}
+            }
         ''')
         
         if not tweets_data:
             await msg.edit_text(f"❌ Твиты @{username} не найдены!")
             return
         
-        report = f"📊 **ТВИТЫ @{username}**\n"
-        report += f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
-        report += f"📌 Всего: {len(tweets_data)}\n\n"
-        
+        report = f"📊 ТВИТЫ @{username}\n\n"
         for i, tweet in enumerate(tweets_data, 1):
-            if tweet['is_pinned']:
-                report += f"📌 **{i}. ЗАКРЕПЛЕН**\n"
-            else:
-                report += f"**{i}.** "
-            
-            text = tweet['text'][:250]
-            if len(tweet['text']) > 250:
-                text += "..."
-            report += f"{text}\n"
-            
-            if tweet['time']:
-                time_str = tweet['time'][:16].replace('T', ' ')
-                report += f"\n🕐 {time_str}"
-            
-            report += "\n\n"
+            report += f"{i}. {tweet['text'][:200]}\n\n"
         
-        if len(report) > 4000:
-            filename = f"tweets_{username}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-            with open(filename, 'w', encoding='utf-8') as f:
-                f.write(report)
-            await update.message.reply_document(
-                document=open(filename, 'rb'),
-                caption=f"📄 {len(tweets_data)} твитов @{username}"
-            )
-        else:
-            await msg.edit_text(report, parse_mode='Markdown')
-        
-        screenshot = await page.screenshot(type='jpeg', quality=80)
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption=f"📸 Твиты @{username}"
-        )
+        await msg.edit_text(report[:4000])
         
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-        logger.error(f"Error in tweets: {e}", exc_info=True)
 
-# ========== ПОИСК ТВИТОВ ==========
+# ========== /SEARCH ==========
 
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Поиск твитов"""
     if not context.args:
-        await update.message.reply_text(
-            "ℹ️ Использование: /search <запрос>\n"
-            "Пример: /search биткоин"
-        )
+        await update.message.reply_text("ℹ️ Использование: /search <запрос>")
         return
     
     query = ' '.join(context.args)
@@ -907,10 +795,16 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         page = browser['page']
         
         search_url = f"https://x.com/search?q={query.replace(' ', '%20')}&src=typed_query"
-        await page.goto(search_url, wait_until='domcontentloaded')
-        await page.wait_for_timeout(3000)
         
-        await page.wait_for_selector('[data-testid="tweet"]', timeout=10000)
+        # Используем safe_goto
+        if not await safe_goto(page, search_url):
+            await msg.edit_text("❌ Не удалось загрузить страницу поиска")
+            return
+        
+        # Используем wait_for_content
+        if not await wait_for_content(page, '[data-testid="tweet"]'):
+            await msg.edit_text("❌ Ничего не найдено")
+            return
         
         tweets_data = await page.evaluate('''
             () => {
@@ -918,28 +812,16 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 const tweetElements = document.querySelectorAll('[data-testid="tweet"]');
                 
                 tweetElements.forEach((tweet, index) => {
-                    if (index >= 10) return;
+                    if (index >= 5) return;
                     
                     const textEl = tweet.querySelector('[data-testid="tweetText"]');
-                    const timeEl = tweet.querySelector('time');
-                    
                     let text = textEl ? textEl.innerText : '';
                     text = text.replace(/https?:\\/\\/[^\\s]*/g, '');
-                    text = text.replace(/http?:\\/\\/[^\\s]*/g, '');
-                    text = text.replace(/ftp?:\\/\\/[^\\s]*/g, '');
-                    text = text.replace(/www\\.[^\\s]*/g, '');
-                    text = text.replace(/[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}\\S*/g, '');
-                    text = text.replace(/\\b[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}\\b/g, '');
-                    text = text.replace(/[a-zA-Z0-9]+-[a-zA-Z0-9]+-[a-zA-Z0-9]+/g, '');
-                    text = text.replace(/[a-zA-Z0-9]+\\.[a-zA-Z]{2,}\\b/g, '');
-                    text = text.replace(/\\n\\s*\\n/g, '\\n');
-                    text = text.replace(/\\s{2,}/g, ' ');
                     text = text.trim();
                     
-                    tweets.push({
-                        text: text,
-                        time: timeEl ? timeEl.getAttribute('datetime') : ''
-                    });
+                    if (text) {
+                        tweets.push({text: text});
+                    }
                 });
                 
                 return tweets;
@@ -950,176 +832,125 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"❌ По запросу '{query}' ничего не найдено!")
             return
         
-        report = f"🔍 **РЕЗУЛЬТАТЫ ПО ЗАПРОСУ**\n"
-        report += f"📌 `{query}`\n"
-        report += f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
-        report += f"📊 Найдено: {len(tweets_data)}\n\n"
-        
+        report = f"🔍 РЕЗУЛЬТАТЫ\nЗапрос: {query}\n\n"
         for i, tweet in enumerate(tweets_data, 1):
-            report += f"**{i}.** "
-            
-            text = tweet['text'][:280]
-            if len(tweet['text']) > 280:
-                text += "..."
-            
-            if text.strip():
-                report += f"{text}\n"
-            
-            if tweet['time']:
-                time_str = tweet['time'][:16].replace('T', ' ')
-                report += f"\n🕐 {time_str}"
-            
-            report += "\n\n"
+            report += f"{i}. {tweet['text'][:200]}\n\n"
         
-        if len(report) > 4000:
-            filename = f"search_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-            with open(filename, 'w', encoding='utf-8') as f:
-                f.write(report)
-            await update.message.reply_document(
-                document=open(filename, 'rb'),
-                caption=f"📄 Результаты поиска: {query}"
-            )
-        else:
-            await msg.edit_text(report, parse_mode='Markdown')
-        
-        screenshot = await page.screenshot(type='jpeg', quality=80)
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption=f"🔍 Поиск: {query}"
-        )
+        await msg.edit_text(report[:4000])
         
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-        logger.error(f"Error in search: {e}", exc_info=True)
+
+# ========== /GETGIRL ==========
+
+async def getgirl(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправляет случайное фото из пабликов с красивыми девушками"""
+    chat_id = update.effective_chat.id
+    user = update.effective_user
+    logger.info(f"🌸 /getgirl вызван пользователем @{user.username}")
+    
+    msg = await update.message.reply_text("🌸 Ищу красивую девушку...")
+    start_time = datetime.now()
+    
+    try:
+        browser = await get_browser()
+        page = browser['page']
+        
+        beauty_bot = BeautyBot()
+        
+        # Поиск фото с повторными попытками
+        photo_url = None
+        for attempt in range(3):
+            logger.info(f"Попытка {attempt+1}/3")
+            try:
+                photo_url = await beauty_bot.get_random_photo_url(page)
+                if photo_url:
+                    break
+            except Exception as e:
+                logger.error(f"Ошибка в попытке {attempt+1}: {e}")
+                await page.wait_for_timeout(2000)
+        
+        if photo_url:
+            try:
+                await msg.delete()
+                await update.message.reply_photo(photo=photo_url)
+                total_time = (datetime.now() - start_time).total_seconds()
+                logger.info(f"✅ Фото отправлено! Время: {total_time:.2f}с")
+            except Exception as e:
+                logger.error(f"❌ Ошибка отправки фото: {e}")
+                await msg.edit_text("❌ Ошибка отправки фото")
+        else:
+            logger.warning("⚠️ Фото не найдено")
+            await msg.edit_text("😔 Не удалось найти фото, попробуйте позже")
+            
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка: {e}", exc_info=True)
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ========== BROWSER-USE ==========
 
 async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Выполнить задачу в браузере через AI"""
     if not context.args:
-        await update.message.reply_text(
-            "ℹ️ Использование: /browse <задача>\n"
-            "Пример: /browse Найди последние новости про ИИ\n"
-            "Пример: /browse Перейди на x.com"
-        )
+        await update.message.reply_text("ℹ️ Использование: /browse <задача>")
         return
     
     task = ' '.join(context.args)
     msg = await update.message.reply_text(f"🌐 Выполняю: {task[:100]}...")
     
-    # Проверяем, установлен ли browser-use
     if not BROWSER_USE_AVAILABLE:
-        await msg.edit_text("⏳ Browser-Use не найден. Устанавливаю...")
+        await msg.edit_text("⏳ Устанавливаю browser-use...")
         if not install_browser_use():
-            await msg.edit_text("❌ Не удалось установить browser-use.")
+            await msg.edit_text("❌ Не удалось установить browser-use")
             return
-        await msg.edit_text("✅ Browser-Use установлен! Выполняю задачу...")
     
-    # Проверяем Agnes
     if not AGNES_AVAILABLE:
         await msg.edit_text("⏳ Инициализирую Agnes...")
         init_agnes()
         if not AGNES_AVAILABLE:
-            await msg.edit_text(
-                "❌ Agnes не доступна. Установи AGNES_API_KEY в переменные окружения.\n"
-                "Ключ можно получить на https://agnes-ai.com/"
-            )
+            await msg.edit_text("❌ Agnes не доступна")
             return
-        await msg.edit_text("✅ Agnes готова! Выполняю задачу...")
     
     try:
         from browser_use import Agent
         
-        # Создаем агента с Agnes (без явного Browser)
         agent = Agent(
             task=task,
             llm=agnes_llm,
             use_vision=False,
         )
         
-        await msg.edit_text(f"🧠 Agnes думает над задачей: {task[:100]}...")
-        
-        # Выполняем задачу
+        await msg.edit_text(f"🧠 Agnes выполняет: {task[:100]}...")
         result = await agent.run()
         
-        response = f"✅ **Задача выполнена!**\n\n"
-        response += f"📋 **Запрос:** {task}\n\n"
+        response = f"✅ Задача выполнена!\n\n{result[:1500] if result else 'Результат не получен'}"
+        await msg.edit_text(response)
         
-        if result:
-            response += f"📝 **Результат:**\n{result[:1500]}"
-        else:
-            response += "⚠️ Результат не получен"
-        
-        if len(response) > 4000:
-            filename = f"browse_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-            with open(filename, 'w', encoding='utf-8') as f:
-                f.write(f"Задача: {task}\n\n{result}")
-            await update.message.reply_document(
-                document=open(filename, 'rb'),
-                caption=f"📄 Результат: {task[:50]}"
-            )
-        else:
-            await msg.edit_text(response, parse_mode='Markdown')
-        
-    except ImportError as e:
-        await msg.edit_text(f"❌ Ошибка импорта: {str(e)[:200]}")
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-        logger.error(f"Error in browse: {e}", exc_info=True)
 
 async def agnes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Проверка статуса Agnes"""
-    global AGNES_AVAILABLE, agnes_llm
-    
     if AGNES_AVAILABLE:
-        await update.message.reply_text(
-            "✅ **Agnes готова к работе!**\n\n"
-            f"Модель: agnes-2.0-flash\n"
-            f"Провайдер: Agnes AI (https://agnes-ai.com/)\n\n"
-            "Используй /browse <задача> для выполнения задач."
-        )
+        await update.message.reply_text("✅ Agnes готова к работе!")
     else:
-        await update.message.reply_text(
-            "❌ **Agnes не доступна**\n\n"
-            "Возможные причины:\n"
-            "1. Не установлен AGNES_API_KEY в переменные окружения\n"
-            "2. Проблемы с подключением к API\n"
-            "3. Не установлены зависимости (langchain-openai)\n\n"
-            "Для настройки:\n"
-            "1. Получи ключ на https://agnes-ai.com/\n"
-            "2. Добавь в переменные окружения: AGNES_API_KEY=твой_ключ\n"
-            "3. Перезапусти бота"
-        )
+        await update.message.reply_text("❌ Agnes не доступна")
 
 # ========== ЗАПУСК ==========
 def main():
     app = Application.builder().token(TOKEN).build()
     
-    # Основные
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("login", login))
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("close", close))
-    
-    # XBOT
     app.add_handler(CommandHandler("tweets", tweets))
     app.add_handler(CommandHandler("search", search))
-    
-    # Browser-Use + Agnes
+    app.add_handler(CommandHandler("getgirl", getgirl))
     app.add_handler(CommandHandler("browse", browse))
     app.add_handler(CommandHandler("agnes", agnes))
     
-    # КРАСИВЫЕ ДЕВУШКИ
-    app.add_handler(CommandHandler("getgirl", getgirl))
-    
     print("✅ Бот запущен!")
-    print(f"🧠 Browser-Use: {'✅ Доступен' if BROWSER_USE_AVAILABLE else '❌ Не установлен'}")
-    print(f"🤖 Agnes: {'✅ Доступна' if AGNES_AVAILABLE else '❌ Не доступна'}")
-    print("🌸 /getgirl - случайное фото из пабликов с красивыми девушками")
-    print("Команды:")
-    print("  /start, /login, /screen, /status, /close")
-    print("  /tweets, /search, /browse, /agnes, /getgirl")
+    print("Команды: /start, /login, /screen, /status, /close, /tweets, /search, /getgirl, /browse, /agnes")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
