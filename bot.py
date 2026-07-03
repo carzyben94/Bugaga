@@ -618,11 +618,11 @@ async def take_screenshot():
 
 # ========== ДИАГНОСТИЧЕСКАЯ КОМАНДА ==========
 async def diagnos(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Диагностика команд: Shadow DOM, API, Extract, Search, Tweets"""
+    """Полная диагностика со всеми вариантами решения"""
     msg = await update.message.reply_text(
-        "🔬 **ДИАГНОСТИКА КОМАНД**\n\n"
-        "⏳ Проверка: Shadow DOM, API, Extract, Search, Tweets\n"
-        "Это займет 2-4 минуты."
+        "🔬 **ДИАГНОСТИКА ВСЕХ КОМАНД**\n\n"
+        "⏳ Проверка с множеством вариантов...\n"
+        "Это займет 3-5 минут."
     )
     
     log_file = f"diagnos_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
@@ -635,24 +635,31 @@ async def diagnos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(log_entry)
     
     def log_section(title):
-        log_diag(f"\n{'='*60}")
+        log_diag(f"\n{'='*70}")
         log_diag(f"📌 {title}")
-        log_diag(f"{'='*60}")
+        log_diag(f"{'='*70}")
     
     def log_error(command, error):
         log_diag(f"❌ ОШИБКА: {str(error)[:300]}", "ERROR")
         logger.error(f"Error in {command}: {error}", exc_info=True)
     
+    def log_solution(command, solution):
+        log_diag(f"💡 РЕШЕНИЕ для {command}: {solution}", "SOLUTION")
+    
     results = {}
+    solutions = {}
     
     try:
-        # Проверка браузера
+        # ============================================================
+        # 1. ПРОВЕРКА БРАУЗЕРА
+        # ============================================================
         log_section("1️⃣ ПРОВЕРКА БРАУЗЕРА")
-        await msg.edit_text("🔬 1/6: Проверка браузера...")
+        await msg.edit_text("🔬 1/7: Проверка браузера...")
         
         page = await get_browser()
         if page is None:
             log_diag("❌ Браузер не запущен", "ERROR")
+            log_solution("Браузер", "Используйте /login для запуска браузера")
             await msg.edit_text("❌ Браузер не запущен. Используйте /login")
             return
         log_diag("✅ Браузер запущен")
@@ -660,60 +667,129 @@ async def diagnos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Проверка авторизации
         if not login_status['is_logged_in']:
             log_diag("⚠️ Пользователь не авторизован", "WARNING")
+            log_solution("Авторизация", "Используйте /login или обновите куки через /setcookies")
         
         # ============================================================
-        # 2. SHADOW DOM
+        # 2. SHADOW DOM - ВСЕ ВАРИАНТЫ
         # ============================================================
-        log_section("2️⃣ SHADOW DOM")
-        await msg.edit_text("🔬 2/6: Проверка Shadow DOM...")
+        log_section("2️⃣ SHADOW DOM - ВСЕ ВАРИАНТЫ")
+        await msg.edit_text("🔬 2/7: Проверка Shadow DOM (3 варианта)...")
         
+        shadow_results = []
+        
+        # Вариант 1: Поиск через JS
         try:
-            log_diag("🔍 Поиск Shadow DOM...")
-            shadow_selectors = [
+            log_diag("🔍 Вариант 1: Поиск элементов с shadowRoot через JS")
+            js_shadow = """
+                () => {
+                    const elements = [];
+                    document.querySelectorAll('*').forEach(el => {
+                        if (el.shadowRoot) {
+                            elements.push({
+                                tag: el.tagName,
+                                id: el.id || '',
+                                class: el.className || ''
+                            });
+                        }
+                    });
+                    return elements;
+                }
+            """
+            shadow_elements = await page.execute_script(js_shadow)
+            if shadow_elements and len(shadow_elements) > 0:
+                log_diag(f"  ✅ Найдено {len(shadow_elements)} элементов с Shadow DOM")
+                for el in shadow_elements[:3]:
+                    log_diag(f"    📦 {el.get('tag', '')} id={el.get('id', '')}")
+                shadow_results.append("Вариант 1: ✅ РАБОТАЕТ")
+            else:
+                log_diag("  ⚠️ Вариант 1: Элементы не найдены")
+                shadow_results.append("Вариант 1: ⚠️ Не найдены")
+        except Exception as e:
+            log_error("Shadow DOM Вариант 1", e)
+            shadow_results.append(f"Вариант 1: ❌ {str(e)[:30]}")
+        
+        # Вариант 2: Поиск конкретных элементов
+        try:
+            log_diag("🔍 Вариант 2: Поиск конкретных элементов")
+            selectors = [
                 ('GrokDrawer', '[data-testid="GrokDrawer"]'),
                 ('GrokDrawerHeader', '[data-testid="GrokDrawerHeader"]'),
                 ('chat-drawer-root', '[data-testid="chat-drawer-root"]'),
             ]
-            
             found = False
-            for name, selector in shadow_selectors:
+            for name, selector in selectors:
                 try:
-                    host = await page.find(selector, timeout=3000)
-                    if host:
-                        if hasattr(host, 'get_shadow_root'):
-                            shadow = await host.get_shadow_root()
-                            if shadow:
-                                log_diag(f"  ✅ {name}: Shadow DOM найден")
-                                found = True
-                            else:
-                                log_diag(f"  ⚠️ {name}: элемент есть, Shadow Root пуст")
-                        else:
-                            log_diag(f"  ⚠️ {name}: нет метода get_shadow_root")
+                    host = await page.find(selector, timeout=2000)
+                    if host and hasattr(host, 'get_shadow_root'):
+                        shadow = await host.get_shadow_root()
+                        if shadow:
+                            log_diag(f"  ✅ {name}: Shadow DOM найден")
+                            found = True
                 except Exception as e:
-                    log_diag(f"  ❌ {name}: {str(e)[:50]}")
-            
+                    log_diag(f"  ❌ {name}: {str(e)[:30]}")
             if found:
-                log_diag("✅ Shadow DOM доступен")
-                results["shadow"] = "✅ Работает"
+                shadow_results.append("Вариант 2: ✅ РАБОТАЕТ")
             else:
-                log_diag("⚠️ Shadow DOM элементы не найдены")
-                results["shadow"] = "⚠️ Не найдены"
-                
+                shadow_results.append("Вариант 2: ⚠️ Не найдены")
         except Exception as e:
-            log_error("Shadow DOM", e)
-            results["shadow"] = f"❌ {str(e)[:50]}"
+            log_error("Shadow DOM Вариант 2", e)
+            shadow_results.append(f"Вариант 2: ❌ {str(e)[:30]}")
         
-        # ============================================================
-        # 3. API ЗАПРОС
-        # ============================================================
-        log_section("3️⃣ API ЗАПРОС")
-        await msg.edit_text("🔬 3/6: Проверка API запроса...")
-        
+        # Вариант 3: Рекурсивный поиск
         try:
+            log_diag("🔍 Вариант 3: Рекурсивный поиск shadowRoot")
+            js_recursive = """
+                () => {
+                    function findShadowRoots(el) {
+                        let results = [];
+                        if (el.shadowRoot) {
+                            results.push({
+                                tag: el.tagName,
+                                id: el.id || '',
+                                class: el.className || ''
+                            });
+                        }
+                        el.childNodes.forEach(child => {
+                            if (child.nodeType === 1) {
+                                results = results.concat(findShadowRoots(child));
+                            }
+                        });
+                        return results;
+                    }
+                    return findShadowRoots(document.body);
+                }
+            """
+            recursive_results = await page.execute_script(js_recursive)
+            if recursive_results and len(recursive_results) > 0:
+                log_diag(f"  ✅ Найдено {len(recursive_results)} элементов")
+                shadow_results.append("Вариант 3: ✅ РАБОТАЕТ")
+            else:
+                shadow_results.append("Вариант 3: ⚠️ Не найдены")
+        except Exception as e:
+            log_error("Shadow DOM Вариант 3", e)
+            shadow_results.append(f"Вариант 3: ❌ {str(e)[:30]}")
+        
+        # Итог по Shadow DOM
+        if any("РАБОТАЕТ" in r for r in shadow_results):
+            results["shadow"] = "✅ Работает"
+            solutions["shadow"] = "Используйте работающий вариант из диагностики"
+        else:
+            results["shadow"] = "⚠️ Не найден"
+            solutions["shadow"] = "Проверьте, что вы на странице X.com"
+        
+        # ============================================================
+        # 3. API ЗАПРОС - ВСЕ ВАРИАНТЫ
+        # ============================================================
+        log_section("3️⃣ API ЗАПРОС - ВСЕ ВАРИАНТЫ")
+        await msg.edit_text("🔬 3/7: Проверка API (3 варианта)...")
+        
+        api_results = []
+        
+        # Вариант 1: Fetch с credentials
+        try:
+            log_diag("🌐 Вариант 1: Fetch с credentials")
             test_url = "https://x.com/i/api/1.1/onboarding/task.json"
-            log_diag(f"🌐 Тестовый API запрос: {test_url}")
-            
-            js_code = f"""
+            js_fetch = f"""
                 (async () => {{
                     try {{
                         const response = await fetch('{test_url}', {{
@@ -721,169 +797,287 @@ async def diagnos(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             credentials: 'include',
                             headers: {{ 'Accept': 'application/json' }}
                         }});
+                        const data = await response.json();
                         return {{
                             status: response.status,
                             ok: response.ok,
-                            statusText: response.statusText
+                            data: data
                         }};
                     }} catch (e) {{
                         return {{ error: e.message }};
                     }}
                 }})()
             """
-            
-            result = await page.execute_script(js_code)
-            
-            if result and result.get('error'):
-                log_diag(f"❌ Ошибка API: {result['error']}")
-                results["api"] = f"❌ {result['error'][:50]}"
-            elif result and result.get('ok'):
-                log_diag(f"✅ API запрос успешен (статус: {result.get('status')})")
-                results["api"] = "✅ Работает"
+            result = await page.execute_script(js_fetch)
+            if result and result.get('ok'):
+                log_diag(f"  ✅ Успешно (статус: {result.get('status')})")
+                api_results.append("Вариант 1: ✅ РАБОТАЕТ")
             else:
-                log_diag(f"⚠️ API ответ: статус {result.get('status', 'unknown')}")
-                results["api"] = f"⚠️ Статус {result.get('status', 'unknown')}"
-                
+                status = result.get('status', 'unknown') if result else 'unknown'
+                log_diag(f"  ⚠️ Статус: {status}")
+                api_results.append(f"Вариант 1: ⚠️ Статус {status}")
         except Exception as e:
-            log_error("API запрос", e)
-            results["api"] = f"❌ {str(e)[:50]}"
+            log_error("API Вариант 1", e)
+            api_results.append(f"Вариант 1: ❌ {str(e)[:30]}")
         
-        # ============================================================
-        # 4. EXTRACT
-        # ============================================================
-        log_section("4️⃣ EXTRACT")
-        await msg.edit_text("🔬 4/6: Проверка Extract...")
-        
+        # Вариант 2: XMLHttpRequest
         try:
-            if not PYDANTIC_AVAILABLE:
-                log_diag("❌ Pydantic не установлен", "ERROR")
-                results["extract"] = "❌ Pydantic не установлен"
-            else:
-                log_diag("🔍 Извлечение данных...")
-                
-                js_extract = """
-                    () => {
-                        const tweets = [];
-                        const elements = document.querySelectorAll('[data-testid="tweet"]');
-                        elements.forEach((el, i) => {
-                            if (i >= 3) return;
-                            const textEl = el.querySelector('[data-testid="tweetText"]');
-                            const userEl = el.querySelector('[data-testid="User-Name"]');
-                            tweets.push({
-                                text: textEl ? textEl.textContent : '',
-                                author: userEl ? userEl.textContent : ''
+            log_diag("🌐 Вариант 2: XMLHttpRequest")
+            js_xhr = """
+                (async () => {
+                    return new Promise((resolve) => {
+                        const xhr = new XMLHttpRequest();
+                        xhr.open('GET', 'https://x.com/i/api/1.1/onboarding/task.json', true);
+                        xhr.withCredentials = true;
+                        xhr.setRequestHeader('Accept', 'application/json');
+                        xhr.onload = function() {
+                            resolve({
+                                status: xhr.status,
+                                ok: xhr.status >= 200 && xhr.status < 300,
+                                data: JSON.parse(xhr.responseText)
                             });
-                        });
-                        return tweets;
-                    }
-                """
-                
-                extracted = await page.execute_script(js_extract)
-                
-                if extracted and len(extracted) > 0:
-                    log_diag(f"✅ Извлечено {len(extracted)} элементов")
-                    for i, item in enumerate(extracted[:2]):
-                        log_diag(f"  📄 {i+1}. {item.get('author', '')[:30]}: {item.get('text', '')[:50]}...")
-                    results["extract"] = f"✅ {len(extracted)} элементов"
-                else:
-                    log_diag("⚠️ Данные не извлечены (нет твитов на странице)")
-                    results["extract"] = "⚠️ Нет данных"
-                    
+                        };
+                        xhr.onerror = function() {
+                            resolve({ error: 'Network error' });
+                        };
+                        xhr.send();
+                    });
+                })()
+            """
+            xhr_result = await page.execute_script(js_xhr)
+            if xhr_result and xhr_result.get('ok'):
+                log_diag(f"  ✅ Успешно (статус: {xhr_result.get('status')})")
+                api_results.append("Вариант 2: ✅ РАБОТАЕТ")
+            else:
+                log_diag(f"  ⚠️ Статус: {xhr_result.get('status', 'unknown')}")
+                api_results.append(f"Вариант 2: ⚠️ Статус {xhr_result.get('status', 'unknown')}")
         except Exception as e:
-            log_error("Extract", e)
-            results["extract"] = f"❌ {str(e)[:50]}"
+            log_error("API Вариант 2", e)
+            api_results.append(f"Вариант 2: ❌ {str(e)[:30]}")
         
-        # ============================================================
-        # 5. ПОИСК
-        # ============================================================
-        log_section("5️⃣ ПОИСК")
-        await msg.edit_text("🔬 5/6: Проверка Поиска...")
-        
+        # Вариант 3: Прямой запрос через Pydoll
         try:
-            test_query = "python"
-            search_url = f"https://x.com/search?q={test_query}&src=typed_query"
-            log_diag(f"🔍 Тестовый поиск: {test_query}")
-            
-            await page.go_to(search_url)
-            await asyncio.sleep(3)
-            
-            js_search = """
+            log_diag("🌐 Вариант 3: Через Pydoll request")
+            if hasattr(page, 'request'):
+                response = await page.request.get('https://x.com/i/api/1.1/onboarding/task.json')
+                if response and response.status == 200:
+                    log_diag(f"  ✅ Успешно (статус: {response.status})")
+                    api_results.append("Вариант 3: ✅ РАБОТАЕТ")
+                else:
+                    log_diag(f"  ⚠️ Статус: {response.status if response else 'unknown'}")
+                    api_results.append(f"Вариант 3: ⚠️ Статус {response.status if response else 'unknown'}")
+            else:
+                log_diag("  ⚠️ Метод request не доступен")
+                api_results.append("Вариант 3: ⚠️ Недоступен")
+        except Exception as e:
+            log_error("API Вариант 3", e)
+            api_results.append(f"Вариант 3: ❌ {str(e)[:30]}")
+        
+        # Итог по API
+        if any("РАБОТАЕТ" in r for r in api_results):
+            results["api"] = "✅ Работает"
+            solutions["api"] = "Используйте работающий вариант"
+        else:
+            results["api"] = "⚠️ Не работает"
+            solutions["api"] = "Проверьте авторизацию и куки"
+        
+        # ============================================================
+        # 4. EXTRACT - ВСЕ ВАРИАНТЫ
+        # ============================================================
+        log_section("4️⃣ EXTRACT - ВСЕ ВАРИАНТЫ")
+        await msg.edit_text("🔬 4/7: Проверка Extract (3 варианта)...")
+        
+        extract_results = []
+        
+        # Вариант 1: Через Pydantic (если установлен)
+        if PYDANTIC_AVAILABLE:
+            try:
+                log_diag("📊 Вариант 1: Через Pydantic")
+                from pydoll.extractor import ExtractionModel, Field
+                
+                class TweetExtract(ExtractionModel):
+                    text: str = Field(selector='[data-testid="tweetText"]')
+                    author: str = Field(selector='[data-testid="User-Name"]')
+                
+                tweets = await page.extract_all(TweetExtract, scope='[data-testid="tweet"]')
+                if tweets and len(tweets) > 0:
+                    log_diag(f"  ✅ Извлечено {len(tweets)} элементов")
+                    extract_results.append("Вариант 1: ✅ РАБОТАЕТ")
+                else:
+                    log_diag("  ⚠️ Данные не извлечены")
+                    extract_results.append("Вариант 1: ⚠️ Нет данных")
+            except Exception as e:
+                log_error("Extract Вариант 1", e)
+                extract_results.append(f"Вариант 1: ❌ {str(e)[:30]}")
+        else:
+            log_diag("⚠️ Pydantic не установлен")
+            extract_results.append("Вариант 1: ⚠️ Pydantic не установлен")
+        
+        # Вариант 2: Через JS
+        try:
+            log_diag("📊 Вариант 2: Через JS")
+            js_extract = """
+                () => {
+                    const tweets = [];
+                    document.querySelectorAll('[data-testid="tweet"]').forEach(el => {
+                        const textEl = el.querySelector('[data-testid="tweetText"]');
+                        const userEl = el.querySelector('[data-testid="User-Name"]');
+                        tweets.push({
+                            text: textEl ? textEl.textContent : '',
+                            author: userEl ? userEl.textContent : ''
+                        });
+                    });
+                    return tweets.slice(0, 5);
+                }
+            """
+            extracted = await page.execute_script(js_extract)
+            if extracted and len(extracted) > 0:
+                log_diag(f"  ✅ Извлечено {len(extracted)} элементов")
+                extract_results.append("Вариант 2: ✅ РАБОТАЕТ")
+            else:
+                log_diag("  ⚠️ Данные не извлечены")
+                extract_results.append("Вариант 2: ⚠️ Нет данных")
+        except Exception as e:
+            log_error("Extract Вариант 2", e)
+            extract_results.append(f"Вариант 2: ❌ {str(e)[:30]}")
+        
+        # Вариант 3: Через querySelectorAll
+        try:
+            log_diag("📊 Вариант 3: Через querySelectorAll")
+            js_query = """
                 () => {
                     const tweets = [];
                     const elements = document.querySelectorAll('[data-testid="tweet"]');
                     elements.forEach((el, i) => {
-                        if (i >= 5) return;
-                        const textEl = el.querySelector('[data-testid="tweetText"]');
-                        if (textEl) {
-                            tweets.push(textEl.textContent);
-                        }
+                        if (i >= 3) return;
+                        const text = el.querySelector('[data-testid="tweetText"]');
+                        tweets.push(text ? text.textContent : '');
                     });
                     return tweets;
                 }
             """
-            
-            search_results = await page.execute_script(js_search)
-            
-            if search_results and len(search_results) > 0:
-                log_diag(f"✅ Найдено {len(search_results)} твитов по запросу '{test_query}'")
-                for i, text in enumerate(search_results[:2]):
-                    log_diag(f"  📄 {i+1}. {text[:60]}...")
-                results["search"] = f"✅ {len(search_results)} результатов"
+            query_results = await page.execute_script(js_query)
+            if query_results and len(query_results) > 0:
+                log_diag(f"  ✅ Найдено {len(query_results)} элементов")
+                extract_results.append("Вариант 3: ✅ РАБОТАЕТ")
             else:
-                log_diag(f"⚠️ По запросу '{test_query}' ничего не найдено")
-                results["search"] = "⚠️ Нет результатов"
-                
+                log_diag("  ⚠️ Данные не найдены")
+                extract_results.append("Вариант 3: ⚠️ Нет данных")
         except Exception as e:
-            log_error("Поиск", e)
-            results["search"] = f"❌ {str(e)[:50]}"
+            log_error("Extract Вариант 3", e)
+            extract_results.append(f"Вариант 3: ❌ {str(e)[:30]}")
+        
+        # Итог по Extract
+        if any("РАБОТАЕТ" in r for r in extract_results):
+            results["extract"] = "✅ Работает"
+            solutions["extract"] = "Используйте работающий вариант"
+        else:
+            results["extract"] = "⚠️ Не работает"
+            solutions["extract"] = "Убедитесь, что на странице есть твиты"
         
         # ============================================================
-        # 6. ТВИТЫ
+        # 5. ПОИСК - ВСЕ ВАРИАНТЫ
         # ============================================================
-        log_section("6️⃣ ТВИТЫ")
-        await msg.edit_text("🔬 6/6: Проверка Твитов...")
+        log_section("5️⃣ ПОИСК - ВСЕ ВАРИАНТЫ")
+        await msg.edit_text("🔬 5/7: Проверка Поиска (3 варианта)...")
         
-        try:
-            test_user = "elonmusk"
-            log_diag(f"📊 Тестовый парсинг твитов: @{test_user}")
-            
-            await page.go_to(f"https://x.com/{test_user}")
-            await asyncio.sleep(3)
-            
-            js_tweets = f"""
-                () => {{
-                    const tweets = [];
-                    const elements = document.querySelectorAll('[data-testid="tweet"]');
-                    elements.forEach((el, i) => {{
-                        if (i >= 5) return;
-                        const textEl = el.querySelector('[data-testid="tweetText"]');
-                        if (textEl) {{
-                            tweets.push(textEl.textContent);
-                        }}
-                    }});
-                    return tweets;
-                }}
-            """
-            
-            tweets_data = await page.execute_script(js_tweets)
-            
-            if tweets_data and len(tweets_data) > 0:
-                log_diag(f"✅ Найдено {len(tweets_data)} твитов от @{test_user}")
-                for i, text in enumerate(tweets_data[:2]):
-                    log_diag(f"  📄 {i+1}. {text[:60]}...")
-                results["tweets"] = f"✅ {len(tweets_data)} твитов"
-            else:
-                log_diag(f"⚠️ Твиты от @{test_user} не найдены")
-                results["tweets"] = "⚠️ Нет твитов"
+        search_results_combined = []
+        
+        test_queries = ["python", "ai", "news"]
+        for query in test_queries[:2]:
+            try:
+                log_diag(f"🔍 Вариант с запросом: '{query}'")
+                search_url = f"https://x.com/search?q={query}&src=typed_query"
+                await page.go_to(search_url)
+                await asyncio.sleep(2)
                 
-        except Exception as e:
-            log_error("Твиты", e)
-            results["tweets"] = f"❌ {str(e)[:50]}"
+                js_search = """
+                    () => {
+                        const tweets = [];
+                        document.querySelectorAll('[data-testid="tweet"]').forEach(el => {
+                            const text = el.querySelector('[data-testid="tweetText"]');
+                            if (text) tweets.push(text.textContent);
+                        });
+                        return tweets.slice(0, 3);
+                    }
+                """
+                results = await page.execute_script(js_search)
+                if results and len(results) > 0:
+                    log_diag(f"  ✅ Найдено {len(results)} твитов")
+                    search_results_combined.append(f"'{query}': ✅ {len(results)} результатов")
+                else:
+                    log_diag(f"  ⚠️ По запросу '{query}' ничего не найдено")
+                    search_results_combined.append(f"'{query}': ⚠️ Нет результатов")
+            except Exception as e:
+                log_error(f"Поиск '{query}'", e)
+                search_results_combined.append(f"'{query}': ❌ {str(e)[:30]}")
+        
+        # Итог по Поиску
+        if any("✅" in r for r in search_results_combined):
+            results["search"] = "✅ Работает"
+            solutions["search"] = "Поиск работает. Используйте /search <запрос>"
+        else:
+            results["search"] = "⚠️ Не работает"
+            solutions["search"] = "Проверьте соединение или попробуйте другой запрос"
         
         # ============================================================
-        # 7. ИТОГИ
+        # 6. ТВИТЫ - ВСЕ ВАРИАНТЫ
         # ============================================================
-        log_section("7️⃣ ИТОГИ ДИАГНОСТИКИ")
+        log_section("6️⃣ ТВИТЫ - ВСЕ ВАРИАНТЫ")
+        await msg.edit_text("🔬 6/7: Проверка Твитов (3 варианта)...")
+        
+        tweets_results = []
+        
+        test_users = ["elonmusk", "x", "tech"]
+        for username in test_users[:2]:
+            try:
+                log_diag(f"📊 Парсинг твитов: @{username}")
+                await page.go_to(f"https://x.com/{username}")
+                await asyncio.sleep(2)
+                
+                js_tweets = """
+                    () => {
+                        const tweets = [];
+                        document.querySelectorAll('[data-testid="tweet"]').forEach(el => {
+                            const text = el.querySelector('[data-testid="tweetText"]');
+                            if (text) tweets.push(text.textContent);
+                        });
+                        return tweets.slice(0, 3);
+                    }
+                """
+                tweets_data = await page.execute_script(js_tweets)
+                if tweets_data and len(tweets_data) > 0:
+                    log_diag(f"  ✅ Найдено {len(tweets_data)} твитов")
+                    tweets_results.append(f"@{username}: ✅ {len(tweets_data)} твитов")
+                else:
+                    log_diag(f"  ⚠️ Твиты от @{username} не найдены")
+                    tweets_results.append(f"@{username}: ⚠️ Нет твитов")
+            except Exception as e:
+                log_error(f"Твиты @{username}", e)
+                tweets_results.append(f"@{username}: ❌ {str(e)[:30]}")
+        
+        # Итог по Твитам
+        if any("✅" in r for r in tweets_results):
+            results["tweets"] = "✅ Работает"
+            solutions["tweets"] = "Парсинг работает. Используйте /tweets <username>"
+        else:
+            results["tweets"] = "⚠️ Не работает"
+            solutions["tweets"] = "Проверьте, что пользователь существует"
+        
+        # ============================================================
+        # 7. ВСЕ РЕШЕНИЯ
+        # ============================================================
+        log_section("7️⃣ ВСЕ РЕШЕНИЯ")
+        await msg.edit_text("🔬 7/7: Сбор решений...")
+        
+        log_diag("\n📋 **ВСЕ ВАРИАНТЫ РЕШЕНИЙ:**")
+        for cmd, solution in solutions.items():
+            log_diag(f"  💡 {cmd.upper()}: {solution}")
+        
+        # ============================================================
+        # 8. ИТОГИ
+        # ============================================================
+        log_section("8️⃣ ИТОГИ ДИАГНОСТИКИ")
         
         log_diag("\n📊 РЕЗУЛЬТАТЫ:")
         for cmd, status in results.items():
@@ -903,7 +1097,7 @@ async def diagnos(update: Update, context: ContextTypes.DEFAULT_TYPE):
             log_diag("❌ БОЛЬШИНСТВО КОМАНД НЕ РАБОТАЮТ")
         
         # ============================================================
-        # 8. ОТПРАВКА РЕЗУЛЬТАТОВ
+        # 9. ОТПРАВКА РЕЗУЛЬТАТОВ
         # ============================================================
         
         # Сохраняем лог
@@ -917,10 +1111,15 @@ async def diagnos(update: Update, context: ContextTypes.DEFAULT_TYPE):
             emoji = "✅" if "✅" in str(status) else ("⚠️" if "⚠️" in str(status) else "❌")
             report += f"  {emoji} {cmd.upper()}: {status}\n"
         
-        report += f"\n✅ Успешно: {success_count}/{total}"
+        report += f"\n✅ Успешно: {success_count}/{total}\n\n"
+        
+        # Добавляем решения
+        report += "📋 **РЕШЕНИЯ:**\n"
+        for cmd, solution in solutions.items():
+            report += f"  💡 {cmd.upper()}: {solution}\n"
         
         if success_count == total:
-            report += "\n\n🎉 **ВСЕ КОМАНДЫ РАБОТАЮТ!**"
+            report += "\n🎉 **ВСЕ КОМАНДЫ РАБОТАЮТ!**"
         elif success_count >= total // 2:
             report += "\n\n⚠️ **НЕКОТОРЫЕ КОМАНДЫ НЕ РАБОТАЮТ**"
             report += "\n📋 Проверьте лог-файл для деталей"
@@ -937,9 +1136,9 @@ async def diagnos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         # Если есть ошибки - показываем их отдельно
-        errors = [f"{cmd}: {status}" for cmd, status in results.items() if "❌" in str(status) or "⚠️" in str(status)]
+        errors = [f"{cmd}: {status}" for cmd, status in results.items() if "❌" in str(status)]
         if errors:
-            error_msg = "⚠️ **Обнаружены проблемы:**\n\n" + "\n".join(errors)
+            error_msg = "⚠️ **Обнаружены ошибки:**\n\n" + "\n".join(errors)
             await update.message.reply_text(error_msg)
         
     except Exception as e:
@@ -1495,18 +1694,15 @@ async def api(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(f"🌐 Выполняю API запрос: {url[:80]}...")
     
     try:
-        # Проверяем браузер
         page = await get_browser()
         if page is None:
             await msg.edit_text("❌ Браузер не запущен. Используйте /login")
             return
         
-        # Проверяем авторизацию
         if not login_status['is_logged_in']:
             await msg.edit_text("❌ Вы не авторизованы. Используйте /login")
             return
         
-        # Выполняем API запрос через fetch с куками
         js_code = f"""
             (async () => {{
                 try {{
@@ -1588,30 +1784,47 @@ async def extract(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = await update.message.reply_text("📊 Извлекаю структурированные данные...")
     
     try:
-        result = await extract_structured_data()
-        
-        if result.get('error'):
-            await msg.edit_text(f"❌ Ошибка: {result['error']}")
+        # Используем JS вариант (более надежный)
+        js_extract = """
+            () => {
+                const tweets = [];
+                document.querySelectorAll('[data-testid="tweet"]').forEach(el => {
+                    const textEl = el.querySelector('[data-testid="tweetText"]');
+                    const userEl = el.querySelector('[data-testid="User-Name"]');
+                    tweets.push({
+                        text: textEl ? textEl.textContent : '',
+                        author: userEl ? userEl.textContent : ''
+                    });
+                });
+                return tweets.slice(0, 10);
+            }
+        """
+        page = await get_browser()
+        if page is None:
+            await msg.edit_text("❌ Браузер не запущен")
             return
         
-        count = result.get('count', 0)
-        data = result.get('data', [])
+        extracted = await page.execute_script(js_extract)
         
+        if not extracted or len(extracted) == 0:
+            await msg.edit_text("⚠️ Нет данных для извлечения")
+            return
+        
+        count = len(extracted)
         response_text = f"✅ **Извлечено {count} элементов**\n\n"
         
-        for i, item in enumerate(data[:5], 1):
-            if isinstance(item, dict):
-                text = item.get('text', '')[:100]
-                author = item.get('author', 'Неизвестно')
-                response_text += f"**{i}.** {author}: {text}...\n\n"
+        for i, item in enumerate(extracted[:5], 1):
+            text = item.get('text', '')[:100] if isinstance(item, dict) else str(item)[:100]
+            author = item.get('author', 'Неизвестно') if isinstance(item, dict) else 'Неизвестно'
+            response_text += f"**{i}.** {author}: {text}...\n\n"
         
         if count > 5:
             response_text += f"... и еще {count - 5} элементов\n\n"
         
-        if data and len(data) > 0:
+        if extracted and len(extracted) > 0:
             filename = f"extracted_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
             with open(filename, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+                json.dump(extracted, f, indent=2, ensure_ascii=False)
             await update.message.reply_document(
                 document=open(filename, 'rb'),
                 caption=f"📄 Извлеченные данные ({count} элементов)"
@@ -1638,110 +1851,74 @@ async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("❌ Браузер не запущен. Используйте /login")
             return
         
-        log_diag = "🔍 Ищу элементы с Shadow DOM...\n\n"
+        # Ищем элементы с shadowRoot через JS
+        js_shadow = """
+            () => {
+                const elements = [];
+                document.querySelectorAll('*').forEach(el => {
+                    if (el.shadowRoot) {
+                        elements.push({
+                            tag: el.tagName,
+                            id: el.id || '',
+                            class: el.className || ''
+                        });
+                    }
+                });
+                return elements;
+            }
+        """
+        shadow_elements = await page.execute_script(js_shadow)
         
-        shadow_selectors = [
-            ('GrokDrawer', '[data-testid="GrokDrawer"]'),
-            ('GrokDrawerHeader', '[data-testid="GrokDrawerHeader"]'),
-            ('chat-drawer-root', '[data-testid="chat-drawer-root"]'),
-        ]
+        log_diag = "🛡️ **Shadow DOM**\n\n"
         
-        found_shadow = False
-        for name, selector in shadow_selectors:
-            try:
-                host = await page.find(selector, timeout=3000)
-                if host:
-                    if hasattr(host, 'get_shadow_root'):
-                        shadow_root = await host.get_shadow_root()
-                        if shadow_root:
-                            found_shadow = True
-                            log_diag += f"✅ {name}: Shadow DOM найден!\n"
-                            try:
-                                inner_elements = await shadow_root.query_all('*')
-                                if inner_elements:
-                                    log_diag += f"   📦 Внутри найдено элементов: {len(inner_elements)}\n"
-                            except:
-                                pass
-                        else:
-                            log_diag += f"⚠️ {name}: Элемент найден, но Shadow Root пуст\n"
-                    else:
-                        log_diag += f"⚠️ {name}: Элемент не содержит Shadow DOM\n"
-            except Exception as e:
-                log_diag += f"❌ {name}: Ошибка - {str(e)[:50]}\n"
-        
-        if not found_shadow:
-            log_diag += "\n⚠️ Shadow DOM элементы не найдены.\n"
-            log_diag += "💡 Возможно, вы не на странице X.com или элемент не загружен.\n\n"
-            log_diag += "📌 **Как использовать Shadow DOM в коде:**\n"
+        if shadow_elements and len(shadow_elements) > 0:
+            log_diag += f"✅ Найдено {len(shadow_elements)} элементов с Shadow DOM:\n\n"
+            for el in shadow_elements[:5]:
+                log_diag += f"• **{el.get('tag', '')}**"
+                if el.get('id'):
+                    log_diag += f" id=\"{el.get('id')}\""
+                if el.get('class'):
+                    log_diag += f" class=\"{el.get('class')}\""
+                log_diag += "\n"
+            
+            log_diag += "\n💡 Как использовать:\n"
             log_diag += "```python\n"
             log_diag += "host = await tab.find('#shadow-host')\n"
             log_diag += "shadow_root = await host.get_shadow_root()\n"
             log_diag += "inner = await shadow_root.query('.inner-class')\n"
             log_diag += "```"
         else:
-            log_diag += "\n✅ Shadow DOM доступен!\n"
-            log_diag += "💡 Используйте host.get_shadow_root() для доступа к элементам."
+            log_diag += "⚠️ Shadow DOM элементы не найдены.\n\n"
+            log_diag += "📌 **Что такое Shadow DOM?**\n"
+            log_diag += "Это изолированная часть DOM, скрытая от основного документа.\n\n"
+            log_diag += "📌 **Как найти:**\n"
+            log_diag += "1. Откройте DevTools (F12)\n"
+            log_diag += "2. Включите 'Show user agent shadow DOM'\n"
+            log_diag += "3. Ищите элементы с #shadow-root\n\n"
+            log_diag += "📌 **Пример кода:**\n"
+            log_diag += "```python\n"
+            log_diag += "host = await tab.find('#shadow-host')\n"
+            log_diag += "shadow_root = await host.get_shadow_root()\n"
+            log_diag += "inner = await shadow_root.query('.inner-class')\n"
+            log_diag += "```"
         
-        await msg.edit_text(log_diag)
+        await msg.edit_text(log_diag, parse_mode='Markdown')
         
     except Exception as e:
         logger.error(f"❌ Ошибка Shadow DOM: {e}", exc_info=True)
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
-async def extract_structured_data(selector=None):
-    """Извлечение структурированных данных с помощью Pydantic"""
+async def install_pydantic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Установка Pydantic"""
     global PYDANTIC_AVAILABLE
-    logger.info(f"📊 Извлечение структурированных данных")
+    logger.info(f"📩 Команда /install_pydantic от {update.effective_user.username}")
     
-    if not PYDANTIC_AVAILABLE:
-        return {"error": "Pydantic не установлен. Используйте /install_pydantic"}
+    msg = await update.message.reply_text("⏳ Устанавливаю Pydantic...")
     
-    if engine_mode != "pydoll":
-        return {"error": "Структурированное извлечение доступно только в режиме Pydoll"}
-    
-    tab = await get_pydoll_browser()
-    if tab is None:
-        return {"error": "Браузер не запущен"}
-    
-    try:
-        from pydoll.extractor import ExtractionModel, Field
-        
-        class TweetExtract(ExtractionModel):
-            text: str = Field(selector='[data-testid="tweetText"]', description='Текст твита')
-            author: str = Field(selector='[data-testid="User-Name"]', description='Автор')
-        
-        if selector:
-            tweets = await tab.extract_all(TweetExtract, scope=selector)
-        else:
-            tweets = await tab.extract_all(TweetExtract, scope='[data-testid="tweet"]')
-        
-        return {
-            "count": len(tweets),
-            "data": [t.model_dump() for t in tweets]
-        }
-    except ImportError:
-        js_code = """
-            () => {
-                const tweets = [];
-                document.querySelectorAll('[data-testid="tweet"]').forEach(tweet => {
-                    const textEl = tweet.querySelector('[data-testid="tweetText"]');
-                    const userEl = tweet.querySelector('[data-testid="User-Name"]');
-                    tweets.push({
-                        text: textEl ? textEl.textContent : '',
-                        author: userEl ? userEl.textContent : ''
-                    });
-                });
-                return tweets.slice(0, 10);
-            }
-        """
-        result = await tab.execute_script(js_code)
-        return {
-            "count": len(result) if result else 0,
-            "data": result
-        }
-    except Exception as e:
-        logger.error(f"❌ Ошибка извлечения данных: {e}")
-        return {"error": str(e)}
+    if install_pydantic():
+        await msg.edit_text("✅ Pydantic установлен успешно!\n\nТеперь доступны структурированные данные через /extract")
+    else:
+        await msg.edit_text("❌ Не удалось установить Pydantic")
 
 async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Скриншот"""
