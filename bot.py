@@ -597,35 +597,46 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await asyncio.sleep(3)
             log_diag("✅ Переход выполнен")
             
-            # 5. Проверка кук
+            # 5. Проверка кук - ИСПРАВЛЕНО
             await msg.edit_text("5️⃣ Проверяю куки...")
             log_diag("=== ПРОВЕРКА КУК ===")
             
-            # Получаем все куки через JS
-            cookies_js = await tab.execute_script('document.cookie')
-            log_diag(f"📋 Куки из браузера: {cookies_js[:500]}...")
-            
-            # Разбираем куки
-            cookie_list = []
-            for cookie in cookies_js.split(';'):
-                if '=' in cookie:
-                    name, value = cookie.strip().split('=', 1)
-                    cookie_list.append({'name': name, 'value': value[:30] + '...' if len(value) > 30 else value})
-            
-            log_diag(f"📦 Всего кук: {len(cookie_list)}")
-            
-            # Проверяем важные куки
-            important = ['auth_token', 'ct0', 'twid']
-            found_cookies = []
-            for c in cookie_list:
-                if c['name'] in important:
-                    found_cookies.append(c)
-                    log_diag(f"✅ Найдена кука: {c['name']} = {c['value']}")
-            
-            if found_cookies:
-                log_diag(f"✅ Найдены важные куки: {', '.join([c['name'] for c in found_cookies])}")
-            else:
-                log_diag("❌ Важные куки НЕ НАЙДЕНЫ!")
+            try:
+                cookies_js = await tab.execute_script('document.cookie')
+                log_diag(f"📋 Куки из браузера: {cookies_js[:500] if cookies_js else 'пусто'}...")
+                
+                # Разбираем куки правильно
+                cookie_list = []
+                if cookies_js:
+                    for cookie in cookies_js.split(';'):
+                        cookie = cookie.strip()
+                        if '=' in cookie:
+                            # Разделяем только по первому '='
+                            parts = cookie.split('=', 1)
+                            if len(parts) == 2:
+                                name = parts[0].strip()
+                                value = parts[1].strip()
+                                if len(value) > 30:
+                                    value = value[:30] + '...'
+                                cookie_list.append({'name': name, 'value': value})
+                
+                log_diag(f"📦 Всего кук: {len(cookie_list)}")
+                
+                # Проверяем важные куки
+                important = ['auth_token', 'ct0', 'twid']
+                found_cookies = []
+                for c in cookie_list:
+                    if c['name'] in important:
+                        found_cookies.append(c)
+                        log_diag(f"✅ Найдена кука: {c['name']} = {c['value']}")
+                
+                if found_cookies:
+                    log_diag(f"✅ Найдены важные куки: {', '.join([c['name'] for c in found_cookies])}")
+                else:
+                    log_diag("❌ Важные куки НЕ НАЙДЕНЫ!")
+                    
+            except Exception as e:
+                log_diag(f"❌ Ошибка при получении кук: {e}")
             
             # 6. Проверка авторизации
             await msg.edit_text("6️⃣ Проверяю авторизацию...")
@@ -640,11 +651,11 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     const hasLoginForm = !!document.querySelector('[data-testid="loginForm"]');
                     
                     return {
-                        hasTweetBtn,
-                        hasProfileLink,
-                        hasHomeLink,
-                        hasSideNav,
-                        hasLoginForm,
+                        hasTweetBtn: hasTweetBtn || false,
+                        hasProfileLink: hasProfileLink || false,
+                        hasHomeLink: hasHomeLink || false,
+                        hasSideNav: hasSideNav || false,
+                        hasLoginForm: hasLoginForm || false,
                         isLoggedIn: !!(hasTweetBtn || hasProfileLink || hasHomeLink || hasSideNav)
                     };
                 }
