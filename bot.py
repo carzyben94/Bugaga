@@ -7,7 +7,7 @@ import asyncio
 import re
 import random
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Dict, Set
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -149,133 +149,6 @@ login_status = {
     'cookies_valid': False
 }
 
-# ========== КЛАСС ДЛЯ /GETGIRL ==========
-class BeautyBot:
-    def __init__(self):
-        # ВАШИ ПАБЛИКИ С КРАСИВЫМИ ДЕВУШКАМИ
-        self.beauty_pages = [
-            "bikinisnbabes",
-            "EuGirlsDom",
-            "wxrldofbeauty"
-        ]
-        
-        # Защита от дублей
-        self.sent_posts = set()
-        self.sent_history = []
-        
-    def _extract_photo(self, tweet_html: str) -> Optional[str]:
-        """Извлекает URL фото из HTML твита"""
-        try:
-            # Ищем img теги с twitter-аватарами или фото
-            img_patterns = [
-                r'<img[^>]*src="([^"]*)"[^>]*>',
-                r'src="(https://pbs\.twimg\.com/media/[^"]+)"',
-                r'src="(https://pbs\.twimg\.com/[^"]+)"',
-            ]
-            
-            for pattern in img_patterns:
-                matches = re.findall(pattern, tweet_html)
-                for url in matches:
-                    # Пропускаем аватары и иконки
-                    if 'profile_images' in url or 'emoji' in url or 'default' in url:
-                        continue
-                    # Пропускаем маленькие картинки
-                    if 'name=small' in url or 'name=thumb' in url:
-                        continue
-                    return url
-            
-            return None
-        except Exception as e:
-            logger.error(f"Ошибка извлечения фото: {e}")
-            return None
-    
-    async def get_random_photo_url(self, page) -> Optional[str]:
-        """Получает случайное фото из случайного паблика"""
-        # Выбираем все паблики и перемешиваем
-        selected_pages = self.beauty_pages.copy()
-        random.shuffle(selected_pages)
-        
-        for username in selected_pages:
-            try:
-                # Переходим на страницу паблика
-                await page.goto(f"https://x.com/{username}", wait_until='domcontentloaded')
-                await page.wait_for_timeout(3000)
-                
-                # Ждем загрузки твитов
-                try:
-                    await page.wait_for_selector('[data-testid="tweet"]', timeout=10000)
-                except:
-                    continue
-                
-                # Получаем все твиты с фото
-                tweets_data = await page.evaluate('''
-                    () => {
-                        const tweets = [];
-                        const tweetElements = document.querySelectorAll('[data-testid="tweet"]');
-                        
-                        tweetElements.forEach((tweet) => {
-                            // Ищем изображения
-                            const images = tweet.querySelectorAll('img');
-                            const imageUrls = [];
-                            
-                            images.forEach(img => {
-                                const src = img.getAttribute('src');
-                                if (src && src.includes('pbs.twimg.com/media/')) {
-                                    // Пропускаем аватары
-                                    if (!src.includes('profile_images') && !src.includes('emoji')) {
-                                        imageUrls.push(src);
-                                    }
-                                }
-                            });
-                            
-                            if (imageUrls.length > 0) {
-                                const link = tweet.querySelector('a[href*="/status/"]');
-                                const tweetUrl = link ? link.getAttribute('href') : '';
-                                
-                                tweets.push({
-                                    id: tweet.getAttribute('data-tweet-id') || '',
-                                    photo_urls: imageUrls,
-                                    url: tweetUrl
-                                });
-                            }
-                        });
-                        
-                        return tweets;
-                    }
-                ''')
-                
-                if not tweets_data:
-                    continue
-                
-                # Перемешиваем твиты
-                random.shuffle(tweets_data)
-                
-                for tweet in tweets_data:
-                    # Проверяем дубли
-                    if tweet['id'] and tweet['id'] in self.sent_posts:
-                        continue
-                    
-                    if tweet['photo_urls']:
-                        photo_url = tweet['photo_urls'][0]
-                        
-                        # Добавляем в историю
-                        if tweet['id']:
-                            self.sent_posts.add(tweet['id'])
-                            self.sent_history.append(tweet['id'])
-                            
-                            # Ограничиваем историю
-                            if len(self.sent_history) > 100:
-                                old_id = self.sent_history.pop(0)
-                                self.sent_posts.remove(old_id)
-                        
-                        return photo_url
-                        
-            except Exception as e:
-                logger.error(f"Ошибка с @{username}: {e}")
-                continue
-        
-        return None
-
 # ========== УСТАНОВКА БРАУЗЕРА ==========
 def get_chromium_path() -> Optional[str]:
     base_dir = PLAYWRIGHT_DIR
@@ -412,29 +285,161 @@ async def close_browser():
             'cookies_valid': False
         }
 
+# ========== КЛАСС BEAUTYBOT ==========
+
+class BeautyBot:
+    def __init__(self):
+        # ВАШИ ПАБЛИКИ С КРАСИВЫМИ ДЕВУШКАМИ
+        self.beauty_pages = [
+            "bikinisnbabes",
+            "EuGirlsDom",
+            "wxrldofbeauty"
+        ]
+        
+        # Защита от дублей
+        self.sent_posts = set()
+        self.sent_history = []
+        self.total_attempts = 0
+        self.successful_finds = 0
+        
+    async def get_random_photo_url(self, page) -> Optional[str]:
+        """Получает случайное фото из случайного паблика с логированием"""
+        self.total_attempts += 1
+        logger.info(f"🔍 Попытка #{self.total_attempts} найти фото")
+        
+        # Выбираем все паблики и перемешиваем
+        selected_pages = self.beauty_pages.copy()
+        random.shuffle(selected_pages)
+        logger.info(f"📋 Паблики для проверки: {', '.join(selected_pages)}")
+        
+        page_index = 0
+        for username in selected_pages:
+            page_index += 1
+            logger.info(f"📄 [{page_index}/{len(selected_pages)}] Проверяю паблик @{username}")
+            
+            try:
+                # Переходим на страницу паблика
+                logger.info(f"  ⏳ Загрузка страницы @{username}...")
+                page_load_start = datetime.now()
+                
+                try:
+                    await page.goto(f"https://x.com/{username}", wait_until='domcontentloaded', timeout=30000)
+                    await page.wait_for_timeout(3000)
+                    load_time = (datetime.now() - page_load_start).total_seconds()
+                    logger.info(f"  ✅ Страница @{username} загружена за {load_time:.2f}с")
+                except Exception as e:
+                    logger.error(f"  ❌ Ошибка загрузки страницы @{username}: {e}")
+                    continue
+                
+                # Ждем загрузки твитов
+                try:
+                    logger.info(f"  ⏳ Ожидание твитов...")
+                    await page.wait_for_selector('[data-testid="tweet"]', timeout=10000)
+                    logger.info(f"  ✅ Твиты найдены")
+                except Exception as e:
+                    logger.warning(f"  ⚠️ Твиты не загрузились на @{username}: {e}")
+                    continue
+                
+                # Получаем все твиты с фото
+                logger.info(f"  ⏳ Извлечение твитов с фото...")
+                tweets_data = await page.evaluate('''
+                    () => {
+                        const tweets = [];
+                        const tweetElements = document.querySelectorAll('[data-testid="tweet"]');
+                        
+                        tweetElements.forEach((tweet) => {
+                            const images = tweet.querySelectorAll('img');
+                            const imageUrls = [];
+                            
+                            images.forEach(img => {
+                                const src = img.getAttribute('src');
+                                if (src && src.includes('pbs.twimg.com/media/')) {
+                                    if (!src.includes('profile_images') && !src.includes('emoji')) {
+                                        imageUrls.push(src);
+                                    }
+                                }
+                            });
+                            
+                            if (imageUrls.length > 0) {
+                                const link = tweet.querySelector('a[href*="/status/"]');
+                                const tweetUrl = link ? link.getAttribute('href') : '';
+                                
+                                tweets.push({
+                                    id: tweet.getAttribute('data-tweet-id') || '',
+                                    photo_urls: imageUrls,
+                                    url: tweetUrl
+                                });
+                            }
+                        });
+                        
+                        return tweets;
+                    }
+                ''')
+                
+                if not tweets_data:
+                    logger.warning(f"  ⚠️ Нет фото в твитах @{username}")
+                    continue
+                
+                logger.info(f"  ✅ Найдено {len(tweets_data)} твитов с фото в @{username}")
+                
+                # Перемешиваем твиты
+                random.shuffle(tweets_data)
+                
+                # Проверяем твиты на дубли
+                checked = 0
+                for tweet in tweets_data:
+                    checked += 1
+                    
+                    # Проверяем дубли
+                    if tweet['id'] and tweet['id'] in self.sent_posts:
+                        logger.info(f"  🔄 Твит {tweet['id']} уже отправлен (пропускаем)")
+                        continue
+                    
+                    if tweet['photo_urls']:
+                        photo_url = tweet['photo_urls'][0]
+                        logger.info(f"  ✅ Найдено новое фото в твите {tweet['id']}")
+                        logger.info(f"  🖼️ URL: {photo_url[:80]}...")
+                        
+                        # Добавляем в историю
+                        if tweet['id']:
+                            self.sent_posts.add(tweet['id'])
+                            self.sent_history.append(tweet['id'])
+                            self.successful_finds += 1
+                            
+                            # Ограничиваем историю
+                            if len(self.sent_history) > 100:
+                                old_id = self.sent_history.pop(0)
+                                self.sent_posts.remove(old_id)
+                                logger.info(f"  🗑️ Удален старый ID из истории: {old_id}")
+                            
+                            logger.info(f"  📊 Отправлено фото #{self.successful_finds}")
+                            logger.info(f"  📊 В истории: {len(self.sent_posts)} уникальных ID")
+                        
+                        return photo_url
+                
+                logger.warning(f"  ⚠️ Все {checked} твитов в @{username} уже отправлены")
+                
+            except Exception as e:
+                logger.error(f"  ❌ Ошибка при обработке @{username}: {e}", exc_info=True)
+                continue
+        
+        logger.warning(f"❌ Фото не найдено ни в одном из {len(selected_pages)} пабликов")
+        logger.warning(f"📊 Всего попыток: {self.total_attempts}, успешно: {self.successful_finds}")
+        return None
+
 # ========== КОМАНДЫ ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    status_browser_use = "✅" if BROWSER_USE_AVAILABLE else "⏳ (установится при первом вызове)"
-    status_agnes = "✅" if AGNES_AVAILABLE else "❌"
     await update.message.reply_text(
-        f"🤖 **X.com Бот**\n\n"
-        f"📋 **Основные команды:**\n"
-        f"/login - Авторизация в X.com\n"
-        f"/screen - Скриншот страницы\n"
-        f"/status - Статус браузера\n"
-        f"/close - Закрыть браузер\n\n"
-        f"📊 **Парсинг:**\n"
-        f"/tweets <username> - Твиты пользователя\n"
-        f"/search <запрос> - Поиск твитов\n\n"
-        f"🌸 **Красивые девушки:**\n"
-        f"/getgirl - Случайное фото из пабликов\n\n"
-        f"🧠 **AI:**\n"
-        f"/browse <задача> - Выполнить задачу в браузере\n"
-        f"/agnes - Статус Agnes\n\n"
-        f"📦 **Статус:**\n"
-        f"Browser-Use: {status_browser_use}\n"
-        f"Agnes: {status_agnes}"
+        f"Меню\n"
+        f"/login Авторизация в X.com\n"
+        f"/screen Скриншот\n"
+        f"/status Статус браузера\n"
+        f"/close Закрыть браузер\n"
+        f"Бот\n"
+        f"/tweets <username>\n"
+        f"/search <запрос>\n"
+        f"/getgirl"
     )
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -695,39 +700,86 @@ async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await close_browser()
     await msg.edit_text("✅ Браузер закрыт!")
 
-# ========== /GETGIRL - КРАСИВЫЕ ДЕВУШКИ ==========
+# ========== /GETGIRL - КРАСИВЫЕ ДЕВУШКИ С ЛОГАМИ ==========
 
 async def getgirl(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отправляет случайное фото из пабликов с красивыми девушками"""
+    chat_id = update.effective_chat.id
+    user = update.effective_user
+    logger.info(f"🌸 /getgirl вызван пользователем @{user.username} (id: {user.id}) в чате {chat_id}")
+    
     msg = await update.message.reply_text("🌸 Ищу красивую девушку...")
+    start_time = datetime.now()
     
     try:
-        # Получаем браузер
-        browser = await get_browser()
-        page = browser['page']
+        # Шаг 1: Получение браузера
+        logger.info(f"📱 Шаг 1: Получение браузера...")
+        browser_start = datetime.now()
         
-        # Создаем экземпляр бота для девушек
+        try:
+            browser = await get_browser()
+            page = browser['page']
+            logger.info(f"✅ Браузер получен за {(datetime.now() - browser_start).total_seconds():.2f}с")
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения браузера: {e}", exc_info=True)
+            await msg.edit_text("❌ Ошибка: не удалось запустить браузер")
+            return
+        
+        # Шаг 2: Создание экземпляра BeautyBot
+        logger.info(f"📱 Шаг 2: Инициализация BeautyBot...")
         beauty_bot = BeautyBot()
+        logger.info(f"✅ BeautyBot инициализирован. Пабликов: {len(beauty_bot.beauty_pages)}")
+        logger.info(f"📋 Список пабликов: {', '.join(beauty_bot.beauty_pages)}")
         
-        # Ищем фото
-        photo_url = await beauty_bot.get_random_photo_url(page)
+        # Шаг 3: Поиск фото
+        logger.info(f"📱 Шаг 3: Поиск фото...")
+        photo_start = datetime.now()
         
-        if photo_url:
-            try:
-                # Отправляем фото в чат
-                await msg.delete()
-                await update.message.reply_photo(
-                    photo=photo_url
-                )
-            except Exception as e:
-                logger.error(f"Ошибка отправки фото: {e}")
-                await msg.edit_text("❌ Ошибка отправки фото, попробуйте ещё раз")
-        else:
-            await msg.edit_text("😔 Не удалось найти фото, попробуйте позже")
+        try:
+            photo_url = await beauty_bot.get_random_photo_url(page)
+            search_time = (datetime.now() - photo_start).total_seconds()
+            
+            if photo_url:
+                logger.info(f"✅ Фото найдено за {search_time:.2f}с")
+                logger.info(f"🖼️ URL фото: {photo_url[:100]}...")
+                
+                # Шаг 4: Отправка фото
+                logger.info(f"📱 Шаг 4: Отправка фото...")
+                send_start = datetime.now()
+                
+                try:
+                    await msg.delete()
+                    await update.message.reply_photo(photo=photo_url)
+                    send_time = (datetime.now() - send_start).total_seconds()
+                    total_time = (datetime.now() - start_time).total_seconds()
+                    
+                    logger.info(f"✅ Фото отправлено за {send_time:.2f}с")
+                    logger.info(f"✅ ВСЕГО: {total_time:.2f}с")
+                    logger.info(f"✅ Статус: УСПЕШНО")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Ошибка отправки фото: {e}", exc_info=True)
+                    await msg.edit_text("❌ Ошибка отправки фото, попробуйте ещё раз")
+                    
+            else:
+                logger.warning(f"⚠️ Фото не найдено. Время поиска: {search_time:.2f}с")
+                logger.warning(f"⚠️ Причина: нет фото в пабликах или все фото уже отправлены")
+                await msg.edit_text("😔 Не удалось найти фото, попробуйте позже")
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка поиска фото: {e}", exc_info=True)
+            await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
             
     except Exception as e:
-        logger.error(f"Ошибка в getgirl: {e}", exc_info=True)
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+        logger.error(f"❌ Критическая ошибка в getgirl: {e}", exc_info=True)
+        try:
+            await msg.edit_text(f"❌ Критическая ошибка: {str(e)[:200]}")
+        except:
+            await update.message.reply_text(f"❌ Критическая ошибка: {str(e)[:200]}")
+    
+    finally:
+        total_time = (datetime.now() - start_time).total_seconds()
+        logger.info(f"🏁 Завершение /getgirl. Общее время: {total_time:.2f}с")
 
 # ========== ТВИТЫ ПОЛЬЗОВАТЕЛЯ ==========
 
@@ -836,7 +888,6 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
         logger.error(f"Error in tweets: {e}", exc_info=True)
 
-
 # ========== ПОИСК ТВИТОВ ==========
 
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -941,7 +992,6 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
         logger.error(f"Error in search: {e}", exc_info=True)
 
-
 # ========== BROWSER-USE ==========
 
 async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1017,7 +1067,6 @@ async def browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
         logger.error(f"Error in browse: {e}", exc_info=True)
 
-
 async def agnes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Проверка статуса Agnes"""
     global AGNES_AVAILABLE, agnes_llm
@@ -1041,7 +1090,6 @@ async def agnes(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "2. Добавь в переменные окружения: AGNES_API_KEY=твой_ключ\n"
             "3. Перезапусти бота"
         )
-
 
 # ========== ЗАПУСК ==========
 def main():
