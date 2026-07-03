@@ -38,7 +38,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📋 Доступные команды:\n"
         "/parse - Получить цитаты\n"
         "/go <url> - Открыть любой сайт\n"
-        "/screen - Сделать скриншот текущей страницы"
+        "/screen - Сделать скриншот"
     )
 
 async def go(update: Update, context: ContextTypes.DEFAULT_TYPE):
