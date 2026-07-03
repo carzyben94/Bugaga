@@ -102,7 +102,7 @@ browser_data = None
 pydoll_browser = None
 pydoll_tab = None
 browser_lock = False
-use_pydoll = False  # По умолчанию Playwright
+engine_mode = "playwright"  # "playwright" или "pydoll"
 login_status = {
     'is_logged_in': False,
     'username': None,
@@ -124,6 +124,8 @@ async def get_pydoll_browser():
     
     try:
         from pydoll.browser import Chrome
+        
+        print("🚀 Запускаю Pydoll браузер...")
         
         # Важные флаги для Railway/контейнеров
         pydoll_browser = await Chrome(
@@ -150,22 +152,27 @@ async def get_pydoll_browser():
                     domain=cookie['domain'],
                     path=cookie['path']
                 )
+                print(f"🍪 Установлена кука: {cookie['name']}")
             except Exception as e:
                 logger.warning(f"Pydoll cookie error {cookie['name']}: {e}")
         
         logger.info("✅ Pydoll браузер запущен")
+        print("✅ Pydoll браузер готов!")
         return pydoll_tab
     except Exception as e:
         logger.error(f"Pydoll ошибка: {e}")
+        print(f"❌ Pydoll ошибка: {e}")
         return None
 
 async def close_pydoll_browser():
+    """Закрывает Pydoll браузер"""
     global pydoll_browser, pydoll_tab
     if pydoll_browser:
         try:
             await pydoll_browser.stop()
-        except:
-            pass
+            print("✅ Pydoll браузер закрыт")
+        except Exception as e:
+            print(f"⚠️ Ошибка при закрытии Pydoll: {e}")
         pydoll_browser = None
         pydoll_tab = None
 
@@ -192,6 +199,8 @@ async def get_playwright_browser():
     
     try:
         from playwright.async_api import async_playwright
+        
+        print("🚀 Запускаю Playwright браузер...")
         
         p = await async_playwright().start()
         
@@ -250,6 +259,7 @@ async def get_playwright_browser():
         }
         
         logger.info("✅ Playwright браузер запущен")
+        print("✅ Playwright браузер готов!")
         return browser_data
     finally:
         browser_lock = False
@@ -270,113 +280,94 @@ async def close_playwright_browser():
             'cookies_valid': False
         }
 
-# ========== УНИВЕРСАЛЬНЫЙ БРАУЗЕР С FALLBACK ==========
+# ========== УНИВЕРСАЛЬНЫЙ БРАУЗЕР (ТОЛЬКО ТЕКУЩИЙ ДВИЖОК) ==========
 async def get_browser():
-    """Универсальное получение браузера с автоматическим fallback"""
-    global use_pydoll
+    """Получает браузер согласно выбранному движку"""
+    global engine_mode
     
-    if use_pydoll and PYDOLL_AVAILABLE:
-        try:
-            # Пробуем Pydoll
-            browser = await get_pydoll_browser()
-            if browser:
-                logger.info("✅ Использую Pydoll")
-                return browser
-        except Exception as e:
-            logger.error(f"❌ Pydoll failed: {e}, falling back to Playwright")
-            use_pydoll = False
-            await close_pydoll_browser()
-    
-    # Fallback на Playwright
-    logger.info("🔄 Использую Playwright")
-    browser_data = await get_playwright_browser()
-    return browser_data['page'] if browser_data else None
+    if engine_mode == "pydoll":
+        if not PYDOLL_AVAILABLE:
+            raise Exception("Pydoll не установлен!")
+        return await get_pydoll_browser()
+    elif engine_mode == "playwright":
+        if not PLAYWRIGHT_AVAILABLE:
+            raise Exception("Playwright не установлен!")
+        browser_data = await get_playwright_browser()
+        return browser_data['page'] if browser_data else None
+    else:
+        raise Exception(f"Неизвестный движок: {engine_mode}")
 
 async def close_browser():
-    """Универсальное закрытие браузера"""
-    if use_pydoll:
+    """Закрывает браузер согласно выбранному движку"""
+    global engine_mode
+    
+    if engine_mode == "pydoll":
         await close_pydoll_browser()
-    else:
+    elif engine_mode == "playwright":
         await close_playwright_browser()
 
-async def get_page():
-    """Универсальное получение страницы"""
-    return await get_browser()
-
 async def take_screenshot():
-    """Универсальный скриншот"""
-    if use_pydoll and PYDOLL_AVAILABLE:
-        try:
-            page = await get_pydoll_browser()
-            if page:
-                return await page.screenshot()
-        except:
-            pass
-    
-    # Fallback на Playwright
-    browser = await get_playwright_browser()
-    if browser:
-        page = browser['page']
-        return await page.screenshot(type='jpeg', quality=80)
+    """Делает скриншот согласно выбранному движку"""
+    if engine_mode == "pydoll":
+        page = await get_pydoll_browser()
+        if page:
+            return await page.screenshot()
+    else:
+        browser = await get_playwright_browser()
+        if browser:
+            page = browser['page']
+            return await page.screenshot(type='jpeg', quality=80)
     return None
 
 async def goto_url(url):
-    """Универсальный переход по URL"""
-    if use_pydoll and PYDOLL_AVAILABLE:
-        try:
-            page = await get_pydoll_browser()
-            if page:
-                await page.go_to(url)
-                return
-        except:
-            pass
-    
-    # Fallback на Playwright
-    browser = await get_playwright_browser()
-    if browser:
-        page = browser['page']
-        await page.goto(url, wait_until='domcontentloaded')
+    """Переход по URL согласно выбранному движку"""
+    if engine_mode == "pydoll":
+        page = await get_pydoll_browser()
+        if page:
+            await page.go_to(url)
+            return
+    else:
+        browser = await get_playwright_browser()
+        if browser:
+            page = browser['page']
+            await page.goto(url, wait_until='domcontentloaded')
+            return
+    raise Exception("Не удалось перейти по URL")
 
 async def evaluate_js(script):
-    """Универсальное выполнение JS"""
-    if use_pydoll and PYDOLL_AVAILABLE:
-        try:
-            page = await get_pydoll_browser()
-            if page:
-                return await page.evaluate(script)
-        except:
-            pass
-    
-    # Fallback на Playwright
-    browser = await get_playwright_browser()
-    if browser:
-        page = browser['page']
-        return await page.evaluate(script)
+    """Выполнение JS согласно выбранному движку"""
+    if engine_mode == "pydoll":
+        page = await get_pydoll_browser()
+        if page:
+            return await page.evaluate(script)
+    else:
+        browser = await get_playwright_browser()
+        if browser:
+            page = browser['page']
+            return await page.evaluate(script)
     return None
 
 async def wait_for_selector(selector, timeout=15000):
-    """Универсальное ожидание элемента"""
-    if use_pydoll and PYDOLL_AVAILABLE:
-        try:
-            page = await get_pydoll_browser()
-            if page:
-                await page.wait_for_element(selector, timeout=timeout/1000)
-                return
-        except:
-            pass
-    
-    # Fallback на Playwright
-    browser = await get_playwright_browser()
-    if browser:
-        page = browser['page']
-        await page.wait_for_selector(selector, timeout=timeout)
+    """Ожидание элемента согласно выбранному движку"""
+    if engine_mode == "pydoll":
+        page = await get_pydoll_browser()
+        if page:
+            await page.wait_for_element(selector, timeout=timeout/1000)
+            return
+    else:
+        browser = await get_playwright_browser()
+        if browser:
+            page = browser['page']
+            await page.wait_for_selector(selector, timeout=timeout)
+            return
+    raise Exception(f"Элемент {selector} не найден")
 
 # ========== КОМАНДЫ ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🤖 **X.com Бот**\n\n"
-        f"🎮 Движок: {'Pydoll' if use_pydoll else 'Playwright'}\n"
+        f"🎮 Движок: {'Pydoll' if engine_mode == 'pydoll' else 'Playwright'}\n"
         f"🧠 Agnes: {'✅' if AGNES_AVAILABLE else '❌'}\n\n"
         f"📌 Команды:\n"
         f"/login - Авторизация в X.com\n"
@@ -393,20 +384,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def engine(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Переключение между движками браузера"""
-    global use_pydoll
+    global engine_mode
     
     if not context.args:
-        current = "Pydoll" if use_pydoll else "Playwright"
+        current = "Pydoll" if engine_mode == "pydoll" else "Playwright"
         status = ""
-        if use_pydoll and not PYDOLL_AVAILABLE:
+        if engine_mode == "pydoll" and not PYDOLL_AVAILABLE:
             status = " (⚠️ Pydoll не установлен!)"
+        elif engine_mode == "playwright" and not PLAYWRIGHT_AVAILABLE:
+            status = " (⚠️ Playwright не установлен!)"
         
         await update.message.reply_text(
             f"🔧 Текущий движок: **{current}**{status}\n\n"
             f"Доступные движки:\n"
             f"  /engine playwright - Playwright (стабильный)\n"
             f"  /engine pydoll - Pydoll (человеческое поведение)\n\n"
-            f"ℹ️ Pydoll лучше для обхода антибот-систем"
+            f"ℹ️ Pydoll лучше для обхода антибот-систем\n"
+            f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}\n"
+            f"📦 Playwright: {'✅' if PLAYWRIGHT_AVAILABLE else '❌'}"
         )
         return
     
@@ -416,23 +411,39 @@ async def engine(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not PYDOLL_AVAILABLE:
             await update.message.reply_text(
                 "❌ Pydoll не установлен!\n\n"
-                "Установите вручную: pip install pydoll-python\n"
-                "Или перезапустите бота"
+                "Установите: pip install pydoll-python"
             )
             return
         
+        # Закрываем текущий браузер
         await close_browser()
-        use_pydoll = True
+        
+        # Переключаем движок
+        engine_mode = "pydoll"
+        
         await update.message.reply_text(
             "✅ Переключено на **Pydoll**\n"
-            "Теперь браузер будет с человеческим поведением!"
+            "Теперь браузер будет с человеческим поведением!\n\n"
+            "Используй /login для авторизации"
         )
         
     elif engine_type == "playwright":
+        if not PLAYWRIGHT_AVAILABLE:
+            await update.message.reply_text(
+                "❌ Playwright не установлен!\n\n"
+                "Установите: pip install playwright && playwright install chromium"
+            )
+            return
+        
+        # Закрываем текущий браузер
         await close_browser()
-        use_pydoll = False
+        
+        # Переключаем движок
+        engine_mode = "playwright"
+        
         await update.message.reply_text(
-            "✅ Переключено на **Playwright**"
+            "✅ Переключено на **Playwright**\n\n"
+            "Используй /login для авторизации"
         )
     else:
         await update.message.reply_text(
@@ -441,9 +452,17 @@ async def engine(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("⏳ Захожу в X.com...")
+    """Авторизация в X.com через выбранный движок"""
+    msg = await update.message.reply_text(f"⏳ Захожу в X.com через {engine_mode}...")
     
     try:
+        # Получаем браузер согласно выбранному движку
+        page = await get_browser()
+        if not page:
+            await msg.edit_text(f"❌ Не удалось запустить {engine_mode} браузер")
+            return
+        
+        # Переходим на X.com
         await goto_url('https://x.com')
         await asyncio.sleep(3)
         
@@ -492,7 +511,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         login_status['last_check'] = datetime.now()
         login_status['cookies_valid'] = auth_status['hasAuthToken'] and auth_status['hasCt0']
         
-        status_msg = f"✅ X.com\n\n"
+        status_msg = f"✅ X.com ({engine_mode})\n\n"
         status_msg += f"🍪 auth_token: {'✅' if auth_status['hasAuthToken'] else '❌'}\n"
         status_msg += f"🍪 ct0: {'✅' if auth_status['hasCt0'] else '❌'}\n\n"
         
@@ -507,17 +526,23 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await msg.edit_text(status_msg)
         
-        screenshot = await take_screenshot()
-        if screenshot:
-            await update.message.reply_photo(
-                photo=screenshot,
-                caption=f"📸 X.com - {'✅ Авторизован' if auth_status['isLoggedIn'] else '❌ Не авторизован'}"
-            )
+        # Делаем скриншот
+        try:
+            screenshot = await take_screenshot()
+            if screenshot:
+                await update.message.reply_photo(
+                    photo=screenshot,
+                    caption=f"📸 X.com - {'✅ Авторизован' if auth_status['isLoggedIn'] else '❌ Не авторизован'}"
+                )
+        except Exception as e:
+            logger.error(f"Screenshot error: {e}")
         
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+        logger.error(f"Login error: {e}", exc_info=True)
 
 async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Скриншот текущей страницы"""
     msg = await update.message.reply_text("⏳ Делаю скриншот...")
     
     try:
@@ -526,7 +551,7 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.delete()
             await update.message.reply_photo(
                 photo=screenshot,
-                caption=f"📸 Скриншот X.com\n🎮 Движок: {'Pydoll' if use_pydoll else 'Playwright'}"
+                caption=f"📸 Скриншот X.com\n🎮 Движок: {engine_mode}"
             )
         else:
             await msg.edit_text("❌ Не удалось сделать скриншот")
@@ -535,20 +560,21 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:100]}")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Статус бота"""
     msg = await update.message.reply_text("⏳ Проверяю статус...")
     
     try:
         status_msg = "📊 **СТАТУС БОТА**\n\n"
         
         # Движки
-        status_msg += f"🎮 Текущий движок: **{'Pydoll' if use_pydoll else 'Playwright'}**\n"
+        status_msg += f"🎮 Текущий движок: **{engine_mode}**\n"
         status_msg += f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}\n"
         status_msg += f"📦 Playwright: {'✅' if PLAYWRIGHT_AVAILABLE else '❌'}\n"
         status_msg += f"🧠 Agnes: {'✅' if AGNES_AVAILABLE else '❌'}\n\n"
         
         # Статус браузера
         try:
-            if use_pydoll and PYDOLL_AVAILABLE:
+            if engine_mode == "pydoll":
                 page = await get_pydoll_browser()
                 if page:
                     status_msg += "🌐 Браузер: ✅ Запущен (Pydoll)\n"
@@ -564,8 +590,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     page = browser['page']
                     url = page.url
                     status_msg += f"🔗 URL: {url[:50]}\n"
-        except:
-            status_msg += "🌐 Браузер: ❌ Не запущен\n"
+        except Exception as e:
+            status_msg += f"🌐 Браузер: ❌ Не запущен\n"
         
         # Авторизация
         status_msg += "\n🔐 **АВТОРИЗАЦИЯ:**\n"
@@ -584,6 +610,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Закрывает браузер"""
     msg = await update.message.reply_text("⏳ Закрываю браузер...")
     await close_browser()
     await msg.edit_text("✅ Браузер закрыт!")
@@ -872,7 +899,7 @@ def main():
     app.add_handler(CommandHandler("agnes", agnes))
     
     print("✅ Бот запущен!")
-    print(f"🎮 Движок: {'Pydoll' if use_pydoll else 'Playwright'}")
+    print(f"🎮 Движок: {engine_mode}")
     print(f"🧠 Agnes: {'✅' if AGNES_AVAILABLE else '❌'}")
     print("\nКоманды:")
     print("  /start, /login, /screen, /status, /engine, /close")
