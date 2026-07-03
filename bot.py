@@ -180,69 +180,59 @@ async def close_pydoll_browser():
 async def get_browser():
     return await get_pydoll_browser()
 
-# ========== БЕЗОПАСНОЕ ВЫПОЛНЕНИЕ JS ==========
+# ========== БЕЗОПАСНОЕ ВЫПОЛНЕНИЕ JS ЧЕРЕЗ JSON ==========
 
-def safe_convert_result(data):
-    """Рекурсивно преобразует данные в безопасный формат (хешируемые типы)"""
-    if data is None:
-        return None
-    # slice — специальная обработка
-    elif isinstance(data, slice):
-        return {'slice_start': data.start, 'slice_stop': data.stop, 'slice_step': data.step}
-    elif isinstance(data, (str, int, float, bool)):
-        return data
-    elif isinstance(data, list):
-        return [safe_convert_result(item) for item in data]
-    elif isinstance(data, dict):
-        try:
-            return {str(key): safe_convert_result(value) for key, value in data.items()}
-        except Exception:
-            return {str(k): str(v) for k, v in data.items()}
-    elif isinstance(data, tuple):
-        return tuple(safe_convert_result(item) for item in data)
-    elif hasattr(data, '__dict__'):
-        try:
-            return {str(k): safe_convert_result(v) for k, v in data.__dict__.items()}
-        except:
-            return str(data)
-    else:
-        # Все остальное преобразуем в строку
-        try:
-            return str(data)
-        except:
-            return None
-
-async def safe_execute_js(script, timeout=10, default_return=None):
+async def safe_execute_js(page, script, timeout=10, default_return=None):
     """
-    Безопасное выполнение JS с обработкой всех ошибок
-    Всегда возвращает простой Python объект (dict, list, str, int, None)
+    Безопасное выполнение JS через JSON сериализацию.
+    Полностью устраняет ошибку unhashable type: 'slice'
     """
     logger.debug(f"  📜 Выполнение JS (таймаут: {timeout}с)")
     
-    page = await get_browser()
     if page is None:
         logger.error("  ❌ Страница не получена")
         return default_return
     
+    # Оборачиваем скрипт в JSON сериализацию
+    wrapped_script = f"""
+        (function() {{
+            try {{
+                var result = {script};
+                return JSON.stringify(result);
+            }} catch(e) {{
+                return JSON.stringify({{error: e.message, stack: e.stack}});
+            }}
+        }})()
+    """
+    
     try:
-        result = await asyncio.wait_for(
-            page.execute_script(script),
+        result_str = await asyncio.wait_for(
+            page.execute_script(wrapped_script),
             timeout=timeout
         )
-        return safe_convert_result(result)
         
+        # Парсим JSON
+        if isinstance(result_str, str):
+            data = json.loads(result_str)
+        else:
+            # Если вдруг вернулся не строкой
+            data = result_str
+        
+        # Проверяем на ошибку в JS
+        if isinstance(data, dict) and 'error' in data:
+            logger.warning(f"  ⚠️ JS ошибка: {data['error']}")
+            return default_return
+        
+        return data
+        
+    except json.JSONDecodeError as e:
+        logger.error(f"  ❌ Ошибка парсинга JSON: {e}")
+        return default_return
     except asyncio.TimeoutError:
         logger.warning(f"  ⏱️ Таймаут {timeout}с")
         return default_return
-    except TypeError as e:
-        if 'unhashable type' in str(e):
-            logger.warning(f"  ⚠️ Ошибка хеширования: {e}")
-            return default_return
-        else:
-            logger.error(f"  ❌ TypeError: {e}")
-            return default_return
     except Exception as e:
-        logger.error(f"  ❌ Ошибка JS: {str(e)[:100]}")
+        logger.error(f"  ❌ Ошибка выполнения: {str(e)[:100]}")
         return default_return
 
 async def take_screenshot():
@@ -265,38 +255,28 @@ async def shadow_v1(page):
     """Вариант 1: Простой поиск shadowRoot"""
     logger.info("  🔍 V1: Простой поиск shadowRoot")
     try:
-        js = """
+        script = """
             (function() {
-                try {
-                    var result = [];
-                    var elements = document.querySelectorAll('*');
-                    for (var i = 0; i < elements.length; i++) {
-                        var el = elements[i];
-                        if (el.shadowRoot) {
-                            result.push({
-                                tag: el.tagName.toLowerCase(),
-                                id: el.id || null,
-                                class: el.className || null,
-                                children: el.shadowRoot.children.length
-                            });
-                        }
+                var result = [];
+                var elements = document.querySelectorAll('*');
+                for (var i = 0; i < elements.length; i++) {
+                    var el = elements[i];
+                    if (el.shadowRoot) {
+                        result.push({
+                            tag: el.tagName.toLowerCase(),
+                            id: el.id || null,
+                            class: el.className || null,
+                            children: el.shadowRoot.children.length
+                        });
                     }
-                    return result;
-                } catch(e) {
-                    return {error: e.message};
                 }
+                return result;
             })()
         """
-        result = await safe_execute_js(js, timeout=5.0, default_return=[])
-        
-        if result and isinstance(result, dict) and 'error' in result:
-            logger.warning(f"  ⚠️ V1: JS ошибка - {result['error']}")
-            return []
-        
+        result = await safe_execute_js(page, script, timeout=5.0, default_return=[])
         count = len(result) if isinstance(result, list) else 0
         logger.info(f"  ✅ V1: Найдено {count} элементов")
         return result if isinstance(result, list) else []
-        
     except Exception as e:
         logger.error(f"  ❌ V1: {str(e)[:100]}")
         return []
@@ -305,52 +285,42 @@ async def shadow_v2(page):
     """Вариант 2: Поиск конкретных элементов"""
     logger.info("  🔍 V2: Поиск конкретных элементов")
     try:
-        js = """
+        script = """
             (function() {
-                try {
-                    var result = [];
-                    var selectors = ['grok-drawer', 'video-player', 'emoji-picker'];
-                    for (var s = 0; s < selectors.length; s++) {
-                        var sel = selectors[s];
-                        try {
-                            var el = document.querySelector(sel);
-                            if (el && el.shadowRoot) {
-                                var children = [];
-                                var childNodes = el.shadowRoot.children;
-                                for (var c = 0; c < childNodes.length; c++) {
-                                    var child = childNodes[c];
-                                    children.push({
-                                        tag: child.tagName.toLowerCase(),
-                                        id: child.id || null,
-                                        text: child.textContent ? child.textContent.slice(0, 50) : null
-                                    });
-                                }
-                                result.push({
-                                    host: sel,
-                                    id: el.id || null,
-                                    children: children
+                var result = [];
+                var selectors = ['grok-drawer', 'video-player', 'emoji-picker'];
+                for (var s = 0; s < selectors.length; s++) {
+                    var sel = selectors[s];
+                    try {
+                        var el = document.querySelector(sel);
+                        if (el && el.shadowRoot) {
+                            var children = [];
+                            var childNodes = el.shadowRoot.children;
+                            for (var c = 0; c < childNodes.length; c++) {
+                                var child = childNodes[c];
+                                children.push({
+                                    tag: child.tagName.toLowerCase(),
+                                    id: child.id || null,
+                                    text: child.textContent ? child.textContent.slice(0, 50) : null
                                 });
                             }
-                        } catch(e) {
-                            // Пропускаем ошибки для отдельных селекторов
+                            result.push({
+                                host: sel,
+                                id: el.id || null,
+                                children: children
+                            });
                         }
+                    } catch(e) {
+                        // Пропускаем ошибки
                     }
-                    return result;
-                } catch(e) {
-                    return {error: e.message};
                 }
+                return result;
             })()
         """
-        result = await safe_execute_js(js, timeout=5.0, default_return=[])
-        
-        if result and isinstance(result, dict) and 'error' in result:
-            logger.warning(f"  ⚠️ V2: JS ошибка - {result['error']}")
-            return []
-        
+        result = await safe_execute_js(page, script, timeout=5.0, default_return=[])
         count = len(result) if isinstance(result, list) else 0
         logger.info(f"  ✅ V2: Найдено {count} элементов")
         return result if isinstance(result, list) else []
-        
     except Exception as e:
         logger.error(f"  ❌ V2: {str(e)[:100]}")
         return []
@@ -359,60 +329,50 @@ async def shadow_v3(page):
     """Вариант 3: Рекурсивный обход"""
     logger.info("  🔍 V3: Рекурсивный обход")
     try:
-        js = """
+        script = """
             (function() {
-                try {
-                    function traverse(el, path) {
-                        var data = {
-                            tag: el.tagName.toLowerCase(),
-                            id: el.id || null,
-                            class: el.className || null,
-                            path: path,
-                            hasShadow: !!el.shadowRoot,
-                            children: []
-                        };
-                        
-                        if (el.shadowRoot) {
-                            var shadowChildren = el.shadowRoot.children;
-                            for (var i = 0; i < shadowChildren.length; i++) {
-                                try {
-                                    data.children.push(traverse(shadowChildren[i], path + ' > shadow'));
-                                } catch(e) {
-                                    data.children.push({error: e.message});
-                                }
+                function traverse(el, path) {
+                    var data = {
+                        tag: el.tagName.toLowerCase(),
+                        id: el.id || null,
+                        class: el.className || null,
+                        path: path,
+                        hasShadow: !!el.shadowRoot,
+                        children: []
+                    };
+                    
+                    if (el.shadowRoot) {
+                        var shadowChildren = el.shadowRoot.children;
+                        for (var i = 0; i < shadowChildren.length; i++) {
+                            try {
+                                data.children.push(traverse(shadowChildren[i], path + ' > shadow'));
+                            } catch(e) {
+                                data.children.push({error: e.message});
                             }
                         }
-                        
-                        var domChildren = el.children;
-                        for (var j = 0; j < domChildren.length; j++) {
-                            var child = domChildren[j];
-                            if (!child.shadowRoot) {
-                                try {
-                                    data.children.push(traverse(child, path + ' > ' + el.tagName));
-                                } catch(e) {
-                                    data.children.push({error: e.message});
-                                }
-                            }
-                        }
-                        
-                        return data;
                     }
                     
-                    return traverse(document.body, 'body');
-                } catch(e) {
-                    return {error: e.message};
+                    var domChildren = el.children;
+                    for (var j = 0; j < domChildren.length; j++) {
+                        var child = domChildren[j];
+                        if (!child.shadowRoot) {
+                            try {
+                                data.children.push(traverse(child, path + ' > ' + el.tagName));
+                            } catch(e) {
+                                data.children.push({error: e.message});
+                            }
+                        }
+                    }
+                    
+                    return data;
                 }
+                
+                return traverse(document.body, 'body');
             })()
         """
-        result = await safe_execute_js(js, timeout=10.0, default_return={})
-        
-        if result and isinstance(result, dict) and 'error' in result:
-            logger.warning(f"  ⚠️ V3: JS ошибка - {result['error']}")
-            return {}
-        
+        result = await safe_execute_js(page, script, timeout=10.0, default_return={})
         logger.info(f"  ✅ V3: Обход завершен")
         return result if isinstance(result, dict) else {}
-        
     except Exception as e:
         logger.error(f"  ❌ V3: {str(e)[:100]}")
         return {}
@@ -421,54 +381,44 @@ async def shadow_v4(page):
     """Вариант 4: Хосты с shadowRoot"""
     logger.info("  🔍 V4: Хосты с shadowRoot")
     try:
-        js = """
+        script = """
             (function() {
-                try {
-                    var hosts = [];
-                    var elements = document.querySelectorAll('*');
-                    for (var i = 0; i < elements.length; i++) {
-                        var el = elements[i];
-                        if (el.shadowRoot) {
+                var hosts = [];
+                var elements = document.querySelectorAll('*');
+                for (var i = 0; i < elements.length; i++) {
+                    var el = elements[i];
+                    if (el.shadowRoot) {
+                        try {
+                            var info = {
+                                tag: el.tagName,
+                                id: el.id || null,
+                                class: el.className || null,
+                                childCount: el.shadowRoot.children.length
+                            };
+                            
                             try {
-                                var info = {
-                                    tag: el.tagName,
-                                    id: el.id || null,
-                                    class: el.className || null,
-                                    childCount: el.shadowRoot.children.length
-                                };
-                                
-                                try {
-                                    var buttons = el.shadowRoot.querySelectorAll('button');
-                                    var inputs = el.shadowRoot.querySelectorAll('input, textarea');
-                                    info.buttons = buttons.length;
-                                    info.inputs = inputs.length;
-                                } catch(e) {
-                                    info.buttons = 0;
-                                    info.inputs = 0;
-                                }
-                                
-                                hosts.push(info);
+                                var buttons = el.shadowRoot.querySelectorAll('button');
+                                var inputs = el.shadowRoot.querySelectorAll('input, textarea');
+                                info.buttons = buttons.length;
+                                info.inputs = inputs.length;
                             } catch(e) {
-                                // Пропускаем ошибки для отдельных элементов
+                                info.buttons = 0;
+                                info.inputs = 0;
                             }
+                            
+                            hosts.push(info);
+                        } catch(e) {
+                            // Пропускаем ошибки
                         }
                     }
-                    return hosts;
-                } catch(e) {
-                    return {error: e.message};
                 }
+                return hosts;
             })()
         """
-        result = await safe_execute_js(js, timeout=5.0, default_return=[])
-        
-        if result and isinstance(result, dict) and 'error' in result:
-            logger.warning(f"  ⚠️ V4: JS ошибка - {result['error']}")
-            return []
-        
+        result = await safe_execute_js(page, script, timeout=5.0, default_return=[])
         count = len(result) if isinstance(result, list) else 0
         logger.info(f"  ✅ V4: Найдено {count} хостов")
         return result if isinstance(result, list) else []
-        
     except Exception as e:
         logger.error(f"  ❌ V4: {str(e)[:100]}")
         return []
@@ -514,7 +464,6 @@ async def shadow_v5(page):
         
         logger.info(f"  ✅ V5: Найдено {len(hosts)} элементов")
         return hosts
-        
     except Exception as e:
         logger.error(f"  ❌ V5: {str(e)[:100]}")
         return []
@@ -685,7 +634,7 @@ async def emulate_human_login_flow(page):
 
 async def check_login_status_detailed(page):
     try:
-        js_code = """
+        script = """
             (function() {
                 var cookies = {};
                 var parts = document.cookie.split(';');
@@ -744,7 +693,8 @@ async def check_login_status_detailed(page):
                 };
             })()
         """
-        return await safe_execute_js(js_code, timeout=10.0, default_return={'isLoggedIn': False})
+        result = await safe_execute_js(page, script, timeout=10.0, default_return={'isLoggedIn': False})
+        return result if isinstance(result, dict) else {'isLoggedIn': False}
     except Exception as e:
         logger.error(f"❌ Ошибка проверки статуса: {e}")
         return {'isLoggedIn': False}
@@ -914,7 +864,7 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await human_scroll(page, 500)
         await asyncio.sleep(1)
         
-        js_tweets = f"""
+        script = f"""
             (function() {{
                 var tweets = [];
                 var elements = document.querySelectorAll('[data-testid="tweet"]');
@@ -933,7 +883,7 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }})()
         """
         
-        tweets_data = await safe_execute_js(js_tweets, timeout=10.0, default_return=[])
+        tweets_data = await safe_execute_js(page, script, timeout=10.0, default_return=[])
         
         if not tweets_data:
             await send_message_safe(update, f"❌ Твиты @{username} не найдены")
