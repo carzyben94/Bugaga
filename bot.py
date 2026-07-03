@@ -139,12 +139,16 @@ async def cookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
         json_str = ' '.join(context.args)
         cookies_data = json.loads(json_str)
         
-        count = 0
-        for name, value in cookies_data.items():
-            await tab.add_cookie(name, value)
-            count += 1
+        # Преобразуем в формат для Pydoll
+        cookies_list = [
+            {"name": name, "value": value}
+            for name, value in cookies_data.items()
+        ]
         
-        await update.message.reply_text(f"✅ Установлено {count} кук!")
+        # Устанавливаем куки
+        await tab.set_cookies(cookies_list)
+        
+        await update.message.reply_text(f"✅ Установлено {len(cookies_list)} кук!")
         
     except json.JSONDecodeError:
         await update.message.reply_text(
