@@ -1,9 +1,11 @@
-# bot.py - X.com бот с Pydoll (полная версия)
+# bot.py - X.com бот с Pydoll (с эмуляцией человека)
 import os
 import logging
 import asyncio
 import json
 import subprocess
+import random
+import base64
 from datetime import datetime
 from typing import Optional, List
 from pydantic import BaseModel
@@ -48,6 +50,35 @@ class APIResponse(BaseModel):
     status: int
     ok: bool
     data: dict
+
+# ========== ЭМУЛЯЦИЯ ЧЕЛОВЕКА ==========
+def random_delay(min_sec=0.5, max_sec=2.0):
+    """Случайная задержка для имитации человека"""
+    return random.uniform(min_sec, max_sec)
+
+async def human_goto(page, url):
+    """Переход с эмуляцией человеческого поведения"""
+    try:
+        if hasattr(page, 'go_to'):
+            await page.go_to(url, humanize=True)
+        else:
+            await page.go_to(url)
+        await asyncio.sleep(random_delay(1.5, 3.5))
+    except Exception as e:
+        logger.warning(f"Human goto error: {e}")
+        await page.go_to(url)
+
+async def human_scroll(page, amount=300):
+    """Прокрутка с эмуляцией человеческого поведения"""
+    try:
+        if hasattr(page, 'scroll_by'):
+            await page.scroll_by(amount, humanize=True)
+        else:
+            await page.execute_script(f'window.scrollBy(0, {amount})')
+        await asyncio.sleep(random_delay(0.3, 1.0))
+    except Exception as e:
+        logger.warning(f"Human scroll error: {e}")
+        await page.execute_script(f'window.scrollBy(0, {amount})')
 
 # ========== ПОЛНЫЕ КУКИ X.COM ==========
 COOKIES = [
@@ -141,7 +172,6 @@ def find_chromium():
             logger.info(f"✅ Chromium найден: {path}")
             return path
     
-    # Пробуем через which
     try:
         result = subprocess.run(['which', 'chromium'], capture_output=True, text=True)
         if result.returncode == 0 and result.stdout.strip():
@@ -178,12 +208,10 @@ async def get_browser():
         from pydoll.browser import Chrome
         from pydoll.browser.options import ChromiumOptions
         
-        # Находим Chromium
         chromium_path = find_chromium()
         if not chromium_path:
             raise Exception("Chromium не найден. Установи: apt-get install chromium")
         
-        # Настройка браузера
         options = ChromiumOptions()
         options.binary_location = chromium_path
         
@@ -202,10 +230,8 @@ async def get_browser():
         
         logger.info("✅ Браузер запущен!")
         
-        await pydoll_tab.go_to('https://x.com')
-        await asyncio.sleep(2)
+        await human_goto(pydoll_tab, 'https://x.com')
         
-        # Установка кук
         for cookie in COOKIES:
             try:
                 await pydoll_tab.set_cookie(
@@ -245,15 +271,30 @@ async def execute_js(script):
         logger.error(f"JS error: {e}")
         return None
 
-async def screenshot():
+async def take_screenshot():
+    """Скриншот - возвращает bytes или None"""
     page = await get_browser()
     if page is None:
         return None
+    
     try:
-        return await page.screenshot()
+        if hasattr(page, 'take_screenshot'):
+            try:
+                screenshot_base64 = await page.take_screenshot(as_base64=True)
+                if screenshot_base64:
+                    return base64.b64decode(screenshot_base64)
+            except:
+                temp_file = '/tmp/screenshot.png'
+                await page.take_screenshot(path=temp_file)
+                if os.path.exists(temp_file):
+                    with open(temp_file, 'rb') as f:
+                        return f.read()
+        elif hasattr(page, 'screenshot'):
+            return await page.screenshot()
     except Exception as e:
         logger.error(f"Screenshot error: {e}")
-        return None
+    
+    return None
 
 # ========== КОМАНДЫ ==========
 
@@ -294,7 +335,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "close":
         await close(update, context)
 
-# ---------- ЛОГИН ----------
+# ---------- ЛОГИН (с эмуляцией) ----------
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global login_status
     
@@ -309,8 +350,9 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("❌ Не удалось запустить браузер")
             return
         
-        await page.go_to('https://x.com')
-        await asyncio.sleep(3)
+        # Переход с эмуляцией
+        await human_goto(page, 'https://x.com')
+        await asyncio.sleep(random_delay(2.0, 4.0))
         
         # Проверка авторизации
         auth = await execute_js('''
@@ -322,6 +364,8 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 }, {});
                 
                 const hasAuth = !!cookies.auth_token;
+                const hasCt0 = !!cookies.ct0;
+                
                 const profile = document.querySelector('[data-testid="AppTabBar_Profile_Link"] a');
                 let username = null;
                 if (profile) {
@@ -329,22 +373,56 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if (href) username = href.replace('/', '');
                 }
                 
-                return { logged: hasAuth, username: username };
+                const hasLoginLink = !!document.querySelector('a[href="/login"]');
+                const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
+                const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]');
+                
+                const isLoggedIn = hasAuth || (hasProfileLink && !hasLoginLink);
+                
+                return {
+                    hasAuthToken: hasAuth,
+                    hasCt0: hasCt0,
+                    username: username || 'неизвестно',
+                    isLoggedIn: isLoggedIn
+                };
             }
         ''')
         
-        login_status['is_logged_in'] = auth.get('logged', False)
+        if auth is None:
+            await msg.edit_text("❌ Не удалось проверить авторизацию")
+            return
+        
+        login_status['is_logged_in'] = auth.get('isLoggedIn', False)
         login_status['username'] = auth.get('username')
         
-        await msg.delete()
+        # Формируем статус
+        status_msg = f"✅ X.com\n\n"
+        status_msg += f"🍪 auth_token: {'✅' if auth.get('hasAuthToken') else '❌'}\n"
+        status_msg += f"🍪 ct0: {'✅' if auth.get('hasCt0') else '❌'}\n\n"
         
-        img = await screenshot()
-        if img:
-            await update.message.reply_photo(photo=img)
+        if auth.get('isLoggedIn'):
+            status_msg += "✅ ВЫ АВТОРИЗОВАНЫ!\n"
+            if auth.get('username') and auth.get('username') != 'неизвестно':
+                status_msg += f"👤 @{auth['username']}\n"
         else:
-            await update.message.reply_text("❌ Скриншот не удался")
+            status_msg += "❌ НЕ АВТОРИЗОВАН\n"
+            status_msg += "\nИспользуй /setcookies для обновления кук"
+        
+        await msg.edit_text(status_msg)
+        
+        # Скриншот с подписью
+        await asyncio.sleep(random_delay(0.5, 1.0))
+        screenshot = await take_screenshot()
+        if screenshot:
+            caption = f"📸 X.com - {'✅ Авторизован' if auth.get('isLoggedIn') else '❌ Не авторизован'}"
+            if auth.get('isLoggedIn') and auth.get('username') and auth.get('username') != 'неизвестно':
+                caption += f" @{auth['username']}"
+            await update.message.reply_photo(photo=screenshot, caption=caption)
+        
+        logger.info(f"✅ Логин выполнен: {login_status['username']}")
             
     except Exception as e:
+        logger.error(f"❌ Ошибка в login: {e}", exc_info=True)
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ---------- SHADOW DOM ----------
@@ -392,7 +470,8 @@ async def shadow_dom(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await msg.edit_text(response, parse_mode='Markdown')
         
-        img = await screenshot()
+        await asyncio.sleep(random_delay(0.5, 1.0))
+        img = await take_screenshot()
         if img:
             await update.message.reply_photo(photo=img, caption="📸 Текущая страница")
         
@@ -455,6 +534,12 @@ async def extract_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = await update.message.reply_text("📊 Извлечение данных...")
     
     try:
+        # Скроллим для загрузки контента
+        page = await get_browser()
+        if page:
+            await human_scroll(page, 300)
+            await asyncio.sleep(random_delay(1.0, 2.0))
+        
         raw_data = await execute_js('''
             () => {
                 const items = [];
@@ -513,7 +598,8 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = await update.message.reply_text("📸 Делаю скриншот...")
     
     try:
-        img = await screenshot()
+        await asyncio.sleep(random_delay(0.5, 1.0))
+        img = await take_screenshot()
         if img:
             await msg.delete()
             await update.message.reply_photo(photo=img, caption="📸 Скриншот")
@@ -576,7 +662,6 @@ def main():
     
     print("✅ Бот запущен!")
     
-    # Проверка Chromium при старте
     chromium_path = find_chromium()
     if chromium_path:
         print(f"✅ Chromium найден: {chromium_path}")
