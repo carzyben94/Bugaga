@@ -1,4 +1,4 @@
-# bot.py - X.com бот с Pydoll (финальная версия)
+# bot.py - X.com бот с Pydoll (с куками)
 import os
 import logging
 import asyncio
@@ -51,6 +51,131 @@ class APIResponse(BaseModel):
     ok: bool
     data: dict
 
+# ========== КУКИ X.COM (ПОЛНЫЙ СПИСОК) ==========
+COOKIES = [
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "__cuid",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "lang",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "ru"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "dnt",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "1"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "guest_id",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "v1%3A178267838599411411"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "guest_id_marketing",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "v1%3A178267838599411411"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "guest_id_ads",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "v1%3A178267838599411411"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "personalization_id",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "\"v1_DKrxLZAC902dMFdd1QrVYg==\""
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "twid",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "u%3D2067347503503052800"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "auth_token",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "ct0",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "__cf_bm",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "2ku2oJe0Gfg05gUB2fEh0b3jU9kiEobTZUNq2OLAZvQ-1783074057.6785293-1.0.1.1-f3HYKsWH7RaLPfRVib1mioDjCy4hFVGk5ATKiOfVeQgHghivv2.i9DeLep5fhXPi6.dIRT6FDZsaMuGgPKzUJtG6793WLbUt6AzN06.CiGHiLlgfgCb7wWVjtZ3lnkSE"
+    }
+]
+
 # ========== ЭМУЛЯЦИЯ ЧЕЛОВЕКА ==========
 def random_delay(min_sec=0.5, max_sec=2.0):
     return random.uniform(min_sec, max_sec)
@@ -76,76 +201,6 @@ async def human_scroll(page, amount=300):
     except Exception as e:
         logger.warning(f"Human scroll error: {e}")
         await page.execute_script(f'window.scrollBy(0, {amount})')
-
-# ========== ПОЛНЫЕ КУКИ X.COM ==========
-COOKIES = [
-    {
-        "name": "__cuid",
-        "value": "55d2d7c5-4888-430a-b024-dd785da46ef4",
-        "domain": ".x.com",
-        "path": "/"
-    },
-    {
-        "name": "lang",
-        "value": "ru",
-        "domain": ".x.com",
-        "path": "/"
-    },
-    {
-        "name": "dnt",
-        "value": "1",
-        "domain": ".x.com",
-        "path": "/"
-    },
-    {
-        "name": "guest_id",
-        "value": "v1%3A178267838599411411",
-        "domain": ".x.com",
-        "path": "/"
-    },
-    {
-        "name": "guest_id_marketing",
-        "value": "v1%3A178267838599411411",
-        "domain": ".x.com",
-        "path": "/"
-    },
-    {
-        "name": "guest_id_ads",
-        "value": "v1%3A178267838599411411",
-        "domain": ".x.com",
-        "path": "/"
-    },
-    {
-        "name": "personalization_id",
-        "value": "\"v1_DKrxLZAC902dMFdd1QrVYg==\"",
-        "domain": ".x.com",
-        "path": "/"
-    },
-    {
-        "name": "twid",
-        "value": "u%3D2067347503503052800",
-        "domain": ".x.com",
-        "path": "/"
-    },
-    {
-        "name": "auth_token",
-        "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936",
-        "domain": ".x.com",
-        "path": "/"
-    },
-    {
-        "name": "ct0",
-        "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb",
-        "domain": ".x.com",
-        "path": "/"
-    },
-    {
-        "name": "__cf_bm",
-        "value": "8AS4KkJTPVEBxib6jMqZVT_KfZfetc9yFYZaTAjIero-1783072999.9943306-1.0.1.1-h.ZVKRVBwECbpuDlQc4BJwZxlvHQJAbIhjncRLnauthiJvlZYU0C0xGyfkYbQkkb4C5oZIoqS7sgU1uyById4wz_oQjkJ_cAMMWZTh67dXXCqpWyxQk3Zs76u9q3QrGL",
-        "domain": ".x.com",
-        "path": "/"
-    }
-]
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 pydoll_browser = None
@@ -226,8 +281,8 @@ async def get_browser():
         
         logger.info("✅ Браузер запущен!")
         
-        await human_goto(pydoll_tab, 'https://x.com')
-        
+        # Сначала устанавливаем куки
+        logger.info("🍪 Устанавливаю куки...")
         for cookie in COOKIES:
             try:
                 await pydoll_tab.set_cookie(
@@ -239,6 +294,10 @@ async def get_browser():
                 logger.debug(f"🍪 Кука установлена: {cookie['name']}")
             except Exception as e:
                 logger.warning(f"Cookie error {cookie['name']}: {e}")
+        
+        # Потом переходим на X.com
+        logger.info("🌐 Перехожу на X.com...")
+        await human_goto(pydoll_tab, 'https://x.com')
         
         logger.info("✅ Браузер готов!")
         return pydoll_tab
@@ -293,7 +352,6 @@ async def take_screenshot():
 
 # ========== УНИВЕРСАЛЬНЫЕ ФУНКЦИИ ОТПРАВКИ ==========
 async def send_photo(update: Update, photo_bytes, caption=None):
-    """Отправляет фото через update.message или update.callback_query"""
     try:
         if update.message:
             await update.message.reply_photo(photo=photo_bytes, caption=caption)
@@ -305,7 +363,6 @@ async def send_photo(update: Update, photo_bytes, caption=None):
         logger.error(f"❌ Ошибка отправки фото: {e}")
 
 async def send_message(update: Update, text, parse_mode='Markdown'):
-    """Отправляет текст через update.message или update.callback_query"""
     try:
         if update.message:
             await update.message.reply_text(text, parse_mode=parse_mode)
@@ -317,7 +374,6 @@ async def send_message(update: Update, text, parse_mode='Markdown'):
         logger.error(f"❌ Ошибка отправки сообщения: {e}")
 
 async def send_document(update: Update, file, caption=None):
-    """Отправляет документ"""
     try:
         if update.message:
             await update.message.reply_document(document=file, caption=caption)
@@ -365,24 +421,26 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "close":
         await close(update, context)
 
-# ---------- ЛОГИН ----------
+# ---------- ЛОГИН (куки → вход → скриншот) ----------
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global login_status
     
     if hasattr(update, 'callback_query'):
-        msg = await update.callback_query.edit_message_text("⏳ Авторизация...")
+        msg = await update.callback_query.edit_message_text("⏳ Устанавливаю куки и захожу на X.com...")
     else:
-        msg = await update.message.reply_text("⏳ Авторизация...")
+        msg = await update.message.reply_text("⏳ Устанавливаю куки и захожу на X.com...")
     
     try:
+        # 1. Запускаем браузер (куки устанавливаются внутри)
         page = await get_browser()
         if page is None:
             await msg.edit_text("❌ Не удалось запустить браузер")
             return
         
-        await human_goto(page, 'https://x.com')
+        # 2. Ждем загрузки страницы
         await asyncio.sleep(random_delay(2.0, 4.0))
         
+        # 3. Проверяем авторизацию
         auth = await execute_js('''
             () => {
                 const cookies = document.cookie.split(';').reduce((acc, c) => {
@@ -422,6 +480,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         login_status['is_logged_in'] = auth.get('isLoggedIn', False)
         login_status['username'] = auth.get('username')
         
+        # 4. Текстовый статус
         status_msg = f"✅ X.com\n\n"
         status_msg += f"🍪 auth_token: {'✅' if auth.get('hasAuthToken') else '❌'}\n"
         status_msg += f"🍪 ct0: {'✅' if auth.get('hasCt0') else '❌'}\n\n"
@@ -432,9 +491,11 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 status_msg += f"👤 @{auth['username']}\n"
         else:
             status_msg += "❌ НЕ АВТОРИЗОВАН\n"
+            status_msg += "\n💡 Обнови куки через /setcookies"
         
         await msg.edit_text(status_msg)
         
+        # 5. Скриншот
         await asyncio.sleep(random_delay(0.5, 1.0))
         screenshot = await take_screenshot()
         if screenshot:
