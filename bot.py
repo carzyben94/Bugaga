@@ -1,4 +1,4 @@
-import os 
+import os
 import sys
 import subprocess
 import logging
@@ -194,30 +194,47 @@ async def take_screenshot():
         logger.error(f"❌ Ошибка скриншота: {e}")
         return None
 
-# ========== ЛУЧШИЙ МЕТОД (ИЗ ТЕСТОВ) ==========
+# ========== БЕЗОПАСНОЕ ВЫПОЛНЕНИЕ JS (РЕШЕНИЕ ОШИБКИ SLICE) ==========
 
 async def exec_js(page, script, timeout=10):
     """
-    Лучший метод выполнения JS (M3 - JSON.stringify + parse)
-    Найден в результате тестирования 18 комбинаций
+    Безопасное выполнение JS с принудительной JSON сериализацией
+    Полностью исключает ошибку slice(None, 5, None)
     """
-    wrapped = f"JSON.stringify((function() {{ try {{ return {script}; }} catch(e) {{ return {{'error': e.message}}; }} }})())"
     try:
-        result = await asyncio.wait_for(page.execute_script(wrapped), timeout=timeout)
-        if isinstance(result, str):
-            return json.loads(result)
-        return result
+        # Оборачиваем скрипт в JSON.stringify
+        wrapped = f"""
+            (function() {{
+                try {{
+                    var result = {script};
+                    // Принудительная сериализация через JSON
+                    return JSON.stringify(result);
+                }} catch(e) {{
+                    return JSON.stringify({{"error": e.message}});
+                }}
+            }})()
+        """
+        result_str = await asyncio.wait_for(page.execute_script(wrapped), timeout=timeout)
+        
+        # Если результат — строка, парсим JSON
+        if isinstance(result_str, str):
+            try:
+                return json.loads(result_str)
+            except json.JSONDecodeError:
+                return result_str
+        return result_str
+        
     except asyncio.TimeoutError:
         logger.warning(f"⏱️ Таймаут {timeout}с")
         return None
     except Exception as e:
-        logger.warning(f"⚠️ Ошибка JS: {e}")
+        logger.warning(f"⚠️ Ошибка: {e}")
         return None
 
 # ========== SHADOW DOM ФУНКЦИИ ==========
 
-async def find_shadow_root(page):
-    """Найти все элементы с shadowRoot на странице"""
+async def find_shadow(page):
+    """Поиск всех shadowRoot элементов"""
     script = """
         (function() {
             var result = [];
@@ -237,15 +254,16 @@ async def find_shadow_root(page):
     """
     return await exec_js(page, script)
 
-async def get_shadow_content(page, selector):
-    """Получить содержимое shadowRoot конкретного элемента"""
+async def get_shadow_details(page, selector):
+    """Получить содержимое shadowRoot по селектору"""
     script = f"""
         (function() {{
             var el = document.querySelector('{selector}');
             if (el && el.shadowRoot) {{
                 var children = [];
-                for (var i = 0; i < el.shadowRoot.children.length; i++) {{
-                    var child = el.shadowRoot.children[i];
+                var nodes = el.shadowRoot.children;
+                for (var i = 0; i < nodes.length; i++) {{
+                    var child = nodes[i];
                     children.push({{
                         tag: child.tagName,
                         id: child.id || '',
@@ -266,7 +284,7 @@ async def get_shadow_content(page, selector):
     return await exec_js(page, script)
 
 async def find_shadow_deep(page):
-    """Глубокий поиск shadowRoot (рекурсивно)"""
+    """Глубокий рекурсивный поиск shadowRoot"""
     script = """
         (function() {
             function find(el, depth) {
@@ -293,10 +311,10 @@ async def find_shadow_deep(page):
 # ========== /SHADOW ==========
 
 async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Поиск Shadow DOM элементов на странице"""
+    """Поиск Shadow DOM"""
     logger.info(f"📩 /shadow от {update.effective_user.username}")
     
-    msg = await update.message.reply_text("🛡️ Ищу Shadow DOM элементы...")
+    msg = await update.message.reply_text("🛡️ Поиск Shadow DOM...")
     
     try:
         page = await get_browser()
@@ -304,18 +322,16 @@ async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("❌ Браузер не запущен. Используйте /login")
             return
         
-        # Ищем shadowRoot
-        shadow_data = await find_shadow_root(page)
+        data = await find_shadow(page)
         
-        if not shadow_data or len(shadow_data) == 0:
-            await msg.edit_text("❌ Shadow DOM элементы не найдены на странице")
+        if not data or len(data) == 0:
+            await msg.edit_text("❌ Shadow DOM не найден на странице")
             return
         
-        # Формируем ответ
         response = f"🛡️ **SHADOW DOM НАЙДЕН!**\n\n"
-        response += f"📦 Найдено элементов: {len(shadow_data)}\n\n"
+        response += f"📦 Всего элементов: {len(data)}\n\n"
         
-        for i, item in enumerate(shadow_data[:5], 1):
+        for i, item in enumerate(data[:5], 1):
             response += f"**{i}.** `{item.get('tag', 'unknown')}`"
             if item.get('id'):
                 response += f" id=\"{item['id']}\""
@@ -323,55 +339,30 @@ async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 response += f" class=\"{item['class'][:30]}\""
             response += f"\n   📄 Детей в shadowRoot: {item.get('children', 0)}\n\n"
         
-        # Получаем детали первого элемента
-        if shadow_data:
-            first = shadow_data[0]
-            selector = f"#{first['id']}" if first.get('id') else first.get('tag', '').lower()
-            if selector:
-                details = await get_shadow_content(page, selector)
-                if details:
-                    response += f"📋 **Содержимое {selector}:**\n"
-                    for child in details.get('children', [])[:3]:
-                        response += f"  └─ {child.get('tag', '')}"
-                        if child.get('id'):
-                            response += f" (id: {child['id']})"
-                        response += "\n"
-        
-        response += "\n💡 **Как использовать:**\n"
-        response += "```python\n"
-        response += "# Найти хост\n"
-        response += "host = await tab.find('#shadow-host')\n\n"
-        response += "# Получить shadowRoot\n"
-        response += "shadow = await host.get_shadow_root()\n\n"
-        response += "# Искать внутри\n"
-        response += "inner = await shadow.query('.inner-class')\n"
-        response += "```"
-        
         await msg.edit_text(response, parse_mode='Markdown')
         
-        # Сохраняем данные
-        filename = f"shadow_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        # Сохраняем JSON
+        filename = f"shadow_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(shadow_data, f, indent=2, ensure_ascii=False)
+            json.dump(data, f, indent=2, ensure_ascii=False)
         
         await update.message.reply_document(
             document=open(filename, 'rb'),
-            caption=f"📄 Данные Shadow DOM ({len(shadow_data)} элементов)"
+            caption=f"📄 Данные Shadow DOM ({len(data)} элементов)"
         )
         
-        # Скриншот
         screenshot = await take_screenshot()
         if screenshot:
             await send_photo_safe(update, screenshot, "📸 Текущая страница")
         
     except Exception as e:
-        logger.error(f"❌ Ошибка shadow: {e}", exc_info=True)
+        logger.error(f"❌ Ошибка: {e}", exc_info=True)
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
-# ========== /SHADOW_DEEP - ГЛУБОКИЙ ПОИСК ==========
+# ========== /SHADOW_DEEP ==========
 
 async def shadow_deep(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Глубокий рекурсивный поиск Shadow DOM"""
+    """Глубокий поиск Shadow DOM"""
     logger.info(f"📩 /shadow_deep от {update.effective_user.username}")
     
     msg = await update.message.reply_text("🛡️ Глубокий поиск Shadow DOM...")
@@ -379,19 +370,19 @@ async def shadow_deep(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         page = await get_browser()
         if page is None:
-            await msg.edit_text("❌ Браузер не запущен. Используйте /login")
+            await msg.edit_text("❌ Браузер не запущен")
             return
         
-        shadow_data = await find_shadow_deep(page)
+        data = await find_shadow_deep(page)
         
-        if not shadow_data or len(shadow_data) == 0:
-            await msg.edit_text("❌ Shadow DOM элементы не найдены")
+        if not data or len(data) == 0:
+            await msg.edit_text("❌ Shadow DOM не найден")
             return
         
-        response = f"🛡️ **ГЛУБОКИЙ ПОИСК SHADOW DOM**\n\n"
-        response += f"📦 Найдено: {len(shadow_data)} элементов\n\n"
+        response = f"🛡️ **ГЛУБОКИЙ ПОИСК**\n\n"
+        response += f"📦 Всего: {len(data)} элементов\n\n"
         
-        for i, item in enumerate(shadow_data[:5], 1):
+        for i, item in enumerate(data[:5], 1):
             response += f"**{i}.** `{item.get('tag', 'unknown')}`"
             if item.get('id'):
                 response += f" id=\"{item['id']}\""
@@ -402,23 +393,21 @@ async def shadow_deep(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         filename = f"shadow_deep_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(shadow_data, f, indent=2, ensure_ascii=False)
+            json.dump(data, f, indent=2, ensure_ascii=False)
         
         await update.message.reply_document(
             document=open(filename, 'rb'),
-            caption=f"📄 Глубокий поиск ({len(shadow_data)} элементов)"
+            caption=f"📄 Глубокий поиск ({len(data)} элементов)"
         )
         
     except Exception as e:
-        logger.error(f"❌ Ошибка shadow_deep: {e}", exc_info=True)
+        logger.error(f"❌ Ошибка: {e}", exc_info=True)
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
-# ========== /SHADOW_CONTENT - ПОЛУЧИТЬ СОДЕРЖИМОЕ ==========
+# ========== /SHADOW_CONTENT ==========
 
 async def shadow_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Получить содержимое shadowRoot по селектору"""
-    logger.info(f"📩 /shadow_content от {update.effective_user.username}")
-    
+    """Получить содержимое shadowRoot"""
     if not context.args:
         await update.message.reply_text(
             "ℹ️ Использование: /shadow_content <селектор>\n"
@@ -434,24 +423,24 @@ async def shadow_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         page = await get_browser()
         if page is None:
-            await msg.edit_text("❌ Браузер не запущен. Используйте /login")
+            await msg.edit_text("❌ Браузер не запущен")
             return
         
-        details = await get_shadow_content(page, selector)
+        data = await get_shadow_details(page, selector)
         
-        if not details:
+        if not data:
             await msg.edit_text(f"❌ Элемент '{selector}' не найден или не имеет shadowRoot")
             return
         
         response = f"🛡️ **SHADOW ROOT: {selector}**\n\n"
-        response += f"🏷️ Хост: {details.get('host', 'unknown')}\n"
-        if details.get('id'):
-            response += f"🆔 ID: {details['id']}\n"
-        response += f"📄 Детей: {len(details.get('children', []))}\n\n"
+        response += f"🏷️ Хост: {data.get('host', 'unknown')}\n"
+        if data.get('id'):
+            response += f"🆔 ID: {data['id']}\n"
+        response += f"📄 Детей: {len(data.get('children', []))}\n\n"
         
-        if details.get('children'):
+        if data.get('children'):
             response += "📋 **Дети:**\n"
-            for child in details['children'][:5]:
+            for child in data['children'][:5]:
                 response += f"  • {child.get('tag', '')}"
                 if child.get('id'):
                     response += f" (id: {child['id']})"
@@ -460,15 +449,15 @@ async def shadow_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     response += f"\n    \"{text}...\""
                 response += "\n"
         
-        if details.get('html'):
+        if data.get('html'):
             response += f"\n📝 **HTML (первые 300 символов):**\n"
-            response += f"```html\n{details['html'][:300]}...\n```"
+            response += f"```html\n{data['html'][:300]}...\n```"
         
         await msg.edit_text(response, parse_mode='Markdown')
         
         filename = f"shadow_content_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(details, f, indent=2, ensure_ascii=False)
+            json.dump(data, f, indent=2, ensure_ascii=False)
         
         await update.message.reply_document(
             document=open(filename, 'rb'),
@@ -476,7 +465,7 @@ async def shadow_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
     except Exception as e:
-        logger.error(f"❌ Ошибка shadow_content: {e}", exc_info=True)
+        logger.error(f"❌ Ошибка: {e}", exc_info=True)
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
@@ -721,10 +710,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await shadow_deep(update, context)
     elif query.data == "shadow_content":
         await query.edit_message_text(
-            "📄 **Введите селектор для получения содержимого shadowRoot:**\n\n"
-            "Пример: `/shadow_content grok-drawer`\n"
-            "Пример: `/shadow_content #grok-drawer`\n"
-            "Пример: `/shadow_content [data-testid='GrokDrawer']`"
+            "📄 **Введите селектор:**\n\n"
+            "Пример: `/shadow_content grok-drawer`"
         )
     elif query.data == "close":
         await close(update, context)
