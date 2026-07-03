@@ -7,7 +7,7 @@ import asyncio
 import base64
 from datetime import datetime
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ========== НАСТРОЙКА ЛОГГИРОВАНИЯ ==========
 logging.basicConfig(
@@ -178,10 +178,17 @@ def install_chromium():
 
 # ========== КУКИ X.COM ==========
 COOKIES = [
+    {"name": "__cuid", "value": "55d2d7c5-4888-430a-b024-dd785da46ef4", "domain": ".x.com", "path": "/"},
+    {"name": "lang", "value": "ru", "domain": ".x.com", "path": "/"},
+    {"name": "dnt", "value": "1", "domain": ".x.com", "path": "/"},
+    {"name": "guest_id", "value": "v1%3A178267838599411411", "domain": ".x.com", "path": "/"},
+    {"name": "guest_id_marketing", "value": "v1%3A178267838599411411", "domain": ".x.com", "path": "/"},
+    {"name": "guest_id_ads", "value": "v1%3A178267838599411411", "domain": ".x.com", "path": "/"},
+    {"name": "personalization_id", "value": "\"v1_DKrxLZAC902dMFdd1QrVYg==\"", "domain": ".x.com", "path": "/"},
+    {"name": "twid", "value": "u%3D2067347503503052800", "domain": ".x.com", "path": "/"},
     {"name": "auth_token", "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936", "domain": ".x.com", "path": "/"},
     {"name": "ct0", "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb", "domain": ".x.com", "path": "/"},
-    {"name": "twid", "value": "u%3D2067347503503052800", "domain": ".x.com", "path": "/"},
-    {"name": "lang", "value": "ru", "domain": ".x.com", "path": "/"},
+    {"name": "__cf_bm", "value": "nTs3wcXdCJEOwWzrJyjIg_huVdfck44vXhCJEXi.WuM-1783057691.7981694-1.0.1.1-pPPuXat31U4x5zNib67xLk9EFfH73h1ZdJPU8GvpXVu3pQ6TVu_rRHHpSZZMRRlzToQCMmjHQmaxoa_A4lwaYonLGPxEPsBIDig2wlei1L210t._g0yt.3n7XxfTQzrP", "domain": ".x.com", "path": "/"}
 ]
 
 logger.info(f"🍪 Загружено {len(COOKIES)} кук для X.com")
@@ -226,7 +233,6 @@ async def get_pydoll_browser():
         
         options = ChromiumOptions()
         
-        # Находим Chromium
         chromium_paths = [
             '/usr/bin/chromium', 
             '/usr/bin/chromium-browser', 
@@ -247,7 +253,6 @@ async def get_pydoll_browser():
             logger.error("❌ Chromium не найден в системе!")
             raise Exception("Chromium не найден в системе")
         
-        # Используем рабочий вариант 1 (стандартный запуск)
         args = [
             "--no-sandbox",
             "--disable-dev-shm-usage",
@@ -266,18 +271,36 @@ async def get_pydoll_browser():
         pydoll_tab = await pydoll_browser.start()
         logger.info("✅ Браузер запущен, вкладка получена!")
         
-        logger.info("🍪 Устанавливаю куки для X.com...")
+        # Устанавливаем куки
+        logger.info(f"🍪 Устанавливаю {len(COOKIES)} кук для X.com...")
+        
+        # Сначала переходим на X.com
+        logger.info("🌐 Переход на X.com для установки кук...")
+        await pydoll_tab.go_to('https://x.com')
+        await asyncio.sleep(3)
+        
+        cookies_set = 0
         for cookie in COOKIES:
             try:
                 await pydoll_tab.set_cookie(
                     name=cookie['name'],
                     value=cookie['value'],
-                    domain=cookie['domain'],
-                    path=cookie['path']
+                    domain=cookie.get('domain', '.x.com'),
+                    path=cookie.get('path', '/')
                 )
+                cookies_set += 1
                 logger.debug(f"🍪 Установлена кука: {cookie['name']}")
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка установки куки {cookie['name']}: {e}")
+                try:
+                    js_cookie = f"document.cookie='{cookie['name']}={cookie['value']}; domain={cookie.get('domain', '.x.com')}; path={cookie.get('path', '/')}'"
+                    await pydoll_tab.execute_script(js_cookie)
+                    cookies_set += 1
+                    logger.debug(f"🍪 Установлена кука через JS: {cookie['name']}")
+                except Exception as e2:
+                    logger.warning(f"⚠️ Не удалось установить куку {cookie['name']}: {e2}")
+        
+        logger.info(f"🍪 Установлено {cookies_set} из {len(COOKIES)} кук")
         
         logger.info("✅ Pydoll браузер полностью готов!")
         return pydoll_tab
@@ -504,7 +527,7 @@ async def take_screenshot():
 
 # ========== ДИАГНОСТИЧЕСКАЯ КОМАНДА ==========
 async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Диагностика Pydoll"""
+    """Диагностика Pydoll с проверкой кук"""
     msg = await update.message.reply_text("🔍 Запуск диагностики Pydoll...")
     
     log_file = f"diagnostic_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
@@ -515,7 +538,7 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(text)
     
     try:
-        # Проверка Chromium
+        # 1. Проверка Chromium
         await msg.edit_text("1️⃣ Проверяю Chromium...")
         log_diag("=== ПРОВЕРКА CHROMIUM ===")
         
@@ -541,7 +564,7 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log_diag(f"✅ Chromium найден: {found}")
         await msg.edit_text(f"✅ Chromium найден\n\n2️⃣ Проверяю Pydoll...")
         
-        # Проверка импорта
+        # 2. Проверка импорта
         try:
             from pydoll.browser import Chrome
             from pydoll.browser.options import ChromiumOptions
@@ -551,9 +574,10 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"❌ Ошибка: {e}")
             return
         
-        await msg.edit_text("✅ Pydoll импортирован\n\n3️⃣ Тестирую вариант 1...")
+        # 3. Запуск браузера
+        await msg.edit_text("3️⃣ Запускаю браузер...")
+        log_diag("=== ЗАПУСК БРАУЗЕРА ===")
         
-        # Тестируем только рабочий вариант
         try:
             options = ChromiumOptions()
             options.binary_location = found
@@ -566,24 +590,89 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tab = await browser.start()
             log_diag("✅ Браузер запущен!")
             
-            await tab.go_to('https://www.google.com')
-            await asyncio.sleep(2)
-            title = await tab.execute_script('document.title')
-            log_diag(f"✅ Google: {title}")
-            
+            # 4. Переход на X.com
+            await msg.edit_text("4️⃣ Перехожу на X.com...")
+            log_diag("🌐 Переход на X.com...")
             await tab.go_to('https://x.com')
             await asyncio.sleep(3)
-            title_x = await tab.execute_script('document.title')
-            log_diag(f"✅ X.com: {title_x}")
+            log_diag("✅ Переход выполнен")
             
+            # 5. Проверка кук
+            await msg.edit_text("5️⃣ Проверяю куки...")
+            log_diag("=== ПРОВЕРКА КУК ===")
+            
+            # Получаем все куки через JS
+            cookies_js = await tab.execute_script('document.cookie')
+            log_diag(f"📋 Куки из браузера: {cookies_js[:500]}...")
+            
+            # Разбираем куки
+            cookie_list = []
+            for cookie in cookies_js.split(';'):
+                if '=' in cookie:
+                    name, value = cookie.strip().split('=', 1)
+                    cookie_list.append({'name': name, 'value': value[:30] + '...' if len(value) > 30 else value})
+            
+            log_diag(f"📦 Всего кук: {len(cookie_list)}")
+            
+            # Проверяем важные куки
+            important = ['auth_token', 'ct0', 'twid']
+            found_cookies = []
+            for c in cookie_list:
+                if c['name'] in important:
+                    found_cookies.append(c)
+                    log_diag(f"✅ Найдена кука: {c['name']} = {c['value']}")
+            
+            if found_cookies:
+                log_diag(f"✅ Найдены важные куки: {', '.join([c['name'] for c in found_cookies])}")
+            else:
+                log_diag("❌ Важные куки НЕ НАЙДЕНЫ!")
+            
+            # 6. Проверка авторизации
+            await msg.edit_text("6️⃣ Проверяю авторизацию...")
+            log_diag("=== ПРОВЕРКА АВТОРИЗАЦИИ ===")
+            
+            auth_check = await tab.execute_script('''
+                () => {
+                    const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]');
+                    const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
+                    const hasHomeLink = !!document.querySelector('[data-testid="AppTabBar_Home_Link"]');
+                    const hasSideNav = !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
+                    const hasLoginForm = !!document.querySelector('[data-testid="loginForm"]');
+                    
+                    return {
+                        hasTweetBtn,
+                        hasProfileLink,
+                        hasHomeLink,
+                        hasSideNav,
+                        hasLoginForm,
+                        isLoggedIn: !!(hasTweetBtn || hasProfileLink || hasHomeLink || hasSideNav)
+                    };
+                }
+            ''')
+            
+            log_diag(f"📊 Результат проверки авторизации: {auth_check}")
+            
+            if auth_check and auth_check.get('isLoggedIn'):
+                log_diag("✅ ВЫ АВТОРИЗОВАНЫ!")
+                await msg.edit_text("✅ **Диагностика завершена!**\n\n✅ ВЫ АВТОРИЗОВАНЫ!\nPydoll работает корректно.")
+            else:
+                log_diag("❌ НЕ АВТОРИЗОВАН")
+                await msg.edit_text("✅ **Диагностика завершена!**\n\n❌ НЕ АВТОРИЗОВАН\nКуки не работают или истекли.\n\nИспользуйте /setcookies для обновления кук.")
+            
+            # 7. Скриншот для диагностики
+            log_diag("📸 Делаю скриншот...")
+            screenshot_b64 = await tab.take_screenshot(as_base64=True)
+            if screenshot_b64:
+                screenshot = base64.b64decode(screenshot_b64)
+                await update.message.reply_photo(
+                    photo=screenshot,
+                    caption=f"📸 Диагностический скриншот X.com\n{'✅ Авторизован' if auth_check and auth_check.get('isLoggedIn') else '❌ Не авторизован'}"
+                )
+                log_diag("✅ Скриншот отправлен")
+            
+            # Закрываем браузер
             await browser.close()
             log_diag("✅ Браузер закрыт")
-            
-            await msg.edit_text(
-                "✅ **Диагностика завершена!**\n\n"
-                "Pydoll работает!\n"
-                "Используй /login для авторизации"
-            )
             
         except Exception as e:
             log_diag(f"❌ Ошибка: {e}")
@@ -605,6 +694,77 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f.write('\n'.join(diagnostic_log))
         await update.message.reply_document(document=open(log_file, 'rb'), caption="📋 Лог диагностики")
 
+# ========== КОМАНДА ДЛЯ ОБНОВЛЕНИЯ КУК ==========
+async def setcookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обновление кук через Telegram"""
+    global COOKIES
+    await update.message.reply_text(
+        "🍪 **Обновление кук X.com**\n\n"
+        "Отправьте куки в JSON формате:\n"
+        "`[{\"name\":\"auth_token\",\"value\":\"...\",\"domain\":\".x.com\",\"path\":\"/\"}]`\n\n"
+        "Или отправьте /cancel для отмены"
+    )
+    context.user_data['waiting_for_cookies'] = True
+
+async def handle_cookies_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка введенных кук"""
+    global COOKIES
+    
+    if not context.user_data.get('waiting_for_cookies'):
+        return
+    
+    text = update.message.text.strip()
+    
+    if text.lower() == '/cancel':
+        context.user_data['waiting_for_cookies'] = False
+        await update.message.reply_text("❌ Отменено")
+        return
+    
+    try:
+        import json
+        data = json.loads(text)
+        new_cookies = []
+        
+        if isinstance(data, list):
+            for cookie in data:
+                if 'name' in cookie and 'value' in cookie:
+                    new_cookies.append({
+                        "name": cookie['name'],
+                        "value": cookie['value'],
+                        "domain": cookie.get('domain', '.x.com'),
+                        "path": cookie.get('path', '/')
+                    })
+        elif isinstance(data, dict):
+            for name, value in data.items():
+                if value:
+                    new_cookies.append({
+                        "name": name,
+                        "value": value,
+                        "domain": ".x.com",
+                        "path": "/"
+                    })
+        
+        if new_cookies:
+            COOKIES = new_cookies
+            context.user_data['waiting_for_cookies'] = False
+            await close_browser()
+            await update.message.reply_text(
+                f"✅ **Куки обновлены!**\n\n"
+                f"📦 Всего: {len(COOKIES)} кук\n"
+                f"🍪 Включены: {', '.join([c['name'] for c in COOKIES])}\n\n"
+                f"Используйте /login для авторизации"
+            )
+        else:
+            await update.message.reply_text("❌ Не удалось распознать куки")
+            
+    except json.JSONDecodeError as e:
+        await update.message.reply_text(f"❌ Ошибка JSON: {e}")
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отмена"""
+    context.user_data['waiting_for_cookies'] = False
+    await update.message.reply_text("✅ Отменено")
+
 # ========== КОМАНДЫ ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -622,7 +782,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/screen - Скриншот\n"
         f"/status - Статус браузера\n"
         f"/close - Закрыть браузер\n"
-        f"/test - Диагностика Pydoll",
+        f"/test - Диагностика Pydoll\n"
+        f"/setcookies - Обновить куки",
         parse_mode='Markdown'
     )
 
@@ -732,9 +893,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     hasAuthToken: !!cookies.auth_token,
                     hasCt0: !!cookies.ct0,
                     username: username,
-                    isLoggedIn: !!(hasTweetBtn || hasProfileLink || hasHomeLink || hasSideNav),
-                    url: window.location.href,
-                    title: document.title || ''
+                    isLoggedIn: !!(hasTweetBtn || hasProfileLink || hasHomeLink || hasSideNav)
                 };
             }
         ''')
@@ -864,12 +1023,15 @@ def main():
     app.add_handler(CommandHandler("engine", engine))
     app.add_handler(CommandHandler("close", close))
     app.add_handler(CommandHandler("test", test))
+    app.add_handler(CommandHandler("setcookies", setcookies))
+    app.add_handler(CommandHandler("cancel", cancel))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_cookies_input))
     
     print("\n✅ Бот запущен!")
     print(f"🎮 Движок: {engine_mode}")
     print(f"📦 Pydoll: {'✅' if PYDOLL_AVAILABLE else '❌'}")
     print(f"🌐 Chromium: {'✅' if CHROMIUM_INSTALLED else '❌'}")
-    print("\nКоманды: /start, /engine, /login, /screen, /status, /close, /test")
+    print("\nКоманды: /start, /engine, /login, /screen, /status, /close, /test, /setcookies")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
