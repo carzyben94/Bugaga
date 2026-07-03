@@ -36,11 +36,22 @@ login_status = {
     'cookies_valid': False
 }
 
-# ========== КУКИ ==========
+# ========== ПОЛНЫЕ КУКИ X.COM (ИЗ ПРИМЕРА) ==========
 COOKIES = [
+    {"name": "__cuid", "value": "55d2d7c5-4888-430a-b024-dd785da46ef4", "domain": ".x.com", "path": "/"},
+    {"name": "lang", "value": "ru", "domain": ".x.com", "path": "/"},
+    {"name": "dnt", "value": "1", "domain": ".x.com", "path": "/"},
+    {"name": "guest_id", "value": "v1%3A178267838599411411", "domain": ".x.com", "path": "/"},
+    {"name": "guest_id_marketing", "value": "v1%3A178267838599411411", "domain": ".x.com", "path": "/"},
+    {"name": "guest_id_ads", "value": "v1%3A178267838599411411", "domain": ".x.com", "path": "/"},
+    {"name": "personalization_id", "value": "\"v1_DKrxLZAC902dMFdd1QrVYg==\"", "domain": ".x.com", "path": "/"},
+    {"name": "twid", "value": "u%3D2067347503503052800", "domain": ".x.com", "path": "/"},
     {"name": "auth_token", "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936", "domain": ".x.com", "path": "/"},
     {"name": "ct0", "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb", "domain": ".x.com", "path": "/"},
+    {"name": "__cf_bm", "value": "nTs3wcXdCJEOwWzrJyjIg_huVdfck44vXhCJEXi.WuM-1783057691.7981694-1.0.1.1-pPPuXat31U4x5zNib67xLk9EFfH73h1ZdJPU8GvpXVu3pQ6TVu_rRHHpSZZMRRlzToQCMmjHQmaxoa_A4lwaYonLGPxEPsBIDig2wlei1L210t._g0yt.3n7XxfTQzrP", "domain": ".x.com", "path": "/"}
 ]
+
+logger.info(f"🍪 Загружено {len(COOKIES)} кук для X.com")
 
 browser = None
 tab = None
@@ -112,12 +123,35 @@ async def get_browser():
         await tab.go_to('https://x.com')
         await asyncio.sleep(2)
         
+        cookies_set = 0
         for cookie in COOKIES:
             try:
                 await tab.set_cookie(**cookie)
-                logger.debug(f"🍪 Кука: {cookie['name']}")
+                cookies_set += 1
+                logger.debug(f"🍪 Кука установлена: {cookie['name']}")
             except Exception as e:
-                logger.warning(f"⚠️ Ошибка {cookie['name']}: {e}")
+                logger.warning(f"⚠️ Ошибка установки {cookie['name']}: {e}")
+                # Пробуем через JS
+                try:
+                    js_cookie = f"document.cookie='{cookie['name']}={cookie['value']}; domain={cookie.get('domain', '.x.com')}; path={cookie.get('path', '/')}'"
+                    await tab.execute_script(js_cookie)
+                    cookies_set += 1
+                    logger.debug(f"🍪 Кука установлена через JS: {cookie['name']}")
+                except Exception as e2:
+                    logger.warning(f"⚠️ Не удалось установить куку {cookie['name']}: {e2}")
+        
+        logger.info(f"🍪 Установлено {cookies_set} из {len(COOKIES)} кук")
+        
+        # Проверяем куки
+        try:
+            check_cookies = await tab.execute_script('document.cookie')
+            logger.info(f"📋 Куки в браузере: {check_cookies[:200]}...")
+            if 'auth_token' in check_cookies:
+                logger.info("✅ auth_token найден в куках!")
+            else:
+                logger.warning("⚠️ auth_token НЕ найден в куках!")
+        except Exception as e:
+            logger.error(f"❌ Ошибка проверки кук: {e}")
         
         return tab
         
@@ -376,7 +410,10 @@ def main():
     print(f"📦 Pydantic: ✅")
     print(f"📦 Asyncio: ✅")
     print(f"🎮 Движок: {engine_mode}")
-    print(f"🍪 Кук: {len(COOKIES)}")
+    print(f"🍪 Кук загружено: {len(COOKIES)}")
+    print("\n📋 КУКИ:")
+    for cookie in COOKIES:
+        print(f"  • {cookie['name']}: {cookie['value'][:30]}...")
     print("\n📌 Команды:")
     print("  /start - главное меню")
     print("  /login - авторизация в X.com")
