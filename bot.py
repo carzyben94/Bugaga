@@ -15,11 +15,8 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 try:
     from pydantic import BaseModel, Field, ValidationError
     PYDANTIC_AVAILABLE = True
-    logger = logging.getLogger(__name__)
-    logger.info("✅ Pydantic загружен")
 except ImportError:
     PYDANTIC_AVAILABLE = False
-    logging.warning("⚠️ Pydantic не установлен")
 
 # ========== НАСТРОЙКА ЛОГГИРОВАНИЯ ==========
 logging.basicConfig(
@@ -86,11 +83,6 @@ if PYDANTIC_AVAILABLE:
         id: Optional[str] = Field(None, description="ID")
         class_name: Optional[str] = Field(None, description="Класс")
         children_count: int = Field(0, description="Количество детей")
-        
-    class ExtractedDataModel(BaseModel):
-        source: str = Field(..., description="Источник")
-        data: List[Dict[str, Any]] = Field(default_factory=list, description="Данные")
-        count: int = Field(0, description="Количество")
 
 # ========== КУКИ X.COM ==========
 COOKIES = [
@@ -342,32 +334,36 @@ def safe_validate(model_class, data):
     if not PYDANTIC_AVAILABLE:
         return data
     
+    # Если строка - пробуем парсить JSON
     if isinstance(data, str):
         try:
             data = json.loads(data)
         except:
             return data
     
+    # Если список - валидируем каждый элемент
     if isinstance(data, list):
         validated = []
         for item in data:
             if isinstance(item, dict):
                 try:
                     validated.append(model_class(**item).model_dump())
-                except ValidationError as e:
+                except Exception as e:
                     logger.warning(f"⚠️ Ошибка валидации: {e}")
                     validated.append(item)
             else:
                 validated.append(item)
         return validated
-    elif isinstance(data, dict):
+    
+    # Если словарь - валидируем один объект
+    if isinstance(data, dict):
         try:
             return model_class(**data).model_dump()
-        except ValidationError as e:
+        except Exception as e:
             logger.warning(f"⚠️ Ошибка валидации: {e}")
             return data
-    else:
-        return data
+    
+    return data
 
 # ========== SHADOW DOM ==========
 
@@ -383,7 +379,7 @@ async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_message_safe(update, "❌ Браузер не запущен. Используйте /login")
             return
         
-        # 1. Находим все элементы с shadowRoot
+        # Находим все элементы с shadowRoot
         js_find = """
             () => {
                 const result = [];
@@ -408,80 +404,30 @@ async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_message_safe(update, "⚠️ Shadow DOM элементы не найдены на странице.")
             return
         
-        # Валидация через Pydantic
+        # Валидация
         validated_elements = safe_validate(ShadowElementModel, shadow_elements)
-        
-        # 2. Пробуем получить содержимое первого shadowRoot
-        js_get_content = """
-            () => {
-                const result = [];
-                document.querySelectorAll('*').forEach(el => {
-                    if (el.shadowRoot) {
-                        const items = [];
-                        for (let child of el.shadowRoot.children) {
-                            items.push({
-                                tag: child.tagName.toLowerCase(),
-                                text: child.textContent ? child.textContent.slice(0, 100) : '',
-                                id: child.id || null
-                            });
-                        }
-                        result.push({
-                            host: el.tagName.toLowerCase(),
-                            children: items.slice(0, 5)
-                        });
-                    }
-                });
-                return result.slice(0, 3);
-            }
-        """
-        
-        shadow_content = await page.execute_script(js_get_content)
         
         # Формируем ответ
         response = f"🛡️ **SHADOW DOM**\n\n"
         response += f"📦 Найдено элементов: {len(validated_elements)}\n\n"
         
         for i, el in enumerate(validated_elements[:5], 1):
-            response += f"**{i}.** `{el.get('tag', 'unknown')}`"
-            if el.get('id'):
-                response += f" id=\"{el['id']}\""
-            if el.get('class_name'):
-                response += f" class=\"{el['class_name']}\""
-            response += f"\n   📄 Детей: {el.get('children_count', 0)}\n\n"
+            if isinstance(el, dict):
+                response += f"**{i}.** `{el.get('tag', 'unknown')}`"
+                if el.get('id'):
+                    response += f" id=\"{el['id']}\""
+                if el.get('class_name'):
+                    response += f" class=\"{el['class_name']}\""
+                response += f"\n   📄 Детей: {el.get('children_count', 0)}\n\n"
         
-        if shadow_content and len(shadow_content) > 0:
-            response += "📋 **Содержимое shadowRoot:**\n\n"
-            for item in shadow_content[:2]:
-                response += f"🏷️ Хост: `{item.get('host', 'unknown')}`\n"
-                for child in item.get('children', [])[:3]:
-                    response += f"  └─ {child.get('tag', '')}"
-                    if child.get('text'):
-                        text = child['text'].replace('\n', ' ')[:50]
-                        response += f" \"{text}...\""
-                    response += "\n"
-                response += "\n"
-        
-        # Инструкция по работе с Shadow DOM
         response += "💡 **Как использовать:**\n"
         response += "```python\n"
-        response += "# Найти хост-элемент\n"
-        response += "host = await tab.find('#shadow-host')\n\n"
-        response += "# Получить shadowRoot\n"
-        response += "shadow_root = await host.get_shadow_root()\n\n"
-        response += "# Искать внутри shadowRoot\n"
+        response += "host = await tab.find('#shadow-host')\n"
+        response += "shadow_root = await host.get_shadow_root()\n"
         response += "inner = await shadow_root.query('.inner-class')\n"
         response += "```"
         
-        if len(response) > 4000:
-            filename = f"shadow_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            with open(filename, 'w', encoding='utf-8') as f:
-                json.dump(validated_elements, f, indent=2, ensure_ascii=False)
-            await update.message.reply_document(
-                document=open(filename, 'rb'),
-                caption=f"🛡️ Shadow DOM элементы ({len(validated_elements)})"
-            )
-        else:
-            await send_message_safe(update, response, parse_mode='Markdown')
+        await send_message_safe(update, response, parse_mode='Markdown')
         
     except Exception as e:
         logger.error(f"❌ Ошибка shadow: {e}", exc_info=True)
@@ -491,23 +437,18 @@ async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def api(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Выполнение API запросов через браузер с сессией"""
-    logger.info(f"📩 /api от {update.effective_user.username} с аргументами: {context.args}")
+    logger.info(f"📩 /api от {update.effective_user.username}")
     
     if not context.args:
         await update.message.reply_text(
             "🌐 **API запрос с сессией браузера**\n\n"
             "Использование: `/api <url>`\n"
-            "Пример: `/api https://x.com/i/api/1.1/onboarding/task.json`\n\n"
-            "⚠️ Запрос использует сессию браузера с вашими куками.\n"
-            "Поддерживает GET и POST (укажите метод и тело)."
+            "Пример: `/api https://x.com/i/api/1.1/onboarding/task.json`"
         )
         return
     
     url = context.args[0]
-    method = context.args[1].upper() if len(context.args) > 1 else "GET"
-    body = ' '.join(context.args[2:]) if len(context.args) > 2 else None
-    
-    await send_message_safe(update, f"🌐 Выполняю {method} запрос к {url[:80]}...")
+    await send_message_safe(update, f"🌐 Выполняю запрос к {url[:80]}...")
     
     try:
         page = await get_browser()
@@ -515,65 +456,25 @@ async def api(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_message_safe(update, "❌ Браузер не запущен. Используйте /login")
             return
         
-        if not login_status['is_logged_in']:
-            await send_message_safe(update, "❌ Вы не авторизованы. Используйте /login")
-            return
-        
-        # Формируем JS код для запроса
-        if method == "POST" and body:
-            js_code = f"""
-                (async () => {{
-                    try {{
-                        const response = await fetch('{url}', {{
-                            method: 'POST',
-                            credentials: 'include',
-                            headers: {{
-                                'Accept': 'application/json',
-                                'Content-Type': 'application/json'
-                            }},
-                            body: JSON.stringify({body})
-                        }});
-                        
-                        const data = await response.json();
-                        return {{
-                            status: response.status,
-                            ok: response.ok,
-                            data: data
-                        }};
-                    }} catch (e) {{
-                        return {{
-                            error: e.message,
-                            status: 0
-                        }};
-                    }}
-                }})()
-            """
-        else:
-            js_code = f"""
-                (async () => {{
-                    try {{
-                        const response = await fetch('{url}', {{
-                            method: 'GET',
-                            credentials: 'include',
-                            headers: {{
-                                'Accept': 'application/json',
-                            }}
-                        }});
-                        
-                        const data = await response.json();
-                        return {{
-                            status: response.status,
-                            ok: response.ok,
-                            data: data
-                        }};
-                    }} catch (e) {{
-                        return {{
-                            error: e.message,
-                            status: 0
-                        }};
-                    }}
-                }})()
-            """
+        js_code = f"""
+            (async () => {{
+                try {{
+                    const response = await fetch('{url}', {{
+                        method: 'GET',
+                        credentials: 'include',
+                        headers: {{ 'Accept': 'application/json' }}
+                    }});
+                    const data = await response.json();
+                    return {{
+                        status: response.status,
+                        ok: response.ok,
+                        data: data
+                    }};
+                }} catch (e) {{
+                    return {{ error: e.message, status: 0 }};
+                }}
+            }})()
+        """
         
         result = await page.execute_script(js_code)
         
@@ -581,34 +482,19 @@ async def api(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_message_safe(update, f"❌ Ошибка: {result['error']}")
             return
         
-        # Валидация через Pydantic
-        validated_result = safe_validate(ApiResponseModel, result)
+        validated = safe_validate(ApiResponseModel, result)
         
         response_text = f"✅ **API ЗАПРОС ВЫПОЛНЕН**\n\n"
         response_text += f"📍 {url[:80]}\n"
-        response_text += f"📊 Статус: {validated_result.get('status', 0)}\n"
-        response_text += f"📊 Успешно: {'✅' if validated_result.get('ok') else '❌'}\n\n"
+        response_text += f"📊 Статус: {validated.get('status', 0)}\n"
+        response_text += f"📊 Успешно: {'✅' if validated.get('ok') else '❌'}\n\n"
         
-        data = validated_result.get('data', {})
+        data = validated.get('data', {})
         if data:
-            if isinstance(data, dict):
-                data_str = json.dumps(data, indent=2, ensure_ascii=False)[:1500]
-            else:
-                data_str = str(data)[:1500]
+            data_str = json.dumps(data, indent=2, ensure_ascii=False)[:1500]
             response_text += f"📝 **Данные:**\n```json\n{data_str}\n```"
-        else:
-            response_text += "⚠️ Данные не получены"
         
-        if len(response_text) > 4000:
-            filename = f"api_response_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            with open(filename, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-            await update.message.reply_document(
-                document=open(filename, 'rb'),
-                caption=f"📄 API ответ: {url[:50]}"
-            )
-        else:
-            await send_message_safe(update, response_text, parse_mode='Markdown')
+        await send_message_safe(update, response_text, parse_mode='Markdown')
             
     except Exception as e:
         logger.error(f"❌ Ошибка API: {e}", exc_info=True)
@@ -628,7 +514,6 @@ async def extract(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_message_safe(update, "❌ Браузер не запущен. Используйте /login")
             return
         
-        # Извлекаем твиты со страницы
         js_extract = """
             () => {
                 const tweets = [];
@@ -637,7 +522,6 @@ async def extract(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     const timeEl = el.querySelector('time');
                     const isPinned = !!el.querySelector('[data-testid="pinIcon"]');
                     
-                    // Лайки
                     const likeBtn = el.querySelector('[data-testid="like"]');
                     let likes = 0;
                     if (likeBtn) {
@@ -646,16 +530,6 @@ async def extract(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         if (match) likes = parseInt(match[1]);
                     }
                     
-                    // Ретвиты
-                    const retweetBtn = el.querySelector('[data-testid="retweet"]');
-                    let retweets = 0;
-                    if (retweetBtn) {
-                        const retweetText = retweetBtn.getAttribute('aria-label') || '';
-                        const match = retweetText.match(/(\\d+)/);
-                        if (match) retweets = parseInt(match[1]);
-                    }
-                    
-                    // Автор
                     let author = null;
                     const userEl = el.querySelector('[data-testid="User-Name"]');
                     if (userEl) {
@@ -680,8 +554,7 @@ async def extract(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             author: author,
                             time: timeEl ? timeEl.getAttribute('datetime') : null,
                             is_pinned: isPinned,
-                            likes: likes,
-                            retweets: retweets
+                            likes: likes
                         });
                     }
                 });
@@ -692,29 +565,15 @@ async def extract(update: Update, context: ContextTypes.DEFAULT_TYPE):
         extracted_data = await page.execute_script(js_extract)
         
         if not extracted_data or len(extracted_data) == 0:
-            await send_message_safe(update, "⚠️ Нет данных для извлечения. Убедитесь, что на странице есть твиты.")
+            await send_message_safe(update, "⚠️ Нет данных для извлечения.")
             return
         
-        # Валидация через Pydantic
         validated_tweets = safe_validate(TweetModel, extracted_data)
         
-        # Формируем структурированный вывод
         response = f"📊 **ИЗВЛЕЧЕНИЕ ДАННЫХ**\n\n"
         response += f"📌 Найдено: {len(validated_tweets)} твитов\n"
         response += f"🕐 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
         
-        # Статистика
-        if PYDANTIC_AVAILABLE:
-            total_likes = sum([t.get('likes', 0) for t in validated_tweets if isinstance(t, dict)])
-            total_retweets = sum([t.get('retweets', 0) for t in validated_tweets if isinstance(t, dict)])
-            pinned = [t for t in validated_tweets if isinstance(t, dict) and t.get('is_pinned')]
-            
-            response += f"❤️ Всего лайков: {total_likes}\n"
-            response += f"🔄 Всего ретвитов: {total_retweets}\n"
-            response += f"📌 Закреплено: {len(pinned)}\n\n"
-        
-        # Показываем первые 3 твита
-        response += "📝 **Примеры:**\n\n"
         for i, tweet in enumerate(validated_tweets[:3], 1):
             if isinstance(tweet, dict):
                 text = tweet.get('text', '')[:150]
@@ -725,8 +584,6 @@ async def extract(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     response += f"   👤 @{tweet['author']}"
                 if tweet.get('likes', 0) > 0:
                     response += f" ❤️ {tweet['likes']}"
-                if tweet.get('retweets', 0) > 0:
-                    response += f" 🔄 {tweet['retweets']}"
                 if tweet.get('is_pinned'):
                     response += " 📌 ЗАКРЕПЛЕН"
                 response += "\n\n"
@@ -736,18 +593,11 @@ async def extract(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with open(filename, 'w', encoding='utf-8') as f:
             json.dump(validated_tweets, f, indent=2, ensure_ascii=False)
         
-        # Отправляем результат
-        if len(response) > 4000:
-            await update.message.reply_document(
-                document=open(filename, 'rb'),
-                caption=f"📄 Извлечено {len(validated_tweets)} твитов"
-            )
-        else:
-            await send_message_safe(update, response)
-            await update.message.reply_document(
-                document=open(filename, 'rb'),
-                caption=f"📄 Полные данные ({len(validated_tweets)} твитов)"
-            )
+        await send_message_safe(update, response)
+        await update.message.reply_document(
+            document=open(filename, 'rb'),
+            caption=f"📄 Полные данные ({len(validated_tweets)} твитов)"
+        )
         
     except Exception as e:
         logger.error(f"❌ Ошибка extract: {e}", exc_info=True)
@@ -982,8 +832,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "api":
         await query.edit_message_text(
             "🌐 **Введите URL для API запроса:**\n\n"
-            "Пример: `/api https://x.com/i/api/1.1/onboarding/task.json`\n\n"
-            "POST запрос: `/api <url> POST {\\\"key\\\":\\\"value\\\"}`"
+            "Пример: `/api https://x.com/i/api/1.1/onboarding/task.json`"
         )
     elif query.data == "extract":
         await extract(update, context)
@@ -1064,7 +913,6 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_message_safe(update, f"❌ Твиты @{username} не найдены")
             return
         
-        # Валидация через Pydantic
         validated_tweets = safe_validate(TweetModel, tweets_data)
         
         response = f"📊 **ТВИТЫ @{username}**\n📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n📌 {len(validated_tweets)}\n\n"
@@ -1075,13 +923,7 @@ async def tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     response += "📌 ЗАКРЕПЛЕН\n"
                 response += "\n"
         
-        if len(response) > 4000:
-            filename = f"tweets_{username}.json"
-            with open(filename, 'w', encoding='utf-8') as f:
-                json.dump(validated_tweets, f, indent=2, ensure_ascii=False)
-            await update.message.reply_document(document=open(filename, 'rb'), caption=f"📄 {len(validated_tweets)} твитов")
-        else:
-            await send_message_safe(update, response)
+        await send_message_safe(update, response)
         
     except Exception as e:
         await send_message_safe(update, f"❌ Ошибка: {str(e)[:200]}")
