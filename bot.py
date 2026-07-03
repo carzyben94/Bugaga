@@ -40,7 +40,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/parse - Получить цитаты\n"
         "/go <url> - Открыть любой сайт\n"
         "/screen - Сделать скриншот\n"
-        "/cookie - Управление куками"
+        "/cookie {\"name\":\"value\"} - Установить куки"
     )
 
 async def go(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -116,7 +116,7 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
 async def cookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Управление куками"""
+    """Установка кук из JSON"""
     user_id = update.effective_user.id
     
     # Проверяем, есть ли активный браузер
@@ -124,90 +124,36 @@ async def cookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Сначала открой сайт командой /go")
         return
     
+    # Проверяем, есть ли JSON
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Передай JSON с куками\n"
+            "Пример: /cookie {\"auth_token\":\"123\",\"ct0\":\"456\"}"
+        )
+        return
+    
     _, tab = user_browsers[user_id]
     
-    # Если нет аргументов - показываем текущие куки
-    if not context.args:
-        try:
-            cookies = await tab.get_cookies()
-            if cookies:
-                reply = "🍪 Текущие куки:\n\n"
-                for cookie in cookies[:10]:  # Показываем максимум 10 кук
-                    reply += f"• {cookie.get('name', '')}: {cookie.get('value', '')[:50]}\n"
-                await update.message.reply_text(reply)
-            else:
-                await update.message.reply_text("🍪 Куки не найдены")
-        except Exception as e:
-            logger.error(f"Ошибка: {e}")
-            await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
-        return
-    
-    # Команда: /cookie import {"name":"value"}
-    if context.args[0].lower() == 'import':
-        try:
-            # Получаем JSON строку
-            json_str = ' '.join(context.args[1:])
-            cookies_data = json.loads(json_str)
-            
-            count = 0
-            for name, value in cookies_data.items():
-                await tab.add_cookie(name, value)
-                count += 1
-            
-            await update.message.reply_text(f"✅ Импортировано {count} кук!")
-            
-        except json.JSONDecodeError:
-            await update.message.reply_text("❌ Неправильный JSON формат\nПример: /cookie import {\"auth_token\":\"123\",\"ct0\":\"456\"}")
-        except Exception as e:
-            logger.error(f"Ошибка: {e}")
-            await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
-        return
-    
-    # Команда: /cookie add name=value
-    if context.args[0].lower() == 'add' and len(context.args) >= 2:
-        try:
-            cookie_str = context.args[1]
-            if '=' in cookie_str:
-                name, value = cookie_str.split('=', 1)
-                await tab.add_cookie(name, value)
-                await update.message.reply_text(f"✅ Кука установлена: {name}={value[:20]}...")
-            else:
-                await update.message.reply_text("❌ Неправильный формат. Используй: /cookie add name=value")
-        except Exception as e:
-            logger.error(f"Ошибка: {e}")
-            await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
-        return
-    
-    # Команда: /cookie delete name
-    if context.args[0].lower() == 'delete' and len(context.args) >= 2:
-        try:
-            name = context.args[1]
-            await tab.delete_cookie(name)
-            await update.message.reply_text(f"✅ Кука удалена: {name}")
-        except Exception as e:
-            logger.error(f"Ошибка: {e}")
-            await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
-        return
-    
-    # Команда: /cookie clear
-    if context.args[0].lower() == 'clear':
-        try:
-            await tab.clear_cookies()
-            await update.message.reply_text("✅ Все куки удалены")
-        except Exception as e:
-            logger.error(f"Ошибка: {e}")
-            await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
-        return
-    
-    # Помощь по команде cookie
-    await update.message.reply_text(
-        "🍪 Управление куками:\n\n"
-        "/cookie - Показать все куки\n"
-        "/cookie import {\"name\":\"value\"} - Импортировать куки из JSON\n"
-        "/cookie add name=value - Добавить куку\n"
-        "/cookie delete name - Удалить куку\n"
-        "/cookie clear - Очистить все куки"
-    )
+    try:
+        # Собираем все аргументы в одну строку
+        json_str = ' '.join(context.args)
+        cookies_data = json.loads(json_str)
+        
+        count = 0
+        for name, value in cookies_data.items():
+            await tab.add_cookie(name, value)
+            count += 1
+        
+        await update.message.reply_text(f"✅ Установлено {count} кук!")
+        
+    except json.JSONDecodeError:
+        await update.message.reply_text(
+            "❌ Неправильный JSON формат\n"
+            "Пример: /cookie {\"auth_token\":\"123\",\"ct0\":\"456\"}"
+        )
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
 async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Парсит цитаты с quotes.toscrape.com"""
