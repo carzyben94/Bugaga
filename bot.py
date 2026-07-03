@@ -52,11 +52,12 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tab = await browser.start()
             await tab.go_to('https://quotes.toscrape.com')
             
-            # Ждём загрузки страницы
-            await tab.wait_for_element('.quote', timeout=10)
+            # Ждём загрузки страницы (простая пауза)
+            import asyncio
+            await asyncio.sleep(3)  # Ждём 3 секунды
             
             # Извлекаем цитаты
-            quotes = await tab.extract_all(Quote, timeout=5)
+            quotes = await tab.extract_all(Quote, timeout=10)
             
             if quotes:
                 reply = "📚 Цитаты:\n\n"
