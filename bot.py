@@ -194,20 +194,19 @@ async def take_screenshot():
         logger.error(f"❌ Ошибка скриншота: {e}")
         return None
 
-# ========== БЕЗОПАСНОЕ ВЫПОЛНЕНИЕ JS (РЕШЕНИЕ ОШИБКИ SLICE) ==========
+# ========== БЕЗОПАСНОЕ ВЫПОЛНЕНИЕ JS ==========
 
 async def exec_js(page, script, timeout=10):
     """
-    Безопасное выполнение JS с принудительной JSON сериализацией
-    Полностью исключает ошибку slice(None, 5, None)
+    Безопасное выполнение JS через JSON.stringify
+    В JavaScript заменяем .slice() на .substring() чтобы избежать проблем
     """
     try:
-        # Оборачиваем скрипт в JSON.stringify
+        # Оборачиваем скрипт с JSON.stringify
         wrapped = f"""
             (function() {{
                 try {{
                     var result = {script};
-                    // Принудительная сериализация через JSON
                     return JSON.stringify(result);
                 }} catch(e) {{
                     return JSON.stringify({{"error": e.message}});
@@ -216,7 +215,6 @@ async def exec_js(page, script, timeout=10):
         """
         result_str = await asyncio.wait_for(page.execute_script(wrapped), timeout=timeout)
         
-        # Если результат — строка, парсим JSON
         if isinstance(result_str, str):
             try:
                 return json.loads(result_str)
@@ -231,7 +229,7 @@ async def exec_js(page, script, timeout=10):
         logger.warning(f"⚠️ Ошибка: {e}")
         return None
 
-# ========== SHADOW DOM ФУНКЦИИ ==========
+# ========== SHADOW DOM ФУНКЦИИ (ВСЕ .slice ЗАМЕНЕНЫ НА .substring) ==========
 
 async def find_shadow(page):
     """Поиск всех shadowRoot элементов"""
@@ -256,6 +254,7 @@ async def find_shadow(page):
 
 async def get_shadow_details(page, selector):
     """Получить содержимое shadowRoot по селектору"""
+    # ВАЖНО: используем substring вместо slice!
     script = f"""
         (function() {{
             var el = document.querySelector('{selector}');
@@ -268,14 +267,14 @@ async def get_shadow_details(page, selector):
                         tag: child.tagName,
                         id: child.id || '',
                         class: child.className || '',
-                        text: child.textContent ? child.textContent.slice(0, 100) : ''
+                        text: child.textContent ? child.textContent.substring(0, 100) : ''
                     }});
                 }}
                 return {{
                     host: el.tagName,
                     id: el.id || '',
                     children: children,
-                    html: el.shadowRoot.innerHTML.slice(0, 500)
+                    html: el.shadowRoot.innerHTML.substring(0, 500)
                 }};
             }}
             return null;
@@ -341,7 +340,6 @@ async def shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await msg.edit_text(response, parse_mode='Markdown')
         
-        # Сохраняем JSON
         filename = f"shadow_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         with open(filename, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
