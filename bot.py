@@ -5,7 +5,6 @@ import subprocess
 import logging
 import asyncio
 import base64
-import tempfile
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -211,7 +210,11 @@ async def get_pydoll_browser():
     if pydoll_browser and pydoll_tab:
         logger.info("🔄 Проверка существующего браузера...")
         try:
-            await pydoll_tab.evaluate('1')
+            # Используем execute_script вместо evaluate
+            if hasattr(pydoll_tab, 'execute_script'):
+                await pydoll_tab.execute_script('1')
+            else:
+                await pydoll_tab.evaluate('1')
             logger.info("✅ Существующий браузер работает")
             return pydoll_tab
         except Exception as e:
@@ -248,23 +251,12 @@ async def get_pydoll_browser():
             logger.error("❌ Chromium не найден в системе!")
             raise Exception("Chromium не найден в системе")
         
-        # Добавляем все необходимые аргументы
+        # Добавляем аргументы (рабочий вариант из диагностики)
         args = [
             "--no-sandbox",
             "--disable-dev-shm-usage",
             "--disable-gpu",
-            "--disable-setuid-sandbox",
-            "--disable-blink-features=AutomationControlled",
-            "--window-size=1280,720",
             "--headless=new",
-            "--disable-infobars",
-            "--disable-notifications",
-            "--disable-extensions",
-            "--disable-background-networking",
-            "--disable-default-apps",
-            "--disable-sync",
-            "--disable-translate",
-            "--no-first-run",
         ]
         for arg in args:
             options.add_argument(arg)
@@ -467,8 +459,8 @@ async def goto_url(url):
             else:
                 raise
 
-async def evaluate_js(script):
-    """Выполнение JS с повторными попытками"""
+async def execute_js(script):
+    """Выполнение JS с поддержкой обоих методов"""
     logger.debug(f"📜 Выполнение JS")
     
     page = await get_browser()
@@ -477,12 +469,18 @@ async def evaluate_js(script):
         return None
     
     try:
-        if hasattr(page, 'evaluate'):
+        # Пробуем execute_script (новый метод в Pydoll 2.23.0)
+        if hasattr(page, 'execute_script'):
+            result = await page.execute_script(script)
+            logger.debug(f"✅ JS выполнен через execute_script")
+            return result
+        # Пробуем evaluate (старый метод)
+        elif hasattr(page, 'evaluate'):
             result = await page.evaluate(script)
-            logger.debug(f"✅ JS выполнен успешно")
+            logger.debug(f"✅ JS выполнен через evaluate")
             return result
         else:
-            logger.error(f"❌ Нет метода evaluate у {type(page)}")
+            logger.error(f"❌ Нет метода execute_script или evaluate у {type(page)}")
             return None
     except Exception as e:
         logger.error(f"❌ Ошибка при выполнении JS: {e}")
@@ -524,7 +522,6 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Расширенная диагностика Pydoll с множеством вариантов"""
     msg = await update.message.reply_text("🔍 Запуск расширенной диагностики Pydoll...\nЭто может занять 2-3 минуты.")
     
-    # Собираем лог в файл
     log_file = f"diagnostic_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
     diagnostic_log = []
     
@@ -562,7 +559,6 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 pass
             await msg.edit_text("❌ Chromium не найден! Невозможно продолжить.")
-            # Отправляем лог
             with open(log_file, 'w', encoding='utf-8') as f:
                 f.write('\n'.join(diagnostic_log))
             await update.message.reply_document(document=open(log_file, 'rb'), caption="📋 Лог диагностики")
@@ -621,7 +617,9 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 log_diag("🌐 Переход на google.com...")
                 await tab.go_to('https://www.google.com')
                 await asyncio.sleep(2)
-                title = await tab.evaluate('document.title')
+                
+                # Используем execute_script вместо evaluate
+                title = await tab.execute_script('document.title')
                 log_diag(f"📄 Заголовок: {title}")
                 
                 # Скриншот Google
@@ -630,7 +628,6 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if screenshot_b64:
                     screenshot = base64.b64decode(screenshot_b64)
                     log_diag(f"✅ Скриншот Google: {len(screenshot)} байт")
-                    # Отправляем скриншот
                     await update.message.reply_photo(photo=screenshot, caption=f"📸 Вариант {i}: {variant_name} - Google")
                 else:
                     log_diag("⚠️ Скриншот Google не удался")
@@ -639,7 +636,7 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 log_diag("🌐 Переход на x.com...")
                 await tab.go_to('https://x.com')
                 await asyncio.sleep(3)
-                title_x = await tab.evaluate('document.title')
+                title_x = await tab.execute_script('document.title')
                 log_diag(f"📄 Заголовок X.com: {title_x}")
                 
                 # Скриншот X.com
@@ -709,7 +706,6 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Critical test error: {e}", exc_info=True)
         await msg.edit_text(f"❌ Критическая ошибка: {str(e)[:200]}")
         
-        # Отправляем лог
         with open(log_file, 'w', encoding='utf-8') as f:
             f.write('\n'.join(diagnostic_log))
         await update.message.reply_document(document=open(log_file, 'rb'), caption="📋 Лог диагностики (с ошибкой)")
@@ -816,7 +812,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(5)
         
         try:
-            title = await page.evaluate('document.title')
+            title = await execute_js('document.title')
             logger.info(f"📄 Заголовок страницы: {title}")
         except Exception as e:
             logger.error(f"❌ Не удалось получить заголовок: {e}")
@@ -825,7 +821,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for attempt in range(3):
             logger.info(f"🔄 Попытка проверки авторизации {attempt + 1}/3...")
             try:
-                auth_status = await evaluate_js('''
+                auth_status = await execute_js('''
                     () => {
                         const hasTweetBtn = !!document.querySelector('[data-testid="tweetButton"]');
                         const hasProfileLink = !!document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
@@ -966,7 +962,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if page:
                 status_msg += "🌐 Браузер: ✅ Запущен (Pydoll)\n"
                 try:
-                    url = await page.evaluate('window.location.href')
+                    url = await execute_js('window.location.href')
                     status_msg += f"🔗 URL: {url[:50]}\n"
                 except:
                     pass
