@@ -1,4 +1,4 @@
-# bot.py - X.com бот с Agnes (бесплатная LLM)
+ # bot.py - X.com бот с Agnes (бесплатная LLM)
 import os
 import sys
 import subprocess
