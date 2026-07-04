@@ -2,6 +2,7 @@ import os
 import logging
 import asyncio
 import base64
+from itertools import islice
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -20,6 +21,8 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен!")
+
+# ==================== МОДЕЛИ ====================
 
 class Quote(ExtractionModel):
     text: str = Field(selector='.text')
@@ -170,17 +173,13 @@ async def explore_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
             })()
         """)
         
-        # ✅ ИСПРАВЛЕНО: НЕТ СРЕЗОВ!
+        # ✅ ИСПОЛЬЗУЕМ islice ДЛЯ БЕЗОПАСНОГО СРЕЗА
         images = await tab.find(tag_name='img', src_contains='media', find_all=True)
         image_urls = []
-        count = 0
-        for img in images:
-            if count >= 10:
-                break
+        for img in islice(images, 10):
             src = await img.get_attribute('src')
             if src:
                 image_urls.append(src)
-            count += 1
         
         report_lines = []
         report_lines.append("=" * 60)
