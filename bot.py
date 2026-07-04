@@ -235,29 +235,29 @@ async def send_screen_with_buttons(update, user_id, caption="🎮 Джойсти
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     menu = (
-        "🤖 *Бот для X.com*\n\n"
-        "🎮 *Джойстик*\n"
+        "🤖 Бот для X.com\n\n"
+        "🎮 Джойстик\n"
         "/joystick — Открыть джойстик\n\n"
-        "🔐 *Авторизация*\n"
+        "🔐 Авторизация\n"
         "/login X.com\n"
         "/close Закрыть браузер\n\n"
-        "📸 *Скриншот*\n"
+        "📸 Скриншот\n"
         "/screen Скриншот\n\n"
-        "🔍 *Поиск*\n"
+        "🔍 Поиск\n"
         "/search Запрос\n\n"
-        "📸 *Фото*\n"
+        "📸 Фото\n"
         "/getbaby Случайное фото\n\n"
-        "⌨️ *Ввод*\n"
+        "⌨️ Ввод\n"
         "/type <текст> — Ввести текст\n\n"
-        "🧠 *AI-зрение*\n"
+        "🧠 AI-зрение\n"
         "/ai_find <что> — Найти элемент через AI\n"
         "/ai_click <что> — Найти и кликнуть через AI\n"
         "/click_num <номер> — Кликнуть по элементу из списка\n\n"
-        "⚡ *JavaScript*\n"
+        "⚡ JavaScript\n"
         "/eval <js> — Выполнить JavaScript\n"
         "/ai Любая команда (умный eval)"
     )
-    await update.message.reply_text(menu, parse_mode='Markdown')
+    await update.message.reply_text(menu)
 
 # ==================== ЛОГИН ====================
 
@@ -576,7 +576,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if elements:
                         context.user_data['ai_elements'] = elements
                         
-                        reply = "👁️ *Что я вижу на странице:*\n\n"
+                        reply = "👁️ Что я вижу на странице:\n\n"
                         
                         # Группируем по типам
                         buttons = [e for e in elements if e.get('type') == 'button']
@@ -585,7 +585,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         icons = [e for e in elements if e.get('type') == 'icon']
                         
                         if buttons:
-                            reply += "🔘 *Кнопки:*\n"
+                            reply += "🔘 Кнопки:\n"
                             for el in buttons[:10]:
                                 reply += f"  {el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
                             if len(buttons) > 10:
@@ -593,38 +593,37 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             reply += "\n"
                         
                         if inputs:
-                            reply += "⌨️ *Поля ввода:*\n"
+                            reply += "⌨️ Поля ввода:\n"
                             for el in inputs[:5]:
                                 reply += f"  {el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
                             reply += "\n"
                         
                         if links:
-                            reply += "🔗 *Ссылки:*\n"
+                            reply += "🔗 Ссылки:\n"
                             for el in links[:5]:
                                 reply += f"  {el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
                             reply += "\n"
                         
                         if icons:
-                            reply += "🖼️ *Иконки:*\n"
+                            reply += "🖼️ Иконки:\n"
                             for el in icons[:5]:
                                 reply += f"  {el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
                             reply += "\n"
                         
-                        reply += f"📊 *Всего найдено: {len(elements)} элементов*\n\n"
-                        reply += "💡 *Чтобы кликнуть, отправь:* `/click_num <номер>`\n"
-                        reply += "💡 *Например:* `/click_num 1`"
+                        reply += f"📊 Всего найдено: {len(elements)} элементов\n\n"
+                        reply += "💡 Чтобы кликнуть, отправь: /click_num <номер>\n"
+                        reply += "💡 Например: /click_num 1"
                         
-                        await query.message.reply_text(reply, parse_mode='Markdown')
+                        await query.message.reply_text(reply)
                         
                     else:
                         await query.message.reply_text("😕 Не найдено интерактивных элементов")
                         
                 except json.JSONDecodeError as e:
                     await query.message.reply_text(
-                        f"⚠️ *Ошибка парсинга JSON:* {str(e)[:100]}\n\n"
-                        f"📄 *Получено:*\n```\n{result[:800]}\n```\n\n"
-                        f"💡 Попробуй ещё раз или используй /ai_find",
-                        parse_mode='Markdown'
+                        f"⚠️ Ошибка парсинга JSON: {str(e)[:100]}\n\n"
+                        f"📄 Получено:\n{result[:800]}\n\n"
+                        f"💡 Попробуй ещё раз или используй /ai_find"
                     )
                 
             except Exception as e:
@@ -656,9 +655,9 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 coords = json.loads(response.choices[0].message.content)
                 
-                reply = "🧠 *AI нашёл элементы:*\n\n"
+                reply = "🧠 AI нашёл элементы:\n\n"
                 for name, coord in coords.items():
-                    reply += f"• `{name}`: ({coord[0]}, {coord[1]})\n"
+                    reply += f"• {name}: ({coord[0]}, {coord[1]})\n"
                 
                 await query.message.reply_text(reply)
                 
@@ -996,15 +995,14 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not context.args:
         await update.message.reply_text(
-            "🤖 *Умный /eval*\n\n"
+            "🤖 Умный /eval\n\n"
             "Просто скажи что хочешь сделать:\n"
             "/ai найди твиты про войну\n"
             "/ai лайкни первый твит\n"
             "/ai сколько подписчиков\n"
             "/ai фото красивых девушек\n"
             "/ai прокрути вниз\n"
-            "/ai статистика",
-            parse_mode='Markdown'
+            "/ai статистика"
         )
         return
     
@@ -1016,7 +1014,7 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Сначала выполни /login")
             return
         
-        await update.message.reply_text("🧠 *Генерирую код через Agnes AI...*", parse_mode='Markdown')
+        await update.message.reply_text("🧠 Генерирую код через Agnes AI...")
         
         _, tab = user_browsers[user_id]
         
@@ -1026,7 +1024,7 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             current_url = ''
         
         if 'x.com' not in current_url and 'twitter.com' not in current_url:
-            await update.message.reply_text("🔄 Перехожу на X.com...", parse_mode='Markdown')
+            await update.message.reply_text("🔄 Перехожу на X.com...")
             await tab.go_to('https://x.com')
             await asyncio.sleep(3)
         
@@ -1050,9 +1048,8 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if len(page_info.get('testids', {})) == 0:
             await update.message.reply_text(
-                "❌ *Не найдено элементов на странице.*\n"
-                "Попробуй выполнить /login заново",
-                parse_mode='Markdown'
+                "❌ Не найдено элементов на странице.\n"
+                "Попробуй выполнить /login заново"
             )
             return
         
@@ -1107,16 +1104,15 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if not js_code or len(js_code) < 5:
             await update.message.reply_text(
-                "⚠️ *Не удалось сгенерировать код.*\n"
-                "Попробуй переформулировать команду.",
-                parse_mode='Markdown'
+                "⚠️ Не удалось сгенерировать код.\n"
+                "Попробуй переформулировать команду."
             )
             return
         
         await update.message.reply_text(
-            f"⚡ *Выполняю код:*\n"
-            f"```javascript\n{js_code[:400]}\n```",
-            parse_mode='Markdown'
+            f"⚡ Выполняю код:\n"
+            f"{js_code[:400]}\n"
+            f"(показано первых 400 символов)"
         )
         
         try:
@@ -1137,9 +1133,9 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             result_str = result_str[:1000] + '...'
         
         if not result_str or result_str == '""' or result_str == "''" or result_str == '[]':
-            await update.message.reply_text("⚠️ *Результат пустой.*")
+            await update.message.reply_text("⚠️ Результат пустой.")
         else:
-            await update.message.reply_text(f"📊 *Результат:*\n{result_str[:500]}")
+            await update.message.reply_text(f"📊 Результат:\n{result_str[:500]}")
         
     except asyncio.TimeoutError:
         await update.message.reply_text("⏰ Agnes AI не ответил вовремя. Попробуй позже.")
