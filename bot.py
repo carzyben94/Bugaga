@@ -161,29 +161,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/explore_selector <селектор> — Детально исследовать элемент\n\n"
         "⚡ *Универсальная команда*\n"
         "/do <запрос> — Всё в одной команде\n\n"
-        "📌 *Продвинутые команды:* /start2"
+        "⚡ *JavaScript*\n"
+        "/eval <js> — Выполнить JavaScript"
     )
     await update.message.reply_text(menu1, parse_mode='Markdown')
-
-async def start2(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    menu2 = (
-        "🌑 *Shadow DOM*\n"
-        "/shadow <хост> <селектор> — Найти в Shadow DOM\n"
-        "/shadow_all <хост> <селектор> — Найти все в Shadow DOM\n"
-        "/shadow_click <хост> <селектор> — Кликнуть в Shadow DOM\n"
-        "/shadow_type <хост> <селектор> <текст> — Ввести в Shadow DOM\n\n"
-        "🌐 *Сеть*\n"
-        "/network — Показать сетевые запросы\n"
-        "/block_images — Блокировать изображения\n"
-        "/unblock_images — Разблокировать изображения\n\n"
-        "🍪 *Куки*\n"
-        "/cookie {\"name\":\"value\"} — Установить куки\n\n"
-        "⚡ *JavaScript*\n"
-        "/eval <js> — Выполнить JavaScript\n\n"
-        "📚 *Парсинг*\n"
-        "/parse — Получить цитаты"
-    )
-    await update.message.reply_text(menu2, parse_mode='Markdown')
 
 # ==================== АВТОРИЗАЦИЯ ====================
 
@@ -332,8 +313,8 @@ async def explore_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
             })()
         """)
         
-        # Фото — исправлено: find_all → query_all
-        images = await tab.query_all('img[src*="media"]')
+        # ✅ Исправлено: find() с find_all=True
+        images = await tab.find(tag_name='img', src_contains='media', find_all=True)
         image_urls = []
         for img in images[:10]:
             src = await img.get_attribute('src')
@@ -686,8 +667,7 @@ async def do_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             
             await update.message.reply_text("📸 Ищу фото...")
-            # Исправлено: find_all → query_all
-            images = await tab.query_all('img[src*="media"]')
+            images = await tab.find(tag_name='img', src_contains='media', find_all=True)
             
             if images:
                 img_urls = []
@@ -916,315 +896,6 @@ async def do_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
-# ==================== SHADOW DOM ====================
-
-async def shadow_find(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args or len(context.args) < 2:
-        await update.message.reply_text(
-            "❌ Укажи хост-селектор и селектор для Shadow DOM\n"
-            "Пример: /shadow #movie_player .play-btn"
-        )
-        return
-    
-    host_selector = context.args[0]
-    shadow_selector = context.args[1]
-    user_id = update.effective_user.id
-    
-    try:
-        if user_id not in user_browsers:
-            await update.message.reply_text("❌ Сначала открой сайт командой /go или /login")
-            return
-        
-        _, tab = user_browsers[user_id]
-        host_element = await tab.find(host_selector)
-        if not host_element:
-            await update.message.reply_text(f"❌ Хост-элемент не найден: {host_selector}")
-            return
-        
-        shadow_root = await host_element.get_shadow_root()
-        if not shadow_root:
-            await update.message.reply_text(f"❌ Shadow DOM не найден в {host_selector}")
-            return
-        
-        element = await shadow_root.query(shadow_selector)
-        if element:
-            text = await element.text()
-            await update.message.reply_text(f"✅ Найден элемент в Shadow DOM:\n\n{text[:500]}")
-        else:
-            await update.message.reply_text(f"❌ Элемент не найден в Shadow DOM: {shadow_selector}")
-            
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
-
-async def shadow_find_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args or len(context.args) < 2:
-        await update.message.reply_text(
-            "❌ Укажи хост-селектор и селектор для Shadow DOM\n"
-            "Пример: /shadow_all #movie_player .item"
-        )
-        return
-    
-    host_selector = context.args[0]
-    shadow_selector = context.args[1]
-    user_id = update.effective_user.id
-    
-    try:
-        if user_id not in user_browsers:
-            await update.message.reply_text("❌ Сначала открой сайт командой /go или /login")
-            return
-        
-        _, tab = user_browsers[user_id]
-        host_element = await tab.find(host_selector)
-        if not host_element:
-            await update.message.reply_text(f"❌ Хост-элемент не найден: {host_selector}")
-            return
-        
-        shadow_root = await host_element.get_shadow_root()
-        if not shadow_root:
-            await update.message.reply_text(f"❌ Shadow DOM не найден в {host_selector}")
-            return
-        
-        elements = await shadow_root.query_all(shadow_selector)
-        if elements:
-            count = len(elements)
-            reply = f"✅ Найдено {count} элементов в Shadow DOM:\n\n"
-            for i, element in enumerate(elements[:5], 1):
-                try:
-                    text = await element.text()
-                    reply += f"{i}. {text[:100]}\n"
-                except:
-                    reply += f"{i}. [не удалось получить текст]\n"
-            if count > 5:
-                reply += f"\n... и ещё {count - 5} элементов"
-            await update.message.reply_text(reply)
-        else:
-            await update.message.reply_text(f"❌ Элементы не найдены в Shadow DOM: {shadow_selector}")
-            
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
-
-async def shadow_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args or len(context.args) < 2:
-        await update.message.reply_text(
-            "❌ Укажи хост-селектор и селектор для Shadow DOM\n"
-            "Пример: /shadow_click #movie_player .play-btn"
-        )
-        return
-    
-    host_selector = context.args[0]
-    shadow_selector = context.args[1]
-    user_id = update.effective_user.id
-    
-    try:
-        if user_id not in user_browsers:
-            await update.message.reply_text("❌ Сначала открой сайт командой /go или /login")
-            return
-        
-        _, tab = user_browsers[user_id]
-        host_element = await tab.find(host_selector)
-        if not host_element:
-            await update.message.reply_text(f"❌ Хост-элемент не найден: {host_selector}")
-            return
-        
-        shadow_root = await host_element.get_shadow_root()
-        if not shadow_root:
-            await update.message.reply_text(f"❌ Shadow DOM не найден в {host_selector}")
-            return
-        
-        element = await shadow_root.query(shadow_selector)
-        if element:
-            await element.click(humanize=True)
-            await update.message.reply_text(f"✅ Кликнул по элементу в Shadow DOM: {shadow_selector}")
-        else:
-            await update.message.reply_text(f"❌ Элемент не найден в Shadow DOM: {shadow_selector}")
-            
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
-
-async def shadow_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) < 3:
-        await update.message.reply_text(
-            "❌ Укажи хост-селектор, селектор и текст\n"
-            "Пример: /shadow_type #movie_player .input hello"
-        )
-        return
-    
-    host_selector = context.args[0]
-    shadow_selector = context.args[1]
-    text = ' '.join(context.args[2:])
-    user_id = update.effective_user.id
-    
-    try:
-        if user_id not in user_browsers:
-            await update.message.reply_text("❌ Сначала открой сайт командой /go или /login")
-            return
-        
-        _, tab = user_browsers[user_id]
-        host_element = await tab.find(host_selector)
-        if not host_element:
-            await update.message.reply_text(f"❌ Хост-элемент не найден: {host_selector}")
-            return
-        
-        shadow_root = await host_element.get_shadow_root()
-        if not shadow_root:
-            await update.message.reply_text(f"❌ Shadow DOM не найден в {host_selector}")
-            return
-        
-        element = await shadow_root.query(shadow_selector)
-        if element:
-            await element.click(humanize=True)
-            await asyncio.sleep(0.5)
-            await element.type_text(text, humanize=True)
-            await update.message.reply_text(f"✅ Ввёл текст в Shadow DOM: {text[:50]}")
-        else:
-            await update.message.reply_text(f"❌ Элемент не найден в Shadow DOM: {shadow_selector}")
-            
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
-
-# ==================== СЕТЬ ====================
-
-async def network_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    try:
-        if user_id not in user_browsers:
-            await update.message.reply_text("❌ Сначала открой сайт командой /go или /login")
-            return
-        
-        await update.message.reply_text("🌐 Получаю сетевые запросы...")
-        _, tab = user_browsers[user_id]
-        
-        # По документации: enable_network_events
-        await tab.enable_network_events()
-        logs = await tab.get_network_logs()
-        
-        if logs:
-            reply = "🌐 Последние сетевые запросы:\n\n"
-            for i, log in enumerate(logs[:10], 1):
-                url = log.get('url', 'неизвестно')[:80]
-                status = log.get('status', '???')
-                method = log.get('method', '???')
-                reply += f"{i}. {method} {status} — {url}\n"
-            await update.message.reply_text(reply)
-        else:
-            await update.message.reply_text("📊 Сетевых запросов не найдено")
-            
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
-
-async def block_images(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    try:
-        if user_id not in user_browsers:
-            await update.message.reply_text("❌ Сначала открой сайт командой /go или /login")
-            return
-        
-        _, tab = user_browsers[user_id]
-        
-        await tab.enable_network_events()
-        await tab.set_request_interception(
-            patterns=[{'urlPattern': '*.jpg', 'interceptionStage': 'Request'}, 
-                     {'urlPattern': '*.png', 'interceptionStage': 'Request'},
-                     {'urlPattern': '*.gif', 'interceptionStage': 'Request'},
-                     {'urlPattern': '*.webp', 'interceptionStage': 'Request'}],
-            handle=True
-        )
-        await update.message.reply_text("✅ Изображения заблокированы")
-            
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
-
-async def unblock_images(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    try:
-        if user_id not in user_browsers:
-            await update.message.reply_text("❌ Сначала открой сайт командой /go или /login")
-            return
-        
-        _, tab = user_browsers[user_id]
-        
-        await tab.disable_network_events()
-        await update.message.reply_text("✅ Изображения разблокированы")
-            
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
-
-# ==================== КУКИ ====================
-
-async def cookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    if user_id not in user_browsers:
-        await update.message.reply_text("❌ Сначала открой сайт командой /go или /login")
-        return
-    
-    if not context.args:
-        await update.message.reply_text(
-            "❌ Передай JSON с куками\n"
-            "Пример: /cookie {\"auth_token\":\"123\",\"ct0\":\"456\"}"
-        )
-        return
-    
-    _, tab = user_browsers[user_id]
-    
-    try:
-        json_str = ' '.join(context.args)
-        cookies_data = json.loads(json_str)
-        cookies_list = [{"name": name, "value": value} for name, value in cookies_data.items()]
-        await tab.set_cookies(cookies_list)
-        await update.message.reply_text(f"✅ Установлено {len(cookies_list)} кук!")
-        
-    except json.JSONDecodeError:
-        await update.message.reply_text(
-            "❌ Неправильный JSON формат\n"
-            "Пример: /cookie {\"auth_token\":\"123\",\"ct0\":\"456\"}"
-        )
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
-
-# ==================== ПАРСИНГ ====================
-
-async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Начинаю парсинг...")
-    
-    try:
-        options = ChromiumOptions()
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--headless=new")
-        options.add_argument("--disable-gpu")
-        options.binary_location = CHROME_PATH
-        
-        async with Chrome(options=options) as browser:
-            tab = await browser.start()
-            await tab.go_to('https://quotes.toscrape.com')
-            await asyncio.sleep(3)
-            
-            quotes = await tab.extract_all(Quote, scope=".quote", timeout=10)
-            
-            if quotes:
-                reply = "📚 Цитаты:\n\n"
-                for i, q in enumerate(quotes[:5], 1):
-                    reply += f"{i}. \"{q.text}\"\n   — {q.author}\n   🏷️ {q.tags}\n\n"
-                await update.message.reply_text(reply)
-            else:
-                await update.message.reply_text("😕 Ничего не найдено")
-                
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
-
 # ==================== EVAL ====================
 
 async def evaluate_js(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1263,7 +934,6 @@ def main():
     
     # Меню
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("start2", start2))
     
     # Авторизация
     application.add_handler(CommandHandler("login", login))
@@ -1275,21 +945,8 @@ def main():
     # Универсальная команда
     application.add_handler(CommandHandler("do", do_action))
     
-    # Shadow DOM
-    application.add_handler(CommandHandler("shadow", shadow_find))
-    application.add_handler(CommandHandler("shadow_all", shadow_find_all))
-    application.add_handler(CommandHandler("shadow_click", shadow_click))
-    application.add_handler(CommandHandler("shadow_type", shadow_type))
-    
-    # Сеть
-    application.add_handler(CommandHandler("network", network_logs))
-    application.add_handler(CommandHandler("block_images", block_images))
-    application.add_handler(CommandHandler("unblock_images", unblock_images))
-    
-    # Куки и парсинг
-    application.add_handler(CommandHandler("cookie", cookie))
+    # JavaScript
     application.add_handler(CommandHandler("eval", evaluate_js))
-    application.add_handler(CommandHandler("parse", parse))
     
     application.add_error_handler(error_handler)
     
