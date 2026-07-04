@@ -3,13 +3,11 @@ import logging
 import asyncio
 import base64
 import json
-import re
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from pydoll.browser import Chrome
 from pydoll.browser.options import ChromiumOptions
-from pydoll.extractor import ExtractionModel, Field
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -39,33 +37,6 @@ X_COOKIES = [
 ]
 
 user_browsers = {}
-
-# ==================== МОДЕЛИ ====================
-
-class Tweet(ExtractionModel):
-    """Модель твита (только текст)"""
-    text: str = Field(
-        selector='div[data-testid="tweetText"]',
-        default="[текст не найден]"
-    )
-
-# ==================== ФУНКЦИИ ====================
-
-def fix_text(text):
-    """Исправляет слипшиеся слова (чтоИИ → что ИИ)"""
-    text = re.sub(r'([а-я])([А-Я])', r'\1 \2', text)
-    text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
-    return text
-
-def truncate_text(text, max_length=600):
-    """Обрезает текст по словам, не разрывая слова"""
-    if len(text) <= max_length:
-        return text
-    truncated = text[:max_length]
-    last_space = truncated.rfind(' ')
-    if last_space > 0:
-        return truncated[:last_space] + '...'
-    return truncated + '...'
 
 # ==================== МЕНЮ ====================
 
@@ -116,7 +87,6 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================== ЗАКРЫТЬ БРАУЗЕР ====================
 
 async def close_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Закрывает браузер и очищает сессию"""
     user_id = update.effective_user.id
     
     try:
@@ -160,11 +130,9 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         screenshot_bytes = base64.b64decode(screenshot_base64)
         
-        url = await tab.current_url
-        
         await update.message.reply_photo(
             photo=screenshot_bytes,
-            caption=f"🖼️ Скриншот"
+            caption="🖼️ Скриншот"
         )
         
     except asyncio.TimeoutError:
@@ -173,7 +141,7 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
-# ==================== ПОИСК ====================
+# ==================== ПОИСК (ТОЧНЫЙ ПАРСИНГ) ====================
 
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -195,12 +163,22 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await tab.go_to(f'https://x.com/search?q={query}&src=typed_query')
         await asyncio.sleep(3)
         
-        tweets = await tab.extract_all(
-            Tweet,
-            scope='article[data-testid="tweet"]',
-            timeout=10
-        )
+        # ✅ ТОЧНЫЙ ПАРСИНГ через execute_script + innerText
+        tweets = await tab.execute_script("""
+            (function() {
+                const elements = document.querySelectorAll('div[data-testid="tweetText"]');
+                const result = [];
+                elements.forEach(el => {
+                    const text = el.innerText || el.textContent || '';
+                    if (text.trim()) {
+                        result.push(text);
+                    }
+                });
+                return result;
+            })()
+        """)
         
+        # Скриншот
         screenshot_base64 = await asyncio.wait_for(
             tab.take_screenshot(as_base64=True),
             timeout=30.0
@@ -215,15 +193,31 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
             count = len(tweets)
             reply = f"📊 Найдено {count} твитов\n\n"
             
-            for i, tweet in enumerate(tweets[:10], 1):
-                text = fix_text(tweet.text)
-                text = truncate_text(text, 600)
+            for i, tweet in enumerate(tweets[:20], 1):
+                text = tweet.strip()
+                if len(text) > 600:
+                    text = text[:600] + '...'
                 reply += f"{i}. {text}\n\n"
             
-            if count > 10:
-                reply += f"... и ещё {count - 10} твитов"
+            if count > 20:
+                reply += f"... и ещё {count - 20} твитов"
             
-            await update.message.reply_text(reply)
+            # Отправка с учётом лимита 4096 символов
+            if len(reply) > 4096:
+                parts = []
+                current = ""
+                for line in reply.split('\n'):
+                    if len(current) + len(line) + 1 > 4000:
+                        parts.append(current)
+                        current = ""
+                    current += line + '\n'
+                if current:
+                    parts.append(current)
+                
+                for part in parts:
+                    await update.message.reply_text(part)
+            else:
+                await update.message.reply_text(reply)
         else:
             await update.message.reply_text("😕 Твиты не найдены")
             
