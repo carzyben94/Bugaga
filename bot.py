@@ -265,7 +265,7 @@ async def explore_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
         url = await tab.current_url
         title = await tab.title
         
-        # Все data-testid через execute_script (исправлено!)
+        # Все data-testid через execute_script
         all_testids = await tab.execute_script("""
             (function() {
                 const ids = new Set();
@@ -332,8 +332,8 @@ async def explore_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
             })()
         """)
         
-        # Фото
-        images = await tab.find_all('img[src*="media"]')
+        # Фото — исправлено: find_all → query_all
+        images = await tab.query_all('img[src*="media"]')
         image_urls = []
         for img in images[:10]:
             src = await img.get_attribute('src')
@@ -686,7 +686,8 @@ async def do_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             
             await update.message.reply_text("📸 Ищу фото...")
-            images = await tab.find_all('img[src*="media"]')
+            # Исправлено: find_all → query_all
+            images = await tab.query_all('img[src*="media"]')
             
             if images:
                 img_urls = []
@@ -1098,7 +1099,8 @@ async def network_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🌐 Получаю сетевые запросы...")
         _, tab = user_browsers[user_id]
         
-        await tab.enable_network_interception()
+        # По документации: enable_network_events
+        await tab.enable_network_events()
         logs = await tab.get_network_logs()
         
         if logs:
@@ -1125,7 +1127,8 @@ async def block_images(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         _, tab = user_browsers[user_id]
-        await tab.enable_network_interception()
+        
+        await tab.enable_network_events()
         await tab.set_request_interception(
             patterns=[{'urlPattern': '*.jpg', 'interceptionStage': 'Request'}, 
                      {'urlPattern': '*.png', 'interceptionStage': 'Request'},
@@ -1148,7 +1151,8 @@ async def unblock_images(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         _, tab = user_browsers[user_id]
-        await tab.disable_network_interception()
+        
+        await tab.disable_network_events()
         await update.message.reply_text("✅ Изображения разблокированы")
             
     except Exception as e:
