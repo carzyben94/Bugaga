@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import re
+import random
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -40,7 +41,7 @@ X_COOKIES = [
 
 user_browsers = {}
 
-# ==================== МОДЕЛИ ====================
+# ==================== МОДЕЛЬ ====================
 
 class Tweet(ExtractionModel):
     text: str = Field(
@@ -51,7 +52,6 @@ class Tweet(ExtractionModel):
 # ==================== ФУНКЦИИ ====================
 
 def fix_text(text):
-    """Исправляет слипшиеся слова"""
     text = re.sub(r'([а-яё])([А-ЯЁ])', r'\1 \2', text)
     text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
     text = re.sub(r'([А-ЯЁ])([А-ЯЁ][а-яё])', r'\1 \2', text)
@@ -69,7 +69,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/login X.com\n"
         "/close Закрыть браузер\n"
         "/screen Скриншот\n"
-        "/search Запрос"
+        "/search Запрос\n"
+        "/getbaby Случайное фото"
     )
     await update.message.reply_text(menu)
 
@@ -238,6 +239,71 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
+# ==================== GETBABY ====================
+
+async def getbaby(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Собирает фото из трёх профилей и отправляет случайное"""
+    PROFILES = [
+        'babesdailyyy',
+        'beautyshowcase',
+        'EuGirlsDom'
+    ]
+    
+    user_id = update.effective_user.id
+    
+    try:
+        if user_id not in user_browsers:
+            await update.message.reply_text("❌ Сначала выполни /login")
+            return
+        
+        await update.message.reply_text("📸 Ищу фото...")
+        
+        _, tab = user_browsers[user_id]
+        
+        random.shuffle(PROFILES)
+        
+        all_photos = []
+        
+        for username in PROFILES:
+            try:
+                await tab.go_to(f'https://x.com/{username}')
+                await asyncio.sleep(2)
+                
+                photos = await tab.execute_script("""
+                    (function() {
+                        const images = document.querySelectorAll('img[src*="media"]');
+                        const result = [];
+                        images.forEach(img => {
+                            const src = img.src;
+                            if (src && src.includes('media')) {
+                                result.push(src);
+                            }
+                        });
+                        return result;
+                    })()
+                """)
+                
+                for photo in photos[:5]:
+                    all_photos.append(photo)
+                
+            except Exception as e:
+                continue
+        
+        if all_photos:
+            random.shuffle(all_photos)
+            selected = random.choice(all_photos)
+            
+            await update.message.reply_photo(photo=selected)
+            
+            await update.message.reply_text(f"📊 Найдено {len(all_photos)} фото")
+            
+        else:
+            await update.message.reply_text("😕 Фото не найдены")
+        
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+
 # ==================== ОБРАБОТЧИК ОШИБОК ====================
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -253,6 +319,7 @@ def main():
     application.add_handler(CommandHandler("close", close_browser))
     application.add_handler(CommandHandler("screen", screen))
     application.add_handler(CommandHandler("search", search))
+    application.add_handler(CommandHandler("getbaby", getbaby))
     
     application.add_error_handler(error_handler)
     
