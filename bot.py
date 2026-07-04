@@ -12,7 +12,6 @@ from pydoll.browser import Chrome
 from pydoll.browser.options import ChromiumOptions
 from pydoll.extractor import ExtractionModel, Field
 
-# Импортируем новый OpenAI клиент
 from openai import AsyncOpenAI
 
 logging.basicConfig(
@@ -28,7 +27,7 @@ if not TOKEN:
 
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
 
-# ✅ СОЗДАЁМ КЛИЕНТ (новый синтаксис OpenAI >=1.0.0)
+# Создаём клиент для Agnes AI
 agnes_client = None
 if AGNES_API_KEY:
     agnes_client = AsyncOpenAI(
@@ -338,10 +337,10 @@ async def getbaby(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
-# ==================== AI КОМАНДА (ИСПРАВЛЕННАЯ) ====================
+# ==================== AI КОМАНДА (Agnes AI) ====================
 
 async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Выполняет любую команду через Agnes AI (OpenAI >=1.0.0)"""
+    """Выполняет любую команду через Agnes AI"""
     if not AGNES_API_KEY:
         await update.message.reply_text(
             "❌ Agnes API ключ не найден.\n"
@@ -382,7 +381,7 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         _, tab = user_browsers[user_id]
         
-        # 1. Получаем контекст страницы
+        # Получаем контекст страницы
         page_info = await tab.execute_script("""
             (function() {
                 const ids = {};
@@ -401,7 +400,7 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             })()
         """)
         
-        # 2. Формируем промпт для Agnes AI
+        # Формируем промпт
         prompt = f"""
         Ты — агент по автоматизации X.com (Twitter).
         
@@ -423,10 +422,10 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         Верни ТОЛЬКО код, без пояснений и markdown.
         """
         
-        # 3. Запрашиваем код у Agnes AI (НОВЫЙ СИНТАКСИС!)
+        # ✅ ПРАВИЛЬНАЯ МОДЕЛЬ ДЛЯ AGNES AI
         try:
             response = await agnes_client.chat.completions.create(
-                model="gpt-4",
+                model="agnes-2.0-flash",  # ← Правильная модель!
                 messages=[
                     {"role": "system", "content": "Ты — эксперт по JavaScript и автоматизации браузера. Отвечай только кодом, без пояснений."},
                     {"role": "user", "content": prompt}
@@ -443,10 +442,10 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             js_code = re.sub(r'```\n?', '', js_code)
             js_code = js_code.strip()
             
-            # 4. Выполняем код в браузере
+            # Выполняем код в браузере
             result = await tab.execute_script(js_code)
             
-            # 5. Форматируем результат
+            # Форматируем результат
             if isinstance(result, (list, dict)):
                 result_str = json.dumps(result, ensure_ascii=False, indent=2)
             else:
@@ -455,7 +454,7 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(result_str) > 1500:
                 result_str = result_str[:1500] + '...'
             
-            # 6. Отправляем ответ
+            # Отправляем ответ
             await update.message.reply_text(
                 f"🤖 *Выполнено:* {command}\n\n"
                 f"```javascript\n{js_code[:500]}\n```\n"
