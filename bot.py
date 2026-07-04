@@ -178,7 +178,7 @@ async def send_screen_with_buttons(update, user_id, caption="🎮 Джойсти
         
         caption_text = f"{caption}\n🖱️ Курсор: ({x}, {y}) | Шаг: {step}px"
         
-        if isinstance(update, Update) and update.callback_query:
+        if isinstance(update, Update) && update.callback_query:
             try:
                 await update.callback_query.edit_message_media(
                     media=InputMediaPhoto(
@@ -406,49 +406,6 @@ def fix_text(text):
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
-# Функция для восстановления неполного JSON
-def fix_incomplete_json(text):
-    if not text:
-        return text
-    
-    # Убираем маркеры кода
-    text = re.sub(r'```json\n?', '', text)
-    text = re.sub(r'```\n?', '', text)
-    text = text.strip()
-    
-    # Если JSON уже полный
-    if text.endswith('}') and text.count('{') == text.count('}'):
-        return text
-    
-    # Находим последнюю полную запись
-    lines = text.split('\n')
-    fixed_lines = []
-    current_element = []
-    elements_count = 0
-    
-    for line in lines:
-        if '{"id":' in line:
-            if current_element and elements_count < 10:
-                fixed_lines.extend(current_element)
-                fixed_lines.append('    }')
-                elements_count += 1
-            current_element = [line]
-        elif current_element:
-            current_element.append(line)
-            if '}' in line and '"id"' in ''.join(current_element):
-                fixed_lines.extend(current_element)
-                fixed_lines.append('    }')
-                elements_count += 1
-                current_element = []
-    
-    # Закрываем JSON
-    result_text = '{\n  "elements": [\n'
-    if fixed_lines:
-        result_text += '\n'.join(fixed_lines)
-    result_text += '\n  ]\n}'
-    
-    return result_text
-
 # ==================== ОБРАБОТЧИК ДЖОЙСТИКА ====================
 
 async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -537,7 +494,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
         
-        # ===== AI-ЗРЕНИЕ =====
+        # ===== AI ЧТО ВИДИШЬ? (ПРОСТОЙ СПИСОК) =====
         elif action == "ai_what_see":
             try:
                 await query.message.delete()
@@ -550,34 +507,24 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         agnes_client.chat.completions.create(
                             model="agnes-2.0-flash",
                             messages=[
-                                {"role": "system", "content": """
-                                Ты — AI-агент по анализу интерфейсов.
-                                Верни ТОЛЬКО валидный JSON.
-                                Ограничься 10 самыми важными элементами.
-                                Используй краткие названия.
-                                """},
+                                {"role": "system", "content": "Ты — эксперт по анализу интерфейсов. Отвечай кратко, просто списком."},
                                 {"role": "user", "content": [
                                     {"type": "text", "text": """
-                                    Проанализируй скриншот X.com.
-                                    Найди основные интерактивные элементы (не более 10).
+                                    Просто перечисли что видишь на скриншоте X.com.
                                     
-                                    ТИПЫ: button, input, link, icon
+                                    Формат:
+                                    Название элемента → (X, Y)
                                     
-                                    ФОРМАТ JSON (краткий):
-                                    {
-                                      "elements": [
-                                        {
-                                          "id": 1,
-                                          "type": "button",
-                                          "name": "Лайк",
-                                          "x": 520,
-                                          "y": 310
-                                        }
-                                      ]
-                                    }
+                                    Например:
+                                    Логотип X → (70, 60)
+                                    Главная → (70, 190)
+                                    Поиск → (70, 280)
+                                    Уведомления → (70, 370)
+                                    Сообщения → (70, 460)
+                                    Профиль → (70, 550)
+                                    Написать твит → (500, 700)
                                     
-                                    Верни ТОЛЬКО JSON. Не более 10 элементов.
-                                    Без поля description.
+                                    Только список. Без лишнего текста.
                                     """},
                                     {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_base64}"}}
                                 ]}
@@ -588,66 +535,50 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         timeout=25.0
                     )
                 except asyncio.TimeoutError:
-                    await query.message.reply_text(
-                        "⏰ AI не ответил за 25 секунд.\n\n"
-                        "Попробуй:\n"
-                        "1. Использовать /ai_find для поиска конкретного элемента\n"
-                        "2. Попробовать ещё раз"
-                    )
+                    await query.message.reply_text("⏰ AI не ответил за 25 секунд. Попробуй ещё раз.")
                     return
                 
                 result = response.choices[0].message.content
                 
-                # Очищаем JSON от markdown
-                result = re.sub(r'```json\n?', '', result)
-                result = re.sub(r'```\n?', '', result)
-                result = result.strip()
-                
-                # Если JSON невалидный, пробуем восстановить
-                try:
-                    data = json.loads(result)
-                except:
-                    result = fix_incomplete_json(result)
-                    try:
-                        data = json.loads(result)
-                    except:
-                        # Показываем что получилось
-                        await query.message.reply_text(
-                            f"⚠️ Не удалось восстановить JSON.\n\n"
-                            f"📄 Получено:\n{result[:500]}\n\n"
-                            f"💡 Попробуй использовать /ai_find"
-                        )
-                        return
-                
-                elements = data.get('elements', [])
+                # Парсим для сохранения координат
+                elements = []
+                lines = result.strip().split('\n')
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    
+                    # Ищем координаты (X, Y)
+                    coord_match = re.search(r'\((\d+),\s*(\d+)\)', line)
+                    if coord_match:
+                        x = int(coord_match.group(1))
+                        y = int(coord_match.group(2))
+                        # Ищем название (все что до координат)
+                        name = re.sub(r'\s*\([\d,\s]+\)\s*$', '', line).strip()
+                        # Убираем стрелку если есть
+                        name = re.sub(r'\s*→\s*$', '', name)
+                        if name:
+                            elements.append({
+                                'id': len(elements) + 1,
+                                'name': name,
+                                'x': x,
+                                'y': y
+                            })
                 
                 if elements:
                     context.user_data['ai_elements'] = elements
                     
-                    # Формируем компактный отчет
-                    reply = "👁️ Найденные элементы:\n\n"
+                    reply = "👁️ Что вижу на странице:\n\n"
+                    for el in elements:
+                        reply += f"{el['name']} → ({el['x']}, {el['y']})\n"
                     
-                    for el in elements[:10]:
-                        emoji = "🔘" if el.get('type') == 'button' else "⌨️" if el.get('type') == 'input' else "🔗" if el.get('type') == 'link' else "🖼️"
-                        reply += f"{emoji} {el['id']}. {el['name']}\n"
-                        reply += f"   📍 ({el['x']}, {el['y']})\n\n"
+                    reply += f"\n📊 Всего: {len(elements)} элементов"
+                    reply += "\n💡 /click_num <номер> - кликнуть"
                     
-                    reply += f"📊 Всего: {len(elements)} элементов\n"
-                    reply += "💡 /click_num <номер> - кликнуть по элементу"
-                    
-                    # Сохраняем JSON для копирования
-                    json_data = json.dumps(elements, ensure_ascii=False, indent=2)
-                    
-                    await query.message.reply_text(
-                        reply,
-                        reply_markup=InlineKeyboardMarkup([
-                            [InlineKeyboardButton("📋 Копировать JSON", callback_data=f"copy_json_{json_data[:50]}")],
-                            [InlineKeyboardButton("❌ Закрыть", callback_data="close_ai_view")]
-                        ])
-                    )
-                    
+                    await query.message.reply_text(reply)
                 else:
-                    await query.message.reply_text("😕 Не найдено интерактивных элементов")
+                    # Если не удалось распарсить - показываем как есть
+                    await query.message.reply_text(f"👁️ Что вижу на странице:\n\n{result}")
                     
             except Exception as e:
                 logger.error(f"Ошибка: {e}")
@@ -752,34 +683,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка: {e}")
         await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:300]}")
-
-# ==================== КОПИРОВАТЬ JSON ====================
-
-async def copy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    action = query.data
-    
-    if action.startswith("copy_json_"):
-        # Показываем JSON с возможностью копирования
-        elements = context.user_data.get('ai_elements', [])
-        json_data = json.dumps(elements, ensure_ascii=False, indent=2)
-        
-        await query.edit_message_text(
-            f"📋 JSON данные:\n\n```json\n{json_data[:1000]}\n```\n\n"
-            f"💡 Нажмите на сообщение и выберите 'Копировать'",
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("❌ Закрыть", callback_data="close_copy")]
-            ])
-        )
-    
-    elif action == "close_copy":
-        await query.delete()
-    
-    elif action == "close_ai_view":
-        await query.delete()
 
 # ==================== /click_num ====================
 
@@ -1217,7 +1120,6 @@ def main():
     application.add_handler(CommandHandler("click_num", click_num))
     
     application.add_handler(CallbackQueryHandler(joystick_callback))
-    application.add_handler(CallbackQueryHandler(copy_callback, pattern="^(copy_|close_copy|close_ai_view)"))
     
     application.add_error_handler(error_handler)
     
