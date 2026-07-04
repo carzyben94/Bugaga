@@ -23,7 +23,7 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен!")
 
-# ==================== РАСШИРЕННЫЕ МОДЕЛИ ====================
+# ==================== МОДЕЛИ ====================
 
 class Quote(ExtractionModel):
     text: str = Field(selector='.text')
@@ -92,7 +92,8 @@ class TweetStats(ExtractionModel):
     )
 
 class Tweet(ExtractionModel):
-    """ПОЛНАЯ модель твита"""
+    """ПОЛНАЯ модель твита с is_reply, is_retweet, is_pinned"""
+    
     text: str = Field(
         selector='div[data-testid="tweetText"]',
         default="[текст не найден]"
@@ -117,17 +118,21 @@ class Tweet(ExtractionModel):
         attribute='href',
         default="[ссылка не найдена]"
     )
+    # ===== ПОЛЯ С TRANSFORM ДЛЯ КОРРЕКТНОЙ ОБРАБОТКИ =====
     is_reply: bool = Field(
         selector='[data-testid="reply"]',
-        default=False
+        default=False,
+        transform=lambda x: True if x else False
     )
     is_retweet: bool = Field(
         selector='[data-testid="retweet"]',
-        default=False
+        default=False,
+        transform=lambda x: True if x else False
     )
     is_pinned: bool = Field(
         selector='[data-testid="pin"]',
-        default=False
+        default=False,
+        transform=lambda x: True if x else False
     )
 
 CHROME_PATH = '/usr/bin/chromium'
@@ -227,18 +232,14 @@ def extract_url(text):
 
 def extract_username(text):
     """Извлекает имя пользователя из текста"""
-    # Ищем @username
     pattern = r'@(\w+)'
     match = re.search(pattern, text)
     if match:
         return match.group(1)
-    
-    # Ищем username в конце
     words = text.split()
     for word in words:
         if word.startswith('@'):
             return word[1:]
-    
     return None
 
 def format_number(num):
@@ -373,6 +374,14 @@ async def do_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             reply += f"  👁️ {views}"
                         reply += "\n"
                     
+                    # is_reply, is_retweet, is_pinned
+                    if tweet.is_reply:
+                        reply += "   💬 Это ответ\n"
+                    if tweet.is_retweet:
+                        reply += "   🔄 Это ретвит\n"
+                    if tweet.is_pinned:
+                        reply += "   📌 Закреплённый твит\n"
+                    
                     # Ссылка
                     if tweet.link and tweet.link != "[ссылка не найдена]":
                         reply += f"   🔗 https://x.com{tweet.link}\n"
@@ -462,7 +471,6 @@ async def do_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if retweet_btn:
                 await retweet_btn.click(humanize=True)
                 await asyncio.sleep(1)
-                # Подтверждаем ретвит
                 confirm_btn = await tab.find('div[data-testid="retweetConfirm"]')
                 if confirm_btn:
                     await confirm_btn.click()
