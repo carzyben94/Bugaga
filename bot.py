@@ -426,7 +426,6 @@ def parse_ai_response(text):
             
             # Извлекаем название (все что до координат)
             name = re.sub(r'\s*\([\d,\s]+\)\s*$', '', line).strip()
-            # Убираем стрелку и эмодзи в начале
             name = re.sub(r'^[^\w\sа-яА-Я]+\s*', '', name)
             name = re.sub(r'\s*[→➡️]\s*$', '', name)
             
@@ -528,7 +527,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
         
-        # ===== AI ЧТО ВИДИШЬ? (БЕЗ JSON) =====
+        # ===== AI ЧТО ВИДИШЬ? =====
         elif action == "ai_what_see":
             try:
                 await query.message.delete()
@@ -540,13 +539,16 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     agnes_client.chat.completions.create(
                         model="agnes-2.0-flash",
                         messages=[
-                            {"role": "system", "content": "Ты — эксперт по анализу интерфейсов. Отвечай кратко, просто списком."},
+                            {"role": "system", "content": "Ты — эксперт по анализу интерфейсов. Определяй ТОЧНЫЙ ЦЕНТР каждого элемента."},
                             {"role": "user", "content": [
                                 {"type": "text", "text": """
-                                Просто перечисли что видишь на скриншоте X.com.
+                                Перечисли что видишь на скриншоте X.com.
                                 
                                 Формат (каждый элемент с новой строки):
-                                Название элемента → (X, Y)
+                                Название → (X, Y)
+                                
+                                Где X, Y - это ТОЧНЫЙ ЦЕНТР элемента.
+                                Центр = (левая_граница + правая_граница) / 2, (верхняя + нижняя) / 2
                                 
                                 Например:
                                 Логотип X → (70, 60)
@@ -578,7 +580,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if elements:
                     context.user_data['ai_elements'] = elements
                     
-                    reply = "👁️ Что вижу на странице:\n\n"
+                    reply = "👁️ Что вижу на странице (центры элементов):\n\n"
                     for el in elements:
                         reply += f"{el['name']} → ({el['x']}, {el['y']})\n"
                     
