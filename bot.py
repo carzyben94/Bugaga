@@ -21,8 +21,6 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен!")
 
-# ==================== МОДЕЛИ (Pydantic) ====================
-
 class Quote(ExtractionModel):
     text: str = Field(selector='.text')
     author: str = Field(selector='.author')
@@ -172,7 +170,7 @@ async def explore_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
             })()
         """)
         
-        # ✅ ИСПРАВЛЕНО: сбор фото через цикл
+        # ✅ ИСПРАВЛЕНО: НЕТ СРЕЗОВ!
         images = await tab.find(tag_name='img', src_contains='media', find_all=True)
         image_urls = []
         count = 0
