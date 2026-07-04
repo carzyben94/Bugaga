@@ -56,18 +56,30 @@ X_COOKIES = [
 
 user_browsers = {}
 
-# ==================== КУРСОР ДЛЯ ДЖОЙСТИКА ====================
+# ==================== КУРСОР С РЕЖИМАМИ ====================
 
 class CursorManager:
     def __init__(self):
         self.x = 500
         self.y = 300
         self.step = 10
+        self.mode = 1
     
     def move(self, dx, dy):
-        self.x += dx
-        self.y += dy
+        self.x += dx * self.step
+        self.y += dy * self.step
         return self.x, self.y
+    
+    def set_mode(self, mode):
+        if mode == 1:
+            self.step = 10
+            self.mode = 1
+        elif mode == 2:
+            self.step = 40
+            self.mode = 2
+    
+    def get_mode(self):
+        return self.mode, self.step
     
     def get_position(self):
         return self.x, self.y
@@ -100,7 +112,12 @@ def draw_cursor_on_screenshot(screenshot_bytes, cursor_x, cursor_y):
 
 # ==================== КНОПКИ ДЖОЙСТИКА ====================
 
-def get_joystick_keyboard():
+def get_joystick_keyboard(user_id=None):
+    mode_text = ""
+    if user_id and user_id in cursor_managers:
+        mode, step = cursor_managers[user_id].get_mode()
+        mode_text = f" | Шаг {step}px"
+    
     keyboard = [
         [
             InlineKeyboardButton("⬆️", callback_data="up"),
@@ -119,15 +136,17 @@ def get_joystick_keyboard():
         ],
         [
             InlineKeyboardButton("🔄 Обновить", callback_data="refresh"),
+        ],
+        [
+            InlineKeyboardButton("🔵 Шаг 10", callback_data="mode_1"),
+            InlineKeyboardButton("🔴 Шаг 40", callback_data="mode_2"),
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# ==================== ОТПРАВКА СКРИНА + КНОПОК (БЕЗ МИГАНИЯ) ====================
+# ==================== ОТПРАВКА СКРИНА + КНОПОК ====================
 
 async def send_screen_with_buttons(update, user_id, caption="🎮 Джойстик X.com"):
-    """Отправляет или обновляет скриншот с курсором + кнопки (без мигания)"""
-    
     if user_id not in user_browsers:
         if isinstance(update, Update) and update.callback_query:
             await update.callback_query.edit_message_text("❌ Сначала выполни /login")
@@ -138,6 +157,7 @@ async def send_screen_with_buttons(update, user_id, caption="🎮 Джойсти
     _, tab = user_browsers[user_id]
     cursor = get_cursor(user_id)
     x, y = cursor.get_position()
+    mode, step = cursor.get_mode()
     
     try:
         screenshot_base64 = await asyncio.wait_for(
@@ -148,21 +168,21 @@ async def send_screen_with_buttons(update, user_id, caption="🎮 Джойсти
         
         image_with_cursor = draw_cursor_on_screenshot(screenshot_bytes, x, y)
         
+        caption_text = f"{caption}\n🖱️ Курсор: ({x}, {y}) | Шаг: {step}px"
+        
         if isinstance(update, Update) and update.callback_query:
-            # ✅ Редактируем существующее сообщение (без мигания!)
             await update.callback_query.edit_message_media(
                 media=InputMediaPhoto(
                     media=image_with_cursor,
-                    caption=f"{caption}\n🖱️ Курсор: ({x}, {y})"
+                    caption=caption_text
                 ),
-                reply_markup=get_joystick_keyboard()
+                reply_markup=get_joystick_keyboard(user_id)
             )
         else:
-            # Новое сообщение
             await update.message.reply_photo(
                 photo=image_with_cursor,
-                caption=f"{caption}\n🖱️ Курсор: ({x}, {y})",
-                reply_markup=get_joystick_keyboard()
+                caption=caption_text,
+                reply_markup=get_joystick_keyboard(user_id)
             )
         
         return image_with_cursor
@@ -182,44 +202,16 @@ async def send_screen_with_buttons(update, user_id, caption="🎮 Джойсти
             )
         return None
 
-# ==================== МОДЕЛИ ====================
-
-class Tweet(ExtractionModel):
-    text: str = Field(
-        selector='div[data-testid="tweetText"]',
-        default="[текст не найден]"
-    )
-
-class TweetPhoto(ExtractionModel):
-    photo: str = Field(
-        selector='img[src*="media"]',
-        attribute='src',
-        default=""
-    )
-
-# ==================== ФУНКЦИИ ====================
-
-def fix_text(text):
-    text = re.sub(r'([а-яё])([А-ЯЁ])', r'\1 \2', text)
-    text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
-    text = re.sub(r'([А-ЯЁ])([А-ЯЁ][а-яё])', r'\1 \2', text)
-    text = re.sub(r'([«»"\'])([А-Яа-яA-Za-z])', r'\1 \2', text)
-    text = re.sub(r'([А-Яа-яA-Za-z])([«»"\'])', r'\1 \2', text)
-    text = re.sub(r'([—–])([А-Яа-яA-Za-z])', r'\1 \2', text)
-    text = re.sub(r'([А-Яа-яA-Za-z])([—–])', r'\1 \2', text)
-    text = re.sub(r'\s+', ' ', text)
-    return text.strip()
-
 # ==================== МЕНЮ ====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     menu = (
         "🤖 *Бот для X.com*\n\n"
+        "🎮 *Джойстик*\n"
+        "/joystick — Открыть джойстик\n\n"
         "🔐 *Авторизация*\n"
         "/login X.com\n"
         "/close Закрыть браузер\n\n"
-        "🎮 *Джойстик*\n"
-        "/joystick — Открыть джойстик\n\n"
         "📸 *Скриншот*\n"
         "/screen Скриншот\n\n"
         "🔍 *Поиск*\n"
@@ -260,19 +252,19 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         if action == "up":
-            cursor.move(0, -10)
+            cursor.move(0, -1)
             await send_screen_with_buttons(update, user_id, "⬆️ Вверх")
         
         elif action == "down":
-            cursor.move(0, 10)
+            cursor.move(0, 1)
             await send_screen_with_buttons(update, user_id, "⬇️ Вниз")
         
         elif action == "left":
-            cursor.move(-10, 0)
+            cursor.move(-1, 0)
             await send_screen_with_buttons(update, user_id, "⬅️ Влево")
         
         elif action == "right":
-            cursor.move(10, 0)
+            cursor.move(1, 0)
             await send_screen_with_buttons(update, user_id, "➡️ Вправо")
         
         elif action == "reset":
@@ -299,6 +291,15 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await tab.refresh()
             await asyncio.sleep(2)
             await send_screen_with_buttons(update, user_id, "✅ Страница обновлена")
+        
+        # ===== РЕЖИМЫ =====
+        elif action == "mode_1":
+            cursor.set_mode(1)
+            await send_screen_with_buttons(update, user_id, "🔵 Режим: Шаг 10px (точный)")
+        
+        elif action == "mode_2":
+            cursor.set_mode(2)
+            await send_screen_with_buttons(update, user_id, "🔴 Режим: Шаг 40px (быстрый)")
         
         else:
             await send_screen_with_buttons(update, user_id, "❌ Неизвестная команда")
@@ -781,29 +782,17 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     application = Application.builder().token(TOKEN).build()
     
-    # Меню
     application.add_handler(CommandHandler("start", start))
-    
-    # Авторизация
     application.add_handler(CommandHandler("login", login))
     application.add_handler(CommandHandler("close", close_browser))
-    
-    # Джойстик
     application.add_handler(CommandHandler("joystick", joystick))
-    application.add_handler(CallbackQueryHandler(joystick_callback))
-    
-    # Скриншот
     application.add_handler(CommandHandler("screen", screen))
-    
-    # Поиск
     application.add_handler(CommandHandler("search", search))
-    
-    # Фото
     application.add_handler(CommandHandler("getbaby", getbaby))
-    
-    # JavaScript
     application.add_handler(CommandHandler("eval", evaluate_js))
     application.add_handler(CommandHandler("ai", ai_command))
+    
+    application.add_handler(CallbackQueryHandler(joystick_callback))
     
     application.add_error_handler(error_handler)
     
