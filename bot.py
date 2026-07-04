@@ -72,7 +72,7 @@ user_browsers = {}
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Приветственное меню (часть 1 - основные команды)"""
     menu1 = (
-        "🤖 *Бот для автоматизации — 100% Pydoll*\n\n"
+        "🤖 *Бот для автоматизации*\n\n"
         "🔐 *Авторизация*\n"
         "/login — Войти в X.com\n\n"
         "🔍 *Навигация*\n"
@@ -884,7 +884,7 @@ def main():
     
     # Основные команды
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("start2", start2))  # ← ВАЖНО! /start2 зарегистрирован
+    application.add_handler(CommandHandler("start2", start2))  # ← ВОТ ЭТО ВАЖНО!
     application.add_handler(CommandHandler("login", login))
     application.add_handler(CommandHandler("search", search_x))
     application.add_handler(CommandHandler("go", go))
