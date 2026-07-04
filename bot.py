@@ -70,9 +70,7 @@ X_COOKIES = [
 user_browsers = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Приветственное меню (разбито на 2 части)"""
-    
-    # Часть 1: Основные команды
+    """Приветственное меню (часть 1 - основные команды)"""
     menu1 = (
         "🤖 *Бот для автоматизации — 100% Pydoll*\n\n"
         "🔐 *Авторизация*\n"
@@ -89,10 +87,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/click <selector> — Кликнуть\n"
         "/type <selector> <text> — Ввести текст\n"
         "/wait <selector> — Ожидать элемент\n"
-        "/scroll_to <selector> — Прокрутить к элементу"
+        "/scroll_to <selector> — Прокрутить к элементу\n\n"
+        "📌 *Продвинутые команды:* /start2"
     )
     
-    # Часть 2: Продвинутые команды
+    await update.message.reply_text(menu1, parse_mode='Markdown')
+
+async def start2(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает только продвинутые команды (часть 2)"""
     menu2 = (
         "🌑 *Shadow DOM*\n"
         "/shadow <selector> — Найти в Shadow DOM\n"
@@ -111,7 +113,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📖 *Селекторы:* .class #id div > p"
     )
     
-    await update.message.reply_text(menu1, parse_mode='Markdown')
     await update.message.reply_text(menu2, parse_mode='Markdown')
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -883,6 +884,7 @@ def main():
     
     # Основные команды
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("start2", start2))
     application.add_handler(CommandHandler("login", login))
     application.add_handler(CommandHandler("search", search_x))
     application.add_handler(CommandHandler("go", go))
