@@ -2,6 +2,7 @@ import os
 import logging
 import asyncio
 import base64
+import json
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -98,6 +99,18 @@ async def evaluate_js(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         _, tab = user_browsers[user_id]
         result = await tab.execute_script(js_code)
+        
+        # ✅ Извлекаем только значение
+        if isinstance(result, dict) and 'result' in result:
+            if isinstance(result['result'], dict) and 'value' in result['result']:
+                result = result['result']['value']
+            elif 'value' in result:
+                result = result['value']
+        
+        # Если результат — список или словарь, красиво форматируем
+        if isinstance(result, (list, dict)):
+            result = json.dumps(result, ensure_ascii=False, indent=2)
+        
         await update.message.reply_text(f"✅ Результат:\n\n{str(result)[:500]}")
             
     except Exception as e:
