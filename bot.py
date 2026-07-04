@@ -136,6 +136,10 @@ def get_joystick_keyboard(user_id=None):
             InlineKeyboardButton("🔎 Поиск", callback_data="go_search"),
         ],
         [
+            InlineKeyboardButton("🧠 AI Найти", callback_data="ai_find"),
+            InlineKeyboardButton("🧠 AI Клик", callback_data="ai_click"),
+        ],
+        [
             InlineKeyboardButton("🔄 Обновить", callback_data="refresh"),
         ],
         [
@@ -221,6 +225,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/getbaby Случайное фото\n\n"
         "⌨️ *Ввод*\n"
         "/type <текст> — Ввести текст\n\n"
+        "🧠 *AI-зрение*\n"
+        "/ai_find <что> — Найти элемент через AI\n"
+        "/ai_click <что> — Найти и кликнуть через AI\n\n"
         "⚡ *JavaScript*\n"
         "/eval <js> — Выполнить JavaScript\n"
         "/ai Любая команда (умный eval)"
@@ -346,6 +353,36 @@ async def joystick(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_joystick_keyboard()
         )
 
+# ==================== МОДЕЛИ ====================
+
+class Tweet(ExtractionModel):
+    text: str = Field(
+        selector='div[data-testid="tweetText"]',
+        default="[текст не найден]"
+    )
+
+class TweetPhoto(ExtractionModel):
+    photo: str = Field(
+        selector='img[src*="media"]',
+        attribute='src',
+        default=""
+    )
+
+# ==================== ФУНКЦИИ ====================
+
+def fix_text(text):
+    text = re.sub(r'([а-яё])([А-ЯЁ])', r'\1 \2', text)
+    text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
+    text = re.sub(r'([А-ЯЁ])([А-ЯЁ][а-яё])', r'\1 \2', text)
+    text = re.sub(r'([«»"\'])([А-Яа-яA-Za-z])', r'\1 \2', text)
+    text = re.sub(r'([А-Яа-яA-Za-z])([«»"\'])', r'\1 \2', text)
+    text = re.sub(r'([—–])([А-Яа-яA-Za-z])', r'\1 \2', text)
+    text = re.sub(r'([А-Яа-яA-Za-z])([—–])', r'\1 \2', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+# ==================== ОБРАБОТЧИК ДЖОЙСТИКА ====================
+
 async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -424,17 +461,79 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # ===== ПОИСК =====
         elif action == "go_search":
             try:
-                # Шаг 1: Переход в Explore
                 await tab.mouse.click(60, 140, humanize=True)
                 await asyncio.sleep(1)
-                
-                # Шаг 2: Клик в поле поиска
                 await tab.mouse.click(380, 40, humanize=True)
                 await asyncio.sleep(0.5)
-                
                 await send_screen_with_buttons(update, user_id, "🔎 Поле поиска активно\nВведите текст через /type")
             except Exception as e:
                 await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
+        
+        # ===== AI-ЗРЕНИЕ =====
+        elif action == "ai_find":
+            try:
+                await query.edit_message_text("📸 Делаю скриншот и анализирую...")
+                
+                screenshot_base64 = await tab.take_screenshot(as_base64=True)
+                
+                response = await agnes_client.chat.completions.create(
+                    model="agnes-2.0-flash",
+                    messages=[
+                        {"role": "system", "content": "Ты — эксперт по анализу скриншотов. Верни ТОЛЬКО JSON с координатами."},
+                        {"role": "user", "content": [
+                            {"type": "text", "text": """
+                            Проанализируй скриншот X.com.
+                            Найди: кнопку лайка, ретвита, поле поиска, кнопку твита.
+                            Верни ТОЛЬКО JSON: {"like": [x, y], "retweet": [x, y], "search": [x, y], "tweet": [x, y]}
+                            """},
+                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_base64}"}}
+                        ]}
+                    ],
+                    max_tokens=500
+                )
+                
+                coords = json.loads(response.choices[0].message.content)
+                
+                reply = "🧠 *AI нашёл элементы:*\n\n"
+                for name, coord in coords.items():
+                    reply += f"• `{name}`: ({coord[0]}, {coord[1]})\n"
+                
+                await send_screen_with_buttons(update, user_id, reply)
+                
+            except Exception as e:
+                await send_screen_with_buttons(update, user_id, f"❌ Ошибка AI: {str(e)[:200]}")
+        
+        elif action == "ai_click":
+            try:
+                await query.edit_message_text("📸 Делаю скриншот...")
+                
+                screenshot_base64 = await tab.take_screenshot(as_base64=True)
+                
+                await query.edit_message_text("🧠 Ищу кнопку лайка...")
+                
+                response = await agnes_client.chat.completions.create(
+                    model="agnes-2.0-flash",
+                    messages=[
+                        {"role": "system", "content": "Ты — эксперт по анализу скриншотов. Верни ТОЛЬКО координаты x,y."},
+                        {"role": "user", "content": [
+                            {"type": "text", "text": "Найди на этом скриншоте кнопку лайка (❤️). Верни координаты центра кнопки."},
+                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_base64}"}}
+                        ]}
+                    ],
+                    max_tokens=100
+                )
+                
+                result = response.choices[0].message.content.strip()
+                x, y = map(int, result.split(','))
+                
+                cursor = get_cursor(user_id)
+                cursor.x, cursor.y = x, y
+                
+                await tab.mouse.click(x, y, humanize=True)
+                await send_screen_with_buttons(update, user_id, f"🧠 AI клик по лайку! ({x}, {y})")
+                
+            except Exception as e:
+                await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:200]}")
         
         elif action == "refresh":
             await query.edit_message_text("🔄 Обновляю страницу...")
@@ -457,10 +556,9 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:300]}")
 
-# ==================== КОМАНДА /type ====================
+# ==================== ОСТАЛЬНЫЕ КОМАНДЫ ====================
 
 async def type_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Вводит текст в активное поле"""
     if not context.args:
         await update.message.reply_text("❌ Укажи текст для ввода\nПример: /type python")
         return
@@ -475,13 +573,10 @@ async def type_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _, tab = user_browsers[user_id]
     
     try:
-        # ✅ Правильный метод — type()
         await tab.type(text, humanize=True)
         await update.message.reply_text(f"✅ Введён текст: {text}")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
-
-# ==================== ОСТАЛЬНЫЕ КОМАНДЫ ====================
 
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -553,8 +648,6 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
-
-# ==================== GETBABY ====================
 
 async def getbaby(update: Update, context: ContextTypes.DEFAULT_TYPE):
     PROFILES = [
@@ -632,8 +725,6 @@ async def getbaby(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
-# ==================== EVAL ====================
-
 async def evaluate_js(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text(
@@ -668,8 +759,6 @@ async def evaluate_js(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
-
-# ==================== AI КОМАНДА ====================
 
 async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not AGNES_API_KEY:
@@ -837,34 +926,6 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-# ==================== МОДЕЛИ ====================
-
-class Tweet(ExtractionModel):
-    text: str = Field(
-        selector='div[data-testid="tweetText"]',
-        default="[текст не найден]"
-    )
-
-class TweetPhoto(ExtractionModel):
-    photo: str = Field(
-        selector='img[src*="media"]',
-        attribute='src',
-        default=""
-    )
-
-# ==================== ФУНКЦИИ ====================
-
-def fix_text(text):
-    text = re.sub(r'([а-яё])([А-ЯЁ])', r'\1 \2', text)
-    text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
-    text = re.sub(r'([А-ЯЁ])([А-ЯЁ][а-яё])', r'\1 \2', text)
-    text = re.sub(r'([«»"\'])([А-Яа-яA-Za-z])', r'\1 \2', text)
-    text = re.sub(r'([А-Яа-яA-Za-z])([«»"\'])', r'\1 \2', text)
-    text = re.sub(r'([—–])([А-Яа-яA-Za-z])', r'\1 \2', text)
-    text = re.sub(r'([А-Яа-яA-Za-z])([—–])', r'\1 \2', text)
-    text = re.sub(r'\s+', ' ', text)
-    return text.strip()
 
 # ==================== ОБРАБОТЧИК ОШИБОК ====================
 
