@@ -85,8 +85,8 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await tab.set_cookies(X_COOKIES)
         await asyncio.sleep(1)
         
-        # Обновляем страницу для применения кук
-        await tab.reload()
+        # Обновляем страницу через refresh() (правильный метод)
+        await tab.refresh()
         await asyncio.sleep(5)  # Ждём загрузки
         
         # Сохраняем браузер
