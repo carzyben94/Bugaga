@@ -30,7 +30,7 @@ class Quote(ExtractionModel):
 # Путь к браузеру
 CHROME_PATH = '/usr/bin/chromium'
 
-# Куки для X.com (с domain и path)
+# Куки для X.com
 X_COOKIES = [
     {"name": "__cuid", "value": "55d2d7c5-4888-430a-b024-dd785da46ef4", "domain": ".x.com", "path": "/"},
     {"name": "lang", "value": "ru", "domain": ".x.com", "path": "/"},
@@ -49,14 +49,40 @@ X_COOKIES = [
 user_browsers = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Приветственное меню"""
+    """Приветственное меню с категориями"""
     await update.message.reply_text(
-        "📋 Доступные команды:\n"
-        "/login - Войти в X.com\n"
-        "/parse - Получить цитаты\n"
-        "/go <url> - Открыть любой сайт\n"
-        "/screen - Сделать скриншот\n"
-        "/cookie {\"name\":\"value\"} - Установить куки"
+        "🤖 *Бот для автоматизации браузера*\n\n"
+        
+        "🔐 *АВТОРИЗАЦИЯ*\n"
+        "/login - Войти в X.com\n\n"
+        
+        "🔍 *ПОИСК И НАВИГАЦИЯ*\n"
+        "/search <текст> - Поиск на X.com\n"
+        "/go <url> - Открыть сайт\n"
+        "/scroll <top|bottom|px> - Прокрутить страницу\n\n"
+        
+        "📸 *СКРИНШОТЫ*\n"
+        "/screen - Скриншот страницы\n\n"
+        
+        "🔎 *РАБОТА С ЭЛЕМЕНТАМИ*\n"
+        "/find <selector> - Найти элемент\n"
+        "/find_all <selector> - Найти все элементы\n"
+        "/click <selector> - Кликнуть элемент\n"
+        "/type <selector> <text> - Ввести текст\n"
+        "/wait <selector> - Ожидать элемент\n\n"
+        
+        "🍪 *КУКИ*\n"
+        "/cookie {\"name\":\"value\"} - Установить куки\n\n"
+        
+        "⚡ *ДРУГОЕ*\n"
+        "/eval <js> - Выполнить JavaScript\n"
+        "/parse - Получить цитаты\n\n"
+        
+        "📖 *Примеры селекторов:*\n"
+        "`.class` - по классу\n"
+        "`#id` - по ID\n"
+        "`div > p` - по CSS-пути",
+        parse_mode='Markdown'
     )
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -73,32 +99,22 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         options.add_argument("--disable-gpu")
         options.binary_location = CHROME_PATH
         
-        # Создаём браузер
         browser = Chrome(options=options)
         tab = await browser.start()
         
-        # Сначала переходим на X.com (для установки домена)
         await tab.go_to('https://x.com')
         await asyncio.sleep(2)
         
-        # Устанавливаем куки
         await tab.set_cookies(X_COOKIES)
         await asyncio.sleep(1)
         
-        # Обновляем страницу через refresh
         await tab.refresh()
         await asyncio.sleep(5)
         
-        # Проверяем куки
-        cookies = await tab.get_cookies()
-        logger.info(f"Установлено кук: {len(cookies)}")
-        
-        # Сохраняем браузер
         user_browsers[user_id] = (browser, tab)
         
         await update.message.reply_text("✅ Вход выполнен успешно!")
         
-        # Делаем скриншот для подтверждения
         await update.message.reply_text("📸 Делаю скриншот...")
         
         try:
@@ -117,6 +133,52 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка входа: {str(e)[:300]}")
+
+async def search_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Поиск на X.com"""
+    if not context.args:
+        await update.message.reply_text("❌ Укажи текст для поиска\nПример: /search python")
+        return
+    
+    search_query = ' '.join(context.args)
+    user_id = update.effective_user.id
+    
+    try:
+        if user_id not in user_browsers:
+            await update.message.reply_text("❌ Сначала выполни /login")
+            return
+        
+        await update.message.reply_text(f"🔍 Ищу: {search_query}")
+        
+        _, tab = user_browsers[user_id]
+        
+        search_url = f"https://x.com/search?q={search_query}&src=typed_query"
+        await tab.go_to(search_url)
+        await asyncio.sleep(5)
+        
+        screenshot_base64 = await asyncio.wait_for(
+            tab.take_screenshot(as_base64=True),
+            timeout=30.0
+        )
+        screenshot_bytes = base64.b64decode(screenshot_base64)
+        
+        await update.message.reply_photo(
+            photo=screenshot_bytes,
+            caption=f"🔍 Результаты поиска: {search_query}"
+        )
+        
+        try:
+            tweets = await tab.find_all('article[data-testid="tweet"]')
+            if tweets:
+                await update.message.reply_text(f"📊 Найдено {len(tweets)} твитов")
+            else:
+                await update.message.reply_text("📊 Твиты не найдены")
+        except:
+            await update.message.reply_text("📊 Страница загружена")
+            
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
 async def go(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Открывает любой сайт"""
@@ -189,6 +251,224 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except asyncio.TimeoutError:
             await update.message.reply_text("⏰ Скриншот занимает слишком много времени. Попробуй ещё раз.")
             
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+
+async def find_element(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Находит элемент по селектору"""
+    if not context.args:
+        await update.message.reply_text("❌ Укажи селектор\nПример: /find .quote")
+        return
+    
+    selector = context.args[0]
+    user_id = update.effective_user.id
+    
+    try:
+        if user_id not in user_browsers:
+            await update.message.reply_text("❌ Сначала открой сайт командой /go или /login")
+            return
+        
+        _, tab = user_browsers[user_id]
+        
+        element = await tab.find(selector)
+        
+        if element:
+            text = await element.text()
+            await update.message.reply_text(f"✅ Найден элемент:\n\n{text[:500]}")
+        else:
+            await update.message.reply_text(f"❌ Элемент не найден: {selector}")
+            
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+
+async def find_all_elements(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Находит все элементы по селектору"""
+    if not context.args:
+        await update.message.reply_text("❌ Укажи селектор\nПример: /find_all .quote")
+        return
+    
+    selector = context.args[0]
+    user_id = update.effective_user.id
+    
+    try:
+        if user_id not in user_browsers:
+            await update.message.reply_text("❌ Сначала открой сайт командой /go или /login")
+            return
+        
+        _, tab = user_browsers[user_id]
+        
+        elements = await tab.find_all(selector)
+        
+        if elements:
+            count = len(elements)
+            reply = f"✅ Найдено {count} элементов:\n\n"
+            for i, element in enumerate(elements[:5], 1):
+                try:
+                    text = await element.text()
+                    reply += f"{i}. {text[:100]}\n"
+                except:
+                    reply += f"{i}. [не удалось получить текст]\n"
+            
+            if count > 5:
+                reply += f"\n... и ещё {count - 5} элементов"
+            
+            await update.message.reply_text(reply)
+        else:
+            await update.message.reply_text(f"❌ Элементы не найдены: {selector}")
+            
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+
+async def click_element(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кликает по элементу"""
+    if not context.args:
+        await update.message.reply_text("❌ Укажи селектор\nПример: /click .button")
+        return
+    
+    selector = context.args[0]
+    user_id = update.effective_user.id
+    
+    try:
+        if user_id not in user_browsers:
+            await update.message.reply_text("❌ Сначала открой сайт командой /go или /login")
+            return
+        
+        _, tab = user_browsers[user_id]
+        
+        element = await tab.find(selector)
+        
+        if element:
+            await element.click()
+            await update.message.reply_text(f"✅ Кликнул по элементу: {selector}")
+        else:
+            await update.message.reply_text(f"❌ Элемент не найден: {selector}")
+            
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+
+async def type_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Вводит текст в элемент"""
+    if len(context.args) < 2:
+        await update.message.reply_text("❌ Укажи селектор и текст\nПример: /type .input hello")
+        return
+    
+    selector = context.args[0]
+    text = ' '.join(context.args[1:])
+    user_id = update.effective_user.id
+    
+    try:
+        if user_id not in user_browsers:
+            await update.message.reply_text("❌ Сначала открой сайт командой /go или /login")
+            return
+        
+        _, tab = user_browsers[user_id]
+        
+        element = await tab.find(selector)
+        
+        if element:
+            await element.click()
+            await asyncio.sleep(0.5)
+            await element.type(text)
+            await update.message.reply_text(f"✅ Ввёл текст в {selector}: {text[:50]}")
+        else:
+            await update.message.reply_text(f"❌ Элемент не найден: {selector}")
+            
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+
+async def evaluate_js(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Выполняет JavaScript код"""
+    if not context.args:
+        await update.message.reply_text("❌ Укажи JS код\nПример: /eval document.title")
+        return
+    
+    js_code = ' '.join(context.args)
+    user_id = update.effective_user.id
+    
+    try:
+        if user_id not in user_browsers:
+            await update.message.reply_text("❌ Сначала открой сайт командой /go или /login")
+            return
+        
+        _, tab = user_browsers[user_id]
+        
+        result = await tab.evaluate(js_code)
+        
+        await update.message.reply_text(f"✅ Результат:\n\n{str(result)[:500]}")
+            
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+
+async def scroll_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Прокручивает страницу"""
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Укажи направление или пиксели\n"
+            "Примеры:\n"
+            "/scroll top - в начало\n"
+            "/scroll bottom - в конец\n"
+            "/scroll 500 - на 500px вниз"
+        )
+        return
+    
+    scroll_arg = context.args[0]
+    user_id = update.effective_user.id
+    
+    try:
+        if user_id not in user_browsers:
+            await update.message.reply_text("❌ Сначала открой сайт командой /go или /login")
+            return
+        
+        _, tab = user_browsers[user_id]
+        
+        if scroll_arg.lower() == 'top':
+            await tab.evaluate("window.scrollTo(0, 0)")
+            await update.message.reply_text("⬆️ Прокрутил в начало")
+        elif scroll_arg.lower() == 'bottom':
+            await tab.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await update.message.reply_text("⬇️ Прокрутил в конец")
+        else:
+            try:
+                pixels = int(scroll_arg)
+                await tab.evaluate(f"window.scrollBy(0, {pixels})")
+                await update.message.reply_text(f"📜 Прокрутил на {pixels}px")
+            except ValueError:
+                await update.message.reply_text("❌ Неправильный формат. Используй: top, bottom или число")
+            
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+
+async def wait_element(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ожидает появление элемента"""
+    if not context.args:
+        await update.message.reply_text("❌ Укажи селектор\nПример: /wait .loading")
+        return
+    
+    selector = context.args[0]
+    user_id = update.effective_user.id
+    
+    try:
+        if user_id not in user_browsers:
+            await update.message.reply_text("❌ Сначала открой сайт командой /go или /login")
+            return
+        
+        _, tab = user_browsers[user_id]
+        
+        await update.message.reply_text(f"⏳ Ожидаю элемент: {selector}")
+        
+        await tab.wait_for_selector(selector, timeout=30)
+        
+        await update.message.reply_text(f"✅ Элемент появился: {selector}")
+            
+    except asyncio.TimeoutError:
+        await update.message.reply_text(f"⏰ Таймаут: элемент не появился за 30 сек")
     except Exception as e:
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
@@ -277,8 +557,16 @@ def main():
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("login", login))
+    application.add_handler(CommandHandler("search", search_x))
     application.add_handler(CommandHandler("go", go))
     application.add_handler(CommandHandler("screen", screen))
+    application.add_handler(CommandHandler("find", find_element))
+    application.add_handler(CommandHandler("find_all", find_all_elements))
+    application.add_handler(CommandHandler("click", click_element))
+    application.add_handler(CommandHandler("type", type_text))
+    application.add_handler(CommandHandler("eval", evaluate_js))
+    application.add_handler(CommandHandler("scroll", scroll_page))
+    application.add_handler(CommandHandler("wait", wait_element))
     application.add_handler(CommandHandler("cookie", cookie))
     application.add_handler(CommandHandler("parse", parse))
     application.add_error_handler(error_handler)
