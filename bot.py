@@ -90,7 +90,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/screen Скриншот\n"
         "/search Запрос\n"
         "/getbaby Случайное фото\n"
-        "/ai Любая команда (умный eval)"
+        "/ai Любая команда (умный eval)\n"
+        "/eval <js> — Выполнить JavaScript"
     )
     await update.message.reply_text(menu)
 
@@ -337,6 +338,43 @@ async def getbaby(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
+# ==================== EVAL ====================
+
+async def evaluate_js(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Укажи JS код\n"
+            "Пример: /eval document.title"
+        )
+        return
+    
+    js_code = ' '.join(context.args)
+    user_id = update.effective_user.id
+    
+    try:
+        if user_id not in user_browsers:
+            await update.message.reply_text("❌ Сначала выполни /login")
+            return
+        
+        _, tab = user_browsers[user_id]
+        result = await tab.execute_script(js_code)
+        
+        if isinstance(result, dict):
+            if 'result' in result and isinstance(result['result'], dict):
+                if 'value' in result['result']:
+                    result = result['result']['value']
+            elif 'value' in result:
+                result = result['value']
+        
+        if isinstance(result, (list, dict)):
+            result = json.dumps(result, ensure_ascii=False, indent=2)
+        
+        await update.message.reply_text(f"✅ Результат:\n\n{str(result)[:500]}")
+            
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+
 # ==================== AI КОМАНДА (УМНЫЙ EVAL) ====================
 
 async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -391,51 +429,6 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await tab.go_to('https://x.com')
             await asyncio.sleep(3)
         
-        # ✅ Проверяем, есть ли твиты
-        tweet_count = 0
-        try:
-            tweet_count = await tab.execute_script(
-                "document.querySelectorAll('article[data-testid=\"tweet\"]').length"
-            )
-        except:
-            tweet_count = 0
-        
-        # Если твитов нет — используем поиск
-        if tweet_count == 0:
-            await update.message.reply_text("🔍 Твитов нет, использую поиск...", parse_mode='Markdown')
-            
-            keywords = command.lower()
-            for word in ['найди', 'найти', 'искать', 'поиск', 'покажи']:
-                keywords = keywords.replace(word, '')
-            keywords = keywords.strip()
-            
-            if not keywords:
-                keywords = command
-            
-            await tab.go_to(f'https://x.com/search?q={keywords}&src=typed_query')
-            await asyncio.sleep(3)
-            await update.message.reply_text(f"✅ На странице поиска: {keywords}", parse_mode='Markdown')
-            
-            # Проверяем твиты после поиска
-            try:
-                tweet_count = await tab.execute_script(
-                    "document.querySelectorAll('article[data-testid=\"tweet\"]').length"
-                )
-            except:
-                tweet_count = 0
-        
-        # ✅ Если всё равно нет твитов — сообщаем
-        if tweet_count == 0:
-            await update.message.reply_text(
-                "❌ *Не найдено твитов на странице.*\n"
-                "Попробуй:\n"
-                "1. Выполни /login заново\n"
-                "2. Проверь, что ты на X.com\n"
-                "3. Попробуй другую команду",
-                parse_mode='Markdown'
-            )
-            return
-        
         # ✅ Собираем контекст
         page_info = await tab.execute_script("""
             (function() {
@@ -455,13 +448,20 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             })()
         """)
         
+        if len(page_info.get('testids', {})) == 0:
+            await update.message.reply_text(
+                "❌ *Не найдено элементов на странице.*\n"
+                "Попробуй выполнить /login заново",
+                parse_mode='Markdown'
+            )
+            return
+        
         # ✅ Генерируем JS код через Agnes AI
         prompt = f"""
         Ты — агент по автоматизации X.com (Twitter).
         
         СТРАНИЦА:
         URL: {page_info.get('url', 'неизвестно')}
-        Title: {page_info.get('title', 'неизвестно')}
         Твитов на странице: {page_info.get('tweet_count', 0)}
         Доступные data-testid: {json.dumps(page_info.get('testids', {}), ensure_ascii=False)}
         
@@ -471,16 +471,15 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         - Если нужно вернуть данные — используй return
         - Если нужно выполнить действие — просто выполни код
         - Используй доступные data-testid из контекста
+        - НЕ используй комментарии
         - Верни ТОЛЬКО код, без пояснений и markdown.
-        - НЕ используй комментарии (// или /* */)
-        - Если данных нет — верни пустой массив []
         """
         
         response = await asyncio.wait_for(
             agnes_client.chat.completions.create(
                 model="agnes-2.0-flash",
                 messages=[
-                    {"role": "system", "content": "Ты — эксперт по JavaScript. Отвечай ТОЛЬКО кодом. НИКАКИХ комментариев. Если нет данных — верни []."},
+                    {"role": "system", "content": "Ты — эксперт по JavaScript. Отвечай ТОЛЬКО кодом. НИКАКИХ комментариев."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.1,
@@ -496,36 +495,28 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         js_code = re.sub(r'```json\n?', '', js_code)
         js_code = re.sub(r'```\n?', '', js_code)
         
-        # ✅ Убираем комментарии и пустые строки
+        # ✅ Убираем комментарии
         lines = js_code.split('\n')
         clean_lines = []
         for line in lines:
-            # Убираем однострочные комментарии
             if line.strip().startswith('//'):
                 continue
-            # Убираем многострочные комментарии
             if line.strip().startswith('/*') or line.strip().startswith('*'):
                 continue
-            # Убираем пустые строки
             if line.strip() == '':
                 continue
             clean_lines.append(line)
         js_code = '\n'.join(clean_lines).strip()
         
-        # Проверяем, что код не пустой
         if not js_code or len(js_code) < 5:
             await update.message.reply_text(
                 "⚠️ *Не удалось сгенерировать код.*\n"
-                "Попробуй переформулировать команду.\n\n"
-                "💡 *Примеры:*\n"
-                "/ai найди твиты про войну\n"
-                "/ai сколько твитов\n"
-                "/ai лайкни первый твит",
+                "Попробуй переформулировать команду.",
                 parse_mode='Markdown'
             )
             return
         
-        # ✅ ВЫПОЛНЯЕМ КОД
+        # ✅ ВЫПОЛНЯЕМ КОД (как /eval)
         await update.message.reply_text(
             f"⚡ *Выполняю код:*\n"
             f"```javascript\n{js_code[:400]}\n```",
@@ -578,6 +569,7 @@ def main():
     application.add_handler(CommandHandler("screen", screen))
     application.add_handler(CommandHandler("search", search))
     application.add_handler(CommandHandler("getbaby", getbaby))
+    application.add_handler(CommandHandler("eval", evaluate_js))
     application.add_handler(CommandHandler("ai", ai_command))
     
     application.add_error_handler(error_handler)
