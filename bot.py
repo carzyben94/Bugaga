@@ -1,5 +1,5 @@
 import os
-import logging 
+import logging
 import asyncio
 import base64
 import json
@@ -377,8 +377,9 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 const ids = {};
                 document.querySelectorAll('[data-testid]').forEach(el => {
                     const id = el.dataset.testid;
-                    if (!ids[id]) ids[id] = 0;
-                    ids[id]++;
+                    if (id) {
+                        ids[id] = (ids[id] || 0) + 1;
+                    }
                 });
                 return {
                     url: window.location.href,
@@ -394,10 +395,10 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         Ты — агент по автоматизации X.com (Twitter).
         
         СТРАНИЦА:
-        URL: {page_info['url']}
-        Title: {page_info['title']}
-        Доступные data-testid: {json.dumps(page_info['testids'], ensure_ascii=False)}
-        Твитов на странице: {page_info['tweet_count']}
+        URL: {page_info.get('url', 'неизвестно')}
+        Title: {page_info.get('title', 'неизвестно')}
+        Доступные data-testid: {json.dumps(page_info.get('testids', {}), ensure_ascii=False)}
+        Твитов на странице: {page_info.get('tweet_count', 0)}
         
         ЗАДАЧА: {command}
         
