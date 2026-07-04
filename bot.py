@@ -8,6 +8,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 from pydoll.browser import Chrome
 from pydoll.browser.options import ChromiumOptions
+from pydoll.extractor import ExtractionModel, Field
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -37,6 +38,27 @@ X_COOKIES = [
 ]
 
 user_browsers = {}
+
+# ==================== МОДЕЛИ ====================
+
+def clean_text(text):
+    """Очищает текст от мусора (по документации Pydoll)"""
+    if not text:
+        return ""
+    # Заменяем неразрывные пробелы на обычные
+    text = text.replace('\u00a0', ' ')
+    # Заменяем переносы строк на пробелы
+    text = text.replace('\n', ' ')
+    # Убираем лишние пробелы
+    text = ' '.join(text.split())
+    return text
+
+class Tweet(ExtractionModel):
+    text: str = Field(
+        selector='div[data-testid="tweetText"]',
+        default="[текст не найден]",
+        transform=clean_text
+    )
 
 # ==================== МЕНЮ ====================
 
@@ -141,7 +163,7 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
-# ==================== ПОИСК (ТОЧНЫЙ ПАРСИНГ) ====================
+# ==================== ПОИСК ====================
 
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -163,22 +185,12 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await tab.go_to(f'https://x.com/search?q={query}&src=typed_query')
         await asyncio.sleep(3)
         
-        # ✅ ТОЧНЫЙ ПАРСИНГ через execute_script + innerText
-        tweets = await tab.execute_script("""
-            (function() {
-                const elements = document.querySelectorAll('div[data-testid="tweetText"]');
-                const result = [];
-                elements.forEach(el => {
-                    const text = el.innerText || el.textContent || '';
-                    if (text.trim()) {
-                        result.push(text);
-                    }
-                });
-                return result;
-            })()
-        """)
+        tweets = await tab.extract_all(
+            Tweet,
+            scope='article[data-testid="tweet"]',
+            timeout=10
+        )
         
-        # Скриншот
         screenshot_base64 = await asyncio.wait_for(
             tab.take_screenshot(as_base64=True),
             timeout=30.0
@@ -194,7 +206,7 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply = f"📊 Найдено {count} твитов\n\n"
             
             for i, tweet in enumerate(tweets[:20], 1):
-                text = tweet.strip()
+                text = tweet.text
                 if len(text) > 600:
                     text = text[:600] + '...'
                 reply += f"{i}. {text}\n\n"
@@ -202,7 +214,6 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if count > 20:
                 reply += f"... и ещё {count - 20} твитов"
             
-            # Отправка с учётом лимита 4096 символов
             if len(reply) > 4096:
                 parts = []
                 current = ""
