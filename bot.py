@@ -3,6 +3,7 @@ import logging
 import asyncio
 import base64
 import json
+import re
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -41,22 +42,25 @@ user_browsers = {}
 
 # ==================== МОДЕЛИ ====================
 
-def clean_text(text):
-    """Очищает текст от мусора"""
-    if not text:
-        return ""
-    text = text.replace('\u00a0', ' ')
-    text = text.replace('\n', ' ')
-    text = ' '.join(text.split())
-    return text
-
 class Tweet(ExtractionModel):
     text: str = Field(
         selector='div[data-testid="tweetText"]',
-        attribute='innerText',  # ✅ Явно указываем атрибут (по документации)
-        default="[текст не найден]",
-        transform=clean_text
+        default="[текст не найден]"
     )
+
+# ==================== ФУНКЦИИ ====================
+
+def fix_text(text):
+    """Исправляет слипшиеся слова"""
+    text = re.sub(r'([а-яё])([А-ЯЁ])', r'\1 \2', text)
+    text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
+    text = re.sub(r'([А-ЯЁ])([А-ЯЁ][а-яё])', r'\1 \2', text)
+    text = re.sub(r'([«»"\'])([А-Яа-яA-Za-z])', r'\1 \2', text)
+    text = re.sub(r'([А-Яа-яA-Za-z])([«»"\'])', r'\1 \2', text)
+    text = re.sub(r'([—–])([А-Яа-яA-Za-z])', r'\1 \2', text)
+    text = re.sub(r'([А-Яа-яA-Za-z])([—–])', r'\1 \2', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
 
 # ==================== МЕНЮ ====================
 
@@ -204,7 +208,7 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply = f"📊 Найдено {count} твитов\n\n"
             
             for i, tweet in enumerate(tweets[:20], 1):
-                text = tweet.text
+                text = fix_text(tweet.text)
                 if len(text) > 600:
                     text = text[:600] + '...'
                 reply += f"{i}. {text}\n\n"
