@@ -29,13 +29,51 @@ if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен!")
 
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
+AGNES_BASE_URL = os.environ.get("AGNES_BASE_URL", "https://apihub.agnes-ai.com/v1")
 
 agnes_client = None
 if AGNES_API_KEY:
-    agnes_client = AsyncOpenAI(
-        api_key=AGNES_API_KEY,
-        base_url="https://apihub.agnes-ai.com/v1"
-    )
+    try:
+        agnes_client = AsyncOpenAI(
+            api_key=AGNES_API_KEY,
+            base_url=AGNES_BASE_URL
+        )
+        logger.info(f"✅ Agnes AI клиент инициализирован с URL: {AGNES_BASE_URL}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка инициализации Agnes AI: {e}")
+
+# Список моделей для проверки
+AI_MODELS = [
+    "agnes-2.0-flash",
+    "agnes-vision",
+    "agnes-2.0",
+    "agnes-flash",
+    "gpt-4-vision-preview"
+]
+
+# Функция для проверки доступных моделей
+async def test_models():
+    """Проверяет доступные модели Agnes AI"""
+    if not agnes_client:
+        return []
+    
+    available_models = []
+    for model in AI_MODELS:
+        try:
+            response = await asyncio.wait_for(
+                agnes_client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": "Test"}],
+                    max_tokens=1
+                ),
+                timeout=5.0
+            )
+            available_models.append(model)
+            logger.info(f"✅ Модель доступна: {model}")
+        except Exception as e:
+            logger.warning(f"❌ Модель {model} не доступна: {e}")
+    
+    return available_models
 
 CHROME_PATH = '/usr/bin/chromium'
 
@@ -500,12 +538,30 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.delete()
                 await query.message.reply_text("👁️ Анализирую страницу...")
                 
+                if not agnes_client:
+                    await query.message.reply_text("❌ Agnes AI не инициализирован. Проверь API ключ.")
+                    return
+                
                 screenshot_base64 = await tab.take_screenshot(as_base64=True)
+                
+                # Проверяем доступные модели
+                available_models = await test_models()
+                if not available_models:
+                    await query.message.reply_text(
+                        "❌ Нет доступных моделей Agnes AI.\n"
+                        "Проверь API ключ и Base URL.\n"
+                        f"Текущий URL: {AGNES_BASE_URL}"
+                    )
+                    return
+                
+                # Используем первую доступную модель
+                model_to_use = available_models[0]
+                logger.info(f"Использую модель: {model_to_use}")
                 
                 try:
                     response = await asyncio.wait_for(
                         agnes_client.chat.completions.create(
-                            model="agnes-2.0-flash",
+                            model=model_to_use,
                             messages=[
                                 {"role": "system", "content": "Ты — эксперт по анализу интерфейсов. Отвечай кратко, просто списком."},
                                 {"role": "user", "content": [
@@ -532,10 +588,19 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             max_tokens=500,
                             temperature=0.1
                         ),
-                        timeout=25.0
+                        timeout=30.0
                     )
                 except asyncio.TimeoutError:
-                    await query.message.reply_text("⏰ AI не ответил за 25 секунд. Попробуй ещё раз.")
+                    await query.message.reply_text("⏰ AI не ответил за 30 секунд. Попробуй ещё раз.")
+                    return
+                except Exception as e:
+                    await query.message.reply_text(
+                        f"❌ Ошибка AI: {str(e)[:200]}\n\n"
+                        f"Проверь:\n"
+                        f"1. API ключ (AGNES_API_KEY)\n"
+                        f"2. Base URL: {AGNES_BASE_URL}\n"
+                        f"3. Модель: {model_to_use}"
+                    )
                     return
                 
                 result = response.choices[0].message.content
@@ -585,10 +650,22 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.delete()
                 await query.message.reply_text("📸 Делаю скриншот и анализирую...")
                 
+                if not agnes_client:
+                    await query.message.reply_text("❌ Agnes AI не инициализирован.")
+                    return
+                
                 screenshot_base64 = await tab.take_screenshot(as_base64=True)
                 
+                # Проверяем доступные модели
+                available_models = await test_models()
+                if not available_models:
+                    await query.message.reply_text("❌ Нет доступных моделей Agnes AI.")
+                    return
+                
+                model_to_use = available_models[0]
+                
                 response = await agnes_client.chat.completions.create(
-                    model="agnes-2.0-flash",
+                    model=model_to_use,
                     messages=[
                         {"role": "system", "content": "Ты — эксперт по анализу скриншотов. Верни ТОЛЬКО JSON с координатами."},
                         {"role": "user", "content": [
@@ -619,12 +696,24 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.delete()
                 await query.message.reply_text("📸 Делаю скриншот...")
                 
+                if not agnes_client:
+                    await query.message.reply_text("❌ Agnes AI не инициализирован.")
+                    return
+                
                 screenshot_base64 = await tab.take_screenshot(as_base64=True)
                 
                 await query.message.reply_text("🧠 Ищу кнопку лайка...")
                 
+                # Проверяем доступные модели
+                available_models = await test_models()
+                if not available_models:
+                    await query.message.reply_text("❌ Нет доступных моделей Agnes AI.")
+                    return
+                
+                model_to_use = available_models[0]
+                
                 response = await agnes_client.chat.completions.create(
-                    model="agnes-2.0-flash",
+                    model=model_to_use,
                     messages=[
                         {"role": "system", "content": "Ты — эксперт по анализу скриншотов. Верни ТОЛЬКО два числа: x и y координаты центра кнопки, разделённые запятой."},
                         {"role": "user", "content": [
@@ -1000,6 +1089,14 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
+        # Проверяем доступные модели
+        available_models = await test_models()
+        if not available_models:
+            await update.message.reply_text("❌ Нет доступных моделей Agnes AI.")
+            return
+        
+        model_to_use = available_models[0]
+        
         prompt = f"""
         Ты — агент по автоматизации X.com (Twitter).
         
@@ -1020,7 +1117,7 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         response = await asyncio.wait_for(
             agnes_client.chat.completions.create(
-                model="agnes-2.0-flash",
+                model=model_to_use,
                 messages=[
                     {"role": "system", "content": "Ты — эксперт по JavaScript. Отвечай ТОЛЬКО кодом. НИКАКИХ комментариев."},
                     {"role": "user", "content": prompt}
@@ -1090,6 +1187,33 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
+# ==================== КОМАНДА /test_ai ====================
+
+async def test_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Тестирует подключение к Agnes AI"""
+    await update.message.reply_text("🔍 Проверяю подключение к Agnes AI...")
+    
+    if not agnes_client:
+        await update.message.reply_text("❌ Agnes AI не инициализирован. Проверь API ключ.")
+        return
+    
+    try:
+        available_models = await test_models()
+        if available_models:
+            reply = "✅ Доступные модели:\n\n"
+            for model in available_models:
+                reply += f"• {model}\n"
+            reply += f"\n🌐 Base URL: {AGNES_BASE_URL}"
+            await update.message.reply_text(reply)
+        else:
+            await update.message.reply_text(
+                f"❌ Нет доступных моделей.\n"
+                f"🌐 Base URL: {AGNES_BASE_URL}\n"
+                f"Проверь API ключ."
+            )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
 # ==================== ОБРАБОТЧИК ОШИБОК ====================
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1111,6 +1235,7 @@ def main():
     application.add_handler(CommandHandler("eval", evaluate_js))
     application.add_handler(CommandHandler("ai", ai_command))
     application.add_handler(CommandHandler("click_num", click_num))
+    application.add_handler(CommandHandler("test_ai", test_ai))  # Новая команда для теста
     
     application.add_handler(CallbackQueryHandler(joystick_callback))
     
