@@ -110,7 +110,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--headless=new")
         options.add_argument("--disable-gpu")
-        options.add_argument("--blink-settings=imagesEnabled=false")
+        # ✅ Убрал блокировку изображений
         options.binary_location = CHROME_PATH
         
         browser = Chrome(options=options)
@@ -138,7 +138,6 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def analyze_page(tab, page_name):
     """Анализирует страницу и возвращает структуру"""
     
-    # ✅ Правильно: свойства без скобок, но с await
     structure = {
         'url': await tab.current_url,
         'title': await tab.title,
@@ -170,49 +169,22 @@ async def analyze_page(tab, page_name):
         ('main_container', 'main'),
         ('sidebar', 'aside'),
         ('header', 'header'),
+        ('footer', 'footer'),
     ]
     
-    # Специфичные селекторы для разных страниц
-    page_selectors = {
-        'profile': [
-            ('profile_name', 'div[data-testid="UserProfileHeader_Items"] h2'),
-            ('profile_bio', 'div[data-testid="UserProfileHeader_Items"] span'),
-            ('profile_followers', 'a[href*="/followers"] span'),
-            ('profile_following', 'a[href*="/following"] span'),
-        ],
-        'home': [
-            ('whats_happening', 'div[data-testid="tweetTextarea"]'),
-        ],
-        'explore': [
-            ('trends', 'div[data-testid="trend"]'),
-            ('trend_name', 'div[data-testid="trend"] span'),
-            ('trend_count', 'div[data-testid="trend"] span:last-child'),
-        ],
-        'search': [
-            ('search_results', 'div[data-testid="cellInnerDiv"]'),
-        ],
-        'messages': [
-            ('message_input', 'div[data-testid="dmComposerTextInput"]'),
-            ('send_button', 'button[data-testid="sendButton"]'),
-        ],
-        'notifications': [
-            ('notification', 'div[data-testid="notification"]'),
-            ('notification_text', 'div[data-testid="notification"] span'),
-        ],
-    }
-    
-    # Проверяем базовые селекторы
+    # Проверяем все селекторы
     for name, selector in base_selectors:
         try:
             elements = await tab.find_all(selector)
             if elements:
                 count = len(elements)
                 first_text = ''
-                if count > 0 and elements[0]:
+                if count > 0:
                     try:
-                        first_text = await elements[0].text()
-                        if len(first_text) > 100:
-                            first_text = first_text[:100] + '...'
+                        if hasattr(elements[0], 'text'):
+                            first_text = await elements[0].text()
+                            if len(first_text) > 100:
+                                first_text = first_text[:100] + '...'
                     except:
                         first_text = '[текст не получен]'
                 
@@ -223,31 +195,6 @@ async def analyze_page(tab, page_name):
                 }
         except Exception as e:
             pass
-    
-    # Проверяем специфичные селекторы
-    for page_type, selectors in page_selectors.items():
-        if page_type in page_name:
-            for name, selector in selectors:
-                try:
-                    elements = await tab.find_all(selector)
-                    if elements:
-                        count = len(elements)
-                        first_text = ''
-                        if count > 0 and elements[0]:
-                            try:
-                                first_text = await elements[0].text()
-                                if len(first_text) > 100:
-                                    first_text = first_text[:100] + '...'
-                            except:
-                                first_text = '[текст не получен]'
-                        
-                        structure['elements'][name] = {
-                            'selector': selector,
-                            'count': count,
-                            'sample': first_text
-                        }
-                except Exception as e:
-                    pass
     
     return structure
 
@@ -285,10 +232,19 @@ async def explore_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             try:
                 await tab.go_to(url)
-                await asyncio.sleep(3)
+                await asyncio.sleep(5)
+                
+                # Ждём загрузки твитов
+                try:
+                    await tab.wait_for_selector('article[data-testid="tweet"]', timeout=8)
+                except:
+                    pass
                 
                 structure = await analyze_page(tab, page_name)
                 all_structures[page_name] = structure
+                
+                elements_count = len(structure.get('elements', {}))
+                await update.message.reply_text(f"  ✅ Найдено {elements_count} элементов")
                 
             except Exception as e:
                 logger.error(f"Ошибка при исследовании {page_name}: {e}")
@@ -303,7 +259,6 @@ async def explore_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         for page_name, structure in all_structures.items():
             if 'error' not in structure:
-                # Сохраняем структуру для использования
                 func_key = f"{user_key}_{page_name}"
                 generated_functions[func_key] = structure
         
@@ -383,7 +338,7 @@ async def explore_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await tab.go_to(f'https://x.com/search?q={page}&src=typed_query')
         
-        await asyncio.sleep(3)
+        await asyncio.sleep(5)
         
         structure = await analyze_page(tab, page)
         
@@ -595,7 +550,7 @@ async def go(update: Update, context: ContextTypes.DEFAULT_TYPE):
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--headless=new")
         options.add_argument("--disable-gpu")
-        options.add_argument("--blink-settings=imagesEnabled=false")
+        # ✅ Убрал блокировку изображений
         options.binary_location = CHROME_PATH
         
         if user_id in user_browsers:
