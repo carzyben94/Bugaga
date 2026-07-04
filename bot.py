@@ -56,7 +56,7 @@ X_COOKIES = [
 
 user_browsers = {}
 
-# ==================== КУРСОР С РЕЖИМАМИ ====================
+# ==================== КУРСОР ====================
 
 class CursorManager:
     def __init__(self):
@@ -106,18 +106,12 @@ def draw_cursor_on_screenshot(screenshot_bytes, cursor_x, cursor_y):
         output = BytesIO()
         image.save(output, format='PNG')
         return output.getvalue()
-    except Exception as e:
-        logger.error(f"Ошибка рисования курсора: {e}")
+    except:
         return screenshot_bytes
 
 # ==================== КНОПКИ ДЖОЙСТИКА ====================
 
 def get_joystick_keyboard(user_id=None):
-    mode_text = ""
-    if user_id and user_id in cursor_managers:
-        mode, step = cursor_managers[user_id].get_mode()
-        mode_text = f" | Шаг {step}px"
-    
     keyboard = [
         [
             InlineKeyboardButton("⬆️", callback_data="up"),
@@ -133,6 +127,10 @@ def get_joystick_keyboard(user_id=None):
         [
             InlineKeyboardButton("🖱️ Клик", callback_data="click"),
             InlineKeyboardButton("📸 Скрин", callback_data="screenshot"),
+        ],
+        [
+            InlineKeyboardButton("🏠 Home", callback_data="go_home"),
+            InlineKeyboardButton("🔍 Explore", callback_data="go_explore"),
         ],
         [
             InlineKeyboardButton("🔄 Обновить", callback_data="refresh"),
@@ -223,90 +221,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/ai Любая команда (умный eval)"
     )
     await update.message.reply_text(menu, parse_mode='Markdown')
-
-# ==================== ДЖОЙСТИК ====================
-
-async def joystick(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id in user_browsers:
-        await send_screen_with_buttons(update, user_id, "🎮 Джойстик X.com")
-    else:
-        await update.message.reply_text(
-            "❌ Сначала выполни /login",
-            reply_markup=get_joystick_keyboard()
-        )
-
-async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = update.effective_user.id
-    action = query.data
-    
-    if user_id not in user_browsers:
-        await query.edit_message_text("❌ Сначала выполни /login")
-        return
-    
-    _, tab = user_browsers[user_id]
-    cursor = get_cursor(user_id)
-    
-    try:
-        if action == "up":
-            cursor.move(0, -1)
-            await send_screen_with_buttons(update, user_id, "⬆️ Вверх")
-        
-        elif action == "down":
-            cursor.move(0, 1)
-            await send_screen_with_buttons(update, user_id, "⬇️ Вниз")
-        
-        elif action == "left":
-            cursor.move(-1, 0)
-            await send_screen_with_buttons(update, user_id, "⬅️ Влево")
-        
-        elif action == "right":
-            cursor.move(1, 0)
-            await send_screen_with_buttons(update, user_id, "➡️ Вправо")
-        
-        elif action == "reset":
-            try:
-                viewport = await tab.execute_script("return { width: window.innerWidth, height: window.innerHeight }")
-                cursor.x = viewport['width'] // 2
-                cursor.y = viewport['height'] // 2
-            except:
-                cursor.x, cursor.y = 500, 300
-            await send_screen_with_buttons(update, user_id, "🔄 Курсор сброшен")
-        
-        elif action == "click":
-            try:
-                await tab.mouse.click(cursor.x, cursor.y, humanize=True)
-                await send_screen_with_buttons(update, user_id, f"🖱️ Клик по ({cursor.x}, {cursor.y})")
-            except Exception as e:
-                await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
-        
-        elif action == "screenshot":
-            await send_screen_with_buttons(update, user_id, "📸 Скриншот")
-        
-        elif action == "refresh":
-            await query.edit_message_text("🔄 Обновляю страницу...")
-            await tab.refresh()
-            await asyncio.sleep(2)
-            await send_screen_with_buttons(update, user_id, "✅ Страница обновлена")
-        
-        # ===== РЕЖИМЫ =====
-        elif action == "mode_1":
-            cursor.set_mode(1)
-            await send_screen_with_buttons(update, user_id, "🔵 Режим: Шаг 10px (точный)")
-        
-        elif action == "mode_2":
-            cursor.set_mode(2)
-            await send_screen_with_buttons(update, user_id, "🔴 Режим: Шаг 40px (быстрый)")
-        
-        else:
-            await send_screen_with_buttons(update, user_id, "❌ Неизвестная команда")
-    
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:300]}")
 
 # ==================== ЛОГИН ====================
 
@@ -414,6 +328,106 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+
+# ==================== ДЖОЙСТИК ====================
+
+async def joystick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id in user_browsers:
+        await send_screen_with_buttons(update, user_id, "🎮 Джойстик X.com")
+    else:
+        await update.message.reply_text(
+            "❌ Сначала выполни /login",
+            reply_markup=get_joystick_keyboard()
+        )
+
+async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    action = query.data
+    
+    if user_id not in user_browsers:
+        await query.edit_message_text("❌ Сначала выполни /login")
+        return
+    
+    _, tab = user_browsers[user_id]
+    cursor = get_cursor(user_id)
+    
+    try:
+        if action == "up":
+            cursor.move(0, -1)
+            await send_screen_with_buttons(update, user_id, "⬆️ Вверх")
+        
+        elif action == "down":
+            cursor.move(0, 1)
+            await send_screen_with_buttons(update, user_id, "⬇️ Вниз")
+        
+        elif action == "left":
+            cursor.move(-1, 0)
+            await send_screen_with_buttons(update, user_id, "⬅️ Влево")
+        
+        elif action == "right":
+            cursor.move(1, 0)
+            await send_screen_with_buttons(update, user_id, "➡️ Вправо")
+        
+        elif action == "reset":
+            try:
+                viewport = await tab.execute_script("return { width: window.innerWidth, height: window.innerHeight }")
+                cursor.x = viewport['width'] // 2
+                cursor.y = viewport['height'] // 2
+            except:
+                cursor.x, cursor.y = 500, 300
+            await send_screen_with_buttons(update, user_id, "🔄 Курсор сброшен")
+        
+        elif action == "click":
+            try:
+                await tab.mouse.click(cursor.x, cursor.y, humanize=True)
+                await send_screen_with_buttons(update, user_id, f"🖱️ Клик по ({cursor.x}, {cursor.y})")
+            except Exception as e:
+                await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
+        
+        elif action == "screenshot":
+            await send_screen_with_buttons(update, user_id, "📸 Скриншот")
+        
+        # ===== НОВЫЕ КНОПКИ HOME И EXPLORE =====
+        elif action == "go_home":
+            try:
+                await tab.mouse.click(60, 80, humanize=True)
+                await asyncio.sleep(1)
+                await send_screen_with_buttons(update, user_id, "🏠 Перешёл на Home")
+            except Exception as e:
+                await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
+        
+        elif action == "go_explore":
+            try:
+                await tab.mouse.click(60, 140, humanize=True)
+                await asyncio.sleep(1)
+                await send_screen_with_buttons(update, user_id, "🔍 Перешёл на Explore")
+            except Exception as e:
+                await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
+        
+        elif action == "refresh":
+            await query.edit_message_text("🔄 Обновляю страницу...")
+            await tab.refresh()
+            await asyncio.sleep(2)
+            await send_screen_with_buttons(update, user_id, "✅ Страница обновлена")
+        
+        elif action == "mode_1":
+            cursor.set_mode(1)
+            await send_screen_with_buttons(update, user_id, "🔵 Режим: Шаг 10px")
+        
+        elif action == "mode_2":
+            cursor.set_mode(2)
+            await send_screen_with_buttons(update, user_id, "🔴 Режим: Шаг 40px")
+        
+        else:
+            await send_screen_with_buttons(update, user_id, "❌ Неизвестная команда")
+    
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:300]}")
 
 # ==================== ПОИСК ====================
 
