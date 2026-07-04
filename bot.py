@@ -30,7 +30,6 @@ if not TOKEN:
 
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
 
-# Создаём клиент для Agnes AI
 agnes_client = None
 if AGNES_API_KEY:
     agnes_client = AsyncOpenAI(
@@ -131,6 +130,7 @@ def get_joystick_keyboard(user_id=None):
         [
             InlineKeyboardButton("🏠 Home", callback_data="go_home"),
             InlineKeyboardButton("🔍 Explore", callback_data="go_explore"),
+            InlineKeyboardButton("👤 Профиль", callback_data="go_profile"),
         ],
         [
             InlineKeyboardButton("🔄 Обновить", callback_data="refresh"),
@@ -391,7 +391,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif action == "screenshot":
             await send_screen_with_buttons(update, user_id, "📸 Скриншот")
         
-        # ===== НОВЫЕ КНОПКИ HOME И EXPLORE =====
+        # ===== НАВИГАЦИЯ =====
         elif action == "go_home":
             try:
                 await tab.mouse.click(60, 80, humanize=True)
@@ -405,6 +405,14 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await tab.mouse.click(60, 140, humanize=True)
                 await asyncio.sleep(1)
                 await send_screen_with_buttons(update, user_id, "🔍 Перешёл на Explore")
+            except Exception as e:
+                await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
+        
+        elif action == "go_profile":
+            try:
+                await tab.mouse.click(60, 380, humanize=True)
+                await asyncio.sleep(1)
+                await send_screen_with_buttons(update, user_id, "👤 Перешёл в Профиль")
             except Exception as e:
                 await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
         
