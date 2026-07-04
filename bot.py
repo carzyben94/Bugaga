@@ -71,15 +71,12 @@ def truncate_text(text, max_length=600):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     menu = (
-        "🤖 *Бот для X.com*\n\n"
-        "🔐 *Авторизация*\n"
         "/login — Войти в X.com\n"
         "/close — Закрыть браузер\n"
-        "/screen — Скриншот текущей страницы\n\n"
-        "🔍 *Поиск*\n"
+        "/screen — Скриншот текущей страницы\n"
         "/search <текст> — Поиск твитов"
     )
-    await update.message.reply_text(menu, parse_mode='Markdown')
+    await update.message.reply_text(menu)
 
 # ==================== АВТОРИЗАЦИЯ ====================
 
