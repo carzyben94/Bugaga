@@ -72,48 +72,48 @@ user_browsers = {}
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Приветственное меню (часть 1 - основные команды)"""
     menu1 = (
-        "🤖 *Бот для автоматизации*\n\n"
-        "🔐 *Авторизация*\n"
+        "🤖 Бот для автоматизации\n\n"
+        "🔐 Авторизация\n"
         "/login — Войти в X.com\n\n"
-        "🔍 *Навигация*\n"
+        "🔍 Навигация\n"
         "/search <текст> — Поиск на X.com\n"
         "/go <url> — Открыть сайт\n"
         "/scroll <top|bottom|px> — Прокрутка\n\n"
-        "📸 *Скриншоты*\n"
+        "📸 Скриншоты\n"
         "/screen — Скриншот страницы\n\n"
-        "🔎 *Элементы*\n"
+        "🔎 Элементы\n"
         "/find <selector> — Найти элемент\n"
         "/find_all <selector> — Найти все\n"
         "/click <selector> — Кликнуть\n"
         "/type <selector> <text> — Ввести текст\n"
         "/wait <selector> — Ожидать элемент\n"
         "/scroll_to <selector> — Прокрутить к элементу\n\n"
-        "📌 *Продвинутые команды:* /start2"
+        "📌 Продвинутые команды: /start2"
     )
     
-    await update.message.reply_text(menu1, parse_mode='Markdown')
+    await update.message.reply_text(menu1)
 
 async def start2(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает только продвинутые команды (часть 2)"""
     menu2 = (
-        "🌑 *Shadow DOM*\n"
+        "🌑 Shadow DOM\n"
         "/shadow <selector> — Найти в Shadow DOM\n"
         "/shadow_all <selector> — Найти все в Shadow DOM\n"
         "/shadow_click <selector> — Кликнуть в Shadow DOM\n"
         "/shadow_type <selector> <text> — Ввести в Shadow DOM\n\n"
-        "🌐 *Сеть*\n"
+        "🌐 Сеть\n"
         "/network — Показать сетевые запросы\n"
         "/block_images — Блокировать изображения\n"
         "/unblock_images — Разблокировать изображения\n\n"
-        "🍪 *Куки*\n"
+        "🍪 Куки\n"
         "/cookie {\"name\":\"value\"} — Установить куки\n\n"
-        "⚡ *Другое*\n"
+        "⚡ Другое\n"
         "/eval <js> — Выполнить JS\n"
         "/parse — Получить цитаты\n\n"
-        "📖 *Селекторы:* .class #id div > p"
+        "📖 Селекторы: .class #id div > p"
     )
     
-    await update.message.reply_text(menu2, parse_mode='Markdown')
+    await update.message.reply_text(menu2)
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Автоматический вход на X.com с куками"""
@@ -884,7 +884,7 @@ def main():
     
     # Основные команды
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("start2", start2))  # ← ВОТ ЭТО ВАЖНО!
+    application.add_handler(CommandHandler("start2", start2))
     application.add_handler(CommandHandler("login", login))
     application.add_handler(CommandHandler("search", search_x))
     application.add_handler(CommandHandler("go", go))
@@ -920,7 +920,7 @@ def main():
     else:
         logger.error(f"❌ Браузер не найден: {CHROME_PATH}")
     
-    logger.info("🚀 Бот запущен с 100% функционалом Pydoll!")
+    logger.info("🚀 Бот запущен!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
