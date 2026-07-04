@@ -133,6 +133,9 @@ def get_joystick_keyboard(user_id=None):
             InlineKeyboardButton("👤 Профиль", callback_data="go_profile"),
         ],
         [
+            InlineKeyboardButton("🔎 Поиск", callback_data="go_search"),
+        ],
+        [
             InlineKeyboardButton("🔄 Обновить", callback_data="refresh"),
         ],
         [
@@ -416,6 +419,21 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
         
+        # ===== ПОИСК =====
+        elif action == "go_search":
+            try:
+                # Шаг 1: Переход в Explore
+                await tab.mouse.click(60, 140, humanize=True)
+                await asyncio.sleep(1)
+                
+                # Шаг 2: Клик в поле поиска
+                await tab.mouse.click(380, 40, humanize=True)
+                await asyncio.sleep(0.5)
+                
+                await send_screen_with_buttons(update, user_id, "🔎 Поле поиска активно\nВведите текст через /type")
+            except Exception as e:
+                await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
+        
         elif action == "refresh":
             await query.edit_message_text("🔄 Обновляю страницу...")
             await tab.refresh()
@@ -437,7 +455,31 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:300]}")
 
-# ==================== ПОИСК ====================
+# ==================== КОМАНДА /type ====================
+
+async def type_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Вводит текст в активное поле"""
+    if not context.args:
+        await update.message.reply_text("❌ Укажи текст для ввода\nПример: /type python")
+        return
+    
+    text = ' '.join(context.args)
+    user_id = update.effective_user.id
+    
+    if user_id not in user_browsers:
+        await update.message.reply_text("❌ Сначала выполни /login")
+        return
+    
+    _, tab = user_browsers[user_id]
+    
+    try:
+        # Вводим текст в активное поле
+        await tab.type_text(text, humanize=True)
+        await update.message.reply_text(f"✅ Введён текст: {text}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+
+# ==================== ОСТАЛЬНЫЕ КОМАНДЫ ====================
 
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -794,6 +836,34 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
+# ==================== МОДЕЛИ ====================
+
+class Tweet(ExtractionModel):
+    text: str = Field(
+        selector='div[data-testid="tweetText"]',
+        default="[текст не найден]"
+    )
+
+class TweetPhoto(ExtractionModel):
+    photo: str = Field(
+        selector='img[src*="media"]',
+        attribute='src',
+        default=""
+    )
+
+# ==================== ФУНКЦИИ ====================
+
+def fix_text(text):
+    text = re.sub(r'([а-яё])([А-ЯЁ])', r'\1 \2', text)
+    text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
+    text = re.sub(r'([А-ЯЁ])([А-ЯЁ][а-яё])', r'\1 \2', text)
+    text = re.sub(r'([«»"\'])([А-Яа-яA-Za-z])', r'\1 \2', text)
+    text = re.sub(r'([А-Яа-яA-Za-z])([«»"\'])', r'\1 \2', text)
+    text = re.sub(r'([—–])([А-Яа-яA-Za-z])', r'\1 \2', text)
+    text = re.sub(r'([А-Яа-яA-Za-z])([—–])', r'\1 \2', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
 # ==================== ОБРАБОТЧИК ОШИБОК ====================
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -811,6 +881,7 @@ def main():
     application.add_handler(CommandHandler("screen", screen))
     application.add_handler(CommandHandler("search", search))
     application.add_handler(CommandHandler("getbaby", getbaby))
+    application.add_handler(CommandHandler("type", type_text))
     application.add_handler(CommandHandler("eval", evaluate_js))
     application.add_handler(CommandHandler("ai", ai_command))
     
