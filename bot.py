@@ -100,14 +100,16 @@ async def evaluate_js(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, tab = user_browsers[user_id]
         result = await tab.execute_script(js_code)
         
-        # ✅ Извлекаем только значение
-        if isinstance(result, dict) and 'result' in result:
-            if isinstance(result['result'], dict) and 'value' in result['result']:
-                result = result['result']['value']
+        # ✅ Извлекаем value из ответа Pydoll
+        if isinstance(result, dict):
+            if 'result' in result and isinstance(result['result'], dict):
+                value = result['result'].get('value')
+                if value is not None:
+                    result = value
             elif 'value' in result:
                 result = result['value']
         
-        # Если результат — список или словарь, красиво форматируем
+        # Если результат — список/словарь, красиво форматируем
         if isinstance(result, (list, dict)):
             result = json.dumps(result, ensure_ascii=False, indent=2)
         
