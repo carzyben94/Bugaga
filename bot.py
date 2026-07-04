@@ -3,7 +3,7 @@ import logging
 import asyncio
 import base64
 import json
-import aiohttp
+import re
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -42,37 +42,24 @@ user_browsers = {}
 
 # ==================== МОДЕЛИ ====================
 
-class TweetMedia(ExtractionModel):
-    """Модель медиа-вложения (фото и видео)"""
-    type: str = Field(
-        selector='[data-testid="tweetPhoto"], [data-testid="tweetVideo"]',
-        default="unknown"
-    )
-    url: str = Field(
-        selector='img, video',
-        attribute='src',
-        default="[ссылка не найдена]"
-    )
-    alt: str = Field(
-        selector='img',
-        attribute='alt',
-        default="[описание отсутствует]"
-    )
-
 class Tweet(ExtractionModel):
-    """Модель твита с фото"""
+    """Модель твита"""
     text: str = Field(
         selector='div[data-testid="tweetText"]',
         default="[текст не найден]"
     )
-    media: list[TweetMedia] = Field(
-        selector='[data-testid="tweetPhoto"], [data-testid="tweetVideo"]',
-        default=[]
-    )
 
 # ==================== ФУНКЦИИ ====================
 
-def truncate_text(text, max_length=300):
+def fix_text(text):
+    """Исправляет слипшиеся слова (чтоИИ → что ИИ)"""
+    # Разделяем слова, где заглавная буква после строчной (русские)
+    text = re.sub(r'([а-я])([А-Я])', r'\1 \2', text)
+    # Разделяем слова, где заглавная буква после буквы (латиница)
+    text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
+    return text
+
+def truncate_text(text, max_length=600):
     """Обрезает текст по словам, не разрывая слова"""
     if len(text) <= max_length:
         return text
@@ -81,17 +68,6 @@ def truncate_text(text, max_length=300):
     if last_space > 0:
         return truncated[:last_space] + '...'
     return truncated + '...'
-
-async def download_image(url):
-    """Скачивает изображение по ссылке"""
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=10) as response:
-                if response.status == 200:
-                    return await response.read()
-    except:
-        pass
-    return None
 
 # ==================== МЕНЮ ====================
 
@@ -102,7 +78,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/login — Войти в X.com\n"
         "/screen — Скриншот текущей страницы\n\n"
         "🔍 *Поиск*\n"
-        "/search <текст> — Поиск твитов с фото"
+        "/search <текст> — Поиск твитов"
     )
     await update.message.reply_text(menu, parse_mode='Markdown')
 
@@ -179,7 +155,7 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================== ПОИСК ====================
 
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Поиск твитов на X.com с отправкой фото"""
+    """Поиск твитов на X.com"""
     if not context.args:
         await update.message.reply_text("❌ Укажи текст для поиска\nПример: /search python")
         return
@@ -218,33 +194,18 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if tweets:
             count = len(tweets)
+            reply = f"📊 Найдено {count} твитов\n\n"
             
-            # Отправляем текст с твитами
-            if count > 0:
-                reply = f"📊 Найдено {count} твитов\n\n"
-                
-                for i, tweet in enumerate(tweets[:10], 1):
-                    # Обрезаем текст по словам
-                    text = truncate_text(tweet.text, 300)
-                    reply += f"{i}. {text}\n\n"
-                    
-                    # Отправляем фото из твита
-                    if tweet.media:
-                        for media in tweet.media[:3]:
-                            if media.url and media.url != "[ссылка не найдена]":
-                                img_data = await download_image(media.url)
-                                if img_data:
-                                    await update.message.reply_photo(
-                                        photo=img_data,
-                                        caption=f"📸 Фото из твита {i}"
-                                    )
-                
-                if count > 10:
-                    reply += f"... и ещё {count - 10} твитов"
-                
-                await update.message.reply_text(reply)
-            else:
-                await update.message.reply_text("😕 Твиты не найдены")
+            for i, tweet in enumerate(tweets[:10], 1):
+                # Исправляем и обрезаем текст
+                text = fix_text(tweet.text)
+                text = truncate_text(text, 600)
+                reply += f"{i}. {text}\n\n"
+            
+            if count > 10:
+                reply += f"... и ещё {count - 10} твитов"
+            
+            await update.message.reply_text(reply)
         else:
             await update.message.reply_text("😕 Твиты не найдены")
             
