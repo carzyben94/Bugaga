@@ -21,7 +21,7 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен!")
 
-# ==================== МОДЕЛИ ====================
+# ==================== МОДЕЛИ (Pydantic) ====================
 
 class Quote(ExtractionModel):
     text: str = Field(selector='.text')
@@ -51,8 +51,6 @@ X_COOKIES = [
 
 user_browsers = {}
 
-# ==================== МЕНЮ ====================
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     menu = (
         "🤖 *Исследователь X.com*\n\n"
@@ -65,8 +63,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/eval <js> — Выполнить JavaScript"
     )
     await update.message.reply_text(menu, parse_mode='Markdown')
-
-# ==================== АВТОРИЗАЦИЯ ====================
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -101,8 +97,6 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка входа: {str(e)[:300]}")
 
-# ==================== ИССЛЕДОВАНИЕ СТРАНИЦЫ ====================
-
 async def explore_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Полное исследование страницы с сохранением в файл"""
     user_id = update.effective_user.id
@@ -120,7 +114,6 @@ async def explore_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
         url = await tab.current_url
         title = await tab.title
         
-        # Все data-testid
         all_testids = await tab.execute_script("""
             (function() {
                 const ids = new Set();
@@ -131,7 +124,6 @@ async def explore_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
             })()
         """)
         
-        # Основные элементы
         main_selectors = [
             ('Твиты', 'article[data-testid="tweet"]'),
             ('Текст твита', 'div[data-testid="tweetText"]'),
@@ -170,7 +162,6 @@ async def explore_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 pass
         
-        # Пример твита
         tweet_sample = await tab.execute_script("""
             (function() {
                 const tweet = document.querySelector('article[data-testid="tweet"]');
@@ -181,7 +172,7 @@ async def explore_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
             })()
         """)
         
-        # ✅ Исправлено: find() с find_all=True и циклом
+        # ✅ ИСПРАВЛЕНО: сбор фото через цикл
         images = await tab.find(tag_name='img', src_contains='media', find_all=True)
         image_urls = []
         count = 0
@@ -193,7 +184,6 @@ async def explore_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 image_urls.append(src)
             count += 1
         
-        # Формируем отчёт
         report_lines = []
         report_lines.append("=" * 60)
         report_lines.append("🔍 ПОЛНОЕ ИССЛЕДОВАНИЕ СТРАНИЦЫ")
@@ -242,12 +232,10 @@ async def explore_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         report_text = '\n'.join(report_lines)
         
-        # Сохраняем в файл
         filename = f"explore_{username}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
         with open(filename, 'w', encoding='utf-8') as f:
             f.write(report_text)
         
-        # Короткая версия для чата
         short_reply = f"🔍 *Исследование страницы*\n\n"
         short_reply += f"📍 URL: {url}\n"
         short_reply += f"📄 Title: {title}\n\n"
@@ -270,7 +258,6 @@ async def explore_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(short_reply, parse_mode='Markdown')
         
-        # Отправляем файл
         with open(filename, 'rb') as f:
             await update.message.reply_document(
                 document=f,
@@ -278,7 +265,6 @@ async def explore_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption=f"📁 Полный лог исследования\n📍 {url}"
             )
         
-        # Скриншот
         screenshot_base64 = await asyncio.wait_for(
             tab.take_screenshot(as_base64=True),
             timeout=30.0
@@ -297,8 +283,6 @@ async def explore_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
-
-# ==================== ИССЛЕДОВАНИЕ СЕЛЕКТОРА ====================
 
 async def explore_selector(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Детальное исследование конкретного элемента"""
@@ -372,8 +356,6 @@ async def explore_selector(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
-# ==================== EVAL ====================
-
 async def evaluate_js(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text(
@@ -397,12 +379,8 @@ async def evaluate_js(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
-# ==================== ОБРАБОТЧИК ОШИБОК ====================
-
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Ошибка: {context.error}")
-
-# ==================== MAIN ====================
 
 def main():
     application = Application.builder().token(TOKEN).build()
