@@ -178,7 +178,7 @@ async def send_screen_with_buttons(update, user_id, caption="🎮 Джойсти
         
         caption_text = f"{caption}\n🖱️ Курсор: ({x}, {y}) | Шаг: {step}px"
         
-        if isinstance(update, Update) && update.callback_query:
+        if isinstance(update, Update) and update.callback_query:
             try:
                 await update.callback_query.edit_message_media(
                     media=InputMediaPhoto(
@@ -494,7 +494,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
         
-        # ===== AI ЧТО ВИДИШЬ? (ПРОСТОЙ СПИСОК) =====
+        # ===== AI ЧТО ВИДИШЬ? =====
         elif action == "ai_what_see":
             try:
                 await query.message.delete()
@@ -548,14 +548,11 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if not line:
                         continue
                     
-                    # Ищем координаты (X, Y)
                     coord_match = re.search(r'\((\d+),\s*(\d+)\)', line)
                     if coord_match:
                         x = int(coord_match.group(1))
                         y = int(coord_match.group(2))
-                        # Ищем название (все что до координат)
                         name = re.sub(r'\s*\([\d,\s]+\)\s*$', '', line).strip()
-                        # Убираем стрелку если есть
                         name = re.sub(r'\s*→\s*$', '', name)
                         if name:
                             elements.append({
@@ -577,7 +574,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     await query.message.reply_text(reply)
                 else:
-                    # Если не удалось распарсить - показываем как есть
                     await query.message.reply_text(f"👁️ Что вижу на странице:\n\n{result}")
                     
             except Exception as e:
@@ -641,12 +637,10 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 result = response.choices[0].message.content.strip()
                 
-                # Очищаем результат от лишних символов
                 result = re.sub(r'[\[\]\(\)"\']', '', result)
                 result = re.sub(r'координаты[:]?\s*', '', result, flags=re.IGNORECASE)
                 result = result.strip()
                 
-                # Извлекаем все числа
                 numbers = re.findall(r'\d+', result)
                 
                 if len(numbers) >= 2:
@@ -687,7 +681,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================== /click_num ====================
 
 async def click_num(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Кликает по элементу по номеру из списка"""
     if not context.args:
         await update.message.reply_text("❌ Укажи номер элемента\nПример: /click_num 1")
         return
