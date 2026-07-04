@@ -68,13 +68,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/explore <page> — Исследовать конкретную страницу\n"
         "/list — Показать найденные структуры\n\n"
         "⚡ Создание функций\n"
-        "/generate <name> — Создать функцию из структуры\n"
-        "/use <name> — Использовать созданную функцию\n"
-        "/functions — Показать все созданные функции\n\n"
+        "/functions — Показать все созданные функции\n"
+        "/use <name> — Использовать созданную функцию\n\n"
         "📸 Другое\n"
         "/screen — Скриншот\n"
         "/search <текст> — Поиск\n"
-        "/go <url> — Открыть сайт"
+        "/go <url> — Открыть сайт\n\n"
+        "📌 Продвинутые команды: /start2"
     )
     await update.message.reply_text(menu1)
 
@@ -93,8 +93,7 @@ async def start2(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/cookie {\"name\":\"value\"} — Установить куки\n\n"
         "⚡ Другое\n"
         "/eval <js> — Выполнить JS\n"
-        "/parse — Получить цитаты\n\n"
-        "📖 Селекторы: .class #id div > p"
+        "/parse — Получить цитаты"
     )
     await update.message.reply_text(menu2)
 
@@ -134,103 +133,15 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка входа: {str(e)[:300]}")
 
-# ==================== ГЕНЕРАЛЬНОЕ ИССЛЕДОВАНИЕ ====================
-
-async def explore_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Генеральное исследование всего X.com"""
-    user_id = update.effective_user.id
-    
-    try:
-        if user_id not in user_browsers:
-            await update.message.reply_text("❌ Сначала выполни /login")
-            return
-        
-        await update.message.reply_text("🔍 Запускаю генеральное исследование X.com...")
-        
-        _, tab = user_browsers[user_id]
-        
-        # Список всех страниц для исследования
-        pages = {
-            'home': 'https://x.com/home',
-            'explore': 'https://x.com/explore',
-            'notifications': 'https://x.com/notifications',
-            'messages': 'https://x.com/messages',
-            'profile': 'https://x.com/settings/profile',
-            'trending': 'https://x.com/explore/tabs/trending',
-            'following': 'https://x.com/i/following',
-            'search': 'https://x.com/search?q=test',
-        }
-        
-        all_structures = {}
-        
-        for page_name, url in pages.items():
-            await update.message.reply_text(f"📄 Исследую: {page_name}...")
-            
-            try:
-                await tab.go_to(url)
-                await asyncio.sleep(3)
-                
-                structure = await analyze_page(tab, page_name)
-                all_structures[page_name] = structure
-                
-            except Exception as e:
-                logger.error(f"Ошибка при исследовании {page_name}: {e}")
-                all_structures[page_name] = {'error': str(e)}
-        
-        # Сохраняем всё
-        user_key = f"user_{user_id}"
-        explored_structures[user_key] = all_structures
-        
-        # Генерируем функции
-        await update.message.reply_text("⚡ Генерирую функции...")
-        
-        for page_name, structure in all_structures.items():
-            if 'error' not in structure:
-                function_code = generate_function_from_structure(page_name, structure)
-                func_key = f"{user_key}_{page_name}"
-                generated_functions[func_key] = function_code
-        
-        # Отчёт
-        report = "✅ *Генеральное исследование завершено!*\n\n"
-        report += "📊 *Найдено структур:*\n"
-        
-        for page_name, structure in all_structures.items():
-            if 'error' not in structure:
-                elements_count = len(structure.get('elements', {}))
-                report += f"  • *{page_name}*: {elements_count} элементов\n"
-            else:
-                report += f"  • *{page_name}*: ❌ {structure['error']}\n"
-        
-        report += "\n💡 *Созданные функции:*\n"
-        func_keys = [k for k in generated_functions.keys() if k.startswith(user_key)]
-        for func_key in func_keys:
-            func_name = func_key.replace(f"{user_key}_", "")
-            report += f"  • `{func_name}`\n"
-        
-        report += "\n📋 *Команды:*\n"
-        report += "  • `/list` — показать все структуры\n"
-        report += "  • `/use <name>` — использовать функцию\n"
-        report += "  • `/functions` — показать все функции"
-        
-        await update.message.reply_text(report, parse_mode='Markdown')
-        
-        # Сохраняем в JSON
-        try:
-            with open(f'explore_all_{user_id}.json', 'w', encoding='utf-8') as f:
-                json.dump(all_structures, f, ensure_ascii=False, indent=2)
-        except:
-            pass
-        
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+# ==================== АНАЛИЗ СТРАНИЦЫ ====================
 
 async def analyze_page(tab, page_name):
     """Анализирует страницу и возвращает структуру"""
     
+    # ✅ Правильно: свойства без скобок, но с await
     structure = {
-        'url': await tab.current_url(),
-        'title': await tab.evaluate('document.title'),
+        'url': await tab.current_url,
+        'title': await tab.title,
         'elements': {}
     }
     
@@ -340,12 +251,10 @@ async def analyze_page(tab, page_name):
     
     return structure
 
-def generate_function_from_structure(name, structure):
-    """Генерирует функцию на основе структуры"""
-    
-    function_code = f"""
-async def get_{name}(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    \"\"\"Автоматически сгенерированная функция для {name}\"\"\"
+# ==================== ГЕНЕРАЛЬНОЕ ИССЛЕДОВАНИЕ ====================
+
+async def explore_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Генеральное исследование всего X.com"""
     user_id = update.effective_user.id
     
     try:
@@ -353,49 +262,85 @@ async def get_{name}(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Сначала выполни /login")
             return
         
-        await update.message.reply_text(f"🔍 Получаю данные с {name}...")
+        await update.message.reply_text("🔍 Запускаю генеральное исследование X.com...")
         
         _, tab = user_browsers[user_id]
         
-        # Переходим на страницу
-        await tab.go_to('{structure.get('url', 'https://x.com')}')
-        await asyncio.sleep(3)
+        # Список всех страниц для исследования
+        pages = {
+            'home': 'https://x.com/home',
+            'explore': 'https://x.com/explore',
+            'notifications': 'https://x.com/notifications',
+            'messages': 'https://x.com/messages',
+            'profile': 'https://x.com/settings/profile',
+            'trending': 'https://x.com/explore/tabs/trending',
+            'following': 'https://x.com/i/following',
+            'search': 'https://x.com/search?q=test',
+        }
         
-        # Извлекаем твиты
-        tweets = await tab.extract_all(
-            Tweet,
-            scope='article[data-testid="tweet"]',
-            timeout=10
-        )
+        all_structures = {}
         
-        # Скриншот
-        screenshot_base64 = await asyncio.wait_for(
-            tab.take_screenshot(as_base64=True),
-            timeout=30.0
-        )
-        screenshot_bytes = base64.b64decode(screenshot_base64)
-        await update.message.reply_photo(
-            photo=screenshot_bytes,
-            caption=f"🖼️ {name.capitalize()}"
-        )
-        
-        # Результаты
-        if tweets:
-            reply = f"📊 *Найдено {len(tweets)} твитов на {name}*\n\n"
-            for i, tweet in enumerate(tweets[:5], 1):
-                text = tweet.text[:150] + '...' if len(tweet.text) > 150 else tweet.text
-                reply += f"{i}. {text}\n\n"
+        for page_name, url in pages.items():
+            await update.message.reply_text(f"📄 Исследую: {page_name}...")
             
-            await update.message.reply_text(reply, parse_mode='Markdown')
-        else:
-            await update.message.reply_text("📊 Твиты не найдены")
-            
+            try:
+                await tab.go_to(url)
+                await asyncio.sleep(3)
+                
+                structure = await analyze_page(tab, page_name)
+                all_structures[page_name] = structure
+                
+            except Exception as e:
+                logger.error(f"Ошибка при исследовании {page_name}: {e}")
+                all_structures[page_name] = {'error': str(e)}
+        
+        # Сохраняем всё
+        user_key = f"user_{user_id}"
+        explored_structures[user_key] = all_structures
+        
+        # Генерируем функции
+        await update.message.reply_text("⚡ Генерирую функции...")
+        
+        for page_name, structure in all_structures.items():
+            if 'error' not in structure:
+                # Сохраняем структуру для использования
+                func_key = f"{user_key}_{page_name}"
+                generated_functions[func_key] = structure
+        
+        # Отчёт
+        report = "✅ *Генеральное исследование завершено!*\n\n"
+        report += "📊 *Найдено структур:*\n"
+        
+        for page_name, structure in all_structures.items():
+            if 'error' not in structure:
+                elements_count = len(structure.get('elements', {}))
+                report += f"  • *{page_name}*: {elements_count} элементов\n"
+            else:
+                report += f"  • *{page_name}*: ❌ {structure['error']}\n"
+        
+        report += "\n💡 *Созданные функции:*\n"
+        func_keys = [k for k in generated_functions.keys() if k.startswith(user_key)]
+        for func_key in func_keys:
+            func_name = func_key.replace(f"{user_key}_", "")
+            report += f"  • `{func_name}`\n"
+        
+        report += "\n📋 *Команды:*\n"
+        report += "  • `/list` — показать все структуры\n"
+        report += "  • `/use <name>` — использовать функцию\n"
+        report += "  • `/functions` — показать все функции"
+        
+        await update.message.reply_text(report, parse_mode='Markdown')
+        
+        # Сохраняем в JSON
+        try:
+            with open(f'explore_all_{user_id}.json', 'w', encoding='utf-8') as f:
+                json.dump(all_structures, f, ensure_ascii=False, indent=2)
+        except:
+            pass
+        
     except Exception as e:
-        logger.error(f"Ошибка: {{e}}")
-        await update.message.reply_text(f"❌ Ошибка: {{str(e)[:300]}}")
-"""
-    
-    return function_code
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
 # ==================== КОМАНДЫ ДЛЯ РАБОТЫ С ИССЛЕДОВАНИЕМ ====================
 
@@ -447,10 +392,8 @@ async def explore_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
             explored_structures[user_key] = {}
         explored_structures[user_key][page] = structure
         
-        # Генерируем функцию
-        function_code = generate_function_from_structure(page, structure)
         func_key = f"{user_key}_{page}"
-        generated_functions[func_key] = function_code
+        generated_functions[func_key] = structure
         
         # Отчёт
         reply = f"✅ *Исследование завершено: {page}*\n\n"
@@ -515,7 +458,7 @@ async def list_functions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(reply, parse_mode='Markdown')
 
 async def use_function(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Использует созданную функцию"""
+    """Использует созданную функцию для парсинга"""
     if not context.args:
         await update.message.reply_text("❌ Укажи имя функции\nПример: /use home")
         return
@@ -529,27 +472,54 @@ async def use_function(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Функция '{func_name}' не найдена. Используй /list")
         return
     
-    # Выполняем функцию
     try:
-        # Создаём динамическую функцию
-        exec_globals = {
-            'update': update,
-            'context': context,
-            'user_browsers': user_browsers,
-            'logger': logger,
-            'asyncio': asyncio,
-            'base64': base64,
-            'Tweet': Tweet,
-        }
+        if user_id not in user_browsers:
+            await update.message.reply_text("❌ Сначала выполни /login")
+            return
         
-        exec(generated_functions[func_key], exec_globals)
-        await exec_globals[f'get_{func_name}'](update, context)
+        await update.message.reply_text(f"🔍 Использую функцию: {func_name}")
         
+        _, tab = user_browsers[user_id]
+        structure = generated_functions[func_key]
+        
+        # Переходим на страницу из структуры
+        await tab.go_to(structure['url'])
+        await asyncio.sleep(3)
+        
+        # Извлекаем твиты
+        tweets = await tab.extract_all(
+            Tweet,
+            scope='article[data-testid="tweet"]',
+            timeout=10
+        )
+        
+        # Скриншот
+        screenshot_base64 = await asyncio.wait_for(
+            tab.take_screenshot(as_base64=True),
+            timeout=30.0
+        )
+        screenshot_bytes = base64.b64decode(screenshot_base64)
+        await update.message.reply_photo(
+            photo=screenshot_bytes,
+            caption=f"🖼️ {func_name.capitalize()}"
+        )
+        
+        # Результаты
+        if tweets:
+            reply = f"📊 *Найдено {len(tweets)} твитов на {func_name}*\n\n"
+            for i, tweet in enumerate(tweets[:5], 1):
+                text = tweet.text[:150] + '...' if len(tweet.text) > 150 else tweet.text
+                reply += f"{i}. {text}\n\n"
+            
+            await update.message.reply_text(reply, parse_mode='Markdown')
+        else:
+            await update.message.reply_text("📊 Твиты не найдены")
+            
     except Exception as e:
         logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка выполнения: {str(e)[:300]}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
-# ==================== ОСТАЛЬНЫЕ КОМАНДЫ ====================
+# ==================== ДРУГИЕ КОМАНДЫ ====================
 
 async def search_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -975,6 +945,233 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
+async def evaluate_js(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("❌ Укажи JS код\nПример: /eval document.title")
+        return
+    
+    js_code = ' '.join(context.args)
+    user_id = update.effective_user.id
+    
+    try:
+        if user_id not in user_browsers:
+            await update.message.reply_text("❌ Сначала открой сайт командой /go или /login")
+            return
+        
+        _, tab = user_browsers[user_id]
+        result = await tab.evaluate(js_code)
+        await update.message.reply_text(f"✅ Результат:\n\n{str(result)[:500]}")
+            
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+
+async def scroll_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Укажи направление или пиксели\n"
+            "Примеры:\n"
+            "/scroll top - в начало\n"
+            "/scroll bottom - в конец\n"
+            "/scroll 500 - на 500px вниз"
+        )
+        return
+    
+    scroll_arg = context.args[0]
+    user_id = update.effective_user.id
+    
+    try:
+        if user_id not in user_browsers:
+            await update.message.reply_text("❌ Сначала открой сайт командой /go или /login")
+            return
+        
+        _, tab = user_browsers[user_id]
+        
+        if scroll_arg.lower() == 'top':
+            await tab.evaluate("window.scrollTo(0, 0)")
+            await update.message.reply_text("⬆️ Прокрутил в начало")
+        elif scroll_arg.lower() == 'bottom':
+            await tab.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await update.message.reply_text("⬇️ Прокрутил в конец")
+        else:
+            try:
+                pixels = int(scroll_arg)
+                await tab.evaluate(f"window.scrollBy(0, {pixels})")
+                await update.message.reply_text(f"📜 Прокрутил на {pixels}px")
+            except ValueError:
+                await update.message.reply_text("❌ Неправильный формат. Используй: top, bottom или число")
+            
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+
+async def scroll_to_element(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("❌ Укажи селектор\nПример: /scroll_to .footer")
+        return
+    
+    selector = context.args[0]
+    user_id = update.effective_user.id
+    
+    try:
+        if user_id not in user_browsers:
+            await update.message.reply_text("❌ Сначала открой сайт командой /go или /login")
+            return
+        
+        _, tab = user_browsers[user_id]
+        element = await tab.find(selector)
+        
+        if element:
+            await tab.scroll.to_element(element, humanize=True)
+            await update.message.reply_text(f"✅ Прокрутил к элементу: {selector}")
+        else:
+            await update.message.reply_text(f"❌ Элемент не найден: {selector}")
+            
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+
+async def find_element(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("❌ Укажи селектор\nПример: /find .quote")
+        return
+    
+    selector = context.args[0]
+    user_id = update.effective_user.id
+    
+    try:
+        if user_id not in user_browsers:
+            await update.message.reply_text("❌ Сначала открой сайт командой /go или /login")
+            return
+        
+        _, tab = user_browsers[user_id]
+        element = await tab.find(selector)
+        
+        if element:
+            text = await element.text()
+            await update.message.reply_text(f"✅ Найден элемент:\n\n{text[:500]}")
+        else:
+            await update.message.reply_text(f"❌ Элемент не найден: {selector}")
+            
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+
+async def find_all_elements(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("❌ Укажи селектор\nПример: /find_all .quote")
+        return
+    
+    selector = context.args[0]
+    user_id = update.effective_user.id
+    
+    try:
+        if user_id not in user_browsers:
+            await update.message.reply_text("❌ Сначала открой сайт командой /go или /login")
+            return
+        
+        _, tab = user_browsers[user_id]
+        elements = await tab.find_all(selector)
+        
+        if elements:
+            count = len(elements)
+            reply = f"✅ Найдено {count} элементов:\n\n"
+            for i, element in enumerate(elements[:5], 1):
+                try:
+                    text = await element.text()
+                    reply += f"{i}. {text[:100]}\n"
+                except:
+                    reply += f"{i}. [не удалось получить текст]\n"
+            if count > 5:
+                reply += f"\n... и ещё {count - 5} элементов"
+            await update.message.reply_text(reply)
+        else:
+            await update.message.reply_text(f"❌ Элементы не найдены: {selector}")
+            
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+
+async def click_element(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("❌ Укажи селектор\nПример: /click .button")
+        return
+    
+    selector = context.args[0]
+    user_id = update.effective_user.id
+    
+    try:
+        if user_id not in user_browsers:
+            await update.message.reply_text("❌ Сначала открой сайт командой /go или /login")
+            return
+        
+        _, tab = user_browsers[user_id]
+        element = await tab.find(selector)
+        
+        if element:
+            await element.click(humanize=True)
+            await update.message.reply_text(f"✅ Кликнул по элементу: {selector}")
+        else:
+            await update.message.reply_text(f"❌ Элемент не найден: {selector}")
+            
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+
+async def type_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 2:
+        await update.message.reply_text("❌ Укажи селектор и текст\nПример: /type .input hello")
+        return
+    
+    selector = context.args[0]
+    text = ' '.join(context.args[1:])
+    user_id = update.effective_user.id
+    
+    try:
+        if user_id not in user_browsers:
+            await update.message.reply_text("❌ Сначала открой сайт командой /go или /login")
+            return
+        
+        _, tab = user_browsers[user_id]
+        element = await tab.find(selector)
+        
+        if element:
+            await element.click(humanize=True)
+            await asyncio.sleep(0.5)
+            await element.type_text(text, humanize=True)
+            await update.message.reply_text(f"✅ Ввёл текст в {selector}: {text[:50]}")
+        else:
+            await update.message.reply_text(f"❌ Элемент не найден: {selector}")
+            
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+
+async def wait_element(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("❌ Укажи селектор\nПример: /wait .loading")
+        return
+    
+    selector = context.args[0]
+    user_id = update.effective_user.id
+    
+    try:
+        if user_id not in user_browsers:
+            await update.message.reply_text("❌ Сначала открой сайт командой /go или /login")
+            return
+        
+        _, tab = user_browsers[user_id]
+        
+        await update.message.reply_text(f"⏳ Ожидаю элемент: {selector}")
+        await tab.wait_for_selector(selector, timeout=30)
+        await update.message.reply_text(f"✅ Элемент появился: {selector}")
+            
+    except asyncio.TimeoutError:
+        await update.message.reply_text(f"⏰ Таймаут: элемент не появился за 30 сек")
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Ошибка: {context.error}")
 
@@ -990,6 +1187,14 @@ def main():
     application.add_handler(CommandHandler("search", search_x))
     application.add_handler(CommandHandler("go", go))
     application.add_handler(CommandHandler("screen", screen))
+    application.add_handler(CommandHandler("find", find_element))
+    application.add_handler(CommandHandler("find_all", find_all_elements))
+    application.add_handler(CommandHandler("click", click_element))
+    application.add_handler(CommandHandler("type", type_text))
+    application.add_handler(CommandHandler("wait", wait_element))
+    application.add_handler(CommandHandler("scroll", scroll_page))
+    application.add_handler(CommandHandler("scroll_to", scroll_to_element))
+    application.add_handler(CommandHandler("eval", evaluate_js))
     
     # Исследование
     application.add_handler(CommandHandler("explore_all", explore_all))
