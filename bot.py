@@ -149,7 +149,7 @@ def get_joystick_keyboard(user_id=None):
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# ==================== ОТПРАВКА СКРИНА + КНОПОК ====================
+# ==================== ОТПРАВКА СКРИНА + КНОПОК (ИСПРАВЛЕННАЯ) ====================
 
 async def send_screen_with_buttons(update, user_id, caption="🎮 Джойстик X.com"):
     if user_id not in user_browsers:
@@ -176,13 +176,26 @@ async def send_screen_with_buttons(update, user_id, caption="🎮 Джойсти
         caption_text = f"{caption}\n🖱️ Курсор: ({x}, {y}) | Шаг: {step}px"
         
         if isinstance(update, Update) and update.callback_query:
-            await update.callback_query.edit_message_media(
-                media=InputMediaPhoto(
-                    media=image_with_cursor,
-                    caption=caption_text
-                ),
-                reply_markup=get_joystick_keyboard(user_id)
-            )
+            try:
+                # Пробуем отредактировать сообщение с фото
+                await update.callback_query.edit_message_media(
+                    media=InputMediaPhoto(
+                        media=image_with_cursor,
+                        caption=caption_text
+                    ),
+                    reply_markup=get_joystick_keyboard(user_id)
+                )
+            except Exception as e:
+                # Если не получается — удаляем и отправляем новое
+                try:
+                    await update.callback_query.message.delete()
+                except:
+                    pass
+                await update.effective_message.reply_photo(
+                    photo=image_with_cursor,
+                    caption=caption_text,
+                    reply_markup=get_joystick_keyboard(user_id)
+                )
         else:
             await update.message.reply_photo(
                 photo=image_with_cursor,
@@ -196,10 +209,20 @@ async def send_screen_with_buttons(update, user_id, caption="🎮 Джойсти
         logger.error(f"Ошибка: {e}")
         error_text = f"❌ Ошибка: {str(e)[:300]}"
         if isinstance(update, Update) and update.callback_query:
-            await update.callback_query.edit_message_text(
-                error_text,
-                reply_markup=get_joystick_keyboard()
-            )
+            try:
+                await update.callback_query.edit_message_text(
+                    error_text,
+                    reply_markup=get_joystick_keyboard()
+                )
+            except:
+                try:
+                    await update.callback_query.message.delete()
+                except:
+                    pass
+                await update.effective_message.reply_text(
+                    error_text,
+                    reply_markup=get_joystick_keyboard()
+                )
         else:
             await update.message.reply_text(
                 error_text,
@@ -472,7 +495,8 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # ===== AI-ЗРЕНИЕ =====
         elif action == "ai_find":
             try:
-                await query.edit_message_text("📸 Делаю скриншот и анализирую...")
+                await query.message.delete()
+                await query.message.reply_text("📸 Делаю скриншот и анализирую...")
                 
                 screenshot_base64 = await tab.take_screenshot(as_base64=True)
                 
@@ -498,18 +522,19 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 for name, coord in coords.items():
                     reply += f"• `{name}`: ({coord[0]}, {coord[1]})\n"
                 
-                await send_screen_with_buttons(update, user_id, reply)
+                await query.message.reply_text(reply)
                 
             except Exception as e:
-                await send_screen_with_buttons(update, user_id, f"❌ Ошибка AI: {str(e)[:200]}")
+                await query.message.reply_text(f"❌ Ошибка AI: {str(e)[:200]}")
         
         elif action == "ai_click":
             try:
-                await query.edit_message_text("📸 Делаю скриншот...")
+                await query.message.delete()
+                await query.message.reply_text("📸 Делаю скриншот...")
                 
                 screenshot_base64 = await tab.take_screenshot(as_base64=True)
                 
-                await query.edit_message_text("🧠 Ищу кнопку лайка...")
+                await query.message.reply_text("🧠 Ищу кнопку лайка...")
                 
                 response = await agnes_client.chat.completions.create(
                     model="agnes-2.0-flash",
@@ -533,7 +558,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await send_screen_with_buttons(update, user_id, f"🧠 AI клик по лайку! ({x}, {y})")
                 
             except Exception as e:
-                await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:200]}")
+                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
         
         elif action == "refresh":
             await query.edit_message_text("🔄 Обновляю страницу...")
@@ -556,7 +581,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:300]}")
 
-# ==================== ОСТАЛЬНЫЕ КОМАНДЫ ====================
+# ==================== КОМАНДЫ ====================
 
 async def type_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
