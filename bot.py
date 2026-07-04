@@ -415,6 +415,26 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await tab.go_to(f'https://x.com/search?q={keywords}&src=typed_query')
             await asyncio.sleep(3)
             await update.message.reply_text(f"✅ На странице поиска: {keywords}", parse_mode='Markdown')
+            
+            # Проверяем твиты после поиска
+            try:
+                tweet_count = await tab.execute_script(
+                    "document.querySelectorAll('article[data-testid=\"tweet\"]').length"
+                )
+            except:
+                tweet_count = 0
+        
+        # ✅ Если всё равно нет твитов — сообщаем
+        if tweet_count == 0:
+            await update.message.reply_text(
+                "❌ *Не найдено твитов на странице.*\n"
+                "Попробуй:\n"
+                "1. Выполни /login заново\n"
+                "2. Проверь, что ты на X.com\n"
+                "3. Попробуй другую команду",
+                parse_mode='Markdown'
+            )
+            return
         
         # ✅ Собираем контекст
         page_info = await tab.execute_script("""
@@ -452,13 +472,15 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         - Если нужно выполнить действие — просто выполни код
         - Используй доступные data-testid из контекста
         - Верни ТОЛЬКО код, без пояснений и markdown.
+        - НЕ используй комментарии (// или /* */)
+        - Если данных нет — верни пустой массив []
         """
         
         response = await asyncio.wait_for(
             agnes_client.chat.completions.create(
                 model="agnes-2.0-flash",
                 messages=[
-                    {"role": "system", "content": "Ты — эксперт по JavaScript. Отвечай только кодом, без пояснений."},
+                    {"role": "system", "content": "Ты — эксперт по JavaScript. Отвечай ТОЛЬКО кодом. НИКАКИХ комментариев. Если нет данных — верни []."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.1,
@@ -473,21 +495,52 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         js_code = re.sub(r'```javascript\n?', '', js_code)
         js_code = re.sub(r'```json\n?', '', js_code)
         js_code = re.sub(r'```\n?', '', js_code)
-        js_code = js_code.strip()
         
-        if not js_code or len(js_code) < 10:
-            await update.message.reply_text("❌ Код слишком короткий. Попробуй переформулировать.")
+        # ✅ Убираем комментарии и пустые строки
+        lines = js_code.split('\n')
+        clean_lines = []
+        for line in lines:
+            # Убираем однострочные комментарии
+            if line.strip().startswith('//'):
+                continue
+            # Убираем многострочные комментарии
+            if line.strip().startswith('/*') or line.strip().startswith('*'):
+                continue
+            # Убираем пустые строки
+            if line.strip() == '':
+                continue
+            clean_lines.append(line)
+        js_code = '\n'.join(clean_lines).strip()
+        
+        # Проверяем, что код не пустой
+        if not js_code or len(js_code) < 5:
+            await update.message.reply_text(
+                "⚠️ *Не удалось сгенерировать код.*\n"
+                "Попробуй переформулировать команду.\n\n"
+                "💡 *Примеры:*\n"
+                "/ai найди твиты про войну\n"
+                "/ai сколько твитов\n"
+                "/ai лайкни первый твит",
+                parse_mode='Markdown'
+            )
             return
         
-        # ✅ ВЫПОЛНЯЕМ КОД ЧЕРЕЗ EVAL (показываем код и результат)
+        # ✅ ВЫПОЛНЯЕМ КОД
         await update.message.reply_text(
-            f"⚡ *Выполняю через /eval:*\n"
+            f"⚡ *Выполняю код:*\n"
             f"```javascript\n{js_code[:400]}\n```",
             parse_mode='Markdown'
         )
         
-        # Выполняем код (как в /eval)
-        result = await tab.execute_script(js_code)
+        # Выполняем код
+        try:
+            result = await asyncio.wait_for(
+                tab.execute_script(js_code),
+                timeout=10.0
+            )
+        except asyncio.TimeoutError:
+            await update.message.reply_text("⚠️ Выполнение кода заняло слишком много времени.")
+            return
         
         # Форматируем результат
         if isinstance(result, (list, dict)):
@@ -498,8 +551,8 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(result_str) > 1000:
             result_str = result_str[:1000] + '...'
         
-        if not result_str or result_str == '""' or result_str == "''":
-            await update.message.reply_text("⚠️ *Результат пустой.*")
+        if not result_str or result_str == '""' or result_str == "''" or result_str == '[]':
+            await update.message.reply_text("⚠️ *Результат пустой.*\nПопробуй другую команду.")
         else:
             await update.message.reply_text(f"📊 *Результат:*\n{result_str[:500]}")
         
