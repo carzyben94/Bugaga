@@ -73,41 +73,42 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         options.add_argument("--disable-gpu")
         options.binary_location = CHROME_PATH
         
-        # Создаём новый браузер
+        # Создаём браузер
         browser = Chrome(options=options)
         tab = await browser.start()
         
         # Открываем X.com
         await tab.go_to('https://x.com')
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
         
         # Устанавливаем куки
         await tab.set_cookies(X_COOKIES)
         await asyncio.sleep(1)
         
-        # Перезагружаем страницу для применения кук
-        await tab.go_to('https://x.com')
-        await asyncio.sleep(3)
+        # Обновляем страницу для применения кук
+        await tab.reload()
+        await asyncio.sleep(5)  # Ждём загрузки
         
-        # Сохраняем браузер для пользователя
+        # Сохраняем браузер
         user_browsers[user_id] = (browser, tab)
         
-        await update.message.reply_text(
-            "✅ Вход выполнен успешно!\n"
-            "Теперь ты авторизован на X.com\n\n"
-            "📸 Используй /screen для скриншота"
-        )
+        await update.message.reply_text("✅ Вход выполнен успешно!")
         
         # Делаем скриншот для подтверждения
+        await update.message.reply_text("📸 Делаю скриншот...")
+        
         try:
-            screenshot_base64 = await tab.take_screenshot(as_base64=True)
+            screenshot_base64 = await asyncio.wait_for(
+                tab.take_screenshot(as_base64=True),
+                timeout=30.0
+            )
             screenshot_bytes = base64.b64decode(screenshot_base64)
             await update.message.reply_photo(
                 photo=screenshot_bytes,
                 caption="🖼️ Ты авторизован на X.com!"
             )
-        except:
-            await update.message.reply_text("⚠️ Не удалось сделать скриншот, но вход выполнен.")
+        except asyncio.TimeoutError:
+            await update.message.reply_text("⏰ Не удалось сделать скриншот, но вход выполнен.")
             
     except Exception as e:
         logger.error(f"Ошибка: {e}")
@@ -121,7 +122,6 @@ async def go(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     url = context.args[0]
     
-    # Добавляем https:// если нет протокола
     if not url.startswith(('http://', 'https://')):
         url = 'https://' + url
     
@@ -135,18 +135,14 @@ async def go(update: Update, context: ContextTypes.DEFAULT_TYPE):
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--headless=new")
         options.add_argument("--disable-gpu")
-        options.add_argument("--disable-extensions")
-        options.add_argument("--disable-images")
         options.binary_location = CHROME_PATH
         
-        # Если у пользователя уже есть браузер - используем его
         if user_id in user_browsers:
             browser, tab = user_browsers[user_id]
             await tab.go_to(url)
             await asyncio.sleep(3)
             await update.message.reply_text(f"✅ Перешёл на {url}")
         else:
-            # Создаём новый браузер
             browser = Chrome(options=options)
             tab = await browser.start()
             await tab.go_to(url)
@@ -163,7 +159,6 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
     try:
-        # Проверяем, есть ли активный браузер
         if user_id not in user_browsers:
             await update.message.reply_text("❌ Сначала открой сайт командой /go или /login")
             return
@@ -172,20 +167,16 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         _, tab = user_browsers[user_id]
         
-        # Ждём загрузки страницы
-        await asyncio.sleep(2)
+        await asyncio.sleep(1)
         
-        # Делаем скриншот с увеличенным таймаутом
         try:
             screenshot_base64 = await asyncio.wait_for(
                 tab.take_screenshot(as_base64=True),
                 timeout=30.0
             )
             
-            # Декодируем base64 в байты для отправки
             screenshot_bytes = base64.b64decode(screenshot_base64)
             
-            # Отправляем фото в Telegram
             await update.message.reply_photo(
                 photo=screenshot_bytes,
                 caption="🖼️ Скриншот страницы"
@@ -202,12 +193,10 @@ async def cookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Установка кук из JSON"""
     user_id = update.effective_user.id
     
-    # Проверяем, есть ли активный браузер
     if user_id not in user_browsers:
         await update.message.reply_text("❌ Сначала открой сайт командой /go или /login")
         return
     
-    # Проверяем, есть ли JSON
     if not context.args:
         await update.message.reply_text(
             "❌ Передай JSON с куками\n"
@@ -218,19 +207,15 @@ async def cookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _, tab = user_browsers[user_id]
     
     try:
-        # Собираем все аргументы в одну строку
         json_str = ' '.join(context.args)
         cookies_data = json.loads(json_str)
         
-        # Преобразуем в формат для Pydoll
         cookies_list = [
             {"name": name, "value": value}
             for name, value in cookies_data.items()
         ]
         
-        # Устанавливаем куки
         await tab.set_cookies(cookies_list)
-        
         await update.message.reply_text(f"✅ Установлено {len(cookies_list)} кук!")
         
     except json.JSONDecodeError:
@@ -286,7 +271,6 @@ def main():
     """Запуск бота"""
     application = Application.builder().token(TOKEN).build()
     
-    # Регистрируем команды
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("login", login))
     application.add_handler(CommandHandler("go", go))
@@ -295,7 +279,6 @@ def main():
     application.add_handler(CommandHandler("parse", parse))
     application.add_error_handler(error_handler)
     
-    # Проверяем наличие браузера
     if os.path.exists(CHROME_PATH):
         logger.info(f"✅ Браузер найден: {CHROME_PATH}")
     else:
