@@ -3,6 +3,7 @@ import logging
 import asyncio
 import base64
 import json
+import re
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -22,17 +23,112 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен!")
 
-# Модели для парсинга
+# ==================== РАСШИРЕННЫЕ МОДЕЛИ ====================
+
 class Quote(ExtractionModel):
     text: str = Field(selector='.text')
     author: str = Field(selector='.author')
     tags: str = Field(selector='.tag')
 
+class Author(ExtractionModel):
+    """Модель автора"""
+    name: str = Field(
+        selector='div[data-testid="User-Name"] span[dir="ltr"]',
+        default="[имя не найдено]"
+    )
+    username: str = Field(
+        selector='div[data-testid="User-Name"] span[dir="ltr"]:last-child',
+        default="[никнейм не найден]"
+    )
+    avatar: str = Field(
+        selector='img[alt*="avatar"]',
+        attribute='src',
+        default="[аватар не найден]"
+    )
+    verified: bool = Field(
+        selector='svg[aria-label="Verified account"]',
+        default=False,
+        transform=lambda x: True if x else False
+    )
+
+class TweetMedia(ExtractionModel):
+    """Модель медиа-вложения (фото и видео)"""
+    type: str = Field(
+        selector='[data-testid="tweetPhoto"], [data-testid="tweetVideo"]',
+        default="unknown"
+    )
+    url: str = Field(
+        selector='img, video',
+        attribute='src',
+        default="[ссылка не найдена]"
+    )
+    alt: str = Field(
+        selector='img',
+        attribute='alt',
+        default="[описание отсутствует]"
+    )
+
+class TweetStats(ExtractionModel):
+    """Модель статистики твита"""
+    likes: int = Field(
+        selector='div[data-testid="like"] span',
+        default=0,
+        transform=lambda x: int(x) if x else 0
+    )
+    retweets: int = Field(
+        selector='div[data-testid="retweet"] span',
+        default=0,
+        transform=lambda x: int(x) if x else 0
+    )
+    replies: int = Field(
+        selector='div[data-testid="reply"] span',
+        default=0,
+        transform=lambda x: int(x) if x else 0
+    )
+    views: int = Field(
+        selector='div[data-testid="views"] span',
+        default=0,
+        transform=lambda x: int(x) if x else 0
+    )
+
 class Tweet(ExtractionModel):
-    text: str = Field(selector='div[data-testid="tweetText"]', default="[текст не найден]")
-    author: str = Field(selector='div[data-testid="User-Name"] span', default="[автор не найден]")
-    link: str = Field(selector='a[href*="/status/"]', attribute='href', default="[ссылка не найдена]")
-    timestamp: str = Field(selector='time', default="[время не указано]")
+    """ПОЛНАЯ модель твита"""
+    text: str = Field(
+        selector='div[data-testid="tweetText"]',
+        default="[текст не найден]"
+    )
+    author: Author = Field(
+        selector='div[data-testid="User-Name"]'
+    )
+    media: list[TweetMedia] = Field(
+        selector='[data-testid="tweetPhoto"], [data-testid="tweetVideo"]',
+        default=[]
+    )
+    stats: TweetStats = Field(
+        selector='div[role="group"]'
+    )
+    timestamp: str = Field(
+        selector='time',
+        attribute='datetime',
+        default="[время не указано]"
+    )
+    link: str = Field(
+        selector='a[href*="/status/"]',
+        attribute='href',
+        default="[ссылка не найдена]"
+    )
+    is_reply: bool = Field(
+        selector='[data-testid="reply"]',
+        default=False
+    )
+    is_retweet: bool = Field(
+        selector='[data-testid="retweet"]',
+        default=False
+    )
+    is_pinned: bool = Field(
+        selector='[data-testid="pin"]',
+        default=False
+    )
 
 CHROME_PATH = '/usr/bin/chromium'
 
@@ -63,10 +159,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/login — Войти в X.com\n\n"
         "🔍 *Универсальная команда*\n"
         "/do <запрос> — Всё в одной команде\n\n"
-        "🍪 *Куки*\n"
-        "/cookie {\"name\":\"value\"} — Установить куки\n\n"
-        "⚡ *Другое*\n"
-        "/eval <js> — Выполнить JavaScript\n\n"
         "📌 *Продвинутые команды:* /start2"
     )
     await update.message.reply_text(menu1, parse_mode='Markdown')
@@ -82,7 +174,10 @@ async def start2(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/network — Показать сетевые запросы\n"
         "/block_images — Блокировать изображения\n"
         "/unblock_images — Разблокировать изображения\n\n"
-        "📚 *Парсинг*\n"
+        "🍪 *Куки*\n"
+        "/cookie {\"name\":\"value\"} — Установить куки\n\n"
+        "⚡ *Другое*\n"
+        "/eval <js> — Выполнить JavaScript\n"
         "/parse — Получить цитаты"
     )
     await update.message.reply_text(menu2, parse_mode='Markdown')
@@ -122,25 +217,71 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка входа: {str(e)[:300]}")
 
+# ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
+
+def extract_url(text):
+    """Извлекает URL из текста"""
+    pattern = r'https?://(?:x\.com|twitter\.com)/[^\s]+'
+    match = re.search(pattern, text)
+    return match.group(0) if match else None
+
+def extract_username(text):
+    """Извлекает имя пользователя из текста"""
+    # Ищем @username
+    pattern = r'@(\w+)'
+    match = re.search(pattern, text)
+    if match:
+        return match.group(1)
+    
+    # Ищем username в конце
+    words = text.split()
+    for word in words:
+        if word.startswith('@'):
+            return word[1:]
+    
+    return None
+
+def format_number(num):
+    """Форматирует число (1000 → 1K, 1000000 → 1M)"""
+    if num >= 1000000:
+        return f"{num/1000000:.1f}M"
+    elif num >= 1000:
+        return f"{num/1000:.1f}K"
+    return str(num)
+
 # ==================== УНИВЕРСАЛЬНАЯ КОМАНДА /do ====================
 
 async def do_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Универсальная команда для любых действий"""
     if not context.args:
         await update.message.reply_text(
-            "❌ Укажи действие\n\n"
-            "📋 *Примеры:*\n"
-            "  `/do @username` — профиль + фото\n"
-            "  `/do найти текст` — поиск\n"
-            "  `/do открой url` — открыть сайт\n"
-            "  `/do скриншот` — скриншот\n"
-            "  `/do назад` — назад в истории\n"
-            "  `/do вперёд` — вперёд в истории\n"
-            "  `/do текст` — поиск по умолчанию",
+            "📋 *Что я умею:*\n\n"
+            "👤 *Профили*\n"
+            "  /do @username — профиль + фото\n"
+            "  /do профиль @username — профиль + твиты\n\n"
+            "🔍 *Поиск*\n"
+            "  /do найти текст — поиск\n"
+            "  /do текст — поиск по умолчанию\n\n"
+            "❤️ *Действия с твитами*\n"
+            "  /do лайк url — поставить лайк\n"
+            "  /do ретвит url — ретвитнуть\n\n"
+            "👥 *Подписки*\n"
+            "  /do подпишись @username — подписаться\n"
+            "  /do отпишись @username — отписаться\n\n"
+            "🏠 *Навигация*\n"
+            "  /do главная — на главную\n"
+            "  /do тренды — на Explore\n"
+            "  /do уведомления — в уведомления\n"
+            "  /do сообщения — в сообщения\n"
+            "  /do назад — назад\n"
+            "  /do вперёд — вперёд\n\n"
+            "📸 *Другое*\n"
+            "  /do скриншот — скриншот",
             parse_mode='Markdown'
         )
         return
     
+    full_text = ' '.join(context.args)
     action = context.args[0].lower()
     args = context.args[1:] if len(context.args) > 1 else []
     
@@ -153,7 +294,102 @@ async def do_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         _, tab = user_browsers[user_id]
         
-        # ===== 1. ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ (@username) =====
+        # ===== 1. ПРОФИЛЬ С ТВИТАМИ =====
+        if action in ['профиль', 'profile'] or 'профиль' in full_text:
+            username = None
+            for word in context.args:
+                if word.startswith('@'):
+                    username = word[1:]
+                    break
+                elif word not in ['профиль', 'profile']:
+                    username = word
+                    break
+            
+            if not username:
+                await update.message.reply_text("❌ Укажи имя пользователя\nПример: /do профиль elonmusk")
+                return
+            
+            await update.message.reply_text(f"👤 Загружаю профиль: @{username}")
+            
+            await tab.go_to(f'https://x.com/{username}')
+            await asyncio.sleep(3)
+            
+            # Получаем имя профиля
+            try:
+                profile_name = await tab.evaluate(
+                    "document.querySelector('div[data-testid=\"UserProfileHeader_Items\"] h2')?.innerText || 'Не найдено'"
+                )
+            except:
+                profile_name = "Не найдено"
+            
+            # Извлекаем твиты с расширенной моделью
+            tweets = await tab.extract_all(
+                Tweet,
+                scope='article[data-testid="tweet"]',
+                timeout=10
+            )
+            
+            # Скриншот
+            screenshot_base64 = await asyncio.wait_for(
+                tab.take_screenshot(as_base64=True),
+                timeout=30.0
+            )
+            screenshot_bytes = base64.b64decode(screenshot_base64)
+            
+            # Формируем ответ
+            reply = f"👤 *Профиль: @{username}*\n"
+            reply += f"📛 Имя: {profile_name}\n\n"
+            
+            if tweets:
+                reply += f"📊 *Первые {min(3, len(tweets))} твитов:*\n\n"
+                for i, tweet in enumerate(tweets[:3], 1):
+                    reply += f"*{i}. {tweet.text[:200]}*"
+                    if len(tweet.text) > 200:
+                        reply += "..."
+                    reply += "\n"
+                    
+                    # Информация об авторе
+                    reply += f"   👤 {tweet.author.name} (@{tweet.author.username})"
+                    if tweet.author.verified:
+                        reply += " ✅"
+                    reply += "\n"
+                    
+                    # Время
+                    if tweet.timestamp and tweet.timestamp != "[время не указано]":
+                        reply += f"   📅 {tweet.timestamp[:10]} {tweet.timestamp[11:16] if len(tweet.timestamp) > 10 else ''}\n"
+                    
+                    # Медиа
+                    if tweet.media:
+                        reply += f"   🖼️ {len(tweet.media)} фото/видео\n"
+                    
+                    # Статистика
+                    if tweet.stats:
+                        likes = format_number(tweet.stats.likes)
+                        retweets = format_number(tweet.stats.retweets)
+                        replies = format_number(tweet.stats.replies)
+                        views = format_number(tweet.stats.views) if tweet.stats.views else 0
+                        reply += f"   ❤️ {likes}  🔄 {retweets}  💬 {replies}"
+                        if views:
+                            reply += f"  👁️ {views}"
+                        reply += "\n"
+                    
+                    # Ссылка
+                    if tweet.link and tweet.link != "[ссылка не найдена]":
+                        reply += f"   🔗 https://x.com{tweet.link}\n"
+                    
+                    reply += "\n"
+            else:
+                reply += "😕 Твиты не найдены\n"
+            
+            await update.message.reply_photo(
+                photo=screenshot_bytes,
+                caption=f"👤 Профиль: @{username}"
+            )
+            
+            await update.message.reply_text(reply, parse_mode='Markdown')
+            return
+        
+        # ===== 2. ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ (@username) =====
         if action.startswith('@'):
             username = action[1:]
             await update.message.reply_text(f"👤 Перехожу в профиль: @{username}")
@@ -172,7 +408,7 @@ async def do_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption=f"👤 Профиль: @{username}"
             )
             
-            # Ищем фото в твитах
+            # Ищем фото
             await update.message.reply_text("📸 Ищу фото...")
             images = await tab.find_all('img[src*="media"]')
             
@@ -192,7 +428,113 @@ async def do_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("😕 Фото не найдены")
             return
         
-        # ===== 2. ПОИСК =====
+        # ===== 3. ЛАЙК =====
+        if action in ['лайк', 'like']:
+            url = extract_url(full_text)
+            if not url:
+                await update.message.reply_text("❌ Укажи ссылку на твит\nПример: /do лайк https://x.com/...")
+                return
+            
+            await update.message.reply_text("❤️ Лайкаю твит...")
+            await tab.go_to(url)
+            await asyncio.sleep(2)
+            
+            like_btn = await tab.find('button[data-testid="like"]')
+            if like_btn:
+                await like_btn.click(humanize=True)
+                await update.message.reply_text("✅ Лайк поставлен!")
+            else:
+                await update.message.reply_text("❌ Кнопка лайка не найдена")
+            return
+        
+        # ===== 4. РЕТВИТ =====
+        if action in ['ретвит', 'репост', 'retweet']:
+            url = extract_url(full_text)
+            if not url:
+                await update.message.reply_text("❌ Укажи ссылку на твит\nПример: /do ретвит https://x.com/...")
+                return
+            
+            await update.message.reply_text("🔄 Ретвичу...")
+            await tab.go_to(url)
+            await asyncio.sleep(2)
+            
+            retweet_btn = await tab.find('button[data-testid="retweet"]')
+            if retweet_btn:
+                await retweet_btn.click(humanize=True)
+                await asyncio.sleep(1)
+                # Подтверждаем ретвит
+                confirm_btn = await tab.find('div[data-testid="retweetConfirm"]')
+                if confirm_btn:
+                    await confirm_btn.click()
+                await update.message.reply_text("✅ Ретвит сделан!")
+            else:
+                await update.message.reply_text("❌ Кнопка ретвита не найдена")
+            return
+        
+        # ===== 5. ПОДПИСАТЬСЯ =====
+        if action in ['подпишись', 'follow']:
+            username = extract_username(full_text)
+            if not username:
+                await update.message.reply_text("❌ Укажи имя пользователя\nПример: /do подпишись elonmusk")
+                return
+            
+            await update.message.reply_text(f"👤 Подписываюсь на @{username}...")
+            await tab.go_to(f'https://x.com/{username}')
+            await asyncio.sleep(2)
+            
+            follow_btn = await tab.find('div[data-testid="follow"]')
+            if follow_btn:
+                await follow_btn.click(humanize=True)
+                await update.message.reply_text(f"✅ Подписался на @{username}")
+            else:
+                await update.message.reply_text(f"❌ Кнопка подписки не найдена")
+            return
+        
+        # ===== 6. ОТПИСАТЬСЯ =====
+        if action in ['отпишись', 'unfollow']:
+            username = extract_username(full_text)
+            if not username:
+                await update.message.reply_text("❌ Укажи имя пользователя\nПример: /do отпишись elonmusk")
+                return
+            
+            await update.message.reply_text(f"👤 Отписываюсь от @{username}...")
+            await tab.go_to(f'https://x.com/{username}')
+            await asyncio.sleep(2)
+            
+            unfollow_btn = await tab.find('div[data-testid="unfollow"]')
+            if unfollow_btn:
+                await unfollow_btn.click(humanize=True)
+                await asyncio.sleep(1)
+                confirm_btn = await tab.find('div[data-testid="unfollowConfirm"]')
+                if confirm_btn:
+                    await confirm_btn.click()
+                await update.message.reply_text(f"✅ Отписался от @{username}")
+            else:
+                await update.message.reply_text(f"❌ Кнопка отписки не найдена")
+            return
+        
+        # ===== 7. НАВИГАЦИЯ =====
+        if action in ['главная', 'home']:
+            await tab.go_to('https://x.com/home')
+            await update.message.reply_text("🏠 Перешёл на главную")
+            return
+        
+        if action in ['тренды', 'explore']:
+            await tab.go_to('https://x.com/explore')
+            await update.message.reply_text("🔍 Перешёл на Explore")
+            return
+        
+        if action in ['уведомления', 'notifications']:
+            await tab.go_to('https://x.com/notifications')
+            await update.message.reply_text("🔔 Перешёл в уведомления")
+            return
+        
+        if action in ['сообщения', 'messages']:
+            await tab.go_to('https://x.com/messages')
+            await update.message.reply_text("✉️ Перешёл в сообщения")
+            return
+        
+        # ===== 8. ПОИСК =====
         if action in ['найти', 'искать', 'поиск', 'search']:
             if not args:
                 await update.message.reply_text("❌ Укажи что искать\nПример: /do найти новости")
@@ -210,7 +552,14 @@ async def do_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply = f"📊 Найдено {count} твитов\n\n"
                 for i, tweet in enumerate(tweets[:10], 1):
                     text = tweet.text[:150] + '...' if len(tweet.text) > 150 else tweet.text
-                    reply += f"{i}. {text}\n\n"
+                    reply += f"{i}. {text}\n"
+                    reply += f"   👤 {tweet.author.username}\n"
+                    if tweet.stats:
+                        likes = format_number(tweet.stats.likes)
+                        retweets = format_number(tweet.stats.retweets)
+                        replies = format_number(tweet.stats.replies)
+                        reply += f"   ❤️ {likes}  🔄 {retweets}  💬 {replies}\n"
+                    reply += "\n"
                 if count > 10:
                     reply += f"... и ещё {count - 10} твитов"
                 await update.message.reply_text(reply)
@@ -218,21 +567,8 @@ async def do_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("😕 Твиты не найдены")
             return
         
-        # ===== 3. ОТКРЫТЬ URL =====
-        if action in ['открой', 'open', 'перейди', 'go']:
-            if not args:
-                await update.message.reply_text("❌ Укажи URL\nПример: /do открой x.com")
-                return
-            url = args[0]
-            if not url.startswith(('http://', 'https://')):
-                url = 'https://' + url
-            await tab.go_to(url)
-            await asyncio.sleep(2)
-            await update.message.reply_text(f"🌐 Открыл: {url}")
-            return
-        
-        # ===== 4. СКРИНШОТ =====
-        if action in ['скриншот', 'screen', 'screenshot']:
+        # ===== 9. СКРИНШОТ =====
+        if action in ['скриншот', 'скрин', 'screen', 'screenshot']:
             await update.message.reply_text("📸 Делаю скриншот...")
             await asyncio.sleep(1)
             screenshot_base64 = await asyncio.wait_for(
@@ -246,7 +582,7 @@ async def do_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        # ===== 5. НАЗАД / ВПЕРЁД =====
+        # ===== 10. НАЗАД / ВПЕРЁД =====
         if action in ['назад', 'back']:
             await tab.go_back()
             await asyncio.sleep(2)
@@ -259,8 +595,20 @@ async def do_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("➡️ Вперёд")
             return
         
-        # ===== 6. ПОИСК ПО УМОЛЧАНИЮ =====
-        # Всё остальное — это поиск
+        # ===== 11. ОТКРЫТЬ URL =====
+        if action in ['открой', 'open', 'перейди', 'go']:
+            if not args:
+                await update.message.reply_text("❌ Укажи URL\nПример: /do открой x.com")
+                return
+            url = args[0]
+            if not url.startswith(('http://', 'https://')):
+                url = 'https://' + url
+            await tab.go_to(url)
+            await asyncio.sleep(2)
+            await update.message.reply_text(f"🌐 Открыл: {url}")
+            return
+        
+        # ===== 12. ПОИСК ПО УМОЛЧАНИЮ =====
         query = ' '.join(context.args)
         await update.message.reply_text(f"🔍 Ищу: {query}")
         
@@ -274,7 +622,14 @@ async def do_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply = f"📊 Найдено {count} твитов\n\n"
             for i, tweet in enumerate(tweets[:10], 1):
                 text = tweet.text[:150] + '...' if len(tweet.text) > 150 else tweet.text
-                reply += f"{i}. {text}\n\n"
+                reply += f"{i}. {text}\n"
+                reply += f"   👤 {tweet.author.username}\n"
+                if tweet.stats:
+                    likes = format_number(tweet.stats.likes)
+                    retweets = format_number(tweet.stats.retweets)
+                    replies = format_number(tweet.stats.replies)
+                    reply += f"   ❤️ {likes}  🔄 {retweets}  💬 {replies}\n"
+                reply += "\n"
             if count > 10:
                 reply += f"... и ещё {count - 10} твитов"
             await update.message.reply_text(reply)
