@@ -97,10 +97,10 @@ async def start2(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает только продвинутые команды (часть 2)"""
     menu2 = (
         "🌑 Shadow DOM\n"
-        "/shadow <selector> — Найти в Shadow DOM\n"
-        "/shadow_all <selector> — Найти все в Shadow DOM\n"
-        "/shadow_click <selector> — Кликнуть в Shadow DOM\n"
-        "/shadow_type <selector> <text> — Ввести в Shadow DOM\n\n"
+        "/shadow <хост> <селектор> — Найти в Shadow DOM\n"
+        "/shadow_all <хост> <селектор> — Найти все в Shadow DOM\n"
+        "/shadow_click <хост> <селектор> — Кликнуть в Shadow DOM\n"
+        "/shadow_type <хост> <селектор> <текст> — Ввести в Shadow DOM\n\n"
         "🌐 Сеть\n"
         "/network — Показать сетевые запросы\n"
         "/block_images — Блокировать изображения\n"
@@ -550,15 +550,19 @@ async def wait_element(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
-# ==================== SHADOW DOM КОМАНДЫ ====================
+# ==================== SHADOW DOM КОМАНДЫ (ПО ДОКУМЕНТАЦИИ) ====================
 
 async def shadow_find(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Находит элемент в Shadow DOM"""
-    if not context.args:
-        await update.message.reply_text("❌ Укажи селектор для Shadow DOM\nПример: /shadow .internal-btn")
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "❌ Укажи хост-селектор и селектор для Shadow DOM\n"
+            "Пример: /shadow #movie_player .play-btn"
+        )
         return
     
-    selector = context.args[0]
+    host_selector = context.args[0]
+    shadow_selector = context.args[1]
     user_id = update.effective_user.id
     
     try:
@@ -568,23 +572,23 @@ async def shadow_find(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         _, tab = user_browsers[user_id]
         
-        host_element = await tab.find('#movie_player')
+        host_element = await tab.find(host_selector)
         if not host_element:
-            await update.message.reply_text("❌ Хост-элемент не найден. Укажи хост-селектор")
+            await update.message.reply_text(f"❌ Хост-элемент не найден: {host_selector}")
             return
         
         shadow_root = await host_element.get_shadow_root()
         if not shadow_root:
-            await update.message.reply_text("❌ Shadow DOM не найден в этом элементе")
+            await update.message.reply_text(f"❌ Shadow DOM не найден в {host_selector}")
             return
         
-        element = await shadow_root.query(selector)
+        element = await shadow_root.query(shadow_selector)
         
         if element:
             text = await element.text()
             await update.message.reply_text(f"✅ Найден элемент в Shadow DOM:\n\n{text[:500]}")
         else:
-            await update.message.reply_text(f"❌ Элемент не найден в Shadow DOM: {selector}")
+            await update.message.reply_text(f"❌ Элемент не найден в Shadow DOM: {shadow_selector}")
             
     except Exception as e:
         logger.error(f"Ошибка: {e}")
@@ -592,11 +596,15 @@ async def shadow_find(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def shadow_find_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Находит все элементы в Shadow DOM"""
-    if not context.args:
-        await update.message.reply_text("❌ Укажи селектор для Shadow DOM\nПример: /shadow_all .item")
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "❌ Укажи хост-селектор и селектор для Shadow DOM\n"
+            "Пример: /shadow_all #movie_player .item"
+        )
         return
     
-    selector = context.args[0]
+    host_selector = context.args[0]
+    shadow_selector = context.args[1]
     user_id = update.effective_user.id
     
     try:
@@ -606,17 +614,17 @@ async def shadow_find_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         _, tab = user_browsers[user_id]
         
-        host_element = await tab.find('#movie_player')
+        host_element = await tab.find(host_selector)
         if not host_element:
-            await update.message.reply_text("❌ Хост-элемент не найден")
+            await update.message.reply_text(f"❌ Хост-элемент не найден: {host_selector}")
             return
         
         shadow_root = await host_element.get_shadow_root()
         if not shadow_root:
-            await update.message.reply_text("❌ Shadow DOM не найден")
+            await update.message.reply_text(f"❌ Shadow DOM не найден в {host_selector}")
             return
         
-        elements = await shadow_root.query_all(selector)
+        elements = await shadow_root.query_all(shadow_selector)
         
         if elements:
             count = len(elements)
@@ -633,7 +641,7 @@ async def shadow_find_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             await update.message.reply_text(reply)
         else:
-            await update.message.reply_text(f"❌ Элементы не найдены в Shadow DOM: {selector}")
+            await update.message.reply_text(f"❌ Элементы не найдены в Shadow DOM: {shadow_selector}")
             
     except Exception as e:
         logger.error(f"Ошибка: {e}")
@@ -641,11 +649,15 @@ async def shadow_find_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def shadow_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Кликает по элементу в Shadow DOM с humanize"""
-    if not context.args:
-        await update.message.reply_text("❌ Укажи селектор\nПример: /shadow_click .play-btn")
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "❌ Укажи хост-селектор и селектор для Shadow DOM\n"
+            "Пример: /shadow_click #movie_player .play-btn"
+        )
         return
     
-    selector = context.args[0]
+    host_selector = context.args[0]
+    shadow_selector = context.args[1]
     user_id = update.effective_user.id
     
     try:
@@ -655,23 +667,23 @@ async def shadow_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         _, tab = user_browsers[user_id]
         
-        host_element = await tab.find('#movie_player')
+        host_element = await tab.find(host_selector)
         if not host_element:
-            await update.message.reply_text("❌ Хост-элемент не найден")
+            await update.message.reply_text(f"❌ Хост-элемент не найден: {host_selector}")
             return
         
         shadow_root = await host_element.get_shadow_root()
         if not shadow_root:
-            await update.message.reply_text("❌ Shadow DOM не найден")
+            await update.message.reply_text(f"❌ Shadow DOM не найден в {host_selector}")
             return
         
-        element = await shadow_root.query(selector)
+        element = await shadow_root.query(shadow_selector)
         
         if element:
             await element.click(humanize=True)
-            await update.message.reply_text(f"✅ Кликнул по элементу в Shadow DOM: {selector}")
+            await update.message.reply_text(f"✅ Кликнул по элементу в Shadow DOM: {shadow_selector}")
         else:
-            await update.message.reply_text(f"❌ Элемент не найден в Shadow DOM: {selector}")
+            await update.message.reply_text(f"❌ Элемент не найден в Shadow DOM: {shadow_selector}")
             
     except Exception as e:
         logger.error(f"Ошибка: {e}")
@@ -679,12 +691,16 @@ async def shadow_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def shadow_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Вводит текст в элемент в Shadow DOM с humanize"""
-    if len(context.args) < 2:
-        await update.message.reply_text("❌ Укажи селектор и текст\nПример: /shadow_type .input hello")
+    if len(context.args) < 3:
+        await update.message.reply_text(
+            "❌ Укажи хост-селектор, селектор и текст\n"
+            "Пример: /shadow_type #movie_player .input hello"
+        )
         return
     
-    selector = context.args[0]
-    text = ' '.join(context.args[1:])
+    host_selector = context.args[0]
+    shadow_selector = context.args[1]
+    text = ' '.join(context.args[2:])
     user_id = update.effective_user.id
     
     try:
@@ -694,17 +710,17 @@ async def shadow_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         _, tab = user_browsers[user_id]
         
-        host_element = await tab.find('#movie_player')
+        host_element = await tab.find(host_selector)
         if not host_element:
-            await update.message.reply_text("❌ Хост-элемент не найден")
+            await update.message.reply_text(f"❌ Хост-элемент не найден: {host_selector}")
             return
         
         shadow_root = await host_element.get_shadow_root()
         if not shadow_root:
-            await update.message.reply_text("❌ Shadow DOM не найден")
+            await update.message.reply_text(f"❌ Shadow DOM не найден в {host_selector}")
             return
         
-        element = await shadow_root.query(selector)
+        element = await shadow_root.query(shadow_selector)
         
         if element:
             await element.click(humanize=True)
@@ -712,13 +728,13 @@ async def shadow_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await element.type_text(text, humanize=True)
             await update.message.reply_text(f"✅ Ввёл текст в Shadow DOM: {text[:50]}")
         else:
-            await update.message.reply_text(f"❌ Элемент не найден в Shadow DOM: {selector}")
+            await update.message.reply_text(f"❌ Элемент не найден в Shadow DOM: {shadow_selector}")
             
     except Exception as e:
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
-# ==================== СЕТЕВЫЕ КОМАНДЫ ====================
+# ==================== СЕТЕВЫЕ КОМАНДЫ (ПО ДОКУМЕНТАЦИИ) ====================
 
 async def network_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает сетевые запросы"""
@@ -733,8 +749,14 @@ async def network_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         _, tab = user_browsers[user_id]
         
-        await tab.enable_network_interception()
+        # Включаем события сети (правильно по документации)
+        await tab.enable_network_events()
         
+        # Делаем перезагрузку для сбора запросов
+        await tab.refresh()
+        await asyncio.sleep(3)
+        
+        # Получаем логи
         logs = await tab.get_network_logs()
         
         if logs:
@@ -744,7 +766,6 @@ async def network_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 status = log.get('status', '???')
                 method = log.get('method', '???')
                 reply += f"{i}. {method} {status} — {url}\n"
-            
             await update.message.reply_text(reply)
         else:
             await update.message.reply_text("📊 Сетевых запросов не найдено")
@@ -764,12 +785,17 @@ async def block_images(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         _, tab = user_browsers[user_id]
         
+        # Включаем перехват запросов
         await tab.enable_network_interception()
+        
+        # Устанавливаем паттерны для блокировки
         await tab.set_request_interception(
-            patterns=[{'urlPattern': '*.jpg', 'interceptionStage': 'Request'}, 
-                     {'urlPattern': '*.png', 'interceptionStage': 'Request'},
-                     {'urlPattern': '*.gif', 'interceptionStage': 'Request'},
-                     {'urlPattern': '*.webp', 'interceptionStage': 'Request'}],
+            patterns=[
+                {'urlPattern': '*.jpg', 'interceptionStage': 'Request'},
+                {'urlPattern': '*.png', 'interceptionStage': 'Request'},
+                {'urlPattern': '*.gif', 'interceptionStage': 'Request'},
+                {'urlPattern': '*.webp', 'interceptionStage': 'Request'}
+            ],
             handle=True
         )
         
@@ -790,6 +816,7 @@ async def unblock_images(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         _, tab = user_browsers[user_id]
         
+        # Отключаем перехват
         await tab.disable_network_interception()
         
         await update.message.reply_text("✅ Изображения разблокированы")
