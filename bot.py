@@ -3,6 +3,7 @@ import logging
 import asyncio
 import base64
 import json
+import aiohttp
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -59,48 +60,38 @@ class TweetMedia(ExtractionModel):
     )
 
 class Tweet(ExtractionModel):
-    """Полная модель твита с фото"""
+    """Модель твита с фото"""
     text: str = Field(
         selector='div[data-testid="tweetText"]',
         default="[текст не найден]"
-    )
-    author_name: str = Field(
-        selector='div[data-testid="User-Name"] span[dir="ltr"]:first-child',
-        default="[имя не найдено]"
-    )
-    author_username: str = Field(
-        selector='div[data-testid="User-Name"] span[dir="ltr"]:last-child',
-        default="[никнейм не найден]"
-    )
-    likes: int = Field(
-        selector='div[data-testid="like"] span',
-        default=0,
-        transform=lambda x: int(x) if x else 0
-    )
-    retweets: int = Field(
-        selector='div[data-testid="retweet"] span',
-        default=0,
-        transform=lambda x: int(x) if x else 0
-    )
-    replies: int = Field(
-        selector='div[data-testid="reply"] span',
-        default=0,
-        transform=lambda x: int(x) if x else 0
-    )
-    link: str = Field(
-        selector='a[href*="/status/"]',
-        attribute='href',
-        default="[ссылка не найдена]"
-    )
-    timestamp: str = Field(
-        selector='time',
-        attribute='datetime',
-        default="[время не указано]"
     )
     media: list[TweetMedia] = Field(
         selector='[data-testid="tweetPhoto"], [data-testid="tweetVideo"]',
         default=[]
     )
+
+# ==================== ФУНКЦИИ ====================
+
+def truncate_text(text, max_length=300):
+    """Обрезает текст по словам, не разрывая слова"""
+    if len(text) <= max_length:
+        return text
+    truncated = text[:max_length]
+    last_space = truncated.rfind(' ')
+    if last_space > 0:
+        return truncated[:last_space] + '...'
+    return truncated + '...'
+
+async def download_image(url):
+    """Скачивает изображение по ссылке"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=10) as response:
+                if response.status == 200:
+                    return await response.read()
+    except:
+        pass
+    return None
 
 # ==================== МЕНЮ ====================
 
@@ -188,7 +179,7 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================== ПОИСК ====================
 
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Поиск твитов на X.com через extract с фото"""
+    """Поиск твитов на X.com с отправкой фото"""
     if not context.args:
         await update.message.reply_text("❌ Укажи текст для поиска\nПример: /search python")
         return
@@ -227,42 +218,33 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if tweets:
             count = len(tweets)
-            reply = f"📊 Найдено {count} твитов\n\n"
             
-            for i, tweet in enumerate(tweets[:10], 1):
-                # Текст
-                text = tweet.text[:150] + '...' if len(tweet.text) > 150 else tweet.text
-                reply += f"{i}. {text}\n"
+            # Отправляем текст с твитами
+            if count > 0:
+                reply = f"📊 Найдено {count} твитов\n\n"
                 
-                # Автор
-                reply += f"   👤 @{tweet.author_username} ({tweet.author_name})\n"
+                for i, tweet in enumerate(tweets[:10], 1):
+                    # Обрезаем текст по словам
+                    text = truncate_text(tweet.text, 300)
+                    reply += f"{i}. {text}\n\n"
+                    
+                    # Отправляем фото из твита
+                    if tweet.media:
+                        for media in tweet.media[:3]:
+                            if media.url and media.url != "[ссылка не найдена]":
+                                img_data = await download_image(media.url)
+                                if img_data:
+                                    await update.message.reply_photo(
+                                        photo=img_data,
+                                        caption=f"📸 Фото из твита {i}"
+                                    )
                 
-                # Статистика
-                if tweet.likes or tweet.retweets or tweet.replies:
-                    likes = f"{tweet.likes:,}" if tweet.likes else "0"
-                    retweets = f"{tweet.retweets:,}" if tweet.retweets else "0"
-                    replies = f"{tweet.replies:,}" if tweet.replies else "0"
-                    reply += f"   ❤️ {likes}  🔄 {retweets}  💬 {replies}\n"
+                if count > 10:
+                    reply += f"... и ещё {count - 10} твитов"
                 
-                # Фото
-                if tweet.media:
-                    reply += f"   🖼️ {len(tweet.media)} фото/видео\n"
-                    for media in tweet.media[:3]:
-                        if media.url and media.url != "[ссылка не найдена]":
-                            reply += f"      📎 {media.url}\n"
-                    if len(tweet.media) > 3:
-                        reply += f"      ... и ещё {len(tweet.media) - 3}\n"
-                
-                # Ссылка
-                if tweet.link and tweet.link != "[ссылка не найдена]":
-                    reply += f"   🔗 https://x.com{tweet.link}\n"
-                
-                reply += "\n"
-            
-            if count > 10:
-                reply += f"... и ещё {count - 10} твитов"
-            
-            await update.message.reply_text(reply)
+                await update.message.reply_text(reply)
+            else:
+                await update.message.reply_text("😕 Твиты не найдены")
         else:
             await update.message.reply_text("😕 Твиты не найдены")
             
