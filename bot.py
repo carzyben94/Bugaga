@@ -884,7 +884,7 @@ def main():
     
     # Основные команды
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("start2", start2))  # ← ВАЖНО!
+    application.add_handler(CommandHandler("start2", start2))  # ← ВАЖНО! /start2 зарегистрирован
     application.add_handler(CommandHandler("login", login))
     application.add_handler(CommandHandler("search", search_x))
     application.add_handler(CommandHandler("go", go))
