@@ -552,7 +552,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_base64}"}}
                         ]}
                     ],
-                    max_tokens=1000,
+                    max_tokens=2000,
                     temperature=0.1
                 )
                 
@@ -562,6 +562,11 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 result = re.sub(r'```json\n?', '', result)
                 result = re.sub(r'```\n?', '', result)
                 result = result.strip()
+                
+                # Проверка: если JSON неполный
+                if not result.endswith('}'):
+                    if result.count('{') > result.count('}'):
+                        result += '}]}'
                 
                 # Парсим JSON
                 try:
@@ -614,10 +619,11 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     else:
                         await query.message.reply_text("😕 Не найдено интерактивных элементов")
                         
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as e:
                     await query.message.reply_text(
-                        f"⚠️ *AI вернул невалидный JSON.*\n\n"
-                        f"```\n{result[:500]}\n```",
+                        f"⚠️ *Ошибка парсинга JSON:* {str(e)[:100]}\n\n"
+                        f"📄 *Получено:*\n```\n{result[:800]}\n```\n\n"
+                        f"💡 Попробуй ещё раз или используй /ai_find",
                         parse_mode='Markdown'
                     )
                 
