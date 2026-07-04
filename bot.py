@@ -64,20 +64,23 @@ async def go(update: Update, context: ContextTypes.DEFAULT_TYPE):
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--headless=new")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-images")
         options.binary_location = CHROME_PATH
         
         # Если у пользователя уже есть браузер - используем его
         if user_id in user_browsers:
             browser, tab = user_browsers[user_id]
             await tab.go_to(url)
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
             await update.message.reply_text(f"✅ Перешёл на {url}")
         else:
             # Создаём новый браузер
             browser = Chrome(options=options)
             tab = await browser.start()
             await tab.go_to(url)
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
             user_browsers[user_id] = (browser, tab)
             await update.message.reply_text(f"✅ Открыл: {url}")
             
@@ -99,17 +102,27 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         _, tab = user_browsers[user_id]
         
-        # Делаем скриншот в формате base64
-        screenshot_base64 = await tab.take_screenshot(as_base64=True)
+        # Ждём загрузки страницы
+        await asyncio.sleep(2)
         
-        # Декодируем base64 в байты для отправки
-        screenshot_bytes = base64.b64decode(screenshot_base64)
-        
-        # Отправляем фото в Telegram
-        await update.message.reply_photo(
-            photo=screenshot_bytes,
-            caption="🖼️ Скриншот страницы"
-        )
+        # Делаем скриншот с увеличенным таймаутом
+        try:
+            screenshot_base64 = await asyncio.wait_for(
+                tab.take_screenshot(as_base64=True),
+                timeout=30.0
+            )
+            
+            # Декодируем base64 в байты для отправки
+            screenshot_bytes = base64.b64decode(screenshot_base64)
+            
+            # Отправляем фото в Telegram
+            await update.message.reply_photo(
+                photo=screenshot_bytes,
+                caption="🖼️ Скриншот страницы"
+            )
+            
+        except asyncio.TimeoutError:
+            await update.message.reply_text("⏰ Скриншот занимает слишком много времени. Попробуй ещё раз.")
             
     except Exception as e:
         logger.error(f"Ошибка: {e}")
@@ -168,6 +181,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--headless=new")
+        options.add_argument("--disable-gpu")
         options.binary_location = CHROME_PATH
         
         async with Chrome(options=options) as browser:
