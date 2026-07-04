@@ -166,7 +166,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка входа: {str(e)[:300]}")
 
 async def search_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Поиск на X.com с использованием extract_all"""
+    """Поиск на X.com с использованием extract_all (без ссылок и авторов)"""
     if not context.args:
         await update.message.reply_text("❌ Укажи текст для поиска\nПример: /search python")
         return
@@ -211,11 +211,7 @@ async def search_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             for i, tweet in enumerate(tweets[:10], 1):
                 text = tweet.text[:150] + "..." if len(tweet.text) > 150 else tweet.text
-                reply += f"{i}. {text}\n"
-                reply += f"   👤 {tweet.author}\n"
-                if tweet.link and tweet.link != "[ссылка не найдена]":
-                    reply += f"   🔗 https://x.com{tweet.link}\n"
-                reply += "\n"
+                reply += f"{i}. {text}\n\n"
             
             if count > 10:
                 reply += f"... и ещё {count - 10} твитов"
