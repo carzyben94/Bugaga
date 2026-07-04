@@ -29,51 +29,13 @@ if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен!")
 
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
-AGNES_BASE_URL = os.environ.get("AGNES_BASE_URL", "https://apihub.agnes-ai.com/v1")
 
 agnes_client = None
 if AGNES_API_KEY:
-    try:
-        agnes_client = AsyncOpenAI(
-            api_key=AGNES_API_KEY,
-            base_url=AGNES_BASE_URL
-        )
-        logger.info(f"✅ Agnes AI клиент инициализирован с URL: {AGNES_BASE_URL}")
-    except Exception as e:
-        logger.error(f"❌ Ошибка инициализации Agnes AI: {e}")
-
-# Список моделей для проверки
-AI_MODELS = [
-    "agnes-2.0-flash",
-    "agnes-vision",
-    "agnes-2.0",
-    "agnes-flash",
-    "gpt-4-vision-preview"
-]
-
-# Функция для проверки доступных моделей
-async def test_models():
-    """Проверяет доступные модели Agnes AI"""
-    if not agnes_client:
-        return []
-    
-    available_models = []
-    for model in AI_MODELS:
-        try:
-            response = await asyncio.wait_for(
-                agnes_client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": "Test"}],
-                    max_tokens=1
-                ),
-                timeout=5.0
-            )
-            available_models.append(model)
-            logger.info(f"✅ Модель доступна: {model}")
-        except Exception as e:
-            logger.warning(f"❌ Модель {model} не доступна: {e}")
-    
-    return available_models
+    agnes_client = AsyncOpenAI(
+        api_key=AGNES_API_KEY,
+        base_url="https://apihub.agnes-ai.com/v1"
+    )
 
 CHROME_PATH = '/usr/bin/chromium'
 
@@ -273,29 +235,29 @@ async def send_screen_with_buttons(update, user_id, caption="🎮 Джойсти
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     menu = (
-        "🤖 Бот для X.com\n\n"
-        "🎮 Джойстик\n"
+        "🤖 *Бот для X.com*\n\n"
+        "🎮 *Джойстик*\n"
         "/joystick — Открыть джойстик\n\n"
-        "🔐 Авторизация\n"
+        "🔐 *Авторизация*\n"
         "/login X.com\n"
         "/close Закрыть браузер\n\n"
-        "📸 Скриншот\n"
+        "📸 *Скриншот*\n"
         "/screen Скриншот\n\n"
-        "🔍 Поиск\n"
+        "🔍 *Поиск*\n"
         "/search Запрос\n\n"
-        "📸 Фото\n"
+        "📸 *Фото*\n"
         "/getbaby Случайное фото\n\n"
-        "⌨️ Ввод\n"
+        "⌨️ *Ввод*\n"
         "/type <текст> — Ввести текст\n\n"
-        "🧠 AI-зрение\n"
+        "🧠 *AI-зрение*\n"
         "/ai_find <что> — Найти элемент через AI\n"
         "/ai_click <что> — Найти и кликнуть через AI\n"
         "/click_num <номер> — Кликнуть по элементу из списка\n\n"
-        "⚡ JavaScript\n"
+        "⚡ *JavaScript*\n"
         "/eval <js> — Выполнить JavaScript\n"
         "/ai Любая команда (умный eval)"
     )
-    await update.message.reply_text(menu)
+    await update.message.reply_text(menu, parse_mode='Markdown')
 
 # ==================== ЛОГИН ====================
 
@@ -532,115 +494,139 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
         
-        # ===== AI ЧТО ВИДИШЬ? =====
+        # ===== AI-ЗРЕНИЕ =====
         elif action == "ai_what_see":
             try:
                 await query.message.delete()
                 await query.message.reply_text("👁️ Анализирую страницу...")
                 
-                if not agnes_client:
-                    await query.message.reply_text("❌ Agnes AI не инициализирован. Проверь API ключ.")
-                    return
-                
                 screenshot_base64 = await tab.take_screenshot(as_base64=True)
                 
-                # Проверяем доступные модели
-                available_models = await test_models()
-                if not available_models:
-                    await query.message.reply_text(
-                        "❌ Нет доступных моделей Agnes AI.\n"
-                        "Проверь API ключ и Base URL.\n"
-                        f"Текущий URL: {AGNES_BASE_URL}"
-                    )
-                    return
-                
-                # Используем первую доступную модель
-                model_to_use = available_models[0]
-                logger.info(f"Использую модель: {model_to_use}")
-                
-                try:
-                    response = await asyncio.wait_for(
-                        agnes_client.chat.completions.create(
-                            model=model_to_use,
-                            messages=[
-                                {"role": "system", "content": "Ты — эксперт по анализу интерфейсов. Отвечай кратко, просто списком."},
-                                {"role": "user", "content": [
-                                    {"type": "text", "text": """
-                                    Просто перечисли что видишь на скриншоте X.com.
-                                    
-                                    Формат:
-                                    Название элемента → (X, Y)
-                                    
-                                    Например:
-                                    Логотип X → (70, 60)
-                                    Главная → (70, 190)
-                                    Поиск → (70, 280)
-                                    Уведомления → (70, 370)
-                                    Сообщения → (70, 460)
-                                    Профиль → (70, 550)
-                                    Написать твит → (500, 700)
-                                    
-                                    Только список. Без лишнего текста.
-                                    """},
-                                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_base64}"}}
-                                ]}
-                            ],
-                            max_tokens=500,
-                            temperature=0.1
-                        ),
-                        timeout=30.0
-                    )
-                except asyncio.TimeoutError:
-                    await query.message.reply_text("⏰ AI не ответил за 30 секунд. Попробуй ещё раз.")
-                    return
-                except Exception as e:
-                    await query.message.reply_text(
-                        f"❌ Ошибка AI: {str(e)[:200]}\n\n"
-                        f"Проверь:\n"
-                        f"1. API ключ (AGNES_API_KEY)\n"
-                        f"2. Base URL: {AGNES_BASE_URL}\n"
-                        f"3. Модель: {model_to_use}"
-                    )
-                    return
+                response = await agnes_client.chat.completions.create(
+                    model="agnes-2.0-flash",
+                    messages=[
+                        {"role": "system", "content": """
+                        Ты — AI-агент по анализу интерфейсов. 
+                        Твоя задача — найти ВСЕ интерактивные элементы на скриншоте.
+                        Анализируй КАЖДЫЙ уголок изображения.
+                        Верни ТОЛЬКО JSON в указанном формате.
+                        """},
+                        {"role": "user", "content": [
+                            {"type": "text", "text": """
+                            Проанализируй этот скриншот X.com ПОДРОБНО.
+                            Найди ВСЕ элементы, с которыми можно взаимодействовать:
+                            
+                            ТИПЫ ЭЛЕМЕНТОВ:
+                            - Кнопки (лайк, ретвит, подписаться, ответить, поделиться)
+                            - Поля ввода (поиск, написать твит)
+                            - Ссылки и навигация (главная, explore, профиль, уведомления, сообщения)
+                            - Иконки действий (ещё, закладки, настройки)
+                            - Кнопки в твитах (лайк, ретвит, ответ, просмотр)
+                            
+                            Для КАЖДОГО элемента верни:
+                            1. Порядковый номер
+                            2. Тип (button, input, link, icon)
+                            3. Название/описание (что это)
+                            4. Координаты центра (x, y)
+                            5. Размер (ширина, высота)
+                            
+                            ФОРМАТ JSON:
+                            {
+                              "elements": [
+                                {
+                                  "id": 1,
+                                  "type": "button",
+                                  "name": "Лайк",
+                                  "x": 520,
+                                  "y": 310,
+                                  "width": 40,
+                                  "height": 40,
+                                  "description": "Кнопка лайка ❤️"
+                                }
+                              ]
+                            }
+                            
+                            ВЕРНИ ТОЛЬКО JSON, НИКАКОГО ТЕКСТА.
+                            АНАЛИЗИРУЙ ВЕСЬ СКРИНШОТ ПОЛНОСТЬЮ.
+                            """},
+                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_base64}"}}
+                        ]}
+                    ],
+                    max_tokens=2000,
+                    temperature=0.1
+                )
                 
                 result = response.choices[0].message.content
                 
-                # Парсим для сохранения координат
-                elements = []
-                lines = result.strip().split('\n')
-                for line in lines:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    
-                    coord_match = re.search(r'\((\d+),\s*(\d+)\)', line)
-                    if coord_match:
-                        x = int(coord_match.group(1))
-                        y = int(coord_match.group(2))
-                        name = re.sub(r'\s*\([\d,\s]+\)\s*$', '', line).strip()
-                        name = re.sub(r'\s*→\s*$', '', name)
-                        if name:
-                            elements.append({
-                                'id': len(elements) + 1,
-                                'name': name,
-                                'x': x,
-                                'y': y
-                            })
+                # Очищаем JSON от markdown
+                result = re.sub(r'```json\n?', '', result)
+                result = re.sub(r'```\n?', '', result)
+                result = result.strip()
                 
-                if elements:
-                    context.user_data['ai_elements'] = elements
+                # Проверка: если JSON неполный
+                if not result.endswith('}'):
+                    if result.count('{') > result.count('}'):
+                        result += '}]}'
+                
+                # Парсим JSON
+                try:
+                    data = json.loads(result)
+                    elements = data.get('elements', [])
                     
-                    reply = "👁️ Что вижу на странице:\n\n"
-                    for el in elements:
-                        reply += f"{el['name']} → ({el['x']}, {el['y']})\n"
-                    
-                    reply += f"\n📊 Всего: {len(elements)} элементов"
-                    reply += "\n💡 /click_num <номер> - кликнуть"
-                    
-                    await query.message.reply_text(reply)
-                else:
-                    await query.message.reply_text(f"👁️ Что вижу на странице:\n\n{result}")
-                    
+                    if elements:
+                        context.user_data['ai_elements'] = elements
+                        
+                        reply = "👁️ *Что я вижу на странице:*\n\n"
+                        
+                        # Группируем по типам
+                        buttons = [e for e in elements if e.get('type') == 'button']
+                        inputs = [e for e in elements if e.get('type') == 'input']
+                        links = [e for e in elements if e.get('type') == 'link']
+                        icons = [e for e in elements if e.get('type') == 'icon']
+                        
+                        if buttons:
+                            reply += "🔘 *Кнопки:*\n"
+                            for el in buttons[:10]:
+                                reply += f"  {el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
+                            if len(buttons) > 10:
+                                reply += f"  ... и ещё {len(buttons) - 10}\n"
+                            reply += "\n"
+                        
+                        if inputs:
+                            reply += "⌨️ *Поля ввода:*\n"
+                            for el in inputs[:5]:
+                                reply += f"  {el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
+                            reply += "\n"
+                        
+                        if links:
+                            reply += "🔗 *Ссылки:*\n"
+                            for el in links[:5]:
+                                reply += f"  {el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
+                            reply += "\n"
+                        
+                        if icons:
+                            reply += "🖼️ *Иконки:*\n"
+                            for el in icons[:5]:
+                                reply += f"  {el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
+                            reply += "\n"
+                        
+                        reply += f"📊 *Всего найдено: {len(elements)} элементов*\n\n"
+                        reply += "💡 *Чтобы кликнуть, отправь:* `/click_num <номер>`\n"
+                        reply += "💡 *Например:* `/click_num 1`"
+                        
+                        await query.message.reply_text(reply, parse_mode='Markdown')
+                        
+                    else:
+                        await query.message.reply_text("😕 Не найдено интерактивных элементов")
+                        
+                except json.JSONDecodeError as e:
+                    await query.message.reply_text(
+                        f"⚠️ *Ошибка парсинга JSON:* {str(e)[:100]}\n\n"
+                        f"📄 *Получено:*\n```\n{result[:800]}\n```\n\n"
+                        f"💡 Попробуй ещё раз или используй /ai_find",
+                        parse_mode='Markdown'
+                    )
+                
             except Exception as e:
                 logger.error(f"Ошибка: {e}")
                 await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
@@ -650,22 +636,10 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.delete()
                 await query.message.reply_text("📸 Делаю скриншот и анализирую...")
                 
-                if not agnes_client:
-                    await query.message.reply_text("❌ Agnes AI не инициализирован.")
-                    return
-                
                 screenshot_base64 = await tab.take_screenshot(as_base64=True)
                 
-                # Проверяем доступные модели
-                available_models = await test_models()
-                if not available_models:
-                    await query.message.reply_text("❌ Нет доступных моделей Agnes AI.")
-                    return
-                
-                model_to_use = available_models[0]
-                
                 response = await agnes_client.chat.completions.create(
-                    model=model_to_use,
+                    model="agnes-2.0-flash",
                     messages=[
                         {"role": "system", "content": "Ты — эксперт по анализу скриншотов. Верни ТОЛЬКО JSON с координатами."},
                         {"role": "user", "content": [
@@ -682,9 +656,9 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 coords = json.loads(response.choices[0].message.content)
                 
-                reply = "🧠 AI нашёл элементы:\n\n"
+                reply = "🧠 *AI нашёл элементы:*\n\n"
                 for name, coord in coords.items():
-                    reply += f"• {name}: ({coord[0]}, {coord[1]})\n"
+                    reply += f"• `{name}`: ({coord[0]}, {coord[1]})\n"
                 
                 await query.message.reply_text(reply)
                 
@@ -696,24 +670,12 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.delete()
                 await query.message.reply_text("📸 Делаю скриншот...")
                 
-                if not agnes_client:
-                    await query.message.reply_text("❌ Agnes AI не инициализирован.")
-                    return
-                
                 screenshot_base64 = await tab.take_screenshot(as_base64=True)
                 
                 await query.message.reply_text("🧠 Ищу кнопку лайка...")
                 
-                # Проверяем доступные модели
-                available_models = await test_models()
-                if not available_models:
-                    await query.message.reply_text("❌ Нет доступных моделей Agnes AI.")
-                    return
-                
-                model_to_use = available_models[0]
-                
                 response = await agnes_client.chat.completions.create(
-                    model=model_to_use,
+                    model="agnes-2.0-flash",
                     messages=[
                         {"role": "system", "content": "Ты — эксперт по анализу скриншотов. Верни ТОЛЬКО два числа: x и y координаты центра кнопки, разделённые запятой."},
                         {"role": "user", "content": [
@@ -726,10 +688,12 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 result = response.choices[0].message.content.strip()
                 
+                # Очищаем результат от лишних символов
                 result = re.sub(r'[\[\]\(\)"\']', '', result)
                 result = re.sub(r'координаты[:]?\s*', '', result, flags=re.IGNORECASE)
                 result = result.strip()
                 
+                # Извлекаем все числа
                 numbers = re.findall(r'\d+', result)
                 
                 if len(numbers) >= 2:
@@ -770,6 +734,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================== /click_num ====================
 
 async def click_num(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кликает по элементу по номеру из списка"""
     if not context.args:
         await update.message.reply_text("❌ Укажи номер элемента\nПример: /click_num 1")
         return
@@ -1031,14 +996,15 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not context.args:
         await update.message.reply_text(
-            "🤖 Умный /eval\n\n"
+            "🤖 *Умный /eval*\n\n"
             "Просто скажи что хочешь сделать:\n"
             "/ai найди твиты про войну\n"
             "/ai лайкни первый твит\n"
             "/ai сколько подписчиков\n"
             "/ai фото красивых девушек\n"
             "/ai прокрути вниз\n"
-            "/ai статистика"
+            "/ai статистика",
+            parse_mode='Markdown'
         )
         return
     
@@ -1050,7 +1016,7 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Сначала выполни /login")
             return
         
-        await update.message.reply_text("🧠 Генерирую код через Agnes AI...")
+        await update.message.reply_text("🧠 *Генерирую код через Agnes AI...*", parse_mode='Markdown')
         
         _, tab = user_browsers[user_id]
         
@@ -1060,7 +1026,7 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             current_url = ''
         
         if 'x.com' not in current_url and 'twitter.com' not in current_url:
-            await update.message.reply_text("🔄 Перехожу на X.com...")
+            await update.message.reply_text("🔄 Перехожу на X.com...", parse_mode='Markdown')
             await tab.go_to('https://x.com')
             await asyncio.sleep(3)
         
@@ -1084,18 +1050,11 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if len(page_info.get('testids', {})) == 0:
             await update.message.reply_text(
-                "❌ Не найдено элементов на странице.\n"
-                "Попробуй выполнить /login заново"
+                "❌ *Не найдено элементов на странице.*\n"
+                "Попробуй выполнить /login заново",
+                parse_mode='Markdown'
             )
             return
-        
-        # Проверяем доступные модели
-        available_models = await test_models()
-        if not available_models:
-            await update.message.reply_text("❌ Нет доступных моделей Agnes AI.")
-            return
-        
-        model_to_use = available_models[0]
         
         prompt = f"""
         Ты — агент по автоматизации X.com (Twitter).
@@ -1117,7 +1076,7 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         response = await asyncio.wait_for(
             agnes_client.chat.completions.create(
-                model=model_to_use,
+                model="agnes-2.0-flash",
                 messages=[
                     {"role": "system", "content": "Ты — эксперт по JavaScript. Отвечай ТОЛЬКО кодом. НИКАКИХ комментариев."},
                     {"role": "user", "content": prompt}
@@ -1148,15 +1107,16 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if not js_code or len(js_code) < 5:
             await update.message.reply_text(
-                "⚠️ Не удалось сгенерировать код.\n"
-                "Попробуй переформулировать команду."
+                "⚠️ *Не удалось сгенерировать код.*\n"
+                "Попробуй переформулировать команду.",
+                parse_mode='Markdown'
             )
             return
         
         await update.message.reply_text(
-            f"⚡ Выполняю код:\n"
-            f"{js_code[:400]}\n"
-            f"(показано первых 400 символов)"
+            f"⚡ *Выполняю код:*\n"
+            f"```javascript\n{js_code[:400]}\n```",
+            parse_mode='Markdown'
         )
         
         try:
@@ -1177,41 +1137,14 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             result_str = result_str[:1000] + '...'
         
         if not result_str or result_str == '""' or result_str == "''" or result_str == '[]':
-            await update.message.reply_text("⚠️ Результат пустой.")
+            await update.message.reply_text("⚠️ *Результат пустой.*")
         else:
-            await update.message.reply_text(f"📊 Результат:\n{result_str[:500]}")
+            await update.message.reply_text(f"📊 *Результат:*\n{result_str[:500]}")
         
     except asyncio.TimeoutError:
         await update.message.reply_text("⏰ Agnes AI не ответил вовремя. Попробуй позже.")
     except Exception as e:
         logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-# ==================== КОМАНДА /test_ai ====================
-
-async def test_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Тестирует подключение к Agnes AI"""
-    await update.message.reply_text("🔍 Проверяю подключение к Agnes AI...")
-    
-    if not agnes_client:
-        await update.message.reply_text("❌ Agnes AI не инициализирован. Проверь API ключ.")
-        return
-    
-    try:
-        available_models = await test_models()
-        if available_models:
-            reply = "✅ Доступные модели:\n\n"
-            for model in available_models:
-                reply += f"• {model}\n"
-            reply += f"\n🌐 Base URL: {AGNES_BASE_URL}"
-            await update.message.reply_text(reply)
-        else:
-            await update.message.reply_text(
-                f"❌ Нет доступных моделей.\n"
-                f"🌐 Base URL: {AGNES_BASE_URL}\n"
-                f"Проверь API ключ."
-            )
-    except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ==================== ОБРАБОТЧИК ОШИБОК ====================
@@ -1235,7 +1168,6 @@ def main():
     application.add_handler(CommandHandler("eval", evaluate_js))
     application.add_handler(CommandHandler("ai", ai_command))
     application.add_handler(CommandHandler("click_num", click_num))
-    application.add_handler(CommandHandler("test_ai", test_ai))  # Новая команда для теста
     
     application.add_handler(CallbackQueryHandler(joystick_callback))
     
@@ -1251,3 +1183,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+Что видишь?
