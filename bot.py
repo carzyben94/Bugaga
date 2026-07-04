@@ -136,7 +136,10 @@ def get_joystick_keyboard(user_id=None):
             InlineKeyboardButton("🔎 Поиск", callback_data="go_search"),
         ],
         [
+            InlineKeyboardButton("👁️ Что видишь?", callback_data="ai_what_see"),
             InlineKeyboardButton("🧠 AI Найти", callback_data="ai_find"),
+        ],
+        [
             InlineKeyboardButton("🧠 AI Клик", callback_data="ai_click"),
         ],
         [
@@ -248,7 +251,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/type <текст> — Ввести текст\n\n"
         "🧠 *AI-зрение*\n"
         "/ai_find <что> — Найти элемент через AI\n"
-        "/ai_click <что> — Найти и кликнуть через AI\n\n"
+        "/ai_click <что> — Найти и кликнуть через AI\n"
+        "/click_num <номер> — Кликнуть по элементу из списка\n\n"
         "⚡ *JavaScript*\n"
         "/eval <js> — Выполнить JavaScript\n"
         "/ai Любая команда (умный eval)"
@@ -490,7 +494,137 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
         
-        # ===== AI-ЗРЕНИЕ (ИСПРАВЛЕННОЕ) =====
+        # ===== AI-ЗРЕНИЕ =====
+        elif action == "ai_what_see":
+            try:
+                await query.message.delete()
+                await query.message.reply_text("👁️ Анализирую страницу...")
+                
+                screenshot_base64 = await tab.take_screenshot(as_base64=True)
+                
+                response = await agnes_client.chat.completions.create(
+                    model="agnes-2.0-flash",
+                    messages=[
+                        {"role": "system", "content": """
+                        Ты — AI-агент по анализу интерфейсов. 
+                        Твоя задача — найти ВСЕ интерактивные элементы на скриншоте.
+                        Анализируй КАЖДЫЙ уголок изображения.
+                        Верни ТОЛЬКО JSON в указанном формате.
+                        """},
+                        {"role": "user", "content": [
+                            {"type": "text", "text": """
+                            Проанализируй этот скриншот X.com ПОДРОБНО.
+                            Найди ВСЕ элементы, с которыми можно взаимодействовать:
+                            
+                            ТИПЫ ЭЛЕМЕНТОВ:
+                            - Кнопки (лайк, ретвит, подписаться, ответить, поделиться)
+                            - Поля ввода (поиск, написать твит)
+                            - Ссылки и навигация (главная, explore, профиль, уведомления, сообщения)
+                            - Иконки действий (ещё, закладки, настройки)
+                            - Кнопки в твитах (лайк, ретвит, ответ, просмотр)
+                            
+                            Для КАЖДОГО элемента верни:
+                            1. Порядковый номер
+                            2. Тип (button, input, link, icon)
+                            3. Название/описание (что это)
+                            4. Координаты центра (x, y)
+                            5. Размер (ширина, высота)
+                            
+                            ФОРМАТ JSON:
+                            {
+                              "elements": [
+                                {
+                                  "id": 1,
+                                  "type": "button",
+                                  "name": "Лайк",
+                                  "x": 520,
+                                  "y": 310,
+                                  "width": 40,
+                                  "height": 40,
+                                  "description": "Кнопка лайка ❤️"
+                                }
+                              ]
+                            }
+                            
+                            ВЕРНИ ТОЛЬКО JSON, НИКАКОГО ТЕКСТА.
+                            АНАЛИЗИРУЙ ВЕСЬ СКРИНШОТ ПОЛНОСТЬЮ.
+                            """},
+                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_base64}"}}
+                        ]}
+                    ],
+                    max_tokens=1000,
+                    temperature=0.1
+                )
+                
+                result = response.choices[0].message.content
+                
+                # Очищаем JSON от markdown
+                result = re.sub(r'```json\n?', '', result)
+                result = re.sub(r'```\n?', '', result)
+                result = result.strip()
+                
+                # Парсим JSON
+                try:
+                    data = json.loads(result)
+                    elements = data.get('elements', [])
+                    
+                    if elements:
+                        context.user_data['ai_elements'] = elements
+                        
+                        reply = "👁️ *Что я вижу на странице:*\n\n"
+                        
+                        # Группируем по типам
+                        buttons = [e for e in elements if e.get('type') == 'button']
+                        inputs = [e for e in elements if e.get('type') == 'input']
+                        links = [e for e in elements if e.get('type') == 'link']
+                        icons = [e for e in elements if e.get('type') == 'icon']
+                        
+                        if buttons:
+                            reply += "🔘 *Кнопки:*\n"
+                            for el in buttons[:10]:
+                                reply += f"  {el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
+                            if len(buttons) > 10:
+                                reply += f"  ... и ещё {len(buttons) - 10}\n"
+                            reply += "\n"
+                        
+                        if inputs:
+                            reply += "⌨️ *Поля ввода:*\n"
+                            for el in inputs[:5]:
+                                reply += f"  {el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
+                            reply += "\n"
+                        
+                        if links:
+                            reply += "🔗 *Ссылки:*\n"
+                            for el in links[:5]:
+                                reply += f"  {el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
+                            reply += "\n"
+                        
+                        if icons:
+                            reply += "🖼️ *Иконки:*\n"
+                            for el in icons[:5]:
+                                reply += f"  {el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
+                            reply += "\n"
+                        
+                        reply += f"📊 *Всего найдено: {len(elements)} элементов*\n\n"
+                        reply += "💡 *Чтобы кликнуть, отправь:* `/click_num <номер>`\n"
+                        reply += "💡 *Например:* `/click_num 1`"
+                        
+                        await query.message.reply_text(reply, parse_mode='Markdown')
+                        
+                    else:
+                        await query.message.reply_text("😕 Не найдено интерактивных элементов")
+                        
+                except json.JSONDecodeError:
+                    await query.message.reply_text(
+                        f"⚠️ *AI вернул невалидный JSON.*\n\n"
+                        f"```\n{result[:500]}\n```",
+                        parse_mode='Markdown'
+                    )
+                
+            except Exception as e:
+                logger.error(f"Ошибка: {e}")
+                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        
         elif action == "ai_find":
             try:
                 await query.message.delete()
@@ -590,6 +724,51 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка: {e}")
         await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:300]}")
+
+# ==================== /click_num ====================
+
+async def click_num(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кликает по элементу по номеру из списка"""
+    if not context.args:
+        await update.message.reply_text("❌ Укажи номер элемента\nПример: /click_num 1")
+        return
+    
+    try:
+        num = int(context.args[0])
+        user_id = update.effective_user.id
+        
+        if user_id not in user_browsers:
+            await update.message.reply_text("❌ Сначала выполни /login")
+            return
+        
+        if 'ai_elements' not in context.user_data:
+            await update.message.reply_text("❌ Сначала нажми '👁️ Что видишь?'")
+            return
+        
+        elements = context.user_data['ai_elements']
+        
+        target = None
+        for el in elements:
+            if el.get('id') == num:
+                target = el
+                break
+        
+        if not target:
+            await update.message.reply_text(f"❌ Элемент с номером {num} не найден")
+            return
+        
+        x, y = target.get('x'), target.get('y')
+        name = target.get('name', 'элемент')
+        
+        _, tab = user_browsers[user_id]
+        cursor = get_cursor(user_id)
+        cursor.x, cursor.y = x, y
+        
+        await tab.mouse.click(x, y, humanize=True)
+        await update.message.reply_text(f"✅ Клик по элементу {num}: {name} → ({x}, {y})")
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ==================== КОМАНДЫ ====================
 
@@ -982,6 +1161,7 @@ def main():
     application.add_handler(CommandHandler("type", type_text))
     application.add_handler(CommandHandler("eval", evaluate_js))
     application.add_handler(CommandHandler("ai", ai_command))
+    application.add_handler(CommandHandler("click_num", click_num))
     
     application.add_handler(CallbackQueryHandler(joystick_callback))
     
