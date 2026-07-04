@@ -219,6 +219,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/search Запрос\n\n"
         "📸 *Фото*\n"
         "/getbaby Случайное фото\n\n"
+        "⌨️ *Ввод*\n"
+        "/type <текст> — Ввести текст\n\n"
         "⚡ *JavaScript*\n"
         "/eval <js> — Выполнить JavaScript\n"
         "/ai Любая команда (умный eval)"
@@ -473,8 +475,8 @@ async def type_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _, tab = user_browsers[user_id]
     
     try:
-        # Вводим текст в активное поле
-        await tab.type_text(text, humanize=True)
+        # ✅ Правильный метод — type()
+        await tab.type(text, humanize=True)
         await update.message.reply_text(f"✅ Введён текст: {text}")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
