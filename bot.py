@@ -8,7 +8,7 @@ import random
 from io import BytesIO
 from datetime import datetime
 from PIL import Image, ImageDraw
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 from pydoll.browser import Chrome
@@ -94,7 +94,8 @@ def draw_cursor_on_screenshot(screenshot_bytes, cursor_x, cursor_y):
         output = BytesIO()
         image.save(output, format='PNG')
         return output.getvalue()
-    except:
+    except Exception as e:
+        logger.error(f"Ошибка рисования курсора: {e}")
         return screenshot_bytes
 
 # ==================== КНОПКИ ДЖОЙСТИКА ====================
@@ -122,9 +123,11 @@ def get_joystick_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# ==================== ОТПРАВКА СКРИНА + КНОПОК ====================
+# ==================== ОТПРАВКА СКРИНА + КНОПОК (БЕЗ МИГАНИЯ) ====================
 
 async def send_screen_with_buttons(update, user_id, caption="🎮 Джойстик X.com"):
+    """Отправляет или обновляет скриншот с курсором + кнопки (без мигания)"""
+    
     if user_id not in user_browsers:
         if isinstance(update, Update) and update.callback_query:
             await update.callback_query.edit_message_text("❌ Сначала выполни /login")
@@ -146,16 +149,16 @@ async def send_screen_with_buttons(update, user_id, caption="🎮 Джойсти
         image_with_cursor = draw_cursor_on_screenshot(screenshot_bytes, x, y)
         
         if isinstance(update, Update) and update.callback_query:
-            try:
-                await update.callback_query.delete_message()
-            except:
-                pass
-            await update.effective_message.reply_photo(
-                photo=image_with_cursor,
-                caption=f"{caption}\n🖱️ Курсор: ({x}, {y})",
+            # ✅ Редактируем существующее сообщение (без мигания!)
+            await update.callback_query.edit_message_media(
+                media=InputMediaPhoto(
+                    media=image_with_cursor,
+                    caption=f"{caption}\n🖱️ Курсор: ({x}, {y})"
+                ),
                 reply_markup=get_joystick_keyboard()
             )
         else:
+            # Новое сообщение
             await update.message.reply_photo(
                 photo=image_with_cursor,
                 caption=f"{caption}\n🖱️ Курсор: ({x}, {y})",
