@@ -149,7 +149,7 @@ def get_joystick_keyboard(user_id=None):
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# ==================== ОТПРАВКА СКРИНА + КНОПОК (ИСПРАВЛЕННАЯ) ====================
+# ==================== ОТПРАВКА СКРИНА + КНОПОК ====================
 
 async def send_screen_with_buttons(update, user_id, caption="🎮 Джойстик X.com"):
     if user_id not in user_browsers:
@@ -177,7 +177,6 @@ async def send_screen_with_buttons(update, user_id, caption="🎮 Джойсти
         
         if isinstance(update, Update) and update.callback_query:
             try:
-                # Пробуем отредактировать сообщение с фото
                 await update.callback_query.edit_message_media(
                     media=InputMediaPhoto(
                         media=image_with_cursor,
@@ -186,7 +185,6 @@ async def send_screen_with_buttons(update, user_id, caption="🎮 Джойсти
                     reply_markup=get_joystick_keyboard(user_id)
                 )
             except Exception as e:
-                # Если не получается — удаляем и отправляем новое
                 try:
                     await update.callback_query.message.delete()
                 except:
@@ -492,7 +490,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
         
-        # ===== AI-ЗРЕНИЕ =====
+        # ===== AI-ЗРЕНИЕ (ИСПРАВЛЕННОЕ) =====
         elif action == "ai_find":
             try:
                 await query.message.delete()
@@ -539,9 +537,9 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 response = await agnes_client.chat.completions.create(
                     model="agnes-2.0-flash",
                     messages=[
-                        {"role": "system", "content": "Ты — эксперт по анализу скриншотов. Верни ТОЛЬКО координаты x,y."},
+                        {"role": "system", "content": "Ты — эксперт по анализу скриншотов. Верни ТОЛЬКО два числа: x и y координаты центра кнопки, разделённые запятой."},
                         {"role": "user", "content": [
-                            {"type": "text", "text": "Найди на этом скриншоте кнопку лайка (❤️). Верни координаты центра кнопки."},
+                            {"type": "text", "text": "Найди на этом скриншоте кнопку лайка (❤️). Верни координаты центра кнопки в формате x, y."},
                             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_base64}"}}
                         ]}
                     ],
@@ -549,13 +547,25 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 
                 result = response.choices[0].message.content.strip()
-                x, y = map(int, result.split(','))
                 
-                cursor = get_cursor(user_id)
-                cursor.x, cursor.y = x, y
+                # Очищаем результат от лишних символов
+                result = re.sub(r'[\[\]\(\)"\']', '', result)
+                result = re.sub(r'координаты[:]?\s*', '', result, flags=re.IGNORECASE)
+                result = result.strip()
                 
-                await tab.mouse.click(x, y, humanize=True)
-                await send_screen_with_buttons(update, user_id, f"🧠 AI клик по лайку! ({x}, {y})")
+                # Извлекаем все числа
+                numbers = re.findall(r'\d+', result)
+                
+                if len(numbers) >= 2:
+                    x, y = int(numbers[0]), int(numbers[1])
+                    
+                    cursor = get_cursor(user_id)
+                    cursor.x, cursor.y = x, y
+                    
+                    await tab.mouse.click(x, y, humanize=True)
+                    await send_screen_with_buttons(update, user_id, f"🧠 AI клик по лайку! ({x}, {y})")
+                else:
+                    await query.message.reply_text(f"❌ Не удалось распознать координаты: {result}")
                 
             except Exception as e:
                 await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
