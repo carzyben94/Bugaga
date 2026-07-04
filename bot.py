@@ -29,7 +29,7 @@ class Quote(ExtractionModel):
 
 # Модель для парсинга твитов
 class Tweet(ExtractionModel):
-    """Модель для извлечения данных из твита"""
+    """Модель для извлечения данных из твита через extract_all"""
     text: str = Field(selector='div[data-testid="tweetText"]', default="[текст не найден]")
     author: str = Field(selector='div[data-testid="User-Name"] span', default="[автор не найден]")
 
@@ -61,7 +61,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔐 Авторизация\n"
         "/login — Войти в X.com\n\n"
         "🔍 Навигация\n"
-        "/search <текст> — Поиск на X.com\n"
+        "/search <текст> — Поиск на X.com (extract_all)\n"
         "/go <url> — Открыть сайт\n"
         "/scroll <top|bottom|px> — Прокрутка\n\n"
         "📸 Скриншоты\n"
@@ -76,7 +76,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/cookie {\"name\":\"value\"} — Установить куки\n\n"
         "⚡ Другое\n"
         "/eval <js> — Выполнить JS\n"
-        "/parse — Получить цитаты\n\n"
+        "/parse — Получить цитаты (extract_all)\n\n"
         "📖 Селекторы: .class #id div > p"
     )
     
@@ -154,7 +154,9 @@ async def search_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await tab.go_to(search_url)
         await asyncio.sleep(5)
         
-        # 2. ИЗВЛЕЧЕНИЕ данных через extract_all
+        # 2. ИЗВЛЕЧЕНИЕ данных через extract_all (ОДИН ЗАПРОС!)
+        await update.message.reply_text("📊 Извлекаю твиты через extract_all...")
+        
         tweets = await tab.extract_all(
             Tweet,
             scope='article[data-testid="tweet"]',
@@ -175,7 +177,7 @@ async def search_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 4. ВЫВОД результатов
         if tweets:
             count = len(tweets)
-            reply = f"📊 Найдено {count} твитов\n\n"
+            reply = f"📊 Найдено {count} твитов (extract_all)\n\n"
             
             for i, tweet in enumerate(tweets[:10], 1):
                 text = tweet.text[:150] + "..." if len(tweet.text) > 150 else tweet.text
