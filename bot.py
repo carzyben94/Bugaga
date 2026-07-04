@@ -21,13 +21,16 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен!")
 
+# Модель для парсинга цитат
 class Quote(ExtractionModel):
     text: str = Field(selector='.text')
     author: str = Field(selector='.author')
     tags: str = Field(selector='.tag')
 
+# Путь к браузеру
 CHROME_PATH = '/usr/bin/chromium'
 
+# Куки для X.com
 X_COOKIES = [
     {"name": "__cuid", "value": "55d2d7c5-4888-430a-b024-dd785da46ef4", "domain": ".x.com", "path": "/"},
     {"name": "lang", "value": "ru", "domain": ".x.com", "path": "/"},
@@ -42,6 +45,7 @@ X_COOKIES = [
     {"name": "__cf_bm", "value": "0lyNYlKnbjXejqIk_blw2x20TfMRtW3SWJ_jmpay.t4-1783123617.0158947-1.0.1.1-1rnugK6C5Aw5r.126FQ3rJYZTCG2WhtPATFYO5Ip0QukW40cCR0qDNfacg6VRv3vRh3w.4Un_NQ6hOnxQfvhm68Grg1hZiLbF6HAyxvxzmS06Q8AzQkKu_i248B5sxj7", "domain": ".x.com", "path": "/"}
 ]
 
+# Храним браузер и вкладку для каждого пользователя
 user_browsers = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -122,7 +126,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка входа: {str(e)[:300]}")
 
 async def search_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Поиск на X.com"""
+    """Поиск на X.com с выводом первых 10 твитов"""
     if not context.args:
         await update.message.reply_text("❌ Укажи текст для поиска\nПример: /search python")
         return
@@ -139,29 +143,60 @@ async def search_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         _, tab = user_browsers[user_id]
         
+        # Переходим на страницу поиска
         search_url = f"https://x.com/search?q={search_query}&src=typed_query"
         await tab.go_to(search_url)
         await asyncio.sleep(5)
         
+        # Делаем скриншот
         screenshot_base64 = await asyncio.wait_for(
             tab.take_screenshot(as_base64=True),
             timeout=30.0
         )
         screenshot_bytes = base64.b64decode(screenshot_base64)
-        
         await update.message.reply_photo(
             photo=screenshot_bytes,
             caption=f"🔍 Результаты поиска: {search_query}"
         )
         
+        # Парсим твиты
+        await update.message.reply_text("📊 Извлекаю твиты...")
+        
         try:
+            # Находим все твиты на странице
             tweets = await tab.find_all('article[data-testid="tweet"]')
+            
             if tweets:
-                await update.message.reply_text(f"📊 Найдено {len(tweets)} твитов")
+                count = len(tweets)
+                reply = f"📊 Найдено {count} твитов\n\n"
+                
+                # Показываем первые 10 твитов
+                for i, tweet in enumerate(tweets[:10], 1):
+                    try:
+                        # Ищем текст твита
+                        text_element = await tweet.find('div[data-testid="tweetText"]')
+                        if text_element:
+                            text = await text_element.text()
+                            # Обрезаем длинные твиты
+                            if len(text) > 150:
+                                text = text[:150] + "..."
+                            reply += f"{i}. {text}\n\n"
+                        else:
+                            reply += f"{i}. [текст не найден]\n\n"
+                    except Exception as e:
+                        reply += f"{i}. [ошибка парсинга]\n\n"
+                
+                if count > 10:
+                    reply += f"... и ещё {count - 10} твитов"
+                
+                await update.message.reply_text(reply)
+                
             else:
                 await update.message.reply_text("📊 Твиты не найдены")
-        except:
-            await update.message.reply_text("📊 Страница загружена")
+                
+        except Exception as e:
+            logger.error(f"Ошибка парсинга твитов: {e}")
+            await update.message.reply_text("📊 Страница загружена, но твиты не найдены")
             
     except Exception as e:
         logger.error(f"Ошибка: {e}")
