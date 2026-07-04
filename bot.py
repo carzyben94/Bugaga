@@ -55,6 +55,17 @@ X_COOKIES = [
 
 user_browsers = {}
 
+# ==================== ФУНКЦИЯ ЭКРАНИРОВАНИЯ ====================
+
+def escape_markdown(text):
+    """Экранирует спецсимволы для Telegram Markdown"""
+    if not text:
+        return text
+    special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    for char in special_chars:
+        text = text.replace(char, f'\\{char}')
+    return text
+
 # ==================== КУРСОР ====================
 
 class CursorManager:
@@ -587,7 +598,8 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         if buttons:
                             reply += "🔘 *Кнопки:*\n"
                             for el in buttons[:10]:
-                                reply += f"  {el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
+                                name = escape_markdown(el.get('name', 'элемент'))
+                                reply += f"  {el['id']}. {name} → ({el['x']}, {el['y']})\n"
                             if len(buttons) > 10:
                                 reply += f"  ... и ещё {len(buttons) - 10}\n"
                             reply += "\n"
@@ -595,19 +607,22 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         if inputs:
                             reply += "⌨️ *Поля ввода:*\n"
                             for el in inputs[:5]:
-                                reply += f"  {el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
+                                name = escape_markdown(el.get('name', 'поле'))
+                                reply += f"  {el['id']}. {name} → ({el['x']}, {el['y']})\n"
                             reply += "\n"
                         
                         if links:
                             reply += "🔗 *Ссылки:*\n"
                             for el in links[:5]:
-                                reply += f"  {el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
+                                name = escape_markdown(el.get('name', 'ссылка'))
+                                reply += f"  {el['id']}. {name} → ({el['x']}, {el['y']})\n"
                             reply += "\n"
                         
                         if icons:
                             reply += "🖼️ *Иконки:*\n"
                             for el in icons[:5]:
-                                reply += f"  {el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
+                                name = escape_markdown(el.get('name', 'иконка'))
+                                reply += f"  {el['id']}. {name} → ({el['x']}, {el['y']})\n"
                             reply += "\n"
                         
                         reply += f"📊 *Всего найдено: {len(elements)} элементов*\n\n"
@@ -660,7 +675,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 for name, coord in coords.items():
                     reply += f"• `{name}`: ({coord[0]}, {coord[1]})\n"
                 
-                await query.message.reply_text(reply)
+                await query.message.reply_text(reply, parse_mode='Markdown')
                 
             except Exception as e:
                 await query.message.reply_text(f"❌ Ошибка AI: {str(e)[:200]}")
