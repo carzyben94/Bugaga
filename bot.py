@@ -21,16 +21,13 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен!")
 
-# Модель для парсинга цитат
 class Quote(ExtractionModel):
     text: str = Field(selector='.text')
     author: str = Field(selector='.author')
     tags: str = Field(selector='.tag')
 
-# Путь к браузеру
 CHROME_PATH = '/usr/bin/chromium'
 
-# Куки для X.com
 X_COOKIES = [
     {"name": "__cuid", "value": "55d2d7c5-4888-430a-b024-dd785da46ef4", "domain": ".x.com", "path": "/"},
     {"name": "lang", "value": "ru", "domain": ".x.com", "path": "/"},
@@ -45,36 +42,35 @@ X_COOKIES = [
     {"name": "__cf_bm", "value": "0lyNYlKnbjXejqIk_blw2x20TfMRtW3SWJ_jmpay.t4-1783123617.0158947-1.0.1.1-1rnugK6C5Aw5r.126FQ3rJYZTCG2WhtPATFYO5Ip0QukW40cCR0qDNfacg6VRv3vRh3w.4Un_NQ6hOnxQfvhm68Grg1hZiLbF6HAyxvxzmS06Q8AzQkKu_i248B5sxj7", "domain": ".x.com", "path": "/"}
 ]
 
-# Храним браузер и вкладку для каждого пользователя
 user_browsers = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Приветственное меню"""
     menu = (
-        "🤖 *Бот для автоматизации*\n\n"
-        "🔐 *Авторизация*\n"
+        "🤖 Бот для автоматизации\n\n"
+        "🔐 Авторизация\n"
         "/login — Войти в X.com\n\n"
-        "🔍 *Навигация*\n"
+        "🔍 Навигация\n"
         "/search <текст> — Поиск на X.com\n"
         "/go <url> — Открыть сайт\n"
         "/scroll <top|bottom|px> — Прокрутка\n\n"
-        "📸 *Скриншоты*\n"
+        "📸 Скриншоты\n"
         "/screen — Скриншот страницы\n\n"
-        "🔎 *Элементы*\n"
+        "🔎 Элементы\n"
         "/find <selector> — Найти элемент\n"
         "/find_all <selector> — Найти все\n"
         "/click <selector> — Кликнуть\n"
         "/type <selector> <text> — Ввести текст\n"
         "/wait <selector> — Ожидать элемент\n\n"
-        "🍪 *Куки*\n"
+        "🍪 Куки\n"
         "/cookie {\"name\":\"value\"} — Установить куки\n\n"
-        "⚡ *Другое*\n"
+        "⚡ Другое\n"
         "/eval <js> — Выполнить JS\n"
         "/parse — Получить цитаты\n\n"
-        "📖 *Селекторы:* `.class` `#id` `div > p`"
+        "📖 Селекторы: .class #id div > p"
     )
     
-    await update.message.reply_text(menu, parse_mode='Markdown')
+    await update.message.reply_text(menu)
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Автоматический вход на X.com с куками"""
