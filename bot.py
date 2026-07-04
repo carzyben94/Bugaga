@@ -42,20 +42,18 @@ user_browsers = {}
 # ==================== МОДЕЛИ ====================
 
 def clean_text(text):
-    """Очищает текст от мусора (по документации Pydoll)"""
+    """Очищает текст от мусора"""
     if not text:
         return ""
-    # Заменяем неразрывные пробелы на обычные
     text = text.replace('\u00a0', ' ')
-    # Заменяем переносы строк на пробелы
     text = text.replace('\n', ' ')
-    # Убираем лишние пробелы
     text = ' '.join(text.split())
     return text
 
 class Tweet(ExtractionModel):
     text: str = Field(
         selector='div[data-testid="tweetText"]',
+        attribute='innerText',  # ✅ Явно указываем атрибут (по документации)
         default="[текст не найден]",
         transform=clean_text
     )
