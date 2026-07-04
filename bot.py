@@ -337,10 +337,10 @@ async def getbaby(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
-# ==================== AI КОМАНДА (Agnes AI) ====================
+# ==================== AI КОМАНДА (С ЛОГАМИ) ====================
 
 async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Выполняет любую команду через Agnes AI"""
+    """Выполняет любую команду через Agnes AI с логированием"""
     if not AGNES_API_KEY:
         await update.message.reply_text(
             "❌ Agnes API ключ не найден.\n"
@@ -377,11 +377,14 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Сначала выполни /login")
             return
         
-        await update.message.reply_text("🧠 Думаю...")
+        # ✅ ЛОГ 1: Начало
+        await update.message.reply_text("🧠 *Этап 1/5:* Анализирую команду...", parse_mode='Markdown')
         
         _, tab = user_browsers[user_id]
         
-        # Получаем контекст страницы
+        # ✅ ЛОГ 2: Сбор контекста
+        await update.message.reply_text("📊 *Этап 2/5:* Собираю контекст страницы...", parse_mode='Markdown')
+        
         page_info = await tab.execute_script("""
             (function() {
                 const ids = {};
@@ -399,6 +402,19 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 };
             })()
         """)
+        
+        # Показываем сколько найдено элементов
+        testids_count = len(page_info.get('testids', {}))
+        await update.message.reply_text(
+            f"✅ *Контекст собран:*\n"
+            f"• URL: {page_info.get('url', 'неизвестно')[:50]}...\n"
+            f"• Твитов на странице: {page_info.get('tweet_count', 0)}\n"
+            f"• Найдено data-testid: {testids_count}",
+            parse_mode='Markdown'
+        )
+        
+        # ✅ ЛОГ 3: Отправка в Agnes AI
+        await update.message.reply_text("🧠 *Этап 3/5:* Отправляю запрос в Agnes AI...", parse_mode='Markdown')
         
         # Формируем промпт
         prompt = f"""
@@ -418,29 +434,47 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         - Если данные сложные — верни JSON
         - Не используй console.log, используй return
         - Код должен быть готов к выполнению в браузере
+        - ВЕРНИ ПОЛНЫЙ КОД, НЕ ОБРЕЗАЙ ЕГО
         
         Верни ТОЛЬКО код, без пояснений и markdown.
         """
         
-        # ✅ ПРАВИЛЬНАЯ МОДЕЛЬ ДЛЯ AGNES AI
         try:
             response = await agnes_client.chat.completions.create(
-                model="agnes-2.0-flash",  # ← Правильная модель!
+                model="agnes-2.0-flash",
                 messages=[
-                    {"role": "system", "content": "Ты — эксперт по JavaScript и автоматизации браузера. Отвечай только кодом, без пояснений."},
+                    {"role": "system", "content": "Ты — эксперт по JavaScript и автоматизации браузера. Отвечай только кодом, без пояснений. Возвращай ПОЛНЫЙ код, не обрезай."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.1,
-                max_tokens=500
+                max_tokens=1500
             )
             
             js_code = response.choices[0].message.content
+            
+            # ✅ ЛОГ 4: Код получен
+            await update.message.reply_text(
+                f"✅ *Этап 4/5:* Код сгенерирован!\n"
+                f"📏 Длина кода: {len(js_code)} символов",
+                parse_mode='Markdown'
+            )
             
             # Очищаем код от markdown
             js_code = re.sub(r'```javascript\n?', '', js_code)
             js_code = re.sub(r'```json\n?', '', js_code)
             js_code = re.sub(r'```\n?', '', js_code)
             js_code = js_code.strip()
+            
+            # Проверяем код
+            if not js_code or len(js_code) < 10:
+                await update.message.reply_text(
+                    "❌ Agnes AI вернул пустой или слишком короткий код.\n"
+                    "Попробуй переформулировать команду."
+                )
+                return
+            
+            # ✅ ЛОГ 5: Выполнение
+            await update.message.reply_text("⚡ *Этап 5/5:* Выполняю код в браузере...", parse_mode='Markdown')
             
             # Выполняем код в браузере
             result = await tab.execute_script(js_code)
@@ -454,13 +488,26 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(result_str) > 1500:
                 result_str = result_str[:1500] + '...'
             
-            # Отправляем ответ
-            await update.message.reply_text(
-                f"🤖 *Выполнено:* {command}\n\n"
-                f"```javascript\n{js_code[:500]}\n```\n"
-                f"📊 *Результат:*\n{result_str[:500]}",
-                parse_mode='Markdown'
-            )
+            # ✅ ФИНАЛЬНЫЙ ОТВЕТ
+            if not result_str or result_str == '""' or result_str == "''":
+                await update.message.reply_text(
+                    f"✅ *ГОТОВО!*\n\n"
+                    f"🤖 *Команда:* {command}\n\n"
+                    f"📝 *Сгенерированный код:*\n"
+                    f"```javascript\n{js_code[:500]}\n```\n"
+                    f"⚠️ *Результат пустой.*\n"
+                    f"Проверь, что ты на правильной странице.",
+                    parse_mode='Markdown'
+                )
+            else:
+                await update.message.reply_text(
+                    f"✅ *ГОТОВО!*\n\n"
+                    f"🤖 *Команда:* {command}\n\n"
+                    f"📝 *Сгенерированный код:*\n"
+                    f"```javascript\n{js_code[:500]}\n```\n"
+                    f"📊 *Результат:*\n{result_str[:500]}",
+                    parse_mode='Markdown'
+                )
             
         except Exception as e:
             error_msg = str(e)
