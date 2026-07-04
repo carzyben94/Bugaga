@@ -30,6 +30,21 @@ class Quote(ExtractionModel):
 # Путь к браузеру
 CHROME_PATH = '/usr/bin/chromium'
 
+# Куки для X.com
+X_COOKIES = [
+    {"name": "__cuid", "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"},
+    {"name": "lang", "value": "ru"},
+    {"name": "dnt", "value": "1"},
+    {"name": "guest_id", "value": "v1%3A178267838599411411"},
+    {"name": "guest_id_marketing", "value": "v1%3A178267838599411411"},
+    {"name": "guest_id_ads", "value": "v1%3A178267838599411411"},
+    {"name": "personalization_id", "value": "\"v1_DKrxLZAC902dMFdd1QrVYg==\""},
+    {"name": "twid", "value": "u%3D2067347503503052800"},
+    {"name": "auth_token", "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936"},
+    {"name": "ct0", "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb"},
+    {"name": "__cf_bm", "value": "0lyNYlKnbjXejqIk_blw2x20TfMRtW3SWJ_jmpay.t4-1783123617.0158947-1.0.1.1-1rnugK6C5Aw5r.126FQ3rJYZTCG2WhtPATFYO5Ip0QukW40cCR0qDNfacg6VRv3vRh3w.4Un_NQ6hOnxQfvhm68Grg1hZiLbF6HAyxvxzmS06Q8AzQkKu_i248B5sxj7"}
+]
+
 # Храним браузер и вкладку для каждого пользователя
 user_browsers = {}
 
@@ -37,11 +52,66 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Приветственное меню"""
     await update.message.reply_text(
         "📋 Доступные команды:\n"
+        "/login - Войти в X.com\n"
         "/parse - Получить цитаты\n"
         "/go <url> - Открыть любой сайт\n"
         "/screen - Сделать скриншот\n"
         "/cookie {\"name\":\"value\"} - Установить куки"
     )
+
+async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Автоматический вход на X.com с куками"""
+    user_id = update.effective_user.id
+    
+    try:
+        await update.message.reply_text("🔐 Выполняю вход на X.com...")
+        
+        options = ChromiumOptions()
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--headless=new")
+        options.add_argument("--disable-gpu")
+        options.binary_location = CHROME_PATH
+        
+        # Создаём новый браузер
+        browser = Chrome(options=options)
+        tab = await browser.start()
+        
+        # Открываем X.com
+        await tab.go_to('https://x.com')
+        await asyncio.sleep(2)
+        
+        # Устанавливаем куки
+        await tab.set_cookies(X_COOKIES)
+        await asyncio.sleep(1)
+        
+        # Перезагружаем страницу для применения кук
+        await tab.go_to('https://x.com')
+        await asyncio.sleep(3)
+        
+        # Сохраняем браузер для пользователя
+        user_browsers[user_id] = (browser, tab)
+        
+        await update.message.reply_text(
+            "✅ Вход выполнен успешно!\n"
+            "Теперь ты авторизован на X.com\n\n"
+            "📸 Используй /screen для скриншота"
+        )
+        
+        # Делаем скриншот для подтверждения
+        try:
+            screenshot_base64 = await tab.take_screenshot(as_base64=True)
+            screenshot_bytes = base64.b64decode(screenshot_base64)
+            await update.message.reply_photo(
+                photo=screenshot_bytes,
+                caption="🖼️ Ты авторизован на X.com!"
+            )
+        except:
+            await update.message.reply_text("⚠️ Не удалось сделать скриншот, но вход выполнен.")
+            
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка входа: {str(e)[:300]}")
 
 async def go(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Открывает любой сайт"""
@@ -95,7 +165,7 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         # Проверяем, есть ли активный браузер
         if user_id not in user_browsers:
-            await update.message.reply_text("❌ Сначала открой сайт командой /go")
+            await update.message.reply_text("❌ Сначала открой сайт командой /go или /login")
             return
         
         await update.message.reply_text("📸 Делаю скриншот...")
@@ -134,7 +204,7 @@ async def cookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Проверяем, есть ли активный браузер
     if user_id not in user_browsers:
-        await update.message.reply_text("❌ Сначала открой сайт командой /go")
+        await update.message.reply_text("❌ Сначала открой сайт командой /go или /login")
         return
     
     # Проверяем, есть ли JSON
@@ -218,6 +288,7 @@ def main():
     
     # Регистрируем команды
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("login", login))
     application.add_handler(CommandHandler("go", go))
     application.add_handler(CommandHandler("screen", screen))
     application.add_handler(CommandHandler("cookie", cookie))
