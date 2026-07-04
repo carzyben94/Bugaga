@@ -27,6 +27,12 @@ class Quote(ExtractionModel):
     author: str = Field(selector='.author')
     tags: str = Field(selector='.tag')
 
+# Модель для парсинга твитов
+class Tweet(ExtractionModel):
+    """Модель для извлечения данных из твита"""
+    text: str = Field(selector='div[data-testid="tweetText"]', default="[текст не найден]")
+    author: str = Field(selector='div[data-testid="User-Name"] span', default="[автор не найден]")
+
 # Путь к браузеру
 CHROME_PATH = '/usr/bin/chromium'
 
@@ -126,7 +132,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка входа: {str(e)[:300]}")
 
 async def search_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Поиск на X.com с выводом первых 10 твитов"""
+    """Поиск на X.com с использованием extract_all"""
     if not context.args:
         await update.message.reply_text("❌ Укажи текст для поиска\nПример: /search python")
         return
@@ -143,12 +149,19 @@ async def search_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         _, tab = user_browsers[user_id]
         
-        # Переходим на страницу поиска
+        # 1. ПЕРЕХОД на страницу поиска
         search_url = f"https://x.com/search?q={search_query}&src=typed_query"
         await tab.go_to(search_url)
         await asyncio.sleep(5)
         
-        # Делаем скриншот
+        # 2. ИЗВЛЕЧЕНИЕ данных через extract_all
+        tweets = await tab.extract_all(
+            Tweet,
+            scope='article[data-testid="tweet"]',
+            timeout=10
+        )
+        
+        # 3. Скриншот для наглядности
         screenshot_base64 = await asyncio.wait_for(
             tab.take_screenshot(as_base64=True),
             timeout=30.0
@@ -159,44 +172,21 @@ async def search_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
             caption=f"🔍 Результаты поиска: {search_query}"
         )
         
-        # Парсим твиты
-        await update.message.reply_text("📊 Извлекаю твиты...")
-        
-        try:
-            # Находим все твиты на странице
-            tweets = await tab.find_all('article[data-testid="tweet"]')
+        # 4. ВЫВОД результатов
+        if tweets:
+            count = len(tweets)
+            reply = f"📊 Найдено {count} твитов\n\n"
             
-            if tweets:
-                count = len(tweets)
-                reply = f"📊 Найдено {count} твитов\n\n"
-                
-                # Показываем первые 10 твитов
-                for i, tweet in enumerate(tweets[:10], 1):
-                    try:
-                        # Ищем текст твита
-                        text_element = await tweet.find('div[data-testid="tweetText"]')
-                        if text_element:
-                            text = await text_element.text()
-                            # Обрезаем длинные твиты
-                            if len(text) > 150:
-                                text = text[:150] + "..."
-                            reply += f"{i}. {text}\n\n"
-                        else:
-                            reply += f"{i}. [текст не найден]\n\n"
-                    except Exception as e:
-                        reply += f"{i}. [ошибка парсинга]\n\n"
-                
-                if count > 10:
-                    reply += f"... и ещё {count - 10} твитов"
-                
-                await update.message.reply_text(reply)
-                
-            else:
-                await update.message.reply_text("📊 Твиты не найдены")
-                
-        except Exception as e:
-            logger.error(f"Ошибка парсинга твитов: {e}")
-            await update.message.reply_text("📊 Страница загружена, но твиты не найдены")
+            for i, tweet in enumerate(tweets[:10], 1):
+                text = tweet.text[:150] + "..." if len(tweet.text) > 150 else tweet.text
+                reply += f"{i}. {text}\n   — {tweet.author}\n\n"
+            
+            if count > 10:
+                reply += f"... и ещё {count - 10} твитов"
+            
+            await update.message.reply_text(reply)
+        else:
+            await update.message.reply_text("📊 Твиты не найдены")
             
     except Exception as e:
         logger.error(f"Ошибка: {e}")
