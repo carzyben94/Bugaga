@@ -43,7 +43,7 @@ user_browsers = {}
 # ==================== МОДЕЛИ ====================
 
 class Tweet(ExtractionModel):
-    """Модель твита"""
+    """Модель твита (только текст)"""
     text: str = Field(
         selector='div[data-testid="tweetText"]',
         default="[текст не найден]"
@@ -53,9 +53,7 @@ class Tweet(ExtractionModel):
 
 def fix_text(text):
     """Исправляет слипшиеся слова (чтоИИ → что ИИ)"""
-    # Разделяем слова, где заглавная буква после строчной (русские)
     text = re.sub(r'([а-я])([А-Я])', r'\1 \2', text)
-    # Разделяем слова, где заглавная буква после буквы (латиница)
     text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
     return text
 
@@ -76,6 +74,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🤖 *Бот для X.com*\n\n"
         "🔐 *Авторизация*\n"
         "/login — Войти в X.com\n"
+        "/close — Закрыть браузер\n"
         "/screen — Скриншот текущей страницы\n\n"
         "🔍 *Поиск*\n"
         "/search <текст> — Поиск твитов"
@@ -117,6 +116,31 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка входа: {str(e)[:300]}")
 
+# ==================== ЗАКРЫТЬ БРАУЗЕР ====================
+
+async def close_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Закрывает браузер и очищает сессию"""
+    user_id = update.effective_user.id
+    
+    try:
+        if user_id not in user_browsers:
+            await update.message.reply_text("❌ Браузер уже закрыт или не был открыт")
+            return
+        
+        browser, tab = user_browsers[user_id]
+        
+        await update.message.reply_text("🔄 Закрываю браузер...")
+        
+        await browser.close()
+        
+        del user_browsers[user_id]
+        
+        await update.message.reply_text("✅ Браузер закрыт! Сессия очищена.")
+        
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка при закрытии браузера: {str(e)[:300]}")
+
 # ==================== СКРИНШОТ ====================
 
 async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -155,7 +179,6 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================== ПОИСК ====================
 
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Поиск твитов на X.com"""
     if not context.args:
         await update.message.reply_text("❌ Укажи текст для поиска\nПример: /search python")
         return
@@ -181,7 +204,6 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
             timeout=10
         )
         
-        # Скриншот
         screenshot_base64 = await asyncio.wait_for(
             tab.take_screenshot(as_base64=True),
             timeout=30.0
@@ -197,7 +219,6 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply = f"📊 Найдено {count} твитов\n\n"
             
             for i, tweet in enumerate(tweets[:10], 1):
-                # Исправляем и обрезаем текст
                 text = fix_text(tweet.text)
                 text = truncate_text(text, 600)
                 reply += f"{i}. {text}\n\n"
@@ -225,6 +246,7 @@ def main():
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("login", login))
+    application.add_handler(CommandHandler("close", close_browser))
     application.add_handler(CommandHandler("screen", screen))
     application.add_handler(CommandHandler("search", search))
     
