@@ -5,13 +5,15 @@ import base64
 import json
 import re
 import random
-import openai
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from pydoll.browser import Chrome
 from pydoll.browser.options import ChromiumOptions
 from pydoll.extractor import ExtractionModel, Field
+
+# Импортируем новый OpenAI клиент
+from openai import AsyncOpenAI
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -26,10 +28,13 @@ if not TOKEN:
 
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
 
-# Настройка OpenAI для Agnes AI
+# ✅ СОЗДАЁМ КЛИЕНТ (новый синтаксис OpenAI >=1.0.0)
+agnes_client = None
 if AGNES_API_KEY:
-    openai.api_key = AGNES_API_KEY
-    openai.base_url = "https://apihub.agnes-ai.com/v1"
+    agnes_client = AsyncOpenAI(
+        api_key=AGNES_API_KEY,
+        base_url="https://apihub.agnes-ai.com/v1"
+    )
 
 CHROME_PATH = '/usr/bin/chromium'
 
@@ -333,14 +338,20 @@ async def getbaby(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
-# ==================== AI КОМАНДА ====================
+# ==================== AI КОМАНДА (ИСПРАВЛЕННАЯ) ====================
 
 async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Выполняет любую команду через Agnes AI"""
+    """Выполняет любую команду через Agnes AI (OpenAI >=1.0.0)"""
     if not AGNES_API_KEY:
         await update.message.reply_text(
             "❌ Agnes API ключ не найден.\n"
             "Добавь AGNES_API_KEY в переменные окружения."
+        )
+        return
+    
+    if not agnes_client:
+        await update.message.reply_text(
+            "❌ Ошибка инициализации Agnes AI клиента."
         )
         return
     
@@ -412,9 +423,9 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         Верни ТОЛЬКО код, без пояснений и markdown.
         """
         
-        # 3. Запрашиваем код у Agnes AI
+        # 3. Запрашиваем код у Agnes AI (НОВЫЙ СИНТАКСИС!)
         try:
-            response = await openai.ChatCompletion.acreate(
+            response = await agnes_client.chat.completions.create(
                 model="gpt-4",
                 messages=[
                     {"role": "system", "content": "Ты — эксперт по JavaScript и автоматизации браузера. Отвечай только кодом, без пояснений."},
