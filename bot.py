@@ -71,10 +71,10 @@ def truncate_text(text, max_length=600):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     menu = (
-        "/login — Войти в X.com\n"
-        "/close — Закрыть браузер\n"
-        "/screen — Скриншот текущей страницы\n"
-        "/search <текст> — Поиск твитов"
+        "/login X.com\n"
+        "/close Закрыть браузер\n"
+        "/screen Скриншот\n"
+        "/search Запрос"
     )
     await update.message.reply_text(menu)
 
@@ -164,7 +164,7 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_photo(
             photo=screenshot_bytes,
-            caption=f"🖼️ Скриншот страницы\n📍 {url}"
+            caption=f"🖼️ Скриншот"
         )
         
     except asyncio.TimeoutError:
@@ -177,7 +177,7 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("❌ Укажи текст для поиска\nПример: /search python")
+        await update.message.reply_text("❌ Укажи запрос\nПример: /search python")
         return
     
     query = ' '.join(context.args)
