@@ -5,8 +5,11 @@ import base64
 import json
 import re
 import random
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from io import BytesIO
+from datetime import datetime
+from PIL import Image, ImageDraw
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 from pydoll.browser import Chrome
 from pydoll.browser.options import ChromiumOptions
@@ -53,6 +56,129 @@ X_COOKIES = [
 
 user_browsers = {}
 
+# ==================== КУРСОР ДЛЯ ДЖОЙСТИКА ====================
+
+class CursorManager:
+    def __init__(self):
+        self.x = 500
+        self.y = 300
+        self.step = 10
+    
+    def move(self, dx, dy):
+        self.x += dx
+        self.y += dy
+        return self.x, self.y
+    
+    def get_position(self):
+        return self.x, self.y
+
+cursor_managers = {}
+
+def get_cursor(user_id):
+    if user_id not in cursor_managers:
+        cursor_managers[user_id] = CursorManager()
+    return cursor_managers[user_id]
+
+# ==================== РИСОВАНИЕ КУРСОРА ====================
+
+def draw_cursor_on_screenshot(screenshot_bytes, cursor_x, cursor_y):
+    try:
+        image = Image.open(BytesIO(screenshot_bytes))
+        draw = ImageDraw.Draw(image)
+        
+        size = 15
+        draw.line([(cursor_x - size, cursor_y), (cursor_x + size, cursor_y)], fill='red', width=3)
+        draw.line([(cursor_x, cursor_y - size), (cursor_x, cursor_y + size)], fill='red', width=3)
+        draw.ellipse([(cursor_x - 3, cursor_y - 3), (cursor_x + 3, cursor_y + 3)], fill='red')
+        
+        output = BytesIO()
+        image.save(output, format='PNG')
+        return output.getvalue()
+    except:
+        return screenshot_bytes
+
+# ==================== КНОПКИ ДЖОЙСТИКА ====================
+
+def get_joystick_keyboard():
+    keyboard = [
+        [
+            InlineKeyboardButton("⬆️", callback_data="up"),
+        ],
+        [
+            InlineKeyboardButton("⬅️", callback_data="left"),
+            InlineKeyboardButton("🔄", callback_data="reset"),
+            InlineKeyboardButton("➡️", callback_data="right"),
+        ],
+        [
+            InlineKeyboardButton("⬇️", callback_data="down"),
+        ],
+        [
+            InlineKeyboardButton("🖱️ Клик", callback_data="click"),
+            InlineKeyboardButton("📸 Скрин", callback_data="screenshot"),
+        ],
+        [
+            InlineKeyboardButton("🔄 Обновить", callback_data="refresh"),
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+# ==================== ОТПРАВКА СКРИНА + КНОПОК ====================
+
+async def send_screen_with_buttons(update, user_id, caption="🎮 Джойстик X.com"):
+    if user_id not in user_browsers:
+        if isinstance(update, Update) and update.callback_query:
+            await update.callback_query.edit_message_text("❌ Сначала выполни /login")
+        else:
+            await update.message.reply_text("❌ Сначала выполни /login")
+        return None
+    
+    _, tab = user_browsers[user_id]
+    cursor = get_cursor(user_id)
+    x, y = cursor.get_position()
+    
+    try:
+        screenshot_base64 = await asyncio.wait_for(
+            tab.take_screenshot(as_base64=True),
+            timeout=30.0
+        )
+        screenshot_bytes = base64.b64decode(screenshot_base64)
+        
+        image_with_cursor = draw_cursor_on_screenshot(screenshot_bytes, x, y)
+        
+        if isinstance(update, Update) and update.callback_query:
+            try:
+                await update.callback_query.delete_message()
+            except:
+                pass
+            await update.effective_message.reply_photo(
+                photo=image_with_cursor,
+                caption=f"{caption}\n🖱️ Курсор: ({x}, {y})",
+                reply_markup=get_joystick_keyboard()
+            )
+        else:
+            await update.message.reply_photo(
+                photo=image_with_cursor,
+                caption=f"{caption}\n🖱️ Курсор: ({x}, {y})",
+                reply_markup=get_joystick_keyboard()
+            )
+        
+        return image_with_cursor
+        
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        error_text = f"❌ Ошибка: {str(e)[:300]}"
+        if isinstance(update, Update) and update.callback_query:
+            await update.callback_query.edit_message_text(
+                error_text,
+                reply_markup=get_joystick_keyboard()
+            )
+        else:
+            await update.message.reply_text(
+                error_text,
+                reply_markup=get_joystick_keyboard()
+            )
+        return None
+
 # ==================== МОДЕЛИ ====================
 
 class Tweet(ExtractionModel):
@@ -85,17 +211,100 @@ def fix_text(text):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     menu = (
+        "🤖 *Бот для X.com*\n\n"
+        "🔐 *Авторизация*\n"
         "/login X.com\n"
-        "/close Закрыть браузер\n"
-        "/screen Скриншот\n"
-        "/search Запрос\n"
-        "/getbaby Случайное фото\n"
-        "/ai Любая команда (умный eval)\n"
-        "/eval <js> — Выполнить JavaScript"
+        "/close Закрыть браузер\n\n"
+        "🎮 *Джойстик*\n"
+        "/joystick — Открыть джойстик\n\n"
+        "📸 *Скриншот*\n"
+        "/screen Скриншот\n\n"
+        "🔍 *Поиск*\n"
+        "/search Запрос\n\n"
+        "📸 *Фото*\n"
+        "/getbaby Случайное фото\n\n"
+        "⚡ *JavaScript*\n"
+        "/eval <js> — Выполнить JavaScript\n"
+        "/ai Любая команда (умный eval)"
     )
-    await update.message.reply_text(menu)
+    await update.message.reply_text(menu, parse_mode='Markdown')
 
-# ==================== АВТОРИЗАЦИЯ ====================
+# ==================== ДЖОЙСТИК ====================
+
+async def joystick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id in user_browsers:
+        await send_screen_with_buttons(update, user_id, "🎮 Джойстик X.com")
+    else:
+        await update.message.reply_text(
+            "❌ Сначала выполни /login",
+            reply_markup=get_joystick_keyboard()
+        )
+
+async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    action = query.data
+    
+    if user_id not in user_browsers:
+        await query.edit_message_text("❌ Сначала выполни /login")
+        return
+    
+    _, tab = user_browsers[user_id]
+    cursor = get_cursor(user_id)
+    
+    try:
+        if action == "up":
+            cursor.move(0, -10)
+            await send_screen_with_buttons(update, user_id, "⬆️ Вверх")
+        
+        elif action == "down":
+            cursor.move(0, 10)
+            await send_screen_with_buttons(update, user_id, "⬇️ Вниз")
+        
+        elif action == "left":
+            cursor.move(-10, 0)
+            await send_screen_with_buttons(update, user_id, "⬅️ Влево")
+        
+        elif action == "right":
+            cursor.move(10, 0)
+            await send_screen_with_buttons(update, user_id, "➡️ Вправо")
+        
+        elif action == "reset":
+            try:
+                viewport = await tab.execute_script("return { width: window.innerWidth, height: window.innerHeight }")
+                cursor.x = viewport['width'] // 2
+                cursor.y = viewport['height'] // 2
+            except:
+                cursor.x, cursor.y = 500, 300
+            await send_screen_with_buttons(update, user_id, "🔄 Курсор сброшен")
+        
+        elif action == "click":
+            try:
+                await tab.mouse.click(cursor.x, cursor.y, humanize=True)
+                await send_screen_with_buttons(update, user_id, f"🖱️ Клик по ({cursor.x}, {cursor.y})")
+            except Exception as e:
+                await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
+        
+        elif action == "screenshot":
+            await send_screen_with_buttons(update, user_id, "📸 Скриншот")
+        
+        elif action == "refresh":
+            await query.edit_message_text("🔄 Обновляю страницу...")
+            await tab.refresh()
+            await asyncio.sleep(2)
+            await send_screen_with_buttons(update, user_id, "✅ Страница обновлена")
+        
+        else:
+            await send_screen_with_buttons(update, user_id, "❌ Неизвестная команда")
+    
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:300]}")
+
+# ==================== ЛОГИН ====================
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -124,7 +333,15 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         user_browsers[user_id] = (browser, tab)
         
-        await update.message.reply_text("✅ Вход выполнен успешно!")
+        cursor = get_cursor(user_id)
+        try:
+            viewport = await tab.execute_script("return { width: window.innerWidth, height: window.innerHeight }")
+            cursor.x = viewport['width'] // 2
+            cursor.y = viewport['height'] // 2
+        except:
+            cursor.x, cursor.y = 500, 300
+        
+        await update.message.reply_text("✅ Вход выполнен!")
         
     except Exception as e:
         logger.error(f"Ошибка: {e}")
@@ -148,11 +365,14 @@ async def close_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         del user_browsers[user_id]
         
+        if user_id in cursor_managers:
+            del cursor_managers[user_id]
+        
         await update.message.reply_text("✅ Браузер закрыт! Сессия очищена.")
         
     except Exception as e:
         logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка при закрытии браузера: {str(e)[:300]}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
 # ==================== СКРИНШОТ ====================
 
@@ -167,6 +387,8 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📸 Делаю скриншот...")
         
         _, tab = user_browsers[user_id]
+        cursor = get_cursor(user_id)
+        x, y = cursor.get_position()
         
         await asyncio.sleep(1)
         
@@ -176,9 +398,11 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         screenshot_bytes = base64.b64decode(screenshot_base64)
         
+        image_with_cursor = draw_cursor_on_screenshot(screenshot_bytes, x, y)
+        
         await update.message.reply_photo(
-            photo=screenshot_bytes,
-            caption="🖼️ Скриншот"
+            photo=image_with_cursor,
+            caption=f"🖼️ Скриншот\n🖱️ Курсор: ({x}, {y})"
         )
         
     except asyncio.TimeoutError:
@@ -375,10 +599,9 @@ async def evaluate_js(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
-# ==================== AI КОМАНДА (УМНЫЙ EVAL) ====================
+# ==================== AI КОМАНДА ====================
 
 async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Умный /eval — генерирует код через Agnes AI и выполняет как /eval"""
     if not AGNES_API_KEY:
         await update.message.reply_text(
             "❌ Agnes API ключ не найден.\n"
@@ -418,7 +641,6 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         _, tab = user_browsers[user_id]
         
-        # ✅ Проверяем, на X.com ли мы
         try:
             current_url = await tab.current_url
         except:
@@ -429,7 +651,6 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await tab.go_to('https://x.com')
             await asyncio.sleep(3)
         
-        # ✅ Собираем контекст
         page_info = await tab.execute_script("""
             (function() {
                 const ids = {};
@@ -456,7 +677,6 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        # ✅ Генерируем JS код через Agnes AI
         prompt = f"""
         Ты — агент по автоматизации X.com (Twitter).
         
@@ -490,12 +710,10 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         js_code = response.choices[0].message.content
         
-        # Очищаем код от markdown
         js_code = re.sub(r'```javascript\n?', '', js_code)
         js_code = re.sub(r'```json\n?', '', js_code)
         js_code = re.sub(r'```\n?', '', js_code)
         
-        # ✅ Убираем комментарии
         lines = js_code.split('\n')
         clean_lines = []
         for line in lines:
@@ -516,14 +734,12 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        # ✅ ВЫПОЛНЯЕМ КОД (как /eval)
         await update.message.reply_text(
             f"⚡ *Выполняю код:*\n"
             f"```javascript\n{js_code[:400]}\n```",
             parse_mode='Markdown'
         )
         
-        # Выполняем код
         try:
             result = await asyncio.wait_for(
                 tab.execute_script(js_code),
@@ -533,7 +749,6 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ Выполнение кода заняло слишком много времени.")
             return
         
-        # Форматируем результат
         if isinstance(result, (list, dict)):
             result_str = json.dumps(result, ensure_ascii=False, indent=2)
         else:
@@ -543,7 +758,7 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             result_str = result_str[:1000] + '...'
         
         if not result_str or result_str == '""' or result_str == "''" or result_str == '[]':
-            await update.message.reply_text("⚠️ *Результат пустой.*\nПопробуй другую команду.")
+            await update.message.reply_text("⚠️ *Результат пустой.*")
         else:
             await update.message.reply_text(f"📊 *Результат:*\n{result_str[:500]}")
         
@@ -563,12 +778,27 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     application = Application.builder().token(TOKEN).build()
     
+    # Меню
     application.add_handler(CommandHandler("start", start))
+    
+    # Авторизация
     application.add_handler(CommandHandler("login", login))
     application.add_handler(CommandHandler("close", close_browser))
+    
+    # Джойстик
+    application.add_handler(CommandHandler("joystick", joystick))
+    application.add_handler(CallbackQueryHandler(joystick_callback))
+    
+    # Скриншот
     application.add_handler(CommandHandler("screen", screen))
+    
+    # Поиск
     application.add_handler(CommandHandler("search", search))
+    
+    # Фото
     application.add_handler(CommandHandler("getbaby", getbaby))
+    
+    # JavaScript
     application.add_handler(CommandHandler("eval", evaluate_js))
     application.add_handler(CommandHandler("ai", ai_command))
     
