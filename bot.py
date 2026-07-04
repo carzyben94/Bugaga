@@ -49,41 +49,32 @@ X_COOKIES = [
 user_browsers = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Приветственное меню с категориями"""
-    await update.message.reply_text(
-        "🤖 *Бот для автоматизации браузера*\n\n"
-        
-        "🔐 *АВТОРИЗАЦИЯ*\n"
-        "/login - Войти в X.com\n\n"
-        
-        "🔍 *ПОИСК И НАВИГАЦИЯ*\n"
-        "/search <текст> - Поиск на X.com\n"
-        "/go <url> - Открыть сайт\n"
-        "/scroll <top|bottom|px> - Прокрутить страницу\n\n"
-        
-        "📸 *СКРИНШОТЫ*\n"
-        "/screen - Скриншот страницы\n\n"
-        
-        "🔎 *РАБОТА С ЭЛЕМЕНТАМИ*\n"
-        "/find <selector> - Найти элемент\n"
-        "/find_all <selector> - Найти все элементы\n"
-        "/click <selector> - Кликнуть элемент\n"
-        "/type <selector> <text> - Ввести текст\n"
-        "/wait <selector> - Ожидать элемент\n\n"
-        
-        "🍪 *КУКИ*\n"
-        "/cookie {\"name\":\"value\"} - Установить куки\n\n"
-        
-        "⚡ *ДРУГОЕ*\n"
-        "/eval <js> - Выполнить JavaScript\n"
-        "/parse - Получить цитаты\n\n"
-        
-        "📖 *Примеры селекторов:*\n"
-        "`.class` - по классу\n"
-        "`#id` - по ID\n"
-        "`div > p` - по CSS-пути",
-        parse_mode='Markdown'
+    """Приветственное меню"""
+    menu = (
+        "🤖 *Бот для автоматизации*\n\n"
+        "🔐 *Авторизация*\n"
+        "/login — Войти в X.com\n\n"
+        "🔍 *Навигация*\n"
+        "/search <текст> — Поиск на X.com\n"
+        "/go <url> — Открыть сайт\n"
+        "/scroll <top|bottom|px> — Прокрутка\n\n"
+        "📸 *Скриншоты*\n"
+        "/screen — Скриншот страницы\n\n"
+        "🔎 *Элементы*\n"
+        "/find <selector> — Найти элемент\n"
+        "/find_all <selector> — Найти все\n"
+        "/click <selector> — Кликнуть\n"
+        "/type <selector> <text> — Ввести текст\n"
+        "/wait <selector> — Ожидать элемент\n\n"
+        "🍪 *Куки*\n"
+        "/cookie {\"name\":\"value\"} — Установить куки\n\n"
+        "⚡ *Другое*\n"
+        "/eval <js> — Выполнить JS\n"
+        "/parse — Получить цитаты\n\n"
+        "📖 *Селекторы:* `.class` `#id` `div > p`"
     )
+    
+    await update.message.reply_text(menu, parse_mode='Markdown')
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Автоматический вход на X.com с куками"""
