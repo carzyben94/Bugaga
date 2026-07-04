@@ -265,8 +265,8 @@ async def explore_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
         url = await tab.current_url
         title = await tab.title
         
-        # Все data-testid через eval
-        all_testids = await tab.evaluate("""
+        # Все data-testid через execute_script (исправлено!)
+        all_testids = await tab.execute_script("""
             (function() {
                 const ids = new Set();
                 document.querySelectorAll('[data-testid]').forEach(el => {
@@ -302,9 +302,9 @@ async def explore_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elements_info = {}
         for name, selector in main_selectors:
             try:
-                count = await tab.evaluate(f"document.querySelectorAll('{selector}').length")
+                count = await tab.execute_script(f"document.querySelectorAll('{selector}').length")
                 if count > 0:
-                    sample = await tab.evaluate(f"""
+                    sample = await tab.execute_script(f"""
                         (function() {{
                             const el = document.querySelector('{selector}');
                             if (!el) return '';
@@ -320,7 +320,7 @@ async def explore_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
         
         # Пример твита
-        tweet_sample = await tab.evaluate("""
+        tweet_sample = await tab.execute_script("""
             (function() {
                 const tweet = document.querySelector('article[data-testid="tweet"]');
                 if (!tweet) return null;
@@ -469,14 +469,14 @@ async def explore_selector(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         _, tab = user_browsers[user_id]
         
-        # Проверяем существование
-        exists = await tab.evaluate(f"!!document.querySelector('{selector}')")
+        # Проверяем существование через execute_script
+        exists = await tab.execute_script(f"!!document.querySelector('{selector}')")
         if not exists:
             await update.message.reply_text(f"❌ Элемент не найден: {selector}")
             return
         
         # Получаем HTML
-        html = await tab.evaluate(f"""
+        html = await tab.execute_script(f"""
             (function() {{
                 const el = document.querySelector('{selector}');
                 if (!el) return 'Элемент не найден';
@@ -485,7 +485,7 @@ async def explore_selector(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """)
         
         # Получаем все data-testid внутри
-        testids = await tab.evaluate(f"""
+        testids = await tab.execute_script(f"""
             (function() {{
                 const el = document.querySelector('{selector}');
                 if (!el) return [];
@@ -499,7 +499,7 @@ async def explore_selector(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """)
         
         # Получаем текст
-        text = await tab.evaluate(f"""
+        text = await tab.execute_script(f"""
             (function() {{
                 const el = document.querySelector('{selector}');
                 if (!el) return '';
@@ -508,7 +508,7 @@ async def explore_selector(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """)
         
         # Получаем классы
-        classes = await tab.evaluate(f"""
+        classes = await tab.execute_script(f"""
             (function() {{
                 const el = document.querySelector('{selector}');
                 if (!el) return '';
@@ -602,7 +602,7 @@ async def do_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await asyncio.sleep(3)
             
             try:
-                profile_name = await tab.evaluate(
+                profile_name = await tab.execute_script(
                     "document.querySelector('div[data-testid=\"UserProfileHeader_Items\"] h2')?.innerText || 'Не найдено'"
                 )
             except:
@@ -1240,7 +1240,7 @@ async def evaluate_js(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         _, tab = user_browsers[user_id]
-        result = await tab.evaluate(js_code)
+        result = await tab.execute_script(js_code)
         await update.message.reply_text(f"✅ Результат:\n\n{str(result)[:500]}")
             
     except Exception as e:
