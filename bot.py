@@ -41,12 +41,20 @@ X_COOKIES = [
 
 user_browsers = {}
 
-# ==================== МОДЕЛЬ ====================
+# ==================== МОДЕЛИ ====================
 
 class Tweet(ExtractionModel):
     text: str = Field(
         selector='div[data-testid="tweetText"]',
         default="[текст не найден]"
+    )
+
+class TweetPhoto(ExtractionModel):
+    """Модель для извлечения фото из твита"""
+    photo: str = Field(
+        selector='img[src*="media"]',
+        attribute='src',
+        default=""
     )
 
 # ==================== ФУНКЦИИ ====================
@@ -239,7 +247,7 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
-# ==================== GETBABY ====================
+# ==================== GETBABY (с extract) ====================
 
 async def getbaby(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Собирает фото из трёх профилей и отправляет случайное"""
@@ -267,26 +275,42 @@ async def getbaby(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for username in PROFILES:
             try:
                 await tab.go_to(f'https://x.com/{username}')
-                await asyncio.sleep(2)
+                await asyncio.sleep(3)
                 
-                photos = await tab.execute_script("""
-                    (function() {
-                        const images = document.querySelectorAll('img[src*="media"]');
-                        const result = [];
-                        images.forEach(img => {
-                            const src = img.src;
-                            if (src && src.includes('media')) {
-                                result.push(src);
-                            }
-                        });
-                        return result;
-                    })()
-                """)
+                # ✅ Используем extract_all
+                photos = await tab.extract_all(
+                    TweetPhoto,
+                    scope='article[data-testid="tweet"]',
+                    timeout=5
+                )
                 
-                for photo in photos[:5]:
-                    all_photos.append(photo)
+                for photo_obj in photos[:10]:
+                    if photo_obj.photo:
+                        all_photos.append(photo_obj.photo)
                 
+                # Если не нашло — пробуем JS
+                if not photos:
+                    photos_js = await tab.execute_script("""
+                        (function() {
+                            const images = document.querySelectorAll('img[src*="media"]');
+                            const result = [];
+                            images.forEach(img => {
+                                const src = img.src || img.getAttribute('src');
+                                if (src && src.includes('media')) {
+                                    result.push(src);
+                                }
+                            });
+                            return result;
+                        })()
+                    """)
+                    for photo in photos_js[:10]:
+                        all_photos.append(photo)
+                
+                if len(all_photos) >= 15:
+                    break
+                    
             except Exception as e:
+                logger.error(f"Ошибка при обработке {username}: {e}")
                 continue
         
         if all_photos:
