@@ -63,6 +63,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/login — Войти в X.com\n\n"
         "🔍 *Универсальная команда*\n"
         "/do <запрос> — Всё в одной команде\n\n"
+        "🍪 *Куки*\n"
+        "/cookie {\"name\":\"value\"} — Установить куки\n\n"
+        "⚡ *Другое*\n"
+        "/eval <js> — Выполнить JavaScript\n\n"
         "📌 *Продвинутые команды:* /start2"
     )
     await update.message.reply_text(menu1, parse_mode='Markdown')
@@ -78,10 +82,7 @@ async def start2(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/network — Показать сетевые запросы\n"
         "/block_images — Блокировать изображения\n"
         "/unblock_images — Разблокировать изображения\n\n"
-        "🍪 *Куки*\n"
-        "/cookie {\"name\":\"value\"} — Установить куки\n\n"
-        "⚡ *Другое*\n"
-        "/eval <js> — Выполнить JS\n"
+        "📚 *Парсинг*\n"
         "/parse — Получить цитаты"
     )
     await update.message.reply_text(menu2, parse_mode='Markdown')
@@ -524,7 +525,7 @@ async def unblock_images(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
-# ==================== КУКИ И ПАРСИНГ ====================
+# ==================== КУКИ ====================
 
 async def cookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -558,6 +559,8 @@ async def cookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
+# ==================== ПАРСИНГ ====================
+
 async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Начинаю парсинг...")
     
@@ -588,9 +591,14 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
+# ==================== EVAL ====================
+
 async def evaluate_js(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("❌ Укажи JS код\nПример: /eval document.title")
+        await update.message.reply_text(
+            "❌ Укажи JS код\n"
+            "Пример: /eval document.title"
+        )
         return
     
     js_code = ' '.join(context.args)
@@ -609,6 +617,8 @@ async def evaluate_js(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
+# ==================== ОБРАБОТЧИК ОШИБОК ====================
+
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Ошибка: {context.error}")
 
@@ -624,6 +634,8 @@ def main():
     # Основные команды
     application.add_handler(CommandHandler("login", login))
     application.add_handler(CommandHandler("do", do_action))
+    application.add_handler(CommandHandler("cookie", cookie))
+    application.add_handler(CommandHandler("eval", evaluate_js))
     
     # Shadow DOM
     application.add_handler(CommandHandler("shadow", shadow_find))
@@ -636,10 +648,8 @@ def main():
     application.add_handler(CommandHandler("block_images", block_images))
     application.add_handler(CommandHandler("unblock_images", unblock_images))
     
-    # Куки и парсинг
-    application.add_handler(CommandHandler("cookie", cookie))
+    # Парсинг
     application.add_handler(CommandHandler("parse", parse))
-    application.add_handler(CommandHandler("eval", evaluate_js))
     
     application.add_error_handler(error_handler)
     
