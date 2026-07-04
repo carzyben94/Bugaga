@@ -28,7 +28,7 @@ class Quote(ExtractionModel):
     author: str = Field(selector='.author')
     tags: str = Field(selector='.tag')
 
-# Модель для парсинга твитов с продвинутыми возможностями
+# Модель для парсинга твитов
 class Tweet(ExtractionModel):
     text: str = Field(
         selector='div[data-testid="tweetText"]',
@@ -70,8 +70,10 @@ X_COOKIES = [
 user_browsers = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Приветственное меню"""
-    menu = (
+    """Приветственное меню (разбито на 2 части)"""
+    
+    # Часть 1: Основные команды
+    menu1 = (
         "🤖 *Бот для автоматизации — 100% Pydoll*\n\n"
         "🔐 *Авторизация*\n"
         "/login — Войти в X.com\n\n"
@@ -84,10 +86,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔎 *Элементы*\n"
         "/find <selector> — Найти элемент\n"
         "/find_all <selector> — Найти все\n"
-        "/click <selector> — Кликнуть (humanize)\n"
-        "/type <selector> <text> — Ввести текст (humanize)\n"
+        "/click <selector> — Кликнуть\n"
+        "/type <selector> <text> — Ввести текст\n"
         "/wait <selector> — Ожидать элемент\n"
-        "/scroll_to <selector> — Прокрутить к элементу\n\n"
+        "/scroll_to <selector> — Прокрутить к элементу"
+    )
+    
+    # Часть 2: Продвинутые команды
+    menu2 = (
         "🌑 *Shadow DOM*\n"
         "/shadow <selector> — Найти в Shadow DOM\n"
         "/shadow_all <selector> — Найти все в Shadow DOM\n"
@@ -105,7 +111,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📖 *Селекторы:* .class #id div > p"
     )
     
-    await update.message.reply_text(menu, parse_mode='Markdown')
+    await update.message.reply_text(menu1, parse_mode='Markdown')
+    await update.message.reply_text(menu2, parse_mode='Markdown')
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Автоматический вход на X.com с куками"""
@@ -560,20 +567,16 @@ async def shadow_find(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         _, tab = user_browsers[user_id]
         
-        # Ищем элемент, который может содержать Shadow DOM
-        # Например, для YouTube это #movie_player
         host_element = await tab.find('#movie_player')
         if not host_element:
             await update.message.reply_text("❌ Хост-элемент не найден. Укажи хост-селектор")
             return
         
-        # Получаем Shadow Root
         shadow_root = await host_element.get_shadow_root()
         if not shadow_root:
             await update.message.reply_text("❌ Shadow DOM не найден в этом элементе")
             return
         
-        # Ищем элемент внутри Shadow DOM
         element = await shadow_root.query(selector)
         
         if element:
@@ -729,14 +732,11 @@ async def network_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         _, tab = user_browsers[user_id]
         
-        # Включаем перехват запросов
         await tab.enable_network_interception()
         
-        # Получаем логи запросов
         logs = await tab.get_network_logs()
         
         if logs:
-            # Показываем первые 10 запросов
             reply = "🌐 Последние сетевые запросы:\n\n"
             for i, log in enumerate(logs[:10], 1):
                 url = log.get('url', 'неизвестно')[:80]
@@ -763,7 +763,6 @@ async def block_images(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         _, tab = user_browsers[user_id]
         
-        # Блокируем изображения через CDP
         await tab.enable_network_interception()
         await tab.set_request_interception(
             patterns=[{'urlPattern': '*.jpg', 'interceptionStage': 'Request'}, 
@@ -790,7 +789,6 @@ async def unblock_images(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         _, tab = user_browsers[user_id]
         
-        # Отключаем перехват
         await tab.disable_network_interception()
         
         await update.message.reply_text("✅ Изображения разблокированы")
