@@ -337,10 +337,10 @@ async def getbaby(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
-# ==================== AI КОМАНДА (ИСПРАВЛЕННАЯ) ====================
+# ==================== AI КОМАНДА ====================
 
 async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Выполняет любую команду через Agnes AI с принудительной загрузкой"""
+    """Выполняет любую команду через Agnes AI (использует существующий браузер)"""
     if not AGNES_API_KEY:
         await update.message.reply_text(
             "❌ Agnes API ключ не найден.\n"
@@ -381,8 +381,8 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         _, tab = user_browsers[user_id]
         
-        # ✅ Этап 1.5: Принудительный переход на X.com
-        await update.message.reply_text("🌐 *Этап 1.5/5:* Перехожу на X.com...", parse_mode='Markdown')
+        # ✅ Этап 1.5: Проверяем, на X.com ли мы
+        await update.message.reply_text("🌐 *Этап 1.5/5:* Проверяю страницу...", parse_mode='Markdown')
         
         try:
             current_url = await tab.current_url
@@ -390,24 +390,24 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             current_url = ''
         
         if 'x.com' not in current_url and 'twitter.com' not in current_url:
+            await update.message.reply_text("🔄 Перехожу на X.com...", parse_mode='Markdown')
             await tab.go_to('https://x.com')
-            await asyncio.sleep(5)
-            await update.message.reply_text("✅ Перешёл на X.com", parse_mode='Markdown')
-        else:
-            await update.message.reply_text("🔄 Обновляю страницу...", parse_mode='Markdown')
-            await tab.refresh()
             await asyncio.sleep(3)
-            await update.message.reply_text("✅ Страница обновлена", parse_mode='Markdown')
         
-        # ✅ Этап 2: Ожидание загрузки
+        await update.message.reply_text("✅ На X.com", parse_mode='Markdown')
+        
+        # ✅ Этап 2: Ждём загрузки
         await update.message.reply_text("📊 *Этап 2/5:* Жду загрузки страницы...", parse_mode='Markdown')
         
         try:
-            await tab.wait_for_selector('article[data-testid="tweet"]', timeout=10)
-            await update.message.reply_text("✅ Страница загружена, твиты найдены", parse_mode='Markdown')
+            await tab.wait_for_selector('article[data-testid="tweet"]', timeout=8)
+            await update.message.reply_text("✅ Страница загружена", parse_mode='Markdown')
         except:
-            await update.message.reply_text("⚠️ Твиты не найдены, но продолжаем...", parse_mode='Markdown')
+            await update.message.reply_text("⚠️ Твиты не найдены, обновляю...", parse_mode='Markdown')
+            await tab.refresh()
+            await asyncio.sleep(3)
         
+        # ✅ Этап 2.5: Сбор контекста
         await update.message.reply_text("📊 *Этап 2.5/5:* Собираю контекст страницы...", parse_mode='Markdown')
         
         try:
@@ -450,21 +450,21 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
         
         testids_count = len(page_info.get('testids', {}))
-        await update.message.reply_text(
-            f"✅ *Контекст собран:*\n"
-            f"• URL: {page_info.get('url', 'неизвестно')[:50]}...\n"
-            f"• Твитов на странице: {page_info.get('tweet_count', 0)}\n"
-            f"• Найдено data-testid: {testids_count}",
-            parse_mode='Markdown'
-        )
         
         if testids_count == 0:
             await update.message.reply_text(
                 "⚠️ *Не найдено элементов на странице.*\n"
-                "Попробуй перезайти через /login",
+                "Попробуй выполнить /login заново",
                 parse_mode='Markdown'
             )
             return
+        
+        await update.message.reply_text(
+            f"✅ *Контекст собран:*\n"
+            f"• Твитов: {page_info.get('tweet_count', 0)}\n"
+            f"• Элементов: {testids_count}",
+            parse_mode='Markdown'
+        )
         
         # ✅ Этап 3: Отправка в Agnes AI
         await update.message.reply_text("🧠 *Этап 3/5:* Отправляю запрос в Agnes AI...", parse_mode='Markdown')
@@ -504,8 +504,8 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             js_code = response.choices[0].message.content
             
             await update.message.reply_text(
-                f"✅ *Этап 4/5:* Код сгенерирован! (Длина: {len(js_code)} символов)\n"
-                f"⚡ Выполняю...",
+                f"✅ *Этап 4/5:* Код сгенерирован!\n"
+                f"📏 Длина: {len(js_code)} символов",
                 parse_mode='Markdown'
             )
             
@@ -517,6 +517,9 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not js_code or len(js_code) < 10:
                 await update.message.reply_text("❌ Код слишком короткий. Попробуй переформулировать.")
                 return
+            
+            # ✅ Этап 5: Выполнение
+            await update.message.reply_text("⚡ *Этап 5/5:* Выполняю код...", parse_mode='Markdown')
             
             try:
                 result = await asyncio.wait_for(
