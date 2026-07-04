@@ -5,6 +5,7 @@ import base64
 import json
 import re
 import random
+import openai
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -22,6 +23,13 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен!")
+
+AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
+
+# Настройка OpenAI для Agnes AI
+if AGNES_API_KEY:
+    openai.api_key = AGNES_API_KEY
+    openai.base_url = "https://apihub.agnes-ai.com/v1"
 
 CHROME_PATH = '/usr/bin/chromium'
 
@@ -50,7 +58,6 @@ class Tweet(ExtractionModel):
     )
 
 class TweetPhoto(ExtractionModel):
-    """Модель для извлечения фото из твита"""
     photo: str = Field(
         selector='img[src*="media"]',
         attribute='src',
@@ -78,7 +85,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/close Закрыть браузер\n"
         "/screen Скриншот\n"
         "/search Запрос\n"
-        "/getbaby Случайное фото"
+        "/getbaby Случайное фото\n"
+        "/ai Любая команда"
     )
     await update.message.reply_text(menu)
 
@@ -247,10 +255,9 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
-# ==================== GETBABY (с extract) ====================
+# ==================== GETBABY ====================
 
 async def getbaby(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Собирает фото из трёх профилей и отправляет случайное"""
     PROFILES = [
         'babesdailyyy',
         'beautyshowcase',
@@ -277,7 +284,6 @@ async def getbaby(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await tab.go_to(f'https://x.com/{username}')
                 await asyncio.sleep(3)
                 
-                # ✅ Используем extract_all
                 photos = await tab.extract_all(
                     TweetPhoto,
                     scope='article[data-testid="tweet"]',
@@ -288,7 +294,6 @@ async def getbaby(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if photo_obj.photo:
                         all_photos.append(photo_obj.photo)
                 
-                # Если не нашло — пробуем JS
                 if not photos:
                     photos_js = await tab.execute_script("""
                         (function() {
@@ -328,6 +333,138 @@ async def getbaby(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
+# ==================== AI КОМАНДА ====================
+
+async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Выполняет любую команду через Agnes AI"""
+    if not AGNES_API_KEY:
+        await update.message.reply_text(
+            "❌ Agnes API ключ не найден.\n"
+            "Добавь AGNES_API_KEY в переменные окружения."
+        )
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "🤖 *AI-агент для X.com*\n\n"
+            "Просто скажи что хочешь сделать:\n"
+            "/ai найди твиты про войну\n"
+            "/ai лайкни первый твит\n"
+            "/ai сколько подписчиков\n"
+            "/ai фото красивых девушек\n"
+            "/ai прокрути вниз\n"
+            "/ai статистика\n\n"
+            "💰 *Бесплатно, без ограничений!*",
+            parse_mode='Markdown'
+        )
+        return
+    
+    command = ' '.join(context.args)
+    user_id = update.effective_user.id
+    
+    try:
+        if user_id not in user_browsers:
+            await update.message.reply_text("❌ Сначала выполни /login")
+            return
+        
+        await update.message.reply_text("🧠 Думаю...")
+        
+        _, tab = user_browsers[user_id]
+        
+        # 1. Получаем контекст страницы
+        page_info = await tab.execute_script("""
+            (function() {
+                const ids = {};
+                document.querySelectorAll('[data-testid]').forEach(el => {
+                    const id = el.dataset.testid;
+                    if (!ids[id]) ids[id] = 0;
+                    ids[id]++;
+                });
+                return {
+                    url: window.location.href,
+                    title: document.title,
+                    testids: ids,
+                    tweet_count: document.querySelectorAll('article[data-testid="tweet"]').length
+                };
+            })()
+        """)
+        
+        # 2. Формируем промпт для Agnes AI
+        prompt = f"""
+        Ты — агент по автоматизации X.com (Twitter).
+        
+        СТРАНИЦА:
+        URL: {page_info['url']}
+        Title: {page_info['title']}
+        Доступные data-testid: {json.dumps(page_info['testids'], ensure_ascii=False)}
+        Твитов на странице: {page_info['tweet_count']}
+        
+        ЗАДАЧА: {command}
+        
+        Сгенерируй ТОЛЬКО JavaScript код для выполнения этой задачи.
+        - Если нужно вернуть данные — используй return
+        - Если нужно выполнить действие — просто выполни код
+        - Если данные сложные — верни JSON
+        - Не используй console.log, используй return
+        - Код должен быть готов к выполнению в браузере
+        
+        Верни ТОЛЬКО код, без пояснений и markdown.
+        """
+        
+        # 3. Запрашиваем код у Agnes AI
+        try:
+            response = await openai.ChatCompletion.acreate(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": "Ты — эксперт по JavaScript и автоматизации браузера. Отвечай только кодом, без пояснений."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.1,
+                max_tokens=500
+            )
+            
+            js_code = response.choices[0].message.content
+            
+            # Очищаем код от markdown
+            js_code = re.sub(r'```javascript\n?', '', js_code)
+            js_code = re.sub(r'```json\n?', '', js_code)
+            js_code = re.sub(r'```\n?', '', js_code)
+            js_code = js_code.strip()
+            
+            # 4. Выполняем код в браузере
+            result = await tab.execute_script(js_code)
+            
+            # 5. Форматируем результат
+            if isinstance(result, (list, dict)):
+                result_str = json.dumps(result, ensure_ascii=False, indent=2)
+            else:
+                result_str = str(result)
+            
+            if len(result_str) > 1500:
+                result_str = result_str[:1500] + '...'
+            
+            # 6. Отправляем ответ
+            await update.message.reply_text(
+                f"🤖 *Выполнено:* {command}\n\n"
+                f"```javascript\n{js_code[:500]}\n```\n"
+                f"📊 *Результат:*\n{result_str[:500]}",
+                parse_mode='Markdown'
+            )
+            
+        except Exception as e:
+            error_msg = str(e)
+            if 'api_key' in error_msg.lower() or 'auth' in error_msg.lower():
+                await update.message.reply_text(
+                    "❌ Ошибка авторизации Agnes AI.\n"
+                    "Проверь AGNES_API_KEY в переменных окружения."
+                )
+            else:
+                await update.message.reply_text(f"❌ Ошибка AI: {error_msg[:300]}")
+        
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+
 # ==================== ОБРАБОТЧИК ОШИБОК ====================
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -344,6 +481,7 @@ def main():
     application.add_handler(CommandHandler("screen", screen))
     application.add_handler(CommandHandler("search", search))
     application.add_handler(CommandHandler("getbaby", getbaby))
+    application.add_handler(CommandHandler("ai", ai_command))
     
     application.add_error_handler(error_handler)
     
