@@ -406,6 +406,40 @@ def fix_text(text):
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
+# ==================== ПАРСИНГ ОТВЕТА AI ====================
+
+def parse_ai_response(text):
+    """Парсит ответ AI и извлекает элементы с координатами"""
+    elements = []
+    lines = text.strip().split('\n')
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        # Ищем координаты (X, Y)
+        coord_match = re.search(r'\((\d+),\s*(\d+)\)', line)
+        if coord_match:
+            x = int(coord_match.group(1))
+            y = int(coord_match.group(2))
+            
+            # Извлекаем название (все что до координат)
+            name = re.sub(r'\s*\([\d,\s]+\)\s*$', '', line).strip()
+            # Убираем стрелку и эмодзи в начале
+            name = re.sub(r'^[^\w\sа-яА-Я]+\s*', '', name)
+            name = re.sub(r'\s*[→➡️]\s*$', '', name)
+            
+            if name:
+                elements.append({
+                    'id': len(elements) + 1,
+                    'name': name,
+                    'x': x,
+                    'y': y
+                })
+    
+    return elements
+
 # ==================== ОБРАБОТЧИК ДЖОЙСТИКА ====================
 
 async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -494,7 +528,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
         
-        # ===== AI-ЗРЕНИЕ (БЕЗ MARKDOWN) =====
+        # ===== AI ЧТО ВИДИШЬ? (БЕЗ JSON) =====
         elif action == "ai_what_see":
             try:
                 await query.message.delete()
@@ -502,130 +536,62 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 screenshot_base64 = await tab.take_screenshot(as_base64=True)
                 
-                response = await agnes_client.chat.completions.create(
-                    model="agnes-2.0-flash",
-                    messages=[
-                        {"role": "system", "content": """
-                        Ты — AI-агент по анализу интерфейсов. 
-                        Твоя задача — найти ВСЕ интерактивные элементы на скриншоте.
-                        Анализируй КАЖДЫЙ уголок изображения.
-                        Верни ТОЛЬКО JSON в указанном формате.
-                        """},
-                        {"role": "user", "content": [
-                            {"type": "text", "text": """
-                            Проанализируй этот скриншот X.com ПОДРОБНО.
-                            Найди ВСЕ элементы, с которыми можно взаимодействовать:
-                            
-                            ТИПЫ ЭЛЕМЕНТОВ:
-                            - Кнопки (лайк, ретвит, подписаться, ответить, поделиться)
-                            - Поля ввода (поиск, написать твит)
-                            - Ссылки и навигация (главная, explore, профиль, уведомления, сообщения)
-                            - Иконки действий (ещё, закладки, настройки)
-                            - Кнопки в твитах (лайк, ретвит, ответ, просмотр)
-                            
-                            Для КАЖДОГО элемента верни:
-                            1. Порядковый номер
-                            2. Тип (button, input, link, icon)
-                            3. Название/описание (что это)
-                            4. Координаты центра (x, y)
-                            5. Размер (ширина, высота)
-                            
-                            ФОРМАТ JSON:
-                            {
-                              "elements": [
-                                {
-                                  "id": 1,
-                                  "type": "button",
-                                  "name": "Лайк",
-                                  "x": 520,
-                                  "y": 310,
-                                  "width": 40,
-                                  "height": 40,
-                                  "description": "Кнопка лайка"
-                                }
-                              ]
-                            }
-                            
-                            ВЕРНИ ТОЛЬКО JSON, НИКАКОГО ТЕКСТА.
-                            АНАЛИЗИРУЙ ВЕСЬ СКРИНШОТ ПОЛНОСТЬЮ.
-                            """},
-                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_base64}"}}
-                        ]}
-                    ],
-                    max_tokens=2000,
-                    temperature=0.1
+                response = await asyncio.wait_for(
+                    agnes_client.chat.completions.create(
+                        model="agnes-2.0-flash",
+                        messages=[
+                            {"role": "system", "content": "Ты — эксперт по анализу интерфейсов. Отвечай кратко, просто списком."},
+                            {"role": "user", "content": [
+                                {"type": "text", "text": """
+                                Просто перечисли что видишь на скриншоте X.com.
+                                
+                                Формат (каждый элемент с новой строки):
+                                Название элемента → (X, Y)
+                                
+                                Например:
+                                Логотип X → (70, 60)
+                                Главная → (70, 190)
+                                Поиск → (70, 280)
+                                Уведомления → (70, 370)
+                                Сообщения → (70, 460)
+                                Профиль → (70, 550)
+                                Написать твит → (500, 700)
+                                
+                                Найди все основные элементы на странице.
+                                Только список. Без лишнего текста.
+                                Без JSON.
+                                """},
+                                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_base64}"}}
+                            ]}
+                        ],
+                        max_tokens=500,
+                        temperature=0.1
+                    ),
+                    timeout=25.0
                 )
                 
                 result = response.choices[0].message.content
                 
-                # Очищаем JSON от markdown
-                result = re.sub(r'```json\n?', '', result)
-                result = re.sub(r'```\n?', '', result)
-                result = result.strip()
+                # Парсим ответ AI
+                elements = parse_ai_response(result)
                 
-                # Проверка: если JSON неполный
-                if not result.endswith('}'):
-                    if result.count('{') > result.count('}'):
-                        result += '}]}'
-                
-                # Парсим JSON
-                try:
-                    data = json.loads(result)
-                    elements = data.get('elements', [])
+                if elements:
+                    context.user_data['ai_elements'] = elements
                     
-                    if elements:
-                        context.user_data['ai_elements'] = elements
-                        
-                        reply = "👁️ Что я вижу на странице:\n\n"
-                        
-                        # Группируем по типам
-                        buttons = [e for e in elements if e.get('type') == 'button']
-                        inputs = [e for e in elements if e.get('type') == 'input']
-                        links = [e for e in elements if e.get('type') == 'link']
-                        icons = [e for e in elements if e.get('type') == 'icon']
-                        
-                        if buttons:
-                            reply += "🔘 Кнопки:\n"
-                            for el in buttons[:10]:
-                                reply += f"  {el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
-                            if len(buttons) > 10:
-                                reply += f"  ... и ещё {len(buttons) - 10}\n"
-                            reply += "\n"
-                        
-                        if inputs:
-                            reply += "⌨️ Поля ввода:\n"
-                            for el in inputs[:5]:
-                                reply += f"  {el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
-                            reply += "\n"
-                        
-                        if links:
-                            reply += "🔗 Ссылки:\n"
-                            for el in links[:5]:
-                                reply += f"  {el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
-                            reply += "\n"
-                        
-                        if icons:
-                            reply += "🖼️ Иконки:\n"
-                            for el in icons[:5]:
-                                reply += f"  {el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
-                            reply += "\n"
-                        
-                        reply += f"📊 Всего найдено: {len(elements)} элементов\n\n"
-                        reply += "💡 Чтобы кликнуть, отправь: /click_num <номер>\n"
-                        reply += "💡 Например: /click_num 1"
-                        
-                        await query.message.reply_text(reply)
-                        
-                    else:
-                        await query.message.reply_text("😕 Не найдено интерактивных элементов")
-                        
-                except json.JSONDecodeError as e:
-                    await query.message.reply_text(
-                        f"⚠️ Ошибка парсинга JSON: {str(e)[:100]}\n\n"
-                        f"📄 Получено:\n{result[:800]}\n\n"
-                        f"💡 Попробуй ещё раз или используй /ai_find"
-                    )
-                
+                    reply = "👁️ Что вижу на странице:\n\n"
+                    for el in elements:
+                        reply += f"{el['name']} → ({el['x']}, {el['y']})\n"
+                    
+                    reply += f"\n📊 Всего: {len(elements)} элементов"
+                    reply += "\n💡 /click_num <номер> - кликнуть"
+                    
+                    await query.message.reply_text(reply)
+                else:
+                    # Если не удалось распарсить - показываем как есть
+                    await query.message.reply_text(f"👁️ Что вижу на странице:\n\n{result}")
+                    
+            except asyncio.TimeoutError:
+                await query.message.reply_text("⏰ AI не ответил за 25 секунд. Попробуй ещё раз.")
             except Exception as e:
                 logger.error(f"Ошибка: {e}")
                 await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
