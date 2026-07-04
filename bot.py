@@ -90,7 +90,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/screen Скриншот\n"
         "/search Запрос\n"
         "/getbaby Случайное фото\n"
-        "/ai Любая команда"
+        "/ai Любая команда (умный eval)"
     )
     await update.message.reply_text(menu)
 
@@ -337,10 +337,10 @@ async def getbaby(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
-# ==================== AI КОМАНДА ====================
+# ==================== AI КОМАНДА (УМНЫЙ EVAL) ====================
 
 async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Выполняет любую команду через Agnes AI (с автоматическим поиском)"""
+    """Умный /eval — генерирует код через Agnes AI и выполняет как /eval"""
     if not AGNES_API_KEY:
         await update.message.reply_text(
             "❌ Agnes API ключ не найден.\n"
@@ -356,15 +356,14 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not context.args:
         await update.message.reply_text(
-            "🤖 *AI-агент для X.com*\n\n"
+            "🤖 *Умный /eval*\n\n"
             "Просто скажи что хочешь сделать:\n"
             "/ai найди твиты про войну\n"
             "/ai лайкни первый твит\n"
             "/ai сколько подписчиков\n"
             "/ai фото красивых девушек\n"
             "/ai прокрути вниз\n"
-            "/ai статистика\n\n"
-            "💰 *Бесплатно, без ограничений!*",
+            "/ai статистика",
             parse_mode='Markdown'
         )
         return
@@ -377,29 +376,22 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Сначала выполни /login")
             return
         
-        await update.message.reply_text("🧠 *Этап 1/6:* Анализирую команду...", parse_mode='Markdown')
+        await update.message.reply_text("🧠 *Генерирую код через Agnes AI...*", parse_mode='Markdown')
         
         _, tab = user_browsers[user_id]
         
-        # ✅ Этап 2: Проверяем, на X.com ли мы
-        await update.message.reply_text("🌐 *Этап 2/6:* Проверяю страницу...", parse_mode='Markdown')
-        
+        # ✅ Проверяем, на X.com ли мы
         try:
             current_url = await tab.current_url
         except:
             current_url = ''
         
-        # Если не на X.com — переходим
         if 'x.com' not in current_url and 'twitter.com' not in current_url:
             await update.message.reply_text("🔄 Перехожу на X.com...", parse_mode='Markdown')
             await tab.go_to('https://x.com')
             await asyncio.sleep(3)
         
-        await update.message.reply_text("✅ На X.com", parse_mode='Markdown')
-        
-        # ✅ Этап 3: Проверяем, есть ли твиты
-        await update.message.reply_text("📊 *Этап 3/6:* Проверяю наличие твитов...", parse_mode='Markdown')
-        
+        # ✅ Проверяем, есть ли твиты
         tweet_count = 0
         try:
             tweet_count = await tab.execute_script(
@@ -408,106 +400,49 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             tweet_count = 0
         
-        # ✅ Если твитов нет — используем поиск
+        # Если твитов нет — используем поиск
         if tweet_count == 0:
-            await update.message.reply_text(
-                "🔍 *Твитов на странице нет.*\n"
-                "🔎 Использую поиск X.com...",
-                parse_mode='Markdown'
-            )
+            await update.message.reply_text("🔍 Твитов нет, использую поиск...", parse_mode='Markdown')
             
-            # Извлекаем ключевые слова из команды
             keywords = command.lower()
-            # Убираем слова-команды
-            for word in ['найди', 'найти', 'искать', 'поиск', 'покажи', 'найди']:
+            for word in ['найди', 'найти', 'искать', 'поиск', 'покажи']:
                 keywords = keywords.replace(word, '')
             keywords = keywords.strip()
             
             if not keywords:
                 keywords = command
             
-            await update.message.reply_text(
-                f"🔍 *Ищу:* {keywords}\n"
-                f"🌐 Перехожу на страницу поиска...",
-                parse_mode='Markdown'
-            )
-            
-            # Переходим на страницу поиска
             await tab.go_to(f'https://x.com/search?q={keywords}&src=typed_query')
             await asyncio.sleep(3)
-            
-            await update.message.reply_text("✅ На странице поиска", parse_mode='Markdown')
+            await update.message.reply_text(f"✅ На странице поиска: {keywords}", parse_mode='Markdown')
         
-        # ✅ Этап 4: Сбор контекста
-        await update.message.reply_text("📊 *Этап 4/6:* Собираю контекст страницы...", parse_mode='Markdown')
+        # ✅ Собираем контекст
+        page_info = await tab.execute_script("""
+            (function() {
+                const ids = {};
+                document.querySelectorAll('[data-testid]').forEach(el => {
+                    const id = el.dataset.testid;
+                    if (id) {
+                        ids[id] = (ids[id] || 0) + 1;
+                    }
+                });
+                return {
+                    url: window.location.href,
+                    title: document.title,
+                    testids: ids,
+                    tweet_count: document.querySelectorAll('article[data-testid="tweet"]').length
+                };
+            })()
+        """)
         
-        try:
-            page_info = await asyncio.wait_for(
-                tab.execute_script("""
-                    (function() {
-                        const ids = {};
-                        const elements = document.querySelectorAll('[data-testid]');
-                        for (let i = 0; i < Math.min(elements.length, 30); i++) {
-                            const id = elements[i].dataset.testid;
-                            if (id) {
-                                ids[id] = (ids[id] || 0) + 1;
-                            }
-                        }
-                        return {
-                            url: window.location.href,
-                            title: document.title,
-                            testids: ids,
-                            tweet_count: document.querySelectorAll('article[data-testid="tweet"]').length
-                        };
-                    })()
-                """),
-                timeout=5.0
-            )
-        except asyncio.TimeoutError:
-            await update.message.reply_text("⚠️ *Контекст собран частично*", parse_mode='Markdown')
-            try:
-                url = await tab.current_url
-            except:
-                url = 'неизвестно'
-            try:
-                title = await tab.title
-            except:
-                title = 'неизвестно'
-            page_info = {
-                'url': url,
-                'title': title,
-                'testids': {},
-                'tweet_count': 0
-            }
-        
-        testids_count = len(page_info.get('testids', {}))
-        tweet_count = page_info.get('tweet_count', 0)
-        
-        if testids_count == 0:
-            await update.message.reply_text(
-                "❌ *Не найдено элементов на странице.*\n"
-                "Попробуй выполнить /login заново",
-                parse_mode='Markdown'
-            )
-            return
-        
-        await update.message.reply_text(
-            f"✅ *Контекст собран:*\n"
-            f"• Твитов: {tweet_count}\n"
-            f"• Элементов: {testids_count}",
-            parse_mode='Markdown'
-        )
-        
-        # ✅ Этап 5: Отправка в Agnes AI
-        await update.message.reply_text("🧠 *Этап 5/6:* Отправляю запрос в Agnes AI...", parse_mode='Markdown')
-        
+        # ✅ Генерируем JS код через Agnes AI
         prompt = f"""
         Ты — агент по автоматизации X.com (Twitter).
         
         СТРАНИЦА:
         URL: {page_info.get('url', 'неизвестно')}
         Title: {page_info.get('title', 'неизвестно')}
-        Твитов на странице: {tweet_count}
+        Твитов на странице: {page_info.get('tweet_count', 0)}
         Доступные data-testid: {json.dumps(page_info.get('testids', {}), ensure_ascii=False)}
         
         ЗАДАЧА: {command}
@@ -519,81 +454,57 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         - Верни ТОЛЬКО код, без пояснений и markdown.
         """
         
-        try:
-            response = await asyncio.wait_for(
-                agnes_client.chat.completions.create(
-                    model="agnes-2.0-flash",
-                    messages=[
-                        {"role": "system", "content": "Ты — эксперт по JavaScript. Отвечай только кодом, без пояснений."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.1,
-                    max_tokens=1000
-                ),
-                timeout=20.0
-            )
-            
-            js_code = response.choices[0].message.content
-            
-            await update.message.reply_text(
-                f"✅ *Этап 6/6:* Код сгенерирован!\n"
-                f"📏 Длина: {len(js_code)} символов\n"
-                f"⚡ Выполняю...",
-                parse_mode='Markdown'
-            )
-            
-            js_code = re.sub(r'```javascript\n?', '', js_code)
-            js_code = re.sub(r'```json\n?', '', js_code)
-            js_code = re.sub(r'```\n?', '', js_code)
-            js_code = js_code.strip()
-            
-            if not js_code or len(js_code) < 10:
-                await update.message.reply_text("❌ Код слишком короткий. Попробуй переформулировать.")
-                return
-            
-            try:
-                result = await asyncio.wait_for(
-                    tab.execute_script(js_code),
-                    timeout=10.0
-                )
-            except asyncio.TimeoutError:
-                await update.message.reply_text("⚠️ Выполнение кода заняло слишком много времени.")
-                return
-            
-            if isinstance(result, (list, dict)):
-                result_str = json.dumps(result, ensure_ascii=False, indent=2)
-            else:
-                result_str = str(result)
-            
-            if len(result_str) > 1000:
-                result_str = result_str[:1000] + '...'
-            
-            if not result_str or result_str == '""' or result_str == "''":
-                await update.message.reply_text(
-                    f"✅ *ГОТОВО!*\n\n"
-                    f"🤖 *Команда:* {command}\n\n"
-                    f"📝 *Код:*\n```javascript\n{js_code[:300]}\n```\n"
-                    f"⚠️ *Результат пустой.*",
-                    parse_mode='Markdown'
-                )
-            else:
-                await update.message.reply_text(
-                    f"✅ *ГОТОВО!*\n\n"
-                    f"🤖 *Команда:* {command}\n\n"
-                    f"📝 *Код:*\n```javascript\n{js_code[:300]}\n```\n"
-                    f"📊 *Результат:*\n{result_str[:500]}",
-                    parse_mode='Markdown'
-                )
-            
-        except asyncio.TimeoutError:
-            await update.message.reply_text("⏰ Agnes AI не ответил вовремя. Попробуй позже.")
-        except Exception as e:
-            error_msg = str(e)
-            if 'api_key' in error_msg.lower() or 'auth' in error_msg.lower():
-                await update.message.reply_text("❌ Ошибка авторизации Agnes AI. Проверь ключ.")
-            else:
-                await update.message.reply_text(f"❌ Ошибка AI: {error_msg[:200]}")
+        response = await asyncio.wait_for(
+            agnes_client.chat.completions.create(
+                model="agnes-2.0-flash",
+                messages=[
+                    {"role": "system", "content": "Ты — эксперт по JavaScript. Отвечай только кодом, без пояснений."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.1,
+                max_tokens=1000
+            ),
+            timeout=20.0
+        )
         
+        js_code = response.choices[0].message.content
+        
+        # Очищаем код от markdown
+        js_code = re.sub(r'```javascript\n?', '', js_code)
+        js_code = re.sub(r'```json\n?', '', js_code)
+        js_code = re.sub(r'```\n?', '', js_code)
+        js_code = js_code.strip()
+        
+        if not js_code or len(js_code) < 10:
+            await update.message.reply_text("❌ Код слишком короткий. Попробуй переформулировать.")
+            return
+        
+        # ✅ ВЫПОЛНЯЕМ КОД ЧЕРЕЗ EVAL (показываем код и результат)
+        await update.message.reply_text(
+            f"⚡ *Выполняю через /eval:*\n"
+            f"```javascript\n{js_code[:400]}\n```",
+            parse_mode='Markdown'
+        )
+        
+        # Выполняем код (как в /eval)
+        result = await tab.execute_script(js_code)
+        
+        # Форматируем результат
+        if isinstance(result, (list, dict)):
+            result_str = json.dumps(result, ensure_ascii=False, indent=2)
+        else:
+            result_str = str(result)
+        
+        if len(result_str) > 1000:
+            result_str = result_str[:1000] + '...'
+        
+        if not result_str or result_str == '""' or result_str == "''":
+            await update.message.reply_text("⚠️ *Результат пустой.*")
+        else:
+            await update.message.reply_text(f"📊 *Результат:*\n{result_str[:500]}")
+        
+    except asyncio.TimeoutError:
+        await update.message.reply_text("⏰ Agnes AI не ответил вовремя. Попробуй позже.")
     except Exception as e:
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
