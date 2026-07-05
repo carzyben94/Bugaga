@@ -689,14 +689,27 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 _, tab = user_browsers[user_id]
                 
-                tweets = await asyncio.wait_for(
-                    tab.extract_all(
-                        Tweet,
-                        scope='article[data-testid="tweet"]',
-                        timeout=10
-                    ),
-                    timeout=15.0
-                )
+                try:
+                    tweets = await asyncio.wait_for(
+                        tab.extract_all(
+                            Tweet,
+                            scope='article[data-testid="tweet"]',
+                            timeout=15
+                        ),
+                        timeout=20.0
+                    )
+                except asyncio.TimeoutError:
+                    await query.message.reply_text(
+                        "⏰ Поиск твитов через Extractor занял слишком много времени.\n\n"
+                        "Попробуй использовать '🔍 Найти твиты' (JavaScript) - это быстрее!"
+                    )
+                    return
+                except Exception as e:
+                    await query.message.reply_text(
+                        f"❌ Ошибка Extractor: {str(e)[:200]}\n\n"
+                        "Попробуй использовать '🔍 Найти твиты' (JavaScript)"
+                    )
+                    return
                 
                 screenshot_base64 = await tab.take_screenshot(as_base64=True)
                 screenshot_bytes = base64.b64decode(screenshot_base64)
@@ -732,11 +745,12 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     await query.message.reply_text("😕 Твиты не найдены")
                     
-            except asyncio.TimeoutError:
-                await query.message.reply_text("⏰ Поиск твитов занял слишком много времени")
             except Exception as e:
                 logger.error(f"Ошибка search_extractor: {e}")
-                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+                await query.message.reply_text(
+                    f"❌ Ошибка: {str(e)[:200]}\n\n"
+                    "💡 Рекомендую использовать '🔍 Найти твиты' - это быстрее и надежнее!"
+                )
         
         elif action == "refresh":
             await query.edit_message_text("🔄 Обновляю страницу...")
