@@ -284,7 +284,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    await query.answer()  # ← ОТВЕЧАЕМ СРАЗУ!
     
     user_id = update.effective_user.id
     action = query.data
@@ -387,7 +387,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 await query.message.reply_text("📊 Извлекаю твиты...")
                 
-                # Прокручиваем вниз через execute_script
                 for _ in range(3):
                     await tab.execute_script("window.scrollBy(0, 600)")
                     await asyncio.sleep(1.5)
