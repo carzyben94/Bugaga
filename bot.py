@@ -493,10 +493,8 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.delete()
                 await query.message.reply_text("🎯 Получаю точные координаты через JavaScript...")
                 
-                # Логика как в eval
                 _, tab = user_browsers[user_id]
                 
-                # Простой JavaScript как в eval
                 js_code = """
                     (function() {
                         const items = document.querySelectorAll('[data-testid], button, a, input, [role="button"]');
@@ -512,10 +510,9 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 
                                 let name = el.getAttribute('data-testid') || 
                                           el.getAttribute('aria-label') || 
-                                          el.textContent?.trim().slice(0, 25) || 
+                                          (el.textContent ? el.textContent.trim().slice(0, 25) : '') || 
                                           'Элемент';
                                 
-                                // Убираем дубликаты
                                 const key = name + '_' + Math.round(rect.left) + '_' + Math.round(rect.top);
                                 if (!seen.has(key)) {
                                     seen.add(key);
@@ -528,54 +525,61 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             }
                         });
                         
-                        return result.slice(0, 30);
+                        return JSON.stringify(result.slice(0, 30));
                     })()
                 """
                 
-                # Выполняем JS как в eval
-                result = await tab.execute_script(js_code)
+                result_str = await tab.execute_script(js_code)
+                
+                try:
+                    result = json.loads(result_str)
+                except:
+                    result = []
                 
                 if result and len(result) > 0:
                     elements = []
                     for i, item in enumerate(result):
-                        elements.append({
-                            'id': i + 1,
-                            'name': item.get('name', 'Элемент'),
-                            'x': item.get('x', 0),
-                            'y': item.get('y', 0)
-                        })
+                        if isinstance(item, dict):
+                            elements.append({
+                                'id': i + 1,
+                                'name': item.get('name', 'Элемент'),
+                                'x': item.get('x', 0),
+                                'y': item.get('y', 0)
+                            })
                     
-                    context.user_data['ai_elements'] = elements
-                    
-                    # Рисуем точки на скриншоте
-                    screenshot_base64 = await tab.take_screenshot(as_base64=True)
-                    screenshot_bytes = base64.b64decode(screenshot_base64)
-                    image = Image.open(BytesIO(screenshot_bytes))
-                    draw = ImageDraw.Draw(image)
-                    
-                    for el in elements:
-                        x, y = el['x'], el['y']
-                        draw.ellipse([(x - 8, y - 8), (x + 8, y + 8)], fill='lime', outline='white')
-                        draw.text((x + 12, y - 5), str(el['id']), fill='lime')
-                    
-                    output = BytesIO()
-                    image.save(output, format='PNG')
-                    image_with_dots = output.getvalue()
-                    
-                    reply = "🎯 Найденные элементы:\n\n"
-                    for el in elements[:15]:
-                        reply += f"{el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
-                    
-                    if len(elements) > 15:
-                        reply += f"\n... и ещё {len(elements) - 15} элементов"
-                    
-                    reply += f"\n\n📊 Всего: {len(elements)} элементов"
-                    reply += "\n💡 /click_num <номер> - кликнуть"
-                    
-                    await query.message.reply_photo(
-                        photo=image_with_dots,
-                        caption=reply
-                    )
+                    if elements:
+                        context.user_data['ai_elements'] = elements
+                        
+                        screenshot_base64 = await tab.take_screenshot(as_base64=True)
+                        screenshot_bytes = base64.b64decode(screenshot_base64)
+                        image = Image.open(BytesIO(screenshot_bytes))
+                        draw = ImageDraw.Draw(image)
+                        
+                        for el in elements:
+                            x, y = el['x'], el['y']
+                            draw.ellipse([(x - 8, y - 8), (x + 8, y + 8)], fill='lime', outline='white')
+                            draw.text((x + 12, y - 5), str(el['id']), fill='lime')
+                        
+                        output = BytesIO()
+                        image.save(output, format='PNG')
+                        image_with_dots = output.getvalue()
+                        
+                        reply = "🎯 Найденные элементы:\n\n"
+                        for el in elements[:15]:
+                            reply += f"{el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
+                        
+                        if len(elements) > 15:
+                            reply += f"\n... и ещё {len(elements) - 15} элементов"
+                        
+                        reply += f"\n\n📊 Всего: {len(elements)} элементов"
+                        reply += "\n💡 /click_num <номер> - кликнуть"
+                        
+                        await query.message.reply_photo(
+                            photo=image_with_dots,
+                            caption=reply
+                        )
+                    else:
+                        await query.message.reply_text("😕 Не удалось обработать элементы")
                 else:
                     await query.message.reply_text(
                         "😕 Не найдено элементов на странице.\n\n"
