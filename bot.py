@@ -6,8 +6,8 @@ import json
 import re
 from io import BytesIO
 from PIL import Image, ImageDraw
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 from pydoll.browser import Chrome
 from pydoll.browser.options import ChromiumOptions
@@ -60,8 +60,28 @@ def get_menu_text():
         "❌ /close — закрыть браузер\n"
         "⚡ /eval <js> — выполнить JS код\n"
         "📸 /screen — скриншот страницы\n"
-        "📊 /extract <x> <y> — извлечь твит"
+        "📊 /extract <x> <y> — извлечь твит\n\n"
+        "⬇️⬆️ Кнопки скролла внизу"
     )
+
+def get_scroll_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("⬆️ Вверх", callback_data="scroll_up"),
+            InlineKeyboardButton("⬇️ Вниз", callback_data="scroll_down"),
+        ],
+        [
+            InlineKeyboardButton("⬆️⬆️ Вверх 500", callback_data="scroll_up_fast"),
+            InlineKeyboardButton("⬇️⬇️ Вниз 500", callback_data="scroll_down_fast"),
+        ],
+        [
+            InlineKeyboardButton("🔝 Наверх", callback_data="scroll_top"),
+            InlineKeyboardButton("🔽 Вниз", callback_data="scroll_bottom"),
+        ],
+        [
+            InlineKeyboardButton("🔄 Обновить", callback_data="refresh_screen"),
+        ],
+    ])
 
 async def send_or_update_menu(update, user_id, caption=None):
     if user_id not in user_browsers:
@@ -114,7 +134,8 @@ async def send_or_update_menu(update, user_id, caption=None):
     
     msg = await update.message.reply_photo(
         photo=output.getvalue(),
-        caption=f"{menu_text}\n\n📍 Курсор: ({x}, {y})"
+        caption=f"{menu_text}\n\n📍 Курсор: ({x}, {y})",
+        reply_markup=get_scroll_keyboard()
     )
     user_menu_messages[user_id] = msg.message_id
 
@@ -288,6 +309,50 @@ async def extract_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
+# ==================== ОБРАБОТЧИК КНОПОК ====================
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    action = query.data
+    
+    if user_id not in user_browsers:
+        await query.edit_message_text("❌ Сначала /login")
+        return
+    
+    _, tab = user_browsers[user_id]
+    
+    try:
+        if action == "scroll_up":
+            await tab.execute_script("window.scrollBy(0, -300)")
+            await query.message.edit_caption(caption="⬆️ Скролл вверх на 300px")
+        elif action == "scroll_down":
+            await tab.execute_script("window.scrollBy(0, 300)")
+            await query.message.edit_caption(caption="⬇️ Скролл вниз на 300px")
+        elif action == "scroll_up_fast":
+            await tab.execute_script("window.scrollBy(0, -500)")
+            await query.message.edit_caption(caption="⬆️⬆️ Скролл вверх на 500px")
+        elif action == "scroll_down_fast":
+            await tab.execute_script("window.scrollBy(0, 500)")
+            await query.message.edit_caption(caption="⬇️⬇️ Скролл вниз на 500px")
+        elif action == "scroll_top":
+            await tab.execute_script("window.scrollTo(0, 0)")
+            await query.message.edit_caption(caption="🔝 Наверх")
+        elif action == "scroll_bottom":
+            await tab.execute_script("window.scrollTo(0, document.body.scrollHeight)")
+            await query.message.edit_caption(caption="🔽 Вниз")
+        elif action == "refresh_screen":
+            await send_or_update_menu(update, user_id, "🔄 Обновлено")
+            return
+    except Exception as e:
+        await query.message.edit_caption(caption=f"❌ Ошибка: {str(e)[:100]}")
+        return
+    
+    # Обновляем скриншот после скролла
+    await send_or_update_menu(update, user_id, query.message.caption)
+
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -296,6 +361,7 @@ def main():
     app.add_handler(CommandHandler("eval", eval_command))
     app.add_handler(CommandHandler("screen", screen_command))
     app.add_handler(CommandHandler("extract", extract_command))
+    app.add_handler(CallbackQueryHandler(button_handler))
     app.run_polling()
 
 if __name__ == "__main__":
