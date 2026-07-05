@@ -132,10 +132,10 @@ async def close_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Браузер не открыт")
 
-# ==================== /eval (без JSON обёртки) ====================
+# ==================== /eval (чистый вывод) ====================
 
 async def eval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Выполняет JS код в браузере"""
+    """Выполняет JS код в браузере и возвращает чистый результат"""
     if not context.args:
         await update.message.reply_text(
             "❌ Укажи JS код\n"
@@ -154,7 +154,15 @@ async def eval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _, tab = user_browsers[user_id]
     
     try:
-        result = await tab.execute_script(js_code, return_by_value=True)
+        raw = await tab.execute_script(js_code, return_by_value=True)
+        
+        # Извлекаем чистое значение
+        if isinstance(raw, dict) and 'result' in raw:
+            raw = raw['result']
+        if isinstance(raw, dict) and 'value' in raw:
+            result = raw['value']
+        else:
+            result = raw
         
         if isinstance(result, str):
             await update.message.reply_text(f"✅ Результат:\n\n{result[:4096]}")
