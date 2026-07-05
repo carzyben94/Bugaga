@@ -61,13 +61,13 @@ def get_menu_text():
         "❌ /close — закрыть браузер\n"
         "⚡ /eval <js> — выполнить JS код\n"
         "📸 /screen — скриншот страницы\n"
-        "📊 /extract <x> <y> — извлечь твит\n\n"
+        "📊 /extract — выгрузить все твиты\n"
+        "📊 /extract <x> <y> — извлечь твит по координатам\n\n"
         "🎮 Управление курсором и скроллом"
     )
 
 def get_control_keyboard():
     return InlineKeyboardMarkup([
-        # Диагонали
         [
             InlineKeyboardButton("↖️", callback_data="diag_up_left"),
             InlineKeyboardButton("⬆️", callback_data="cursor_up"),
@@ -83,7 +83,6 @@ def get_control_keyboard():
             InlineKeyboardButton("⬇️", callback_data="cursor_down"),
             InlineKeyboardButton("↘️", callback_data="diag_down_right"),
         ],
-        # Скролл
         [
             InlineKeyboardButton("⬆️ Скролл", callback_data="scroll_up"),
             InlineKeyboardButton("⬇️ Скролл", callback_data="scroll_down"),
@@ -104,18 +103,42 @@ def get_control_keyboard():
     ])
 
 async def get_screenshot_with_cursor(user_id):
-    _, tab = user_browsers[user_id]
-    cursor = get_cursor(user_id)
-
+    """Делает скриншот с курсором"""
     try:
+        _, tab = user_browsers[user_id]
+        cursor = get_cursor(user_id)
+
+        # Проверяем что вкладка активна
+        try:
+            await tab.execute_script("return 1")
+        except:
+            # Если вкладка не отвечает — пересоздаём
+            browser, _ = user_browsers[user_id]
+            tab = await browser.new_tab()
+            await tab.go_to('https://x.com')
+            await asyncio.sleep(2)
+            user_browsers[user_id] = (browser, tab)
+
         screenshot_base64 = await asyncio.wait_for(
             tab.take_screenshot(as_base64=True),
             timeout=10.0
         )
     except asyncio.TimeoutError:
+        _, tab = user_browsers[user_id]
         await tab.refresh()
         await asyncio.sleep(3)
         screenshot_base64 = await tab.take_screenshot(as_base64=True)
+    except Exception as e:
+        _, tab = user_browsers[user_id]
+        try:
+            screenshot_base64 = await tab.execute_script("""
+                (function() {
+                    return document.documentElement.outerHTML;
+                })()
+            """, return_by_value=True)
+            raise e
+        except:
+            raise e
 
     screenshot_bytes = base64.b64decode(screenshot_base64)
     image = Image.open(BytesIO(screenshot_bytes))
@@ -275,66 +298,131 @@ async def extract_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Сначала /login")
         return
 
-    if not context.args or len(context.args) < 2:
-        await update.message.reply_text("❌ /extract x y")
-        return
+    _, tab = user_browsers[user_id]
 
+    # Если есть координаты — извлекаем один твит
+    if context.args and len(context.args) >= 2:
+        try:
+            x, y = int(context.args[0]), int(context.args[1])
+
+            result = await tab.execute_script(f"""
+                (function() {{
+                    const el = document.elementFromPoint({x}, {y});
+                    if (!el) return null;
+                    const tweet = el.closest('article[data-testid="tweet"]');
+                    if (!tweet) return {{ error: 'Не найден твит' }};
+                    const textEl = tweet.querySelector('[data-testid="tweetText"]');
+                    const authorEl = tweet.querySelector('[data-testid="User-Name"]');
+                    const likeEl = tweet.querySelector('[data-testid="like"]');
+                    const retweetEl = tweet.querySelector('[data-testid="retweet"]');
+                    const replyEl = tweet.querySelector('[data-testid="reply"]');
+                    const rect = tweet.getBoundingClientRect();
+                    let author = '';
+                    if (authorEl) {{
+                        const spans = authorEl.querySelectorAll('span');
+                        author = spans.length > 0 ? spans[0].textContent.trim() : '';
+                    }}
+                    return {{
+                        text: textEl ? textEl.textContent.trim() : '',
+                        author: author,
+                        likes: likeEl ? likeEl.textContent.trim() : '0',
+                        retweets: retweetEl ? retweetEl.textContent.trim() : '0',
+                        replies: replyEl ? replyEl.textContent.trim() : '0',
+                        coords: {{ x: Math.round(rect.left + rect.width/2), y: Math.round(rect.top + rect.height/2) }}
+                    }};
+                }})()
+            """, return_by_value=True)
+
+            if not result:
+                await update.message.reply_text("❌ Не удалось извлечь данные")
+                return
+
+            if result.get('error'):
+                await update.message.reply_text(f"❌ {result['error']}")
+                return
+
+            reply = f"📊 **Твит под курсором:**\n\n"
+            reply += f"👤 **Автор:** {result.get('author', 'Неизвестно')}\n"
+            text = result.get('text', '')
+            if text:
+                reply += f"📝 **Текст:** {text[:200]}\n"
+            else:
+                reply += "📝 **Текст:** (пусто)\n"
+            reply += f"❤️ **Лайки:** {result.get('likes', '0')}\n"
+            reply += f"🔁 **Ретвиты:** {result.get('retweets', '0')}\n"
+            reply += f"💬 **Ответы:** {result.get('replies', '0')}\n"
+            coords = result.get('coords', {})
+            if coords:
+                reply += f"\n📍 **Координаты:** ({coords.get('x', '?')}, {coords.get('y', '?')})"
+
+            await update.message.reply_text(reply, parse_mode='Markdown')
+            await send_or_update_menu(update, user_id, "📊 Твит извлечён")
+            return
+
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+            return
+
+    # Если нет координат — выгружаем все твиты
     try:
-        x, y = int(context.args[0]), int(context.args[1])
-        _, tab = user_browsers[user_id]
+        await update.message.reply_text("📊 Извлекаю все твиты со страницы...")
 
-        result = await tab.execute_script(f"""
-            (function() {{
-                const el = document.elementFromPoint({x}, {y});
-                if (!el) return null;
-                const tweet = el.closest('article[data-testid="tweet"]');
-                if (!tweet) return {{ error: 'Не найден твит' }};
-                const textEl = tweet.querySelector('[data-testid="tweetText"]');
-                const authorEl = tweet.querySelector('[data-testid="User-Name"]');
-                const likeEl = tweet.querySelector('[data-testid="like"]');
-                const retweetEl = tweet.querySelector('[data-testid="retweet"]');
-                const replyEl = tweet.querySelector('[data-testid="reply"]');
-                const rect = tweet.getBoundingClientRect();
-                let author = '';
-                if (authorEl) {{
-                    const spans = authorEl.querySelectorAll('span');
-                    author = spans.length > 0 ? spans[0].textContent.trim() : '';
-                }}
-                return {{
-                    text: textEl ? textEl.textContent.trim() : '',
-                    author: author,
-                    likes: likeEl ? likeEl.textContent.trim() : '0',
-                    retweets: retweetEl ? retweetEl.textContent.trim() : '0',
-                    replies: replyEl ? replyEl.textContent.trim() : '0',
-                    coords: {{ x: Math.round(rect.left + rect.width/2), y: Math.round(rect.top + rect.height/2) }}
-                }};
-            }})()
+        result = await tab.execute_script("""
+            (function() {
+                const tweets = document.querySelectorAll('article[data-testid="tweet"]');
+                const result = [];
+                
+                tweets.forEach((tweet, index) => {
+                    const textEl = tweet.querySelector('[data-testid="tweetText"]');
+                    const authorEl = tweet.querySelector('[data-testid="User-Name"]');
+                    const likeEl = tweet.querySelector('[data-testid="like"]');
+                    const retweetEl = tweet.querySelector('[data-testid="retweet"]');
+                    const replyEl = tweet.querySelector('[data-testid="reply"]');
+                    const rect = tweet.getBoundingClientRect();
+                    
+                    let author = '';
+                    if (authorEl) {
+                        const spans = authorEl.querySelectorAll('span');
+                        author = spans.length > 0 ? spans[0].textContent.trim() : '';
+                    }
+                    
+                    result.push({
+                        id: index + 1,
+                        author: author,
+                        text: textEl ? textEl.textContent.trim() : '',
+                        likes: likeEl ? likeEl.textContent.trim() : '0',
+                        retweets: retweetEl ? retweetEl.textContent.trim() : '0',
+                        replies: replyEl ? replyEl.textContent.trim() : '0',
+                        x: Math.round(rect.left + rect.width/2),
+                        y: Math.round(rect.top + rect.height/2)
+                    });
+                });
+                
+                return result;
+            })()
         """, return_by_value=True)
 
-        if not result:
-            await update.message.reply_text("❌ Не удалось извлечь данные")
+        if not result or len(result) == 0:
+            await update.message.reply_text("😕 Твиты не найдены на странице")
             return
 
-        if result.get('error'):
-            await update.message.reply_text(f"❌ {result['error']}")
-            return
+        reply = f"📊 **Найдено {len(result)} твитов:**\n\n"
+        
+        for i, tweet in enumerate(result[:15], 1):
+            reply += f"**{i}. {tweet.get('author', 'Неизвестно')}**\n"
+            text = tweet.get('text', '')
+            if text:
+                if len(text) > 150:
+                    text = text[:150] + '...'
+                reply += f"📝 {text}\n"
+            reply += f"❤️ {tweet.get('likes', '0')} | 🔁 {tweet.get('retweets', '0')} | 💬 {tweet.get('replies', '0')}\n"
+            reply += f"📍 ({tweet.get('x', '?')}, {tweet.get('y', '?')})\n\n"
 
-        reply = f"📊 **Твит под курсором:**\n\n"
-        reply += f"👤 **Автор:** {result.get('author', 'Неизвестно')}\n"
-        text = result.get('text', '')
-        if text:
-            reply += f"📝 **Текст:** {text[:200]}\n"
-        else:
-            reply += "📝 **Текст:** (пусто)\n"
-        reply += f"❤️ **Лайки:** {result.get('likes', '0')}\n"
-        reply += f"🔁 **Ретвиты:** {result.get('retweets', '0')}\n"
-        reply += f"💬 **Ответы:** {result.get('replies', '0')}\n"
-        coords = result.get('coords', {})
-        if coords:
-            reply += f"\n📍 **Координаты:** ({coords.get('x', '?')}, {coords.get('y', '?')})"
+        if len(result) > 15:
+            reply += f"... и ещё {len(result) - 15} твитов"
 
         await update.message.reply_text(reply, parse_mode='Markdown')
-        await send_or_update_menu(update, user_id, "📊 Твит извлечён")
+        await send_or_update_menu(update, user_id, "📊 Все твиты выгружены")
 
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
@@ -356,7 +444,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cursor = get_cursor(user_id)
     step = cursor.step
     
-    captions = {}
+    captions = ""
     
     try:
         # ===== ДВИЖЕНИЕ КУРСОРА =====
