@@ -158,6 +158,9 @@ def get_joystick_keyboard(user_id=None):
             InlineKeyboardButton("📝 Ввод в чате", callback_data="chat_input"),
         ],
         [
+            InlineKeyboardButton("🧠 AI Extract", callback_data="ai_extract"),  # ← НОВАЯ КНОПКА
+        ],
+        [
             InlineKeyboardButton("🔄 Обновить", callback_data="refresh"),
         ],
         [
@@ -262,7 +265,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/click <x> <y> — Клик по координатам\n\n"
         "⌨️ Клавиатура\n"
         "Нажми '⌨️ Клавиатура' в джойстике\n"
-        "Или просто напиши текст в чат после '📝 Ввод в чате'"
+        "Или просто напиши текст в чат после '📝 Ввод в чате'\n\n"
+        "🧠 AI Extract\n"
+        "Нажми '🧠 AI Extract' в джойстике для анализа всей страницы"
     )
     await update.message.reply_text(menu)
 
@@ -854,6 +859,153 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "💡 Рекомендую использовать '🔍 Найти твиты' - это быстрее и надежнее!"
                 )
         
+        # ===== AI EXTRACT - АНАЛИЗ ВСЕЙ СТРАНИЦЫ ЧЕРЕЗ AGNES AI =====
+        elif action == "ai_extract":
+            try:
+                await query.message.delete()
+                await query.message.reply_text("🧠 AI анализирует страницу...")
+                
+                # Делаем скриншот всей страницы
+                screenshot_base64 = await tab.take_screenshot(as_base64=True)
+                
+                # Отправляем в Agnes AI для анализа
+                response = await asyncio.wait_for(
+                    agnes_client.chat.completions.create(
+                        model="agnes-2.0-flash",
+                        messages=[
+                            {"role": "system", "content": """
+                            Ты — эксперт по анализу скриншотов X.com.
+                            Анализируй изображение и возвращай ТОЛЬКО JSON.
+                            Будь максимально точным и детальным.
+                            """},
+                            {"role": "user", "content": [
+                                {"type": "text", "text": """
+                                Проанализируй этот скриншот X.com и извлеки ВСЕ данные:
+                                
+                                1. Все твиты (текст, автор, статистика, время)
+                                2. Тренды (что в трендах)
+                                3. Навигацию (главная, поиск, уведомления и т.д.)
+                                4. Рекомендуемые аккаунты
+                                5. Рекламу
+                                6. Поле ввода твита
+                                7. Кнопки (лайк, ретвит, ответить)
+                                
+                                Верни JSON в формате:
+                                {
+                                  "tweets": [
+                                    {
+                                      "author": "Имя",
+                                      "username": "@username",
+                                      "text": "Текст твита",
+                                      "likes": 123,
+                                      "retweets": 45,
+                                      "replies": 12,
+                                      "time": "2ч"
+                                    }
+                                  ],
+                                  "trends": ["#AI", "#Crypto"],
+                                  "navigation": ["Главная", "Поиск", "Уведомления"],
+                                  "suggested": ["@user1", "@user2"],
+                                  "ads": ["Реклама текст"],
+                                  "has_tweet_input": true,
+                                  "page_type": "главная лента"
+                                }
+                                """},
+                                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_base64}"}}
+                            ]}
+                        ],
+                        max_tokens=2000,
+                        temperature=0.1
+                    ),
+                    timeout=30.0
+                )
+                
+                result = response.choices[0].message.content
+                
+                # Очищаем от markdown
+                result = re.sub(r'```json\n?', '', result)
+                result = re.sub(r'```\n?', '', result)
+                result = result.strip()
+                
+                try:
+                    data = json.loads(result)
+                    
+                    reply = "🧠 **AI анализ страницы:**\n\n"
+                    
+                    # Тип страницы
+                    if data.get('page_type'):
+                        reply += f"📄 **Тип:** {data['page_type']}\n\n"
+                    
+                    # Твиты
+                    tweets = data.get('tweets', [])
+                    if tweets:
+                        reply += f"📝 **Твиты ({len(tweets)}):**\n"
+                        for i, tweet in enumerate(tweets[:5], 1):
+                            reply += f"{i}. **{tweet.get('author', 'Неизвестно')}**"
+                            if tweet.get('username'):
+                                reply += f" ({tweet['username']})"
+                            reply += f"\n   📝 {tweet.get('text', '')[:120]}..."
+                            likes = tweet.get('likes', 0)
+                            retweets = tweet.get('retweets', 0)
+                            replies = tweet.get('replies', 0)
+                            if likes or retweets or replies:
+                                reply += f"\n   📊 ❤️ {likes} | 🔁 {retweets} | 💬 {replies}"
+                            if tweet.get('time'):
+                                reply += f"\n   🕐 {tweet['time']}"
+                            reply += "\n\n"
+                    
+                    # Тренды
+                    trends = data.get('trends', [])
+                    if trends:
+                        reply += f"🔥 **Тренды:**\n"
+                        for trend in trends[:5]:
+                            reply += f"   • {trend}\n"
+                        reply += "\n"
+                    
+                    # Навигация
+                    nav = data.get('navigation', [])
+                    if nav:
+                        reply += f"🧭 **Навигация:**\n"
+                        for item in nav:
+                            reply += f"   • {item}\n"
+                        reply += "\n"
+                    
+                    # Рекомендации
+                    suggested = data.get('suggested', [])
+                    if suggested:
+                        reply += f"👤 **Рекомендуемые:**\n"
+                        for acc in suggested[:3]:
+                            reply += f"   • {acc}\n"
+                        reply += "\n"
+                    
+                    # Реклама
+                    ads = data.get('ads', [])
+                    if ads:
+                        reply += f"📢 **Реклама:**\n"
+                        for ad in ads:
+                            reply += f"   • {ad}\n"
+                        reply += "\n"
+                    
+                    # Поле ввода
+                    if data.get('has_tweet_input'):
+                        reply += f"✏️ **Поле для твита:** есть\n"
+                    
+                    reply += "\n💡 /click <x> <y> — кликнуть"
+                    
+                    await query.message.reply_text(reply, parse_mode='Markdown')
+                    
+                except json.JSONDecodeError as e:
+                    await query.message.reply_text(
+                        f"⚠️ Ошибка парсинга JSON: {str(e)[:100]}\n\n"
+                        f"📄 Получено:\n{result[:500]}"
+                    )
+                
+            except asyncio.TimeoutError:
+                await query.message.reply_text("⏰ AI не ответил за 30 секунд. Попробуй ещё раз.")
+            except Exception as e:
+                logger.error(f"Ошибка ai_extract: {e}")
+                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        
         # ===== КЛАВИАТУРА =====
         elif action == "keyboard":
             try:
@@ -889,15 +1041,11 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 elif cmd == 'clear':
                     context.user_data['keyboard_text'] = ''
                 elif cmd == 'enter_submit':
-                    # Enter - вводим текст и отправляем (как нажатие Enter)
                     text = context.user_data.get('keyboard_text', '')
                     if text:
                         await query.message.reply_text(f"📝 Ввожу и отправляю: {text}")
-                        
-                        # 1. Вводим текст
                         success = await type_text_to_tab(tab, text)
                         if success:
-                            # 2. Отправляем (Enter)
                             await asyncio.sleep(0.3)
                             try:
                                 await tab.execute_script("""
@@ -926,7 +1074,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await query.message.reply_text("❌ Нет текста для отправки")
                     return
                 elif cmd == 'done':
-                    # Готово - только вводим текст без отправки
                     text = context.user_data.get('keyboard_text', '')
                     if text:
                         await query.message.reply_text(f"📝 Ввожу текст: {text}")
@@ -964,7 +1111,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     context.user_data['keyboard_text'] = context.user_data.get('keyboard_text', '') + cmd
                 
-                # Обновляем клавиатуру
                 current_text = context.user_data.get('keyboard_text', '')
                 display_text = current_text if current_text else '(пусто)'
                 lang = context.user_data.get('keyboard_lang', 'ru')
@@ -1126,11 +1272,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(f"📝 Ввожу и отправляю: {text}")
         
-        # 1. Вводим текст
         success = await type_text_to_tab(tab, text)
         
         if success:
-            # 2. Автоматически нажимаем Enter
             await asyncio.sleep(0.3)
             try:
                 await tab.execute_script("""
