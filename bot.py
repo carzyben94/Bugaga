@@ -319,7 +319,7 @@ async def eval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
-# ==================== /extract — ПРАВИЛЬНЫЙ ПОДХОД ====================
+# ==================== /extract ====================
 
 async def extract_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -330,9 +330,8 @@ async def extract_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _, tab = user_browsers[user_id]
 
     try:
-        await update.message.reply_text("📊 Извлекаю твиты через Pydoll Extractor...")
+        await update.message.reply_text("📊 Извлекаю твиты...")
 
-        # ✅ ПРАВИЛЬНЫЙ ПОДХОД — используем встроенный Extractor
         tweets = await asyncio.wait_for(
             tab.extract_all(
                 Tweet,
@@ -346,43 +345,52 @@ async def extract_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("😕 Твиты не найдены на странице")
             return
 
-        # Формируем ответ
+        # Формируем ответ с очисткой ссылок
         reply = f"📊 **Найдено {len(tweets)} твитов:**\n\n"
-        parts = []
-        current_part = reply
         
         for i, tweet in enumerate(tweets, 1):
+            # Очищаем текст от ссылок
+            text = tweet.text
+            text = re.sub(r'https?://t\.co/\w+', '', text)
+            text = re.sub(r'https?://\S+', '', text)
+            text = re.sub(r'\s+', ' ', text).strip()
+            
             tweet_text = f"**{i}.** "
             if tweet.author:
                 tweet_text += f"{tweet.author}\n"
             else:
                 tweet_text += "Неизвестно\n"
             
-            if tweet.text:
-                text = tweet.text[:150] + '...' if len(tweet.text) > 150 else tweet.text
+            if text:
+                if len(text) > 200:
+                    text = text[:200] + '...'
                 tweet_text += f"📝 {text}\n"
             
-            # Извлекаем координаты твита (если нужно)
-            # Для этого нужен дополнительный JS, но пока просто показываем данные
             tweet_text += f"❤️ {tweet.likes} | 🔁 {tweet.retweets} | 💬 {tweet.replies}\n\n"
-            
-            if len(current_part) + len(tweet_text) > 4000:
-                parts.append(current_part)
-                current_part = ""
-            
-            current_part += tweet_text
+            reply += tweet_text
 
-        if current_part:
-            parts.append(current_part)
+        # Добавляем меню ВНИЗУ
+        menu_text = get_menu_text()
+        full_caption = f"{reply}\n\n{menu_text}"
 
-        # Отправляем по частям
-        for i, part in enumerate(parts):
-            if i == 0:
-                await update.message.reply_text(part, parse_mode='Markdown')
-            else:
-                await update.message.reply_text(f"📄 Продолжение {i+1}:\n\n{part}", parse_mode='Markdown')
+        # Обновляем или создаем сообщение
+        if user_id in user_menu_messages:
+            try:
+                await update.effective_message.edit_text(
+                    full_caption,
+                    parse_mode='Markdown'
+                )
+                user_menu_messages[user_id] = update.effective_message.message_id
+                return
+            except Exception as e:
+                logger.warning(f"Не удалось отредактировать: {e}")
+                try:
+                    await update.effective_message.delete()
+                except:
+                    pass
 
-        await send_or_update_menu(update, user_id, "📊 Твиты выгружены")
+        msg = await update.message.reply_text(full_caption, parse_mode='Markdown')
+        user_menu_messages[user_id] = msg.message_id
 
     except asyncio.TimeoutError:
         await update.message.reply_text("⏰ Поиск твитов занял слишком много времени")
