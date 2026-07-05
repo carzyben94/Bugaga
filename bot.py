@@ -398,6 +398,43 @@ def fix_text(text):
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
+# ==================== ФУНКЦИЯ ВВОДА ТЕКСТА ====================
+
+async def type_text_to_tab(tab, text):
+    """Универсальная функция ввода текста с поддержкой разных методов Pydoll"""
+    try:
+        # Пробуем type
+        await tab.type(text, humanize=True)
+        return True
+    except AttributeError:
+        try:
+            # Пробуем input
+            await tab.input(text)
+            return True
+        except AttributeError:
+            try:
+                # Пробуем send_keys
+                await tab.send_keys(text)
+                return True
+            except AttributeError:
+                try:
+                    # Пробуем через JavaScript
+                    escaped_text = text.replace("'", "\\'").replace('"', '\\"')
+                    await tab.execute_script(f"""
+                        (function() {{
+                            const el = document.activeElement;
+                            if (el) {{
+                                el.value = '{escaped_text}';
+                                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                            }}
+                        }})()
+                    """)
+                    return True
+                except Exception as e:
+                    logger.error(f"Все методы ввода не сработали: {e}")
+                    return False
+
 # ==================== КЛАВИАТУРА ====================
 
 def get_keyboard_layout(lang='ru'):
@@ -856,9 +893,12 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     text = context.user_data.get('keyboard_text', '')
                     if text:
                         await query.message.reply_text(f"📝 Ввожу текст: {text}")
-                        await tab.type(text, humanize=True)
-                        context.user_data['keyboard_text'] = ''
-                        await send_screen_with_buttons(update, user_id, f"⌨️ Введено: {text}")
+                        success = await type_text_to_tab(tab, text)
+                        if success:
+                            context.user_data['keyboard_text'] = ''
+                            await send_screen_with_buttons(update, user_id, f"⌨️ Введено: {text}")
+                        else:
+                            await query.message.reply_text("❌ Не удалось ввести текст. Попробуй через '📝 Ввод в чате'")
                     else:
                         await query.message.reply_text("❌ Нет текста для ввода")
                     return
@@ -866,7 +906,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     current_lang = context.user_data.get('keyboard_lang', 'ru')
                     context.user_data['keyboard_lang'] = 'en' if current_lang == 'ru' else 'ru'
                     await query.message.delete()
-                    # Пересоздаем клавиатуру
                     await joystick_callback(update, context)
                     return
                 elif cmd == 'to_chat':
@@ -1040,12 +1079,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         _, tab = user_browsers[user_id]
         
-        try:
-            await tab.type(text, humanize=True)
+        await update.message.reply_text(f"📝 Ввожу текст: {text}")
+        success = await type_text_to_tab(tab, text)
+        
+        if success:
             await update.message.reply_text(f"✅ Введён текст: {text}")
             await send_screen_with_buttons(update, user_id, f"📝 Введено: {text}")
-        except Exception as e:
-            await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        else:
+            await update.message.reply_text("❌ Не удалось ввести текст. Попробуй через '⌨️ Клавиатура'")
         
         context.user_data['waiting_for_chat_input'] = False
         return
