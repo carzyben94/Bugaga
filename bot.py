@@ -136,9 +136,6 @@ def get_joystick_keyboard(user_id=None):
             InlineKeyboardButton("🔎 Поиск", callback_data="go_search"),
         ],
         [
-            InlineKeyboardButton("🎯 Точные координаты", callback_data="exact_coords"),
-        ],
-        [
             InlineKeyboardButton("📍 Клик по координатам", callback_data="click_coords"),
         ],
         [
@@ -242,13 +239,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/close Закрыть браузер\n\n"
         "📸 Скриншот\n"
         "/screen Скриншот\n\n"
-        "🔍 Поиск\n"
-        "/search Запрос\n\n"
-        "📸 Фото\n"
-        "/getbaby Случайное фото\n\n"
         "📍 Координаты\n"
-        "/click <x> <y> — Клик по координатам\n"
-        "/click_num <номер> — Клик по номеру элемента"
+        "/click <x> <y> — Клик по координатам"
     )
     await update.message.reply_text(menu)
 
@@ -487,111 +479,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
         
-        # ===== ТОЧНЫЕ КООРДИНАТЫ (ЛОГИКА КАК В EVAL) =====
-        elif action == "exact_coords":
-            try:
-                await query.message.delete()
-                await query.message.reply_text("🎯 Получаю точные координаты через JavaScript...")
-                
-                _, tab = user_browsers[user_id]
-                
-                js_code = """
-                    (function() {
-                        const items = document.querySelectorAll('[data-testid], button, a, input, [role="button"]');
-                        const result = [];
-                        const seen = new Set();
-                        
-                        items.forEach(el => {
-                            const rect = el.getBoundingClientRect();
-                            if (rect.width > 10 && rect.height > 10 && 
-                                rect.top >= 0 && rect.left >= 0 &&
-                                rect.top < window.innerHeight && 
-                                rect.left < window.innerWidth) {
-                                
-                                let name = el.getAttribute('data-testid') || 
-                                          el.getAttribute('aria-label') || 
-                                          (el.textContent ? el.textContent.trim().slice(0, 25) : '') || 
-                                          'Элемент';
-                                
-                                const key = name + '_' + Math.round(rect.left) + '_' + Math.round(rect.top);
-                                if (!seen.has(key)) {
-                                    seen.add(key);
-                                    result.push({
-                                        name: name,
-                                        x: Math.round(rect.left + rect.width / 2),
-                                        y: Math.round(rect.top + rect.height / 2)
-                                    });
-                                }
-                            }
-                        });
-                        
-                        return JSON.stringify(result.slice(0, 30));
-                    })()
-                """
-                
-                result_str = await tab.execute_script(js_code)
-                
-                try:
-                    result = json.loads(result_str)
-                except:
-                    result = []
-                
-                if result and len(result) > 0:
-                    elements = []
-                    for i, item in enumerate(result):
-                        if isinstance(item, dict):
-                            elements.append({
-                                'id': i + 1,
-                                'name': item.get('name', 'Элемент'),
-                                'x': item.get('x', 0),
-                                'y': item.get('y', 0)
-                            })
-                    
-                    if elements:
-                        context.user_data['ai_elements'] = elements
-                        
-                        screenshot_base64 = await tab.take_screenshot(as_base64=True)
-                        screenshot_bytes = base64.b64decode(screenshot_base64)
-                        image = Image.open(BytesIO(screenshot_bytes))
-                        draw = ImageDraw.Draw(image)
-                        
-                        for el in elements:
-                            x, y = el['x'], el['y']
-                            draw.ellipse([(x - 8, y - 8), (x + 8, y + 8)], fill='lime', outline='white')
-                            draw.text((x + 12, y - 5), str(el['id']), fill='lime')
-                        
-                        output = BytesIO()
-                        image.save(output, format='PNG')
-                        image_with_dots = output.getvalue()
-                        
-                        reply = "🎯 Найденные элементы:\n\n"
-                        for el in elements[:15]:
-                            reply += f"{el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
-                        
-                        if len(elements) > 15:
-                            reply += f"\n... и ещё {len(elements) - 15} элементов"
-                        
-                        reply += f"\n\n📊 Всего: {len(elements)} элементов"
-                        reply += "\n💡 /click_num <номер> - кликнуть"
-                        
-                        await query.message.reply_photo(
-                            photo=image_with_dots,
-                            caption=reply
-                        )
-                    else:
-                        await query.message.reply_text("😕 Не удалось обработать элементы")
-                else:
-                    await query.message.reply_text(
-                        "😕 Не найдено элементов на странице.\n\n"
-                        "Попробуй:\n"
-                        "1. Нажать /refresh для обновления\n"
-                        "2. Выполнить /login заново"
-                    )
-                    
-            except Exception as e:
-                logger.error(f"Ошибка exact_coords: {e}")
-                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-        
         # ===== КЛИК ПО КООРДИНАТАМ =====
         elif action == "click_coords":
             try:
@@ -626,53 +513,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка: {e}")
         await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:300]}")
-
-# ==================== /click_num ====================
-
-async def click_num(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Кликает по элементу по номеру из списка"""
-    if not context.args:
-        await update.message.reply_text("❌ Укажи номер элемента\nПример: /click_num 1")
-        return
-    
-    try:
-        num = int(context.args[0])
-        user_id = update.effective_user.id
-        
-        if user_id not in user_browsers:
-            await update.message.reply_text("❌ Сначала выполни /login")
-            return
-        
-        if 'ai_elements' not in context.user_data:
-            await update.message.reply_text("❌ Сначала получи список элементов через '🎯 Точные координаты'")
-            return
-        
-        elements = context.user_data['ai_elements']
-        
-        target = None
-        for el in elements:
-            if el.get('id') == num:
-                target = el
-                break
-        
-        if not target:
-            await update.message.reply_text(f"❌ Элемент с номером {num} не найден")
-            return
-        
-        x, y = target.get('x'), target.get('y')
-        name = target.get('name', 'элемент')
-        
-        _, tab = user_browsers[user_id]
-        cursor = get_cursor(user_id)
-        cursor.x, cursor.y = x, y
-        
-        await tab.mouse.click(x, y, humanize=True)
-        await update.message.reply_text(f"✅ Клик по элементу {num}: {name} → ({x}, {y})")
-        
-        await send_screen_with_buttons(update, user_id, f"📍 Клик по {name}")
-        
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ==================== КОМАНДА /click ====================
 
@@ -714,7 +554,6 @@ async def click_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отменяет текущее ожидание"""
     context.user_data['waiting_for_coords'] = False
-    context.user_data['waiting_for_number'] = False
     await update.message.reply_text("✅ Ожидание отменено")
 
 # ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
@@ -756,191 +595,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("❌ Введи два числа через пробел\nПример: 520 310")
         return
-    
-    # Если ждем номер для клика
-    if context.user_data.get('waiting_for_number'):
-        try:
-            num = int(text.strip())
-            elements = context.user_data.get('ai_elements', [])
-            
-            target = None
-            for el in elements:
-                if el.get('id') == num:
-                    target = el
-                    break
-            
-            if target:
-                x, y = target['x'], target['y']
-                name = target.get('name', 'элемент')
-                
-                if user_id in user_browsers:
-                    _, tab = user_browsers[user_id]
-                    cursor = get_cursor(user_id)
-                    cursor.x, cursor.y = x, y
-                    
-                    await tab.mouse.click(x, y, humanize=True)
-                    await update.message.reply_text(f"✅ Клик по {name} → ({x}, {y})")
-                    
-                    await send_screen_with_buttons(update, user_id, f"📍 Клик по {name}")
-                else:
-                    await update.message.reply_text("❌ Браузер не открыт. Выполни /login")
-            else:
-                await update.message.reply_text(f"❌ Элемент с номером {num} не найден")
-                
-        except ValueError:
-            await update.message.reply_text("❌ Введи число")
-        
-        context.user_data['waiting_for_number'] = False
-        return
-
-# ==================== КОМАНДЫ ====================
-
-async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Укажи запрос\nПример: /search python")
-        return
-    
-    query = ' '.join(context.args)
-    user_id = update.effective_user.id
-    
-    try:
-        if user_id not in user_browsers:
-            await update.message.reply_text("❌ Сначала выполни /login")
-            return
-        
-        await update.message.reply_text(f"🔍 Ищу: {query}")
-        
-        _, tab = user_browsers[user_id]
-        
-        await tab.go_to(f'https://x.com/search?q={query}&src=typed_query')
-        await asyncio.sleep(3)
-        
-        tweets = await tab.extract_all(
-            Tweet,
-            scope='article[data-testid="tweet"]',
-            timeout=10
-        )
-        
-        screenshot_base64 = await asyncio.wait_for(
-            tab.take_screenshot(as_base64=True),
-            timeout=30.0
-        )
-        screenshot_bytes = base64.b64decode(screenshot_base64)
-        await update.message.reply_photo(
-            photo=screenshot_bytes,
-            caption=f"🔍 Результаты поиска: {query}"
-        )
-        
-        if tweets:
-            count = len(tweets)
-            reply = f"📊 Найдено {count} твитов\n\n"
-            
-            for i, tweet in enumerate(tweets[:20], 1):
-                text = fix_text(tweet.text)
-                if len(text) > 600:
-                    text = text[:600] + '...'
-                reply += f"{i}. {text}\n\n"
-            
-            if count > 20:
-                reply += f"... и ещё {count - 20} твитов"
-            
-            if len(reply) > 4096:
-                parts = []
-                current = ""
-                for line in reply.split('\n'):
-                    if len(current) + len(line) + 1 > 4000:
-                        parts.append(current)
-                        current = ""
-                    current += line + '\n'
-                if current:
-                    parts.append(current)
-                
-                for part in parts:
-                    await update.message.reply_text(part)
-            else:
-                await update.message.reply_text(reply)
-        else:
-            await update.message.reply_text("😕 Твиты не найдены")
-            
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
-
-async def getbaby(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    PROFILES = [
-        'babesdailyyy',
-        'beautyshowcase',
-        'EuGirlsDom'
-    ]
-    
-    user_id = update.effective_user.id
-    
-    try:
-        if user_id not in user_browsers:
-            await update.message.reply_text("❌ Сначала выполни /login")
-            return
-        
-        await update.message.reply_text("📸 Ищу фото...")
-        
-        _, tab = user_browsers[user_id]
-        
-        random.shuffle(PROFILES)
-        
-        all_photos = []
-        
-        for username in PROFILES:
-            try:
-                await tab.go_to(f'https://x.com/{username}')
-                await asyncio.sleep(3)
-                
-                photos = await tab.extract_all(
-                    TweetPhoto,
-                    scope='article[data-testid="tweet"]',
-                    timeout=5
-                )
-                
-                for photo_obj in photos[:10]:
-                    if photo_obj.photo:
-                        all_photos.append(photo_obj.photo)
-                
-                if not photos:
-                    photos_js = await tab.execute_script("""
-                        (function() {
-                            const images = document.querySelectorAll('img[src*="media"]');
-                            const result = [];
-                            images.forEach(img => {
-                                const src = img.src || img.getAttribute('src');
-                                if (src && src.includes('media')) {
-                                    result.push(src);
-                                }
-                            });
-                            return result;
-                        })()
-                    """)
-                    for photo in photos_js[:10]:
-                        all_photos.append(photo)
-                
-                if len(all_photos) >= 15:
-                    break
-                    
-            except Exception as e:
-                logger.error(f"Ошибка при обработке {username}: {e}")
-                continue
-        
-        if all_photos:
-            random.shuffle(all_photos)
-            selected = random.choice(all_photos)
-            
-            await update.message.reply_photo(photo=selected)
-            
-            await update.message.reply_text(f"📊 Найдено {len(all_photos)} фото")
-            
-        else:
-            await update.message.reply_text("😕 Фото не найдены")
-        
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
 # ==================== ОБРАБОТЧИК ОШИБОК ====================
 
@@ -957,9 +611,6 @@ def main():
     application.add_handler(CommandHandler("close", close_browser))
     application.add_handler(CommandHandler("joystick", joystick))
     application.add_handler(CommandHandler("screen", screen))
-    application.add_handler(CommandHandler("search", search))
-    application.add_handler(CommandHandler("getbaby", getbaby))
-    application.add_handler(CommandHandler("click_num", click_num))
     application.add_handler(CommandHandler("click", click_command))
     application.add_handler(CommandHandler("cancel", cancel_command))
     
