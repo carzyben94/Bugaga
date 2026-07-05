@@ -9,7 +9,7 @@ from io import BytesIO
 from datetime import datetime
 from PIL import Image, ImageDraw
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
 from pydoll.browser import Chrome
 from pydoll.browser.options import ChromiumOptions
@@ -141,6 +141,10 @@ def get_joystick_keyboard(user_id=None):
         ],
         [
             InlineKeyboardButton("🧠 AI Клик", callback_data="ai_click"),
+            InlineKeyboardButton("🎯 Точные координаты", callback_data="exact_coords"),
+        ],
+        [
+            InlineKeyboardButton("📍 Клик по координатам", callback_data="click_coords"),
         ],
         [
             InlineKeyboardButton("🔄 Обновить", callback_data="refresh"),
@@ -253,6 +257,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/ai_find <что> — Найти элемент через AI\n"
         "/ai_click <что> — Найти и кликнуть через AI\n"
         "/click_num <номер> — Кликнуть по элементу из списка\n\n"
+        "📍 Координаты\n"
+        "/click <x> <y> — Клик по координатам\n"
+        "/click_num <номер> — Клик по номеру элемента\n\n"
         "⚡ JavaScript\n"
         "/eval <js> — Выполнить JavaScript\n"
         "/ai Любая команда (умный eval)"
@@ -418,13 +425,10 @@ def parse_ai_response(text):
         if not line:
             continue
         
-        # Ищем координаты (X, Y)
         coord_match = re.search(r'\((\d+),\s*(\d+)\)', line)
         if coord_match:
             x = int(coord_match.group(1))
             y = int(coord_match.group(2))
-            
-            # Извлекаем название (все что до координат)
             name = re.sub(r'\s*\([\d,\s]+\)\s*$', '', line).strip()
             name = re.sub(r'^[^\w\sа-яА-Я]+\s*', '', name)
             name = re.sub(r'\s*[→➡️]\s*$', '', name)
@@ -573,8 +577,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 
                 result = response.choices[0].message.content
-                
-                # Парсим ответ AI
                 elements = parse_ai_response(result)
                 
                 if elements:
@@ -589,7 +591,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     await query.message.reply_text(reply)
                 else:
-                    # Если не удалось распарсить - показываем как есть
                     await query.message.reply_text(f"👁️ Что вижу на странице:\n\n{result}")
                     
             except asyncio.TimeoutError:
@@ -654,13 +655,10 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 
                 result = response.choices[0].message.content.strip()
-                
-                # Очищаем результат от лишних символов
                 result = re.sub(r'[\[\]\(\)"\']', '', result)
                 result = re.sub(r'координаты[:]?\s*', '', result, flags=re.IGNORECASE)
                 result = result.strip()
                 
-                # Извлекаем все числа
                 numbers = re.findall(r'\d+', result)
                 
                 if len(numbers) >= 2:
@@ -673,6 +671,104 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await send_screen_with_buttons(update, user_id, f"🧠 AI клик по лайку! ({x}, {y})")
                 else:
                     await query.message.reply_text(f"❌ Не удалось распознать координаты: {result}")
+                
+            except Exception as e:
+                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        
+        # ===== ТОЧНЫЕ КООРДИНАТЫ ЧЕРЕЗ JAVASCRIPT =====
+        elif action == "exact_coords":
+            try:
+                await query.message.delete()
+                await query.message.reply_text("🎯 Получаю точные координаты через JavaScript...")
+                
+                _, tab = user_browsers[user_id]
+                
+                elements = await tab.execute_script("""
+                    (function() {
+                        const result = [];
+                        const items = document.querySelectorAll(
+                            '[data-testid], button, a, input, [role="button"], [role="link"]'
+                        );
+                        
+                        items.forEach(el => {
+                            const rect = el.getBoundingClientRect();
+                            if (rect.width > 20 && rect.height > 20 && 
+                                rect.top >= 0 && rect.left >= 0 &&
+                                rect.top < window.innerHeight && 
+                                rect.left < window.innerWidth) {
+                                
+                                const centerX = Math.round(rect.left + rect.width / 2);
+                                const centerY = Math.round(rect.top + rect.height / 2);
+                                
+                                let name = el.getAttribute('aria-label') || 
+                                          el.getAttribute('data-testid') || 
+                                          el.textContent?.trim().slice(0, 30) || 
+                                          'Элемент';
+                                
+                                result.push({
+                                    id: result.length + 1,
+                                    name: name,
+                                    x: centerX,
+                                    y: centerY,
+                                    width: Math.round(rect.width),
+                                    height: Math.round(rect.height)
+                                });
+                            }
+                        });
+                        
+                        return result.slice(0, 30);
+                    })()
+                """)
+                
+                if elements and len(elements) > 0:
+                    context.user_data['ai_elements'] = elements
+                    
+                    screenshot_base64 = await tab.take_screenshot(as_base64=True)
+                    screenshot_bytes = base64.b64decode(screenshot_base64)
+                    image = Image.open(BytesIO(screenshot_bytes))
+                    draw = ImageDraw.Draw(image)
+                    
+                    for el in elements:
+                        x, y = el['x'], el['y']
+                        draw.ellipse([(x - 8, y - 8), (x + 8, y + 8)], fill='lime', outline='white')
+                        draw.text((x + 12, y - 5), str(el['id']), fill='lime')
+                    
+                    output = BytesIO()
+                    image.save(output, format='PNG')
+                    image_with_dots = output.getvalue()
+                    
+                    reply = "🎯 Точные координаты (JavaScript):\n\n"
+                    for el in elements[:15]:
+                        reply += f"{el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
+                    
+                    if len(elements) > 15:
+                        reply += f"\n... и ещё {len(elements) - 15} элементов"
+                    
+                    reply += f"\n\n📊 Всего: {len(elements)} элементов"
+                    reply += "\n💡 /click_num <номер> - кликнуть"
+                    
+                    await query.message.reply_photo(
+                        photo=image_with_dots,
+                        caption=reply
+                    )
+                    
+                else:
+                    await query.message.reply_text("😕 Не найдено видимых элементов на странице")
+                    
+            except Exception as e:
+                logger.error(f"Ошибка exact_coords: {e}")
+                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        
+        # ===== КЛИК ПО КООРДИНАТАМ =====
+        elif action == "click_coords":
+            try:
+                await query.message.delete()
+                await query.message.reply_text(
+                    "📍 Введи координаты в чат в формате: X Y\n"
+                    "Пример: 520 310\n"
+                    "Или /click 520 310"
+                )
+                context.user_data['waiting_for_coords'] = True
                 
             except Exception as e:
                 await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
@@ -715,7 +811,7 @@ async def click_num(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         if 'ai_elements' not in context.user_data:
-            await update.message.reply_text("❌ Сначала нажми '👁️ Что видишь?'")
+            await update.message.reply_text("❌ Сначала получи список элементов через '🎯 Точные координаты' или '👁️ Что видишь?'")
             return
         
         elements = context.user_data['ai_elements']
@@ -740,8 +836,130 @@ async def click_num(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await tab.mouse.click(x, y, humanize=True)
         await update.message.reply_text(f"✅ Клик по элементу {num}: {name} → ({x}, {y})")
         
+        await send_screen_with_buttons(update, user_id, f"📍 Клик по {name}")
+        
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+# ==================== КОМАНДА /click ====================
+
+async def click_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Клик по координатам"""
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "❌ Укажи координаты\n"
+            "Пример: /click 520 310"
+        )
+        return
+    
+    try:
+        x = int(context.args[0])
+        y = int(context.args[1])
+        
+        user_id = update.effective_user.id
+        
+        if user_id not in user_browsers:
+            await update.message.reply_text("❌ Сначала выполни /login")
+            return
+        
+        _, tab = user_browsers[user_id]
+        cursor = get_cursor(user_id)
+        cursor.x, cursor.y = x, y
+        
+        await tab.mouse.click(x, y, humanize=True)
+        await update.message.reply_text(f"✅ Клик по координатам: ({x}, {y})")
+        
+        await send_screen_with_buttons(update, user_id, f"📍 Клик по ({x}, {y})")
+        
+    except ValueError:
+        await update.message.reply_text("❌ Введи два числа через пробел\nПример: /click 520 310")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+# ==================== КОМАНДА /cancel ====================
+
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отменяет текущее ожидание"""
+    context.user_data['waiting_for_coords'] = False
+    context.user_data['waiting_for_number'] = False
+    context.user_data['waiting_for_element'] = False
+    await update.message.reply_text("✅ Ожидание отменено")
+
+# ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает текстовые сообщения"""
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+    
+    # Если ждем координаты
+    if context.user_data.get('waiting_for_coords'):
+        try:
+            parts = text.split()
+            if len(parts) >= 2:
+                x = int(parts[0])
+                y = int(parts[1])
+                
+                if user_id not in user_browsers:
+                    await update.message.reply_text("❌ Сначала выполни /login")
+                    context.user_data['waiting_for_coords'] = False
+                    return
+                
+                _, tab = user_browsers[user_id]
+                cursor = get_cursor(user_id)
+                cursor.x, cursor.y = x, y
+                
+                await tab.mouse.click(x, y, humanize=True)
+                await update.message.reply_text(f"✅ Клик по координатам: ({x}, {y})")
+                
+                await send_screen_with_buttons(update, user_id, f"📍 Клик по ({x}, {y})")
+                
+                context.user_data['waiting_for_coords'] = False
+            else:
+                await update.message.reply_text(
+                    "❌ Введи два числа через пробел\n"
+                    "Пример: 520 310\n"
+                    "Или /cancel чтобы отменить"
+                )
+        except ValueError:
+            await update.message.reply_text("❌ Введи два числа через пробел\nПример: 520 310")
+        return
+    
+    # Если ждем номер для клика
+    if context.user_data.get('waiting_for_number'):
+        try:
+            num = int(text.strip())
+            elements = context.user_data.get('ai_elements', [])
+            
+            target = None
+            for el in elements:
+                if el.get('id') == num:
+                    target = el
+                    break
+            
+            if target:
+                x, y = target['x'], target['y']
+                name = target.get('name', 'элемент')
+                
+                if user_id in user_browsers:
+                    _, tab = user_browsers[user_id]
+                    cursor = get_cursor(user_id)
+                    cursor.x, cursor.y = x, y
+                    
+                    await tab.mouse.click(x, y, humanize=True)
+                    await update.message.reply_text(f"✅ Клик по {name} → ({x}, {y})")
+                    
+                    await send_screen_with_buttons(update, user_id, f"📍 Клик по {name}")
+                else:
+                    await update.message.reply_text("❌ Браузер не открыт. Выполни /login")
+            else:
+                await update.message.reply_text(f"❌ Элемент с номером {num} не найден")
+                
+        except ValueError:
+            await update.message.reply_text("❌ Введи число")
+        
+        context.user_data['waiting_for_number'] = False
+        return
 
 # ==================== КОМАНДЫ ====================
 
@@ -1132,8 +1350,11 @@ def main():
     application.add_handler(CommandHandler("eval", evaluate_js))
     application.add_handler(CommandHandler("ai", ai_command))
     application.add_handler(CommandHandler("click_num", click_num))
+    application.add_handler(CommandHandler("click", click_command))
+    application.add_handler(CommandHandler("cancel", cancel_command))
     
     application.add_handler(CallbackQueryHandler(joystick_callback))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     application.add_error_handler(error_handler)
     
