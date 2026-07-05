@@ -487,132 +487,101 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
         
-        # ===== ТОЧНЫЕ КООРДИНАТЫ ЧЕРЕЗ JAVASCRIPT =====
+        # ===== ТОЧНЫЕ КООРДИНАТЫ (ЛОГИКА КАК В EVAL) =====
         elif action == "exact_coords":
             try:
                 await query.message.delete()
                 await query.message.reply_text("🎯 Получаю точные координаты через JavaScript...")
                 
+                # Логика как в eval
                 _, tab = user_browsers[user_id]
                 
-                current_url = await tab.current_url
-                if 'x.com' not in current_url and 'twitter.com' not in current_url:
-                    await query.message.reply_text(
-                        f"❌ Ты не на X.com!\n"
-                        f"Текущий URL: {current_url}\n"
-                        f"Перейди на X.com и попробуй снова."
-                    )
-                    return
-                
-                result = await tab.execute_script("""
+                # Простой JavaScript как в eval
+                js_code = """
                     (function() {
+                        const items = document.querySelectorAll('[data-testid], button, a, input, [role="button"]');
                         const result = [];
-                        const allElements = document.querySelectorAll('*');
-                        const foundIds = {};
+                        const seen = new Set();
                         
-                        allElements.forEach(el => {
-                            const testId = el.getAttribute('data-testid');
-                            if (testId && !foundIds[testId]) {
-                                foundIds[testId] = true;
-                                const rect = el.getBoundingClientRect();
-                                if (rect.width > 10 && rect.height > 10 && 
-                                    rect.top >= 0 && rect.left >= 0 &&
-                                    rect.top < window.innerHeight && 
-                                    rect.left < window.innerWidth) {
-                                    
+                        items.forEach(el => {
+                            const rect = el.getBoundingClientRect();
+                            if (rect.width > 10 && rect.height > 10 && 
+                                rect.top >= 0 && rect.left >= 0 &&
+                                rect.top < window.innerHeight && 
+                                rect.left < window.innerWidth) {
+                                
+                                let name = el.getAttribute('data-testid') || 
+                                          el.getAttribute('aria-label') || 
+                                          el.textContent?.trim().slice(0, 25) || 
+                                          'Элемент';
+                                
+                                // Убираем дубликаты
+                                const key = name + '_' + Math.round(rect.left) + '_' + Math.round(rect.top);
+                                if (!seen.has(key)) {
+                                    seen.add(key);
                                     result.push({
-                                        id: result.length + 1,
-                                        name: testId,
+                                        name: name,
                                         x: Math.round(rect.left + rect.width / 2),
-                                        y: Math.round(rect.top + rect.height / 2),
-                                        width: Math.round(rect.width),
-                                        height: Math.round(rect.height)
+                                        y: Math.round(rect.top + rect.height / 2)
                                     });
                                 }
                             }
                         });
                         
-                        if (result.length === 0) {
-                            const items = document.querySelectorAll('button, a, input, [role="button"]');
-                            items.forEach(el => {
-                                const rect = el.getBoundingClientRect();
-                                if (rect.width > 20 && rect.height > 20 && 
-                                    rect.top >= 0 && rect.left >= 0 &&
-                                    rect.top < window.innerHeight && 
-                                    rect.left < window.innerWidth) {
-                                    
-                                    let name = el.textContent?.trim().slice(0, 30) || 
-                                              el.getAttribute('aria-label') || 
-                                              'Элемент';
-                                    
-                                    result.push({
-                                        id: result.length + 1,
-                                        name: name,
-                                        x: Math.round(rect.left + rect.width / 2),
-                                        y: Math.round(rect.top + rect.height / 2),
-                                        width: Math.round(rect.width),
-                                        height: Math.round(rect.height)
-                                    });
-                                }
-                            });
-                        }
-                        
-                        return result;
+                        return result.slice(0, 30);
                     })()
-                """)
+                """
                 
-                if isinstance(result, list) and len(result) > 0:
+                # Выполняем JS как в eval
+                result = await tab.execute_script(js_code)
+                
+                if result and len(result) > 0:
                     elements = []
-                    for item in result:
-                        if isinstance(item, dict):
-                            elements.append({
-                                'id': item.get('id', len(elements) + 1),
-                                'name': item.get('name', 'Элемент'),
-                                'x': item.get('x', 0),
-                                'y': item.get('y', 0),
-                                'width': item.get('width', 0),
-                                'height': item.get('height', 0)
-                            })
+                    for i, item in enumerate(result):
+                        elements.append({
+                            'id': i + 1,
+                            'name': item.get('name', 'Элемент'),
+                            'x': item.get('x', 0),
+                            'y': item.get('y', 0)
+                        })
                     
-                    if elements:
-                        context.user_data['ai_elements'] = elements
-                        
-                        screenshot_base64 = await tab.take_screenshot(as_base64=True)
-                        screenshot_bytes = base64.b64decode(screenshot_base64)
-                        image = Image.open(BytesIO(screenshot_bytes))
-                        draw = ImageDraw.Draw(image)
-                        
-                        for el in elements:
-                            x, y = el['x'], el['y']
-                            draw.ellipse([(x - 8, y - 8), (x + 8, y + 8)], fill='lime', outline='white')
-                            draw.text((x + 12, y - 5), str(el['id']), fill='lime')
-                        
-                        output = BytesIO()
-                        image.save(output, format='PNG')
-                        image_with_dots = output.getvalue()
-                        
-                        reply = "🎯 Точные координаты (JavaScript):\n\n"
-                        for el in elements[:15]:
-                            reply += f"{el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
-                        
-                        if len(elements) > 15:
-                            reply += f"\n... и ещё {len(elements) - 15} элементов"
-                        
-                        reply += f"\n\n📊 Всего: {len(elements)} элементов"
-                        reply += "\n💡 /click_num <номер> - кликнуть"
-                        
-                        await query.message.reply_photo(
-                            photo=image_with_dots,
-                            caption=reply
-                        )
-                    else:
-                        await query.message.reply_text("😕 Не удалось обработать элементы")
+                    context.user_data['ai_elements'] = elements
+                    
+                    # Рисуем точки на скриншоте
+                    screenshot_base64 = await tab.take_screenshot(as_base64=True)
+                    screenshot_bytes = base64.b64decode(screenshot_base64)
+                    image = Image.open(BytesIO(screenshot_bytes))
+                    draw = ImageDraw.Draw(image)
+                    
+                    for el in elements:
+                        x, y = el['x'], el['y']
+                        draw.ellipse([(x - 8, y - 8), (x + 8, y + 8)], fill='lime', outline='white')
+                        draw.text((x + 12, y - 5), str(el['id']), fill='lime')
+                    
+                    output = BytesIO()
+                    image.save(output, format='PNG')
+                    image_with_dots = output.getvalue()
+                    
+                    reply = "🎯 Найденные элементы:\n\n"
+                    for el in elements[:15]:
+                        reply += f"{el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
+                    
+                    if len(elements) > 15:
+                        reply += f"\n... и ещё {len(elements) - 15} элементов"
+                    
+                    reply += f"\n\n📊 Всего: {len(elements)} элементов"
+                    reply += "\n💡 /click_num <номер> - кликнуть"
+                    
+                    await query.message.reply_photo(
+                        photo=image_with_dots,
+                        caption=reply
+                    )
                 else:
                     await query.message.reply_text(
                         "😕 Не найдено элементов на странице.\n\n"
                         "Попробуй:\n"
                         "1. Нажать /refresh для обновления\n"
-                        "2. Убедись что ты на X.com"
+                        "2. Выполнить /login заново"
                     )
                     
             except Exception as e:
