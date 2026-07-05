@@ -360,10 +360,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cursor.step = 100
             captions = "🟢 Шаг 100px"
         elif action == "scroll_up":
-            await tab.scroll.by('y', -300, smooth=True)
+            await tab.execute_script("window.scrollBy(0, -300)")
             captions = "⬆️ Скролл вверх на 300px"
         elif action == "scroll_down":
-            await tab.scroll.by('y', 300, smooth=True)
+            await tab.execute_script("window.scrollBy(0, 300)")
             captions = "⬇️ Скролл вниз на 300px"
         elif action == "scroll_top":
             await tab.scroll.to_top(smooth=True)
@@ -387,9 +387,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 await query.message.reply_text("📊 Извлекаю твиты...")
                 
-                # Прокручиваем вниз через scroll API
+                # Прокручиваем вниз через execute_script
                 for _ in range(3):
-                    await tab.scroll.by('y', 600, smooth=True)
+                    await tab.execute_script("window.scrollBy(0, 600)")
                     await asyncio.sleep(1.5)
                 
                 tweets = await asyncio.wait_for(
