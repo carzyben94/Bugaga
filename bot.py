@@ -56,20 +56,6 @@ def get_cursor(user_id):
         cursor_managers[user_id] = CursorManager()
     return cursor_managers[user_id]
 
-def draw_cursor(screenshot_bytes, x, y):
-    try:
-        image = Image.open(BytesIO(screenshot_bytes))
-        draw = ImageDraw.Draw(image)
-        size = 15
-        draw.line([(x - size, y), (x + size, y)], fill='red', width=3)
-        draw.line([(x, y - size), (x, y + size)], fill='red', width=3)
-        draw.ellipse([(x - 3, y - 3), (x + 3, y + 3)], fill='red')
-        output = BytesIO()
-        image.save(output, format='PNG')
-        return output.getvalue()
-    except:
-        return screenshot_bytes
-
 # ==================== КОМАНДЫ ====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -77,7 +63,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🤖 Бот для X.com\n\n"
         "/login — войти в X.com\n"
         "/close — закрыть браузер\n"
-        "/eval <js> — выполнить JS код в браузере"
+        "/eval <js> — выполнить JS код\n"
+        "/screen — скриншот страницы"
     )
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -132,15 +119,14 @@ async def close_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Браузер не открыт")
 
-# ==================== /eval (чистый вывод) ====================
+# ==================== /eval ====================
 
 async def eval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Выполняет JS код в браузере и возвращает чистый результат"""
+    """Выполняет JS код в браузере"""
     if not context.args:
         await update.message.reply_text(
             "❌ Укажи JS код\n"
-            "Пример: /eval document.title\n"
-            "Пример: /eval document.querySelector('[data-testid=\"like\"]')"
+            "Пример: /eval document.title"
         )
         return
     
@@ -156,7 +142,6 @@ async def eval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         raw = await tab.execute_script(js_code, return_by_value=True)
         
-        # Извлекаем чистое значение
         if isinstance(raw, dict) and 'result' in raw:
             raw = raw['result']
         if isinstance(raw, dict) and 'value' in raw:
@@ -174,6 +159,44 @@ async def eval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
+# ==================== /screen ====================
+
+async def screen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Делает скриншот страницы с курсором"""
+    user_id = update.effective_user.id
+    
+    if user_id not in user_browsers:
+        await update.message.reply_text("❌ Сначала выполни /login")
+        return
+    
+    _, tab = user_browsers[user_id]
+    cursor = get_cursor(user_id)
+    
+    try:
+        await update.message.reply_text("📸 Делаю скриншот...")
+        
+        screenshot_base64 = await tab.take_screenshot(as_base64=True)
+        screenshot_bytes = base64.b64decode(screenshot_base64)
+        
+        image = Image.open(BytesIO(screenshot_bytes))
+        draw = ImageDraw.Draw(image)
+        x, y = cursor.x, cursor.y
+        size = 15
+        draw.line([(x - size, y), (x + size, y)], fill='red', width=3)
+        draw.line([(x, y - size), (x, y + size)], fill='red', width=3)
+        draw.ellipse([(x - 3, y - 3), (x + 3, y + 3)], fill='red')
+        
+        output = BytesIO()
+        image.save(output, format='PNG')
+        
+        await update.message.reply_photo(
+            photo=output.getvalue(),
+            caption=f"🖼️ Скриншот\n📍 Курсор: ({x}, {y})"
+        )
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+
 # ==================== ЗАПУСК ====================
 
 def main():
@@ -182,6 +205,7 @@ def main():
     app.add_handler(CommandHandler("login", login))
     app.add_handler(CommandHandler("close", close_browser))
     app.add_handler(CommandHandler("eval", eval_command))
+    app.add_handler(CommandHandler("screen", screen_command))
     app.run_polling()
 
 if __name__ == "__main__":
