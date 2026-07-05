@@ -167,8 +167,14 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 {"role": "system", "content": """
                 Ты — эксперт по JavaScript для автоматизации X.com.
                 Верни ТОЛЬКО код. Без пояснений.
-                Используй document.querySelector, document.querySelectorAll, getBoundingClientRect.
-                Возвращай результат.
+                
+                ВАЖНО: Всегда возвращай результат:
+                - Если ищешь элемент → верни {x, y}
+                - Если собираешь данные → верни список
+                - Если выполняешь действие → верни "ok" или результат
+                - НИКОГДА не возвращай undefined
+                
+                Используй return в конце кода.
                 """},
                 {"role": "user", "content": f"""
                 Команда: {command}
@@ -177,9 +183,10 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 - "найди лайк" → найти кнопку лайка и вернуть {{x, y}}
                 - "собери твиты" → собрать тексты всех твитов в список
                 - "прокрути вниз" → window.scrollBy(0, 300); return 'ok'
-                - "кликни поиск" → найти и кликнуть на поле поиска
+                - "кликни поиск" → найти и кликнуть на поле поиска; return 'clicked'
                 
                 Верни ТОЛЬКО код. Оберни в функцию.
+                ВСЕГДА возвращай результат через return.
                 """}
             ],
             max_tokens=500,
@@ -191,30 +198,32 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         js_code = re.sub(r'```\n?', '', js_code)
         js_code = js_code.strip()
         
-        await update.message.reply_text("⚡ Выполняю...")
+        await update.message.reply_text(f"⚡ Выполняю...\n```javascript\n{js_code[:300]}\n```", parse_mode='Markdown')
         
         result = await tab.execute_script(js_code)
         
-        if result:
-            if isinstance(result, dict) and 'x' in result:
-                x, y = result['x'], result['y']
-                cursor.x, cursor.y = x, y
-                await update.message.reply_text(f"🎯 Найдено → ({x}, {y})")
-                screenshot = await tab.take_screenshot(as_base64=True)
-                img = draw_cursor(base64.b64decode(screenshot), cursor.x, cursor.y)
-                await update.message.reply_photo(
-                    photo=img,
-                    caption=f"📍 ({cursor.x}, {cursor.y})"
-                )
-            elif isinstance(result, list):
-                reply = f"📊 Результат ({len(result)} элементов):\n\n"
-                for i, item in enumerate(result[:10], 1):
-                    reply += f"{i}. {str(item)[:150]}\n"
-                await update.message.reply_text(reply)
-            else:
-                await update.message.reply_text(f"✅ Результат:\n{str(result)[:500]}")
+        # Если результат undefined или None
+        if result is None or result == {}:
+            await update.message.reply_text("✅ Команда выполнена (без возврата данных)")
+            return
+        
+        if isinstance(result, dict) and 'x' in result:
+            x, y = result['x'], result['y']
+            cursor.x, cursor.y = x, y
+            await update.message.reply_text(f"🎯 Найдено → ({x}, {y})")
+            screenshot = await tab.take_screenshot(as_base64=True)
+            img = draw_cursor(base64.b64decode(screenshot), cursor.x, cursor.y)
+            await update.message.reply_photo(
+                photo=img,
+                caption=f"📍 ({cursor.x}, {cursor.y})"
+            )
+        elif isinstance(result, list):
+            reply = f"📊 Результат ({len(result)} элементов):\n\n"
+            for i, item in enumerate(result[:10], 1):
+                reply += f"{i}. {str(item)[:150]}\n"
+            await update.message.reply_text(reply)
         else:
-            await update.message.reply_text("❌ Команда не дала результата")
+            await update.message.reply_text(f"✅ Результат:\n{str(result)[:500]}")
             
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
