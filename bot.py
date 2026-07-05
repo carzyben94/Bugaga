@@ -1004,28 +1004,23 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 _, tab = user_browsers[user_id]
                 
-                # Находим ленту твитов
                 feed_coords = await tab.execute_script("""
                     (function() {
                         const tweet = document.querySelector('article[data-testid="tweet"]');
                         if (!tweet) return null;
                         
-                        let container = tweet.closest('[data-testid="primaryColumn"]') ||
-                                       tweet.closest('main') ||
-                                       document.querySelector('[data-testid="primaryColumn"]');
-                        
+                        let container = document.querySelector('[data-testid="primaryColumn"]');
                         if (!container) {
-                            let parent = tweet.parentElement;
-                            while (parent) {
-                                const rect = parent.getBoundingClientRect();
+                            container = document.querySelector('main');
+                        }
+                        if (!container) {
+                            container = tweet.parentElement;
+                            while (container) {
+                                const rect = container.getBoundingClientRect();
                                 if (rect.width > 300 && rect.height > 400) {
-                                    const tweets = parent.querySelectorAll('article[data-testid="tweet"]');
-                                    if (tweets.length > 1) {
-                                        container = parent;
-                                        break;
-                                    }
+                                    break;
                                 }
-                                parent = parent.parentElement;
+                                container = container.parentElement;
                             }
                         }
                         
@@ -1033,59 +1028,85 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         
                         const rect = container.getBoundingClientRect();
                         
-                        const tweetInput = document.querySelector('[data-testid="tweetTextarea_0"]') ||
-                                          document.querySelector('div[role="textbox"]') ||
-                                          document.querySelector('[data-testid="tweetBox"]');
-                        
-                        let bottomY = rect.bottom;
-                        if (tweetInput) {
-                            const inputRect = tweetInput.getBoundingClientRect();
-                            bottomY = inputRect.bottom + 20;
-                        }
-                        
                         const tabs = document.querySelector('[role="tablist"]');
                         let topY = rect.top;
                         if (tabs) {
                             const tabsRect = tabs.getBoundingClientRect();
-                            topY = tabsRect.bottom;
+                            topY = Math.max(rect.top, tabsRect.bottom);
                         }
                         
+                        const tweetInput = document.querySelector('[data-testid="tweetTextarea_0"]') ||
+                                          document.querySelector('div[role="textbox"]');
+                        let bottomY = rect.bottom;
+                        if (tweetInput) {
+                            const inputRect = tweetInput.getBoundingClientRect();
+                            bottomY = Math.min(rect.bottom, inputRect.top);
+                        }
+                        
+                        const viewportHeight = window.innerHeight;
                         if (topY < 0) topY = 0;
-                        if (bottomY > window.innerHeight) bottomY = window.innerHeight;
+                        if (bottomY > viewportHeight) bottomY = viewportHeight;
+                        
+                        if (bottomY - topY < 100) {
+                            return {
+                                x: Math.round(rect.left + 10),
+                                y: Math.round(rect.top + 10),
+                                width: Math.round(rect.width - 20),
+                                height: Math.round(rect.height - 20)
+                            };
+                        }
                         
                         return {
-                            x: Math.round(rect.left),
-                            y: Math.round(topY),
-                            width: Math.round(rect.width),
-                            height: Math.round(bottomY - topY)
+                            x: Math.round(rect.left + 10),
+                            y: Math.round(topY + 10),
+                            width: Math.round(rect.width - 20),
+                            height: Math.round(bottomY - topY - 20)
                         };
                     })()
                 """)
                 
-                if feed_coords and feed_coords['height'] > 100:
-                    screenshot_base64 = await tab.take_screenshot(
-                        as_base64=True,
-                        clip={
-                            'x': feed_coords['x'],
-                            'y': feed_coords['y'],
-                            'width': feed_coords['width'],
-                            'height': feed_coords['height']
-                        }
-                    )
-                    
-                    screenshot_bytes = base64.b64decode(screenshot_base64)
-                    
-                    await query.message.reply_photo(
-                        photo=screenshot_bytes,
-                        caption=f"📸 Лента твитов\n📍 ({feed_coords['x']}, {feed_coords['y']}) | Размер: {feed_coords['width']}x{feed_coords['height']}"
-                    )
-                else:
+                if not feed_coords:
                     await query.message.reply_text(
                         "❌ Не найдена лента твитов\n\n"
                         "Попробуй:\n"
                         "1. Нажать /refresh для обновления\n"
-                        "2. Убедись что ты на главной странице"
+                        "2. Убедись что ты на главной странице X.com"
                     )
+                    return
+                
+                if feed_coords.get('height', 0) < 50 or feed_coords.get('width', 0) < 50:
+                    await query.message.reply_text(
+                        "❌ Лента твитов слишком маленькая\n"
+                        "Попробуй нажать /refresh и повторить"
+                    )
+                    return
+                
+                try:
+                    screenshot_base64 = await asyncio.wait_for(
+                        tab.take_screenshot(
+                            as_base64=True,
+                            clip={
+                                'x': feed_coords['x'],
+                                'y': feed_coords['y'],
+                                'width': feed_coords['width'],
+                                'height': feed_coords['height']
+                            }
+                        ),
+                        timeout=10.0
+                    )
+                except Exception as e:
+                    await query.message.reply_text(
+                        f"❌ Ошибка при создании скриншота: {str(e)[:100]}\n\n"
+                        "Попробуй использовать обычный скриншот (📸 Скрин)"
+                    )
+                    return
+                
+                screenshot_bytes = base64.b64decode(screenshot_base64)
+                
+                await query.message.reply_photo(
+                    photo=screenshot_bytes,
+                    caption=f"📸 Лента твитов\n📍 ({feed_coords['x']}, {feed_coords['y']}) | Размер: {feed_coords['width']}x{feed_coords['height']}"
+                )
                     
             except Exception as e:
                 logger.error(f"Ошибка screenshot_feed: {e}")
@@ -1099,28 +1120,23 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 _, tab = user_browsers[user_id]
                 
-                # 1. Находим ленту твитов
                 feed_coords = await tab.execute_script("""
                     (function() {
                         const tweet = document.querySelector('article[data-testid="tweet"]');
                         if (!tweet) return null;
                         
-                        let container = tweet.closest('[data-testid="primaryColumn"]') ||
-                                       tweet.closest('main') ||
-                                       document.querySelector('[data-testid="primaryColumn"]');
-                        
+                        let container = document.querySelector('[data-testid="primaryColumn"]');
                         if (!container) {
-                            let parent = tweet.parentElement;
-                            while (parent) {
-                                const rect = parent.getBoundingClientRect();
+                            container = document.querySelector('main');
+                        }
+                        if (!container) {
+                            container = tweet.parentElement;
+                            while (container) {
+                                const rect = container.getBoundingClientRect();
                                 if (rect.width > 300 && rect.height > 400) {
-                                    const tweets = parent.querySelectorAll('article[data-testid="tweet"]');
-                                    if (tweets.length > 1) {
-                                        container = parent;
-                                        break;
-                                    }
+                                    break;
                                 }
-                                parent = parent.parentElement;
+                                container = container.parentElement;
                             }
                         }
                         
@@ -1128,53 +1144,81 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         
                         const rect = container.getBoundingClientRect();
                         
-                        const tweetInput = document.querySelector('[data-testid="tweetTextarea_0"]') ||
-                                          document.querySelector('div[role="textbox"]') ||
-                                          document.querySelector('[data-testid="tweetBox"]');
-                        
-                        let bottomY = rect.bottom;
-                        if (tweetInput) {
-                            const inputRect = tweetInput.getBoundingClientRect();
-                            bottomY = inputRect.bottom + 20;
-                        }
-                        
                         const tabs = document.querySelector('[role="tablist"]');
                         let topY = rect.top;
                         if (tabs) {
                             const tabsRect = tabs.getBoundingClientRect();
-                            topY = tabsRect.bottom;
+                            topY = Math.max(rect.top, tabsRect.bottom);
                         }
                         
+                        const tweetInput = document.querySelector('[data-testid="tweetTextarea_0"]') ||
+                                          document.querySelector('div[role="textbox"]');
+                        let bottomY = rect.bottom;
+                        if (tweetInput) {
+                            const inputRect = tweetInput.getBoundingClientRect();
+                            bottomY = Math.min(rect.bottom, inputRect.top);
+                        }
+                        
+                        const viewportHeight = window.innerHeight;
                         if (topY < 0) topY = 0;
-                        if (bottomY > window.innerHeight) bottomY = window.innerHeight;
+                        if (bottomY > viewportHeight) bottomY = viewportHeight;
+                        
+                        if (bottomY - topY < 100) {
+                            return {
+                                x: Math.round(rect.left + 10),
+                                y: Math.round(rect.top + 10),
+                                width: Math.round(rect.width - 20),
+                                height: Math.round(rect.height - 20)
+                            };
+                        }
                         
                         return {
-                            x: Math.round(rect.left),
-                            y: Math.round(topY),
-                            width: Math.round(rect.width),
-                            height: Math.round(bottomY - topY)
+                            x: Math.round(rect.left + 10),
+                            y: Math.round(topY + 10),
+                            width: Math.round(rect.width - 20),
+                            height: Math.round(bottomY - topY - 20)
                         };
                     })()
                 """)
                 
-                if not feed_coords or feed_coords['height'] < 100:
-                    await query.message.reply_text("❌ Не найдена лента твитов")
+                if not feed_coords:
+                    await query.message.reply_text(
+                        "❌ Не найдена лента твитов\n\n"
+                        "Попробуй:\n"
+                        "1. Нажать /refresh для обновления\n"
+                        "2. Убедись что ты на главной странице X.com"
+                    )
                     return
                 
-                # 2. Делаем скриншот ленты
-                screenshot_base64 = await tab.take_screenshot(
-                    as_base64=True,
-                    clip={
-                        'x': feed_coords['x'],
-                        'y': feed_coords['y'],
-                        'width': feed_coords['width'],
-                        'height': feed_coords['height']
-                    }
-                )
+                if feed_coords.get('height', 0) < 50 or feed_coords.get('width', 0) < 50:
+                    await query.message.reply_text(
+                        "❌ Лента твитов слишком маленькая\n"
+                        "Попробуй нажать /refresh и повторить"
+                    )
+                    return
+                
+                try:
+                    screenshot_base64 = await asyncio.wait_for(
+                        tab.take_screenshot(
+                            as_base64=True,
+                            clip={
+                                'x': feed_coords['x'],
+                                'y': feed_coords['y'],
+                                'width': feed_coords['width'],
+                                'height': feed_coords['height']
+                            }
+                        ),
+                        timeout=10.0
+                    )
+                except Exception as e:
+                    await query.message.reply_text(
+                        f"❌ Ошибка при создании скриншота: {str(e)[:100]}\n\n"
+                        "Попробуй использовать обычный скриншот (📸 Скрин)"
+                    )
+                    return
                 
                 await query.message.reply_text("🧠 AI анализирует ленту...")
                 
-                # 3. Отправляем в AI
                 response = await asyncio.wait_for(
                     agnes_client.chat.completions.create(
                         model="agnes-2.0-flash",
@@ -1259,14 +1303,18 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     else:
                         reply += "😕 Не найдено твитов"
                     
-                    # Отправляем скриншот с анализом
-                    screenshot_bytes = base64.b64decode(screenshot_base64)
-                    await query.message.reply_photo(
-                        photo=screenshot_bytes,
-                        caption=reply[:1000]
-                    )
+                    try:
+                        screenshot_bytes = base64.b64decode(screenshot_base64)
+                        await query.message.reply_photo(
+                            photo=screenshot_bytes,
+                            caption=reply[:1000]
+                        )
+                    except:
+                        pass
                     
                     if len(reply) > 1000:
+                        await query.message.reply_text(reply, parse_mode='Markdown')
+                    else:
                         await query.message.reply_text(reply, parse_mode='Markdown')
                     
                 except json.JSONDecodeError as e:
