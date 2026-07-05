@@ -123,6 +123,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    
     try:
         await update.message.reply_text("🔐 Выполняю вход на X.com...")
         
@@ -131,34 +132,36 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--headless=new")
         options.add_argument("--disable-gpu")
-        options.add_argument("--window-size=1280,720")
+        options.add_argument("--window-size=1024,768")
         options.binary_location = CHROME_PATH
-
+        
         browser = Chrome(options=options)
         tab = await browser.start()
         
-        # Принудительно устанавливаем размер через JS
-        await tab.execute_script("window.resizeTo(1280, 720); window.moveTo(0, 0);")
-        
         await tab.go_to('https://x.com')
         await asyncio.sleep(2)
+        
         await tab.set_cookies(X_COOKIES)
         await asyncio.sleep(1)
+        
         await tab.refresh()
         await asyncio.sleep(5)
-
-        user_browsers[user_id] = (browser, tab)
-        cursor = get_cursor(user_id)
         
-        viewport = await tab.execute_script("return { width: window.innerWidth, height: window.innerHeight }")
-        cursor.x = viewport['width'] // 2
-        cursor.y = viewport['height'] // 2
-
-        await update.message.reply_text("✅ Вход выполнен!")
+        user_browsers[user_id] = (browser, tab)
+        
+        cursor = get_cursor(user_id)
+        try:
+            viewport = await tab.execute_script("return { width: window.innerWidth, height: window.innerHeight }")
+            cursor.x = viewport['width'] // 2
+            cursor.y = viewport['height'] // 2
+        except:
+            cursor.x, cursor.y = 500, 300
+        
+        await update.message.reply_text("✅ Вход выполнен! Размер окна: 1024x768")
         await send_or_update_menu(update, user_id, "✅ Вход выполнен!")
 
     except Exception as e:
-        logger.error(f"Ошибка входа: {e}")
+        logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка входа: {str(e)[:300]}")
 
 async def close_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
