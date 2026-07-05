@@ -8,8 +8,8 @@ from io import BytesIO
 from typing import List, Optional
 from pydantic import BaseModel
 from PIL import Image, ImageDraw
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, filters
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
 from pydoll.browser import Chrome
 from pydoll.browser.options import ChromiumOptions
@@ -44,10 +44,7 @@ X_COOKIES = [
 user_browsers = {}
 user_menu_messages = {}
 
-# ==================== PYDOLL EXTRACTION MODELS ====================
-
 class Tweet(ExtractionModel):
-    """Модель твита для извлечения через Pydoll Extractor"""
     text: str = Field(
         selector='div[data-testid="tweetText"]',
         default=""
@@ -69,8 +66,6 @@ class Tweet(ExtractionModel):
         default="0"
     )
 
-# ==================== КУРСОР ====================
-
 class CursorManager:
     def __init__(self):
         self.x = 500
@@ -85,7 +80,6 @@ def get_cursor(user_id):
     return cursor_managers[user_id]
 
 def escape_markdown(text):
-    """Экранирует спецсимволы для Telegram Markdown"""
     if not text:
         return text
     special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
@@ -96,8 +90,7 @@ def escape_markdown(text):
 def get_menu_text():
     return (
         "🤖 Бот для X.com\n\n"
-        "👇 Используй кнопки ниже для управления\n"
-        "⚡ /eval <js> — выполнить JS код"
+        "👇 Используй кнопки ниже для управления"
     )
 
 def get_control_keyboard():
@@ -148,7 +141,6 @@ def get_control_keyboard():
     ])
 
 async def get_screenshot_with_cursor(user_id):
-    """Делает скриншот с курсором"""
     try:
         _, tab = user_browsers[user_id]
         cursor = get_cursor(user_id)
@@ -238,8 +230,6 @@ async def send_or_update_menu(update, user_id, caption=None):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_or_update_menu(update, update.effective_user.id)
 
-# ==================== КОМАНДЫ ====================
-
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
@@ -283,8 +273,6 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка входа: {str(e)[:300]}")
 
-# ==================== ОБРАБОТЧИК КНОПОК ====================
-
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -292,13 +280,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     action = query.data
     
-    # ===== ВХОД =====
     if action == "do_login":
         await query.message.delete()
         await login(update, context)
         return
     
-    # ===== EVAL =====
     if action == "do_eval":
         await query.message.delete()
         await query.message.reply_text(
@@ -322,7 +308,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     captions = ""
     
     try:
-        # ===== ДВИЖЕНИЕ КУРСОРА =====
         if action == "cursor_up":
             cursor.y -= step
             captions = "⬆️ Курсор вверх"
@@ -335,8 +320,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif action == "cursor_right":
             cursor.x += step
             captions = "➡️ Курсор вправо"
-        
-        # ===== ДИАГОНАЛИ =====
         elif action == "diag_up_left":
             cursor.x -= step
             cursor.y -= step
@@ -353,15 +336,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cursor.x += step
             cursor.y += step
             captions = "↘️ Диагональ вниз-вправо"
-        
-        # ===== ЦЕНТР =====
         elif action == "cursor_center":
             viewport = await tab.execute_script("return { width: window.innerWidth, height: window.innerHeight }")
             cursor.x = viewport['width'] // 2
             cursor.y = viewport['height'] // 2
             captions = "🔄 Курсор в центр"
-        
-        # ===== ШАГ =====
         elif action == "step_30":
             cursor.step = 30
             captions = "🔵 Шаг 30px"
@@ -371,8 +350,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif action == "step_100":
             cursor.step = 100
             captions = "🟢 Шаг 100px"
-        
-        # ===== СКРОЛЛ =====
         elif action == "scroll_up":
             await tab.execute_script("window.scrollBy(0, -300)")
             captions = "⬆️ Скролл вверх на 300px"
@@ -385,13 +362,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif action == "scroll_bottom":
             await tab.execute_script("window.scrollTo(0, document.body.scrollHeight)")
             captions = "🔽 Вниз страницы"
-        
-        # ===== КЛИК =====
         elif action == "mouse_click":
             await tab.mouse.click(cursor.x, cursor.y, humanize=True)
             captions = f"🖱️ Клик по ({cursor.x}, {cursor.y})"
-        
-        # ===== СКРИНШОТ =====
         elif action == "take_screenshot":
             img_data, x, y = await get_screenshot_with_cursor(user_id)
             menu_text = get_menu_text()
@@ -401,8 +374,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=get_control_keyboard()
             )
             return
-        
-        # ===== EXTRACT ТВИТОВ =====
         elif action == "extract_tweets":
             try:
                 await query.message.edit_text("📊 Извлекаю твиты...")
@@ -420,7 +391,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await query.message.edit_text("😕 Твиты не найдены на странице")
                     return
 
+                # Формируем ответ с твитами
                 reply = f"📊 **Найдено {len(tweets)} твитов:**\n\n"
+                parts = []
+                current_part = reply
                 
                 for i, tweet in enumerate(tweets, 1):
                     text = tweet.text
@@ -441,12 +415,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         tweet_text += f"📝 {text}\n"
                     
                     tweet_text += f"❤️ {tweet.likes} | 🔁 {tweet.retweets} | 💬 {tweet.replies}\n\n"
-                    reply += tweet_text
+                    
+                    if len(current_part) + len(tweet_text) > 4000:
+                        parts.append(current_part)
+                        current_part = ""
+                    
+                    current_part += tweet_text
 
-                menu_text = escape_markdown(get_menu_text())
-                full_caption = f"{reply}\n\n{menu_text}"
+                if current_part:
+                    parts.append(current_part)
 
+                # Отправляем твиты отдельным сообщением
+                for part in parts:
+                    await query.message.reply_text(part, parse_mode='Markdown')
+                
+                # Возвращаем меню
                 img_data, x, y = await get_screenshot_with_cursor(user_id)
+                menu_text = get_menu_text()
+                full_caption = f"✅ Твиты выгружены\n\n{menu_text}\n\n📍 Курсор: ({x}, {y}) | Шаг: {cursor.step}px"
+                
                 await query.edit_message_media(
                     media=InputMediaPhoto(media=img_data, caption=full_caption),
                     reply_markup=get_control_keyboard()
@@ -457,8 +444,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 await query.message.edit_text(f"❌ Ошибка: {str(e)[:200]}")
             return
-        
-        # ===== ОБНОВИТЬ =====
         elif action == "refresh_screen":
             img_data, x, y = await get_screenshot_with_cursor(user_id)
             menu_text = get_menu_text()
@@ -468,8 +453,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=get_control_keyboard()
             )
             return
-        
-        # ===== ЗАКРЫТЬ =====
         elif action == "close_browser":
             if user_id in user_browsers:
                 browser, _ = user_browsers[user_id]
@@ -482,7 +465,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await query.edit_message_text("❌ Браузер не открыт")
             return
-        
         else:
             await query.edit_message_text("❌ Неизвестная команда")
             return
@@ -491,7 +473,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"❌ Ошибка: {str(e)[:100]}")
         return
     
-    # Обновляем скриншот
     img_data, x, y = await get_screenshot_with_cursor(user_id)
     menu_text = get_menu_text()
     full_caption = f"{captions}\n\n{menu_text}\n\n📍 Курсор: ({x}, {y}) | Шаг: {cursor.step}px"
@@ -501,13 +482,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=get_control_keyboard()
     )
 
-# ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip()
     
-    # Если ждем команду для eval
     if context.user_data.get('waiting_for_eval'):
         context.user_data['waiting_for_eval'] = False
         
