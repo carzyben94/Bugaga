@@ -154,6 +154,10 @@ def get_joystick_keyboard(user_id=None):
             InlineKeyboardButton("🔍 Поиск (Extractor)", callback_data="search_extractor"),
         ],
         [
+            InlineKeyboardButton("⌨️ Клавиатура", callback_data="keyboard"),
+            InlineKeyboardButton("📝 Ввод в чате", callback_data="chat_input"),
+        ],
+        [
             InlineKeyboardButton("🔄 Обновить", callback_data="refresh"),
         ],
         [
@@ -255,7 +259,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📸 Скриншот\n"
         "/screen Скриншот\n\n"
         "📍 Координаты\n"
-        "/click <x> <y> — Клик по координатам"
+        "/click <x> <y> — Клик по координатам\n\n"
+        "⌨️ Клавиатура\n"
+        "Нажми '⌨️ Клавиатура' в джойстике\n"
+        "Или просто напиши текст в чат после '📝 Ввод в чате'"
     )
     await update.message.reply_text(menu)
 
@@ -390,6 +397,67 @@ def fix_text(text):
     text = re.sub(r'([А-Яа-яA-Za-z])([—–])', r'\1 \2', text)
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
+
+# ==================== КЛАВИАТУРА ====================
+
+def get_keyboard_layout(lang='ru'):
+    layouts = {
+        'ru': [
+            ['А', 'Б', 'В', 'Г', 'Д', 'Е', 'Ё', 'Ж', 'З'],
+            ['И', 'Й', 'К', 'Л', 'М', 'Н', 'О', 'П', 'Р'],
+            ['С', 'Т', 'У', 'Ф', 'Х', 'Ц', 'Ч', 'Ш', 'Щ'],
+            ['Ъ', 'Ы', 'Ь', 'Э', 'Ю', 'Я'],
+        ],
+        'en': [
+            ['Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P'],
+            ['A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L'],
+            ['Z', 'X', 'C', 'V', 'B', 'N', 'M'],
+        ]
+    }
+    return layouts.get(lang, layouts['ru'])
+
+def get_keyboard_markup(context):
+    lang = context.user_data.get('keyboard_lang', 'ru')
+    lang_label = '🇷🇺 RU' if lang == 'ru' else '🇬🇧 EN'
+    
+    keyboard_buttons = []
+    
+    # Буквы
+    for row in get_keyboard_layout(lang):
+        row_buttons = []
+        for char in row:
+            row_buttons.append(InlineKeyboardButton(char, callback_data=f'key_{char}'))
+        keyboard_buttons.append(row_buttons)
+    
+    # Цифры
+    symbols_row = []
+    for char in ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0']:
+        symbols_row.append(InlineKeyboardButton(char, callback_data=f'key_{char}'))
+    keyboard_buttons.append(symbols_row)
+    
+    # Спецсимволы
+    specials_row = []
+    for char in [' ', '-', '.', ',', '!', '?', '@', '#', '$', '%']:
+        specials_row.append(InlineKeyboardButton(char, callback_data=f'key_{char}'))
+    keyboard_buttons.append(specials_row)
+    
+    # Управление
+    control_row = [
+        InlineKeyboardButton('⌫', callback_data='key_backspace'),
+        InlineKeyboardButton('🗑️', callback_data='key_clear'),
+        InlineKeyboardButton('✅ Готово', callback_data='key_done'),
+    ]
+    keyboard_buttons.append(control_row)
+    
+    # Переключение языка и закрытие
+    bottom_row = [
+        InlineKeyboardButton(f'🌐 {lang_label}', callback_data='key_switch_lang'),
+        InlineKeyboardButton('📝 В чат', callback_data='key_to_chat'),
+        InlineKeyboardButton('❌ Закрыть', callback_data='close_keyboard'),
+    ]
+    keyboard_buttons.append(bottom_row)
+    
+    return InlineKeyboardMarkup(keyboard_buttons)
 
 # ==================== ОБРАБОТЧИК ДЖОЙСТИКА ====================
 
@@ -752,6 +820,113 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "💡 Рекомендую использовать '🔍 Найти твиты' - это быстрее и надежнее!"
                 )
         
+        # ===== КЛАВИАТУРА =====
+        elif action == "keyboard":
+            try:
+                await query.message.delete()
+                
+                current_text = context.user_data.get('keyboard_text', '')
+                display_text = current_text if current_text else '(пусто)'
+                
+                lang = context.user_data.get('keyboard_lang', 'ru')
+                lang_label = '🇷🇺 RU' if lang == 'ru' else '🇬🇧 EN'
+                
+                await query.message.reply_text(
+                    f"⌨️ **Клавиатура** ({lang_label})\n\n"
+                    f"📝 Текст: `{display_text}`\n\n"
+                    "Нажимай на буквы для ввода текста.\n"
+                    "📝 'В чат' — можно ввести текст через чат.",
+                    reply_markup=get_keyboard_markup(context),
+                    parse_mode='Markdown'
+                )
+                
+            except Exception as e:
+                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        
+        # ===== КЛАВИАТУРА - ОБРАБОТКА КЛАВИШ =====
+        elif action.startswith("key_"):
+            try:
+                cmd = action.replace("key_", "")
+                
+                if cmd == 'backspace':
+                    context.user_data['keyboard_text'] = context.user_data.get('keyboard_text', '')[:-1]
+                elif cmd == 'clear':
+                    context.user_data['keyboard_text'] = ''
+                elif cmd == 'done':
+                    text = context.user_data.get('keyboard_text', '')
+                    if text:
+                        await query.message.reply_text(f"📝 Ввожу текст: {text}")
+                        await tab.type(text, humanize=True)
+                        context.user_data['keyboard_text'] = ''
+                        await send_screen_with_buttons(update, user_id, f"⌨️ Введено: {text}")
+                    else:
+                        await query.message.reply_text("❌ Нет текста для ввода")
+                    return
+                elif cmd == 'switch_lang':
+                    current_lang = context.user_data.get('keyboard_lang', 'ru')
+                    context.user_data['keyboard_lang'] = 'en' if current_lang == 'ru' else 'ru'
+                    await query.message.delete()
+                    # Пересоздаем клавиатуру
+                    await joystick_callback(update, context)
+                    return
+                elif cmd == 'to_chat':
+                    await query.message.delete()
+                    await query.message.reply_text(
+                        "📝 **Введи текст в чат**\n\n"
+                        "Просто напиши сообщение, и оно будет вставлено в активное поле.\n\n"
+                        "Чтобы отменить: `/cancel`",
+                        parse_mode='Markdown'
+                    )
+                    context.user_data['waiting_for_chat_input'] = True
+                    return
+                else:
+                    context.user_data['keyboard_text'] = context.user_data.get('keyboard_text', '') + cmd
+                
+                # Обновляем клавиатуру
+                current_text = context.user_data.get('keyboard_text', '')
+                display_text = current_text if current_text else '(пусто)'
+                lang = context.user_data.get('keyboard_lang', 'ru')
+                lang_label = '🇷🇺 RU' if lang == 'ru' else '🇬🇧 EN'
+                
+                await query.message.edit_text(
+                    f"⌨️ **Клавиатура** ({lang_label})\n\n"
+                    f"📝 Текст: `{display_text}`\n\n"
+                    "Нажимай на буквы для ввода текста.",
+                    reply_markup=get_keyboard_markup(context),
+                    parse_mode='Markdown'
+                )
+                
+            except Exception as e:
+                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        
+        # ===== ВВОД ТЕКСТА ЧЕРЕЗ ЧАТ =====
+        elif action == "chat_input":
+            try:
+                await query.message.delete()
+                await query.message.reply_text(
+                    "📝 **Введи текст в чат**\n\n"
+                    "Просто напиши сообщение, и оно будет вставлено в активное поле.\n\n"
+                    "Примеры:\n"
+                    "• `привет мир`\n"
+                    "• `Hello world`\n"
+                    "• `@username`\n\n"
+                    "Чтобы отменить: `/cancel`",
+                    parse_mode='Markdown'
+                )
+                context.user_data['waiting_for_chat_input'] = True
+                
+            except Exception as e:
+                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        
+        # ===== ЗАКРЫТЬ КЛАВИАТУРУ =====
+        elif action == "close_keyboard":
+            try:
+                await query.message.delete()
+                context.user_data['keyboard_text'] = ''
+                await send_screen_with_buttons(update, user_id, "⌨️ Клавиатура закрыта")
+            except Exception as e:
+                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        
         elif action == "refresh":
             await query.edit_message_text("🔄 Обновляю страницу...")
             await tab.refresh()
@@ -813,6 +988,7 @@ async def click_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отменяет текущее ожидание"""
     context.user_data['waiting_for_coords'] = False
+    context.user_data['waiting_for_chat_input'] = False
     await update.message.reply_text("✅ Ожидание отменено")
 
 # ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
@@ -853,6 +1029,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
         except ValueError:
             await update.message.reply_text("❌ Введи два числа через пробел\nПример: 520 310")
+        return
+    
+    # Если ждем текст для ввода в чате
+    if context.user_data.get('waiting_for_chat_input'):
+        if user_id not in user_browsers:
+            await update.message.reply_text("❌ Сначала выполни /login")
+            context.user_data['waiting_for_chat_input'] = False
+            return
+        
+        _, tab = user_browsers[user_id]
+        
+        try:
+            await tab.type(text, humanize=True)
+            await update.message.reply_text(f"✅ Введён текст: {text}")
+            await send_screen_with_buttons(update, user_id, f"📝 Введено: {text}")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        
+        context.user_data['waiting_for_chat_input'] = False
         return
 
 # ==================== ОБРАБОТЧИК ОШИБОК ====================
