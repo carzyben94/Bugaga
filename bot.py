@@ -4,40 +4,25 @@ import asyncio
 import base64
 import json
 import re
-import random
 from io import BytesIO
-from datetime import datetime
 from PIL import Image, ImageDraw
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
 from pydoll.browser import Chrome
 from pydoll.browser.options import ChromiumOptions
-from pydoll.extractor import ExtractionModel, Field
-
 from openai import AsyncOpenAI
 
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-
-if not TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN не установлен!")
-
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
+CHROME_PATH = '/usr/bin/chromium'
 
 agnes_client = None
 if AGNES_API_KEY:
-    agnes_client = AsyncOpenAI(
-        api_key=AGNES_API_KEY,
-        base_url="https://apihub.agnes-ai.com/v1"
-    )
-
-CHROME_PATH = '/usr/bin/chromium'
+    agnes_client = AsyncOpenAI(api_key=AGNES_API_KEY, base_url="https://apihub.agnes-ai.com/v1")
 
 X_COOKIES = [
     {"name": "__cuid", "value": "55d2d7c5-4888-430a-b024-dd785da46ef4", "domain": ".x.com", "path": "/"},
@@ -61,27 +46,6 @@ class CursorManager:
     def __init__(self):
         self.x = 500
         self.y = 300
-        self.step = 10
-        self.mode = 1
-    
-    def move(self, dx, dy):
-        self.x += dx * self.step
-        self.y += dy * self.step
-        return self.x, self.y
-    
-    def set_mode(self, mode):
-        if mode == 1:
-            self.step = 10
-            self.mode = 1
-        elif mode == 2:
-            self.step = 40
-            self.mode = 2
-    
-    def get_mode(self):
-        return self.mode, self.step
-    
-    def get_position(self):
-        return self.x, self.y
 
 cursor_managers = {}
 
@@ -90,1626 +54,164 @@ def get_cursor(user_id):
         cursor_managers[user_id] = CursorManager()
     return cursor_managers[user_id]
 
-# ==================== РИСОВАНИЕ КУРСОРА ====================
-
-def draw_cursor_on_screenshot(screenshot_bytes, cursor_x, cursor_y):
+def draw_cursor(screenshot_bytes, x, y):
     try:
         image = Image.open(BytesIO(screenshot_bytes))
         draw = ImageDraw.Draw(image)
-        
         size = 15
-        draw.line([(cursor_x - size, cursor_y), (cursor_x + size, cursor_y)], fill='red', width=3)
-        draw.line([(cursor_x, cursor_y - size), (cursor_x, cursor_y + size)], fill='red', width=3)
-        draw.ellipse([(cursor_x - 3, cursor_y - 3), (cursor_x + 3, cursor_y + 3)], fill='red')
-        
+        draw.line([(x - size, y), (x + size, y)], fill='red', width=3)
+        draw.line([(x, y - size), (x, y + size)], fill='red', width=3)
+        draw.ellipse([(x - 3, y - 3), (x + 3, y + 3)], fill='red')
         output = BytesIO()
         image.save(output, format='PNG')
         return output.getvalue()
     except:
         return screenshot_bytes
 
-# ==================== МОДЕЛЬ ТВИТА ДЛЯ EXTRACTOR ====================
-
-class Tweet(ExtractionModel):
-    text: str = Field(
-        selector='div[data-testid="tweetText"]',
-        default="[текст не найден]"
-    )
-
-# ==================== КНОПКИ ДЖОЙСТИКА ====================
-
-def get_joystick_keyboard(user_id=None):
-    keyboard = [
-        [
-            InlineKeyboardButton("⬆️", callback_data="up"),
-        ],
-        [
-            InlineKeyboardButton("⬅️", callback_data="left"),
-            InlineKeyboardButton("🔄", callback_data="reset"),
-            InlineKeyboardButton("➡️", callback_data="right"),
-        ],
-        [
-            InlineKeyboardButton("⬇️", callback_data="down"),
-        ],
-        [
-            InlineKeyboardButton("🖱️ Клик", callback_data="click"),
-            InlineKeyboardButton("📸 Скрин", callback_data="screenshot"),
-        ],
-        [
-            InlineKeyboardButton("📸 Лента твитов", callback_data="screenshot_feed"),
-            InlineKeyboardButton("🧠 AI Анализ ленты", callback_data="ai_analyze_feed"),
-        ],
-        [
-            InlineKeyboardButton("⬆️ Скролл", callback_data="scroll_up"),
-            InlineKeyboardButton("⬇️ Скролл", callback_data="scroll_down"),
-        ],
-        [
-            InlineKeyboardButton("🏠 Home", callback_data="go_home"),
-            InlineKeyboardButton("🔍 Explore", callback_data="go_explore"),
-            InlineKeyboardButton("👤 Профиль", callback_data="go_profile"),
-        ],
-        [
-            InlineKeyboardButton("🔎 Поиск", callback_data="go_search"),
-        ],
-        [
-            InlineKeyboardButton("📍 Клик по координатам", callback_data="click_coords"),
-        ],
-        [
-            InlineKeyboardButton("📊 Extract", callback_data="extract"),
-            InlineKeyboardButton("🔍 Найти твиты", callback_data="find_tweets"),
-        ],
-        [
-            InlineKeyboardButton("🔍 Поиск (Extractor)", callback_data="search_extractor"),
-        ],
-        [
-            InlineKeyboardButton("⌨️ Клавиатура", callback_data="keyboard"),
-            InlineKeyboardButton("📝 Ввод в чате", callback_data="chat_input"),
-        ],
-        [
-            InlineKeyboardButton("🧠 AI Extract", callback_data="ai_extract"),
-        ],
-        [
-            InlineKeyboardButton("🔄 Обновить", callback_data="refresh"),
-        ],
-        [
-            InlineKeyboardButton("🔵 Шаг 10", callback_data="mode_1"),
-            InlineKeyboardButton("🔴 Шаг 40", callback_data="mode_2"),
-        ]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-# ==================== ОТПРАВКА СКРИНА + КНОПОК ====================
-
-async def send_screen_with_buttons(update, user_id, caption="🎮 Джойстик X.com"):
-    if user_id not in user_browsers:
-        if isinstance(update, Update) and update.callback_query:
-            await update.callback_query.edit_message_text("❌ Сначала выполни /login")
-        else:
-            await update.message.reply_text("❌ Сначала выполни /login")
-        return None
-    
-    _, tab = user_browsers[user_id]
-    cursor = get_cursor(user_id)
-    x, y = cursor.get_position()
-    mode, step = cursor.get_mode()
-    
-    try:
-        screenshot_base64 = await asyncio.wait_for(
-            tab.take_screenshot(as_base64=True),
-            timeout=30.0
-        )
-        screenshot_bytes = base64.b64decode(screenshot_base64)
-        
-        image_with_cursor = draw_cursor_on_screenshot(screenshot_bytes, x, y)
-        
-        caption_text = f"{caption}\n🖱️ Курсор: ({x}, {y}) | Шаг: {step}px"
-        
-        if isinstance(update, Update) and update.callback_query:
-            try:
-                await update.callback_query.edit_message_media(
-                    media=InputMediaPhoto(
-                        media=image_with_cursor,
-                        caption=caption_text
-                    ),
-                    reply_markup=get_joystick_keyboard(user_id)
-                )
-            except Exception as e:
-                try:
-                    await update.callback_query.message.delete()
-                except:
-                    pass
-                await update.effective_message.reply_photo(
-                    photo=image_with_cursor,
-                    caption=caption_text,
-                    reply_markup=get_joystick_keyboard(user_id)
-                )
-        else:
-            await update.message.reply_photo(
-                photo=image_with_cursor,
-                caption=caption_text,
-                reply_markup=get_joystick_keyboard(user_id)
-            )
-        
-        return image_with_cursor
-        
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        error_text = f"❌ Ошибка: {str(e)[:300]}"
-        if isinstance(update, Update) and update.callback_query:
-            try:
-                await update.callback_query.edit_message_text(
-                    error_text,
-                    reply_markup=get_joystick_keyboard()
-                )
-            except:
-                try:
-                    await update.callback_query.message.delete()
-                except:
-                    pass
-                await update.effective_message.reply_text(
-                    error_text,
-                    reply_markup=get_joystick_keyboard()
-                )
-        else:
-            await update.message.reply_text(
-                error_text,
-                reply_markup=get_joystick_keyboard()
-            )
-        return None
-
-# ==================== МЕНЮ ====================
+# ==================== КОМАНДЫ ====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    menu = (
+    await update.message.reply_text(
         "🤖 Бот для X.com\n\n"
-        "🎮 Джойстик\n"
-        "/joystick — Открыть джойстик\n\n"
-        "🔐 Авторизация\n"
-        "/login X.com\n"
-        "/close Закрыть браузер\n\n"
-        "📸 Скриншот\n"
-        "/screen Скриншот\n\n"
-        "📍 Координаты\n"
-        "/click <x> <y> — Клик по координатам\n"
-        "/resize <w> <h> — Изменить размер окна\n\n"
-        "⌨️ Клавиатура\n"
-        "Нажми '⌨️ Клавиатура' в джойстике\n"
-        "Или просто напиши текст в чат после '📝 Ввод в чате'\n\n"
-        "🧠 AI Анализ ленты\n"
-        "Нажми '🧠 AI Анализ ленты' в джойстике"
+        "/login — войти в X.com\n"
+        "/close — закрыть браузер\n\n"
+        "После входа используй:\n"
+        "/ai <команда> — выполнить команду в браузере\n\n"
+        "Примеры:\n"
+        "/ai найди лайк\n"
+        "/ai собери твиты\n"
+        "/ai прокрути вниз"
     )
-    await update.message.reply_text(menu)
-
-# ==================== ЛОГИН ====================
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    
     try:
-        await update.message.reply_text("🔐 Выполняю вход на X.com...")
-        
+        await update.message.reply_text("🔐 Вход в X.com...")
         options = ChromiumOptions()
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--headless=new")
-        options.add_argument("--disable-gpu")
         options.add_argument("--window-size=1024,768")
-        
         options.binary_location = CHROME_PATH
-        
         browser = Chrome(options=options)
         tab = await browser.start()
-        
-        await tab.execute_script("window.resizeTo(1024, 768)")
-        
         await tab.go_to('https://x.com')
         await asyncio.sleep(2)
-        
         await tab.set_cookies(X_COOKIES)
         await asyncio.sleep(1)
-        
         await tab.refresh()
-        await asyncio.sleep(5)
-        
+        await asyncio.sleep(3)
         user_browsers[user_id] = (browser, tab)
-        
         cursor = get_cursor(user_id)
-        try:
-            viewport = await tab.execute_script("return { width: window.innerWidth, height: window.innerHeight }")
-            cursor.x = viewport['width'] // 2
-            cursor.y = viewport['height'] // 2
-        except:
-            cursor.x, cursor.y = 500, 300
-        
-        await update.message.reply_text("✅ Вход выполнен! Размер окна: 1024x768")
-        
+        viewport = await tab.execute_script("return { width: window.innerWidth, height: window.innerHeight }")
+        cursor.x, cursor.y = viewport['width'] // 2, viewport['height'] // 2
+        await update.message.reply_text("✅ Вход выполнен!")
     except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка входа: {str(e)[:300]}")
-
-# ==================== ЗАКРЫТЬ БРАУЗЕР ====================
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def close_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    
-    try:
-        if user_id not in user_browsers:
-            await update.message.reply_text("❌ Браузер уже закрыт или не был открыт")
-            return
-        
-        browser, tab = user_browsers[user_id]
-        
-        await update.message.reply_text("🔄 Закрываю браузер...")
-        
-        await browser.close()
-        
-        del user_browsers[user_id]
-        
-        if user_id in cursor_managers:
-            del cursor_managers[user_id]
-        
-        await update.message.reply_text("✅ Браузер закрыт! Сессия очищена.")
-        
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
-
-# ==================== СКРИНШОТ ====================
-
-async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    try:
-        if user_id not in user_browsers:
-            await update.message.reply_text("❌ Сначала выполни /login")
-            return
-        
-        await update.message.reply_text("📸 Делаю скриншот...")
-        
-        _, tab = user_browsers[user_id]
-        cursor = get_cursor(user_id)
-        x, y = cursor.get_position()
-        
-        await asyncio.sleep(1)
-        
-        screenshot_base64 = await asyncio.wait_for(
-            tab.take_screenshot(as_base64=True),
-            timeout=30.0
-        )
-        screenshot_bytes = base64.b64decode(screenshot_base64)
-        
-        image_with_cursor = draw_cursor_on_screenshot(screenshot_bytes, x, y)
-        
-        await update.message.reply_photo(
-            photo=image_with_cursor,
-            caption=f"🖼️ Скриншот\n🖱️ Курсор: ({x}, {y})"
-        )
-        
-    except asyncio.TimeoutError:
-        await update.message.reply_text("⏰ Скриншот занимает слишком много времени. Попробуй ещё раз.")
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
-
-# ==================== ДЖОЙСТИК ====================
-
-async def joystick(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
     if user_id in user_browsers:
-        await send_screen_with_buttons(update, user_id, "🎮 Джойстик X.com")
+        browser, _ = user_browsers[user_id]
+        await browser.close()
+        del user_browsers[user_id]
+        await update.message.reply_text("✅ Браузер закрыт")
     else:
+        await update.message.reply_text("❌ Браузер не открыт")
+
+# ==================== AI БРАУЗЕР ====================
+
+async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
         await update.message.reply_text(
-            "❌ Сначала выполни /login",
-            reply_markup=get_joystick_keyboard()
+            "❌ Укажи команду\n"
+            "Пример: /ai найди лайк"
         )
-
-# ==================== ФУНКЦИИ ====================
-
-def fix_text(text):
-    text = re.sub(r'([а-яё])([А-ЯЁ])', r'\1 \2', text)
-    text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
-    text = re.sub(r'([А-ЯЁ])([А-ЯЁ][а-яё])', r'\1 \2', text)
-    text = re.sub(r'([«»"\'])([А-Яа-яA-Za-z])', r'\1 \2', text)
-    text = re.sub(r'([А-Яа-яA-Za-z])([«»"\'])', r'\1 \2', text)
-    text = re.sub(r'([—–])([А-Яа-яA-Za-z])', r'\1 \2', text)
-    text = re.sub(r'([А-Яа-яA-Za-z])([—–])', r'\1 \2', text)
-    text = re.sub(r'\s+', ' ', text)
-    return text.strip()
-
-# ==================== ФУНКЦИЯ ВВОДА ТЕКСТА ====================
-
-async def type_text_to_tab(tab, text):
-    """Универсальная функция ввода текста с поддержкой разных методов Pydoll"""
-    try:
-        await tab.type(text, humanize=True)
-        return True
-    except AttributeError:
-        try:
-            await tab.input(text)
-            return True
-        except AttributeError:
-            try:
-                await tab.send_keys(text)
-                return True
-            except AttributeError:
-                try:
-                    escaped_text = text.replace("'", "\\'").replace('"', '\\"')
-                    await tab.execute_script(f"""
-                        (function() {{
-                            const el = document.activeElement;
-                            if (el) {{
-                                el.value = '{escaped_text}';
-                                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                            }}
-                        }})()
-                    """)
-                    return True
-                except Exception as e:
-                    logger.error(f"Все методы ввода не сработали: {e}")
-                    return False
-
-# ==================== КЛАВИАТУРА ====================
-
-def get_keyboard_layout(lang='ru'):
-    layouts = {
-        'ru': [
-            ['А', 'Б', 'В', 'Г', 'Д', 'Е', 'Ё', 'Ж', 'З'],
-            ['И', 'Й', 'К', 'Л', 'М', 'Н', 'О', 'П', 'Р'],
-            ['С', 'Т', 'У', 'Ф', 'Х', 'Ц', 'Ч', 'Ш', 'Щ'],
-            ['Ъ', 'Ы', 'Ь', 'Э', 'Ю', 'Я'],
-        ],
-        'en': [
-            ['Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P'],
-            ['A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L'],
-            ['Z', 'X', 'C', 'V', 'B', 'N', 'M'],
-        ]
-    }
-    return layouts.get(lang, layouts['ru'])
-
-def get_keyboard_markup(context):
-    lang = context.user_data.get('keyboard_lang', 'ru')
-    lang_label = '🇷🇺 RU' if lang == 'ru' else '🇬🇧 EN'
-    
-    keyboard_buttons = []
-    
-    for row in get_keyboard_layout(lang):
-        row_buttons = []
-        for char in row:
-            row_buttons.append(InlineKeyboardButton(char, callback_data=f'key_{char}'))
-        keyboard_buttons.append(row_buttons)
-    
-    symbols_row = []
-    for char in ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0']:
-        symbols_row.append(InlineKeyboardButton(char, callback_data=f'key_{char}'))
-    keyboard_buttons.append(symbols_row)
-    
-    specials_row = []
-    for char in [' ', '-', '.', ',', '!', '?', '@', '#', '$', '%']:
-        specials_row.append(InlineKeyboardButton(char, callback_data=f'key_{char}'))
-    keyboard_buttons.append(specials_row)
-    
-    control_row = [
-        InlineKeyboardButton('⌫', callback_data='key_backspace'),
-        InlineKeyboardButton('🗑️', callback_data='key_clear'),
-        InlineKeyboardButton('⏎ Enter', callback_data='key_enter_submit'),
-        InlineKeyboardButton('✅ Готово', callback_data='key_done'),
-    ]
-    keyboard_buttons.append(control_row)
-    
-    bottom_row = [
-        InlineKeyboardButton(f'🌐 {lang_label}', callback_data='key_switch_lang'),
-        InlineKeyboardButton('📝 В чат', callback_data='key_to_chat'),
-        InlineKeyboardButton('❌ Закрыть', callback_data='close_keyboard'),
-    ]
-    keyboard_buttons.append(bottom_row)
-    
-    return InlineKeyboardMarkup(keyboard_buttons)
-
-# ==================== ОБРАБОТЧИК ДЖОЙСТИКА ====================
-
-async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+        return
     
     user_id = update.effective_user.id
-    action = query.data
+    command = ' '.join(context.args)
     
     if user_id not in user_browsers:
-        await query.edit_message_text("❌ Сначала выполни /login")
+        await update.message.reply_text("❌ Сначала выполни /login")
         return
     
     _, tab = user_browsers[user_id]
     cursor = get_cursor(user_id)
     
-    try:
-        if action == "up":
-            cursor.move(0, -1)
-            await send_screen_with_buttons(update, user_id, "⬆️ Вверх")
-        
-        elif action == "down":
-            cursor.move(0, 1)
-            await send_screen_with_buttons(update, user_id, "⬇️ Вниз")
-        
-        elif action == "left":
-            cursor.move(-1, 0)
-            await send_screen_with_buttons(update, user_id, "⬅️ Влево")
-        
-        elif action == "right":
-            cursor.move(1, 0)
-            await send_screen_with_buttons(update, user_id, "➡️ Вправо")
-        
-        elif action == "reset":
-            try:
-                viewport = await tab.execute_script("return { width: window.innerWidth, height: window.innerHeight }")
-                cursor.x = viewport['width'] // 2
-                cursor.y = viewport['height'] // 2
-            except:
-                cursor.x, cursor.y = 500, 300
-            await send_screen_with_buttons(update, user_id, "🔄 Курсор сброшен")
-        
-        elif action == "click":
-            try:
-                await tab.mouse.click(cursor.x, cursor.y, humanize=True)
-                await send_screen_with_buttons(update, user_id, f"🖱️ Клик по ({cursor.x}, {cursor.y})")
-            except Exception as e:
-                await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
-        
-        elif action == "screenshot":
-            await send_screen_with_buttons(update, user_id, "📸 Скриншот")
-        
-        # ===== СКРОЛЛИНГ =====
-        elif action == "scroll_up":
-            try:
-                await tab.execute_script("window.scrollBy(0, -300);")
-                await asyncio.sleep(0.3)
-                await send_screen_with_buttons(update, user_id, "⬆️ Скролл вверх")
-            except Exception as e:
-                await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
-        
-        elif action == "scroll_down":
-            try:
-                await tab.execute_script("window.scrollBy(0, 300);")
-                await asyncio.sleep(0.3)
-                await send_screen_with_buttons(update, user_id, "⬇️ Скролл вниз")
-            except Exception as e:
-                await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
-        
-        # ===== НАВИГАЦИЯ =====
-        elif action == "go_home":
-            try:
-                await tab.mouse.click(60, 80, humanize=True)
-                await asyncio.sleep(1)
-                await send_screen_with_buttons(update, user_id, "🏠 Перешёл на Home")
-            except Exception as e:
-                await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
-        
-        elif action == "go_explore":
-            try:
-                await tab.mouse.click(60, 140, humanize=True)
-                await asyncio.sleep(1)
-                await send_screen_with_buttons(update, user_id, "🔍 Перешёл на Explore")
-            except Exception as e:
-                await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
-        
-        elif action == "go_profile":
-            try:
-                await tab.mouse.click(60, 380, humanize=True)
-                await asyncio.sleep(1)
-                await send_screen_with_buttons(update, user_id, "👤 Перешёл в Профиль")
-            except Exception as e:
-                await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
-        
-        # ===== ПОИСК =====
-        elif action == "go_search":
-            try:
-                await tab.mouse.click(60, 140, humanize=True)
-                await asyncio.sleep(1)
-                await tab.mouse.click(380, 40, humanize=True)
-                await asyncio.sleep(0.5)
-                await send_screen_with_buttons(update, user_id, "🔎 Поле поиска активно")
-            except Exception as e:
-                await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
-        
-        # ===== КЛИК ПО КООРДИНАТАМ =====
-        elif action == "click_coords":
-            try:
-                await query.message.delete()
-                await query.message.reply_text(
-                    "📍 Введи координаты в чат в формате: X Y\n"
-                    "Пример: 520 310\n"
-                    "Или /click 520 310"
-                )
-                context.user_data['waiting_for_coords'] = True
-                
-            except Exception as e:
-                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-        
-        # ===== EXTRACT =====
-        elif action == "extract":
-            try:
-                await query.message.delete()
-                
-                x, y = cursor.get_position()
-                
-                await query.message.reply_text(f"📊 Извлекаю данные под курсором ({x}, {y})...")
-                
-                result = await tab.execute_script(f"""
-                    (function() {{
-                        const el = document.elementFromPoint({x}, {y});
-                        if (!el) return null;
-                        
-                        const data = {{
-                            tag: el.tagName,
-                            text: el.textContent?.trim().slice(0, 200) || '',
-                            testid: el.getAttribute('data-testid') || '',
-                            href: el.href || '',
-                            src: el.src || '',
-                            alt: el.alt || '',
-                            aria_label: el.getAttribute('aria-label') || '',
-                            role: el.getAttribute('role') || '',
-                            coords: {{ x: {x}, y: {y} }}
-                        }};
-                        
-                        const tweet = el.closest('article[data-testid="tweet"]');
-                        if (tweet) {{
-                            const textEl = tweet.querySelector('div[data-testid="tweetText"]');
-                            data.tweet_text = textEl ? textEl.textContent.trim() : '';
-                            
-                            const authorEl = tweet.querySelector('div[data-testid="User-Name"]');
-                            if (authorEl) {{
-                                const spans = authorEl.querySelectorAll('span');
-                                data.author = spans.length > 0 ? spans[0].textContent.trim() : '';
-                                data.username = spans.length > 1 ? spans[1].textContent.trim() : '';
-                            }}
-                            
-                            const timeEl = tweet.querySelector('time');
-                            data.time = timeEl ? timeEl.getAttribute('datetime') : '';
-                            
-                            const linkEl = tweet.querySelector('a[href*="/status/"]');
-                            data.url = linkEl ? linkEl.href : '';
-                        }}
-                        
-                        return data;
-                    }})()
-                """)
-                
-                if result and isinstance(result, dict):
-                    reply = f"📊 Данные под курсором ({x}, {y}):\n\n"
-                    for key, value in result.items():
-                        if value and key != 'coords':
-                            if key in ['tweet_text', 'text']:
-                                reply += f"📝 {key}: {str(value)[:150]}...\n"
-                            elif key in ['url', 'href', 'src']:
-                                reply += f"🔗 {key}: {str(value)[:100]}\n"
-                            else:
-                                reply += f"• {key}: {value}\n"
-                    
-                    await query.message.reply_text(reply)
-                else:
-                    await query.message.reply_text(f"❌ Нет элемента по координатам ({x}, {y})")
-                    
-            except Exception as e:
-                logger.error(f"Ошибка extract: {e}")
-                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-        
-        # ===== НАЙТИ ТВИТЫ =====
-        elif action == "find_tweets":
-            try:
-                await query.message.delete()
-                await query.message.reply_text("🔍 Ищу твиты на странице...")
-                
-                _, tab = user_browsers[user_id]
-                
-                tweets = await tab.execute_script("""
-                    (function() {
-                        const tweets = document.querySelectorAll('article[data-testid="tweet"]');
-                        const result = [];
-                        
-                        tweets.forEach((tweet, index) => {
-                            const data = {};
-                            data.id = index + 1;
-                            
-                            const textEl = tweet.querySelector('div[data-testid="tweetText"]');
-                            data.text = textEl ? textEl.textContent.trim() : '';
-                            
-                            const authorEl = tweet.querySelector('div[data-testid="User-Name"]');
-                            if (authorEl) {
-                                const spans = authorEl.querySelectorAll('span');
-                                data.author = spans.length > 0 ? spans[0].textContent.trim() : '';
-                                data.username = spans.length > 1 ? spans[1].textContent.trim() : '';
-                            }
-                            
-                            const timeEl = tweet.querySelector('time');
-                            data.time = timeEl ? timeEl.getAttribute('datetime') : '';
-                            
-                            const stats = {};
-                            const statItems = tweet.querySelectorAll('[data-testid$="-count"]');
-                            statItems.forEach(el => {
-                                const testid = el.getAttribute('data-testid');
-                                if (testid) {
-                                    const count = el.textContent.trim();
-                                    if (testid.includes('reply')) stats.replies = count;
-                                    else if (testid.includes('retweet')) stats.retweets = count;
-                                    else if (testid.includes('like')) stats.likes = count;
-                                    else if (testid.includes('view')) stats.views = count;
-                                }
-                            });
-                            data.stats = stats;
-                            
-                            const rect = tweet.getBoundingClientRect();
-                            data.coords = {
-                                x: Math.round(rect.left + rect.width / 2),
-                                y: Math.round(rect.top + rect.height / 2)
-                            };
-                            
-                            const buttons = {};
-                            ['like', 'retweet', 'reply'].forEach(name => {
-                                const btn = tweet.querySelector(`[data-testid="${name}"]`);
-                                if (btn) {
-                                    const r = btn.getBoundingClientRect();
-                                    buttons[name] = {
-                                        x: Math.round(r.left + r.width / 2),
-                                        y: Math.round(r.top + r.height / 2)
-                                    };
-                                }
-                            });
-                            data.buttons = buttons;
-                            
-                            result.push(data);
-                        });
-                        
-                        return result.slice(0, 10);
-                    })()
-                """)
-                
-                if tweets and len(tweets) > 0:
-                    reply = f"🔍 Найдено {len(tweets)} твитов:\n\n"
-                    
-                    for t in tweets:
-                        reply += f"**{t.get('id')}. {t.get('author', 'Неизвестно')}**"
-                        if t.get('username'):
-                            reply += f" (@{t['username']})"
-                        reply += "\n"
-                        
-                        text = t.get('text', '')
-                        if text:
-                            if len(text) > 120:
-                                text = text[:120] + '...'
-                            reply += f"📝 {text}\n"
-                        
-                        stats = t.get('stats', {})
-                        if stats:
-                            parts = []
-                            if stats.get('likes'): parts.append(f"❤️ {stats['likes']}")
-                            if stats.get('retweets'): parts.append(f"🔁 {stats['retweets']}")
-                            if stats.get('replies'): parts.append(f"💬 {stats['replies']}")
-                            if parts:
-                                reply += f"📊 {' | '.join(parts)}\n"
-                        
-                        coords = t.get('coords', {})
-                        if coords:
-                            reply += f"📍 ({coords.get('x', '?')}, {coords.get('y', '?')})\n"
-                        
-                        buttons = t.get('buttons', {})
-                        if buttons:
-                            cmd = []
-                            if buttons.get('like'):
-                                cmd.append(f"❤️ /click {buttons['like']['x']} {buttons['like']['y']}")
-                            if buttons.get('retweet'):
-                                cmd.append(f"🔁 /click {buttons['retweet']['x']} {buttons['retweet']['y']}")
-                            if buttons.get('reply'):
-                                cmd.append(f"💬 /click {buttons['reply']['x']} {buttons['reply']['y']}")
-                            if cmd:
-                                reply += f"💡 {' | '.join(cmd)}\n"
-                        
-                        reply += "\n"
-                    
-                    await query.message.reply_text(reply, parse_mode='Markdown')
-                else:
-                    await query.message.reply_text("😕 Не найдено твитов")
-                    
-            except Exception as e:
-                logger.error(f"Ошибка find_tweets: {e}")
-                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-        
-        # ===== ПОИСК ТВИТОВ ЧЕРЕЗ PYDOLL EXTRACTOR =====
-        elif action == "search_extractor":
-            try:
-                await query.message.delete()
-                await query.message.reply_text("🔍 Ищу твиты через Pydoll Extractor...")
-                
-                _, tab = user_browsers[user_id]
-                
-                try:
-                    tweets = await asyncio.wait_for(
-                        tab.extract_all(
-                            Tweet,
-                            scope='article[data-testid="tweet"]',
-                            timeout=15
-                        ),
-                        timeout=20.0
-                    )
-                except asyncio.TimeoutError:
-                    await query.message.reply_text(
-                        "⏰ Поиск твитов через Extractor занял слишком много времени.\n\n"
-                        "Попробуй использовать '🔍 Найти твиты' (JavaScript) - это быстрее!"
-                    )
-                    return
-                except Exception as e:
-                    await query.message.reply_text(
-                        f"❌ Ошибка Extractor: {str(e)[:200]}\n\n"
-                        "Попробуй использовать '🔍 Найти твиты' (JavaScript)"
-                    )
-                    return
-                
-                screenshot_base64 = await tab.take_screenshot(as_base64=True)
-                screenshot_bytes = base64.b64decode(screenshot_base64)
-                
-                if tweets and len(tweets) > 0:
-                    await query.message.reply_photo(
-                        photo=screenshot_bytes,
-                        caption=f"🔍 Найдено {len(tweets)} твитов (Extractor)"
-                    )
-                    
-                    reply = f"📊 Найдено {len(tweets)} твитов:\n\n"
-                    for i, tweet in enumerate(tweets[:20], 1):
-                        text = fix_text(tweet.text)
-                        if len(text) > 200:
-                            text = text[:200] + '...'
-                        reply += f"{i}. {text}\n\n"
-                    
-                    if len(reply) > 4000:
-                        parts = []
-                        current = ""
-                        for line in reply.split('\n'):
-                            if len(current) + len(line) + 1 > 4000:
-                                parts.append(current)
-                                current = ""
-                            current += line + '\n'
-                        if current:
-                            parts.append(current)
-                        
-                        for part in parts:
-                            await query.message.reply_text(part)
-                    else:
-                        await query.message.reply_text(reply)
-                else:
-                    await query.message.reply_text("😕 Твиты не найдены")
-                    
-            except Exception as e:
-                logger.error(f"Ошибка search_extractor: {e}")
-                await query.message.reply_text(
-                    f"❌ Ошибка: {str(e)[:200]}\n\n"
-                    "💡 Рекомендую использовать '🔍 Найти твиты' - это быстрее и надежнее!"
-                )
-        
-        # ===== AI EXTRACT (ТОЛЬКО ТВИТЫ) =====
-        elif action == "ai_extract":
-            try:
-                await query.message.delete()
-                await query.message.reply_text("🧠 AI анализирует страницу...")
-                
-                screenshot_base64 = await tab.take_screenshot(as_base64=True)
-                
-                response = await asyncio.wait_for(
-                    agnes_client.chat.completions.create(
-                        model="agnes-2.0-flash",
-                        messages=[
-                            {"role": "system", "content": """
-                            Ты — эксперт по анализу скриншотов X.com.
-                            Анализируй изображение и возвращай ТОЛЬКО JSON.
-                            Извлекай ТОЛЬКО твиты. Игнорируй навигацию, рекламу и рекомендации.
-                            """},
-                            {"role": "user", "content": [
-                                {"type": "text", "text": """
-                                Проанализируй этот скриншот X.com и извлеки ТОЛЬКО твиты.
-                                
-                                Для каждого твита верни:
-                                1. Автор (имя)
-                                2. Username (@username)
-                                3. Текст твита
-                                4. Количество лайков
-                                5. Количество ретвитов
-                                6. Количество ответов
-                                7. Время публикации
-                                
-                                Игнорируй:
-                                - Навигацию (Главная, Поиск, Уведомления и т.д.)
-                                - Рекомендации
-                                - Рекламу
-                                - Поле ввода твита
-                                
-                                Верни ТОЛЬКО JSON в формате:
-                                {
-                                  "tweets": [
-                                    {
-                                      "author": "Имя",
-                                      "username": "@username",
-                                      "text": "Текст твита",
-                                      "likes": 123,
-                                      "retweets": 45,
-                                      "replies": 12,
-                                      "time": "2ч"
-                                    }
-                                  ]
-                                }
-                                """},
-                                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_base64}"}}
-                            ]}
-                        ],
-                        max_tokens=2000,
-                        temperature=0.1
-                    ),
-                    timeout=30.0
-                )
-                
-                result = response.choices[0].message.content
-                
-                result = re.sub(r'```json\n?', '', result)
-                result = re.sub(r'```\n?', '', result)
-                result = result.strip()
-                
-                try:
-                    data = json.loads(result)
-                    
-                    reply = "🧠 **AI анализ — Твиты:**\n\n"
-                    
-                    tweets = data.get('tweets', [])
-                    if tweets:
-                        for i, tweet in enumerate(tweets, 1):
-                            reply += f"{i}. **{tweet.get('author', 'Неизвестно')}**"
-                            if tweet.get('username'):
-                                reply += f" ({tweet['username']})"
-                            reply += "\n"
-                            
-                            text = tweet.get('text', '')
-                            if text:
-                                if len(text) > 200:
-                                    text = text[:200] + '...'
-                                reply += f"   📝 {text}\n"
-                            
-                            likes = tweet.get('likes', 0)
-                            retweets = tweet.get('retweets', 0)
-                            replies = tweet.get('replies', 0)
-                            if likes or retweets or replies:
-                                reply += f"   📊 ❤️ {likes} | 🔁 {retweets} | 💬 {replies}\n"
-                            
-                            if tweet.get('time'):
-                                reply += f"   🕐 {tweet['time']}\n"
-                            
-                            reply += "\n"
-                    else:
-                        reply += "😕 Не найдено твитов"
-                    
-                    await query.message.reply_text(reply, parse_mode='Markdown')
-                    
-                except json.JSONDecodeError as e:
-                    await query.message.reply_text(
-                        f"⚠️ Ошибка парсинга JSON: {str(e)[:100]}\n\n"
-                        f"📄 Получено:\n{result[:500]}"
-                    )
-                
-            except asyncio.TimeoutError:
-                await query.message.reply_text("⏰ AI не ответил за 30 секунд. Попробуй ещё раз.")
-            except Exception as e:
-                logger.error(f"Ошибка ai_extract: {e}")
-                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-        
-        # ===== СКРИНШОТ ЛЕНТЫ ТВИТОВ =====
-        elif action == "screenshot_feed":
-            try:
-                await query.message.delete()
-                await query.message.reply_text("📸 Делаю скриншот ленты твитов...")
-                
-                _, tab = user_browsers[user_id]
-                
-                feed_coords = await tab.execute_script("""
-                    (function() {
-                        const tweet = document.querySelector('article[data-testid="tweet"]');
-                        if (!tweet) return null;
-                        
-                        let container = document.querySelector('[data-testid="primaryColumn"]');
-                        if (!container) {
-                            container = document.querySelector('main');
-                        }
-                        if (!container) {
-                            container = tweet.parentElement;
-                            while (container) {
-                                const rect = container.getBoundingClientRect();
-                                if (rect.width > 300 && rect.height > 400) {
-                                    break;
-                                }
-                                container = container.parentElement;
-                            }
-                        }
-                        
-                        if (!container) return null;
-                        
-                        const rect = container.getBoundingClientRect();
-                        
-                        const tabs = document.querySelector('[role="tablist"]');
-                        let topY = rect.top;
-                        if (tabs) {
-                            const tabsRect = tabs.getBoundingClientRect();
-                            topY = Math.max(rect.top, tabsRect.bottom);
-                        }
-                        
-                        const tweetInput = document.querySelector('[data-testid="tweetTextarea_0"]') ||
-                                          document.querySelector('div[role="textbox"]');
-                        let bottomY = rect.bottom;
-                        if (tweetInput) {
-                            const inputRect = tweetInput.getBoundingClientRect();
-                            bottomY = Math.min(rect.bottom, inputRect.top);
-                        }
-                        
-                        const viewportHeight = window.innerHeight;
-                        if (topY < 0) topY = 0;
-                        if (bottomY > viewportHeight) bottomY = viewportHeight;
-                        
-                        if (bottomY - topY < 100) {
-                            return {
-                                x: Math.round(rect.left + 10),
-                                y: Math.round(rect.top + 10),
-                                width: Math.round(rect.width - 20),
-                                height: Math.round(rect.height - 20)
-                            };
-                        }
-                        
-                        return {
-                            x: Math.round(rect.left + 10),
-                            y: Math.round(topY + 10),
-                            width: Math.round(rect.width - 20),
-                            height: Math.round(bottomY - topY - 20)
-                        };
-                    })()
-                """)
-                
-                if not feed_coords:
-                    await query.message.reply_text(
-                        "❌ Не найдена лента твитов\n\n"
-                        "Попробуй:\n"
-                        "1. Нажать /refresh для обновления\n"
-                        "2. Убедись что ты на главной странице X.com"
-                    )
-                    return
-                
-                if feed_coords.get('height', 0) < 50 or feed_coords.get('width', 0) < 50:
-                    await query.message.reply_text(
-                        "❌ Лента твитов слишком маленькая\n"
-                        "Попробуй нажать /refresh и повторить"
-                    )
-                    return
-                
-                try:
-                    screenshot_base64 = await asyncio.wait_for(
-                        tab.take_screenshot(
-                            as_base64=True,
-                            clip={
-                                'x': feed_coords['x'],
-                                'y': feed_coords['y'],
-                                'width': feed_coords['width'],
-                                'height': feed_coords['height']
-                            }
-                        ),
-                        timeout=10.0
-                    )
-                except Exception as e:
-                    await query.message.reply_text(
-                        f"❌ Ошибка при создании скриншота: {str(e)[:100]}\n\n"
-                        "Попробуй использовать обычный скриншот (📸 Скрин)"
-                    )
-                    return
-                
-                screenshot_bytes = base64.b64decode(screenshot_base64)
-                
-                await query.message.reply_photo(
-                    photo=screenshot_bytes,
-                    caption=f"📸 Лента твитов\n📍 ({feed_coords['x']}, {feed_coords['y']}) | Размер: {feed_coords['width']}x{feed_coords['height']}"
-                )
-                    
-            except Exception as e:
-                logger.error(f"Ошибка screenshot_feed: {e}")
-                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-        
-        # ===== AI АНАЛИЗ ЛЕНТЫ ТВИТОВ =====
-        elif action == "ai_analyze_feed":
-            try:
-                await query.message.delete()
-                await query.message.reply_text("📸 Делаю скриншот ленты и отправляю AI...")
-                
-                _, tab = user_browsers[user_id]
-                
-                feed_coords = await tab.execute_script("""
-                    (function() {
-                        const tweet = document.querySelector('article[data-testid="tweet"]');
-                        if (!tweet) return null;
-                        
-                        let container = document.querySelector('[data-testid="primaryColumn"]');
-                        if (!container) {
-                            container = document.querySelector('main');
-                        }
-                        if (!container) {
-                            container = tweet.parentElement;
-                            while (container) {
-                                const rect = container.getBoundingClientRect();
-                                if (rect.width > 300 && rect.height > 400) {
-                                    break;
-                                }
-                                container = container.parentElement;
-                            }
-                        }
-                        
-                        if (!container) return null;
-                        
-                        const rect = container.getBoundingClientRect();
-                        
-                        const tabs = document.querySelector('[role="tablist"]');
-                        let topY = rect.top;
-                        if (tabs) {
-                            const tabsRect = tabs.getBoundingClientRect();
-                            topY = Math.max(rect.top, tabsRect.bottom);
-                        }
-                        
-                        const tweetInput = document.querySelector('[data-testid="tweetTextarea_0"]') ||
-                                          document.querySelector('div[role="textbox"]');
-                        let bottomY = rect.bottom;
-                        if (tweetInput) {
-                            const inputRect = tweetInput.getBoundingClientRect();
-                            bottomY = Math.min(rect.bottom, inputRect.top);
-                        }
-                        
-                        const viewportHeight = window.innerHeight;
-                        if (topY < 0) topY = 0;
-                        if (bottomY > viewportHeight) bottomY = viewportHeight;
-                        
-                        if (bottomY - topY < 100) {
-                            return {
-                                x: Math.round(rect.left + 10),
-                                y: Math.round(rect.top + 10),
-                                width: Math.round(rect.width - 20),
-                                height: Math.round(rect.height - 20)
-                            };
-                        }
-                        
-                        return {
-                            x: Math.round(rect.left + 10),
-                            y: Math.round(topY + 10),
-                            width: Math.round(rect.width - 20),
-                            height: Math.round(bottomY - topY - 20)
-                        };
-                    })()
-                """)
-                
-                if not feed_coords:
-                    await query.message.reply_text(
-                        "❌ Не найдена лента твитов\n\n"
-                        "Попробуй:\n"
-                        "1. Нажать /refresh для обновления\n"
-                        "2. Убедись что ты на главной странице X.com"
-                    )
-                    return
-                
-                if feed_coords.get('height', 0) < 50 or feed_coords.get('width', 0) < 50:
-                    await query.message.reply_text(
-                        "❌ Лента твитов слишком маленькая\n"
-                        "Попробуй нажать /refresh и повторить"
-                    )
-                    return
-                
-                try:
-                    screenshot_base64 = await asyncio.wait_for(
-                        tab.take_screenshot(
-                            as_base64=True,
-                            clip={
-                                'x': feed_coords['x'],
-                                'y': feed_coords['y'],
-                                'width': feed_coords['width'],
-                                'height': feed_coords['height']
-                            }
-                        ),
-                        timeout=10.0
-                    )
-                except Exception as e:
-                    await query.message.reply_text(
-                        f"❌ Ошибка при создании скриншота: {str(e)[:100]}\n\n"
-                        "Попробуй использовать обычный скриншот (📸 Скрин)"
-                    )
-                    return
-                
-                await query.message.reply_text("🧠 AI анализирует ленту...")
-                
-                response = await asyncio.wait_for(
-                    agnes_client.chat.completions.create(
-                        model="agnes-2.0-flash",
-                        messages=[
-                            {"role": "system", "content": """
-                            Ты — эксперт по анализу ленты X.com.
-                            Анализируй изображение и возвращай ТОЛЬКО JSON.
-                            Извлекай ТОЛЬКО твиты.
-                            """},
-                            {"role": "user", "content": [
-                                {"type": "text", "text": """
-                                Проанализируй эту ленту X.com и извлеки ВСЕ твиты.
-                                
-                                Для каждого твита верни:
-                                1. Автор (имя)
-                                2. Username (@username)
-                                3. Текст твита
-                                4. Количество лайков
-                                5. Количество ретвитов
-                                6. Количество ответов
-                                7. Время публикации
-                                
-                                Верни ТОЛЬКО JSON в формате:
-                                {
-                                  "tweets": [
-                                    {
-                                      "author": "Имя",
-                                      "username": "@username",
-                                      "text": "Текст твита",
-                                      "likes": 123,
-                                      "retweets": 45,
-                                      "replies": 12,
-                                      "time": "2ч"
-                                    }
-                                  ]
-                                }
-                                """},
-                                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_base64}"}}
-                            ]}
-                        ],
-                        max_tokens=2000,
-                        temperature=0.1
-                    ),
-                    timeout=30.0
-                )
-                
-                result = response.choices[0].message.content
-                
-                result = re.sub(r'```json\n?', '', result)
-                result = re.sub(r'```\n?', '', result)
-                result = result.strip()
-                
-                try:
-                    data = json.loads(result)
-                    
-                    reply = "🧠 **AI анализ ленты:**\n\n"
-                    
-                    tweets = data.get('tweets', [])
-                    if tweets:
-                        for i, tweet in enumerate(tweets, 1):
-                            reply += f"{i}. **{tweet.get('author', 'Неизвестно')}**"
-                            if tweet.get('username'):
-                                reply += f" ({tweet['username']})"
-                            reply += "\n"
-                            
-                            text = tweet.get('text', '')
-                            if text:
-                                if len(text) > 200:
-                                    text = text[:200] + '...'
-                                reply += f"   📝 {text}\n"
-                            
-                            likes = tweet.get('likes', 0)
-                            retweets = tweet.get('retweets', 0)
-                            replies = tweet.get('replies', 0)
-                            if likes or retweets or replies:
-                                reply += f"   📊 ❤️ {likes} | 🔁 {retweets} | 💬 {replies}\n"
-                            
-                            if tweet.get('time'):
-                                reply += f"   🕐 {tweet['time']}\n"
-                            
-                            reply += "\n"
-                    else:
-                        reply += "😕 Не найдено твитов"
-                    
-                    try:
-                        screenshot_bytes = base64.b64decode(screenshot_base64)
-                        await query.message.reply_photo(
-                            photo=screenshot_bytes,
-                            caption=reply[:1000]
-                        )
-                    except:
-                        pass
-                    
-                    if len(reply) > 1000:
-                        await query.message.reply_text(reply, parse_mode='Markdown')
-                    else:
-                        await query.message.reply_text(reply, parse_mode='Markdown')
-                    
-                except json.JSONDecodeError as e:
-                    await query.message.reply_text(
-                        f"⚠️ Ошибка парсинга JSON: {str(e)[:100]}\n\n"
-                        f"📄 Получено:\n{result[:500]}"
-                    )
-                
-            except asyncio.TimeoutError:
-                await query.message.reply_text("⏰ AI не ответил за 30 секунд. Попробуй ещё раз.")
-            except Exception as e:
-                logger.error(f"Ошибка ai_analyze_feed: {e}")
-                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-        
-        # ===== КЛАВИАТУРА =====
-        elif action == "keyboard":
-            try:
-                await query.message.delete()
-                
-                current_text = context.user_data.get('keyboard_text', '')
-                display_text = current_text if current_text else '(пусто)'
-                
-                lang = context.user_data.get('keyboard_lang', 'ru')
-                lang_label = '🇷🇺 RU' if lang == 'ru' else '🇬🇧 EN'
-                
-                await query.message.reply_text(
-                    f"⌨️ **Клавиатура** ({lang_label})\n\n"
-                    f"📝 Текст: `{display_text}`\n\n"
-                    "Нажимай на буквы для ввода текста.\n"
-                    "⏎ Enter — ввести и отправить\n"
-                    "✅ Готово — только ввести\n"
-                    "📝 В чат — ввести через чат с автоматическим Enter",
-                    reply_markup=get_keyboard_markup(context),
-                    parse_mode='Markdown'
-                )
-                
-            except Exception as e:
-                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-        
-        # ===== КЛАВИАТУРА - ОБРАБОТКА КЛАВИШ =====
-        elif action.startswith("key_"):
-            try:
-                cmd = action.replace("key_", "")
-                
-                if cmd == 'backspace':
-                    context.user_data['keyboard_text'] = context.user_data.get('keyboard_text', '')[:-1]
-                elif cmd == 'clear':
-                    context.user_data['keyboard_text'] = ''
-                elif cmd == 'enter_submit':
-                    text = context.user_data.get('keyboard_text', '')
-                    if text:
-                        await query.message.reply_text(f"📝 Ввожу и отправляю: {text}")
-                        success = await type_text_to_tab(tab, text)
-                        if success:
-                            await asyncio.sleep(0.3)
-                            try:
-                                await tab.execute_script("""
-                                    (function() {
-                                        const el = document.activeElement;
-                                        if (el) {
-                                            el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-                                            el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
-                                            el.dispatchEvent(new Event('change', { bubbles: true }));
-                                            el.dispatchEvent(new Event('submit', { bubbles: true }));
-                                        }
-                                        const searchBtn = document.querySelector('[data-testid="searchButton"]') || 
-                                                          document.querySelector('button[type="submit"]');
-                                        if (searchBtn) {
-                                            searchBtn.click();
-                                        }
-                                    })()
-                                """)
-                            except Exception as e:
-                                logger.error(f"Ошибка при нажатии Enter: {e}")
-                            context.user_data['keyboard_text'] = ''
-                            await send_screen_with_buttons(update, user_id, f"⌨️ Отправлено: {text}")
-                        else:
-                            await query.message.reply_text("❌ Не удалось ввести текст")
-                    else:
-                        await query.message.reply_text("❌ Нет текста для отправки")
-                    return
-                elif cmd == 'done':
-                    text = context.user_data.get('keyboard_text', '')
-                    if text:
-                        await query.message.reply_text(f"📝 Ввожу текст: {text}")
-                        success = await type_text_to_tab(tab, text)
-                        if success:
-                            context.user_data['keyboard_text'] = ''
-                            await send_screen_with_buttons(update, user_id, f"⌨️ Введено: {text}")
-                        else:
-                            await query.message.reply_text("❌ Не удалось ввести текст")
-                    else:
-                        await query.message.reply_text("❌ Нет текста для ввода")
-                    return
-                elif cmd == 'switch_lang':
-                    current_lang = context.user_data.get('keyboard_lang', 'ru')
-                    context.user_data['keyboard_lang'] = 'en' if current_lang == 'ru' else 'ru'
-                    await query.message.delete()
-                    await joystick_callback(update, context)
-                    return
-                elif cmd == 'to_chat':
-                    await query.message.delete()
-                    await query.message.reply_text(
-                        "📝 **Введи текст в чат**\n\n"
-                        "Просто напиши сообщение, и оно будет:\n"
-                        "1️⃣ Вставлено в активное поле\n"
-                        "2️⃣ Автоматически отправлено (Enter)\n\n"
-                        "Примеры:\n"
-                        "• `криптовалюта` — поиск\n"
-                        "• `@username` — переход в профиль\n"
-                        "• `привет` — сообщение\n\n"
-                        "Чтобы отменить: `/cancel`",
-                        parse_mode='Markdown'
-                    )
-                    context.user_data['waiting_for_chat_input'] = True
-                    return
-                else:
-                    context.user_data['keyboard_text'] = context.user_data.get('keyboard_text', '') + cmd
-                
-                current_text = context.user_data.get('keyboard_text', '')
-                display_text = current_text if current_text else '(пусто)'
-                lang = context.user_data.get('keyboard_lang', 'ru')
-                lang_label = '🇷🇺 RU' if lang == 'ru' else '🇬🇧 EN'
-                
-                await query.message.edit_text(
-                    f"⌨️ **Клавиатура** ({lang_label})\n\n"
-                    f"📝 Текст: `{display_text}`\n\n"
-                    "Нажимай на буквы для ввода текста.",
-                    reply_markup=get_keyboard_markup(context),
-                    parse_mode='Markdown'
-                )
-                
-            except Exception as e:
-                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-        
-        # ===== ВВОД ТЕКСТА ЧЕРЕЗ ЧАТ =====
-        elif action == "chat_input":
-            try:
-                await query.message.delete()
-                await query.message.reply_text(
-                    "📝 **Введи текст в чат**\n\n"
-                    "Просто напиши сообщение, и оно будет:\n"
-                    "1️⃣ Вставлено в активное поле\n"
-                    "2️⃣ Автоматически отправлено (Enter)\n\n"
-                    "Примеры:\n"
-                    "• `криптовалюта` — поиск\n"
-                    "• `@username` — переход в профиль\n"
-                    "• `привет` — сообщение\n\n"
-                    "Чтобы отменить: `/cancel`",
-                    parse_mode='Markdown'
-                )
-                context.user_data['waiting_for_chat_input'] = True
-                
-            except Exception as e:
-                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-        
-        # ===== ЗАКРЫТЬ КЛАВИАТУРУ =====
-        elif action == "close_keyboard":
-            try:
-                await query.message.delete()
-                context.user_data['keyboard_text'] = ''
-                await send_screen_with_buttons(update, user_id, "⌨️ Клавиатура закрыта")
-            except Exception as e:
-                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-        
-        elif action == "refresh":
-            await query.edit_message_text("🔄 Обновляю страницу...")
-            await tab.refresh()
-            await asyncio.sleep(2)
-            await send_screen_with_buttons(update, user_id, "✅ Страница обновлена")
-        
-        elif action == "mode_1":
-            cursor.set_mode(1)
-            await send_screen_with_buttons(update, user_id, "🔵 Режим: Шаг 10px")
-        
-        elif action == "mode_2":
-            cursor.set_mode(2)
-            await send_screen_with_buttons(update, user_id, "🔴 Режим: Шаг 40px")
-        
-        else:
-            await send_screen_with_buttons(update, user_id, "❌ Неизвестная команда")
-    
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:300]}")
-
-# ==================== КОМАНДА /click ====================
-
-async def click_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Клик по координатам"""
-    if not context.args or len(context.args) < 2:
-        await update.message.reply_text(
-            "❌ Укажи координаты\n"
-            "Пример: /click 520 310"
-        )
-        return
+    await update.message.reply_text(f"🧠 AI: {command}")
+    await update.message.reply_text("⚡ Генерирую код...")
     
     try:
-        x = int(context.args[0])
-        y = int(context.args[1])
-        
-        user_id = update.effective_user.id
-        
-        if user_id not in user_browsers:
-            await update.message.reply_text("❌ Сначала выполни /login")
-            return
-        
-        _, tab = user_browsers[user_id]
-        cursor = get_cursor(user_id)
-        cursor.x, cursor.y = x, y
-        
-        await tab.mouse.click(x, y, humanize=True)
-        await update.message.reply_text(f"✅ Клик по координатам: ({x}, {y})")
-        
-        await send_screen_with_buttons(update, user_id, f"📍 Клик по ({x}, {y})")
-        
-    except ValueError:
-        await update.message.reply_text("❌ Введи два числа через пробел\nПример: /click 520 310")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-# ==================== КОМАНДА /resize ====================
-
-async def resize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Изменяет размер окна браузера"""
-    if not context.args or len(context.args) < 2:
-        await update.message.reply_text(
-            "❌ Укажи ширину и высоту\n"
-            "Пример: /resize 1024 768"
-        )
-        return
-    
-    try:
-        width = int(context.args[0])
-        height = int(context.args[1])
-        
-        user_id = update.effective_user.id
-        
-        if user_id not in user_browsers:
-            await update.message.reply_text("❌ Сначала выполни /login")
-            return
-        
-        _, tab = user_browsers[user_id]
-        
-        await tab.execute_script(f"""
-            window.moveTo(0, 0);
-            window.resizeTo({width}, {height});
-        """)
-        
-        await asyncio.sleep(1)
-        
-        viewport = await tab.execute_script("""
-            return {
-                width: window.innerWidth,
-                height: window.innerHeight
-            };
-        """)
-        
-        cursor = get_cursor(user_id)
-        cursor.x = viewport['width'] // 2
-        cursor.y = viewport['height'] // 2
-        
-        await update.message.reply_text(
-            f"✅ Размер окна изменен: {width}x{height}\n"
-            f"📐 Реальный размер: {viewport['width']}x{viewport['height']}"
+        response = await agnes_client.chat.completions.create(
+            model="agnes-2.0-flash",
+            messages=[
+                {"role": "system", "content": """
+                Ты — эксперт по JavaScript для автоматизации X.com.
+                Верни ТОЛЬКО код. Без пояснений.
+                Используй document.querySelector, document.querySelectorAll, getBoundingClientRect.
+                Возвращай результат.
+                """},
+                {"role": "user", "content": f"""
+                Команда: {command}
+                
+                Примеры:
+                - "найди лайк" → найти кнопку лайка и вернуть {{x, y}}
+                - "собери твиты" → собрать тексты всех твитов в список
+                - "прокрути вниз" → window.scrollBy(0, 300); return 'ok'
+                - "кликни поиск" → найти и кликнуть на поле поиска
+                
+                Верни ТОЛЬКО код. Оберни в функцию.
+                """}
+            ],
+            max_tokens=500,
+            temperature=0.1
         )
         
-        await send_screen_with_buttons(update, user_id, f"📐 Размер: {viewport['width']}x{viewport['height']}")
+        js_code = response.choices[0].message.content
+        js_code = re.sub(r'```javascript\n?', '', js_code)
+        js_code = re.sub(r'```\n?', '', js_code)
+        js_code = js_code.strip()
         
-    except ValueError:
-        await update.message.reply_text("❌ Введи два числа\nПример: /resize 1024 768")
-    except Exception as e:
-        logger.error(f"Ошибка resize: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-# ==================== КОМАНДА /cancel ====================
-
-async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отменяет текущее ожидание"""
-    context.user_data['waiting_for_coords'] = False
-    context.user_data['waiting_for_chat_input'] = False
-    await update.message.reply_text("✅ Ожидание отменено")
-
-# ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает текстовые сообщения"""
-    user_id = update.effective_user.id
-    text = update.message.text.strip()
-    
-    if context.user_data.get('waiting_for_coords'):
-        try:
-            parts = text.split()
-            if len(parts) >= 2:
-                x = int(parts[0])
-                y = int(parts[1])
-                
-                if user_id not in user_browsers:
-                    await update.message.reply_text("❌ Сначала выполни /login")
-                    context.user_data['waiting_for_coords'] = False
-                    return
-                
-                _, tab = user_browsers[user_id]
-                cursor = get_cursor(user_id)
+        # Показываем код (кратко)
+        await update.message.reply_text(f"⚡ Выполняю...")
+        
+        result = await tab.execute_script(js_code)
+        
+        if result:
+            if isinstance(result, dict) and 'x' in result:
+                x, y = result['x'], result['y']
                 cursor.x, cursor.y = x, y
-                
-                await tab.mouse.click(x, y, humanize=True)
-                await update.message.reply_text(f"✅ Клик по координатам: ({x}, {y})")
-                
-                await send_screen_with_buttons(update, user_id, f"📍 Клик по ({x}, {y})")
-                
-                context.user_data['waiting_for_coords'] = False
-            else:
-                await update.message.reply_text(
-                    "❌ Введи два числа через пробел\n"
-                    "Пример: 520 310\n"
-                    "Или /cancel чтобы отменить"
+                await update.message.reply_text(f"🎯 Найдено → ({x}, {y})")
+                # Делаем скриншот с курсором
+                screenshot = await tab.take_screenshot(as_base64=True)
+                img = draw_cursor(base64.b64decode(screenshot), cursor.x, cursor.y)
+                await update.message.reply_photo(
+                    photo=img,
+                    caption=f"📍 ({cursor.x}, {cursor.y})"
                 )
-        except ValueError:
-            await update.message.reply_text("❌ Введи два числа через пробел\nПример: 520 310")
-        return
-    
-    if context.user_data.get('waiting_for_chat_input'):
-        if user_id not in user_browsers:
-            await update.message.reply_text("❌ Сначала выполни /login")
-            context.user_data['waiting_for_chat_input'] = False
-            return
-        
-        _, tab = user_browsers[user_id]
-        
-        await update.message.reply_text(f"📝 Ввожу и отправляю: {text}")
-        
-        success = await type_text_to_tab(tab, text)
-        
-        if success:
-            await asyncio.sleep(0.3)
-            try:
-                await tab.execute_script("""
-                    (function() {
-                        const el = document.activeElement;
-                        if (el) {
-                            el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-                            el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
-                            el.dispatchEvent(new Event('change', { bubbles: true }));
-                            el.dispatchEvent(new Event('submit', { bubbles: true }));
-                        }
-                        const searchBtn = document.querySelector('[data-testid="searchButton"]') || 
-                                          document.querySelector('button[type="submit"]');
-                        if (searchBtn) {
-                            searchBtn.click();
-                        }
-                    })()
-                """)
-            except Exception as e:
-                logger.error(f"Ошибка при нажатии Enter: {e}")
-            
-            await update.message.reply_text(f"✅ Отправлено: {text}")
-            await send_screen_with_buttons(update, user_id, f"📝 Отправлено: {text}")
+            elif isinstance(result, list):
+                reply = f"📊 Результат ({len(result)} элементов):\n\n"
+                for i, item in enumerate(result[:10], 1):
+                    reply += f"{i}. {str(item)[:150]}\n"
+                await update.message.reply_text(reply)
+            else:
+                await update.message.reply_text(f"✅ Результат:\n{str(result)[:500]}")
         else:
-            await update.message.reply_text("❌ Не удалось ввести текст")
-        
-        context.user_data['waiting_for_chat_input'] = False
-        return
+            await update.message.reply_text("❌ Команда не дала результата")
+            
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        if 'js_code' in locals():
+            await update.message.reply_text(f"📄 Код:\n{js_code[:500]}")
 
-# ==================== ОБРАБОТЧИК ОШИБОК ====================
-
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Ошибка: {context.error}")
-
-# ==================== MAIN ====================
+# ==================== ЗАПУСК ====================
 
 def main():
-    application = Application.builder().token(TOKEN).build()
-    
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("login", login))
-    application.add_handler(CommandHandler("close", close_browser))
-    application.add_handler(CommandHandler("joystick", joystick))
-    application.add_handler(CommandHandler("screen", screen))
-    application.add_handler(CommandHandler("click", click_command))
-    application.add_handler(CommandHandler("resize", resize_command))
-    application.add_handler(CommandHandler("cancel", cancel_command))
-    
-    application.add_handler(CallbackQueryHandler(joystick_callback))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    application.add_error_handler(error_handler)
-    
-    if os.path.exists(CHROME_PATH):
-        logger.info(f"✅ Браузер найден: {CHROME_PATH}")
-    else:
-        logger.error(f"❌ Браузер не найден: {CHROME_PATH}")
-    
-    logger.info("🚀 Бот запущен!")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("login", login))
+    app.add_handler(CommandHandler("close", close_browser))
+    app.add_handler(CommandHandler("ai", ai_command))
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
