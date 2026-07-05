@@ -176,7 +176,17 @@ async def screen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await update.message.reply_text("📸 Делаю скриншот...")
         
-        screenshot_base64 = await tab.take_screenshot(as_base64=True)
+        try:
+            screenshot_base64 = await asyncio.wait_for(
+                tab.take_screenshot(as_base64=True),
+                timeout=10.0
+            )
+        except asyncio.TimeoutError:
+            await update.message.reply_text("⏳ Перезагружаю страницу...")
+            await tab.refresh()
+            await asyncio.sleep(3)
+            screenshot_base64 = await tab.take_screenshot(as_base64=True)
+        
         screenshot_bytes = base64.b64decode(screenshot_base64)
         
         image = Image.open(BytesIO(screenshot_bytes))
@@ -309,4 +319,4 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
-    main() 
+    main()
