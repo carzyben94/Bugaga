@@ -13,6 +13,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 
 from pydoll.browser import Chrome
 from pydoll.browser.options import ChromiumOptions
+from pydoll.extractor import ExtractionModel, Field
 from openai import AsyncOpenAI
 
 logging.basicConfig(level=logging.INFO)
@@ -43,28 +44,30 @@ X_COOKIES = [
 user_browsers = {}
 user_menu_messages = {}
 
-# ==================== PYDANTIC МОДЕЛИ ====================
+# ==================== PYDOLL EXTRACTION MODELS ====================
 
-class Tweet(BaseModel):
-    """Модель твита для валидации"""
-    id: int
-    author: str = ""
-    text: str = ""
-    likes: str = "0"
-    retweets: str = "0"
-    replies: str = "0"
-    x: int = 0
-    y: int = 0
-
-class TweetData(BaseModel):
-    """Модель для извлечения одного твита по координатам"""
-    text: str = ""
-    author: str = ""
-    likes: str = "0"
-    retweets: str = "0"
-    replies: str = "0"
-    coords: dict = {"x": 0, "y": 0}
-    error: Optional[str] = None
+class Tweet(ExtractionModel):
+    """Модель твита для извлечения через Pydoll Extractor"""
+    text: str = Field(
+        selector='div[data-testid="tweetText"]',
+        default=""
+    )
+    author: str = Field(
+        selector='div[data-testid="User-Name"] span',
+        default=""
+    )
+    likes: str = Field(
+        selector='[data-testid="like"]',
+        default="0"
+    )
+    retweets: str = Field(
+        selector='[data-testid="retweet"]',
+        default="0"
+    )
+    replies: str = Field(
+        selector='[data-testid="reply"]',
+        default="0"
+    )
 
 # ==================== КУРСОР ====================
 
@@ -88,8 +91,7 @@ def get_menu_text():
         "❌ /close — закрыть браузер\n"
         "⚡ /eval <js> — выполнить JS код\n"
         "📸 /screen — скриншот страницы\n"
-        "📊 /extract — выгрузить все твиты\n"
-        "📊 /extract <x> <y> — извлечь твит по координатам\n\n"
+        "📊 /extract — выгрузить все твиты\n\n"
         "🎮 Управление курсором и скроллом"
     )
 
@@ -317,6 +319,8 @@ async def eval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
+# ==================== /extract — ПРАВИЛЬНЫЙ ПОДХОД ====================
+
 async def extract_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in user_browsers:
@@ -325,126 +329,21 @@ async def extract_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     _, tab = user_browsers[user_id]
 
-    # Если есть координаты — извлекаем один твит
-    if context.args and len(context.args) >= 2:
-        try:
-            x, y = int(context.args[0]), int(context.args[1])
-
-            result = await tab.execute_script(f"""
-                (function() {{
-                    const el = document.elementFromPoint({x}, {y});
-                    if (!el) return null;
-                    const tweet = el.closest('article[data-testid="tweet"]');
-                    if (!tweet) return {{ error: 'Не найден твит' }};
-                    const textEl = tweet.querySelector('[data-testid="tweetText"]');
-                    const authorEl = tweet.querySelector('[data-testid="User-Name"]');
-                    const likeEl = tweet.querySelector('[data-testid="like"]');
-                    const retweetEl = tweet.querySelector('[data-testid="retweet"]');
-                    const replyEl = tweet.querySelector('[data-testid="reply"]');
-                    const rect = tweet.getBoundingClientRect();
-                    let author = '';
-                    if (authorEl) {{
-                        const spans = authorEl.querySelectorAll('span');
-                        author = spans.length > 0 ? spans[0].textContent.trim() : '';
-                    }}
-                    return {{
-                        text: textEl ? textEl.textContent.trim() : '',
-                        author: author,
-                        likes: likeEl ? likeEl.textContent.trim() : '0',
-                        retweets: retweetEl ? retweetEl.textContent.trim() : '0',
-                        replies: replyEl ? replyEl.textContent.trim() : '0',
-                        coords: {{ x: Math.round(rect.left + rect.width/2), y: Math.round(rect.top + rect.height/2) }}
-                    }};
-                }})()
-            """, return_by_value=True)
-
-            if not result:
-                await update.message.reply_text("❌ Не удалось извлечь данные")
-                return
-
-            if result.get('error'):
-                await update.message.reply_text(f"❌ {result['error']}")
-                return
-
-            # Валидация через Pydantic
-            try:
-                tweet_data = TweetData(**result)
-            except Exception as e:
-                await update.message.reply_text(f"❌ Ошибка валидации: {str(e)[:100]}")
-                return
-
-            reply = f"📊 **Твит под курсором:**\n\n"
-            reply += f"👤 **Автор:** {tweet_data.author or 'Неизвестно'}\n"
-            text = tweet_data.text
-            if text:
-                if len(text) > 200:
-                    text = text[:200] + '...'
-                reply += f"📝 **Текст:** {text}\n"
-            else:
-                reply += "📝 **Текст:** (пусто)\n"
-            reply += f"❤️ **Лайки:** {tweet_data.likes}\n"
-            reply += f"🔁 **Ретвиты:** {tweet_data.retweets}\n"
-            reply += f"💬 **Ответы:** {tweet_data.replies}\n"
-            coords = tweet_data.coords
-            if coords:
-                reply += f"\n📍 **Координаты:** ({coords.get('x', '?')}, {coords.get('y', '?')})"
-
-            await update.message.reply_text(reply, parse_mode='Markdown')
-            await send_or_update_menu(update, user_id, "📊 Твит извлечён")
-            return
-
-        except Exception as e:
-            await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-            return
-
-    # Если нет координат — выгружаем все твиты
     try:
-        await update.message.reply_text("📊 Извлекаю все твиты со страницы...")
+        await update.message.reply_text("📊 Извлекаю твиты через Pydoll Extractor...")
 
-        result = await tab.execute_script("""
-            (function() {
-                const tweets = document.querySelectorAll('article[data-testid="tweet"]');
-                const result = [];
-                
-                tweets.forEach((tweet, index) => {
-                    const textEl = tweet.querySelector('[data-testid="tweetText"]');
-                    const authorEl = tweet.querySelector('[data-testid="User-Name"]');
-                    const likeEl = tweet.querySelector('[data-testid="like"]');
-                    const retweetEl = tweet.querySelector('[data-testid="retweet"]');
-                    const replyEl = tweet.querySelector('[data-testid="reply"]');
-                    const rect = tweet.getBoundingClientRect();
-                    
-                    let author = '';
-                    if (authorEl) {
-                        const spans = authorEl.querySelectorAll('span');
-                        author = spans.length > 0 ? spans[0].textContent.trim() : '';
-                    }
-                    
-                    result.push({
-                        id: index + 1,
-                        author: author,
-                        text: textEl ? textEl.textContent.trim() : '',
-                        likes: likeEl ? likeEl.textContent.trim() : '0',
-                        retweets: retweetEl ? retweetEl.textContent.trim() : '0',
-                        replies: replyEl ? replyEl.textContent.trim() : '0',
-                        x: Math.round(rect.left + rect.width/2),
-                        y: Math.round(rect.top + rect.height/2)
-                    });
-                });
-                
-                return result;
-            })()
-        """, return_by_value=True)
+        # ✅ ПРАВИЛЬНЫЙ ПОДХОД — используем встроенный Extractor
+        tweets = await asyncio.wait_for(
+            tab.extract_all(
+                Tweet,
+                scope='article[data-testid="tweet"]',
+                timeout=10
+            ),
+            timeout=15.0
+        )
 
-        if not result or len(result) == 0:
+        if not tweets or len(tweets) == 0:
             await update.message.reply_text("😕 Твиты не найдены на странице")
-            return
-
-        # Валидация через Pydantic
-        try:
-            tweets = [Tweet(**item) for item in result]
-        except Exception as e:
-            await update.message.reply_text(f"❌ Ошибка валидации: {str(e)[:100]}")
             return
 
         # Формируем ответ
@@ -452,13 +351,20 @@ async def extract_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parts = []
         current_part = reply
         
-        for tweet in tweets:
-            tweet_text = f"**{tweet.id}. {tweet.author or 'Неизвестно'}**\n"
+        for i, tweet in enumerate(tweets, 1):
+            tweet_text = f"**{i}.** "
+            if tweet.author:
+                tweet_text += f"{tweet.author}\n"
+            else:
+                tweet_text += "Неизвестно\n"
+            
             if tweet.text:
                 text = tweet.text[:150] + '...' if len(tweet.text) > 150 else tweet.text
                 tweet_text += f"📝 {text}\n"
-            tweet_text += f"❤️ {tweet.likes} | 🔁 {tweet.retweets} | 💬 {tweet.replies}\n"
-            tweet_text += f"📍 ({tweet.x}, {tweet.y})\n\n"
+            
+            # Извлекаем координаты твита (если нужно)
+            # Для этого нужен дополнительный JS, но пока просто показываем данные
+            tweet_text += f"❤️ {tweet.likes} | 🔁 {tweet.retweets} | 💬 {tweet.replies}\n\n"
             
             if len(current_part) + len(tweet_text) > 4000:
                 parts.append(current_part)
@@ -476,8 +382,10 @@ async def extract_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await update.message.reply_text(f"📄 Продолжение {i+1}:\n\n{part}", parse_mode='Markdown')
 
-        await send_or_update_menu(update, user_id, "📊 Все твиты выгружены")
+        await send_or_update_menu(update, user_id, "📊 Твиты выгружены")
 
+    except asyncio.TimeoutError:
+        await update.message.reply_text("⏰ Поиск твитов занял слишком много времени")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
