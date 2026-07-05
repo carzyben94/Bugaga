@@ -39,7 +39,7 @@ X_COOKIES = [
 ]
 
 user_browsers = {}
-user_menu_messages = {}  # {user_id: message_id}
+user_menu_messages = {}
 
 class CursorManager:
     def __init__(self):
@@ -64,9 +64,7 @@ def get_menu_text():
     )
 
 async def send_or_update_menu(update, user_id, caption=None):
-    """Отправляет или обновляет сообщение с меню и скриншотом"""
     if user_id not in user_browsers:
-        # Если браузер не открыт — просто меню
         menu_text = get_menu_text()
         if user_id in user_menu_messages:
             try:
@@ -104,7 +102,6 @@ async def send_or_update_menu(update, user_id, caption=None):
     output = BytesIO()
     image.save(output, format='PNG')
 
-    # Текст: если есть caption — добавляем
     menu_text = get_menu_text()
     if caption:
         menu_text = f"{caption}\n\n{menu_text}"
@@ -128,16 +125,21 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     try:
         await update.message.reply_text("🔐 Выполняю вход на X.com...")
+        
         options = ChromiumOptions()
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--headless=new")
         options.add_argument("--disable-gpu")
-        options.add_argument("--window-size=1024,768")
+        options.add_argument("--window-size=1280,720")
         options.binary_location = CHROME_PATH
 
         browser = Chrome(options=options)
         tab = await browser.start()
+        
+        # Принудительно устанавливаем размер через JS
+        await tab.execute_script("window.resizeTo(1280, 720); window.moveTo(0, 0);")
+        
         await tab.go_to('https://x.com')
         await asyncio.sleep(2)
         await tab.set_cookies(X_COOKIES)
@@ -147,13 +149,16 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         user_browsers[user_id] = (browser, tab)
         cursor = get_cursor(user_id)
+        
         viewport = await tab.execute_script("return { width: window.innerWidth, height: window.innerHeight }")
-        cursor.x, cursor.y = viewport['width'] // 2, viewport['height'] // 2
+        cursor.x = viewport['width'] // 2
+        cursor.y = viewport['height'] // 2
 
         await update.message.reply_text("✅ Вход выполнен!")
         await send_or_update_menu(update, user_id, "✅ Вход выполнен!")
 
     except Exception as e:
+        logger.error(f"Ошибка входа: {e}")
         await update.message.reply_text(f"❌ Ошибка входа: {str(e)[:300]}")
 
 async def close_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
