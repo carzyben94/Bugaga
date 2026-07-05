@@ -136,11 +136,6 @@ def get_joystick_keyboard(user_id=None):
             InlineKeyboardButton("🔎 Поиск", callback_data="go_search"),
         ],
         [
-            InlineKeyboardButton("👁️ Что видишь?", callback_data="ai_what_see"),
-            InlineKeyboardButton("🧠 AI Найти", callback_data="ai_find"),
-        ],
-        [
-            InlineKeyboardButton("🧠 AI Клик", callback_data="ai_click"),
             InlineKeyboardButton("🎯 Точные координаты", callback_data="exact_coords"),
         ],
         [
@@ -251,18 +246,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/search Запрос\n\n"
         "📸 Фото\n"
         "/getbaby Случайное фото\n\n"
-        "⌨️ Ввод\n"
-        "/type <текст> — Ввести текст\n\n"
-        "🧠 AI-зрение\n"
-        "/ai_find <что> — Найти элемент через AI\n"
-        "/ai_click <что> — Найти и кликнуть через AI\n"
-        "/click_num <номер> — Кликнуть по элементу из списка\n\n"
         "📍 Координаты\n"
         "/click <x> <y> — Клик по координатам\n"
-        "/click_num <номер> — Клик по номеру элемента\n\n"
-        "⚡ JavaScript\n"
-        "/eval <js> — Выполнить JavaScript\n"
-        "/ai Любая команда (умный eval)"
+        "/click_num <номер> — Клик по номеру элемента"
     )
     await update.message.reply_text(menu)
 
@@ -413,36 +399,6 @@ def fix_text(text):
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
-# ==================== ПАРСИНГ ОТВЕТА AI ====================
-
-def parse_ai_response(text):
-    """Парсит ответ AI и извлекает элементы с координатами"""
-    elements = []
-    lines = text.strip().split('\n')
-    
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        
-        coord_match = re.search(r'\((\d+),\s*(\d+)\)', line)
-        if coord_match:
-            x = int(coord_match.group(1))
-            y = int(coord_match.group(2))
-            name = re.sub(r'\s*\([\d,\s]+\)\s*$', '', line).strip()
-            name = re.sub(r'^[^\w\sа-яА-Я]+\s*', '', name)
-            name = re.sub(r'\s*[→➡️]\s*$', '', name)
-            
-            if name:
-                elements.append({
-                    'id': len(elements) + 1,
-                    'name': name,
-                    'x': x,
-                    'y': y
-                })
-    
-    return elements
-
 # ==================== ОБРАБОТЧИК ДЖОЙСТИКА ====================
 
 async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -527,153 +483,9 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await asyncio.sleep(1)
                 await tab.mouse.click(380, 40, humanize=True)
                 await asyncio.sleep(0.5)
-                await send_screen_with_buttons(update, user_id, "🔎 Поле поиска активно\nВведите текст через /type")
+                await send_screen_with_buttons(update, user_id, "🔎 Поле поиска активно")
             except Exception as e:
                 await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
-        
-        # ===== AI ЧТО ВИДИШЬ? =====
-        elif action == "ai_what_see":
-            try:
-                await query.message.delete()
-                await query.message.reply_text("👁️ Анализирую страницу...")
-                
-                screenshot_base64 = await tab.take_screenshot(as_base64=True)
-                
-                response = await asyncio.wait_for(
-                    agnes_client.chat.completions.create(
-                        model="agnes-2.0-flash",
-                        messages=[
-                            {"role": "system", "content": "Ты — эксперт по анализу интерфейсов. Определяй ТОЧНЫЙ ЦЕНТР каждого элемента."},
-                            {"role": "user", "content": [
-                                {"type": "text", "text": """
-                                Перечисли что видишь на скриншоте X.com.
-                                
-                                Формат (каждый элемент с новой строки):
-                                Название → (X, Y)
-                                
-                                Где X, Y - это ТОЧНЫЙ ЦЕНТР элемента.
-                                Центр = (левая_граница + правая_граница) / 2, (верхняя + нижняя) / 2
-                                
-                                Например:
-                                Логотип X → (70, 60)
-                                Главная → (70, 190)
-                                Поиск → (70, 280)
-                                Уведомления → (70, 370)
-                                Сообщения → (70, 460)
-                                Профиль → (70, 550)
-                                Написать твит → (500, 700)
-                                
-                                Найди все основные элементы на странице.
-                                Только список. Без лишнего текста.
-                                Без JSON.
-                                """},
-                                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_base64}"}}
-                            ]}
-                        ],
-                        max_tokens=500,
-                        temperature=0.1
-                    ),
-                    timeout=25.0
-                )
-                
-                result = response.choices[0].message.content
-                elements = parse_ai_response(result)
-                
-                if elements:
-                    context.user_data['ai_elements'] = elements
-                    
-                    reply = "👁️ Что вижу на странице (центры элементов):\n\n"
-                    for el in elements:
-                        reply += f"{el['name']} → ({el['x']}, {el['y']})\n"
-                    
-                    reply += f"\n📊 Всего: {len(elements)} элементов"
-                    reply += "\n💡 /click_num <номер> - кликнуть"
-                    
-                    await query.message.reply_text(reply)
-                else:
-                    await query.message.reply_text(f"👁️ Что вижу на странице:\n\n{result}")
-                    
-            except asyncio.TimeoutError:
-                await query.message.reply_text("⏰ AI не ответил за 25 секунд. Попробуй ещё раз.")
-            except Exception as e:
-                logger.error(f"Ошибка: {e}")
-                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-        
-        elif action == "ai_find":
-            try:
-                await query.message.delete()
-                await query.message.reply_text("📸 Делаю скриншот и анализирую...")
-                
-                screenshot_base64 = await tab.take_screenshot(as_base64=True)
-                
-                response = await agnes_client.chat.completions.create(
-                    model="agnes-2.0-flash",
-                    messages=[
-                        {"role": "system", "content": "Ты — эксперт по анализу скриншотов. Верни ТОЛЬКО JSON с координатами."},
-                        {"role": "user", "content": [
-                            {"type": "text", "text": """
-                            Проанализируй скриншот X.com.
-                            Найди: кнопку лайка, ретвита, поле поиска, кнопку твита.
-                            Верни ТОЛЬКО JSON: {"like": [x, y], "retweet": [x, y], "search": [x, y], "tweet": [x, y]}
-                            """},
-                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_base64}"}}
-                        ]}
-                    ],
-                    max_tokens=500
-                )
-                
-                coords = json.loads(response.choices[0].message.content)
-                
-                reply = "🧠 AI нашёл элементы:\n\n"
-                for name, coord in coords.items():
-                    reply += f"• {name}: ({coord[0]}, {coord[1]})\n"
-                
-                await query.message.reply_text(reply)
-                
-            except Exception as e:
-                await query.message.reply_text(f"❌ Ошибка AI: {str(e)[:200]}")
-        
-        elif action == "ai_click":
-            try:
-                await query.message.delete()
-                await query.message.reply_text("📸 Делаю скриншот...")
-                
-                screenshot_base64 = await tab.take_screenshot(as_base64=True)
-                
-                await query.message.reply_text("🧠 Ищу кнопку лайка...")
-                
-                response = await agnes_client.chat.completions.create(
-                    model="agnes-2.0-flash",
-                    messages=[
-                        {"role": "system", "content": "Ты — эксперт по анализу скриншотов. Верни ТОЛЬКО два числа: x и y координаты центра кнопки, разделённые запятой."},
-                        {"role": "user", "content": [
-                            {"type": "text", "text": "Найди на этом скриншоте кнопку лайка (❤️). Верни координаты центра кнопки в формате x, y."},
-                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_base64}"}}
-                        ]}
-                    ],
-                    max_tokens=100
-                )
-                
-                result = response.choices[0].message.content.strip()
-                result = re.sub(r'[\[\]\(\)"\']', '', result)
-                result = re.sub(r'координаты[:]?\s*', '', result, flags=re.IGNORECASE)
-                result = result.strip()
-                
-                numbers = re.findall(r'\d+', result)
-                
-                if len(numbers) >= 2:
-                    x, y = int(numbers[0]), int(numbers[1])
-                    
-                    cursor = get_cursor(user_id)
-                    cursor.x, cursor.y = x, y
-                    
-                    await tab.mouse.click(x, y, humanize=True)
-                    await send_screen_with_buttons(update, user_id, f"🧠 AI клик по лайку! ({x}, {y})")
-                else:
-                    await query.message.reply_text(f"❌ Не удалось распознать координаты: {result}")
-                
-            except Exception as e:
-                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
         
         # ===== ТОЧНЫЕ КООРДИНАТЫ ЧЕРЕЗ JAVASCRIPT =====
         elif action == "exact_coords":
@@ -683,38 +495,67 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 _, tab = user_browsers[user_id]
                 
+                current_url = await tab.current_url
+                if 'x.com' not in current_url and 'twitter.com' not in current_url:
+                    await query.message.reply_text(
+                        f"❌ Ты не на X.com!\n"
+                        f"Текущий URL: {current_url}\n"
+                        f"Перейди на X.com и попробуй снова."
+                    )
+                    return
+                
                 result = await tab.execute_script("""
                     (function() {
                         const result = [];
-                        const items = document.querySelectorAll(
-                            '[data-testid], button, a, input, [role="button"], [role="link"]'
-                        );
+                        const allElements = document.querySelectorAll('*');
+                        const foundIds = {};
                         
-                        items.forEach(el => {
-                            const rect = el.getBoundingClientRect();
-                            if (rect.width > 20 && rect.height > 20 && 
-                                rect.top >= 0 && rect.left >= 0 &&
-                                rect.top < window.innerHeight && 
-                                rect.left < window.innerWidth) {
-                                
-                                const centerX = Math.round(rect.left + rect.width / 2);
-                                const centerY = Math.round(rect.top + rect.height / 2);
-                                
-                                let name = el.getAttribute('aria-label') || 
-                                          el.getAttribute('data-testid') || 
-                                          (el.textContent ? el.textContent.trim().slice(0, 30) : '') || 
-                                          'Элемент';
-                                
-                                result.push({
-                                    id: result.length + 1,
-                                    name: name,
-                                    x: centerX,
-                                    y: centerY,
-                                    width: Math.round(rect.width),
-                                    height: Math.round(rect.height)
-                                });
+                        allElements.forEach(el => {
+                            const testId = el.getAttribute('data-testid');
+                            if (testId && !foundIds[testId]) {
+                                foundIds[testId] = true;
+                                const rect = el.getBoundingClientRect();
+                                if (rect.width > 10 && rect.height > 10 && 
+                                    rect.top >= 0 && rect.left >= 0 &&
+                                    rect.top < window.innerHeight && 
+                                    rect.left < window.innerWidth) {
+                                    
+                                    result.push({
+                                        id: result.length + 1,
+                                        name: testId,
+                                        x: Math.round(rect.left + rect.width / 2),
+                                        y: Math.round(rect.top + rect.height / 2),
+                                        width: Math.round(rect.width),
+                                        height: Math.round(rect.height)
+                                    });
+                                }
                             }
                         });
+                        
+                        if (result.length === 0) {
+                            const items = document.querySelectorAll('button, a, input, [role="button"]');
+                            items.forEach(el => {
+                                const rect = el.getBoundingClientRect();
+                                if (rect.width > 20 && rect.height > 20 && 
+                                    rect.top >= 0 && rect.left >= 0 &&
+                                    rect.top < window.innerHeight && 
+                                    rect.left < window.innerWidth) {
+                                    
+                                    let name = el.textContent?.trim().slice(0, 30) || 
+                                              el.getAttribute('aria-label') || 
+                                              'Элемент';
+                                    
+                                    result.push({
+                                        id: result.length + 1,
+                                        name: name,
+                                        x: Math.round(rect.left + rect.width / 2),
+                                        y: Math.round(rect.top + rect.height / 2),
+                                        width: Math.round(rect.width),
+                                        height: Math.round(rect.height)
+                                    });
+                                }
+                            });
+                        }
                         
                         return result;
                     })()
@@ -767,7 +608,12 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     else:
                         await query.message.reply_text("😕 Не удалось обработать элементы")
                 else:
-                    await query.message.reply_text("😕 Не найдено видимых элементов на странице")
+                    await query.message.reply_text(
+                        "😕 Не найдено элементов на странице.\n\n"
+                        "Попробуй:\n"
+                        "1. Нажать /refresh для обновления\n"
+                        "2. Убедись что ты на X.com"
+                    )
                     
             except Exception as e:
                 logger.error(f"Ошибка exact_coords: {e}")
@@ -825,7 +671,7 @@ async def click_num(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         if 'ai_elements' not in context.user_data:
-            await update.message.reply_text("❌ Сначала получи список элементов через '🎯 Точные координаты' или '👁️ Что видишь?'")
+            await update.message.reply_text("❌ Сначала получи список элементов через '🎯 Точные координаты'")
             return
         
         elements = context.user_data['ai_elements']
@@ -896,7 +742,6 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отменяет текущее ожидание"""
     context.user_data['waiting_for_coords'] = False
     context.user_data['waiting_for_number'] = False
-    context.user_data['waiting_for_element'] = False
     await update.message.reply_text("✅ Ожидание отменено")
 
 # ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
@@ -976,26 +821,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 # ==================== КОМАНДЫ ====================
-
-async def type_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Укажи текст для ввода\nПример: /type python")
-        return
-    
-    text = ' '.join(context.args)
-    user_id = update.effective_user.id
-    
-    if user_id not in user_browsers:
-        await update.message.reply_text("❌ Сначала выполни /login")
-        return
-    
-    _, tab = user_browsers[user_id]
-    
-    try:
-        await tab.type(text, humanize=True)
-        await update.message.reply_text(f"✅ Введён текст: {text}")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -1144,205 +969,6 @@ async def getbaby(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
-async def evaluate_js(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text(
-            "❌ Укажи JS код\n"
-            "Пример: /eval document.title"
-        )
-        return
-    
-    js_code = ' '.join(context.args)
-    user_id = update.effective_user.id
-    
-    try:
-        if user_id not in user_browsers:
-            await update.message.reply_text("❌ Сначала выполни /login")
-            return
-        
-        _, tab = user_browsers[user_id]
-        result = await tab.execute_script(js_code)
-        
-        if isinstance(result, dict):
-            if 'result' in result and isinstance(result['result'], dict):
-                if 'value' in result['result']:
-                    result = result['result']['value']
-            elif 'value' in result:
-                result = result['value']
-        
-        if isinstance(result, (list, dict)):
-            result = json.dumps(result, ensure_ascii=False, indent=2)
-        
-        await update.message.reply_text(f"✅ Результат:\n\n{str(result)[:500]}")
-            
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
-
-async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not AGNES_API_KEY:
-        await update.message.reply_text(
-            "❌ Agnes API ключ не найден.\n"
-            "Добавь AGNES_API_KEY в переменные окружения."
-        )
-        return
-    
-    if not agnes_client:
-        await update.message.reply_text(
-            "❌ Ошибка инициализации Agnes AI клиента."
-        )
-        return
-    
-    if not context.args:
-        await update.message.reply_text(
-            "🤖 Умный /eval\n\n"
-            "Просто скажи что хочешь сделать:\n"
-            "/ai найди твиты про войну\n"
-            "/ai лайкни первый твит\n"
-            "/ai сколько подписчиков\n"
-            "/ai фото красивых девушек\n"
-            "/ai прокрути вниз\n"
-            "/ai статистика"
-        )
-        return
-    
-    command = ' '.join(context.args)
-    user_id = update.effective_user.id
-    
-    try:
-        if user_id not in user_browsers:
-            await update.message.reply_text("❌ Сначала выполни /login")
-            return
-        
-        await update.message.reply_text("🧠 Генерирую код через Agnes AI...")
-        
-        _, tab = user_browsers[user_id]
-        
-        try:
-            current_url = await tab.current_url
-        except:
-            current_url = ''
-        
-        if 'x.com' not in current_url and 'twitter.com' not in current_url:
-            await update.message.reply_text("🔄 Перехожу на X.com...")
-            await tab.go_to('https://x.com')
-            await asyncio.sleep(3)
-        
-        page_info = await tab.execute_script("""
-            (function() {
-                const ids = {};
-                document.querySelectorAll('[data-testid]').forEach(el => {
-                    const id = el.dataset.testid;
-                    if (id) {
-                        ids[id] = (ids[id] || 0) + 1;
-                    }
-                });
-                return {
-                    url: window.location.href,
-                    title: document.title,
-                    testids: ids,
-                    tweet_count: document.querySelectorAll('article[data-testid="tweet"]').length
-                };
-            })()
-        """)
-        
-        if len(page_info.get('testids', {})) == 0:
-            await update.message.reply_text(
-                "❌ Не найдено элементов на странице.\n"
-                "Попробуй выполнить /login заново"
-            )
-            return
-        
-        prompt = f"""
-        Ты — агент по автоматизации X.com (Twitter).
-        
-        СТРАНИЦА:
-        URL: {page_info.get('url', 'неизвестно')}
-        Твитов на странице: {page_info.get('tweet_count', 0)}
-        Доступные data-testid: {json.dumps(page_info.get('testids', {}), ensure_ascii=False)}
-        
-        ЗАДАЧА: {command}
-        
-        Сгенерируй ТОЛЬКО JavaScript код для выполнения этой задачи.
-        - Если нужно вернуть данные — используй return
-        - Если нужно выполнить действие — просто выполни код
-        - Используй доступные data-testid из контекста
-        - НЕ используй комментарии
-        - Верни ТОЛЬКО код, без пояснений и markdown.
-        """
-        
-        response = await asyncio.wait_for(
-            agnes_client.chat.completions.create(
-                model="agnes-2.0-flash",
-                messages=[
-                    {"role": "system", "content": "Ты — эксперт по JavaScript. Отвечай ТОЛЬКО кодом. НИКАКИХ комментариев."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.1,
-                max_tokens=1000
-            ),
-            timeout=20.0
-        )
-        
-        js_code = response.choices[0].message.content
-        
-        js_code = re.sub(r'```javascript\n?', '', js_code)
-        js_code = re.sub(r'```json\n?', '', js_code)
-        js_code = re.sub(r'```\n?', '', js_code)
-        
-        lines = js_code.split('\n')
-        clean_lines = []
-        for line in lines:
-            if line.strip().startswith('//'):
-                continue
-            if line.strip().startswith('/*') or line.strip().startswith('*'):
-                continue
-            if line.strip() == '':
-                continue
-            clean_lines.append(line)
-        js_code = '\n'.join(clean_lines).strip()
-        
-        if not js_code or len(js_code) < 5:
-            await update.message.reply_text(
-                "⚠️ Не удалось сгенерировать код.\n"
-                "Попробуй переформулировать команду."
-            )
-            return
-        
-        await update.message.reply_text(
-            f"⚡ Выполняю код:\n"
-            f"{js_code[:400]}\n"
-            f"(показано первых 400 символов)"
-        )
-        
-        try:
-            result = await asyncio.wait_for(
-                tab.execute_script(js_code),
-                timeout=10.0
-            )
-        except asyncio.TimeoutError:
-            await update.message.reply_text("⚠️ Выполнение кода заняло слишком много времени.")
-            return
-        
-        if isinstance(result, (list, dict)):
-            result_str = json.dumps(result, ensure_ascii=False, indent=2)
-        else:
-            result_str = str(result)
-        
-        if len(result_str) > 1000:
-            result_str = result_str[:1000] + '...'
-        
-        if not result_str or result_str == '""' or result_str == "''" or result_str == '[]':
-            await update.message.reply_text("⚠️ Результат пустой.")
-        else:
-            await update.message.reply_text(f"📊 Результат:\n{result_str[:500]}")
-        
-    except asyncio.TimeoutError:
-        await update.message.reply_text("⏰ Agnes AI не ответил вовремя. Попробуй позже.")
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
 # ==================== ОБРАБОТЧИК ОШИБОК ====================
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1360,9 +986,6 @@ def main():
     application.add_handler(CommandHandler("screen", screen))
     application.add_handler(CommandHandler("search", search))
     application.add_handler(CommandHandler("getbaby", getbaby))
-    application.add_handler(CommandHandler("type", type_text))
-    application.add_handler(CommandHandler("eval", evaluate_js))
-    application.add_handler(CommandHandler("ai", ai_command))
     application.add_handler(CommandHandler("click_num", click_num))
     application.add_handler(CommandHandler("click", click_command))
     application.add_handler(CommandHandler("cancel", cancel_command))
