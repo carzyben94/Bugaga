@@ -139,6 +139,10 @@ def get_joystick_keyboard(user_id=None):
             InlineKeyboardButton("📍 Клик по координатам", callback_data="click_coords"),
         ],
         [
+            InlineKeyboardButton("📊 Extract", callback_data="extract"),
+            InlineKeyboardButton("🔍 Найти твиты", callback_data="find_tweets"),
+        ],
+        [
             InlineKeyboardButton("🔄 Обновить", callback_data="refresh"),
         ],
         [
@@ -491,6 +495,208 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data['waiting_for_coords'] = True
                 
             except Exception as e:
+                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        
+        # ===== EXTRACT - ИЗВЛЕЧЬ ДАННЫЕ ПОД КУРСОРОМ =====
+        elif action == "extract":
+            try:
+                await query.message.delete()
+                
+                x, y = cursor.get_position()
+                
+                await query.message.reply_text(f"📊 Извлекаю данные под курсором ({x}, {y})...")
+                
+                result = await tab.execute_script(f"""
+                    (function() {{
+                        const el = document.elementFromPoint({x}, {y});
+                        if (!el) return null;
+                        
+                        const data = {{
+                            tag: el.tagName,
+                            text: el.textContent?.trim().slice(0, 200) || '',
+                            testid: el.getAttribute('data-testid') || '',
+                            href: el.href || '',
+                            src: el.src || '',
+                            alt: el.alt || '',
+                            aria_label: el.getAttribute('aria-label') || '',
+                            role: el.getAttribute('role') || '',
+                            coords: {{ x: {x}, y: {y} }}
+                        }};
+                        
+                        // Если это твит - извлекаем больше
+                        const tweet = el.closest('article[data-testid="tweet"]');
+                        if (tweet) {{
+                            const textEl = tweet.querySelector('div[data-testid="tweetText"]');
+                            data.tweet_text = textEl ? textEl.textContent.trim() : '';
+                            
+                            const authorEl = tweet.querySelector('div[data-testid="User-Name"]');
+                            if (authorEl) {{
+                                const spans = authorEl.querySelectorAll('span');
+                                data.author = spans.length > 0 ? spans[0].textContent.trim() : '';
+                                data.username = spans.length > 1 ? spans[1].textContent.trim() : '';
+                            }}
+                            
+                            const timeEl = tweet.querySelector('time');
+                            data.time = timeEl ? timeEl.getAttribute('datetime') : '';
+                            
+                            const linkEl = tweet.querySelector('a[href*="/status/"]');
+                            data.url = linkEl ? linkEl.href : '';
+                        }}
+                        
+                        return JSON.stringify(data);
+                    }})()
+                """)
+                
+                if result:
+                    data = json.loads(result)
+                    
+                    reply = f"📊 Данные под курсором ({x}, {y}):\n\n"
+                    for key, value in data.items():
+                        if value and key != 'coords':
+                            if key == 'tweet_text' or key == 'text':
+                                reply += f"📝 {key}: {value[:150]}...\n"
+                            elif key == 'url' or key == 'href' or key == 'src':
+                                reply += f"🔗 {key}: {value[:100]}\n"
+                            else:
+                                reply += f"• {key}: {value}\n"
+                    
+                    await query.message.reply_text(reply)
+                else:
+                    await query.message.reply_text(f"❌ Нет элемента по координатам ({x}, {y})")
+                    
+            except Exception as e:
+                logger.error(f"Ошибка extract: {e}")
+                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        
+        # ===== НАЙТИ ТВИТЫ =====
+        elif action == "find_tweets":
+            try:
+                await query.message.delete()
+                await query.message.reply_text("🔍 Ищу твиты на странице...")
+                
+                _, tab = user_browsers[user_id]
+                
+                result = await tab.execute_script("""
+                    (function() {
+                        const tweets = document.querySelectorAll('article[data-testid="tweet"]');
+                        const result = [];
+                        
+                        tweets.forEach((tweet, index) => {
+                            const data = {};
+                            data.id = index + 1;
+                            
+                            // Текст
+                            const textEl = tweet.querySelector('div[data-testid="tweetText"]');
+                            data.text = textEl ? textEl.textContent.trim() : '';
+                            
+                            // Автор
+                            const authorEl = tweet.querySelector('div[data-testid="User-Name"]');
+                            if (authorEl) {
+                                const spans = authorEl.querySelectorAll('span');
+                                data.author = spans.length > 0 ? spans[0].textContent.trim() : '';
+                                data.username = spans.length > 1 ? spans[1].textContent.trim() : '';
+                            }
+                            
+                            // Время
+                            const timeEl = tweet.querySelector('time');
+                            data.time = timeEl ? timeEl.getAttribute('datetime') : '';
+                            
+                            // Статистика
+                            const stats = {};
+                            const statItems = tweet.querySelectorAll('[data-testid$="-count"]');
+                            statItems.forEach(el => {
+                                const testid = el.getAttribute('data-testid');
+                                if (testid) {
+                                    const count = el.textContent.trim();
+                                    if (testid.includes('reply')) stats.replies = count;
+                                    else if (testid.includes('retweet')) stats.retweets = count;
+                                    else if (testid.includes('like')) stats.likes = count;
+                                    else if (testid.includes('view')) stats.views = count;
+                                }
+                            });
+                            data.stats = stats;
+                            
+                            // Координаты
+                            const rect = tweet.getBoundingClientRect();
+                            data.coords = {
+                                x: Math.round(rect.left + rect.width / 2),
+                                y: Math.round(rect.top + rect.height / 2)
+                            };
+                            
+                            // Кнопки
+                            const buttons = {};
+                            ['like', 'retweet', 'reply'].forEach(name => {
+                                const btn = tweet.querySelector(`[data-testid="${name}"]`);
+                                if (btn) {
+                                    const r = btn.getBoundingClientRect();
+                                    buttons[name] = {
+                                        x: Math.round(r.left + r.width / 2),
+                                        y: Math.round(r.top + r.height / 2)
+                                    };
+                                }
+                            });
+                            data.buttons = buttons;
+                            
+                            result.push(data);
+                        });
+                        
+                        return JSON.stringify(result.slice(0, 10));
+                    })()
+                """)
+                
+                if result:
+                    tweets = json.loads(result)
+                    
+                    if tweets and len(tweets) > 0:
+                        reply = f"🔍 Найдено {len(tweets)} твитов:\n\n"
+                        
+                        for t in tweets:
+                            reply += f"**{t['id']}. {t.get('author', 'Неизвестно')}**"
+                            if t.get('username'):
+                                reply += f" (@{t['username']})"
+                            reply += "\n"
+                            
+                            text = t.get('text', '')
+                            if text:
+                                if len(text) > 120:
+                                    text = text[:120] + '...'
+                                reply += f"📝 {text}\n"
+                            
+                            stats = t.get('stats', {})
+                            if stats:
+                                parts = []
+                                if stats.get('likes'): parts.append(f"❤️ {stats['likes']}")
+                                if stats.get('retweets'): parts.append(f"🔁 {stats['retweets']}")
+                                if stats.get('replies'): parts.append(f"💬 {stats['replies']}")
+                                if parts:
+                                    reply += f"📊 {' | '.join(parts)}\n"
+                            
+                            coords = t.get('coords', {})
+                            if coords:
+                                reply += f"📍 ({coords.get('x', '?')}, {coords.get('y', '?')})\n"
+                            
+                            buttons = t.get('buttons', {})
+                            if buttons:
+                                cmd = []
+                                if buttons.get('like'):
+                                    cmd.append(f"❤️ /click {buttons['like']['x']} {buttons['like']['y']}")
+                                if buttons.get('retweet'):
+                                    cmd.append(f"🔁 /click {buttons['retweet']['x']} {buttons['retweet']['y']}")
+                                if buttons.get('reply'):
+                                    cmd.append(f"💬 /click {buttons['reply']['x']} {buttons['reply']['y']}")
+                                if cmd:
+                                    reply += f"💡 {' | '.join(cmd)}\n"
+                            
+                            reply += "\n"
+                        
+                        await query.message.reply_text(reply, parse_mode='Markdown')
+                    else:
+                        await query.message.reply_text("😕 Не найдено твитов")
+                else:
+                    await query.message.reply_text("😕 Не найдено твитов")
+                    
+            except Exception as e:
+                logger.error(f"Ошибка find_tweets: {e}")
                 await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
         
         elif action == "refresh":
