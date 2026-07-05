@@ -136,6 +136,10 @@ def get_joystick_keyboard(user_id=None):
             InlineKeyboardButton("📸 Скрин", callback_data="screenshot"),
         ],
         [
+            InlineKeyboardButton("⬆️ Скролл", callback_data="scroll_up"),
+            InlineKeyboardButton("⬇️ Скролл", callback_data="scroll_down"),
+        ],
+        [
             InlineKeyboardButton("🏠 Home", callback_data="go_home"),
             InlineKeyboardButton("🔍 Explore", callback_data="go_explore"),
             InlineKeyboardButton("👤 Профиль", callback_data="go_profile"),
@@ -158,7 +162,7 @@ def get_joystick_keyboard(user_id=None):
             InlineKeyboardButton("📝 Ввод в чате", callback_data="chat_input"),
         ],
         [
-            InlineKeyboardButton("🧠 AI Extract", callback_data="ai_extract"),  # ← НОВАЯ КНОПКА
+            InlineKeyboardButton("🧠 AI Extract", callback_data="ai_extract"),
         ],
         [
             InlineKeyboardButton("🔄 Обновить", callback_data="refresh"),
@@ -262,7 +266,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📸 Скриншот\n"
         "/screen Скриншот\n\n"
         "📍 Координаты\n"
-        "/click <x> <y> — Клик по координатам\n\n"
+        "/click <x> <y> — Клик по координатам\n"
+        "/resize <w> <h> — Изменить размер окна\n\n"
         "⌨️ Клавиатура\n"
         "Нажми '⌨️ Клавиатура' в джойстике\n"
         "Или просто напиши текст в чат после '📝 Ввод в чате'\n\n"
@@ -284,10 +289,14 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--headless=new")
         options.add_argument("--disable-gpu")
+        options.add_argument("--window-size=1280,720")
+        
         options.binary_location = CHROME_PATH
         
         browser = Chrome(options=options)
         tab = await browser.start()
+        
+        await tab.execute_script("window.resizeTo(1280, 720)")
         
         await tab.go_to('https://x.com')
         await asyncio.sleep(2)
@@ -308,7 +317,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             cursor.x, cursor.y = 500, 300
         
-        await update.message.reply_text("✅ Вход выполнен!")
+        await update.message.reply_text("✅ Вход выполнен! Размер окна: 1280x720")
         
     except Exception as e:
         logger.error(f"Ошибка: {e}")
@@ -460,26 +469,22 @@ def get_keyboard_markup(context):
     
     keyboard_buttons = []
     
-    # Буквы
     for row in get_keyboard_layout(lang):
         row_buttons = []
         for char in row:
             row_buttons.append(InlineKeyboardButton(char, callback_data=f'key_{char}'))
         keyboard_buttons.append(row_buttons)
     
-    # Цифры
     symbols_row = []
     for char in ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0']:
         symbols_row.append(InlineKeyboardButton(char, callback_data=f'key_{char}'))
     keyboard_buttons.append(symbols_row)
     
-    # Спецсимволы
     specials_row = []
     for char in [' ', '-', '.', ',', '!', '?', '@', '#', '$', '%']:
         specials_row.append(InlineKeyboardButton(char, callback_data=f'key_{char}'))
     keyboard_buttons.append(specials_row)
     
-    # Управление
     control_row = [
         InlineKeyboardButton('⌫', callback_data='key_backspace'),
         InlineKeyboardButton('🗑️', callback_data='key_clear'),
@@ -488,7 +493,6 @@ def get_keyboard_markup(context):
     ]
     keyboard_buttons.append(control_row)
     
-    # Переключение языка и закрытие
     bottom_row = [
         InlineKeyboardButton(f'🌐 {lang_label}', callback_data='key_switch_lang'),
         InlineKeyboardButton('📝 В чат', callback_data='key_to_chat'),
@@ -550,6 +554,23 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif action == "screenshot":
             await send_screen_with_buttons(update, user_id, "📸 Скриншот")
         
+        # ===== СКРОЛЛИНГ =====
+        elif action == "scroll_up":
+            try:
+                await tab.execute_script("window.scrollBy(0, -300);")
+                await asyncio.sleep(0.3)
+                await send_screen_with_buttons(update, user_id, "⬆️ Скролл вверх")
+            except Exception as e:
+                await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
+        
+        elif action == "scroll_down":
+            try:
+                await tab.execute_script("window.scrollBy(0, 300);")
+                await asyncio.sleep(0.3)
+                await send_screen_with_buttons(update, user_id, "⬇️ Скролл вниз")
+            except Exception as e:
+                await send_screen_with_buttons(update, user_id, f"❌ Ошибка: {str(e)[:100]}")
+        
         # ===== НАВИГАЦИЯ =====
         elif action == "go_home":
             try:
@@ -600,7 +621,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
         
-        # ===== EXTRACT - ИЗВЛЕЧЬ ДАННЫЕ ПОД КУРСОРОМ =====
+        # ===== EXTRACT =====
         elif action == "extract":
             try:
                 await query.message.delete()
@@ -668,7 +689,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"Ошибка extract: {e}")
                 await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
         
-        # ===== НАЙТИ ТВИТЫ (JAVASCRIPT) =====
+        # ===== НАЙТИ ТВИТЫ =====
         elif action == "find_tweets":
             try:
                 await query.message.delete()
@@ -859,16 +880,14 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "💡 Рекомендую использовать '🔍 Найти твиты' - это быстрее и надежнее!"
                 )
         
-        # ===== AI EXTRACT - АНАЛИЗ ВСЕЙ СТРАНИЦЫ ЧЕРЕЗ AGNES AI =====
+        # ===== AI EXTRACT =====
         elif action == "ai_extract":
             try:
                 await query.message.delete()
                 await query.message.reply_text("🧠 AI анализирует страницу...")
                 
-                # Делаем скриншот всей страницы
                 screenshot_base64 = await tab.take_screenshot(as_base64=True)
                 
-                # Отправляем в Agnes AI для анализа
                 response = await asyncio.wait_for(
                     agnes_client.chat.completions.create(
                         model="agnes-2.0-flash",
@@ -922,7 +941,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 result = response.choices[0].message.content
                 
-                # Очищаем от markdown
                 result = re.sub(r'```json\n?', '', result)
                 result = re.sub(r'```\n?', '', result)
                 result = result.strip()
@@ -932,11 +950,9 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     reply = "🧠 **AI анализ страницы:**\n\n"
                     
-                    # Тип страницы
                     if data.get('page_type'):
                         reply += f"📄 **Тип:** {data['page_type']}\n\n"
                     
-                    # Твиты
                     tweets = data.get('tweets', [])
                     if tweets:
                         reply += f"📝 **Твиты ({len(tweets)}):**\n"
@@ -954,7 +970,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 reply += f"\n   🕐 {tweet['time']}"
                             reply += "\n\n"
                     
-                    # Тренды
                     trends = data.get('trends', [])
                     if trends:
                         reply += f"🔥 **Тренды:**\n"
@@ -962,7 +977,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             reply += f"   • {trend}\n"
                         reply += "\n"
                     
-                    # Навигация
                     nav = data.get('navigation', [])
                     if nav:
                         reply += f"🧭 **Навигация:**\n"
@@ -970,7 +984,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             reply += f"   • {item}\n"
                         reply += "\n"
                     
-                    # Рекомендации
                     suggested = data.get('suggested', [])
                     if suggested:
                         reply += f"👤 **Рекомендуемые:**\n"
@@ -978,7 +991,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             reply += f"   • {acc}\n"
                         reply += "\n"
                     
-                    # Реклама
                     ads = data.get('ads', [])
                     if ads:
                         reply += f"📢 **Реклама:**\n"
@@ -986,7 +998,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             reply += f"   • {ad}\n"
                         reply += "\n"
                     
-                    # Поле ввода
                     if data.get('has_tweet_input'):
                         reply += f"✏️ **Поле для твита:** есть\n"
                     
@@ -1213,6 +1224,46 @@ async def click_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
+# ==================== КОМАНДА /resize ====================
+
+async def resize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Изменяет размер окна браузера"""
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "❌ Укажи ширину и высоту\n"
+            "Пример: /resize 1280 720\n"
+            "Пример: /resize 1024 768"
+        )
+        return
+    
+    try:
+        width = int(context.args[0])
+        height = int(context.args[1])
+        
+        user_id = update.effective_user.id
+        
+        if user_id not in user_browsers:
+            await update.message.reply_text("❌ Сначала выполни /login")
+            return
+        
+        _, tab = user_browsers[user_id]
+        
+        await tab.execute_script(f"window.resizeTo({width}, {height})")
+        await asyncio.sleep(1)
+        
+        viewport = await tab.execute_script("return { width: window.innerWidth, height: window.innerHeight }")
+        cursor = get_cursor(user_id)
+        cursor.x = viewport['width'] // 2
+        cursor.y = viewport['height'] // 2
+        
+        await update.message.reply_text(f"✅ Размер окна изменен: {width}x{height}")
+        await send_screen_with_buttons(update, user_id, f"📐 Размер: {width}x{height}")
+        
+    except ValueError:
+        await update.message.reply_text("❌ Введи два числа\nПример: /resize 1280 720")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
 # ==================== КОМАНДА /cancel ====================
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1228,7 +1279,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip()
     
-    # Если ждем координаты
     if context.user_data.get('waiting_for_coords'):
         try:
             parts = text.split()
@@ -1261,7 +1311,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Введи два числа через пробел\nПример: 520 310")
         return
     
-    # Если ждем текст для ввода в чате (с автоматическим Enter)
     if context.user_data.get('waiting_for_chat_input'):
         if user_id not in user_browsers:
             await update.message.reply_text("❌ Сначала выполни /login")
@@ -1320,6 +1369,7 @@ def main():
     application.add_handler(CommandHandler("joystick", joystick))
     application.add_handler(CommandHandler("screen", screen))
     application.add_handler(CommandHandler("click", click_command))
+    application.add_handler(CommandHandler("resize", resize_command))
     application.add_handler(CommandHandler("cancel", cancel_command))
     
     application.add_handler(CallbackQueryHandler(joystick_callback))
