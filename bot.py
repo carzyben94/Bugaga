@@ -14,7 +14,6 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 from pydoll.browser import Chrome
 from pydoll.browser.options import ChromiumOptions
 from pydoll.extractor import ExtractionModel, Field
-from pydoll.exceptions import WaitElementTimeout, ElementNotFound
 from openai import AsyncOpenAI
 
 logging.basicConfig(level=logging.INFO)
@@ -235,7 +234,8 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
     try:
-        await update.message.reply_text("🔐 Выполняю вход на X.com...")
+        # Отправляем сообщение о начале входа
+        msg1 = await update.message.reply_text("🔐 Выполняю вход на X.com...")
         
         options = ChromiumOptions()
         options.add_argument("--no-sandbox")
@@ -267,11 +267,22 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             cursor.x, cursor.y = 500, 300
         
+        # Удаляем сообщение о начале входа
+        try:
+            await msg1.delete()
+        except:
+            pass
+        
+        # Отправляем финальное сообщение (оно останется в чате)
         await update.message.reply_text("✅ Вход выполнен! Размер окна: 1024x768")
         await send_or_update_menu(update, user_id, "✅ Вход выполнен!")
 
     except Exception as e:
         logger.error(f"Ошибка: {e}")
+        try:
+            await msg1.delete()
+        except:
+            pass
         await update.message.reply_text(f"❌ Ошибка входа: {str(e)[:300]}")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -379,9 +390,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 await query.message.reply_text("📊 Извлекаю твиты...")
                 
-                # Ждем загрузки твитов
                 try:
-                    await tab.wait_element('article[data-testid="tweet"]', timeout=8)
+                    await asyncio.wait_for(
+                        tab.find_element('article[data-testid="tweet"]', timeout=5),
+                        timeout=8.0
+                    )
                 except:
                     pass
                 
