@@ -108,6 +108,14 @@ def draw_cursor_on_screenshot(screenshot_bytes, cursor_x, cursor_y):
     except:
         return screenshot_bytes
 
+# ==================== МОДЕЛЬ ТВИТА ДЛЯ EXTRACTOR ====================
+
+class Tweet(ExtractionModel):
+    text: str = Field(
+        selector='div[data-testid="tweetText"]',
+        default="[текст не найден]"
+    )
+
 # ==================== КНОПКИ ДЖОЙСТИКА ====================
 
 def get_joystick_keyboard(user_id=None):
@@ -141,6 +149,9 @@ def get_joystick_keyboard(user_id=None):
         [
             InlineKeyboardButton("📊 Extract", callback_data="extract"),
             InlineKeyboardButton("🔍 Найти твиты", callback_data="find_tweets"),
+        ],
+        [
+            InlineKeyboardButton("🔍 Поиск (Extractor)", callback_data="search_extractor"),
         ],
         [
             InlineKeyboardButton("🔄 Обновить", callback_data="refresh"),
@@ -367,21 +378,6 @@ async def joystick(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_joystick_keyboard()
         )
 
-# ==================== МОДЕЛИ ====================
-
-class Tweet(ExtractionModel):
-    text: str = Field(
-        selector='div[data-testid="tweetText"]',
-        default="[текст не найден]"
-    )
-
-class TweetPhoto(ExtractionModel):
-    photo: str = Field(
-        selector='img[src*="media"]',
-        attribute='src',
-        default=""
-    )
-
 # ==================== ФУНКЦИИ ====================
 
 def fix_text(text):
@@ -523,7 +519,6 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             coords: {{ x: {x}, y: {y} }}
                         }};
                         
-                        // Если это твит - извлекаем больше
                         const tweet = el.closest('article[data-testid="tweet"]');
                         if (tweet) {{
                             const textEl = tweet.querySelector('div[data-testid="tweetText"]');
@@ -543,20 +538,18 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             data.url = linkEl ? linkEl.href : '';
                         }}
                         
-                        return JSON.stringify(data);
+                        return data;
                     }})()
                 """)
                 
-                if result:
-                    data = json.loads(result)
-                    
+                if result and isinstance(result, dict):
                     reply = f"📊 Данные под курсором ({x}, {y}):\n\n"
-                    for key, value in data.items():
+                    for key, value in result.items():
                         if value and key != 'coords':
-                            if key == 'tweet_text' or key == 'text':
-                                reply += f"📝 {key}: {value[:150]}...\n"
-                            elif key == 'url' or key == 'href' or key == 'src':
-                                reply += f"🔗 {key}: {value[:100]}\n"
+                            if key in ['tweet_text', 'text']:
+                                reply += f"📝 {key}: {str(value)[:150]}...\n"
+                            elif key in ['url', 'href', 'src']:
+                                reply += f"🔗 {key}: {str(value)[:100]}\n"
                             else:
                                 reply += f"• {key}: {value}\n"
                     
@@ -568,7 +561,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"Ошибка extract: {e}")
                 await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
         
-        # ===== НАЙТИ ТВИТЫ =====
+        # ===== НАЙТИ ТВИТЫ (JAVASCRIPT) =====
         elif action == "find_tweets":
             try:
                 await query.message.delete()
@@ -576,7 +569,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 _, tab = user_browsers[user_id]
                 
-                result = await tab.execute_script("""
+                tweets = await tab.execute_script("""
                     (function() {
                         const tweets = document.querySelectorAll('article[data-testid="tweet"]');
                         const result = [];
@@ -585,11 +578,9 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             const data = {};
                             data.id = index + 1;
                             
-                            // Текст
                             const textEl = tweet.querySelector('div[data-testid="tweetText"]');
                             data.text = textEl ? textEl.textContent.trim() : '';
                             
-                            // Автор
                             const authorEl = tweet.querySelector('div[data-testid="User-Name"]');
                             if (authorEl) {
                                 const spans = authorEl.querySelectorAll('span');
@@ -597,11 +588,9 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 data.username = spans.length > 1 ? spans[1].textContent.trim() : '';
                             }
                             
-                            // Время
                             const timeEl = tweet.querySelector('time');
                             data.time = timeEl ? timeEl.getAttribute('datetime') : '';
                             
-                            // Статистика
                             const stats = {};
                             const statItems = tweet.querySelectorAll('[data-testid$="-count"]');
                             statItems.forEach(el => {
@@ -616,14 +605,12 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             });
                             data.stats = stats;
                             
-                            // Координаты
                             const rect = tweet.getBoundingClientRect();
                             data.coords = {
                                 x: Math.round(rect.left + rect.width / 2),
                                 y: Math.round(rect.top + rect.height / 2)
                             };
                             
-                            // Кнопки
                             const buttons = {};
                             ['like', 'retweet', 'reply'].forEach(name => {
                                 const btn = tweet.querySelector(`[data-testid="${name}"]`);
@@ -640,63 +627,115 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             result.push(data);
                         });
                         
-                        return JSON.stringify(result.slice(0, 10));
+                        return result.slice(0, 10);
                     })()
                 """)
                 
-                if result:
-                    tweets = json.loads(result)
+                if tweets and len(tweets) > 0:
+                    reply = f"🔍 Найдено {len(tweets)} твитов:\n\n"
                     
-                    if tweets and len(tweets) > 0:
-                        reply = f"🔍 Найдено {len(tweets)} твитов:\n\n"
+                    for t in tweets:
+                        reply += f"**{t.get('id')}. {t.get('author', 'Неизвестно')}**"
+                        if t.get('username'):
+                            reply += f" (@{t['username']})"
+                        reply += "\n"
                         
-                        for t in tweets:
-                            reply += f"**{t['id']}. {t.get('author', 'Неизвестно')}**"
-                            if t.get('username'):
-                                reply += f" (@{t['username']})"
-                            reply += "\n"
-                            
-                            text = t.get('text', '')
-                            if text:
-                                if len(text) > 120:
-                                    text = text[:120] + '...'
-                                reply += f"📝 {text}\n"
-                            
-                            stats = t.get('stats', {})
-                            if stats:
-                                parts = []
-                                if stats.get('likes'): parts.append(f"❤️ {stats['likes']}")
-                                if stats.get('retweets'): parts.append(f"🔁 {stats['retweets']}")
-                                if stats.get('replies'): parts.append(f"💬 {stats['replies']}")
-                                if parts:
-                                    reply += f"📊 {' | '.join(parts)}\n"
-                            
-                            coords = t.get('coords', {})
-                            if coords:
-                                reply += f"📍 ({coords.get('x', '?')}, {coords.get('y', '?')})\n"
-                            
-                            buttons = t.get('buttons', {})
-                            if buttons:
-                                cmd = []
-                                if buttons.get('like'):
-                                    cmd.append(f"❤️ /click {buttons['like']['x']} {buttons['like']['y']}")
-                                if buttons.get('retweet'):
-                                    cmd.append(f"🔁 /click {buttons['retweet']['x']} {buttons['retweet']['y']}")
-                                if buttons.get('reply'):
-                                    cmd.append(f"💬 /click {buttons['reply']['x']} {buttons['reply']['y']}")
-                                if cmd:
-                                    reply += f"💡 {' | '.join(cmd)}\n"
-                            
-                            reply += "\n"
+                        text = t.get('text', '')
+                        if text:
+                            if len(text) > 120:
+                                text = text[:120] + '...'
+                            reply += f"📝 {text}\n"
                         
-                        await query.message.reply_text(reply, parse_mode='Markdown')
-                    else:
-                        await query.message.reply_text("😕 Не найдено твитов")
+                        stats = t.get('stats', {})
+                        if stats:
+                            parts = []
+                            if stats.get('likes'): parts.append(f"❤️ {stats['likes']}")
+                            if stats.get('retweets'): parts.append(f"🔁 {stats['retweets']}")
+                            if stats.get('replies'): parts.append(f"💬 {stats['replies']}")
+                            if parts:
+                                reply += f"📊 {' | '.join(parts)}\n"
+                        
+                        coords = t.get('coords', {})
+                        if coords:
+                            reply += f"📍 ({coords.get('x', '?')}, {coords.get('y', '?')})\n"
+                        
+                        buttons = t.get('buttons', {})
+                        if buttons:
+                            cmd = []
+                            if buttons.get('like'):
+                                cmd.append(f"❤️ /click {buttons['like']['x']} {buttons['like']['y']}")
+                            if buttons.get('retweet'):
+                                cmd.append(f"🔁 /click {buttons['retweet']['x']} {buttons['retweet']['y']}")
+                            if buttons.get('reply'):
+                                cmd.append(f"💬 /click {buttons['reply']['x']} {buttons['reply']['y']}")
+                            if cmd:
+                                reply += f"💡 {' | '.join(cmd)}\n"
+                        
+                        reply += "\n"
+                    
+                    await query.message.reply_text(reply, parse_mode='Markdown')
                 else:
                     await query.message.reply_text("😕 Не найдено твитов")
                     
             except Exception as e:
                 logger.error(f"Ошибка find_tweets: {e}")
+                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        
+        # ===== ПОИСК ТВИТОВ ЧЕРЕЗ PYDOLL EXTRACTOR =====
+        elif action == "search_extractor":
+            try:
+                await query.message.delete()
+                await query.message.reply_text("🔍 Ищу твиты через Pydoll Extractor...")
+                
+                _, tab = user_browsers[user_id]
+                
+                tweets = await asyncio.wait_for(
+                    tab.extract_all(
+                        Tweet,
+                        scope='article[data-testid="tweet"]',
+                        timeout=10
+                    ),
+                    timeout=15.0
+                )
+                
+                screenshot_base64 = await tab.take_screenshot(as_base64=True)
+                screenshot_bytes = base64.b64decode(screenshot_base64)
+                
+                if tweets and len(tweets) > 0:
+                    await query.message.reply_photo(
+                        photo=screenshot_bytes,
+                        caption=f"🔍 Найдено {len(tweets)} твитов (Extractor)"
+                    )
+                    
+                    reply = f"📊 Найдено {len(tweets)} твитов:\n\n"
+                    for i, tweet in enumerate(tweets[:20], 1):
+                        text = fix_text(tweet.text)
+                        if len(text) > 200:
+                            text = text[:200] + '...'
+                        reply += f"{i}. {text}\n\n"
+                    
+                    if len(reply) > 4000:
+                        parts = []
+                        current = ""
+                        for line in reply.split('\n'):
+                            if len(current) + len(line) + 1 > 4000:
+                                parts.append(current)
+                                current = ""
+                            current += line + '\n'
+                        if current:
+                            parts.append(current)
+                        
+                        for part in parts:
+                            await query.message.reply_text(part)
+                    else:
+                        await query.message.reply_text(reply)
+                else:
+                    await query.message.reply_text("😕 Твиты не найдены")
+                    
+            except asyncio.TimeoutError:
+                await query.message.reply_text("⏰ Поиск твитов занял слишком много времени")
+            except Exception as e:
+                logger.error(f"Ошибка search_extractor: {e}")
                 await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
         
         elif action == "refresh":
