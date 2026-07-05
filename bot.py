@@ -289,14 +289,14 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--headless=new")
         options.add_argument("--disable-gpu")
-        options.add_argument("--window-size=1280,720")
+        options.add_argument("--window-size=1024,768")
         
         options.binary_location = CHROME_PATH
         
         browser = Chrome(options=options)
         tab = await browser.start()
         
-        await tab.execute_script("window.resizeTo(1280, 720)")
+        await tab.execute_script("window.resizeTo(1024, 768)")
         
         await tab.go_to('https://x.com')
         await asyncio.sleep(2)
@@ -317,7 +317,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             cursor.x, cursor.y = 500, 300
         
-        await update.message.reply_text("✅ Вход выполнен! Размер окна: 1280x720")
+        await update.message.reply_text("✅ Вход выполнен! Размер окна: 1024x768")
         
     except Exception as e:
         logger.error(f"Ошибка: {e}")
@@ -1231,7 +1231,6 @@ async def resize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args or len(context.args) < 2:
         await update.message.reply_text(
             "❌ Укажи ширину и высоту\n"
-            "Пример: /resize 1280 720\n"
             "Пример: /resize 1024 768"
         )
         return
@@ -1248,20 +1247,37 @@ async def resize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         _, tab = user_browsers[user_id]
         
-        await tab.execute_script(f"window.resizeTo({width}, {height})")
+        # Изменяем размер через JavaScript
+        await tab.execute_script(f"""
+            window.moveTo(0, 0);
+            window.resizeTo({width}, {height});
+        """)
+        
         await asyncio.sleep(1)
         
-        viewport = await tab.execute_script("return { width: window.innerWidth, height: window.innerHeight }")
+        # Проверяем новый размер
+        viewport = await tab.execute_script("""
+            return {
+                width: window.innerWidth,
+                height: window.innerHeight
+            };
+        """)
+        
         cursor = get_cursor(user_id)
         cursor.x = viewport['width'] // 2
         cursor.y = viewport['height'] // 2
         
-        await update.message.reply_text(f"✅ Размер окна изменен: {width}x{height}")
-        await send_screen_with_buttons(update, user_id, f"📐 Размер: {width}x{height}")
+        await update.message.reply_text(
+            f"✅ Размер окна изменен: {width}x{height}\n"
+            f"📐 Реальный размер: {viewport['width']}x{viewport['height']}"
+        )
+        
+        await send_screen_with_buttons(update, user_id, f"📐 Размер: {viewport['width']}x{viewport['height']}")
         
     except ValueError:
-        await update.message.reply_text("❌ Введи два числа\nПример: /resize 1280 720")
+        await update.message.reply_text("❌ Введи два числа\nПример: /resize 1024 768")
     except Exception as e:
+        logger.error(f"Ошибка resize: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ==================== КОМАНДА /cancel ====================
