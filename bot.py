@@ -1,4 +1,4 @@
-import os 
+import os
 import logging
 import asyncio
 import base64
@@ -683,7 +683,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 _, tab = user_browsers[user_id]
                 
-                elements = await tab.execute_script("""
+                result = await tab.execute_script("""
                     (function() {
                         const result = [];
                         const items = document.querySelectorAll(
@@ -702,7 +702,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 
                                 let name = el.getAttribute('aria-label') || 
                                           el.getAttribute('data-testid') || 
-                                          el.textContent?.trim().slice(0, 30) || 
+                                          (el.textContent ? el.textContent.trim().slice(0, 30) : '') || 
                                           'Элемент';
                                 
                                 result.push({
@@ -716,42 +716,56 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             }
                         });
                         
-                        return result.slice(0, 30);
+                        return result;
                     })()
                 """)
                 
-                if elements and len(elements) > 0:
-                    context.user_data['ai_elements'] = elements
+                if isinstance(result, list) and len(result) > 0:
+                    elements = []
+                    for item in result:
+                        if isinstance(item, dict):
+                            elements.append({
+                                'id': item.get('id', len(elements) + 1),
+                                'name': item.get('name', 'Элемент'),
+                                'x': item.get('x', 0),
+                                'y': item.get('y', 0),
+                                'width': item.get('width', 0),
+                                'height': item.get('height', 0)
+                            })
                     
-                    screenshot_base64 = await tab.take_screenshot(as_base64=True)
-                    screenshot_bytes = base64.b64decode(screenshot_base64)
-                    image = Image.open(BytesIO(screenshot_bytes))
-                    draw = ImageDraw.Draw(image)
-                    
-                    for el in elements:
-                        x, y = el['x'], el['y']
-                        draw.ellipse([(x - 8, y - 8), (x + 8, y + 8)], fill='lime', outline='white')
-                        draw.text((x + 12, y - 5), str(el['id']), fill='lime')
-                    
-                    output = BytesIO()
-                    image.save(output, format='PNG')
-                    image_with_dots = output.getvalue()
-                    
-                    reply = "🎯 Точные координаты (JavaScript):\n\n"
-                    for el in elements[:15]:
-                        reply += f"{el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
-                    
-                    if len(elements) > 15:
-                        reply += f"\n... и ещё {len(elements) - 15} элементов"
-                    
-                    reply += f"\n\n📊 Всего: {len(elements)} элементов"
-                    reply += "\n💡 /click_num <номер> - кликнуть"
-                    
-                    await query.message.reply_photo(
-                        photo=image_with_dots,
-                        caption=reply
-                    )
-                    
+                    if elements:
+                        context.user_data['ai_elements'] = elements
+                        
+                        screenshot_base64 = await tab.take_screenshot(as_base64=True)
+                        screenshot_bytes = base64.b64decode(screenshot_base64)
+                        image = Image.open(BytesIO(screenshot_bytes))
+                        draw = ImageDraw.Draw(image)
+                        
+                        for el in elements:
+                            x, y = el['x'], el['y']
+                            draw.ellipse([(x - 8, y - 8), (x + 8, y + 8)], fill='lime', outline='white')
+                            draw.text((x + 12, y - 5), str(el['id']), fill='lime')
+                        
+                        output = BytesIO()
+                        image.save(output, format='PNG')
+                        image_with_dots = output.getvalue()
+                        
+                        reply = "🎯 Точные координаты (JavaScript):\n\n"
+                        for el in elements[:15]:
+                            reply += f"{el['id']}. {el['name']} → ({el['x']}, {el['y']})\n"
+                        
+                        if len(elements) > 15:
+                            reply += f"\n... и ещё {len(elements) - 15} элементов"
+                        
+                        reply += f"\n\n📊 Всего: {len(elements)} элементов"
+                        reply += "\n💡 /click_num <номер> - кликнуть"
+                        
+                        await query.message.reply_photo(
+                            photo=image_with_dots,
+                            caption=reply
+                        )
+                    else:
+                        await query.message.reply_text("😕 Не удалось обработать элементы")
                 else:
                     await query.message.reply_text("😕 Не найдено видимых элементов на странице")
                     
