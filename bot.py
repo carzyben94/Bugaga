@@ -64,7 +64,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/login — войти в X.com\n"
         "/close — закрыть браузер\n"
         "/eval <js> — выполнить JS код\n"
-        "/screen — скриншот страницы"
+        "/screen — скриншот страницы\n"
+        "/extract <x> <y> — извлечь твит по координатам"
     )
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -197,6 +198,104 @@ async def screen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
+# ==================== /extract ====================
+
+async def extract_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Извлекает данные из твита под курсором"""
+    user_id = update.effective_user.id
+    
+    if user_id not in user_browsers:
+        await update.message.reply_text("❌ Сначала выполни /login")
+        return
+    
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "❌ Укажи координаты\n"
+            "Пример: /extract 500 300"
+        )
+        return
+    
+    try:
+        x = int(context.args[0])
+        y = int(context.args[1])
+        
+        _, tab = user_browsers[user_id]
+        
+        result = await tab.execute_script(f"""
+            (function() {{
+                const el = document.elementFromPoint({x}, {y});
+                if (!el) return null;
+                
+                const tweet = el.closest('article[data-testid="tweet"]');
+                if (!tweet) {{
+                    return {{ error: 'Не найден твит под курсором' }};
+                }}
+                
+                const textEl = tweet.querySelector('[data-testid="tweetText"]');
+                const authorEl = tweet.querySelector('[data-testid="User-Name"]');
+                const likeEl = tweet.querySelector('[data-testid="like"]');
+                const retweetEl = tweet.querySelector('[data-testid="retweet"]');
+                const replyEl = tweet.querySelector('[data-testid="reply"]');
+                
+                const rect = tweet.getBoundingClientRect();
+                
+                let author = '';
+                if (authorEl) {{
+                    const spans = authorEl.querySelectorAll('span');
+                    author = spans.length > 0 ? spans[0].textContent.trim() : '';
+                }}
+                
+                return {{
+                    text: textEl ? textEl.textContent.trim() : '',
+                    author: author,
+                    likes: likeEl ? likeEl.textContent.trim() : '0',
+                    retweets: retweetEl ? retweetEl.textContent.trim() : '0',
+                    replies: replyEl ? replyEl.textContent.trim() : '0',
+                    coords: {{
+                        x: Math.round(rect.left + rect.width/2),
+                        y: Math.round(rect.top + rect.height/2)
+                    }}
+                }};
+            }})()
+        """, return_by_value=True)
+        
+        if not result:
+            await update.message.reply_text("❌ Не удалось извлечь данные")
+            return
+        
+        if isinstance(result, dict) and result.get('error'):
+            await update.message.reply_text(f"❌ {result['error']}")
+            return
+        
+        if isinstance(result, dict):
+            reply = "📊 **Твит под курсором:**\n\n"
+            reply += f"👤 **Автор:** {result.get('author', 'Неизвестно')}\n"
+            
+            text = result.get('text', '')
+            if text:
+                if len(text) > 200:
+                    text = text[:200] + '...'
+                reply += f"📝 **Текст:** {text}\n"
+            else:
+                reply += "📝 **Текст:** (пусто)\n"
+            
+            reply += f"❤️ **Лайки:** {result.get('likes', '0')}\n"
+            reply += f"🔁 **Ретвиты:** {result.get('retweets', '0')}\n"
+            reply += f"💬 **Ответы:** {result.get('replies', '0')}\n"
+            
+            coords = result.get('coords', {})
+            if coords:
+                reply += f"\n📍 **Координаты:** ({coords.get('x', '?')}, {coords.get('y', '?')})"
+            
+            await update.message.reply_text(reply, parse_mode='Markdown')
+        else:
+            await update.message.reply_text("❌ Неизвестный формат результата")
+            
+    except ValueError:
+        await update.message.reply_text("❌ Введи два числа\nПример: /extract 500 300")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
 # ==================== ЗАПУСК ====================
 
 def main():
@@ -206,6 +305,7 @@ def main():
     app.add_handler(CommandHandler("close", close_browser))
     app.add_handler(CommandHandler("eval", eval_command))
     app.add_handler(CommandHandler("screen", screen_command))
+    app.add_handler(CommandHandler("extract", extract_command))
     app.run_polling()
 
 if __name__ == "__main__":
