@@ -234,7 +234,6 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
     try:
-        # Отправляем сообщение о начале входа
         msg1 = await update.message.reply_text("🔐 Выполняю вход на X.com...")
         
         options = ChromiumOptions()
@@ -267,13 +266,11 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             cursor.x, cursor.y = 500, 300
         
-        # Удаляем сообщение о начале входа
         try:
             await msg1.delete()
         except:
             pass
         
-        # Отправляем финальное сообщение (оно останется в чате)
         await update.message.reply_text("✅ Вход выполнен! Размер окна: 1024x768")
         await send_or_update_menu(update, user_id, "✅ Вход выполнен!")
 
@@ -363,16 +360,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cursor.step = 100
             captions = "🟢 Шаг 100px"
         elif action == "scroll_up":
-            await tab.execute_script("window.scrollBy(0, -300)")
+            await tab.scroll.by('y', -300, smooth=True)
             captions = "⬆️ Скролл вверх на 300px"
         elif action == "scroll_down":
-            await tab.execute_script("window.scrollBy(0, 300)")
+            await tab.scroll.by('y', 300, smooth=True)
             captions = "⬇️ Скролл вниз на 300px"
         elif action == "scroll_top":
-            await tab.execute_script("window.scrollTo(0, 0)")
+            await tab.scroll.to_top(smooth=True)
             captions = "🔝 Наверх страницы"
         elif action == "scroll_bottom":
-            await tab.execute_script("window.scrollTo(0, document.body.scrollHeight)")
+            await tab.scroll.to_bottom(smooth=True)
             captions = "🔽 Вниз страницы"
         elif action == "mouse_click":
             await tab.mouse.click(cursor.x, cursor.y, humanize=True)
@@ -390,19 +387,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 await query.message.reply_text("📊 Извлекаю твиты...")
                 
-                try:
-                    await asyncio.wait_for(
-                        tab.find_element('article[data-testid="tweet"]', timeout=5),
-                        timeout=8.0
-                    )
-                except:
-                    pass
+                # Прокручиваем вниз для загрузки твитов
+                for _ in range(3):
+                    await tab.scroll.by('y', 600, smooth=True)
+                    await asyncio.sleep(1.5)
                 
                 tweets = await asyncio.wait_for(
                     tab.extract_all(
                         Tweet,
                         scope='article[data-testid="tweet"]',
-                        timeout=12
+                        timeout=12,
+                        limit=30
                     ),
                     timeout=18.0
                 )
