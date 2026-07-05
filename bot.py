@@ -24,6 +24,8 @@ agnes_client = None
 if AGNES_API_KEY:
     agnes_client = AsyncOpenAI(api_key=AGNES_API_KEY, base_url="https://apihub.agnes-ai.com/v1")
 
+# ==================== ПОЛНЫЕ КУКИ ====================
+
 X_COOKIES = [
     {"name": "__cuid", "value": "55d2d7c5-4888-430a-b024-dd785da46ef4", "domain": ".x.com", "path": "/"},
     {"name": "lang", "value": "ru", "domain": ".x.com", "path": "/"},
@@ -85,27 +87,45 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    
     try:
-        await update.message.reply_text("🔐 Вход в X.com...")
+        await update.message.reply_text("🔐 Выполняю вход на X.com...")
+        
         options = ChromiumOptions()
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--headless=new")
+        options.add_argument("--disable-gpu")
         options.add_argument("--window-size=1024,768")
         options.binary_location = CHROME_PATH
+        
         browser = Chrome(options=options)
         tab = await browser.start()
+        
         await tab.go_to('https://x.com')
         await asyncio.sleep(2)
+        
         await tab.set_cookies(X_COOKIES)
         await asyncio.sleep(1)
+        
         await tab.refresh()
-        await asyncio.sleep(3)
+        await asyncio.sleep(5)
+        
         user_browsers[user_id] = (browser, tab)
+        
         cursor = get_cursor(user_id)
-        viewport = await tab.execute_script("return { width: window.innerWidth, height: window.innerHeight }")
-        cursor.x, cursor.y = viewport['width'] // 2, viewport['height'] // 2
-        await update.message.reply_text("✅ Вход выполнен!")
+        try:
+            viewport = await tab.execute_script("return { width: window.innerWidth, height: window.innerHeight }")
+            cursor.x = viewport['width'] // 2
+            cursor.y = viewport['height'] // 2
+        except:
+            cursor.x, cursor.y = 500, 300
+        
+        await update.message.reply_text("✅ Вход выполнен! Размер окна: 1024x768")
+        
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка входа: {str(e)[:300]}")
 
 async def close_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -171,8 +191,7 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         js_code = re.sub(r'```\n?', '', js_code)
         js_code = js_code.strip()
         
-        # Показываем код (кратко)
-        await update.message.reply_text(f"⚡ Выполняю...")
+        await update.message.reply_text("⚡ Выполняю...")
         
         result = await tab.execute_script(js_code)
         
@@ -181,7 +200,6 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 x, y = result['x'], result['y']
                 cursor.x, cursor.y = x, y
                 await update.message.reply_text(f"🎯 Найдено → ({x}, {y})")
-                # Делаем скриншот с курсором
                 screenshot = await tab.take_screenshot(as_base64=True)
                 img = draw_cursor(base64.b64decode(screenshot), cursor.x, cursor.y)
                 await update.message.reply_photo(
