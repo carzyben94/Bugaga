@@ -132,7 +132,7 @@ async def close_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Браузер не открыт")
 
-# ==================== /eval (ИСПРАВЛЕН) ====================
+# ==================== /eval (без JSON обёртки) ====================
 
 async def eval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Выполняет JS код в браузере"""
@@ -154,13 +154,14 @@ async def eval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _, tab = user_browsers[user_id]
     
     try:
-        # ✅ ИСПРАВЛЕНО: добавил return_by_value=True
         result = await tab.execute_script(js_code, return_by_value=True)
         
-        if isinstance(result, (list, dict)):
-            result = json.dumps(result, ensure_ascii=False, indent=2)
-        
-        await update.message.reply_text(f"✅ Результат:\n\n{str(result)[:500]}")
+        if isinstance(result, str):
+            await update.message.reply_text(f"✅ Результат:\n\n{result[:4096]}")
+        elif isinstance(result, (list, dict)):
+            await update.message.reply_text(f"✅ Результат:\n\n{json.dumps(result, ensure_ascii=False, indent=2)[:4096]}")
+        else:
+            await update.message.reply_text(f"✅ Результат:\n\n{str(result)[:4096]}")
         
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
