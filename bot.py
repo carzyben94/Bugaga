@@ -14,6 +14,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 from pydoll.browser import Chrome
 from pydoll.browser.options import ChromiumOptions
 from pydoll.extractor import ExtractionModel, Field
+from pydoll.exceptions import WaitElementTimeout, ElementNotFound
 from openai import AsyncOpenAI
 
 logging.basicConfig(level=logging.INFO)
@@ -378,13 +379,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 await query.message.reply_text("📊 Извлекаю твиты...")
                 
+                # Ждем загрузки твитов
+                try:
+                    await tab.wait_element('article[data-testid="tweet"]', timeout=8)
+                except:
+                    pass
+                
                 tweets = await asyncio.wait_for(
                     tab.extract_all(
                         Tweet,
                         scope='article[data-testid="tweet"]',
-                        timeout=10
+                        timeout=12
                     ),
-                    timeout=15.0
+                    timeout=18.0
                 )
 
                 if not tweets or len(tweets) == 0:
@@ -430,7 +437,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.answer("✅ Твиты выгружены")
                 
             except asyncio.TimeoutError:
-                await query.message.reply_text("⏰ Поиск твитов занял слишком много времени")
+                await query.message.reply_text("⏰ Поиск твитов занял слишком много времени. Попробуй обновить страницу.")
             except Exception as e:
                 await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
             return
