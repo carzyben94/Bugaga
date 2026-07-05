@@ -84,50 +84,72 @@ def get_cursor(user_id):
         cursor_managers[user_id] = CursorManager()
     return cursor_managers[user_id]
 
+def escape_markdown(text):
+    """Экранирует спецсимволы для Telegram Markdown"""
+    if not text:
+        return text
+    special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    for char in special_chars:
+        text = text.replace(char, f'\\{char}')
+    return text
+
 def get_menu_text():
     return (
         "🤖 Бот для X.com\n\n"
-        "🔐 /login — войти в X.com\n"
-        "❌ /close — закрыть браузер\n"
-        "⚡ /eval <js> — выполнить JS код\n"
-        "📸 /screen — скриншот страницы\n"
-        "📊 /extract — выгрузить все твиты\n\n"
-        "🎮 Управление курсором и скроллом"
+        "👇 Используй кнопки ниже для управления\n"
+        "⌨️ /eval <js> — выполнить JS код"
     )
 
 def get_control_keyboard():
     return InlineKeyboardMarkup([
+        # Ряд 1: Диагонали + вверх
         [
             InlineKeyboardButton("↖️", callback_data="diag_up_left"),
             InlineKeyboardButton("⬆️", callback_data="cursor_up"),
             InlineKeyboardButton("↗️", callback_data="diag_up_right"),
         ],
+        # Ряд 2: Влево + центр + вправо
         [
             InlineKeyboardButton("⬅️", callback_data="cursor_left"),
             InlineKeyboardButton("🔄 Центр", callback_data="cursor_center"),
             InlineKeyboardButton("➡️", callback_data="cursor_right"),
         ],
+        # Ряд 3: Диагонали + вниз
         [
             InlineKeyboardButton("↙️", callback_data="diag_down_left"),
             InlineKeyboardButton("⬇️", callback_data="cursor_down"),
             InlineKeyboardButton("↘️", callback_data="diag_down_right"),
         ],
+        # Ряд 4: Скролл
         [
             InlineKeyboardButton("⬆️ Скролл", callback_data="scroll_up"),
             InlineKeyboardButton("⬇️ Скролл", callback_data="scroll_down"),
         ],
+        # Ряд 5: Наверх + Вниз
         [
             InlineKeyboardButton("🔝 Наверх", callback_data="scroll_top"),
             InlineKeyboardButton("🔽 Вниз", callback_data="scroll_bottom"),
         ],
+        # Ряд 6: Extract + Обновить
         [
+            InlineKeyboardButton("📊 Extract", callback_data="extract_tweets"),
             InlineKeyboardButton("🔄 Обновить", callback_data="refresh_screen"),
-            InlineKeyboardButton("🖱️ Клик", callback_data="mouse_click"),
         ],
+        # Ряд 7: Клик + Скрин
+        [
+            InlineKeyboardButton("🖱️ Клик", callback_data="mouse_click"),
+            InlineKeyboardButton("📸 Скрин", callback_data="take_screenshot"),
+        ],
+        # Ряд 8: Шаги
         [
             InlineKeyboardButton("🔵 Шаг 30", callback_data="step_30"),
             InlineKeyboardButton("🔴 Шаг 60", callback_data="step_60"),
             InlineKeyboardButton("🟢 Шаг 100", callback_data="step_100"),
+        ],
+        # Ряд 9: Вход + Закрыть
+        [
+            InlineKeyboardButton("🔐 Вход", callback_data="do_login"),
+            InlineKeyboardButton("❌ Закрыть", callback_data="close_browser"),
         ],
     ])
 
@@ -222,6 +244,8 @@ async def send_or_update_menu(update, user_id, caption=None):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_or_update_menu(update, update.effective_user.id)
 
+# ==================== КОМАНДЫ ====================
+
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
@@ -265,26 +289,6 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка входа: {str(e)[:300]}")
 
-async def close_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id in user_browsers:
-        browser, _ = user_browsers[user_id]
-        await browser.close()
-        del user_browsers[user_id]
-        if user_id in user_menu_messages:
-            del user_menu_messages[user_id]
-        await update.message.reply_text("✅ Браузер закрыт")
-        await send_or_update_menu(update, user_id)
-    else:
-        await update.message.reply_text("❌ Браузер не открыт")
-
-async def screen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id not in user_browsers:
-        await update.message.reply_text("❌ Сначала /login")
-        return
-    await send_or_update_menu(update, user_id, "📸 Скриншот обновлён")
-
 async def eval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("❌ Укажи JS код\nПример: /eval document.title")
@@ -319,84 +323,6 @@ async def eval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
-# ==================== /extract ====================
-
-async def extract_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id not in user_browsers:
-        await update.message.reply_text("❌ Сначала /login")
-        return
-
-    _, tab = user_browsers[user_id]
-
-    try:
-        await update.message.reply_text("📊 Извлекаю твиты...")
-
-        tweets = await asyncio.wait_for(
-            tab.extract_all(
-                Tweet,
-                scope='article[data-testid="tweet"]',
-                timeout=10
-            ),
-            timeout=15.0
-        )
-
-        if not tweets or len(tweets) == 0:
-            await update.message.reply_text("😕 Твиты не найдены на странице")
-            return
-
-        # Формируем ответ с очисткой ссылок
-        reply = f"📊 **Найдено {len(tweets)} твитов:**\n\n"
-        
-        for i, tweet in enumerate(tweets, 1):
-            # Очищаем текст от ссылок
-            text = tweet.text
-            text = re.sub(r'https?://t\.co/\w+', '', text)
-            text = re.sub(r'https?://\S+', '', text)
-            text = re.sub(r'\s+', ' ', text).strip()
-            
-            tweet_text = f"**{i}.** "
-            if tweet.author:
-                tweet_text += f"{tweet.author}\n"
-            else:
-                tweet_text += "Неизвестно\n"
-            
-            if text:
-                if len(text) > 200:
-                    text = text[:200] + '...'
-                tweet_text += f"📝 {text}\n"
-            
-            tweet_text += f"❤️ {tweet.likes} | 🔁 {tweet.retweets} | 💬 {tweet.replies}\n\n"
-            reply += tweet_text
-
-        # Добавляем меню ВНИЗУ
-        menu_text = get_menu_text()
-        full_caption = f"{reply}\n\n{menu_text}"
-
-        # Обновляем или создаем сообщение
-        if user_id in user_menu_messages:
-            try:
-                await update.effective_message.edit_text(
-                    full_caption,
-                    parse_mode='Markdown'
-                )
-                user_menu_messages[user_id] = update.effective_message.message_id
-                return
-            except Exception as e:
-                logger.warning(f"Не удалось отредактировать: {e}")
-                try:
-                    await update.effective_message.delete()
-                except:
-                    pass
-
-        msg = await update.message.reply_text(full_caption, parse_mode='Markdown')
-        user_menu_messages[user_id] = msg.message_id
-
-    except asyncio.TimeoutError:
-        await update.message.reply_text("⏰ Поиск твитов занял слишком много времени")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
 # ==================== ОБРАБОТЧИК КНОПОК ====================
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -406,8 +332,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     action = query.data
     
+    if action == "do_login":
+        await query.message.delete()
+        await login(update, context)
+        return
+    
     if user_id not in user_browsers:
-        await query.edit_message_text("❌ Сначала /login")
+        await query.edit_message_text("❌ Сначала нажми '🔐 Вход'")
         return
     
     _, tab = user_browsers[user_id]
@@ -486,6 +417,73 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await tab.mouse.click(cursor.x, cursor.y, humanize=True)
             captions = f"🖱️ Клик по ({cursor.x}, {cursor.y})"
         
+        # ===== СКРИНШОТ =====
+        elif action == "take_screenshot":
+            img_data, x, y = await get_screenshot_with_cursor(user_id)
+            menu_text = get_menu_text()
+            full_caption = f"📸 Скриншот\n\n{menu_text}\n\n📍 Курсор: ({x}, {y}) | Шаг: {cursor.step}px"
+            await query.edit_message_media(
+                media=InputMediaPhoto(media=img_data, caption=full_caption),
+                reply_markup=get_control_keyboard()
+            )
+            return
+        
+        # ===== EXTRACT ТВИТОВ =====
+        elif action == "extract_tweets":
+            try:
+                await query.message.edit_text("📊 Извлекаю твиты...")
+                
+                tweets = await asyncio.wait_for(
+                    tab.extract_all(
+                        Tweet,
+                        scope='article[data-testid="tweet"]',
+                        timeout=10
+                    ),
+                    timeout=15.0
+                )
+
+                if not tweets or len(tweets) == 0:
+                    await query.message.edit_text("😕 Твиты не найдены на странице")
+                    return
+
+                reply = f"📊 **Найдено {len(tweets)} твитов:**\n\n"
+                
+                for i, tweet in enumerate(tweets, 1):
+                    text = tweet.text
+                    text = re.sub(r'https?://t\.co/\w+', '', text)
+                    text = re.sub(r'https?://\S+', '', text)
+                    text = re.sub(r'\s+', ' ', text).strip()
+                    
+                    author = escape_markdown(tweet.author) if tweet.author else "Неизвестно"
+                    if text:
+                        text = escape_markdown(text)
+                        if len(text) > 200:
+                            text = text[:200] + '...'
+                    
+                    tweet_text = f"**{i}.** "
+                    tweet_text += f"{author}\n"
+                    
+                    if text:
+                        tweet_text += f"📝 {text}\n"
+                    
+                    tweet_text += f"❤️ {tweet.likes} | 🔁 {tweet.retweets} | 💬 {tweet.replies}\n\n"
+                    reply += tweet_text
+
+                menu_text = escape_markdown(get_menu_text())
+                full_caption = f"{reply}\n\n{menu_text}"
+
+                img_data, x, y = await get_screenshot_with_cursor(user_id)
+                await query.edit_message_media(
+                    media=InputMediaPhoto(media=img_data, caption=full_caption),
+                    reply_markup=get_control_keyboard()
+                )
+                
+            except asyncio.TimeoutError:
+                await query.message.edit_text("⏰ Поиск твитов занял слишком много времени")
+            except Exception as e:
+                await query.message.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+            return
+        
         # ===== ОБНОВИТЬ =====
         elif action == "refresh_screen":
             img_data, x, y = await get_screenshot_with_cursor(user_id)
@@ -495,6 +493,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 media=InputMediaPhoto(media=img_data, caption=full_caption),
                 reply_markup=get_control_keyboard()
             )
+            return
+        
+        # ===== ЗАКРЫТЬ =====
+        elif action == "close_browser":
+            if user_id in user_browsers:
+                browser, _ = user_browsers[user_id]
+                await browser.close()
+                del user_browsers[user_id]
+                if user_id in user_menu_messages:
+                    del user_menu_messages[user_id]
+                await query.edit_message_text("✅ Браузер закрыт")
+                await send_or_update_menu(update, user_id)
+            else:
+                await query.edit_message_text("❌ Браузер не открыт")
             return
         
         else:
@@ -519,10 +531,7 @@ def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("login", login))
-    app.add_handler(CommandHandler("close", close_browser))
     app.add_handler(CommandHandler("eval", eval_command))
-    app.add_handler(CommandHandler("screen", screen_command))
-    app.add_handler(CommandHandler("extract", extract_command))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.run_polling()
 
