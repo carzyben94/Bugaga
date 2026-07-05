@@ -403,22 +403,18 @@ def fix_text(text):
 async def type_text_to_tab(tab, text):
     """Универсальная функция ввода текста с поддержкой разных методов Pydoll"""
     try:
-        # Пробуем type
         await tab.type(text, humanize=True)
         return True
     except AttributeError:
         try:
-            # Пробуем input
             await tab.input(text)
             return True
         except AttributeError:
             try:
-                # Пробуем send_keys
                 await tab.send_keys(text)
                 return True
             except AttributeError:
                 try:
-                    # Пробуем через JavaScript
                     escaped_text = text.replace("'", "\\'").replace('"', '\\"')
                     await tab.execute_script(f"""
                         (function() {{
@@ -482,6 +478,7 @@ def get_keyboard_markup(context):
     control_row = [
         InlineKeyboardButton('⌫', callback_data='key_backspace'),
         InlineKeyboardButton('🗑️', callback_data='key_clear'),
+        InlineKeyboardButton('⏎ Enter', callback_data='key_enter_submit'),
         InlineKeyboardButton('✅ Готово', callback_data='key_done'),
     ]
     keyboard_buttons.append(control_row)
@@ -872,7 +869,9 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"⌨️ **Клавиатура** ({lang_label})\n\n"
                     f"📝 Текст: `{display_text}`\n\n"
                     "Нажимай на буквы для ввода текста.\n"
-                    "📝 'В чат' — можно ввести текст через чат.",
+                    "⏎ Enter — ввести и отправить\n"
+                    "✅ Готово — только ввести\n"
+                    "📝 В чат — ввести через чат с автоматическим Enter",
                     reply_markup=get_keyboard_markup(context),
                     parse_mode='Markdown'
                 )
@@ -889,7 +888,45 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     context.user_data['keyboard_text'] = context.user_data.get('keyboard_text', '')[:-1]
                 elif cmd == 'clear':
                     context.user_data['keyboard_text'] = ''
+                elif cmd == 'enter_submit':
+                    # Enter - вводим текст и отправляем (как нажатие Enter)
+                    text = context.user_data.get('keyboard_text', '')
+                    if text:
+                        await query.message.reply_text(f"📝 Ввожу и отправляю: {text}")
+                        
+                        # 1. Вводим текст
+                        success = await type_text_to_tab(tab, text)
+                        if success:
+                            # 2. Отправляем (Enter)
+                            await asyncio.sleep(0.3)
+                            try:
+                                await tab.execute_script("""
+                                    (function() {
+                                        const el = document.activeElement;
+                                        if (el) {
+                                            el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+                                            el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
+                                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                                            el.dispatchEvent(new Event('submit', { bubbles: true }));
+                                        }
+                                        const searchBtn = document.querySelector('[data-testid="searchButton"]') || 
+                                                          document.querySelector('button[type="submit"]');
+                                        if (searchBtn) {
+                                            searchBtn.click();
+                                        }
+                                    })()
+                                """)
+                            except Exception as e:
+                                logger.error(f"Ошибка при нажатии Enter: {e}")
+                            context.user_data['keyboard_text'] = ''
+                            await send_screen_with_buttons(update, user_id, f"⌨️ Отправлено: {text}")
+                        else:
+                            await query.message.reply_text("❌ Не удалось ввести текст")
+                    else:
+                        await query.message.reply_text("❌ Нет текста для отправки")
+                    return
                 elif cmd == 'done':
+                    # Готово - только вводим текст без отправки
                     text = context.user_data.get('keyboard_text', '')
                     if text:
                         await query.message.reply_text(f"📝 Ввожу текст: {text}")
@@ -898,7 +935,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             context.user_data['keyboard_text'] = ''
                             await send_screen_with_buttons(update, user_id, f"⌨️ Введено: {text}")
                         else:
-                            await query.message.reply_text("❌ Не удалось ввести текст. Попробуй через '📝 Ввод в чате'")
+                            await query.message.reply_text("❌ Не удалось ввести текст")
                     else:
                         await query.message.reply_text("❌ Нет текста для ввода")
                     return
@@ -912,7 +949,13 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await query.message.delete()
                     await query.message.reply_text(
                         "📝 **Введи текст в чат**\n\n"
-                        "Просто напиши сообщение, и оно будет вставлено в активное поле.\n\n"
+                        "Просто напиши сообщение, и оно будет:\n"
+                        "1️⃣ Вставлено в активное поле\n"
+                        "2️⃣ Автоматически отправлено (Enter)\n\n"
+                        "Примеры:\n"
+                        "• `криптовалюта` — поиск\n"
+                        "• `@username` — переход в профиль\n"
+                        "• `привет` — сообщение\n\n"
                         "Чтобы отменить: `/cancel`",
                         parse_mode='Markdown'
                     )
@@ -944,11 +987,13 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.delete()
                 await query.message.reply_text(
                     "📝 **Введи текст в чат**\n\n"
-                    "Просто напиши сообщение, и оно будет вставлено в активное поле.\n\n"
+                    "Просто напиши сообщение, и оно будет:\n"
+                    "1️⃣ Вставлено в активное поле\n"
+                    "2️⃣ Автоматически отправлено (Enter)\n\n"
                     "Примеры:\n"
-                    "• `привет мир`\n"
-                    "• `Hello world`\n"
-                    "• `@username`\n\n"
+                    "• `криптовалюта` — поиск\n"
+                    "• `@username` — переход в профиль\n"
+                    "• `привет` — сообщение\n\n"
                     "Чтобы отменить: `/cancel`",
                     parse_mode='Markdown'
                 )
@@ -1070,7 +1115,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Введи два числа через пробел\nПример: 520 310")
         return
     
-    # Если ждем текст для ввода в чате
+    # Если ждем текст для ввода в чате (с автоматическим Enter)
     if context.user_data.get('waiting_for_chat_input'):
         if user_id not in user_browsers:
             await update.message.reply_text("❌ Сначала выполни /login")
@@ -1079,14 +1124,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         _, tab = user_browsers[user_id]
         
-        await update.message.reply_text(f"📝 Ввожу текст: {text}")
+        await update.message.reply_text(f"📝 Ввожу и отправляю: {text}")
+        
+        # 1. Вводим текст
         success = await type_text_to_tab(tab, text)
         
         if success:
-            await update.message.reply_text(f"✅ Введён текст: {text}")
-            await send_screen_with_buttons(update, user_id, f"📝 Введено: {text}")
+            # 2. Автоматически нажимаем Enter
+            await asyncio.sleep(0.3)
+            try:
+                await tab.execute_script("""
+                    (function() {
+                        const el = document.activeElement;
+                        if (el) {
+                            el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+                            el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
+                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                            el.dispatchEvent(new Event('submit', { bubbles: true }));
+                        }
+                        const searchBtn = document.querySelector('[data-testid="searchButton"]') || 
+                                          document.querySelector('button[type="submit"]');
+                        if (searchBtn) {
+                            searchBtn.click();
+                        }
+                    })()
+                """)
+            except Exception as e:
+                logger.error(f"Ошибка при нажатии Enter: {e}")
+            
+            await update.message.reply_text(f"✅ Отправлено: {text}")
+            await send_screen_with_buttons(update, user_id, f"📝 Отправлено: {text}")
         else:
-            await update.message.reply_text("❌ Не удалось ввести текст. Попробуй через '⌨️ Клавиатура'")
+            await update.message.reply_text("❌ Не удалось ввести текст")
         
         context.user_data['waiting_for_chat_input'] = False
         return
