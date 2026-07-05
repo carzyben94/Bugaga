@@ -45,6 +45,7 @@ class CursorManager:
     def __init__(self):
         self.x = 500
         self.y = 300
+        self.step = 30
 
 cursor_managers = {}
 
@@ -61,18 +62,31 @@ def get_menu_text():
         "⚡ /eval <js> — выполнить JS код\n"
         "📸 /screen — скриншот страницы\n"
         "📊 /extract <x> <y> — извлечь твит\n\n"
-        "⬇️⬆️ Кнопки скролла внизу"
+        "🎮 Управление курсором и скроллом"
     )
 
-def get_scroll_keyboard():
+def get_control_keyboard():
     return InlineKeyboardMarkup([
+        # Диагонали
         [
-            InlineKeyboardButton("⬆️ Вверх", callback_data="scroll_up"),
-            InlineKeyboardButton("⬇️ Вниз", callback_data="scroll_down"),
+            InlineKeyboardButton("↖️", callback_data="diag_up_left"),
+            InlineKeyboardButton("⬆️", callback_data="cursor_up"),
+            InlineKeyboardButton("↗️", callback_data="diag_up_right"),
         ],
         [
-            InlineKeyboardButton("⬆️⬆️ Вверх 500", callback_data="scroll_up_fast"),
-            InlineKeyboardButton("⬇️⬇️ Вниз 500", callback_data="scroll_down_fast"),
+            InlineKeyboardButton("⬅️", callback_data="cursor_left"),
+            InlineKeyboardButton("🔄 Центр", callback_data="cursor_center"),
+            InlineKeyboardButton("➡️", callback_data="cursor_right"),
+        ],
+        [
+            InlineKeyboardButton("↙️", callback_data="diag_down_left"),
+            InlineKeyboardButton("⬇️", callback_data="cursor_down"),
+            InlineKeyboardButton("↘️", callback_data="diag_down_right"),
+        ],
+        # Скролл
+        [
+            InlineKeyboardButton("⬆️ Скролл", callback_data="scroll_up"),
+            InlineKeyboardButton("⬇️ Скролл", callback_data="scroll_down"),
         ],
         [
             InlineKeyboardButton("🔝 Наверх", callback_data="scroll_top"),
@@ -80,11 +94,16 @@ def get_scroll_keyboard():
         ],
         [
             InlineKeyboardButton("🔄 Обновить", callback_data="refresh_screen"),
+            InlineKeyboardButton("🖱️ Клик", callback_data="mouse_click"),
+        ],
+        [
+            InlineKeyboardButton("🔵 Шаг 30", callback_data="step_30"),
+            InlineKeyboardButton("🔴 Шаг 60", callback_data="step_60"),
+            InlineKeyboardButton("🟢 Шаг 100", callback_data="step_100"),
         ],
     ])
 
 async def get_screenshot_with_cursor(user_id):
-    """Делает скриншот с курсором"""
     _, tab = user_browsers[user_id]
     cursor = get_cursor(user_id)
 
@@ -112,9 +131,6 @@ async def get_screenshot_with_cursor(user_id):
     return output.getvalue(), x, y
 
 async def send_or_update_menu(update, user_id, caption=None):
-    """Отправляет или обновляет меню со скриншотом в одном сообщении"""
-    
-    # Если браузер не открыт — только меню
     if user_id not in user_browsers:
         menu_text = get_menu_text()
         if user_id in user_menu_messages:
@@ -127,31 +143,29 @@ async def send_or_update_menu(update, user_id, caption=None):
             user_menu_messages[user_id] = msg.message_id
         return
 
-    # Делаем скриншот
     img_data, x, y = await get_screenshot_with_cursor(user_id)
     
     menu_text = get_menu_text()
     if caption:
         menu_text = f"{caption}\n\n{menu_text}"
     
-    full_caption = f"{menu_text}\n\n📍 Курсор: ({x}, {y})"
+    cursor_obj = get_cursor(user_id)
+    full_caption = f"{menu_text}\n\n📍 Курсор: ({x}, {y}) | Шаг: {cursor_obj.step}px"
 
-    # Если уже есть сообщение — редактируем его
     if user_id in user_menu_messages:
         try:
             await update.effective_message.edit_media(
                 media=InputMediaPhoto(media=img_data, caption=full_caption),
-                reply_markup=get_scroll_keyboard()
+                reply_markup=get_control_keyboard()
             )
             return
         except Exception as e:
             logger.warning(f"Не удалось отредактировать: {e}")
     
-    # Если нет сообщения — создаём новое
     msg = await update.message.reply_photo(
         photo=img_data,
         caption=full_caption,
-        reply_markup=get_scroll_keyboard()
+        reply_markup=get_control_keyboard()
     )
     user_menu_messages[user_id] = msg.message_id
 
@@ -340,55 +354,107 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     _, tab = user_browsers[user_id]
     cursor = get_cursor(user_id)
+    step = cursor.step
+    
+    captions = {}
     
     try:
-        # Выполняем скролл
-        if action == "scroll_up":
+        # ===== ДВИЖЕНИЕ КУРСОРА =====
+        if action == "cursor_up":
+            cursor.y -= step
+            captions = "⬆️ Курсор вверх"
+        elif action == "cursor_down":
+            cursor.y += step
+            captions = "⬇️ Курсор вниз"
+        elif action == "cursor_left":
+            cursor.x -= step
+            captions = "⬅️ Курсор влево"
+        elif action == "cursor_right":
+            cursor.x += step
+            captions = "➡️ Курсор вправо"
+        
+        # ===== ДИАГОНАЛИ =====
+        elif action == "diag_up_left":
+            cursor.x -= step
+            cursor.y -= step
+            captions = "↖️ Диагональ вверх-влево"
+        elif action == "diag_up_right":
+            cursor.x += step
+            cursor.y -= step
+            captions = "↗️ Диагональ вверх-вправо"
+        elif action == "diag_down_left":
+            cursor.x -= step
+            cursor.y += step
+            captions = "↙️ Диагональ вниз-влево"
+        elif action == "diag_down_right":
+            cursor.x += step
+            cursor.y += step
+            captions = "↘️ Диагональ вниз-вправо"
+        
+        # ===== ЦЕНТР =====
+        elif action == "cursor_center":
+            viewport = await tab.execute_script("return { width: window.innerWidth, height: window.innerHeight }")
+            cursor.x = viewport['width'] // 2
+            cursor.y = viewport['height'] // 2
+            captions = "🔄 Курсор в центр"
+        
+        # ===== ШАГ =====
+        elif action == "step_30":
+            cursor.step = 30
+            captions = "🔵 Шаг 30px"
+        elif action == "step_60":
+            cursor.step = 60
+            captions = "🔴 Шаг 60px"
+        elif action == "step_100":
+            cursor.step = 100
+            captions = "🟢 Шаг 100px"
+        
+        # ===== СКРОЛЛ =====
+        elif action == "scroll_up":
             await tab.execute_script("window.scrollBy(0, -300)")
+            captions = "⬆️ Скролл вверх на 300px"
         elif action == "scroll_down":
             await tab.execute_script("window.scrollBy(0, 300)")
-        elif action == "scroll_up_fast":
-            await tab.execute_script("window.scrollBy(0, -500)")
-        elif action == "scroll_down_fast":
-            await tab.execute_script("window.scrollBy(0, 500)")
+            captions = "⬇️ Скролл вниз на 300px"
         elif action == "scroll_top":
             await tab.execute_script("window.scrollTo(0, 0)")
+            captions = "🔝 Наверх страницы"
         elif action == "scroll_bottom":
             await tab.execute_script("window.scrollTo(0, document.body.scrollHeight)")
+            captions = "🔽 Вниз страницы"
+        
+        # ===== КЛИК =====
+        elif action == "mouse_click":
+            await tab.mouse.click(cursor.x, cursor.y, humanize=True)
+            captions = f"🖱️ Клик по ({cursor.x}, {cursor.y})"
+        
+        # ===== ОБНОВИТЬ =====
         elif action == "refresh_screen":
-            # Просто обновляем скриншот
             img_data, x, y = await get_screenshot_with_cursor(user_id)
             menu_text = get_menu_text()
-            full_caption = f"🔄 Обновлено\n\n{menu_text}\n\n📍 Курсор: ({x}, {y})"
+            full_caption = f"🔄 Обновлено\n\n{menu_text}\n\n📍 Курсор: ({x}, {y}) | Шаг: {cursor.step}px"
             await query.edit_message_media(
                 media=InputMediaPhoto(media=img_data, caption=full_caption),
-                reply_markup=get_scroll_keyboard()
+                reply_markup=get_control_keyboard()
             )
             return
+        
+        else:
+            await query.edit_message_text("❌ Неизвестная команда")
+            return
+            
     except Exception as e:
-        await query.edit_message_text(f"❌ Ошибка скролла: {str(e)[:100]}")
+        await query.edit_message_text(f"❌ Ошибка: {str(e)[:100]}")
         return
     
-    # Обновляем скриншот после скролла
+    # Обновляем скриншот
     img_data, x, y = await get_screenshot_with_cursor(user_id)
-    
-    # Определяем caption в зависимости от действия
-    captions = {
-        "scroll_up": "⬆️ Скролл вверх на 300px",
-        "scroll_down": "⬇️ Скролл вниз на 300px",
-        "scroll_up_fast": "⬆️⬆️ Скролл вверх на 500px",
-        "scroll_down_fast": "⬇️⬇️ Скролл вниз на 500px",
-        "scroll_top": "🔝 Наверх страницы",
-        "scroll_bottom": "🔽 Вниз страницы",
-    }
-    
-    caption_text = captions.get(action, "🔄 Обновлено")
     menu_text = get_menu_text()
-    full_caption = f"{caption_text}\n\n{menu_text}\n\n📍 Курсор: ({x}, {y})"
+    full_caption = f"{captions}\n\n{menu_text}\n\n📍 Курсор: ({x}, {y}) | Шаг: {cursor.step}px"
     
     await query.edit_message_media(
         media=InputMediaPhoto(media=img_data, caption=full_caption),
-        reply_markup=get_scroll_keyboard()
+        reply_markup=get_control_keyboard()
     )
 
 def main():
