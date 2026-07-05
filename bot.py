@@ -8,8 +8,8 @@ from io import BytesIO
 from typing import List, Optional
 from pydantic import BaseModel
 from PIL import Image, ImageDraw
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, filters
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler
 
 from pydoll.browser import Chrome
 from pydoll.browser.options import ChromiumOptions
@@ -97,58 +97,52 @@ def get_menu_text():
     return (
         "🤖 Бот для X.com\n\n"
         "👇 Используй кнопки ниже для управления\n"
-        "⌨️ /eval <js> — выполнить JS код"
+        "⚡ /eval <js> — выполнить JS код"
     )
 
 def get_control_keyboard():
     return InlineKeyboardMarkup([
-        # Ряд 1: Диагонали + вверх
         [
             InlineKeyboardButton("↖️", callback_data="diag_up_left"),
             InlineKeyboardButton("⬆️", callback_data="cursor_up"),
             InlineKeyboardButton("↗️", callback_data="diag_up_right"),
         ],
-        # Ряд 2: Влево + центр + вправо
         [
             InlineKeyboardButton("⬅️", callback_data="cursor_left"),
             InlineKeyboardButton("🔄 Центр", callback_data="cursor_center"),
             InlineKeyboardButton("➡️", callback_data="cursor_right"),
         ],
-        # Ряд 3: Диагонали + вниз
         [
             InlineKeyboardButton("↙️", callback_data="diag_down_left"),
             InlineKeyboardButton("⬇️", callback_data="cursor_down"),
             InlineKeyboardButton("↘️", callback_data="diag_down_right"),
         ],
-        # Ряд 4: Скролл
         [
             InlineKeyboardButton("⬆️ Скролл", callback_data="scroll_up"),
             InlineKeyboardButton("⬇️ Скролл", callback_data="scroll_down"),
         ],
-        # Ряд 5: Наверх + Вниз
         [
             InlineKeyboardButton("🔝 Наверх", callback_data="scroll_top"),
             InlineKeyboardButton("🔽 Вниз", callback_data="scroll_bottom"),
         ],
-        # Ряд 6: Extract + Обновить
         [
             InlineKeyboardButton("📊 Extract", callback_data="extract_tweets"),
             InlineKeyboardButton("🔄 Обновить", callback_data="refresh_screen"),
         ],
-        # Ряд 7: Клик + Скрин
         [
             InlineKeyboardButton("🖱️ Клик", callback_data="mouse_click"),
             InlineKeyboardButton("📸 Скрин", callback_data="take_screenshot"),
         ],
-        # Ряд 8: Шаги
         [
             InlineKeyboardButton("🔵 Шаг 30", callback_data="step_30"),
             InlineKeyboardButton("🔴 Шаг 60", callback_data="step_60"),
             InlineKeyboardButton("🟢 Шаг 100", callback_data="step_100"),
         ],
-        # Ряд 9: Вход + Закрыть
         [
+            InlineKeyboardButton("⚡ Eval", callback_data="do_eval"),
             InlineKeyboardButton("🔐 Вход", callback_data="do_login"),
+        ],
+        [
             InlineKeyboardButton("❌ Закрыть", callback_data="close_browser"),
         ],
     ])
@@ -289,40 +283,6 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка входа: {str(e)[:300]}")
 
-async def eval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Укажи JS код\nПример: /eval document.title")
-        return
-
-    user_id = update.effective_user.id
-    js_code = ' '.join(context.args)
-
-    if user_id not in user_browsers:
-        await update.message.reply_text("❌ Сначала /login")
-        return
-
-    _, tab = user_browsers[user_id]
-    try:
-        raw = await tab.execute_script(js_code, return_by_value=True)
-        if isinstance(raw, dict) and 'result' in raw:
-            raw = raw['result']
-        if isinstance(raw, dict) and 'value' in raw:
-            result = raw['value']
-        else:
-            result = raw
-
-        if isinstance(result, str):
-            await update.message.reply_text(f"✅ Результат:\n\n{result[:4096]}")
-        elif isinstance(result, (list, dict)):
-            await update.message.reply_text(f"✅ Результат:\n\n{json.dumps(result, ensure_ascii=False, indent=2)[:4096]}")
-        else:
-            await update.message.reply_text(f"✅ Результат:\n\n{str(result)[:4096]}")
-
-        await send_or_update_menu(update, user_id, "⚡ Код выполнен")
-
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
-
 # ==================== ОБРАБОТЧИК КНОПОК ====================
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -332,9 +292,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     action = query.data
     
+    # ===== ВХОД =====
     if action == "do_login":
         await query.message.delete()
         await login(update, context)
+        return
+    
+    # ===== EVAL =====
+    if action == "do_eval":
+        await query.message.delete()
+        await query.message.reply_text(
+            "⚡ Введи JS код для выполнения\n\n"
+            "Примеры:\n"
+            "document.title\n"
+            "window.scrollBy(0, 300)\n"
+            "document.querySelectorAll('article').length"
+        )
+        context.user_data['waiting_for_eval'] = True
         return
     
     if user_id not in user_browsers:
@@ -527,12 +501,50 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=get_control_keyboard()
     )
 
+# ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+    
+    # Если ждем команду для eval
+    if context.user_data.get('waiting_for_eval'):
+        context.user_data['waiting_for_eval'] = False
+        
+        if user_id not in user_browsers:
+            await update.message.reply_text("❌ Сначала нажми '🔐 Вход'")
+            return
+        
+        _, tab = user_browsers[user_id]
+        
+        try:
+            raw = await tab.execute_script(text, return_by_value=True)
+            if isinstance(raw, dict) and 'result' in raw:
+                raw = raw['result']
+            if isinstance(raw, dict) and 'value' in raw:
+                result = raw['value']
+            else:
+                result = raw
+
+            if isinstance(result, str):
+                await update.message.reply_text(f"✅ Результат:\n\n{result[:4096]}")
+            elif isinstance(result, (list, dict)):
+                await update.message.reply_text(f"✅ Результат:\n\n{json.dumps(result, ensure_ascii=False, indent=2)[:4096]}")
+            else:
+                await update.message.reply_text(f"✅ Результат:\n\n{str(result)[:4096]}")
+
+            await send_or_update_menu(update, user_id, "⚡ Код выполнен")
+
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+        return
+
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("login", login))
-    app.add_handler(CommandHandler("eval", eval_command))
     app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.run_polling()
 
 if __name__ == "__main__":
