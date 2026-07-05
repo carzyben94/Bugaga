@@ -99,8 +99,7 @@ def get_menu_text():
         "🤖 Бот для X.com\n\n"
         "📂 /savepage — сохранить страницу в ZIP\n"
         "📊 /pageinfo — информация о странице\n"
-        "🔍 /analyze — AI анализ страницы\n"
-        "👇 Используй кнопки ниже для управления"
+        "🔍 /analyze — AI анализ страницы"
     )
 
 def get_control_keyboard():
@@ -314,7 +313,6 @@ async def savepage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         filename = f'page_{datetime.now().strftime("%Y%m%d_%H%M%S")}.zip'
         
-        # Сохраняем страницу
         await tab.save_bundle(filename)
         
         if os.path.exists(filename):
@@ -392,14 +390,12 @@ async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await update.message.reply_text("📊 Анализирую структуру страницы...")
         
-        # Получаем HTML
         html = await tab.execute_script("""
             (function() {
                 return document.documentElement.outerHTML;
             })()
         """, return_by_value=True)
         
-        # Отправляем в AI
         response = await agnes_client.chat.completions.create(
             model="agnes-2.0-flash",
             messages=[
