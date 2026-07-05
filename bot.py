@@ -140,6 +140,41 @@ def get_control_keyboard():
         ],
     ])
 
+async def safe_scroll(tab, direction, amount=300):
+    """Безопасный скролл с проверкой доступных методов"""
+    try:
+        # Пробуем scroll.by (новый API)
+        if hasattr(tab, 'scroll') and hasattr(tab.scroll, 'by'):
+            if direction == 'up':
+                await tab.scroll.by('y', -amount, smooth=True)
+            else:
+                await tab.scroll.by('y', amount, smooth=True)
+            return True
+    except:
+        pass
+    
+    try:
+        # Пробуем execute_script (старый способ)
+        if direction == 'up':
+            await tab.execute_script(f"window.scrollBy(0, -{amount})")
+        else:
+            await tab.execute_script(f"window.scrollBy(0, {amount})")
+        return True
+    except:
+        pass
+    
+    try:
+        # Пробуем mouse.scroll (ещё один способ)
+        if direction == 'up':
+            await tab.mouse.scroll(0, -amount)
+        else:
+            await tab.mouse.scroll(0, amount)
+        return True
+    except:
+        pass
+    
+    return False
+
 async def get_screenshot_with_cursor(user_id):
     try:
         _, tab = user_browsers[user_id]
@@ -360,17 +395,31 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cursor.step = 100
             captions = "🟢 Шаг 100px"
         elif action == "scroll_up":
-            await tab.scroll.by('y', -300, smooth=True)
-            captions = "⬆️ Скролл вверх на 300px"
+            success = await safe_scroll(tab, 'up', 300)
+            captions = "⬆️ Скролл вверх на 300px" if success else "❌ Скролл не удался"
         elif action == "scroll_down":
-            await tab.scroll.by('y', 300, smooth=True)
-            captions = "⬇️ Скролл вниз на 300px"
+            success = await safe_scroll(tab, 'down', 300)
+            captions = "⬇️ Скролл вниз на 300px" if success else "❌ Скролл не удался"
         elif action == "scroll_top":
-            await tab.scroll.to_top(smooth=True)
-            captions = "🔝 Наверх страницы"
+            try:
+                await tab.execute_script("window.scrollTo(0, 0)")
+                captions = "🔝 Наверх страницы"
+            except:
+                try:
+                    await tab.scroll.to_top(smooth=True)
+                    captions = "🔝 Наверх страницы"
+                except:
+                    captions = "❌ Не удалось прокрутить наверх"
         elif action == "scroll_bottom":
-            await tab.scroll.to_bottom(smooth=True)
-            captions = "🔽 Вниз страницы"
+            try:
+                await tab.execute_script("window.scrollTo(0, document.body.scrollHeight)")
+                captions = "🔽 Вниз страницы"
+            except:
+                try:
+                    await tab.scroll.to_bottom(smooth=True)
+                    captions = "🔽 Вниз страницы"
+                except:
+                    captions = "❌ Не удалось прокрутить вниз"
         elif action == "mouse_click":
             await tab.mouse.click(cursor.x, cursor.y, humanize=True)
             captions = f"🖱️ Клик по ({cursor.x}, {cursor.y})"
@@ -389,7 +438,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 # Прокручиваем вниз для загрузки твитов
                 for _ in range(3):
-                    await tab.scroll.by('y', 600, smooth=True)
+                    try:
+                        await tab.execute_script("window.scrollBy(0, 600)")
+                    except:
+                        try:
+                            await tab.mouse.scroll(0, 600)
+                        except:
+                            pass
                     await asyncio.sleep(1.5)
                 
                 tweets = await asyncio.wait_for(
