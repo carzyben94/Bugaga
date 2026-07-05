@@ -166,32 +166,23 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             messages=[
                 {"role": "system", "content": """
                 Ты — эксперт по JavaScript для X.com.
-                Верни ТОЛЬКО ПОЛНЫЙ код. Без пояснений.
-                Код должен быть полностью завершен и готов к выполнению.
+                Верни ТОЛЬКО код. Без пояснений.
+                Код должен быть обернут в (function(){...})()
                 Всегда возвращай результат через return.
-                Проверь что все скобки закрыты.
                 """},
                 {"role": "user", "content": f"""
                 Команда: {command}
                 
-                ВАЖНО: Верни ТОЛЬКО ПОЛНЫЙ код, который можно сразу выполнить.
+                Верни ТОЛЬКО код в формате:
+                (function(){{ ... return результат; }})()
                 
-                Примеры ПОЛНОГО кода:
-                
-                Поиск элемента: 
+                Пример для поиска:
                 (function(){{const e=document.querySelector('[data-testid="like"]');if(!e)return null;const r=e.getBoundingClientRect();return{{x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}}}})()
                 
-                Сбор данных:
-                (function(){{return Array.from(document.querySelectorAll('article[data-testid="tweet"]')).map(e=>e.textContent.trim()).slice(0,5)}})()
+                Пример для сбора:
+                (function(){{return Array.from(document.querySelectorAll('article[data-testid="tweet"]')).map(e=>e.textContent.trim())}})()
                 
-                Скролл:
-                (function(){{window.scrollBy(0,300);return'ok'}})()
-                
-                Клик:
-                (function(){{const e=document.querySelector('[data-testid="search"]');if(e){{e.click();return'clicked'}}return'not found'}})()
-                
-                Верни ТОЛЬКО ПОЛНЫЙ код. Без комментариев.
-                Код должен быть в одной строке или с правильными скобками.
+                Верни ТОЛЬКО код. Ничего другого.
                 """}
             ],
             max_tokens=800,
@@ -203,14 +194,24 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         js_code = re.sub(r'```\n?', '', js_code)
         js_code = js_code.strip()
         
-        # Проверка что код полный (есть закрывающая скобка)
-        if js_code.count('(') != js_code.count(')'):
-            await update.message.reply_text("⚠️ Код неполный. Попробуй ещё раз.")
+        # Если код не обернут в функцию - оборачиваем
+        if not js_code.startswith('(function'):
+            js_code = f"(function(){{ {js_code} }})()"
+        
+        # Проверка что код полный
+        open_count = js_code.count('(')
+        close_count = js_code.count(')')
+        if open_count != close_count:
+            await update.message.reply_text(f"⚠️ Код неполный. Скобки: ({open_count}/{close_count})")
             return
         
-        await update.message.reply_text(f"⚡ Выполняю...")
+        await update.message.reply_text(f"⚡ Выполняю код:\n```javascript\n{js_code[:300]}...\n```", parse_mode='Markdown')
         
-        result = await tab.execute_script(js_code)
+        try:
+            result = await tab.execute_script(js_code)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка выполнения JS: {str(e)[:200]}")
+            return
         
         if result is None or result == {}:
             await update.message.reply_text("✅ Команда выполнена (без возврата данных)")
@@ -222,10 +223,7 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"🎯 Найдено → ({x}, {y})")
             screenshot = await tab.take_screenshot(as_base64=True)
             img = draw_cursor(base64.b64decode(screenshot), cursor.x, cursor.y)
-            await update.message.reply_photo(
-                photo=img,
-                caption=f"📍 ({cursor.x}, {cursor.y})"
-            )
+            await update.message.reply_photo(photo=img, caption=f"📍 ({cursor.x}, {cursor.y})")
         elif isinstance(result, list):
             reply = f"📊 Результат ({len(result)} элементов):\n\n"
             for i, item in enumerate(result[:10], 1):
@@ -239,6 +237,57 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if 'js_code' in locals():
             await update.message.reply_text(f"📄 Код:\n{js_code[:500]}")
 
+# ==================== КОМАНДА /FIND (БЕЗ AI) ====================
+
+async def find_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Поиск элемента по data-testid без AI"""
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Укажи что искать\n"
+            "Пример: /find like\n"
+            "Пример: /find tweet\n"
+            "Пример: /find search"
+        )
+        return
+    
+    user_id = update.effective_user.id
+    search = context.args[0]
+    
+    if user_id not in user_browsers:
+        await update.message.reply_text("❌ Сначала выполни /login")
+        return
+    
+    _, tab = user_browsers[user_id]
+    cursor = get_cursor(user_id)
+    
+    await update.message.reply_text(f"🔍 Ищу: {search}")
+    
+    try:
+        result = await tab.execute_script(f"""
+            (function() {{
+                const e = document.querySelector('[data-testid="{search}"]');
+                if (!e) return null;
+                const r = e.getBoundingClientRect();
+                return {{
+                    x: Math.round(r.left + r.width/2),
+                    y: Math.round(r.top + r.height/2)
+                }};
+            }})()
+        """)
+        
+        if result:
+            x, y = result['x'], result['y']
+            cursor.x, cursor.y = x, y
+            await update.message.reply_text(f"🎯 Найдено '{search}' → ({x}, {y})")
+            screenshot = await tab.take_screenshot(as_base64=True)
+            img = draw_cursor(base64.b64decode(screenshot), cursor.x, cursor.y)
+            await update.message.reply_photo(photo=img, caption=f"📍 ({cursor.x}, {cursor.y})")
+        else:
+            await update.message.reply_text(f"❌ Элемент '{search}' не найден")
+            
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
 # ==================== ЗАПУСК ====================
 
 def main():
@@ -247,6 +296,7 @@ def main():
     app.add_handler(CommandHandler("login", login))
     app.add_handler(CommandHandler("close", close_browser))
     app.add_handler(CommandHandler("ai", ai_command))
+    app.add_handler(CommandHandler("find", find_command))  # ← НОВАЯ КОМАНДА
     app.run_polling()
 
 if __name__ == "__main__":
