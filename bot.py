@@ -272,7 +272,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Нажми '⌨️ Клавиатура' в джойстике\n"
         "Или просто напиши текст в чат после '📝 Ввод в чате'\n\n"
         "🧠 AI Extract\n"
-        "Нажми '🧠 AI Extract' в джойстике для анализа всей страницы"
+        "Нажми '🧠 AI Extract' в джойстике для анализа твитов"
     )
     await update.message.reply_text(menu)
 
@@ -880,7 +880,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "💡 Рекомендую использовать '🔍 Найти твиты' - это быстрее и надежнее!"
                 )
         
-        # ===== AI EXTRACT =====
+        # ===== AI EXTRACT (ТОЛЬКО ТВИТЫ) =====
         elif action == "ai_extract":
             try:
                 await query.message.delete()
@@ -895,21 +895,28 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             {"role": "system", "content": """
                             Ты — эксперт по анализу скриншотов X.com.
                             Анализируй изображение и возвращай ТОЛЬКО JSON.
-                            Будь максимально точным и детальным.
+                            Извлекай ТОЛЬКО твиты. Игнорируй навигацию, рекламу и рекомендации.
                             """},
                             {"role": "user", "content": [
                                 {"type": "text", "text": """
-                                Проанализируй этот скриншот X.com и извлеки ВСЕ данные:
+                                Проанализируй этот скриншот X.com и извлеки ТОЛЬКО твиты.
                                 
-                                1. Все твиты (текст, автор, статистика, время)
-                                2. Тренды (что в трендах)
-                                3. Навигацию (главная, поиск, уведомления и т.д.)
-                                4. Рекомендуемые аккаунты
-                                5. Рекламу
-                                6. Поле ввода твита
-                                7. Кнопки (лайк, ретвит, ответить)
+                                Для каждого твита верни:
+                                1. Автор (имя)
+                                2. Username (@username)
+                                3. Текст твита
+                                4. Количество лайков
+                                5. Количество ретвитов
+                                6. Количество ответов
+                                7. Время публикации
                                 
-                                Верни JSON в формате:
+                                Игнорируй:
+                                - Навигацию (Главная, Поиск, Уведомления и т.д.)
+                                - Рекомендации
+                                - Рекламу
+                                - Поле ввода твита
+                                
+                                Верни ТОЛЬКО JSON в формате:
                                 {
                                   "tweets": [
                                     {
@@ -921,13 +928,7 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                       "replies": 12,
                                       "time": "2ч"
                                     }
-                                  ],
-                                  "trends": ["#AI", "#Crypto"],
-                                  "navigation": ["Главная", "Поиск", "Уведомления"],
-                                  "suggested": ["@user1", "@user2"],
-                                  "ads": ["Реклама текст"],
-                                  "has_tweet_input": true,
-                                  "page_type": "главная лента"
+                                  ]
                                 }
                                 """},
                                 {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_base64}"}}
@@ -948,60 +949,34 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try:
                     data = json.loads(result)
                     
-                    reply = "🧠 **AI анализ страницы:**\n\n"
-                    
-                    if data.get('page_type'):
-                        reply += f"📄 **Тип:** {data['page_type']}\n\n"
+                    reply = "🧠 **AI анализ — Твиты:**\n\n"
                     
                     tweets = data.get('tweets', [])
                     if tweets:
-                        reply += f"📝 **Твиты ({len(tweets)}):**\n"
-                        for i, tweet in enumerate(tweets[:5], 1):
+                        for i, tweet in enumerate(tweets, 1):
                             reply += f"{i}. **{tweet.get('author', 'Неизвестно')}**"
                             if tweet.get('username'):
                                 reply += f" ({tweet['username']})"
-                            reply += f"\n   📝 {tweet.get('text', '')[:120]}..."
+                            reply += "\n"
+                            
+                            text = tweet.get('text', '')
+                            if text:
+                                if len(text) > 200:
+                                    text = text[:200] + '...'
+                                reply += f"   📝 {text}\n"
+                            
                             likes = tweet.get('likes', 0)
                             retweets = tweet.get('retweets', 0)
                             replies = tweet.get('replies', 0)
                             if likes or retweets or replies:
-                                reply += f"\n   📊 ❤️ {likes} | 🔁 {retweets} | 💬 {replies}"
+                                reply += f"   📊 ❤️ {likes} | 🔁 {retweets} | 💬 {replies}\n"
+                            
                             if tweet.get('time'):
-                                reply += f"\n   🕐 {tweet['time']}"
-                            reply += "\n\n"
-                    
-                    trends = data.get('trends', [])
-                    if trends:
-                        reply += f"🔥 **Тренды:**\n"
-                        for trend in trends[:5]:
-                            reply += f"   • {trend}\n"
-                        reply += "\n"
-                    
-                    nav = data.get('navigation', [])
-                    if nav:
-                        reply += f"🧭 **Навигация:**\n"
-                        for item in nav:
-                            reply += f"   • {item}\n"
-                        reply += "\n"
-                    
-                    suggested = data.get('suggested', [])
-                    if suggested:
-                        reply += f"👤 **Рекомендуемые:**\n"
-                        for acc in suggested[:3]:
-                            reply += f"   • {acc}\n"
-                        reply += "\n"
-                    
-                    ads = data.get('ads', [])
-                    if ads:
-                        reply += f"📢 **Реклама:**\n"
-                        for ad in ads:
-                            reply += f"   • {ad}\n"
-                        reply += "\n"
-                    
-                    if data.get('has_tweet_input'):
-                        reply += f"✏️ **Поле для твита:** есть\n"
-                    
-                    reply += "\n💡 /click <x> <y> — кликнуть"
+                                reply += f"   🕐 {tweet['time']}\n"
+                            
+                            reply += "\n"
+                    else:
+                        reply += "😕 Не найдено твитов"
                     
                     await query.message.reply_text(reply, parse_mode='Markdown')
                     
@@ -1247,7 +1222,6 @@ async def resize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         _, tab = user_browsers[user_id]
         
-        # Изменяем размер через JavaScript
         await tab.execute_script(f"""
             window.moveTo(0, 0);
             window.resizeTo({width}, {height});
@@ -1255,7 +1229,6 @@ async def resize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await asyncio.sleep(1)
         
-        # Проверяем новый размер
         viewport = await tab.execute_script("""
             return {
                 width: window.innerWidth,
