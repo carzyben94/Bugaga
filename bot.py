@@ -6,7 +6,7 @@ import json
 import re
 from io import BytesIO
 from PIL import Image, ImageDraw
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 from pydoll.browser import Chrome
@@ -83,19 +83,8 @@ def get_scroll_keyboard():
         ],
     ])
 
-async def send_or_update_menu(update, user_id, caption=None):
-    if user_id not in user_browsers:
-        menu_text = get_menu_text()
-        if user_id in user_menu_messages:
-            try:
-                await update.effective_message.edit_text(menu_text)
-            except:
-                await update.message.reply_text(menu_text)
-        else:
-            msg = await update.message.reply_text(menu_text)
-            user_menu_messages[user_id] = msg.message_id
-        return
-
+async def get_screenshot_with_cursor(user_id):
+    """Делает скриншот с курсором"""
     _, tab = user_browsers[user_id]
     cursor = get_cursor(user_id)
 
@@ -105,7 +94,6 @@ async def send_or_update_menu(update, user_id, caption=None):
             timeout=10.0
         )
     except asyncio.TimeoutError:
-        await update.message.reply_text("⏳ Перезагружаю страницу...")
         await tab.refresh()
         await asyncio.sleep(3)
         screenshot_base64 = await tab.take_screenshot(as_base64=True)
@@ -121,20 +109,48 @@ async def send_or_update_menu(update, user_id, caption=None):
 
     output = BytesIO()
     image.save(output, format='PNG')
+    return output.getvalue(), x, y
 
+async def send_or_update_menu(update, user_id, caption=None):
+    """Отправляет или обновляет меню со скриншотом в одном сообщении"""
+    
+    # Если браузер не открыт — только меню
+    if user_id not in user_browsers:
+        menu_text = get_menu_text()
+        if user_id in user_menu_messages:
+            try:
+                await update.effective_message.edit_text(menu_text)
+            except:
+                await update.message.reply_text(menu_text)
+        else:
+            msg = await update.message.reply_text(menu_text)
+            user_menu_messages[user_id] = msg.message_id
+        return
+
+    # Делаем скриншот
+    img_data, x, y = await get_screenshot_with_cursor(user_id)
+    
     menu_text = get_menu_text()
     if caption:
         menu_text = f"{caption}\n\n{menu_text}"
+    
+    full_caption = f"{menu_text}\n\n📍 Курсор: ({x}, {y})"
 
+    # Если уже есть сообщение — редактируем его
     if user_id in user_menu_messages:
         try:
-            await update.effective_message.delete()
-        except:
-            pass
+            await update.effective_message.edit_media(
+                media=InputMediaPhoto(media=img_data, caption=full_caption),
+                reply_markup=get_scroll_keyboard()
+            )
+            return
+        except Exception as e:
+            logger.warning(f"Не удалось отредактировать: {e}")
     
+    # Если нет сообщения — создаём новое
     msg = await update.message.reply_photo(
-        photo=output.getvalue(),
-        caption=f"{menu_text}\n\n📍 Курсор: ({x}, {y})",
+        photo=img_data,
+        caption=full_caption,
         reply_markup=get_scroll_keyboard()
     )
     user_menu_messages[user_id] = msg.message_id
@@ -323,35 +339,57 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     _, tab = user_browsers[user_id]
+    cursor = get_cursor(user_id)
     
     try:
+        # Выполняем скролл
         if action == "scroll_up":
             await tab.execute_script("window.scrollBy(0, -300)")
-            await query.message.edit_caption(caption="⬆️ Скролл вверх на 300px")
         elif action == "scroll_down":
             await tab.execute_script("window.scrollBy(0, 300)")
-            await query.message.edit_caption(caption="⬇️ Скролл вниз на 300px")
         elif action == "scroll_up_fast":
             await tab.execute_script("window.scrollBy(0, -500)")
-            await query.message.edit_caption(caption="⬆️⬆️ Скролл вверх на 500px")
         elif action == "scroll_down_fast":
             await tab.execute_script("window.scrollBy(0, 500)")
-            await query.message.edit_caption(caption="⬇️⬇️ Скролл вниз на 500px")
         elif action == "scroll_top":
             await tab.execute_script("window.scrollTo(0, 0)")
-            await query.message.edit_caption(caption="🔝 Наверх")
         elif action == "scroll_bottom":
             await tab.execute_script("window.scrollTo(0, document.body.scrollHeight)")
-            await query.message.edit_caption(caption="🔽 Вниз")
         elif action == "refresh_screen":
-            await send_or_update_menu(update, user_id, "🔄 Обновлено")
+            # Просто обновляем скриншот
+            img_data, x, y = await get_screenshot_with_cursor(user_id)
+            menu_text = get_menu_text()
+            full_caption = f"🔄 Обновлено\n\n{menu_text}\n\n📍 Курсор: ({x}, {y})"
+            await query.edit_message_media(
+                media=InputMediaPhoto(media=img_data, caption=full_caption),
+                reply_markup=get_scroll_keyboard()
+            )
             return
     except Exception as e:
-        await query.message.edit_caption(caption=f"❌ Ошибка: {str(e)[:100]}")
+        await query.edit_message_text(f"❌ Ошибка скролла: {str(e)[:100]}")
         return
     
     # Обновляем скриншот после скролла
-    await send_or_update_menu(update, user_id, query.message.caption)
+    img_data, x, y = await get_screenshot_with_cursor(user_id)
+    
+    # Определяем caption в зависимости от действия
+    captions = {
+        "scroll_up": "⬆️ Скролл вверх на 300px",
+        "scroll_down": "⬇️ Скролл вниз на 300px",
+        "scroll_up_fast": "⬆️⬆️ Скролл вверх на 500px",
+        "scroll_down_fast": "⬇️⬇️ Скролл вниз на 500px",
+        "scroll_top": "🔝 Наверх страницы",
+        "scroll_bottom": "🔽 Вниз страницы",
+    }
+    
+    caption_text = captions.get(action, "🔄 Обновлено")
+    menu_text = get_menu_text()
+    full_caption = f"{caption_text}\n\n{menu_text}\n\n📍 Курсор: ({x}, {y})"
+    
+    await query.edit_message_media(
+        media=InputMediaPhoto(media=img_data, caption=full_caption),
+        reply_markup=get_scroll_keyboard()
+    )
 
 def main():
     app = Application.builder().token(TOKEN).build()
