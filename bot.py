@@ -165,31 +165,36 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             model="agnes-2.0-flash",
             messages=[
                 {"role": "system", "content": """
-                Ты — эксперт по JavaScript для автоматизации X.com.
-                Верни ТОЛЬКО код. Без пояснений.
-                
-                ВАЖНО: Всегда возвращай результат:
-                - Если ищешь элемент → верни {x, y}
-                - Если собираешь данные → верни список
-                - Если выполняешь действие → верни "ok" или результат
-                - НИКОГДА не возвращай undefined
-                
-                Используй return в конце кода.
+                Ты — эксперт по JavaScript для X.com.
+                Верни ТОЛЬКО ПОЛНЫЙ код. Без пояснений.
+                Код должен быть полностью завершен и готов к выполнению.
+                Всегда возвращай результат через return.
+                Проверь что все скобки закрыты.
                 """},
                 {"role": "user", "content": f"""
                 Команда: {command}
                 
-                Примеры:
-                - "найди лайк" → найти кнопку лайка и вернуть {{x, y}}
-                - "собери твиты" → собрать тексты всех твитов в список
-                - "прокрути вниз" → window.scrollBy(0, 300); return 'ok'
-                - "кликни поиск" → найти и кликнуть на поле поиска; return 'clicked'
+                ВАЖНО: Верни ТОЛЬКО ПОЛНЫЙ код, который можно сразу выполнить.
                 
-                Верни ТОЛЬКО код. Оберни в функцию.
-                ВСЕГДА возвращай результат через return.
+                Примеры ПОЛНОГО кода:
+                
+                Поиск элемента: 
+                (function(){{const e=document.querySelector('[data-testid="like"]');if(!e)return null;const r=e.getBoundingClientRect();return{{x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}}}})()
+                
+                Сбор данных:
+                (function(){{return Array.from(document.querySelectorAll('article[data-testid="tweet"]')).map(e=>e.textContent.trim()).slice(0,5)}})()
+                
+                Скролл:
+                (function(){{window.scrollBy(0,300);return'ok'}})()
+                
+                Клик:
+                (function(){{const e=document.querySelector('[data-testid="search"]');if(e){{e.click();return'clicked'}}return'not found'}})()
+                
+                Верни ТОЛЬКО ПОЛНЫЙ код. Без комментариев.
+                Код должен быть в одной строке или с правильными скобками.
                 """}
             ],
-            max_tokens=500,
+            max_tokens=800,
             temperature=0.1
         )
         
@@ -198,11 +203,15 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         js_code = re.sub(r'```\n?', '', js_code)
         js_code = js_code.strip()
         
-        await update.message.reply_text(f"⚡ Выполняю...\n```javascript\n{js_code[:300]}\n```", parse_mode='Markdown')
+        # Проверка что код полный (есть закрывающая скобка)
+        if js_code.count('(') != js_code.count(')'):
+            await update.message.reply_text("⚠️ Код неполный. Попробуй ещё раз.")
+            return
+        
+        await update.message.reply_text(f"⚡ Выполняю...")
         
         result = await tab.execute_script(js_code)
         
-        # Если результат undefined или None
         if result is None or result == {}:
             await update.message.reply_text("✅ Команда выполнена (без возврата данных)")
             return
@@ -241,4 +250,4 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
-    main() 
+    main()
