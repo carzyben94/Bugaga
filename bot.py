@@ -136,6 +136,10 @@ def get_joystick_keyboard(user_id=None):
             InlineKeyboardButton("📸 Скрин", callback_data="screenshot"),
         ],
         [
+            InlineKeyboardButton("📸 Лента твитов", callback_data="screenshot_feed"),
+            InlineKeyboardButton("🧠 AI Анализ ленты", callback_data="ai_analyze_feed"),
+        ],
+        [
             InlineKeyboardButton("⬆️ Скролл", callback_data="scroll_up"),
             InlineKeyboardButton("⬇️ Скролл", callback_data="scroll_down"),
         ],
@@ -271,8 +275,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⌨️ Клавиатура\n"
         "Нажми '⌨️ Клавиатура' в джойстике\n"
         "Или просто напиши текст в чат после '📝 Ввод в чате'\n\n"
-        "🧠 AI Extract\n"
-        "Нажми '🧠 AI Extract' в джойстике для анализа твитов"
+        "🧠 AI Анализ ленты\n"
+        "Нажми '🧠 AI Анализ ленты' в джойстике"
     )
     await update.message.reply_text(menu)
 
@@ -990,6 +994,291 @@ async def joystick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.reply_text("⏰ AI не ответил за 30 секунд. Попробуй ещё раз.")
             except Exception as e:
                 logger.error(f"Ошибка ai_extract: {e}")
+                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        
+        # ===== СКРИНШОТ ЛЕНТЫ ТВИТОВ =====
+        elif action == "screenshot_feed":
+            try:
+                await query.message.delete()
+                await query.message.reply_text("📸 Делаю скриншот ленты твитов...")
+                
+                _, tab = user_browsers[user_id]
+                
+                # Находим ленту твитов
+                feed_coords = await tab.execute_script("""
+                    (function() {
+                        const tweet = document.querySelector('article[data-testid="tweet"]');
+                        if (!tweet) return null;
+                        
+                        let container = tweet.closest('[data-testid="primaryColumn"]') ||
+                                       tweet.closest('main') ||
+                                       document.querySelector('[data-testid="primaryColumn"]');
+                        
+                        if (!container) {
+                            let parent = tweet.parentElement;
+                            while (parent) {
+                                const rect = parent.getBoundingClientRect();
+                                if (rect.width > 300 && rect.height > 400) {
+                                    const tweets = parent.querySelectorAll('article[data-testid="tweet"]');
+                                    if (tweets.length > 1) {
+                                        container = parent;
+                                        break;
+                                    }
+                                }
+                                parent = parent.parentElement;
+                            }
+                        }
+                        
+                        if (!container) return null;
+                        
+                        const rect = container.getBoundingClientRect();
+                        
+                        const tweetInput = document.querySelector('[data-testid="tweetTextarea_0"]') ||
+                                          document.querySelector('div[role="textbox"]') ||
+                                          document.querySelector('[data-testid="tweetBox"]');
+                        
+                        let bottomY = rect.bottom;
+                        if (tweetInput) {
+                            const inputRect = tweetInput.getBoundingClientRect();
+                            bottomY = inputRect.bottom + 20;
+                        }
+                        
+                        const tabs = document.querySelector('[role="tablist"]');
+                        let topY = rect.top;
+                        if (tabs) {
+                            const tabsRect = tabs.getBoundingClientRect();
+                            topY = tabsRect.bottom;
+                        }
+                        
+                        if (topY < 0) topY = 0;
+                        if (bottomY > window.innerHeight) bottomY = window.innerHeight;
+                        
+                        return {
+                            x: Math.round(rect.left),
+                            y: Math.round(topY),
+                            width: Math.round(rect.width),
+                            height: Math.round(bottomY - topY)
+                        };
+                    })()
+                """)
+                
+                if feed_coords and feed_coords['height'] > 100:
+                    screenshot_base64 = await tab.take_screenshot(
+                        as_base64=True,
+                        clip={
+                            'x': feed_coords['x'],
+                            'y': feed_coords['y'],
+                            'width': feed_coords['width'],
+                            'height': feed_coords['height']
+                        }
+                    )
+                    
+                    screenshot_bytes = base64.b64decode(screenshot_base64)
+                    
+                    await query.message.reply_photo(
+                        photo=screenshot_bytes,
+                        caption=f"📸 Лента твитов\n📍 ({feed_coords['x']}, {feed_coords['y']}) | Размер: {feed_coords['width']}x{feed_coords['height']}"
+                    )
+                else:
+                    await query.message.reply_text(
+                        "❌ Не найдена лента твитов\n\n"
+                        "Попробуй:\n"
+                        "1. Нажать /refresh для обновления\n"
+                        "2. Убедись что ты на главной странице"
+                    )
+                    
+            except Exception as e:
+                logger.error(f"Ошибка screenshot_feed: {e}")
+                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        
+        # ===== AI АНАЛИЗ ЛЕНТЫ ТВИТОВ =====
+        elif action == "ai_analyze_feed":
+            try:
+                await query.message.delete()
+                await query.message.reply_text("📸 Делаю скриншот ленты и отправляю AI...")
+                
+                _, tab = user_browsers[user_id]
+                
+                # 1. Находим ленту твитов
+                feed_coords = await tab.execute_script("""
+                    (function() {
+                        const tweet = document.querySelector('article[data-testid="tweet"]');
+                        if (!tweet) return null;
+                        
+                        let container = tweet.closest('[data-testid="primaryColumn"]') ||
+                                       tweet.closest('main') ||
+                                       document.querySelector('[data-testid="primaryColumn"]');
+                        
+                        if (!container) {
+                            let parent = tweet.parentElement;
+                            while (parent) {
+                                const rect = parent.getBoundingClientRect();
+                                if (rect.width > 300 && rect.height > 400) {
+                                    const tweets = parent.querySelectorAll('article[data-testid="tweet"]');
+                                    if (tweets.length > 1) {
+                                        container = parent;
+                                        break;
+                                    }
+                                }
+                                parent = parent.parentElement;
+                            }
+                        }
+                        
+                        if (!container) return null;
+                        
+                        const rect = container.getBoundingClientRect();
+                        
+                        const tweetInput = document.querySelector('[data-testid="tweetTextarea_0"]') ||
+                                          document.querySelector('div[role="textbox"]') ||
+                                          document.querySelector('[data-testid="tweetBox"]');
+                        
+                        let bottomY = rect.bottom;
+                        if (tweetInput) {
+                            const inputRect = tweetInput.getBoundingClientRect();
+                            bottomY = inputRect.bottom + 20;
+                        }
+                        
+                        const tabs = document.querySelector('[role="tablist"]');
+                        let topY = rect.top;
+                        if (tabs) {
+                            const tabsRect = tabs.getBoundingClientRect();
+                            topY = tabsRect.bottom;
+                        }
+                        
+                        if (topY < 0) topY = 0;
+                        if (bottomY > window.innerHeight) bottomY = window.innerHeight;
+                        
+                        return {
+                            x: Math.round(rect.left),
+                            y: Math.round(topY),
+                            width: Math.round(rect.width),
+                            height: Math.round(bottomY - topY)
+                        };
+                    })()
+                """)
+                
+                if not feed_coords or feed_coords['height'] < 100:
+                    await query.message.reply_text("❌ Не найдена лента твитов")
+                    return
+                
+                # 2. Делаем скриншот ленты
+                screenshot_base64 = await tab.take_screenshot(
+                    as_base64=True,
+                    clip={
+                        'x': feed_coords['x'],
+                        'y': feed_coords['y'],
+                        'width': feed_coords['width'],
+                        'height': feed_coords['height']
+                    }
+                )
+                
+                await query.message.reply_text("🧠 AI анализирует ленту...")
+                
+                # 3. Отправляем в AI
+                response = await asyncio.wait_for(
+                    agnes_client.chat.completions.create(
+                        model="agnes-2.0-flash",
+                        messages=[
+                            {"role": "system", "content": """
+                            Ты — эксперт по анализу ленты X.com.
+                            Анализируй изображение и возвращай ТОЛЬКО JSON.
+                            Извлекай ТОЛЬКО твиты.
+                            """},
+                            {"role": "user", "content": [
+                                {"type": "text", "text": """
+                                Проанализируй эту ленту X.com и извлеки ВСЕ твиты.
+                                
+                                Для каждого твита верни:
+                                1. Автор (имя)
+                                2. Username (@username)
+                                3. Текст твита
+                                4. Количество лайков
+                                5. Количество ретвитов
+                                6. Количество ответов
+                                7. Время публикации
+                                
+                                Верни ТОЛЬКО JSON в формате:
+                                {
+                                  "tweets": [
+                                    {
+                                      "author": "Имя",
+                                      "username": "@username",
+                                      "text": "Текст твита",
+                                      "likes": 123,
+                                      "retweets": 45,
+                                      "replies": 12,
+                                      "time": "2ч"
+                                    }
+                                  ]
+                                }
+                                """},
+                                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_base64}"}}
+                            ]}
+                        ],
+                        max_tokens=2000,
+                        temperature=0.1
+                    ),
+                    timeout=30.0
+                )
+                
+                result = response.choices[0].message.content
+                
+                result = re.sub(r'```json\n?', '', result)
+                result = re.sub(r'```\n?', '', result)
+                result = result.strip()
+                
+                try:
+                    data = json.loads(result)
+                    
+                    reply = "🧠 **AI анализ ленты:**\n\n"
+                    
+                    tweets = data.get('tweets', [])
+                    if tweets:
+                        for i, tweet in enumerate(tweets, 1):
+                            reply += f"{i}. **{tweet.get('author', 'Неизвестно')}**"
+                            if tweet.get('username'):
+                                reply += f" ({tweet['username']})"
+                            reply += "\n"
+                            
+                            text = tweet.get('text', '')
+                            if text:
+                                if len(text) > 200:
+                                    text = text[:200] + '...'
+                                reply += f"   📝 {text}\n"
+                            
+                            likes = tweet.get('likes', 0)
+                            retweets = tweet.get('retweets', 0)
+                            replies = tweet.get('replies', 0)
+                            if likes or retweets or replies:
+                                reply += f"   📊 ❤️ {likes} | 🔁 {retweets} | 💬 {replies}\n"
+                            
+                            if tweet.get('time'):
+                                reply += f"   🕐 {tweet['time']}\n"
+                            
+                            reply += "\n"
+                    else:
+                        reply += "😕 Не найдено твитов"
+                    
+                    # Отправляем скриншот с анализом
+                    screenshot_bytes = base64.b64decode(screenshot_base64)
+                    await query.message.reply_photo(
+                        photo=screenshot_bytes,
+                        caption=reply[:1000]
+                    )
+                    
+                    if len(reply) > 1000:
+                        await query.message.reply_text(reply, parse_mode='Markdown')
+                    
+                except json.JSONDecodeError as e:
+                    await query.message.reply_text(
+                        f"⚠️ Ошибка парсинга JSON: {str(e)[:100]}\n\n"
+                        f"📄 Получено:\n{result[:500]}"
+                    )
+                
+            except asyncio.TimeoutError:
+                await query.message.reply_text("⏰ AI не ответил за 30 секунд. Попробуй ещё раз.")
+            except Exception as e:
+                logger.error(f"Ошибка ai_analyze_feed: {e}")
                 await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
         
         # ===== КЛАВИАТУРА =====
