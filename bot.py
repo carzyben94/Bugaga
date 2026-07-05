@@ -5,6 +5,8 @@ import base64
 import json
 import re
 from io import BytesIO
+from typing import List, Optional
+from pydantic import BaseModel
 from PIL import Image, ImageDraw
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
@@ -40,6 +42,31 @@ X_COOKIES = [
 
 user_browsers = {}
 user_menu_messages = {}
+
+# ==================== PYDANTIC МОДЕЛИ ====================
+
+class Tweet(BaseModel):
+    """Модель твита для валидации"""
+    id: int
+    author: str = ""
+    text: str = ""
+    likes: str = "0"
+    retweets: str = "0"
+    replies: str = "0"
+    x: int = 0
+    y: int = 0
+
+class TweetData(BaseModel):
+    """Модель для извлечения одного твита по координатам"""
+    text: str = ""
+    author: str = ""
+    likes: str = "0"
+    retweets: str = "0"
+    replies: str = "0"
+    coords: dict = {"x": 0, "y": 0}
+    error: Optional[str] = None
+
+# ==================== КУРСОР ====================
 
 class CursorManager:
     def __init__(self):
@@ -108,11 +135,9 @@ async def get_screenshot_with_cursor(user_id):
         _, tab = user_browsers[user_id]
         cursor = get_cursor(user_id)
 
-        # Проверяем что вкладка активна
         try:
             await tab.execute_script("return 1")
         except:
-            # Если вкладка не отвечает — пересоздаём
             browser, _ = user_browsers[user_id]
             tab = await browser.new_tab()
             await tab.go_to('https://x.com')
@@ -341,17 +366,26 @@ async def extract_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"❌ {result['error']}")
                 return
 
+            # Валидация через Pydantic
+            try:
+                tweet_data = TweetData(**result)
+            except Exception as e:
+                await update.message.reply_text(f"❌ Ошибка валидации: {str(e)[:100]}")
+                return
+
             reply = f"📊 **Твит под курсором:**\n\n"
-            reply += f"👤 **Автор:** {result.get('author', 'Неизвестно')}\n"
-            text = result.get('text', '')
+            reply += f"👤 **Автор:** {tweet_data.author or 'Неизвестно'}\n"
+            text = tweet_data.text
             if text:
-                reply += f"📝 **Текст:** {text[:200]}\n"
+                if len(text) > 200:
+                    text = text[:200] + '...'
+                reply += f"📝 **Текст:** {text}\n"
             else:
                 reply += "📝 **Текст:** (пусто)\n"
-            reply += f"❤️ **Лайки:** {result.get('likes', '0')}\n"
-            reply += f"🔁 **Ретвиты:** {result.get('retweets', '0')}\n"
-            reply += f"💬 **Ответы:** {result.get('replies', '0')}\n"
-            coords = result.get('coords', {})
+            reply += f"❤️ **Лайки:** {tweet_data.likes}\n"
+            reply += f"🔁 **Ретвиты:** {tweet_data.retweets}\n"
+            reply += f"💬 **Ответы:** {tweet_data.replies}\n"
+            coords = tweet_data.coords
             if coords:
                 reply += f"\n📍 **Координаты:** ({coords.get('x', '?')}, {coords.get('y', '?')})"
 
@@ -406,22 +440,42 @@ async def extract_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("😕 Твиты не найдены на странице")
             return
 
-        reply = f"📊 **Найдено {len(result)} твитов:**\n\n"
+        # Валидация через Pydantic
+        try:
+            tweets = [Tweet(**item) for item in result]
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка валидации: {str(e)[:100]}")
+            return
+
+        # Формируем ответ
+        reply = f"📊 **Найдено {len(tweets)} твитов:**\n\n"
+        parts = []
+        current_part = reply
         
-        for i, tweet in enumerate(result[:15], 1):
-            reply += f"**{i}. {tweet.get('author', 'Неизвестно')}**\n"
-            text = tweet.get('text', '')
-            if text:
-                if len(text) > 150:
-                    text = text[:150] + '...'
-                reply += f"📝 {text}\n"
-            reply += f"❤️ {tweet.get('likes', '0')} | 🔁 {tweet.get('retweets', '0')} | 💬 {tweet.get('replies', '0')}\n"
-            reply += f"📍 ({tweet.get('x', '?')}, {tweet.get('y', '?')})\n\n"
+        for tweet in tweets:
+            tweet_text = f"**{tweet.id}. {tweet.author or 'Неизвестно'}**\n"
+            if tweet.text:
+                text = tweet.text[:150] + '...' if len(tweet.text) > 150 else tweet.text
+                tweet_text += f"📝 {text}\n"
+            tweet_text += f"❤️ {tweet.likes} | 🔁 {tweet.retweets} | 💬 {tweet.replies}\n"
+            tweet_text += f"📍 ({tweet.x}, {tweet.y})\n\n"
+            
+            if len(current_part) + len(tweet_text) > 4000:
+                parts.append(current_part)
+                current_part = ""
+            
+            current_part += tweet_text
 
-        if len(result) > 15:
-            reply += f"... и ещё {len(result) - 15} твитов"
+        if current_part:
+            parts.append(current_part)
 
-        await update.message.reply_text(reply, parse_mode='Markdown')
+        # Отправляем по частям
+        for i, part in enumerate(parts):
+            if i == 0:
+                await update.message.reply_text(part, parse_mode='Markdown')
+            else:
+                await update.message.reply_text(f"📄 Продолжение {i+1}:\n\n{part}", parse_mode='Markdown')
+
         await send_or_update_menu(update, user_id, "📊 Все твиты выгружены")
 
     except Exception as e:
