@@ -376,7 +376,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         elif action == "extract_tweets":
             try:
-                await query.message.edit_text("📊 Извлекаю твиты...")
+                await query.message.reply_text("📊 Извлекаю твиты...")
                 
                 tweets = await asyncio.wait_for(
                     tab.extract_all(
@@ -388,10 +388,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
 
                 if not tweets or len(tweets) == 0:
-                    await query.message.edit_text("😕 Твиты не найдены на странице")
+                    await query.message.reply_text("😕 Твиты не найдены на странице")
                     return
 
-                # Формируем ответ с твитами
                 reply = f"📊 **Найдено {len(tweets)} твитов:**\n\n"
                 parts = []
                 current_part = reply
@@ -425,24 +424,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if current_part:
                     parts.append(current_part)
 
-                # Отправляем твиты отдельным сообщением
                 for part in parts:
                     await query.message.reply_text(part, parse_mode='Markdown')
                 
-                # Возвращаем меню
-                img_data, x, y = await get_screenshot_with_cursor(user_id)
-                menu_text = get_menu_text()
-                full_caption = f"✅ Твиты выгружены\n\n{menu_text}\n\n📍 Курсор: ({x}, {y}) | Шаг: {cursor.step}px"
-                
-                await query.edit_message_media(
-                    media=InputMediaPhoto(media=img_data, caption=full_caption),
-                    reply_markup=get_control_keyboard()
-                )
+                await query.answer("✅ Твиты выгружены")
                 
             except asyncio.TimeoutError:
-                await query.message.edit_text("⏰ Поиск твитов занял слишком много времени")
+                await query.message.reply_text("⏰ Поиск твитов занял слишком много времени")
             except Exception as e:
-                await query.message.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
             return
         elif action == "refresh_screen":
             img_data, x, y = await get_screenshot_with_cursor(user_id)
