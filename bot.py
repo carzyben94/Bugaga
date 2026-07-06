@@ -285,7 +285,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка входа: {str(e)[:300]}")
 
 async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /go username - переход в профиль (редактирует прошлое сообщение)"""
+    """Команда /go username - переход в профиль (как кнопка Скрин)"""
     user_id = update.effective_user.id
     
     # Проверяем, что браузер открыт
@@ -315,36 +315,36 @@ async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await tab.go_to(profile_url)
         await asyncio.sleep(3)
         
-        # Получаем свежий скриншот
+        # Получаем свежий скриншот (как в кнопке Скрин)
         img_data, x, y = await get_screenshot_with_cursor(user_id)
-        
-        # Формируем текст
-        menu_text = f"✅ Перешел в профиль @{username}\n\n{get_menu_text()}"
+        menu_text = get_menu_text()
         cursor_obj = get_cursor(user_id)
-        full_caption = f"{menu_text}\n\n📍 Курсор: ({x}, {y}) | Шаг: {cursor_obj.step}px"
+        full_caption = f"✅ Перешел в профиль @{username}\n\n{menu_text}\n\n📍 Курсор: ({x}, {y}) | Шаг: {cursor_obj.step}px"
         
-        # Редактируем ПРОШЛОЕ сообщение (если есть ID)
+        # Редактируем прошлое сообщение бота (как кнопка Скрин)
         if user_id in user_menu_messages:
             try:
-                # Получаем сообщение по ID и редактируем его
-                message_id = user_menu_messages[user_id]
                 await update.effective_message.bot.edit_message_media(
                     media=InputMediaPhoto(media=img_data, caption=full_caption),
                     chat_id=update.effective_chat.id,
-                    message_id=message_id,
+                    message_id=user_menu_messages[user_id],
                     reply_markup=get_control_keyboard()
                 )
+                # Удаляем сообщение с командой /go
+                await update.message.delete()
                 return
             except Exception as e:
-                logger.warning(f"Не удалось отредактировать прошлое сообщение: {e}")
+                logger.warning(f"Не удалось отредактировать: {e}")
         
-        # Если не удалось отредактировать - создаем новое
+        # Если не получилось - создаем новое
         msg = await update.message.reply_photo(
             photo=img_data,
             caption=full_caption,
             reply_markup=get_control_keyboard()
         )
         user_menu_messages[user_id] = msg.message_id
+        # Удаляем сообщение с командой
+        await update.message.delete()
         
     except Exception as e:
         logger.error(f"Ошибка перехода в профиль: {e}")
