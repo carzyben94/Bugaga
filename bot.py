@@ -285,7 +285,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка входа: {str(e)[:300]}")
 
 async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /go username - переход в профиль"""
+    """Команда /go username - переход в профиль (редактирует текущее сообщение)"""
     user_id = update.effective_user.id
     
     # Проверяем, что браузер открыт
@@ -315,7 +315,7 @@ async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await tab.go_to(profile_url)
         await asyncio.sleep(3)
         
-        # Обновляем скриншот в том же окне через send_or_update_menu
+        # Обновляем скриншот в ТОМ ЖЕ сообщении (редактируем)
         await send_or_update_menu(
             update, 
             user_id, 
