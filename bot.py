@@ -23,18 +23,6 @@ logger = logging.getLogger(__name__)
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHROME_PATH = '/usr/bin/google-chrome'
 
-# Популярные профили для быстрого перехода
-POPULAR_PROFILES = {
-    'elonmusk': 'Илон Маск',
-    'billgates': 'Билл Гейтс',
-    'jack': 'Джек Дорси',
-    'vitalikbuterin': 'Виталик Бутерин',
-    'cz_binance': 'Чанпэн Чжао',
-    'saylor': 'Майкл Сейлор',
-    'naval': 'Навал Равикант',
-    'pmarca': 'Марк Андреессен',
-}
-
 X_COOKIES = [
     {"name": "__cuid", "value": "55d2d7c5-4888-430a-b024-dd785da46ef4", "domain": ".x.com", "path": "/"},
     {"name": "lang", "value": "ru", "domain": ".x.com", "path": "/"},
@@ -298,62 +286,51 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка входа: {str(e)[:300]}")
 
 async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для быстрого перехода в профиль /go username"""
+    """Переход в профиль по username"""
     user_id = update.effective_user.id
     
-    # Если нет аргументов - показываем меню выбора
+    # Если нет аргументов - просим ввести username
     if not context.args:
-        keyboard = []
-        for username, name in POPULAR_PROFILES.items():
-            keyboard.append([InlineKeyboardButton(
-                f"@{username} - {name}", 
-                callback_data=f"go_{username}"
-            )])
-        keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="cancel_go")])
+        # Устанавливаем флаг, что ждем ввод username
+        context.user_data['waiting_for_profile'] = True
+        
+        # Добавляем кнопку отмены
+        keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data="cancel_go")]]
         
         await update.message.reply_text(
-            "👤 **Выбери профиль или введи username:**\n"
-            "`/go username`\n\n"
-            "**Популярные профили:**",
+            "👤 **Введи username профиля**\n\n"
+            "Например: `elonmusk`\n"
+            "Или с @: `@billgates`\n\n"
+            "Просто напиши имя в чат",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
         )
         return
     
     username = context.args[0].strip()
-    # Убираем @ если он есть
     if username.startswith('@'):
         username = username[1:]
     
     # Проверяем, что браузер открыт
     if user_id not in user_browsers:
         await update.message.reply_text(
-            "❌ Сначала нажми '🔐 Вход'\n"
-            "Или используй `/login`"
+            "❌ Сначала нажми '🔐 Вход'"
         )
         return
     
     try:
         _, tab = user_browsers[user_id]
-        
-        # Формируем URL профиля
         profile_url = f"https://x.com/{username}"
         
         await update.message.reply_text(f"🔄 Перехожу в профиль @{username}...")
-        
-        # Переходим по ссылке
         await tab.go_to(profile_url)
-        await asyncio.sleep(3)  # Ждем загрузки
+        await asyncio.sleep(3)
         
-        # Обновляем скриншот
         await send_or_update_menu(
             update, 
             user_id, 
             f"✅ Перешел в профиль @{username}"
         )
-        
-        # Отправляем подтверждение
-        await update.message.reply_text(f"✅ Перешел на страницу @{username}")
         
     except Exception as e:
         logger.error(f"Ошибка перехода в профиль: {e}")
@@ -368,31 +345,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     action = query.data
     
-    # Обработка перехода в профиль через кнопку
-    if action.startswith("go_"):
-        username = action[3:]  # Убираем "go_"
-        context.args = [username]  # Подставляем аргумент
-        await go_to_profile(update, context)
-        await query.message.delete()  # Удаляем меню выбора
-        return
-    
     if action == "cancel_go":
+        context.user_data['waiting_for_profile'] = False
         await query.message.delete()
         await query.message.reply_text("❌ Отменено")
         return
     
     if action == "go_profile":
-        # Показываем меню выбора профиля
-        keyboard = []
-        for username, name in POPULAR_PROFILES.items():
-            keyboard.append([InlineKeyboardButton(
-                f"@{username} - {name}", 
-                callback_data=f"go_{username}"
-            )])
-        keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="cancel_go")])
+        # Устанавливаем флаг ожидания ввода профиля
+        context.user_data['waiting_for_profile'] = True
+        
+        keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data="cancel_go")]]
         
         await query.message.edit_text(
-            "👤 **Выбери профиль:**",
+            "👤 **Введи username профиля**\n\n"
+            "Например: `elonmusk`\n"
+            "Или с @: `@billgates`\n\n"
+            "Просто напиши имя в чат",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
         )
@@ -611,6 +580,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip()
     
+    # Обработка ввода username для профиля
+    if context.user_data.get('waiting_for_profile'):
+        context.user_data['waiting_for_profile'] = False
+        
+        # Убираем @ если есть
+        username = text
+        if username.startswith('@'):
+            username = username[1:]
+        
+        # Проверяем, что это не команда
+        if username.startswith('/'):
+            await update.message.reply_text("❌ Это команда, а не username")
+            return
+        
+        # Вызываем переход в профиль
+        context.args = [username]
+        await go_to_profile(update, context)
+        return
+    
+    # Обработка eval
     if context.user_data.get('waiting_for_eval'):
         context.user_data['waiting_for_eval'] = False
         
@@ -647,7 +636,7 @@ def main():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("login", login))
-    app.add_handler(CommandHandler("go", go_to_profile))  # Новая команда
+    app.add_handler(CommandHandler("go", go_to_profile))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
