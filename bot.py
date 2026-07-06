@@ -19,9 +19,8 @@ from pydoll.browser.options import ChromiumOptions
 from pydoll.extractor import ExtractionModel, Field
 from openai import AsyncOpenAI
 
-# ==================== НОВЫЕ ИМПОРТЫ ДЛЯ BROWSER USE ====================
+# ==================== BROWSER USE (исправлено) ====================
 from browser_use import Agent, Browser
-from browser_use.browser.context import BrowserContext
 from langchain_openai import ChatOpenAI
 
 logging.basicConfig(level=logging.INFO)
@@ -455,7 +454,7 @@ async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
-# ==================== КОМАНДА /browseuse (НОВАЯ) ====================
+# ==================== КОМАНДА /browseuse ====================
 
 async def browseuse_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Запуск Browser Use через CDP"""
@@ -481,7 +480,9 @@ async def browseuse_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    await update.message.reply_text(f"🧠 Думаю над задачей:\n\n{task}\n\n⏳ Это может занять 30-60 секунд...")
+    status_msg = await update.message.reply_text(
+        f"🧠 Думаю над задачей:\n\n{task}\n\n⏳ Это может занять 30-60 секунд..."
+    )
     
     try:
         # Создаем LLM через Agnes
@@ -509,10 +510,10 @@ async def browseuse_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Запускаем агента
         history = await agent.run()
         
-        # Формируем ответ
+        # Получаем результат
         result_text = str(history)
         
-        # Показываем результат
+        # Формируем ответ
         reply = f"✅ **Задача выполнена!**\n\n"
         reply += f"📝 **Задача:** {task}\n"
         reply += f"📊 **Шагов:** {len(history.history)}\n\n"
@@ -521,11 +522,11 @@ async def browseuse_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(result_text) > 1000:
             reply += "\n\n... (обрезано)"
         
-        await update.message.reply_text(reply, parse_mode='Markdown')
+        await status_msg.edit_text(reply, parse_mode='Markdown')
         
     except Exception as e:
         logger.error(f"Browser Use ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+        await status_msg.edit_text(f"❌ Ошибка: {str(e)[:300]}")
 
 # ==================== ОБРАБОТЧИК КНОПОК ====================
 
@@ -558,7 +559,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await savepage_command(update, context)
         return
     
-    # ==================== НОВАЯ КНОПКА ====================
     if action == "show_browseuse":
         await query.edit_message_text(
             "🧠 **Browser Use — Умный агент**\n\n"
@@ -795,7 +795,7 @@ def main():
     app.add_handler(CommandHandler("savepage", savepage_command))
     app.add_handler(CommandHandler("pageinfo", pageinfo_command))
     app.add_handler(CommandHandler("analyze", analyze_command))
-    app.add_handler(CommandHandler("browseuse", browseuse_command))  # НОВОЕ
+    app.add_handler(CommandHandler("browseuse", browseuse_command))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
