@@ -136,6 +136,7 @@ def get_control_keyboard():
             InlineKeyboardButton("🔐 Вход", callback_data="do_login"),
         ],
         [
+            InlineKeyboardButton("👤 Профиль", callback_data="go_profile"),
             InlineKeyboardButton("❌ Закрыть", callback_data="close_browser"),
         ],
     ])
@@ -284,74 +285,49 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         await update.message.reply_text(f"❌ Ошибка входа: {str(e)[:300]}")
 
-async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /go username - переход в профиль (обновляет существующее меню)"""
+async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, username=None):
+    """Переход в профиль по username"""
     user_id = update.effective_user.id
+    
+    # Если username не передан - просим ввести
+    if not username:
+        context.user_data['waiting_for_profile'] = True
+        await update.message.reply_text(
+            "👤 **Введи username профиля**\n\n"
+            "Например: `elonmusk`\n"
+            "Или с @: `@billgates`\n\n"
+            "Просто напиши имя в чат",
+            parse_mode='Markdown'
+        )
+        return
+    
+    # Убираем @ если есть
+    if username.startswith('@'):
+        username = username[1:]
     
     # Проверяем, что браузер открыт
     if user_id not in user_browsers:
         await update.message.reply_text("❌ Сначала нажми '🔐 Вход'")
-        await update.message.delete()  # Удаляем команду
         return
-    
-    # Проверяем, что передан username
-    if not context.args:
-        await update.message.reply_text(
-            "❌ **Укажи username**\n\n"
-            "Пример: `/go elonmusk`\n"
-            "Пример: `/go @billgates`",
-            parse_mode='Markdown'
-        )
-        await update.message.delete()  # Удаляем команду
-        return
-    
-    username = context.args[0].strip()
-    if username.startswith('@'):
-        username = username[1:]
     
     try:
         _, tab = user_browsers[user_id]
         profile_url = f"https://x.com/{username}"
         
-        # Переходим в профиль
+        await update.message.reply_text(f"🔄 Перехожу в профиль @{username}...")
         await tab.go_to(profile_url)
         await asyncio.sleep(3)
         
-        # Получаем свежий скриншот
-        img_data, x, y = await get_screenshot_with_cursor(user_id)
-        menu_text = f"✅ Перешел в профиль @{username}\n\n{get_menu_text()}"
-        cursor_obj = get_cursor(user_id)
-        full_caption = f"{menu_text}\n\n📍 Курсор: ({x}, {y}) | Шаг: {cursor_obj.step}px"
-        
-        # Редактируем существующее сообщение бота
-        if user_id in user_menu_messages:
-            try:
-                await update.effective_message.bot.edit_message_media(
-                    media=InputMediaPhoto(media=img_data, caption=full_caption),
-                    chat_id=update.effective_chat.id,
-                    message_id=user_menu_messages[user_id],
-                    reply_markup=get_control_keyboard()
-                )
-                # Удаляем сообщение с командой
-                await update.message.delete()
-                return
-            except Exception as e:
-                logger.warning(f"Не удалось отредактировать: {e}")
-        
-        # Если сообщения нет - создаем новое
-        msg = await update.message.reply_photo(
-            photo=img_data,
-            caption=full_caption,
-            reply_markup=get_control_keyboard()
+        # Обновляем меню со скриншотом
+        await send_or_update_menu(
+            update, 
+            user_id, 
+            f"✅ Перешел в профиль @{username}"
         )
-        user_menu_messages[user_id] = msg.message_id
-        # Удаляем сообщение с командой
-        await update.message.delete()
         
     except Exception as e:
         logger.error(f"Ошибка перехода в профиль: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-        await update.message.delete()
 
 # ==================== ОБРАБОТЧИК КНОПОК ====================
 
@@ -364,6 +340,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Логируем все нажатия
     logger.info(f"Нажата кнопка: {action} от пользователя {user_id}")
+    
+    # Обработка кнопки "Профиль"
+    if action == "go_profile":
+        logger.info("Обработка go_profile")
+        
+        # Устанавливаем флаг ожидания ввода
+        context.user_data['waiting_for_profile'] = True
+        
+        # Отправляем сообщение с запросом (как Eval)
+        await query.message.reply_text(
+            "👤 **Введи username профиля**\n\n"
+            "Например: `elonmusk`\n"
+            "Или с @: `@billgates`\n\n"
+            "Просто напиши имя в чат",
+            parse_mode='Markdown'
+        )
+        
+        await query.answer("👤 Введи username")
+        return
     
     if action == "do_login":
         await query.message.delete()
@@ -577,6 +572,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip()
+    
+    # Обработка ввода username для профиля
+    if context.user_data.get('waiting_for_profile'):
+        logger.info(f"Получен username для профиля: {text}")
+        context.user_data['waiting_for_profile'] = False
+        
+        # Проверяем, что это не команда
+        if text.startswith('/'):
+            await update.message.reply_text("❌ Это команда, а не username")
+            return
+        
+        # Вызываем переход в профиль
+        await go_to_profile(update, context, username=text)
+        return
     
     # Обработка eval
     if context.user_data.get('waiting_for_eval'):
