@@ -19,6 +19,10 @@ RUN apt-get update && apt-get install -y \
     libxdamage1 \
     libxrandr2 \
     xdg-utils \
+    # Дополнительные зависимости для Playwright
+    libxkbcommon0 \
+    libxss1 \
+    libxtst6 \
     && rm -rf /var/lib/apt/lists/*
 
 # Проверка установки Chromium
@@ -29,6 +33,7 @@ ENV CHROME_PATH=/usr/bin/chromium
 ENV CHROMIUM_PATH=/usr/bin/chromium
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
 
 WORKDIR /app
 
@@ -36,6 +41,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
+
+# Установка браузеров Playwright (НУЖНО для Browser Use)
+RUN playwright install chromium && \
+    playwright install-deps
 
 # Копирование бота
 COPY bot.py .
