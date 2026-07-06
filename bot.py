@@ -1,3 +1,5 @@
+Норм код
+
 import os
 import logging
 import asyncio
@@ -19,74 +21,12 @@ from pydoll.browser.options import ChromiumOptions
 from pydoll.extractor import ExtractionModel, Field
 from openai import AsyncOpenAI
 
-# ==================== BROWSER USE ====================
-from browser_use import Agent, Browser
-from langchain_openai import ChatOpenAI
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
-
-# ==================== ПОИСК CHROMIUM ====================
-
-def find_chromium():
-    """Ищет Chromium/Chrome по разным путям"""
-    possible_paths = [
-        '/usr/bin/chromium',
-        '/usr/bin/chromium-browser',
-        '/usr/bin/chrome',
-        '/usr/bin/google-chrome',
-        '/usr/bin/google-chrome-stable',
-        '/usr/lib/chromium/chromium',
-        '/usr/lib/chromium-browser/chromium-browser',
-        '/snap/bin/chromium',
-        '/snap/bin/chrome',
-        '/usr/bin/chromedriver',
-        '/opt/chromium/chromium',
-        '/opt/google/chrome/chrome',
-        # Alpine Linux
-        '/usr/lib/chromium/chromium',
-        # macOS (для локальной разработки)
-        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-        '/Applications/Chromium.app/Contents/MacOS/Chromium',
-        # Windows (для локальной разработки)
-        'C:/Program Files/Google/Chrome/Application/chrome.exe',
-        'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
-    ]
-    
-    for path in possible_paths:
-        if os.path.exists(path):
-            logger.info(f"✅ Найден браузер: {path}")
-            return path
-    
-    # Пробуем найти через which
-    import subprocess
-    try:
-        result = subprocess.run(['which', 'chromium'], capture_output=True, text=True)
-        if result.returncode == 0:
-            path = result.stdout.strip()
-            if path:
-                logger.info(f"✅ Найден браузер через which: {path}")
-                return path
-    except:
-        pass
-    
-    try:
-        result = subprocess.run(['which', 'google-chrome'], capture_output=True, text=True)
-        if result.returncode == 0:
-            path = result.stdout.strip()
-            if path:
-                logger.info(f"✅ Найден браузер через which: {path}")
-                return path
-    except:
-        pass
-    
-    logger.error("❌ Браузер не найден ни по одному пути!")
-    return None
-
-CHROME_PATH = find_chromium()
+CHROME_PATH = '/usr/bin/chromium'
 
 agnes_client = None
 if AGNES_API_KEY:
@@ -161,8 +101,7 @@ def get_menu_text():
         "🤖 Бот для X.com\n\n"
         "📂 /savepage — сохранить страницу в ZIP\n"
         "📊 /pageinfo — информация о странице\n"
-        "🔍 /analyze — AI анализ страницы\n"
-        "🧠 /browseuse — умный агент (Browser Use)"
+        "🔍 /analyze — AI анализ страницы"
     )
 
 def get_control_keyboard():
@@ -209,7 +148,6 @@ def get_control_keyboard():
         ],
         [
             InlineKeyboardButton("📂 Save Page", callback_data="do_savepage"),
-            InlineKeyboardButton("🧠 Browser Use", callback_data="show_browseuse"),
         ],
         [
             InlineKeyboardButton("❌ Закрыть", callback_data="close_browser"),
@@ -218,31 +156,29 @@ def get_control_keyboard():
 
 async def get_screenshot_with_cursor(user_id):
     try:
-        browser_info = user_browsers[user_id]
-        tab = browser_info['tab']
+        _, tab = user_browsers[user_id]
+        cursor = get_cursor(user_id)
 
         try:
             await tab.execute_script("return 1")
         except:
-            browser = browser_info['browser']
+            browser, _ = user_browsers[user_id]
             tab = await browser.new_tab()
             await tab.go_to('https://x.com')
             await asyncio.sleep(2)
-            browser_info['tab'] = tab
+            user_browsers[user_id] = (browser, tab)
 
         screenshot_base64 = await asyncio.wait_for(
             tab.take_screenshot(as_base64=True),
             timeout=10.0
         )
     except asyncio.TimeoutError:
-        browser_info = user_browsers[user_id]
-        tab = browser_info['tab']
+        _, tab = user_browsers[user_id]
         await tab.refresh()
         await asyncio.sleep(3)
         screenshot_base64 = await tab.take_screenshot(as_base64=True)
     except Exception as e:
-        browser_info = user_browsers[user_id]
-        tab = browser_info['tab']
+        _, tab = user_browsers[user_id]
         try:
             screenshot_base64 = await tab.execute_script("""
                 (function() {
@@ -256,7 +192,6 @@ async def get_screenshot_with_cursor(user_id):
     screenshot_bytes = base64.b64decode(screenshot_base64)
     image = Image.open(BytesIO(screenshot_bytes))
     draw = ImageDraw.Draw(image)
-    cursor = get_cursor(user_id)
     x, y = cursor.x, cursor.y
     size = 15
     draw.line([(x - size, y), (x + size, y)], fill='red', width=3)
@@ -317,51 +252,27 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         msg1 = await update.message.reply_text("🔐 Выполняю вход на X.com...")
         
-        # Проверяем что браузер найден
-        if not CHROME_PATH:
-            await update.message.reply_text(
-                "❌ Chromium не найден в контейнере!\n\n"
-                "Проверь установку браузера:\n"
-                "docker exec -it x-bot apt-get install chromium\n"
-                "или пересобери образ с chromium."
-            )
-            return
-        
-        logger.info(f"Использую браузер: {CHROME_PATH}")
-        
         options = ChromiumOptions()
-        options.binary_location = CHROME_PATH
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--headless=new")
         options.add_argument("--disable-gpu")
         options.add_argument("--window-size=1024,768")
-        # Не добавляем remote-debugging-port - Pydoll сам управляет!
+        options.binary_location = CHROME_PATH
         
-        logger.info("Запускаю браузер...")
         browser = Chrome(options=options)
         tab = await browser.start()
         
-        cdp_port = browser._connection_port
-        logger.info(f"✅ Браузер запущен! CDP порт: {cdp_port}")
-        
         await tab.go_to('https://x.com')
-        logger.info("Страница X.com загружена")
         await asyncio.sleep(2)
         
-        logger.info("Устанавливаю куки...")
         await tab.set_cookies(X_COOKIES)
         await asyncio.sleep(1)
         
-        logger.info("Обновляю страницу...")
         await tab.refresh()
         await asyncio.sleep(5)
         
-        user_browsers[user_id] = {
-            'browser': browser,
-            'tab': tab,
-            'cdp_port': cdp_port
-        }
+        user_browsers[user_id] = (browser, tab)
         
         cursor = get_cursor(user_id)
         try:
@@ -376,17 +287,11 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
         
-        await update.message.reply_text(
-            f"✅ Вход выполнен!\n"
-            f"🌐 CDP порт: {cdp_port}\n"
-            f"📁 Браузер: {CHROME_PATH}"
-        )
+        await update.message.reply_text("✅ Вход выполнен! Размер окна: 1024x768")
         await send_or_update_menu(update, user_id, "✅ Вход выполнен!")
 
     except Exception as e:
-        logger.error(f"❌ Ошибка входа: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        logger.error(f"Ошибка: {e}")
         try:
             await msg1.delete()
         except:
@@ -396,13 +301,14 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================== КОМАНДА /savepage ====================
 
 async def savepage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сохраняет текущую страницу в ZIP архив"""
     user_id = update.effective_user.id
     
     if user_id not in user_browsers:
         await update.message.reply_text("❌ Сначала выполни /login")
         return
     
-    tab = user_browsers[user_id]['tab']
+    _, tab = user_browsers[user_id]
     
     try:
         await update.message.reply_text("📂 Сохраняю страницу...")
@@ -430,13 +336,14 @@ async def savepage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================== КОМАНДА /pageinfo ====================
 
 async def pageinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает информацию о текущей странице"""
     user_id = update.effective_user.id
     
     if user_id not in user_browsers:
         await update.message.reply_text("❌ Сначала выполни /login")
         return
     
-    tab = user_browsers[user_id]['tab']
+    _, tab = user_browsers[user_id]
     
     try:
         info = await tab.execute_script("""
@@ -469,6 +376,7 @@ async def pageinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================== КОМАНДА /analyze ====================
 
 async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """AI анализ структуры страницы"""
     user_id = update.effective_user.id
     
     if user_id not in user_browsers:
@@ -479,7 +387,7 @@ async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Agnes AI не инициализирован")
         return
     
-    tab = user_browsers[user_id]['tab']
+    _, tab = user_browsers[user_id]
     
     try:
         await update.message.reply_text("📊 Анализирую структуру страницы...")
@@ -540,86 +448,6 @@ async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
-# ==================== КОМАНДА /browseuse ====================
-
-async def browseuse_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Запуск Browser Use через CDP"""
-    user_id = update.effective_user.id
-    
-    if user_id not in user_browsers:
-        await update.message.reply_text("❌ Сначала выполни /login")
-        return
-    
-    if not AGNES_API_KEY:
-        await update.message.reply_text("❌ AGNES_API_KEY не настроен")
-        return
-    
-    task = " ".join(context.args) if context.args else None
-    if not task:
-        await update.message.reply_text(
-            "❌ Напиши задачу:\n"
-            "/browseuse найти твиты про Python\n\n"
-            "Примеры:\n"
-            "• /browseuse покажи последние твиты\n"
-            "• /browseuse найди профиль Elon Musk\n"
-            "• /browseuse напиши твит про погоду"
-        )
-        return
-    
-    status_msg = await update.message.reply_text(
-        f"🧠 Думаю над задачей:\n\n{task}\n\n⏳ Это может занять 30-60 секунд..."
-    )
-    
-    try:
-        # Получаем порт CDP из браузера Pydoll
-        browser_info = user_browsers[user_id]
-        cdp_port = browser_info['cdp_port']
-        
-        logger.info(f"Подключаюсь к CDP порту: {cdp_port}")
-        
-        # Создаем LLM через Agnes
-        llm = ChatOpenAI(
-            model="agnes-2.0-flash",
-            openai_api_key=AGNES_API_KEY,
-            base_url="https://apihub.agnes-ai.com/v1",
-            temperature=0.1
-        )
-        
-        # Подключаемся к существующему браузеру через CDP
-        browser = Browser(
-            cdp_url=f"http://localhost:{cdp_port}",
-            headless=False
-        )
-        
-        # Создаем агента
-        agent = Agent(
-            task=task,
-            llm=llm,
-            browser=browser,
-            max_steps=10
-        )
-        
-        # Запускаем агента
-        history = await agent.run()
-        
-        # Получаем результат
-        result_text = str(history)
-        
-        # Формируем ответ
-        reply = f"✅ **Задача выполнена!**\n\n"
-        reply += f"📝 **Задача:** {task}\n"
-        reply += f"📊 **Шагов:** {len(history.history)}\n\n"
-        reply += f"📌 **Результат:**\n{result_text[:1000]}"
-        
-        if len(result_text) > 1000:
-            reply += "\n\n... (обрезано)"
-        
-        await status_msg.edit_text(reply, parse_mode='Markdown')
-        
-    except Exception as e:
-        logger.error(f"Browser Use ошибка: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {str(e)[:300]}")
-
 # ==================== ОБРАБОТЧИК КНОПОК ====================
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -651,24 +479,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await savepage_command(update, context)
         return
     
-    if action == "show_browseuse":
-        await query.edit_message_text(
-            "🧠 **Browser Use — Умный агент**\n\n"
-            "Напиши задачу командой:\n"
-            "/browseuse <описание>\n\n"
-            "Примеры:\n"
-            "• /browseuse найди твиты про AI\n"
-            "• /browseuse покажи профиль пользователя\n"
-            "• /browseuse напиши твит про новости\n\n"
-            "⬅️ Нажми 'Обновить' чтобы вернуться"
-        )
-        return
-    
     if user_id not in user_browsers:
         await query.edit_message_text("❌ Сначала нажми '🔐 Вход'")
         return
     
-    tab = user_browsers[user_id]['tab']
+    _, tab = user_browsers[user_id]
     cursor = get_cursor(user_id)
     step = cursor.step
     
@@ -817,7 +632,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         elif action == "close_browser":
             if user_id in user_browsers:
-                browser = user_browsers[user_id]['browser']
+                browser, _ = user_browsers[user_id]
                 await browser.close()
                 del user_browsers[user_id]
                 if user_id in user_menu_messages:
@@ -855,7 +670,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Сначала нажми '🔐 Вход'")
             return
         
-        tab = user_browsers[user_id]['tab']
+        _, tab = user_browsers[user_id]
         
         try:
             raw = await tab.execute_script(text, return_by_value=True)
@@ -887,7 +702,6 @@ def main():
     app.add_handler(CommandHandler("savepage", savepage_command))
     app.add_handler(CommandHandler("pageinfo", pageinfo_command))
     app.add_handler(CommandHandler("analyze", analyze_command))
-    app.add_handler(CommandHandler("browseuse", browseuse_command))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
