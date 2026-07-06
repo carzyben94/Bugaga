@@ -19,6 +19,11 @@ from pydoll.browser.options import ChromiumOptions
 from pydoll.extractor import ExtractionModel, Field
 from openai import AsyncOpenAI
 
+# ==================== НОВЫЕ ИМПОРТЫ ДЛЯ BROWSER USE ====================
+from browser_use import Agent, Browser
+from browser_use.browser.context import BrowserContext
+from langchain_openai import ChatOpenAI
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -99,7 +104,8 @@ def get_menu_text():
         "🤖 Бот для X.com\n\n"
         "📂 /savepage — сохранить страницу в ZIP\n"
         "📊 /pageinfo — информация о странице\n"
-        "🔍 /analyze — AI анализ страницы"
+        "🔍 /analyze — AI анализ страницы\n"
+        "🧠 /browseuse — умный агент (Browser Use)"
     )
 
 def get_control_keyboard():
@@ -146,6 +152,7 @@ def get_control_keyboard():
         ],
         [
             InlineKeyboardButton("📂 Save Page", callback_data="do_savepage"),
+            InlineKeyboardButton("🧠 Browser Use", callback_data="show_browseuse"),
         ],
         [
             InlineKeyboardButton("❌ Закрыть", callback_data="close_browser"),
@@ -256,6 +263,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         options.add_argument("--headless=new")
         options.add_argument("--disable-gpu")
         options.add_argument("--window-size=1024,768")
+        options.add_argument("--remote-debugging-port=9222")  # Для Browser Use
         options.binary_location = CHROME_PATH
         
         browser = Chrome(options=options)
@@ -285,7 +293,11 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
         
-        await update.message.reply_text("✅ Вход выполнен! Размер окна: 1024x768")
+        await update.message.reply_text(
+            "✅ Вход выполнен!\n"
+            "🌐 CDP доступен на порту: 9222\n"
+            "🧠 Browser Use может подключаться"
+        )
         await send_or_update_menu(update, user_id, "✅ Вход выполнен!")
 
     except Exception as e:
@@ -299,7 +311,6 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================== КОМАНДА /savepage ====================
 
 async def savepage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Сохраняет текущую страницу в ZIP архив"""
     user_id = update.effective_user.id
     
     if user_id not in user_browsers:
@@ -334,7 +345,6 @@ async def savepage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================== КОМАНДА /pageinfo ====================
 
 async def pageinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает информацию о текущей странице"""
     user_id = update.effective_user.id
     
     if user_id not in user_browsers:
@@ -374,7 +384,6 @@ async def pageinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================== КОМАНДА /analyze ====================
 
 async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """AI анализ структуры страницы"""
     user_id = update.effective_user.id
     
     if user_id not in user_browsers:
@@ -446,6 +455,78 @@ async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
+# ==================== КОМАНДА /browseuse (НОВАЯ) ====================
+
+async def browseuse_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Запуск Browser Use через CDP"""
+    user_id = update.effective_user.id
+    
+    if user_id not in user_browsers:
+        await update.message.reply_text("❌ Сначала выполни /login")
+        return
+    
+    if not AGNES_API_KEY:
+        await update.message.reply_text("❌ AGNES_API_KEY не настроен")
+        return
+    
+    task = " ".join(context.args) if context.args else None
+    if not task:
+        await update.message.reply_text(
+            "❌ Напиши задачу:\n"
+            "/browseuse найти твиты про Python\n\n"
+            "Примеры:\n"
+            "• /browseuse покажи последние твиты\n"
+            "• /browseuse найди профиль Elon Musk\n"
+            "• /browseuse напиши твит про погоду"
+        )
+        return
+    
+    await update.message.reply_text(f"🧠 Думаю над задачей:\n\n{task}\n\n⏳ Это может занять 30-60 секунд...")
+    
+    try:
+        # Создаем LLM через Agnes
+        llm = ChatOpenAI(
+            model="agnes-2.0-flash",
+            openai_api_key=AGNES_API_KEY,
+            base_url="https://apihub.agnes-ai.com/v1",
+            temperature=0.1
+        )
+        
+        # Подключаемся к существующему браузеру через CDP
+        browser = Browser(
+            cdp_url="http://localhost:9222",
+            headless=False
+        )
+        
+        # Создаем агента
+        agent = Agent(
+            task=task,
+            llm=llm,
+            browser=browser,
+            max_steps=10
+        )
+        
+        # Запускаем агента
+        history = await agent.run()
+        
+        # Формируем ответ
+        result_text = str(history)
+        
+        # Показываем результат
+        reply = f"✅ **Задача выполнена!**\n\n"
+        reply += f"📝 **Задача:** {task}\n"
+        reply += f"📊 **Шагов:** {len(history.history)}\n\n"
+        reply += f"📌 **Результат:**\n{result_text[:1000]}"
+        
+        if len(result_text) > 1000:
+            reply += "\n\n... (обрезано)"
+        
+        await update.message.reply_text(reply, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"Browser Use ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+
 # ==================== ОБРАБОТЧИК КНОПОК ====================
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -475,6 +556,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "do_savepage":
         await query.message.delete()
         await savepage_command(update, context)
+        return
+    
+    # ==================== НОВАЯ КНОПКА ====================
+    if action == "show_browseuse":
+        await query.edit_message_text(
+            "🧠 **Browser Use — Умный агент**\n\n"
+            "Напиши задачу командой:\n"
+            "/browseuse <описание>\n\n"
+            "Примеры:\n"
+            "• /browseuse найди твиты про AI\n"
+            "• /browseuse покажи профиль пользователя\n"
+            "• /browseuse напиши твит про новости\n\n"
+            "⬅️ Нажми 'Обновить' чтобы вернуться"
+        )
         return
     
     if user_id not in user_browsers:
@@ -700,6 +795,7 @@ def main():
     app.add_handler(CommandHandler("savepage", savepage_command))
     app.add_handler(CommandHandler("pageinfo", pageinfo_command))
     app.add_handler(CommandHandler("analyze", analyze_command))
+    app.add_handler(CommandHandler("browseuse", browseuse_command))  # НОВОЕ
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
