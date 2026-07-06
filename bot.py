@@ -285,16 +285,18 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         await update.message.reply_text(f"❌ Ошибка входа: {str(e)[:300]}")
 
-async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, username=None):
     """Переход в профиль по username"""
     user_id = update.effective_user.id
     
-    # Если нет аргументов - просим ввести username
-    if not context.args:
-        # Устанавливаем флаг, что ждем ввод username
+    # Если username не передан, берем из аргументов
+    if username is None and context.args:
+        username = context.args[0].strip()
+    
+    # Если все еще нет username - просим ввести
+    if not username:
         context.user_data['waiting_for_profile'] = True
         
-        # Добавляем кнопку отмены
         keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data="cancel_go")]]
         
         await update.message.reply_text(
@@ -307,15 +309,13 @@ async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    username = context.args[0].strip()
+    # Убираем @ если есть
     if username.startswith('@'):
         username = username[1:]
     
     # Проверяем, что браузер открыт
     if user_id not in user_browsers:
-        await update.message.reply_text(
-            "❌ Сначала нажми '🔐 Вход'"
-        )
+        await update.message.reply_text("❌ Сначала нажми '🔐 Вход'")
         return
     
     try:
@@ -345,14 +345,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     action = query.data
     
-    if action == "cancel_go":
-        context.user_data['waiting_for_profile'] = False
-        await query.message.delete()
-        await query.message.reply_text("❌ Отменено")
-        return
-    
+    # Обработка кнопки "Профиль"
     if action == "go_profile":
-        # Устанавливаем флаг ожидания ввода профиля
         context.user_data['waiting_for_profile'] = True
         
         keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data="cancel_go")]]
@@ -365,6 +359,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
         )
+        return
+    
+    if action == "cancel_go":
+        context.user_data['waiting_for_profile'] = False
+        await query.message.delete()
+        await query.message.reply_text("❌ Отменено")
+        # Возвращаем меню
+        await send_or_update_menu(update, user_id)
         return
     
     if action == "do_login":
@@ -584,19 +586,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('waiting_for_profile'):
         context.user_data['waiting_for_profile'] = False
         
-        # Убираем @ если есть
-        username = text
-        if username.startswith('@'):
-            username = username[1:]
-        
         # Проверяем, что это не команда
-        if username.startswith('/'):
+        if text.startswith('/'):
             await update.message.reply_text("❌ Это команда, а не username")
             return
         
         # Вызываем переход в профиль
-        context.args = [username]
-        await go_to_profile(update, context)
+        await go_to_profile(update, context, username=text)
         return
     
     # Обработка eval
