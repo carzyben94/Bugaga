@@ -345,23 +345,37 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     action = query.data
     
+    # Логируем все нажатия
+    logger.info(f"Нажата кнопка: {action} от пользователя {user_id}")
+    
     # Обработка кнопки "Профиль"
     if action == "go_profile":
+        logger.info("Обработка go_profile")
+        
+        # Устанавливаем флаг ожидания ввода
         context.user_data['waiting_for_profile'] = True
         
-        keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data="cancel_go")]]
-        
-        await query.message.edit_text(
+        # Отправляем новое сообщение с запросом
+        await query.message.reply_text(
             "👤 **Введи username профиля**\n\n"
             "Например: `elonmusk`\n"
             "Или с @: `@billgates`\n\n"
             "Просто напиши имя в чат",
-            reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
         )
+        
+        # Добавляем кнопку отмены
+        keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data="cancel_go")]]
+        await query.message.reply_text(
+            "Нажми 'Отмена' чтобы выйти",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        
+        await query.answer("👤 Введи username")
         return
     
     if action == "cancel_go":
+        logger.info("Отмена ввода профиля")
         context.user_data['waiting_for_profile'] = False
         await query.message.delete()
         await query.message.reply_text("❌ Отменено")
@@ -584,6 +598,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Обработка ввода username для профиля
     if context.user_data.get('waiting_for_profile'):
+        logger.info(f"Получен username для профиля: {text}")
         context.user_data['waiting_for_profile'] = False
         
         # Проверяем, что это не команда
