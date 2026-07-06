@@ -28,7 +28,65 @@ logger = logging.getLogger(__name__)
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
-CHROME_PATH = '/usr/bin/chromium'
+
+# ==================== ПОИСК CHROMIUM ====================
+
+def find_chromium():
+    """Ищет Chromium/Chrome по разным путям"""
+    possible_paths = [
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser',
+        '/usr/bin/chrome',
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
+        '/usr/lib/chromium/chromium',
+        '/usr/lib/chromium-browser/chromium-browser',
+        '/snap/bin/chromium',
+        '/snap/bin/chrome',
+        '/usr/bin/chromedriver',
+        '/opt/chromium/chromium',
+        '/opt/google/chrome/chrome',
+        # Alpine Linux
+        '/usr/lib/chromium/chromium',
+        # macOS (для локальной разработки)
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        '/Applications/Chromium.app/Contents/MacOS/Chromium',
+        # Windows (для локальной разработки)
+        'C:/Program Files/Google/Chrome/Application/chrome.exe',
+        'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+    ]
+    
+    for path in possible_paths:
+        if os.path.exists(path):
+            logger.info(f"✅ Найден браузер: {path}")
+            return path
+    
+    # Пробуем найти через which
+    import subprocess
+    try:
+        result = subprocess.run(['which', 'chromium'], capture_output=True, text=True)
+        if result.returncode == 0:
+            path = result.stdout.strip()
+            if path:
+                logger.info(f"✅ Найден браузер через which: {path}")
+                return path
+    except:
+        pass
+    
+    try:
+        result = subprocess.run(['which', 'google-chrome'], capture_output=True, text=True)
+        if result.returncode == 0:
+            path = result.stdout.strip()
+            if path:
+                logger.info(f"✅ Найден браузер через which: {path}")
+                return path
+    except:
+        pass
+    
+    logger.error("❌ Браузер не найден ни по одному пути!")
+    return None
+
+CHROME_PATH = find_chromium()
 
 agnes_client = None
 if AGNES_API_KEY:
@@ -259,35 +317,50 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         msg1 = await update.message.reply_text("🔐 Выполняю вход на X.com...")
         
+        # Проверяем что браузер найден
+        if not CHROME_PATH:
+            await update.message.reply_text(
+                "❌ Chromium не найден в контейнере!\n\n"
+                "Проверь установку браузера:\n"
+                "docker exec -it x-bot apt-get install chromium\n"
+                "или пересобери образ с chromium."
+            )
+            return
+        
+        logger.info(f"Использую браузер: {CHROME_PATH}")
+        
         options = ChromiumOptions()
+        options.binary_location = CHROME_PATH
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--headless=new")
         options.add_argument("--disable-gpu")
         options.add_argument("--window-size=1024,768")
-        # ❌ НЕ ДОБАВЛЯЙ remote-debugging-port - Pydoll сам управляет!
-        # options.add_argument("--remote-debugging-port=9222")
-        options.binary_location = CHROME_PATH
+        # Не добавляем remote-debugging-port - Pydoll сам управляет!
         
+        logger.info("Запускаю браузер...")
         browser = Chrome(options=options)
         tab = await browser.start()
         
-        logger.info(f"Браузер запущен! CDP порт: {browser._connection_port}")
+        cdp_port = browser._connection_port
+        logger.info(f"✅ Браузер запущен! CDP порт: {cdp_port}")
         
         await tab.go_to('https://x.com')
+        logger.info("Страница X.com загружена")
         await asyncio.sleep(2)
         
+        logger.info("Устанавливаю куки...")
         await tab.set_cookies(X_COOKIES)
         await asyncio.sleep(1)
         
+        logger.info("Обновляю страницу...")
         await tab.refresh()
         await asyncio.sleep(5)
         
-        # Сохраняем браузер с портом CDP
         user_browsers[user_id] = {
             'browser': browser,
             'tab': tab,
-            'cdp_port': browser._connection_port  # Автоматический порт от Pydoll
+            'cdp_port': cdp_port
         }
         
         cursor = get_cursor(user_id)
@@ -304,13 +377,16 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         
         await update.message.reply_text(
-            f"✅ Вход выполнен! Размер окна: 1024x768\n"
-            f"🌐 CDP порт: {browser._connection_port}"
+            f"✅ Вход выполнен!\n"
+            f"🌐 CDP порт: {cdp_port}\n"
+            f"📁 Браузер: {CHROME_PATH}"
         )
         await send_or_update_menu(update, user_id, "✅ Вход выполнен!")
 
     except Exception as e:
-        logger.error(f"Ошибка входа: {e}")
+        logger.error(f"❌ Ошибка входа: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         try:
             await msg1.delete()
         except:
@@ -818,4 +894,4 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
-    main() 
+    main()
