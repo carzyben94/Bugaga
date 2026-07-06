@@ -315,12 +315,32 @@ async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await tab.go_to(profile_url)
         await asyncio.sleep(3)
         
-        # Обновляем скриншот в ТОМ ЖЕ сообщении (редактируем)
-        await send_or_update_menu(
-            update, 
-            user_id, 
-            f"✅ Перешел в профиль @{username}"
+        # Получаем свежий скриншот
+        img_data, x, y = await get_screenshot_with_cursor(user_id)
+        
+        # Формируем текст
+        menu_text = f"✅ Перешел в профиль @{username}\n\n{get_menu_text()}"
+        cursor_obj = get_cursor(user_id)
+        full_caption = f"{menu_text}\n\n📍 Курсор: ({x}, {y}) | Шаг: {cursor_obj.step}px"
+        
+        # Редактируем существующее сообщение
+        if user_id in user_menu_messages:
+            try:
+                await update.effective_message.edit_media(
+                    media=InputMediaPhoto(media=img_data, caption=full_caption),
+                    reply_markup=get_control_keyboard()
+                )
+                return
+            except Exception as e:
+                logger.warning(f"Не удалось отредактировать: {e}")
+        
+        # Если не удалось отредактировать - создаем новое
+        msg = await update.message.reply_photo(
+            photo=img_data,
+            caption=full_caption,
+            reply_markup=get_control_keyboard()
         )
+        user_menu_messages[user_id] = msg.message_id
         
     except Exception as e:
         logger.error(f"Ошибка перехода в профиль: {e}")
