@@ -286,17 +286,21 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка входа: {str(e)[:300]}")
 
 async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, username=None):
-    """Переход в профиль по username"""
+    """Переход в профиль по username - редактирует текущее сообщение"""
     user_id = update.effective_user.id
     
-    # Если username не передан - просим ввести
+    # Если username не передан - просим ввести (меняем текст сообщения)
     if not username:
         context.user_data['waiting_for_profile'] = True
-        await update.message.reply_text(
+        
+        keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data="cancel_input")]]
+        
+        await update.effective_message.edit_text(
             "👤 **Введи username профиля**\n\n"
             "Например: `elonmusk`\n"
             "Или с @: `@billgates`\n\n"
             "Просто напиши имя в чат",
+            reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
         )
         return
@@ -314,7 +318,7 @@ async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, user
         _, tab = user_browsers[user_id]
         profile_url = f"https://x.com/{username}"
         
-        await update.message.reply_text(f"🔄 Перехожу в профиль @{username}...")
+        # Переходим в профиль
         await tab.go_to(profile_url)
         await asyncio.sleep(3)
         
@@ -341,6 +345,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Логируем все нажатия
     logger.info(f"Нажата кнопка: {action} от пользователя {user_id}")
     
+    # Отмена ввода
+    if action == "cancel_input":
+        context.user_data['waiting_for_profile'] = False
+        context.user_data['waiting_for_eval'] = False
+        await send_or_update_menu(update, user_id)
+        return
+    
     # Обработка кнопки "Профиль"
     if action == "go_profile":
         logger.info("Обработка go_profile")
@@ -348,12 +359,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Устанавливаем флаг ожидания ввода
         context.user_data['waiting_for_profile'] = True
         
-        # Отправляем сообщение с запросом (как Eval)
-        await query.message.reply_text(
+        # Меняем текст текущего сообщения на запрос ввода
+        keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data="cancel_input")]]
+        
+        await query.message.edit_text(
             "👤 **Введи username профиля**\n\n"
             "Например: `elonmusk`\n"
             "Или с @: `@billgates`\n\n"
             "Просто напиши имя в чат",
+            reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
         )
         
@@ -377,16 +391,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if action == "do_eval":
-        await query.message.delete()
-        await query.message.reply_text(
-            "⚡ Введи JS код для выполнения\n\n"
+        # Устанавливаем флаг ожидания ввода
+        context.user_data['waiting_for_eval'] = True
+        
+        # Меняем текст текущего сообщения на запрос ввода
+        keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data="cancel_input")]]
+        
+        await query.message.edit_text(
+            "⚡ **Введи JS код для выполнения**\n\n"
             "Примеры:\n"
             "`document.title`\n"
             "`window.scrollBy(0, 300)`\n"
             "`document.querySelectorAll('article').length`",
+            reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
         )
-        context.user_data['waiting_for_eval'] = True
+        
+        await query.answer("⚡ Введи код")
         return
     
     if user_id not in user_browsers:
@@ -606,14 +627,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 result = raw
 
+            result_text = ""
             if isinstance(result, str):
-                await update.message.reply_text(f"✅ Результат:\n\n{result[:4096]}")
+                result_text = result[:4096]
             elif isinstance(result, (list, dict)):
-                await update.message.reply_text(f"✅ Результат:\n\n{json.dumps(result, ensure_ascii=False, indent=2)[:4096]}")
+                result_text = json.dumps(result, ensure_ascii=False, indent=2)[:4096]
             else:
-                await update.message.reply_text(f"✅ Результат:\n\n{str(result)[:4096]}")
+                result_text = str(result)[:4096]
 
-            await send_or_update_menu(update, user_id, "⚡ Код выполнен")
+            # Обновляем меню с результатом
+            await send_or_update_menu(update, user_id, f"⚡ Результат:\n{result_text}")
 
         except Exception as e:
             await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
