@@ -1,9 +1,9 @@
 FROM python:3.14-slim
 
-# Установка Chromium и зависимостей
+# Установка Google Chrome и зависимостей
 RUN apt-get update && apt-get install -y \
-    chromium \
-    chromium-driver \
+    wget \
+    gnupg \
     fonts-liberation \
     libasound2 \
     libatk-bridge2.0-0 \
@@ -21,12 +21,20 @@ RUN apt-get update && apt-get install -y \
     xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Проверка установки Chromium
-RUN chromium --version || echo "Chromium installed"
+# Добавление репозитория Google Chrome
+RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
+    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list
 
-# Переменные окружения
-ENV CHROME_PATH=/usr/bin/chromium
-ENV CHROMIUM_PATH=/usr/bin/chromium
+# Установка Google Chrome
+RUN apt-get update && apt-get install -y google-chrome-stable \
+    && rm -rf /var/lib/apt/lists/*
+
+# Проверка установки Chrome
+RUN google-chrome --version || echo "Google Chrome installed"
+
+# Переменные окружения для Pydoll
+ENV CHROME_PATH=/usr/bin/google-chrome
+ENV CHROME_BIN=/usr/bin/google-chrome
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
