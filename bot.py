@@ -1,5 +1,3 @@
-Норм код
-
 import os
 import logging
 import asyncio
@@ -26,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
-CHROME_PATH = '/usr/bin/chromium'
+CHROME_PATH = '/usr/bin/google-chrome'  # ← ИЗМЕНЕНО НА CHROME
 
 agnes_client = None
 if AGNES_API_KEY:
@@ -258,7 +256,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         options.add_argument("--headless=new")
         options.add_argument("--disable-gpu")
         options.add_argument("--window-size=1024,768")
-        options.binary_location = CHROME_PATH
+        options.binary_location = CHROME_PATH  # ← ИСПОЛЬЗУЕТ CHROME
         
         browser = Chrome(options=options)
         tab = await browser.start()
