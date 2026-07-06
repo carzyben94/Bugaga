@@ -1,5 +1,5 @@
 import os
-import logging 
+import logging
 import asyncio
 import base64
 import json
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
-CHROME_PATH = '/usr/bin/google-chrome'  # ← ИЗМЕНЕНО НА CHROME
+CHROME_PATH = '/usr/bin/google-chrome'
 
 agnes_client = None
 if AGNES_API_KEY:
@@ -97,9 +97,7 @@ def escape_markdown(text):
 def get_menu_text():
     return (
         "🤖 Бот для X.com\n\n"
-        "📂 /savepage — сохранить страницу в ZIP\n"
-        "📊 /pageinfo — информация о странице\n"
-        "🔍 /analyze — AI анализ страницы"
+        "Управляй браузером с помощью кнопок ниже 👇"
     )
 
 def get_control_keyboard():
@@ -143,9 +141,6 @@ def get_control_keyboard():
         [
             InlineKeyboardButton("⚡ Eval", callback_data="do_eval"),
             InlineKeyboardButton("🔐 Вход", callback_data="do_login"),
-        ],
-        [
-            InlineKeyboardButton("📂 Save Page", callback_data="do_savepage"),
         ],
         [
             InlineKeyboardButton("❌ Закрыть", callback_data="close_browser"),
@@ -256,7 +251,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         options.add_argument("--headless=new")
         options.add_argument("--disable-gpu")
         options.add_argument("--window-size=1024,768")
-        options.binary_location = CHROME_PATH  # ← ИСПОЛЬЗУЕТ CHROME
+        options.binary_location = CHROME_PATH
         
         browser = Chrome(options=options)
         tab = await browser.start()
@@ -296,156 +291,6 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         await update.message.reply_text(f"❌ Ошибка входа: {str(e)[:300]}")
 
-# ==================== КОМАНДА /savepage ====================
-
-async def savepage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Сохраняет текущую страницу в ZIP архив"""
-    user_id = update.effective_user.id
-    
-    if user_id not in user_browsers:
-        await update.message.reply_text("❌ Сначала выполни /login")
-        return
-    
-    _, tab = user_browsers[user_id]
-    
-    try:
-        await update.message.reply_text("📂 Сохраняю страницу...")
-        
-        filename = f'page_{datetime.now().strftime("%Y%m%d_%H%M%S")}.zip'
-        
-        await tab.save_bundle(filename)
-        
-        if os.path.exists(filename):
-            with open(filename, 'rb') as f:
-                await update.message.reply_document(
-                    document=f,
-                    filename=filename,
-                    caption=f"✅ Страница сохранена\n📁 Файл: {filename}\n📊 Размер: {os.path.getsize(filename) // 1024} KB"
-                )
-            
-            os.remove(filename)
-        else:
-            await update.message.reply_text("❌ Не удалось сохранить страницу")
-        
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
-
-# ==================== КОМАНДА /pageinfo ====================
-
-async def pageinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает информацию о текущей странице"""
-    user_id = update.effective_user.id
-    
-    if user_id not in user_browsers:
-        await update.message.reply_text("❌ Сначала выполни /login")
-        return
-    
-    _, tab = user_browsers[user_id]
-    
-    try:
-        info = await tab.execute_script("""
-            (function() {
-                return {
-                    url: window.location.href,
-                    title: document.title,
-                    tweets: document.querySelectorAll('article[data-testid="tweet"]').length,
-                    testids: Array.from(document.querySelectorAll('[data-testid]'))
-                        .map(el => el.getAttribute('data-testid'))
-                        .filter((v,i,a) => a.indexOf(v) === i)
-                        .slice(0, 20)
-                };
-            })()
-        """, return_by_value=True)
-        
-        reply = f"📊 **Информация о странице:**\n\n"
-        reply += f"🔗 URL: {info.get('url', 'неизвестно')}\n"
-        reply += f"📝 Заголовок: {info.get('title', 'неизвестно')}\n"
-        reply += f"🐦 Твитов: {info.get('tweets', 0)}\n\n"
-        reply += "📋 **Доступные data-testid:**\n"
-        for testid in info.get('testids', [])[:15]:
-            reply += f"• `{testid}`\n"
-        
-        await update.message.reply_text(reply, parse_mode='Markdown')
-        
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-# ==================== КОМАНДА /analyze ====================
-
-async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """AI анализ структуры страницы"""
-    user_id = update.effective_user.id
-    
-    if user_id not in user_browsers:
-        await update.message.reply_text("❌ Сначала выполни /login")
-        return
-    
-    if not agnes_client:
-        await update.message.reply_text("❌ Agnes AI не инициализирован")
-        return
-    
-    _, tab = user_browsers[user_id]
-    
-    try:
-        await update.message.reply_text("📊 Анализирую структуру страницы...")
-        
-        html = await tab.execute_script("""
-            (function() {
-                return document.documentElement.outerHTML;
-            })()
-        """, return_by_value=True)
-        
-        response = await agnes_client.chat.completions.create(
-            model="agnes-2.0-flash",
-            messages=[
-                {"role": "system", "content": "Ты — эксперт по парсингу X.com. Проанализируй HTML и предложи селекторы для извлечения твитов."},
-                {"role": "user", "content": f"""
-                HTML страницы (первые 10000 символов):
-                {html[:10000]}
-                
-                Найди селекторы для:
-                1. Текст твита
-                2. Имя автора
-                3. Username
-                4. Лайки
-                5. Ретвиты
-                6. Ответы
-                7. Время
-                
-                Верни JSON с селекторами.
-                """}
-            ],
-            max_tokens=1000,
-            temperature=0.1
-        )
-        
-        result = response.choices[0].message.content
-        result = re.sub(r'```json\n?', '', result)
-        result = re.sub(r'```\n?', '', result)
-        result = result.strip()
-        
-        try:
-            selectors = json.loads(result)
-            
-            reply = "🧠 **AI анализ структуры:**\n\n"
-            for key, value in selectors.items():
-                if key not in ['confidence', 'notes']:
-                    reply += f"• {key}: `{value}`\n"
-            
-            if selectors.get('confidence'):
-                reply += f"\n📊 Уверенность: {selectors['confidence'] * 100}%"
-            if selectors.get('notes'):
-                reply += f"\n📝 {selectors['notes']}"
-            
-            await update.message.reply_text(reply, parse_mode='Markdown')
-            
-        except json.JSONDecodeError:
-            await update.message.reply_text(f"⚠️ Ошибка парсинга JSON:\n{result[:500]}")
-        
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
 # ==================== ОБРАБОТЧИК КНОПОК ====================
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -470,11 +315,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "document.querySelectorAll('article').length"
         )
         context.user_data['waiting_for_eval'] = True
-        return
-    
-    if action == "do_savepage":
-        await query.message.delete()
-        await savepage_command(update, context)
         return
     
     if user_id not in user_browsers:
@@ -697,9 +537,6 @@ def main():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("login", login))
-    app.add_handler(CommandHandler("savepage", savepage_command))
-    app.add_handler(CommandHandler("pageinfo", pageinfo_command))
-    app.add_handler(CommandHandler("analyze", analyze_command))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
