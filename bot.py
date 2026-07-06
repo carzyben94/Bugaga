@@ -285,12 +285,13 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка входа: {str(e)[:300]}")
 
 async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /go username - переход в профиль (как кнопка Скрин)"""
+    """Команда /go username - переход в профиль (обновляет существующее меню)"""
     user_id = update.effective_user.id
     
     # Проверяем, что браузер открыт
     if user_id not in user_browsers:
         await update.message.reply_text("❌ Сначала нажми '🔐 Вход'")
+        await update.message.delete()  # Удаляем команду
         return
     
     # Проверяем, что передан username
@@ -301,6 +302,7 @@ async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Пример: `/go @billgates`",
             parse_mode='Markdown'
         )
+        await update.message.delete()  # Удаляем команду
         return
     
     username = context.args[0].strip()
@@ -315,13 +317,13 @@ async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await tab.go_to(profile_url)
         await asyncio.sleep(3)
         
-        # Получаем свежий скриншот (как в кнопке Скрин)
+        # Получаем свежий скриншот
         img_data, x, y = await get_screenshot_with_cursor(user_id)
-        menu_text = get_menu_text()
+        menu_text = f"✅ Перешел в профиль @{username}\n\n{get_menu_text()}"
         cursor_obj = get_cursor(user_id)
-        full_caption = f"✅ Перешел в профиль @{username}\n\n{menu_text}\n\n📍 Курсор: ({x}, {y}) | Шаг: {cursor_obj.step}px"
+        full_caption = f"{menu_text}\n\n📍 Курсор: ({x}, {y}) | Шаг: {cursor_obj.step}px"
         
-        # Редактируем прошлое сообщение бота (как кнопка Скрин)
+        # Редактируем существующее сообщение бота
         if user_id in user_menu_messages:
             try:
                 await update.effective_message.bot.edit_message_media(
@@ -330,13 +332,13 @@ async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     message_id=user_menu_messages[user_id],
                     reply_markup=get_control_keyboard()
                 )
-                # Удаляем сообщение с командой /go
+                # Удаляем сообщение с командой
                 await update.message.delete()
                 return
             except Exception as e:
                 logger.warning(f"Не удалось отредактировать: {e}")
         
-        # Если не получилось - создаем новое
+        # Если сообщения нет - создаем новое
         msg = await update.message.reply_photo(
             photo=img_data,
             caption=full_caption,
@@ -349,6 +351,7 @@ async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка перехода в профиль: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        await update.message.delete()
 
 # ==================== ОБРАБОТЧИК КНОПОК ====================
 
