@@ -311,14 +311,11 @@ async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, tab = user_browsers[user_id]
         profile_url = f"https://x.com/{username}"
         
-        # Отправляем сообщение о переходе
-        await update.message.reply_text(f"🔄 Перехожу в профиль @{username}...")
-        
-        # Переходим
+        # Переходим в профиль
         await tab.go_to(profile_url)
         await asyncio.sleep(3)
         
-        # Обновляем скриншот в том же окне
+        # Обновляем скриншот в том же окне через send_or_update_menu
         await send_or_update_menu(
             update, 
             user_id, 
@@ -591,7 +588,7 @@ def main():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("login", login))
-    app.add_handler(CommandHandler("go", go_to_profile))  # Команда /go
+    app.add_handler(CommandHandler("go", go_to_profile))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
