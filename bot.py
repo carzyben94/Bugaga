@@ -285,7 +285,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка входа: {str(e)[:300]}")
 
 async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /go username - переход в профиль (редактирует текущее сообщение)"""
+    """Команда /go username - переход в профиль (редактирует прошлое сообщение)"""
     user_id = update.effective_user.id
     
     # Проверяем, что браузер открыт
@@ -323,16 +323,20 @@ async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cursor_obj = get_cursor(user_id)
         full_caption = f"{menu_text}\n\n📍 Курсор: ({x}, {y}) | Шаг: {cursor_obj.step}px"
         
-        # Редактируем существующее сообщение
+        # Редактируем ПРОШЛОЕ сообщение (если есть ID)
         if user_id in user_menu_messages:
             try:
-                await update.effective_message.edit_media(
+                # Получаем сообщение по ID и редактируем его
+                message_id = user_menu_messages[user_id]
+                await update.effective_message.bot.edit_message_media(
                     media=InputMediaPhoto(media=img_data, caption=full_caption),
+                    chat_id=update.effective_chat.id,
+                    message_id=message_id,
                     reply_markup=get_control_keyboard()
                 )
                 return
             except Exception as e:
-                logger.warning(f"Не удалось отредактировать: {e}")
+                logger.warning(f"Не удалось отредактировать прошлое сообщение: {e}")
         
         # Если не удалось отредактировать - создаем новое
         msg = await update.message.reply_photo(
