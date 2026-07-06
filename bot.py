@@ -160,45 +160,31 @@ def get_control_keyboard():
 
 async def get_screenshot_with_cursor(user_id):
     try:
-        # Поддержка нового формата
-        if isinstance(user_browsers[user_id], dict):
-            _, tab = user_browsers[user_id]['browser'], user_browsers[user_id]['tab']
-        else:
-            _, tab = user_browsers[user_id]
-        cursor = get_cursor(user_id)
+        browser_info = user_browsers[user_id]
+        tab = browser_info['tab']
 
         try:
             await tab.execute_script("return 1")
         except:
-            if isinstance(user_browsers[user_id], dict):
-                browser = user_browsers[user_id]['browser']
-            else:
-                browser, _ = user_browsers[user_id]
+            browser = browser_info['browser']
             tab = await browser.new_tab()
             await tab.go_to('https://x.com')
             await asyncio.sleep(2)
-            if isinstance(user_browsers[user_id], dict):
-                user_browsers[user_id]['tab'] = tab
-            else:
-                user_browsers[user_id] = (browser, tab)
+            browser_info['tab'] = tab
 
         screenshot_base64 = await asyncio.wait_for(
             tab.take_screenshot(as_base64=True),
             timeout=10.0
         )
     except asyncio.TimeoutError:
-        if isinstance(user_browsers[user_id], dict):
-            _, tab = user_browsers[user_id]['browser'], user_browsers[user_id]['tab']
-        else:
-            _, tab = user_browsers[user_id]
+        browser_info = user_browsers[user_id]
+        tab = browser_info['tab']
         await tab.refresh()
         await asyncio.sleep(3)
         screenshot_base64 = await tab.take_screenshot(as_base64=True)
     except Exception as e:
-        if isinstance(user_browsers[user_id], dict):
-            _, tab = user_browsers[user_id]['browser'], user_browsers[user_id]['tab']
-        else:
-            _, tab = user_browsers[user_id]
+        browser_info = user_browsers[user_id]
+        tab = browser_info['tab']
         try:
             screenshot_base64 = await tab.execute_script("""
                 (function() {
@@ -212,6 +198,7 @@ async def get_screenshot_with_cursor(user_id):
     screenshot_bytes = base64.b64decode(screenshot_base64)
     image = Image.open(BytesIO(screenshot_bytes))
     draw = ImageDraw.Draw(image)
+    cursor = get_cursor(user_id)
     x, y = cursor.x, cursor.y
     size = 15
     draw.line([(x - size, y), (x + size, y)], fill='red', width=3)
@@ -278,10 +265,14 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         options.add_argument("--headless=new")
         options.add_argument("--disable-gpu")
         options.add_argument("--window-size=1024,768")
+        # ❌ НЕ ДОБАВЛЯЙ remote-debugging-port - Pydoll сам управляет!
+        # options.add_argument("--remote-debugging-port=9222")
         options.binary_location = CHROME_PATH
         
         browser = Chrome(options=options)
         tab = await browser.start()
+        
+        logger.info(f"Браузер запущен! CDP порт: {browser._connection_port}")
         
         await tab.go_to('https://x.com')
         await asyncio.sleep(2)
@@ -292,11 +283,11 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await tab.refresh()
         await asyncio.sleep(5)
         
-        # Сохраняем в новом формате с CDP портом
+        # Сохраняем браузер с портом CDP
         user_browsers[user_id] = {
             'browser': browser,
             'tab': tab,
-            'cdp_port': 9222  # Порт по умолчанию
+            'cdp_port': browser._connection_port  # Автоматический порт от Pydoll
         }
         
         cursor = get_cursor(user_id)
@@ -313,13 +304,13 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         
         await update.message.reply_text(
-            "✅ Вход выполнен! Размер окна: 1024x768\n"
-            "🌐 CDP доступен на порту: 9222"
+            f"✅ Вход выполнен! Размер окна: 1024x768\n"
+            f"🌐 CDP порт: {browser._connection_port}"
         )
         await send_or_update_menu(update, user_id, "✅ Вход выполнен!")
 
     except Exception as e:
-        logger.error(f"Ошибка: {e}")
+        logger.error(f"Ошибка входа: {e}")
         try:
             await msg1.delete()
         except:
@@ -335,10 +326,7 @@ async def savepage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Сначала выполни /login")
         return
     
-    if isinstance(user_browsers[user_id], dict):
-        _, tab = user_browsers[user_id]['browser'], user_browsers[user_id]['tab']
-    else:
-        _, tab = user_browsers[user_id]
+    tab = user_browsers[user_id]['tab']
     
     try:
         await update.message.reply_text("📂 Сохраняю страницу...")
@@ -372,10 +360,7 @@ async def pageinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Сначала выполни /login")
         return
     
-    if isinstance(user_browsers[user_id], dict):
-        _, tab = user_browsers[user_id]['browser'], user_browsers[user_id]['tab']
-    else:
-        _, tab = user_browsers[user_id]
+    tab = user_browsers[user_id]['tab']
     
     try:
         info = await tab.execute_script("""
@@ -418,10 +403,7 @@ async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Agnes AI не инициализирован")
         return
     
-    if isinstance(user_browsers[user_id], dict):
-        _, tab = user_browsers[user_id]['browser'], user_browsers[user_id]['tab']
-    else:
-        _, tab = user_browsers[user_id]
+    tab = user_browsers[user_id]['tab']
     
     try:
         await update.message.reply_text("📊 Анализирую структуру страницы...")
@@ -513,6 +495,12 @@ async def browseuse_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     try:
+        # Получаем порт CDP из браузера Pydoll
+        browser_info = user_browsers[user_id]
+        cdp_port = browser_info['cdp_port']
+        
+        logger.info(f"Подключаюсь к CDP порту: {cdp_port}")
+        
         # Создаем LLM через Agnes
         llm = ChatOpenAI(
             model="agnes-2.0-flash",
@@ -523,7 +511,7 @@ async def browseuse_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Подключаемся к существующему браузеру через CDP
         browser = Browser(
-            cdp_url="http://localhost:9222",
+            cdp_url=f"http://localhost:{cdp_port}",
             headless=False
         )
         
@@ -604,10 +592,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Сначала нажми '🔐 Вход'")
         return
     
-    if isinstance(user_browsers[user_id], dict):
-        _, tab = user_browsers[user_id]['browser'], user_browsers[user_id]['tab']
-    else:
-        _, tab = user_browsers[user_id]
+    tab = user_browsers[user_id]['tab']
     cursor = get_cursor(user_id)
     step = cursor.step
     
@@ -756,10 +741,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         elif action == "close_browser":
             if user_id in user_browsers:
-                if isinstance(user_browsers[user_id], dict):
-                    browser = user_browsers[user_id]['browser']
-                else:
-                    browser, _ = user_browsers[user_id]
+                browser = user_browsers[user_id]['browser']
                 await browser.close()
                 del user_browsers[user_id]
                 if user_id in user_menu_messages:
@@ -797,10 +779,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Сначала нажми '🔐 Вход'")
             return
         
-        if isinstance(user_browsers[user_id], dict):
-            _, tab = user_browsers[user_id]['browser'], user_browsers[user_id]['tab']
-        else:
-            _, tab = user_browsers[user_id]
+        tab = user_browsers[user_id]['tab']
         
         try:
             raw = await tab.execute_script(text, return_by_value=True)
