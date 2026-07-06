@@ -297,15 +297,20 @@ async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, user
     if not username:
         context.user_data['waiting_for_profile'] = True
         
-        keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data="cancel_go")]]
-        
+        # Отправляем сообщение с запросом
         await update.message.reply_text(
             "👤 **Введи username профиля**\n\n"
             "Например: `elonmusk`\n"
             "Или с @: `@billgates`\n\n"
             "Просто напиши имя в чат",
-            reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
+        )
+        
+        # Добавляем кнопку отмены
+        keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data="cancel_go")]]
+        await update.message.reply_text(
+            "Нажми 'Отмена' чтобы выйти",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
     
@@ -326,6 +331,7 @@ async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, user
         await tab.go_to(profile_url)
         await asyncio.sleep(3)
         
+        # Обновляем меню со скриншотом
         await send_or_update_menu(
             update, 
             user_id, 
