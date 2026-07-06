@@ -297,20 +297,16 @@ async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, user
     if not username:
         context.user_data['waiting_for_profile'] = True
         
-        # Отправляем сообщение с запросом
-        await update.message.reply_text(
-            "👤 **Введи username профиля**\n\n"
-            "Например: `elonmusk`\n"
-            "Или с @: `@billgates`\n\n"
-            "Просто напиши имя в чат",
-            parse_mode='Markdown'
-        )
-        
-        # Добавляем кнопку отмены
+        # Меняем текст на запрос ввода
         keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data="cancel_go")]]
-        await update.message.reply_text(
-            "Нажми 'Отмена' чтобы выйти",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+        
+        menu_text = "👤 **Введи username профиля**\n\nНапример: `elonmusk`\nИли с @: `@billgates`"
+        
+        # Показываем запрос в том же сообщении
+        await update.effective_message.edit_text(
+            menu_text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
         )
         return
     
@@ -327,6 +323,7 @@ async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, user
         _, tab = user_browsers[user_id]
         profile_url = f"https://x.com/{username}"
         
+        # Отправляем сообщение о переходе
         await update.message.reply_text(f"🔄 Перехожу в профиль @{username}...")
         await tab.go_to(profile_url)
         await asyncio.sleep(3)
@@ -361,20 +358,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Устанавливаем флаг ожидания ввода
         context.user_data['waiting_for_profile'] = True
         
-        # Отправляем новое сообщение с запросом
-        await query.message.reply_text(
+        # Меняем текст сообщения на запрос ввода
+        keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data="cancel_go")]]
+        
+        await query.message.edit_text(
             "👤 **Введи username профиля**\n\n"
             "Например: `elonmusk`\n"
-            "Или с @: `@billgates`\n\n"
-            "Просто напиши имя в чат",
+            "Или с @: `@billgates`",
+            reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
-        )
-        
-        # Добавляем кнопку отмены
-        keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data="cancel_go")]]
-        await query.message.reply_text(
-            "Нажми 'Отмена' чтобы выйти",
-            reply_markup=InlineKeyboardMarkup(keyboard)
         )
         
         await query.answer("👤 Введи username")
@@ -383,8 +375,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "cancel_go":
         logger.info("Отмена ввода профиля")
         context.user_data['waiting_for_profile'] = False
-        await query.message.delete()
-        await query.message.reply_text("❌ Отменено")
         # Возвращаем меню
         await send_or_update_menu(update, user_id)
         return
@@ -406,16 +396,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if action == "do_eval":
-        await query.message.delete()
-        await query.message.reply_text(
-            "⚡ Введи JS код для выполнения\n\n"
+        # Меняем текст на запрос ввода кода
+        context.user_data['waiting_for_eval'] = True
+        
+        await query.message.edit_text(
+            "⚡ **Введи JS код для выполнения**\n\n"
             "Примеры:\n"
             "`document.title`\n"
             "`window.scrollBy(0, 300)`\n"
             "`document.querySelectorAll('article').length`",
             parse_mode='Markdown'
         )
-        context.user_data['waiting_for_eval'] = True
         return
     
     if user_id not in user_browsers:
@@ -612,8 +603,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Это команда, а не username")
             return
         
-        # Вызываем переход в профиль
-        await go_to_profile(update, context, username=text)
+        # Убираем @ если есть
+        username = text
+        if username.startswith('@'):
+            username = username[1:]
+        
+        # Проверяем, что браузер открыт
+        if user_id not in user_browsers:
+            await update.message.reply_text("❌ Сначала нажми '🔐 Вход'")
+            return
+        
+        try:
+            _, tab = user_browsers[user_id]
+            profile_url = f"https://x.com/{username}"
+            
+            await update.message.reply_text(f"🔄 Перехожу в профиль @{username}...")
+            await tab.go_to(profile_url)
+            await asyncio.sleep(3)
+            
+            # Обновляем меню со скриншотом
+            await send_or_update_menu(
+                update, 
+                user_id, 
+                f"✅ Перешел в профиль @{username}"
+            )
+            
+        except Exception as e:
+            logger.error(f"Ошибка перехода в профиль: {e}")
+            await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
         return
     
     # Обработка eval
