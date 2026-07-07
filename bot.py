@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+import base64
 from io import BytesIO
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -37,32 +38,76 @@ X_COOKIES = [
     {"name": "__cf_bm", "value": "0lyNYlKnbjXejqIk_blw2x20TfMRtW3SWJ_jmpay.t4-1783123617.0158947-1.0.1.1-1rnugK6C5Aw5r.126FQ3rJYZTCG2WhtPATFYO5Ip0QukW40cCR0qDNfacg6VRv3vRh3w.4Un_NQ6hOnxQfvhm68Grg1hZiLbF6HAyxvxzmS06Q8AzQkKu_i248B5sxj7", "domain": ".x.com", "path": "/"}
 ]
 
+# Хранилище активных браузеров (в реальном проекте используйте БД)
+active_browsers = {}
+
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 Доступные команды:\n\n"
-        "/browser - Запустить браузер и открыть X.com"
+        "/open_browser - Открыть браузер и авторизоваться на X.com\n"
+        "/close_browser - Закрыть браузер"
     )
 
-# Команда /browser
-async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Команда /open_browser (бывший /browser)
+async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    # Проверяем, есть ли уже активный браузер у пользователя
+    if user_id in active_browsers:
+        await update.message.reply_text(
+            "⚠️ У вас уже есть активный браузер.\n"
+            "Используйте /close_browser чтобы закрыть его."
+        )
+        return
+    
     status_msg = await update.message.reply_text("🔄 Запускаю браузер, подождите...")
     
     try:
-        screenshot, title, url = await run_browser_task()
+        screenshot, title, url, browser = await run_browser_task()
+        
+        # Сохраняем браузер в активные
+        active_browsers[user_id] = browser
         
         await status_msg.delete()
         
         await update.message.reply_photo(
             photo=screenshot,
-            caption=f"✅ Браузер выполнил задачу!\n\n"
+            caption=f"✅ Браузер открыт и авторизован!\n\n"
                    f"📄 Заголовок: {title}\n"
-                   f"🔗 URL: {url}"
+                   f"🔗 URL: {url}\n\n"
+                   f"💡 Используйте /close_browser чтобы закрыть браузер."
         )
     except Exception as e:
         logger.error(f"Ошибка браузера: {e}")
         await status_msg.edit_text(
             f"❌ Ошибка при запуске браузера:\n\n{str(e)}"
+        )
+
+# Команда /close_browser
+async def close_browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    if user_id not in active_browsers:
+        await update.message.reply_text(
+            "❌ У вас нет активного браузера.\n"
+            "Используйте /open_browser чтобы открыть его."
+        )
+        return
+    
+    try:
+        browser = active_browsers[user_id]
+        await browser.stop()
+        del active_browsers[user_id]
+        
+        await update.message.reply_text(
+            "✅ Браузер успешно закрыт!"
+        )
+        logger.info(f"Браузер закрыт для пользователя {user_id}")
+    except Exception as e:
+        logger.error(f"Ошибка при закрытии браузера: {e}")
+        await update.message.reply_text(
+            f"❌ Ошибка при закрытии браузера:\n\n{str(e)}"
         )
 
 # Запуск браузера со скриншотом
@@ -76,34 +121,35 @@ async def run_browser_task():
     options.add_argument('--disable-gpu')
     options.add_argument('--window-size=1920,1080')
 
-    async with Chrome(options=options) as browser:
-        tab = await browser.start()
-        
-        logger.info("Устанавливаю куки...")
-        await tab.set_cookies(X_COOKIES)
-        
-        logger.info("Перехожу на https://x.com...")
-        await tab.go_to('https://x.com')
-        await asyncio.sleep(3)
-        
-        logger.info("Делаю скриншот...")
-        # Исправление: указываем as_base64=True и path=None
-        screenshot_base64 = await tab.take_screenshot(
-            path=None,
-            as_base64=True,
-            beyond_viewport=False
-        )
-        
-        title = await tab.title
-        current_url = await tab.current_url
-        
-        # Декодируем base64 в байты
-        import base64
-        screenshot_bytes = base64.b64decode(screenshot_base64)
-        screenshot_io = BytesIO(screenshot_bytes)
-        screenshot_io.seek(0)
-        
-        return screenshot_io, title, current_url
+    browser = Chrome(options=options)
+    await browser.start()
+    
+    tab = await browser.start()
+    
+    logger.info("Устанавливаю куки...")
+    await tab.set_cookies(X_COOKIES)
+    
+    logger.info("Перехожу на https://x.com...")
+    await tab.go_to('https://x.com')
+    await asyncio.sleep(3)
+    
+    logger.info("Делаю скриншот...")
+    screenshot_base64 = await tab.take_screenshot(
+        path=None,
+        as_base64=True,
+        beyond_viewport=False
+    )
+    
+    title = await tab.title
+    current_url = await tab.current_url
+    
+    # Декодируем base64 в байты
+    screenshot_bytes = base64.b64decode(screenshot_base64)
+    screenshot_io = BytesIO(screenshot_bytes)
+    screenshot_io.seek(0)
+    
+    # Возвращаем браузер для дальнейшего использования
+    return screenshot_io, title, current_url, browser
 
 # Обработка ошибок
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -118,7 +164,8 @@ def main():
     application = Application.builder().token(TOKEN).build()
     
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("browser", browser_command))
+    application.add_handler(CommandHandler("open_browser", open_browser_command))
+    application.add_handler(CommandHandler("close_browser", close_browser_command))
     application.add_error_handler(error_handler)
     
     logger.info("🚀 Бот запущен и готов к работе!")
