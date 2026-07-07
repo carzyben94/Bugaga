@@ -225,20 +225,27 @@ async def validex_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session = active_sessions[user_id]
         tab = session["tab"]
         
+        # Получаем HTML
         html = await tab.execute_script('return document.documentElement.outerHTML;')
         
         if isinstance(html, dict):
             html = str(html)
-            file_logger.warning(f"HTML получен как словарь, конвертирован в строку")
+            file_logger.warning("HTML получен как словарь, конвертирован в строку")
         
         if len(html) > 50000:
             html = html[:50000]
             file_logger.debug("HTML обрезан до 50000 символов")
         
+        # Создаем приложение ValidEx
         app = validex.App()
         app.add(html)
         
-        tweets = app.extract_all(TweetData)
+        # Извлекаем данные (extract() согласно документации)
+        tweets = app.extract(TweetData)
+        
+        # Проверяем результат
+        if not isinstance(tweets, list):
+            tweets = [tweets] if tweets else []
         
         if not tweets:
             await status_msg.edit_text("❌ ValidEx не нашел твитов")
@@ -521,7 +528,6 @@ async def close_browser_command(update: Update, context: ContextTypes.DEFAULT_TY
 async def get_screenshot_with_cursor(tab, cursor_x, cursor_y):
     file_logger.debug(f"Создание скриншота с курсором ({cursor_x}, {cursor_y})")
     
-    # Исправленный метод получения скриншота
     screenshot_base64 = await tab.take_screenshot(
         path=None,
         as_base64=True,
