@@ -7,7 +7,7 @@ import re
 from io import BytesIO
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict
 from pydantic import BaseModel
 from PIL import Image, ImageDraw
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
@@ -39,6 +39,7 @@ X_COOKIES = [
 
 user_browsers = {}
 user_menu_messages = {}
+user_menu_state = {}  # Для отслеживания текущего меню
 
 # ==================== МОДЕЛЬ ТВИТА ====================
 
@@ -71,6 +72,7 @@ class CursorManager:
         self.x = 500
         self.y = 300
         self.step = 30
+        self.last_action = "Готов"
 
 cursor_managers = {}
 
@@ -87,13 +89,41 @@ def escape_markdown(text):
         text = text.replace(char, f'\\{char}')
     return text
 
-def get_menu_text():
+# ==================== МЕНЮ ====================
+
+def get_menu_text(user_id, status=None):
+    cursor = get_cursor(user_id)
+    if not status:
+        status = cursor.last_action
+    
     return (
-        "🤖 Бот для X.com\n\n"
-        "Управляй браузером с помощью кнопок ниже 👇"
+        f"🤖 **X.com Controller**\n"
+        f"┌─────────────────────┐\n"
+        f"│ 📍 Статус: {status}\n"
+        f"│ 🎯 ({cursor.x}, {cursor.y})\n"
+        f"│ 📏 Шаг: {cursor.step}px\n"
+        f"└─────────────────────┘\n\n"
+        f"💡 **Управление:**\n"
+        f"• Стрелки для навигации\n"
+        f"• 🎯 центрирует курсор\n"
+        f"• 🖱️ для клика"
     )
 
-def get_control_keyboard():
+# ==================== КЛАВИАТУРЫ ====================
+
+def get_main_keyboard():
+    """Главное меню"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🖱️ Управление курсором", callback_data="menu_cursor")],
+        [InlineKeyboardButton("📜 Скроллинг", callback_data="menu_scroll")],
+        [InlineKeyboardButton("⚡ Действия", callback_data="menu_actions")],
+        [InlineKeyboardButton("🔧 Настройки", callback_data="menu_settings")],
+        [InlineKeyboardButton("📊 Парсинг", callback_data="menu_parsing")],
+        [InlineKeyboardButton("❌ Закрыть бота", callback_data="close_browser")],
+    ])
+
+def get_cursor_keyboard():
+    """Меню управления курсором"""
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("↖️", callback_data="diag_up_left"),
@@ -102,7 +132,7 @@ def get_control_keyboard():
         ],
         [
             InlineKeyboardButton("⬅️", callback_data="cursor_left"),
-            InlineKeyboardButton("🔄 Центр", callback_data="cursor_center"),
+            InlineKeyboardButton("🎯 Центр", callback_data="cursor_center"),
             InlineKeyboardButton("➡️", callback_data="cursor_right"),
         ],
         [
@@ -111,35 +141,77 @@ def get_control_keyboard():
             InlineKeyboardButton("↘️", callback_data="diag_down_right"),
         ],
         [
-            InlineKeyboardButton("⬆️ Скролл", callback_data="scroll_up"),
-            InlineKeyboardButton("⬇️ Скролл", callback_data="scroll_down"),
-        ],
-        [
-            InlineKeyboardButton("🔝 Наверх", callback_data="scroll_top"),
-            InlineKeyboardButton("🔽 Вниз", callback_data="scroll_bottom"),
-        ],
-        [
-            InlineKeyboardButton("📊 Extract", callback_data="extract_tweets"),
-            InlineKeyboardButton("🔄 Обновить", callback_data="refresh_screen"),
-        ],
-        [
             InlineKeyboardButton("🖱️ Клик", callback_data="mouse_click"),
             InlineKeyboardButton("📸 Скрин", callback_data="take_screenshot"),
         ],
-        [
-            InlineKeyboardButton("🔵 Шаг 30", callback_data="step_30"),
-            InlineKeyboardButton("🔴 Шаг 60", callback_data="step_60"),
-            InlineKeyboardButton("🟢 Шаг 100", callback_data="step_100"),
-        ],
-        [
-            InlineKeyboardButton("⚡ Eval", callback_data="do_eval"),
-            InlineKeyboardButton("🔐 Вход", callback_data="do_login"),
-        ],
-        [
-            InlineKeyboardButton("👤 Профиль", callback_data="go_profile"),
-            InlineKeyboardButton("❌ Закрыть", callback_data="close_browser"),
-        ],
+        [InlineKeyboardButton("🔙 В главное меню", callback_data="menu_main")],
     ])
+
+def get_scroll_keyboard():
+    """Меню скроллинга"""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("⬆️ Вверх 300px", callback_data="scroll_up"),
+            InlineKeyboardButton("⬇️ Вниз 300px", callback_data="scroll_down"),
+        ],
+        [
+            InlineKeyboardButton("🏠 Наверх", callback_data="scroll_top"),
+            InlineKeyboardButton("🏁 Вниз", callback_data="scroll_bottom"),
+        ],
+        [
+            InlineKeyboardButton("⬆️ Вверх 100px", callback_data="scroll_up_small"),
+            InlineKeyboardButton("⬇️ Вниз 100px", callback_data="scroll_down_small"),
+        ],
+        [InlineKeyboardButton("🔙 В главное меню", callback_data="menu_main")],
+    ])
+
+def get_actions_keyboard():
+    """Меню действий"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("👤 Перейти в профиль", callback_data="go_profile")],
+        [InlineKeyboardButton("⚡ Выполнить JS код", callback_data="do_eval")],
+        [InlineKeyboardButton("🔐 Вход в X.com", callback_data="do_login")],
+        [InlineKeyboardButton("🔄 Обновить страницу", callback_data="refresh_screen")],
+        [InlineKeyboardButton("🔙 В главное меню", callback_data="menu_main")],
+    ])
+
+def get_settings_keyboard():
+    """Меню настроек"""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔵 30px", callback_data="step_30"),
+            InlineKeyboardButton("🔴 60px", callback_data="step_60"),
+            InlineKeyboardButton("🟢 100px", callback_data="step_100"),
+        ],
+        [
+            InlineKeyboardButton("🟣 150px", callback_data="step_150"),
+            InlineKeyboardButton("⚪ 200px", callback_data="step_200"),
+        ],
+        [InlineKeyboardButton("🔙 В главное меню", callback_data="menu_main")],
+    ])
+
+def get_parsing_keyboard():
+    """Меню парсинга"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Извлечь твиты", callback_data="extract_tweets")],
+        [InlineKeyboardButton("📊 Извлечь с прокруткой", callback_data="extract_tweets_scroll")],
+        [InlineKeyboardButton("📈 Статистика страницы", callback_data="page_stats")],
+        [InlineKeyboardButton("🔙 В главное меню", callback_data="menu_main")],
+    ])
+
+def get_keyboard_by_state(state: str):
+    """Возвращает клавиатуру по состоянию меню"""
+    keyboards = {
+        "main": get_main_keyboard,
+        "cursor": get_cursor_keyboard,
+        "scroll": get_scroll_keyboard,
+        "actions": get_actions_keyboard,
+        "settings": get_settings_keyboard,
+        "parsing": get_parsing_keyboard,
+    }
+    return keyboards.get(state, get_main_keyboard)()
+
+# ==================== БРАУЗЕР ====================
 
 async def get_screenshot_with_cursor(user_id):
     try:
@@ -189,33 +261,39 @@ async def get_screenshot_with_cursor(user_id):
     image.save(output, format='PNG')
     return output.getvalue(), x, y
 
-async def send_or_update_menu(update, user_id, caption=None):
+async def send_or_update_menu(update, user_id, caption=None, state="main"):
+    """Обновляет меню с учетом состояния"""
+    user_menu_state[user_id] = state
+    
     if user_id not in user_browsers:
-        menu_text = get_menu_text()
+        menu_text = get_menu_text(user_id, "❌ Браузер не открыт")
         if user_id in user_menu_messages:
             try:
-                await update.effective_message.edit_text(menu_text)
+                await update.effective_message.edit_text(
+                    menu_text,
+                    reply_markup=get_keyboard_by_state(state)
+                )
             except:
                 await update.message.reply_text(menu_text)
         else:
-            msg = await update.message.reply_text(menu_text)
+            msg = await update.message.reply_text(
+                menu_text,
+                reply_markup=get_keyboard_by_state(state)
+            )
             user_menu_messages[user_id] = msg.message_id
         return
 
     img_data, x, y = await get_screenshot_with_cursor(user_id)
+    cursor = get_cursor(user_id)
     
-    menu_text = get_menu_text()
-    if caption:
-        menu_text = f"{caption}\n\n{menu_text}"
-    
-    cursor_obj = get_cursor(user_id)
-    full_caption = f"{menu_text}\n\n📍 Курсор: ({x}, {y}) | Шаг: {cursor_obj.step}px"
+    status = caption if caption else cursor.last_action
+    menu_text = get_menu_text(user_id, status)
 
     if user_id in user_menu_messages:
         try:
             await update.effective_message.edit_media(
-                media=InputMediaPhoto(media=img_data, caption=full_caption),
-                reply_markup=get_control_keyboard()
+                media=InputMediaPhoto(media=img_data, caption=menu_text),
+                reply_markup=get_keyboard_by_state(state)
             )
             return
         except Exception as e:
@@ -223,15 +301,17 @@ async def send_or_update_menu(update, user_id, caption=None):
     
     msg = await update.message.reply_photo(
         photo=img_data,
-        caption=full_caption,
-        reply_markup=get_control_keyboard()
+        caption=menu_text,
+        reply_markup=get_keyboard_by_state(state)
     )
     user_menu_messages[user_id] = msg.message_id
 
 # ==================== КОМАНДЫ ====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await send_or_update_menu(update, update.effective_user.id)
+    user_id = update.effective_user.id
+    user_menu_state[user_id] = "main"
+    await send_or_update_menu(update, user_id, "👋 Бот запущен", "main")
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -275,7 +355,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         
         await update.message.reply_text("✅ Вход выполнен! Размер окна: 1024x768")
-        await send_or_update_menu(update, user_id, "✅ Вход выполнен!")
+        await send_or_update_menu(update, user_id, "✅ Вход выполнен", "main")
 
     except Exception as e:
         logger.error(f"Ошибка: {e}")
@@ -286,10 +366,8 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка входа: {str(e)[:300]}")
 
 async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, username=None):
-    """Переход в профиль по username"""
     user_id = update.effective_user.id
     
-    # Если username не передан - просим ввести
     if not username:
         context.user_data['waiting_for_profile'] = True
         await update.message.reply_text(
@@ -301,11 +379,9 @@ async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, user
         )
         return
     
-    # Убираем @ если есть
     if username.startswith('@'):
         username = username[1:]
     
-    # Проверяем, что браузер открыт
     if user_id not in user_browsers:
         await update.message.reply_text("❌ Сначала нажми '🔐 Вход'")
         return
@@ -318,11 +394,11 @@ async def go_to_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, user
         await tab.go_to(profile_url)
         await asyncio.sleep(3)
         
-        # Обновляем меню со скриншотом
         await send_or_update_menu(
             update, 
             user_id, 
-            f"✅ Перешел в профиль @{username}"
+            f"✅ Профиль @{username}",
+            user_menu_state.get(user_id, "main")
         )
         
     except Exception as e:
@@ -338,17 +414,36 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     action = query.data
     
-    # Логируем все нажатия
     logger.info(f"Нажата кнопка: {action} от пользователя {user_id}")
     
-    # Обработка кнопки "Профиль"
+    # === Обработка переходов между меню ===
+    if action == "menu_main":
+        await send_or_update_menu(update, user_id, "📋 Главное меню", "main")
+        return
+    
+    if action == "menu_cursor":
+        await send_or_update_menu(update, user_id, "🖱️ Управление курсором", "cursor")
+        return
+    
+    if action == "menu_scroll":
+        await send_or_update_menu(update, user_id, "📜 Скроллинг", "scroll")
+        return
+    
+    if action == "menu_actions":
+        await send_or_update_menu(update, user_id, "⚡ Действия", "actions")
+        return
+    
+    if action == "menu_settings":
+        await send_or_update_menu(update, user_id, "🔧 Настройки", "settings")
+        return
+    
+    if action == "menu_parsing":
+        await send_or_update_menu(update, user_id, "📊 Парсинг", "parsing")
+        return
+    
+    # === Специальные действия ===
     if action == "go_profile":
-        logger.info("Обработка go_profile")
-        
-        # Устанавливаем флаг ожидания ввода
         context.user_data['waiting_for_profile'] = True
-        
-        # Отправляем сообщение с запросом
         await query.message.reply_text(
             "👤 **Введи username профиля**\n\n"
             "Например: `elonmusk`\n"
@@ -356,18 +451,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Просто напиши имя в чат",
             parse_mode='Markdown'
         )
-        
         await query.answer("👤 Введи username")
         return
     
-    # Обработка кнопки "Eval"
     if action == "do_eval":
-        logger.info("Обработка do_eval")
-        
-        # Устанавливаем флаг ожидания ввода
         context.user_data['waiting_for_eval'] = True
-        
-        # Отправляем сообщение с запросом
         await query.message.reply_text(
             "⚡ **Введи JS код для выполнения**\n\n"
             "Примеры:\n"
@@ -376,13 +464,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "`document.querySelectorAll('article').length`",
             parse_mode='Markdown'
         )
-        
         await query.answer("⚡ Введи код")
         return
     
     if action == "do_login":
         await query.message.delete()
-        # Создаем фейковое сообщение для login
         class FakeMessage:
             def __init__(self, chat_id):
                 self.chat_id = chat_id
@@ -396,6 +482,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await login(fake_update, context)
         return
     
+    # === Проверка браузера ===
     if user_id not in user_browsers:
         await query.edit_message_text("❌ Сначала нажми '🔐 Вход'")
         return
@@ -403,10 +490,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _, tab = user_browsers[user_id]
     cursor = get_cursor(user_id)
     step = cursor.step
+    current_state = user_menu_state.get(user_id, "main")
     
     captions = ""
     
     try:
+        # === Движение курсора ===
         if action == "cursor_up":
             cursor.y -= step
             captions = "⬆️ Курсор вверх"
@@ -439,7 +528,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             viewport = await tab.execute_script("return { width: window.innerWidth, height: window.innerHeight }")
             cursor.x = viewport['width'] // 2
             cursor.y = viewport['height'] // 2
-            captions = "🔄 Курсор в центр"
+            captions = "🎯 Курсор в центр"
+        
+        # === Настройки ===
         elif action == "step_30":
             cursor.step = 30
             captions = "🔵 Шаг 30px"
@@ -449,30 +540,57 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif action == "step_100":
             cursor.step = 100
             captions = "🟢 Шаг 100px"
+        elif action == "step_150":
+            cursor.step = 150
+            captions = "🟣 Шаг 150px"
+        elif action == "step_200":
+            cursor.step = 200
+            captions = "⚪ Шаг 200px"
+        
+        # === Скроллинг ===
         elif action == "scroll_up":
             await tab.execute_script("window.scrollBy(0, -300)")
             captions = "⬆️ Скролл вверх на 300px"
         elif action == "scroll_down":
             await tab.execute_script("window.scrollBy(0, 300)")
             captions = "⬇️ Скролл вниз на 300px"
+        elif action == "scroll_up_small":
+            await tab.execute_script("window.scrollBy(0, -100)")
+            captions = "⬆️ Скролл вверх на 100px"
+        elif action == "scroll_down_small":
+            await tab.execute_script("window.scrollBy(0, 100)")
+            captions = "⬇️ Скролл вниз на 100px"
         elif action == "scroll_top":
             await tab.scroll.to_top(smooth=True)
-            captions = "🔝 Наверх страницы"
+            captions = "🏠 Наверх страницы"
         elif action == "scroll_bottom":
             await tab.scroll.to_bottom(smooth=True)
-            captions = "🔽 Вниз страницы"
+            captions = "🏁 Вниз страницы"
+        
+        # === Действия ===
         elif action == "mouse_click":
             await tab.mouse.click(cursor.x, cursor.y, humanize=True)
             captions = f"🖱️ Клик по ({cursor.x}, {cursor.y})"
+        
         elif action == "take_screenshot":
             img_data, x, y = await get_screenshot_with_cursor(user_id)
-            menu_text = get_menu_text()
-            full_caption = f"📸 Скриншот\n\n{menu_text}\n\n📍 Курсор: ({x}, {y}) | Шаг: {cursor.step}px"
+            menu_text = get_menu_text(user_id, "📸 Скриншот")
             await query.edit_message_media(
-                media=InputMediaPhoto(media=img_data, caption=full_caption),
-                reply_markup=get_control_keyboard()
+                media=InputMediaPhoto(media=img_data, caption=menu_text),
+                reply_markup=get_keyboard_by_state(current_state)
             )
             return
+        
+        elif action == "refresh_screen":
+            img_data, x, y = await get_screenshot_with_cursor(user_id)
+            menu_text = get_menu_text(user_id, "🔄 Обновлено")
+            await query.edit_message_media(
+                media=InputMediaPhoto(media=img_data, caption=menu_text),
+                reply_markup=get_keyboard_by_state(current_state)
+            )
+            return
+        
+        # === Парсинг ===
         elif action == "extract_tweets":
             try:
                 await query.message.reply_text("📊 Извлекаю твиты...")
@@ -538,15 +656,63 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
             return
-        elif action == "refresh_screen":
-            img_data, x, y = await get_screenshot_with_cursor(user_id)
-            menu_text = get_menu_text()
-            full_caption = f"🔄 Обновлено\n\n{menu_text}\n\n📍 Курсор: ({x}, {y}) | Шаг: {cursor.step}px"
-            await query.edit_message_media(
-                media=InputMediaPhoto(media=img_data, caption=full_caption),
-                reply_markup=get_control_keyboard()
-            )
+        
+        elif action == "extract_tweets_scroll":
+            try:
+                await query.message.reply_text("📊 Извлекаю твиты с прокруткой...")
+                
+                # Прокручиваем 5 раз для загрузки больше контента
+                for i in range(5):
+                    await tab.execute_script("window.scrollBy(0, 800)")
+                    await asyncio.sleep(2)
+                
+                tweets = await asyncio.wait_for(
+                    tab.extract_all(
+                        Tweet,
+                        scope='article[data-testid="tweet"]',
+                        timeout=15,
+                        limit=50
+                    ),
+                    timeout=20.0
+                )
+
+                if not tweets:
+                    await query.message.reply_text("😕 Твиты не найдены")
+                    return
+
+                reply = f"📊 **Найдено {len(tweets)} твитов:**\n\n"
+                # ... аналогично предыдущему парсингу ...
+                await query.message.reply_text(f"✅ Извлечено {len(tweets)} твитов")
+                
+            except Exception as e:
+                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
             return
+        
+        elif action == "page_stats":
+            try:
+                stats = await tab.execute_script("""
+                    return {
+                        title: document.title,
+                        url: window.location.href,
+                        tweets: document.querySelectorAll('article[data-testid="tweet"]').length,
+                        images: document.querySelectorAll('img').length,
+                        links: document.querySelectorAll('a[href]').length
+                    }
+                """)
+                
+                stats_text = (
+                    f"📈 **Статистика страницы**\n\n"
+                    f"📝 Заголовок: {stats.get('title', 'N/A')}\n"
+                    f"🔗 URL: {stats.get('url', 'N/A')}\n"
+                    f"📊 Твитов: {stats.get('tweets', 0)}\n"
+                    f"🖼️ Изображений: {stats.get('images', 0)}\n"
+                    f"🔗 Ссылок: {stats.get('links', 0)}"
+                )
+                await query.message.reply_text(stats_text, parse_mode='Markdown')
+            except Exception as e:
+                await query.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+            return
+        
         elif action == "close_browser":
             if user_id in user_browsers:
                 browser, _ = user_browsers[user_id]
@@ -555,7 +721,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if user_id in user_menu_messages:
                     del user_menu_messages[user_id]
                 await query.edit_message_text("✅ Браузер закрыт")
-                await send_or_update_menu(update, user_id)
+                await send_or_update_menu(update, user_id, "❌ Браузер закрыт", "main")
             else:
                 await query.edit_message_text("❌ Браузер не открыт")
             return
@@ -567,13 +733,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"❌ Ошибка: {str(e)[:100]}")
         return
     
+    # Обновляем последнее действие
+    cursor.last_action = captions
+    
+    # Показываем обновленный экран
     img_data, x, y = await get_screenshot_with_cursor(user_id)
-    menu_text = get_menu_text()
-    full_caption = f"{captions}\n\n{menu_text}\n\n📍 Курсор: ({x}, {y}) | Шаг: {cursor.step}px"
+    menu_text = get_menu_text(user_id, captions)
     
     await query.edit_message_media(
-        media=InputMediaPhoto(media=img_data, caption=full_caption),
-        reply_markup=get_control_keyboard()
+        media=InputMediaPhoto(media=img_data, caption=menu_text),
+        reply_markup=get_keyboard_by_state(current_state)
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -585,12 +754,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Получен username для профиля: {text}")
         context.user_data['waiting_for_profile'] = False
         
-        # Проверяем, что это не команда
         if text.startswith('/'):
             await update.message.reply_text("❌ Это команда, а не username")
             return
         
-        # Вызываем переход в профиль
         await go_to_profile(update, context, username=text)
         return
     
@@ -620,11 +787,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await update.message.reply_text(f"✅ Результат:\n\n{str(result)[:4096]}")
 
-            await send_or_update_menu(update, user_id, "⚡ Код выполнен")
+            current_state = user_menu_state.get(user_id, "main")
+            await send_or_update_menu(update, user_id, "⚡ Код выполнен", current_state)
 
         except Exception as e:
             await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
         return
+    
+    # Если просто текст - отправляем в чат
+    await update.message.reply_text("Используй кнопки для управления ботом")
 
 def main():
     app = Application.builder().token(TOKEN).build()
@@ -635,6 +806,7 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
+    print("🚀 Бот запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
