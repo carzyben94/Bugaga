@@ -147,11 +147,8 @@ async def update_screenshot(update: Update, tab, session):
     
     # Обновляем сообщение
     await update.callback_query.edit_message_media(
-        media=(
-            screenshot_io,
-            "photo",
-            caption="✅ Браузер открыт и авторизован!"
-        ),
+        media=screenshot_io,
+        caption="✅ Браузер открыт и авторизован!",
         reply_markup=get_control_keyboard()
     )
 
