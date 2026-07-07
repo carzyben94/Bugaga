@@ -2,9 +2,11 @@ import os
 import asyncio
 import logging
 import base64
-from io import BytesIO
-from typing import Optional
+import json
+import time
+from io import BytesIO, StringIO
 from datetime import datetime
+from typing import Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from pydoll.browser.chromium import Chrome
@@ -18,6 +20,13 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Дополнительный логгер для файла
+file_logger = logging.getLogger('file_logger')
+file_logger.setLevel(logging.DEBUG)
+file_handler = logging.FileHandler('bot_debug.log', encoding='utf-8')
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+file_logger.addHandler(file_handler)
 
 # Токен бота
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -72,6 +81,7 @@ def get_control_keyboard():
 
 # Рисуем курсор на изображении
 def draw_cursor_on_image(image_bytes, cursor_x, cursor_y):
+    file_logger.debug(f"Рисую курсор на позиции ({cursor_x}, {cursor_y})")
     image = Image.open(BytesIO(image_bytes))
     draw = ImageDraw.Draw(image)
     
@@ -94,19 +104,71 @@ def draw_cursor_on_image(image_bytes, cursor_x, cursor_y):
     output.seek(0)
     return output
 
+# Команда /logs
+async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    file_logger.info(f"Команда /logs от пользователя {user_id}")
+    
+    status_msg = await update.message.reply_text("📊 Собираю логи...")
+    
+    try:
+        # Создаем файл с логами
+        log_file = "bot_debug.log"
+        
+        # Читаем содержимое лога
+        if os.path.exists(log_file):
+            with open(log_file, 'r', encoding='utf-8') as f:
+                log_content = f.read()
+            
+            # Добавляем информацию о системе
+            system_info = f"""
+=== СИСТЕМНАЯ ИНФОРМАЦИЯ ===
+Время запроса: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Пользователь: {user_id}
+Активных сессий: {len(active_sessions)}
+Размер лога: {len(log_content)} символов
+
+=== ЛОГИ БОТА ===
+{log_content}
+"""
+            
+            # Создаем BytesIO для отправки
+            log_io = BytesIO(system_info.encode('utf-8'))
+            log_io.name = f"bot_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            
+            await status_msg.delete()
+            
+            await update.message.reply_document(
+                document=log_io,
+                caption=f"📋 Логи бота за {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+            
+            file_logger.info(f"Логи отправлены пользователю {user_id}")
+        else:
+            await status_msg.edit_text("❌ Файл логов не найден")
+            
+    except Exception as e:
+        file_logger.error(f"Ошибка при отправке логов: {e}")
+        await status_msg.edit_text(f"❌ Ошибка при отправке логов:\n\n{str(e)}")
+
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    file_logger.info(f"Команда /start от пользователя {user_id}")
+    
     await update.message.reply_text(
         "/open_browser - Открыть браузер\n"
         "/close_browser - Закрыть браузер\n"
         "/tweets - Извлечь твиты\n"
         "/search <запрос> - Поиск по Twitter\n"
-        "/p <username> - Перейти в профиль"
+        "/p <username> - Перейти в профиль\n"
+        "/logs - Отправить файл с логами"
     )
 
 # Команда /open_browser
 async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    file_logger.info(f"Команда /open_browser от пользователя {user_id}")
     
     if user_id in active_sessions:
         await update.message.reply_text(
@@ -118,6 +180,7 @@ async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYP
     status_msg = await update.message.reply_text("🔄 Запускаю браузер, подождите...")
     
     try:
+        file_logger.debug(f"Запуск браузера для пользователя {user_id}")
         screenshot, browser, tab, cursor_pos = await run_browser_task()
         
         active_sessions[user_id] = {
@@ -127,6 +190,8 @@ async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYP
             "cursor_y": cursor_pos[1]
         }
         
+        file_logger.info(f"Браузер успешно запущен для пользователя {user_id}")
+        
         await status_msg.delete()
         
         await update.message.reply_photo(
@@ -135,7 +200,7 @@ async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYP
             reply_markup=get_control_keyboard()
         )
     except Exception as e:
-        logger.error(f"Ошибка браузера: {e}")
+        file_logger.error(f"Ошибка запуска браузера для {user_id}: {e}")
         await status_msg.edit_text(
             f"❌ Ошибка при запуске браузера:\n\n{str(e)}"
         )
@@ -143,6 +208,9 @@ async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYP
 # Команда /p - переход в профиль
 async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    username = ' '.join(context.args)
+    
+    file_logger.info(f"Команда /p от {user_id}, username: {username}")
     
     if user_id not in active_sessions:
         await update.message.reply_text(
@@ -150,8 +218,6 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Получаем username
-    username = ' '.join(context.args)
     if not username:
         await update.message.reply_text(
             "❌ Укажите username.\n"
@@ -159,7 +225,6 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Убираем @ если есть
     username = username.replace('@', '')
     
     status_msg = await update.message.reply_text(f"👤 Перехожу в профиль @{username}...")
@@ -168,15 +233,14 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session = active_sessions[user_id]
         tab = session["tab"]
         
-        # Переходим в профиль
         profile_url = f"https://x.com/{username}"
+        file_logger.debug(f"Переход в профиль: {profile_url}")
+        
         await tab.go_to(profile_url)
         await asyncio.sleep(3)
         
-        # Извлекаем твиты из профиля
         tweets = await extract_tweets_from_page(tab)
         
-        # Формируем ответ
         response = f"👤 Профиль @{username}\n\n"
         
         if tweets:
@@ -192,10 +256,11 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             response += "❌ Твиты не найдены"
         
+        file_logger.info(f"Извлечено {len(tweets)} твитов из профиля @{username}")
+        
         await status_msg.delete()
         await update.message.reply_text(response)
         
-        # Обновляем скриншот
         cursor_x = session.get("cursor_x", 960)
         cursor_y = session.get("cursor_y", 540)
         screenshot_io = await get_screenshot_with_cursor(tab, cursor_x, cursor_y)
@@ -207,7 +272,7 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
     except Exception as e:
-        logger.error(f"Ошибка перехода в профиль: {e}")
+        file_logger.error(f"Ошибка перехода в профиль @{username}: {e}")
         await status_msg.edit_text(
             f"❌ Ошибка при переходе в профиль:\n\n{str(e)}"
         )
@@ -215,6 +280,9 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Команда /search
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    query_text = ' '.join(context.args)
+    
+    file_logger.info(f"Команда /search от {user_id}, запрос: {query_text}")
     
     if user_id not in active_sessions:
         await update.message.reply_text(
@@ -222,7 +290,6 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    query_text = ' '.join(context.args)
     if not query_text:
         await update.message.reply_text(
             "❌ Укажите поисковый запрос.\n"
@@ -237,6 +304,8 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tab = session["tab"]
         
         search_url = f"https://x.com/search?q={query_text.replace(' ', '%20')}&src=typed_query"
+        file_logger.debug(f"Поиск: {search_url}")
+        
         await tab.go_to(search_url)
         await asyncio.sleep(3)
         
@@ -256,6 +325,8 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(tweets) > 5:
             response += f"И ещё {len(tweets) - 5} твитов..."
         
+        file_logger.info(f"Найдено {len(tweets)} твитов по запросу '{query_text}'")
+        
         await status_msg.delete()
         await update.message.reply_text(response)
         
@@ -270,7 +341,7 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
     except Exception as e:
-        logger.error(f"Ошибка поиска: {e}")
+        file_logger.error(f"Ошибка поиска '{query_text}': {e}")
         await status_msg.edit_text(
             f"❌ Ошибка при поиске:\n\n{str(e)}"
         )
@@ -278,6 +349,7 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Команда /tweets
 async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    file_logger.info(f"Команда /tweets от пользователя {user_id}")
     
     if user_id not in active_sessions:
         await update.message.reply_text(
@@ -307,11 +379,13 @@ async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(tweets) > 10:
             response += f"И ещё {len(tweets) - 10} твитов..."
         
+        file_logger.info(f"Извлечено {len(tweets)} твитов")
+        
         await status_msg.delete()
         await update.message.reply_text(response)
         
     except Exception as e:
-        logger.error(f"Ошибка извлечения твитов: {e}")
+        file_logger.error(f"Ошибка извлечения твитов: {e}")
         await status_msg.edit_text(
             f"❌ Ошибка при извлечении твитов:\n\n{str(e)}"
         )
@@ -319,6 +393,7 @@ async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Команда /close_browser
 async def close_browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    file_logger.info(f"Команда /close_browser от пользователя {user_id}")
     
     if user_id not in active_sessions:
         await update.message.reply_text(
@@ -332,16 +407,19 @@ async def close_browser_command(update: Update, context: ContextTypes.DEFAULT_TY
         await session["browser"].stop()
         del active_sessions[user_id]
         
+        file_logger.info(f"Браузер закрыт для пользователя {user_id}")
+        
         await update.message.reply_text("✅ Браузер успешно закрыт!")
-        logger.info(f"Браузер закрыт для пользователя {user_id}")
     except Exception as e:
-        logger.error(f"Ошибка при закрытии браузера: {e}")
+        file_logger.error(f"Ошибка закрытия браузера для {user_id}: {e}")
         await update.message.reply_text(
             f"❌ Ошибка при закрытии браузера:\n\n{str(e)}"
         )
 
 # Получение скриншота с курсором
 async def get_screenshot_with_cursor(tab, cursor_x, cursor_y):
+    file_logger.debug(f"Создание скриншота с курсором ({cursor_x}, {cursor_y})")
+    
     screenshot_base64 = await tab.take_screenshot(
         as_base64=True,
         quality=100,
@@ -358,6 +436,8 @@ async def update_screenshot(query, tab, session):
     cursor_x = session.get("cursor_x", 500)
     cursor_y = session.get("cursor_y", 300)
     
+    file_logger.debug(f"Обновление скриншота для пользователя {query.from_user.id}")
+    
     screenshot_io = await get_screenshot_with_cursor(tab, cursor_x, cursor_y)
     
     media = InputMediaPhoto(
@@ -373,6 +453,7 @@ async def update_screenshot(query, tab, session):
 # Извлечение только текста твитов
 async def extract_tweets_from_page(tab):
     try:
+        file_logger.debug("Начинаю извлечение твитов")
         await asyncio.sleep(2)
         
         tweets = await tab.extract_all(
@@ -381,19 +462,21 @@ async def extract_tweets_from_page(tab):
             timeout=5
         )
         
-        logger.info(f"Извлечено {len(tweets)} твитов")
+        file_logger.debug(f"Извлечено {len(tweets)} твитов")
         return tweets
     except Exception as e:
-        logger.error(f"Ошибка извлечения твитов: {e}")
+        file_logger.error(f"Ошибка извлечения твитов: {e}")
         return []
 
 # Обработка нажатий кнопок
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-    
     user_id = update.effective_user.id
     action = query.data
+    
+    file_logger.info(f"Кнопка {action} от пользователя {user_id}")
+    
+    await query.answer()
     
     if user_id not in active_sessions:
         await query.edit_message_text(
@@ -409,6 +492,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cursor_x = session.get("cursor_x", 500)
         cursor_y = session.get("cursor_y", 300)
         js_code = ""
+        
+        file_logger.debug(f"Действие: {action}, позиция курсора: ({cursor_x}, {cursor_y})")
         
         if action == "up":
             cursor_y = max(0, cursor_y - step)
@@ -444,6 +529,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             js_code = 'window.location.reload();'
         
         if js_code:
+            file_logger.debug(f"Выполняю JS: {js_code}")
             await tab.execute_script(js_code)
             await asyncio.sleep(0.5)
         
@@ -453,13 +539,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update_screenshot(query, tab, session)
         
     except Exception as e:
-        logger.error(f"Ошибка при выполнении действия {action}: {e}")
+        file_logger.error(f"Ошибка выполнения действия {action}: {e}")
         await query.edit_message_text(
             f"❌ Ошибка:\n\n{str(e)}"
         )
 
 # Запуск браузера со скриншотом
 async def run_browser_task():
+    file_logger.debug("Запуск браузера")
+    
     options = ChromiumOptions()
     options.binary_location = CHROME_PATH
     options.headless = True
@@ -469,28 +557,35 @@ async def run_browser_task():
     options.add_argument('--disable-gpu')
     options.add_argument('--window-size=1920,1080')
 
+    file_logger.debug("Создание экземпляра Chrome")
     browser = Chrome(options=options)
     await browser.start()
     
+    file_logger.debug("Создание вкладки")
     tab = await browser.start()
     
-    logger.info("Устанавливаю куки...")
+    file_logger.info("Устанавливаю куки...")
     await tab.set_cookies(X_COOKIES)
     
-    logger.info("Перехожу на https://x.com...")
+    file_logger.info("Перехожу на https://x.com...")
     await tab.go_to('https://x.com')
     await asyncio.sleep(3)
     
     cursor_x, cursor_y = 960, 540
     
-    logger.info("Делаю скриншот...")
+    file_logger.debug("Делаю скриншот...")
     screenshot_io = await get_screenshot_with_cursor(tab, cursor_x, cursor_y)
     
+    file_logger.info("Браузер успешно запущен")
     return screenshot_io, browser, tab, (cursor_x, cursor_y)
 
 # Обработка ошибок
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Ошибка: {context.error}")
+    user_id = update.effective_user.id if update and update.effective_user else "unknown"
+    error = context.error
+    
+    file_logger.error(f"Глобальная ошибка для пользователя {user_id}: {error}")
+    
     if update and update.effective_message:
         await update.effective_message.reply_text(
             "❌ Произошла ошибка. Попробуйте позже."
@@ -505,10 +600,11 @@ def main():
     application.add_handler(CommandHandler("tweets", tweets_command))
     application.add_handler(CommandHandler("search", search_command))
     application.add_handler(CommandHandler("p", profile_command))
+    application.add_handler(CommandHandler("logs", logs_command))
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_error_handler(error_handler)
     
-    logger.info("🚀 Бот запущен и готов к работе!")
+    file_logger.info("🚀 Бот запущен и готов к работе!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
