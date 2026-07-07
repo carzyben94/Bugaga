@@ -1,5 +1,5 @@
 import os
-import asyncio 
+import asyncio
 import logging
 import base64
 from io import BytesIO
@@ -68,29 +68,25 @@ def get_control_keyboard():
 
 # Рисуем курсор на изображении
 def draw_cursor_on_image(image_bytes, cursor_x, cursor_y):
-    # Открываем изображение
     image = Image.open(BytesIO(image_bytes))
     draw = ImageDraw.Draw(image)
     
-    # Размеры курсора
     cursor_size = 20
     
-    # Рисуем курсор в виде стрелки
-    # Треугольник (стрелка)
+    # Рисуем стрелку
     points = [
-        (cursor_x, cursor_y),  # Острие
-        (cursor_x - cursor_size//2, cursor_y + cursor_size),  # Левое крыло
-        (cursor_x + cursor_size//2, cursor_y + cursor_size),  # Правое крыло
+        (cursor_x, cursor_y),
+        (cursor_x - cursor_size//2, cursor_y + cursor_size),
+        (cursor_x + cursor_size//2, cursor_y + cursor_size),
     ]
     draw.polygon(points, fill="red", outline="black")
     
-    # Маленький кружок для наглядности
+    # Маленький кружок
     draw.ellipse(
         [(cursor_x - 3, cursor_y - 3), (cursor_x + 3, cursor_y + 3)],
         fill="black"
     )
     
-    # Сохраняем в BytesIO
     output = BytesIO()
     image.save(output, format='PNG')
     output.seek(0)
@@ -163,18 +159,15 @@ async def close_browser_command(update: Update, context: ContextTypes.DEFAULT_TY
             f"❌ Ошибка при закрытии браузера:\n\n{str(e)}"
         )
 
-# Получение скриншота с курсором через Pillow
+# Получение скриншота с курсором
 async def get_screenshot_with_cursor(tab, cursor_x, cursor_y):
-    # Делаем скриншот без курсора
     screenshot_base64 = await tab.take_screenshot(
-        path=None,
         as_base64=True,
+        quality=100,
         beyond_viewport=False
     )
     
     screenshot_bytes = base64.b64decode(screenshot_base64)
-    
-    # Рисуем курсор через Pillow
     image_with_cursor = draw_cursor_on_image(screenshot_bytes, cursor_x, cursor_y)
     
     return image_with_cursor
@@ -196,7 +189,7 @@ async def update_screenshot(query, tab, session):
         reply_markup=get_control_keyboard()
     )
 
-# Обработка нажатий кнопок
+# Обработка нажатий кнопок через JavaScript
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -215,57 +208,61 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step = 200
     
     try:
-        # Обновляем позицию курсора
         cursor_x = session.get("cursor_x", 500)
         cursor_y = session.get("cursor_y", 300)
         
-        # Выполняем действие
+        # JavaScript код для выполнения в браузере
+        js_code = ""
+        
         if action == "up":
             cursor_y = max(0, cursor_y - step)
-            await tab.scroll_by(0, -step)
+            js_code = f'window.scrollBy(0, -{step});'
         elif action == "down":
             cursor_y = min(1080, cursor_y + step)
-            await tab.scroll_by(0, step)
+            js_code = f'window.scrollBy(0, {step});'
         elif action == "left":
             cursor_x = max(0, cursor_x - step)
-            await tab.scroll_by(-step, 0)
+            js_code = f'window.scrollBy(-{step}, 0);'
         elif action == "right":
             cursor_x = min(1920, cursor_x + step)
-            await tab.scroll_by(step, 0)
+            js_code = f'window.scrollBy({step}, 0);'
         elif action == "up_left":
             cursor_x = max(0, cursor_x - step)
             cursor_y = max(0, cursor_y - step)
-            await tab.scroll_by(-step, -step)
+            js_code = f'window.scrollBy(-{step}, -{step});'
         elif action == "up_right":
             cursor_x = min(1920, cursor_x + step)
             cursor_y = max(0, cursor_y - step)
-            await tab.scroll_by(step, -step)
+            js_code = f'window.scrollBy({step}, -{step});'
         elif action == "down_left":
             cursor_x = max(0, cursor_x - step)
             cursor_y = min(1080, cursor_y + step)
-            await tab.scroll_by(-step, step)
+            js_code = f'window.scrollBy(-{step}, {step});'
         elif action == "down_right":
             cursor_x = min(1920, cursor_x + step)
             cursor_y = min(1080, cursor_y + step)
-            await tab.scroll_by(step, step)
+            js_code = f'window.scrollBy({step}, {step});'
         elif action == "refresh":
             cursor_x = 960
             cursor_y = 540
-            await tab.go_to('https://x.com/home')
-            await asyncio.sleep(1)
+            js_code = 'window.location.reload();'
         elif action == "close_browser":
             await session["browser"].stop()
             del active_sessions[user_id]
             await query.edit_message_text("✅ Браузер успешно закрыт!")
             return
         
+        # Выполняем JavaScript в браузере
+        if js_code:
+            logger.info(f"Выполняю JS: {js_code}")
+            await tab.execute_script(js_code)
+            await asyncio.sleep(0.5)
+        
         # Сохраняем новую позицию курсора
         session["cursor_x"] = cursor_x
         session["cursor_y"] = cursor_y
         
-        await asyncio.sleep(0.5)
-        
-        # Обновляем скриншот с курсором
+        # Обновляем скриншот
         await update_screenshot(query, tab, session)
         
     except Exception as e:
@@ -297,7 +294,6 @@ async def run_browser_task():
     await tab.go_to('https://x.com')
     await asyncio.sleep(3)
     
-    # Начальная позиция курсора
     cursor_x, cursor_y = 960, 540
     
     logger.info("Делаю скриншот...")
