@@ -9,8 +9,10 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMe
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from pydoll.browser.chromium import Chrome
 from pydoll.browser.options import ChromiumOptions
-from pydoll.extraction import ExtractionModel, Field
+from pydoll.extractor import ExtractionModel, Field
 from PIL import Image, ImageDraw
+from pydantic import BaseModel
+import validex
 
 # Настройка логирования
 logging.basicConfig(
@@ -49,12 +51,19 @@ X_COOKIES = [
     {"name": "__cf_bm", "value": "0lyNYlKnbjXejqIk_blw2x20TfMRtW3SWJ_jmpay.t4-1783123617.0158947-1.0.1.1-1rnugK6C5Aw5r.126FQ3rJYZTCG2WhtPATFYO5Ip0QukW40cCR0qDNfacg6VRv3vRh3w.4Un_NQ6hOnxQfvhm68Grg1hZiLbF6HAyxvxzmS06Q8AzQkKu_i248B5sxj7", "domain": ".x.com", "path": "/"}
 ]
 
-# Модель для текста твита
+# Модель для обычного извлечения
 class Tweet(ExtractionModel):
     text: str = Field(selector='div[data-testid="tweetText"]', default='')
     author: Optional[str] = Field(selector='div[data-testid="User-Name"] a', default='')
     likes: Optional[str] = Field(selector='button[data-testid="like"] span', default='0')
     retweets: Optional[str] = Field(selector='button[data-testid="retweet"] span', default='0')
+
+# Модель для ValidEx
+class TweetData(BaseModel):
+    text: str
+    author: Optional[str] = None
+    likes: Optional[int] = 0
+    retweets: Optional[int] = 0
 
 # Хранилище активных браузеров
 active_sessions = {}
@@ -158,6 +167,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/tweets - Извлечь твиты\n"
         "/search <запрос> - Поиск по Twitter\n"
         "/p <username> - Перейти в профиль\n"
+        "/validex - Извлечь через ValidEx\n"
         "/logs - Отправить файл с логами"
     )
 
@@ -199,6 +209,64 @@ async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYP
         file_logger.error(f"Ошибка запуска браузера для {user_id}: {e}")
         await status_msg.edit_text(
             f"❌ Ошибка при запуске браузера:\n\n{str(e)}"
+        )
+
+# КОМАНДА /VALIDEX
+async def validex_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    file_logger.info(f"Команда /validex от пользователя {user_id}")
+    
+    if user_id not in active_sessions:
+        await update.message.reply_text(
+            "❌ Нет активного браузера. Используйте /open_browser"
+        )
+        return
+    
+    status_msg = await update.message.reply_text("🧠 Извлекаю через ValidEx...")
+    
+    try:
+        session = active_sessions[user_id]
+        tab = session["tab"]
+        
+        # Получаем HTML страницы
+        html = await tab.execute_script('return document.documentElement.outerHTML;')
+        
+        # Создаем приложение ValidEx
+        app = validex.App()
+        app.add(html)
+        
+        # Извлекаем данные
+        tweets = app.extract_all(TweetData)
+        
+        if not tweets:
+            await status_msg.edit_text("❌ ValidEx не нашел твитов")
+            return
+        
+        # Формируем ответ
+        response = "🧠 ValidEx извлек данные:\n\n"
+        for i, tweet in enumerate(tweets[:5], 1):
+            text = tweet.text[:200] + "..." if len(tweet.text) > 200 else tweet.text
+            response += f"{i}. {text}\n"
+            if tweet.author:
+                response += f"   👤 {tweet.author}"
+            if tweet.likes:
+                response += f"  ❤️ {tweet.likes}"
+            if tweet.retweets:
+                response += f"  🔄 {tweet.retweets}"
+            response += "\n\n"
+        
+        if len(tweets) > 5:
+            response += f"И ещё {len(tweets) - 5} твитов..."
+        
+        file_logger.info(f"ValidEx извлек {len(tweets)} твитов")
+        
+        await status_msg.delete()
+        await update.message.reply_text(response)
+        
+    except Exception as e:
+        file_logger.error(f"Ошибка ValidEx: {e}")
+        await status_msg.edit_text(
+            f"❌ Ошибка ValidEx:\n\n{str(e)}"
         )
 
 # Команда /p - переход в профиль
@@ -629,14 +697,14 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     application = Application.builder().token(TOKEN).build()
     
-    # Регистрируем все команды
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("open_browser", open_browser_command))
     application.add_handler(CommandHandler("close_browser", close_browser_command))
     application.add_handler(CommandHandler("tweets", tweets_command))
     application.add_handler(CommandHandler("search", search_command))
     application.add_handler(CommandHandler("p", profile_command))
-    application.add_handler(CommandHandler("logs", logs_command))  # <-- Добавил!
+    application.add_handler(CommandHandler("logs", logs_command))
+    application.add_handler(CommandHandler("validex", validex_command))
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_error_handler(error_handler)
     
