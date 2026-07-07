@@ -3,11 +3,10 @@ import asyncio
 import logging
 import base64
 from io import BytesIO
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from pydoll.browser.chromium import Chrome
 from pydoll.browser.options import ChromiumOptions
-from telegram.constants import ParseMode
 
 # Настройка логирования
 logging.basicConfig(
@@ -42,7 +41,7 @@ X_COOKIES = [
 # Хранилище активных браузеров
 active_sessions = {}
 
-# Клавиатура управления с диагоналями
+# Клавиатура управления
 def get_control_keyboard():
     keyboard = [
         [
@@ -91,24 +90,16 @@ async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYP
         
         active_sessions[user_id] = {
             "browser": browser,
-            "tab": tab,
-            "scroll_x": 0,
-            "scroll_y": 0,
-            "message_id": None,
-            "chat_id": update.effective_chat.id
+            "tab": tab
         }
         
         await status_msg.delete()
         
-        msg = await update.message.reply_photo(
+        await update.message.reply_photo(
             photo=screenshot,
             caption="✅ Браузер открыт и авторизован!",
             reply_markup=get_control_keyboard()
         )
-        
-        # Сохраняем ID сообщения для обновления
-        active_sessions[user_id]["message_id"] = msg.message_id
-        
     except Exception as e:
         logger.error(f"Ошибка браузера: {e}")
         await status_msg.edit_text(
@@ -139,37 +130,30 @@ async def close_browser_command(update: Update, context: ContextTypes.DEFAULT_TY
             f"❌ Ошибка при закрытии браузера:\n\n{str(e)}"
         )
 
+# Функция для получения скриншота с курсором
+async def get_screenshot_with_cursor(tab):
+    screenshot_base64 = await tab.take_screenshot(
+        path=None,
+        as_base64=True,
+        beyond_viewport=False,
+        capture_cursor=True
+    )
+    screenshot_bytes = base64.b64decode(screenshot_base64)
+    screenshot_io = BytesIO(screenshot_bytes)
+    screenshot_io.seek(0)
+    return screenshot_io
+
 # Обновление скриншота
-async def update_screenshot(update: Update, tab, session):
-    try:
-        # Делаем скриншот
-        screenshot_base64 = await tab.take_screenshot(
-            path=None,
-            as_base64=True,
-            beyond_viewport=False
-        )
-        
-        screenshot_bytes = base64.b64decode(screenshot_base64)
-        screenshot_io = BytesIO(screenshot_bytes)
-        screenshot_io.seek(0)
-        
-        # Обновляем сообщение с фото
-        await update.callback_query.edit_message_media(
-            media=screenshot_io,
-            caption="✅ Браузер открыт и авторизован!",
-            reply_markup=get_control_keyboard()
-        )
-    except Exception as e:
-        logger.error(f"Ошибка обновления скриншота: {e}")
-        # Если не удалось обновить, отправляем новое сообщение
-        try:
-            await update.callback_query.message.reply_photo(
-                photo=screenshot_io,
-                caption="✅ Браузер открыт и авторизован!",
-                reply_markup=get_control_keyboard()
-            )
-        except Exception as e2:
-            logger.error(f"Ошибка отправки нового сообщения: {e2}")
+async def update_screenshot(query, tab):
+    screenshot_io = await get_screenshot_with_cursor(tab)
+    media = InputMediaPhoto(
+        media=screenshot_io,
+        caption="✅ Браузер открыт и авторизован!"
+    )
+    await query.edit_message_media(
+        media=media,
+        reply_markup=get_control_keyboard()
+    )
 
 # Обработка нажатий кнопок
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -216,11 +200,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("✅ Браузер успешно закрыт!")
             return
         
-        # Небольшая пауза
         await asyncio.sleep(0.5)
         
         # Обновляем скриншот
-        await update_screenshot(update, tab, session)
+        await update_screenshot(query, tab)
         
     except Exception as e:
         logger.error(f"Ошибка при выполнении действия {action}: {e}")
@@ -252,15 +235,7 @@ async def run_browser_task():
     await asyncio.sleep(3)
     
     logger.info("Делаю скриншот...")
-    screenshot_base64 = await tab.take_screenshot(
-        path=None,
-        as_base64=True,
-        beyond_viewport=False
-    )
-    
-    screenshot_bytes = base64.b64decode(screenshot_base64)
-    screenshot_io = BytesIO(screenshot_bytes)
-    screenshot_io.seek(0)
+    screenshot_io = await get_screenshot_with_cursor(tab)
     
     return screenshot_io, browser, tab
 
