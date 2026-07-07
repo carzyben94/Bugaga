@@ -3,9 +3,9 @@ import asyncio
 import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from pydoll.browser.chromium import Chrome  # Изменен импорт
-from pydoll.browser.options import ChromiumOptions  # Для настроек
-from pydoll.constants import PageLoadState
+# Правильный импорт согласно документации
+from pydoll.browser import Chrome
+from pydoll.browser.options import ChromiumOptions
 
 # Настройка логирования
 logging.basicConfig(
@@ -61,41 +61,31 @@ async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Асинхронная задача для браузера
 async def run_browser_task():
-    # Настройка опций браузера согласно документации [citation:5]
+    # Настройка опций согласно документации [citation:7]
     options = ChromiumOptions()
-    options.binary_location = CHROME_PATH  # Указываем путь к Chrome
-    options.headless = True  # Запуск в фоновом режиме
-    options.start_timeout = 30  # Увеличиваем таймаут для надежности
-    # Добавляем аргументы для совместимости с Railway
+    options.binary_location = CHROME_PATH
+    options.headless = True
+    options.start_timeout = 30
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
     options.add_argument('--window-size=1920,1080')
 
-    # Используем контекстный менеджер для автоматического управления [citation:1][citation:7]
+    # Используем контекстный менеджер согласно документации [citation:3]
     async with Chrome(options=options) as browser:
-        # Создаем новую вкладку
         tab = await browser.start()
         
-        # Устанавливаем куки через NetworkCommands [citation:6][citation:8]
-        # В новой версии куки устанавливаются через tab.set_cookies()
-        for cookie_data in X_COOKIES:
-            await tab.set_cookies([{
-                'name': cookie_data['name'],
-                'value': cookie_data['value'],
-                'domain': cookie_data['domain'],
-                'path': cookie_data['path']
-            }])
+        # Устанавливаем куки согласно документации Tab.set_cookies() [citation:2][citation:4]
+        # Принимает список CookieParam словарей
+        await tab.set_cookies(X_COOKIES)
         
-        # Переходим на сайт
+        # Навигация по URL согласно документации [citation:2]
         await tab.go_to('https://x.com')
         await asyncio.sleep(3)
         
-        # Получаем заголовок
+        # Используем свойства, а не методы [citation:2]
         title = await tab.title
-        
-        # Получаем текущий URL
-        current_url = await tab.get_current_url()
+        current_url = await tab.current_url
         
         return f"Заголовок: {title}\nURL: {current_url}\nСтатус: Авторизация выполнена"
 
