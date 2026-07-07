@@ -2,11 +2,9 @@ import os
 import asyncio
 import logging
 import base64
-import json
-import time
-from io import BytesIO, StringIO
+from io import BytesIO
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from pydoll.browser.chromium import Chrome
@@ -51,9 +49,12 @@ X_COOKIES = [
     {"name": "__cf_bm", "value": "0lyNYlKnbjXejqIk_blw2x20TfMRtW3SWJ_jmpay.t4-1783123617.0158947-1.0.1.1-1rnugK6C5Aw5r.126FQ3rJYZTCG2WhtPATFYO5Ip0QukW40cCR0qDNfacg6VRv3vRh3w.4Un_NQ6hOnxQfvhm68Grg1hZiLbF6HAyxvxzmS06Q8AzQkKu_i248B5sxj7", "domain": ".x.com", "path": "/"}
 ]
 
-# Модель для текста твита
+# Модель для текста твита с альтернативными селекторами
 class Tweet(ExtractionModel):
-    text: str = Field(selector='div[data-testid="tweetText"]')
+    text: str = Field(
+        selector='div[data-testid="tweetText"]',
+        default=''  # Если не найден, возвращаем пустую строку
+    )
 
 # Хранилище активных браузеров
 active_sessions = {}
@@ -81,7 +82,6 @@ def get_control_keyboard():
 
 # Рисуем курсор на изображении
 def draw_cursor_on_image(image_bytes, cursor_x, cursor_y):
-    file_logger.debug(f"Рисую курсор на позиции ({cursor_x}, {cursor_y})")
     image = Image.open(BytesIO(image_bytes))
     draw = ImageDraw.Draw(image)
     
@@ -112,15 +112,12 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("📊 Собираю логи...")
     
     try:
-        # Создаем файл с логами
         log_file = "bot_debug.log"
         
-        # Читаем содержимое лога
         if os.path.exists(log_file):
             with open(log_file, 'r', encoding='utf-8') as f:
                 log_content = f.read()
             
-            # Добавляем информацию о системе
             system_info = f"""
 === СИСТЕМНАЯ ИНФОРМАЦИЯ ===
 Время запроса: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
@@ -132,7 +129,6 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 {log_content}
 """
             
-            # Создаем BytesIO для отправки
             log_io = BytesIO(system_info.encode('utf-8'))
             log_io.name = f"bot_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
             
@@ -237,22 +233,31 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_logger.debug(f"Переход в профиль: {profile_url}")
         
         await tab.go_to(profile_url)
-        await asyncio.sleep(3)
         
-        tweets = await extract_tweets_from_page(tab)
+        # Ждем загрузки страницы
+        await asyncio.sleep(5)
+        
+        # Пробуем извлечь твиты с увеличенным таймаутом
+        tweets = await extract_tweets_from_page(tab, timeout=10)
         
         response = f"👤 Профиль @{username}\n\n"
         
         if tweets:
-            response += f"📝 Последние твиты:\n\n"
-            for i, tweet in enumerate(tweets[:5], 1):
-                text = tweet.text.replace('\n', ' ').strip()
-                if len(text) > 150:
-                    text = text[:150] + "..."
-                response += f"{i}. {text}\n\n"
+            # Фильтруем пустые твиты
+            valid_tweets = [t for t in tweets if t.text and t.text.strip()]
             
-            if len(tweets) > 5:
-                response += f"И ещё {len(tweets) - 5} твитов..."
+            if valid_tweets:
+                response += f"📝 Последние твиты:\n\n"
+                for i, tweet in enumerate(valid_tweets[:5], 1):
+                    text = tweet.text.replace('\n', ' ').strip()
+                    if len(text) > 200:
+                        text = text[:200] + "..."
+                    response += f"{i}. {text}\n\n"
+                
+                if len(valid_tweets) > 5:
+                    response += f"И ещё {len(valid_tweets) - 5} твитов..."
+            else:
+                response += "❌ Твиты не найдены (пустые)"
         else:
             response += "❌ Твиты не найдены"
         
@@ -307,25 +312,31 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_logger.debug(f"Поиск: {search_url}")
         
         await tab.go_to(search_url)
-        await asyncio.sleep(3)
+        await asyncio.sleep(5)
         
-        tweets = await extract_tweets_from_page(tab)
+        tweets = await extract_tweets_from_page(tab, timeout=10)
         
         if not tweets:
             await status_msg.edit_text(f"❌ По запросу '{query_text}' ничего не найдено")
             return
         
+        valid_tweets = [t for t in tweets if t.text and t.text.strip()]
+        
+        if not valid_tweets:
+            await status_msg.edit_text(f"❌ По запросу '{query_text}' нет текстовых твитов")
+            return
+        
         response = f"🔍 Результаты поиска: {query_text}\n\n"
-        for i, tweet in enumerate(tweets[:5], 1):
+        for i, tweet in enumerate(valid_tweets[:5], 1):
             text = tweet.text.replace('\n', ' ').strip()
-            if len(text) > 150:
-                text = text[:150] + "..."
+            if len(text) > 200:
+                text = text[:200] + "..."
             response += f"{i}. {text}\n\n"
         
-        if len(tweets) > 5:
-            response += f"И ещё {len(tweets) - 5} твитов..."
+        if len(valid_tweets) > 5:
+            response += f"И ещё {len(valid_tweets) - 5} твитов..."
         
-        file_logger.info(f"Найдено {len(tweets)} твитов по запросу '{query_text}'")
+        file_logger.info(f"Найдено {len(valid_tweets)} твитов по запросу '{query_text}'")
         
         await status_msg.delete()
         await update.message.reply_text(response)
@@ -363,23 +374,29 @@ async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session = active_sessions[user_id]
         tab = session["tab"]
         
-        tweets = await extract_tweets_from_page(tab)
+        tweets = await extract_tweets_from_page(tab, timeout=10)
         
         if not tweets:
             await status_msg.edit_text("❌ Твиты не найдены на странице")
             return
         
+        valid_tweets = [t for t in tweets if t.text and t.text.strip()]
+        
+        if not valid_tweets:
+            await status_msg.edit_text("❌ Твиты не найдены (пустые)")
+            return
+        
         response = "📝 Твиты:\n\n"
-        for i, tweet in enumerate(tweets[:10], 1):
+        for i, tweet in enumerate(valid_tweets[:10], 1):
             text = tweet.text.replace('\n', ' ').strip()
             if len(text) > 200:
                 text = text[:200] + "..."
             response += f"{i}. {text}\n\n"
         
-        if len(tweets) > 10:
-            response += f"И ещё {len(tweets) - 10} твитов..."
+        if len(valid_tweets) > 10:
+            response += f"И ещё {len(valid_tweets) - 10} твитов..."
         
-        file_logger.info(f"Извлечено {len(tweets)} твитов")
+        file_logger.info(f"Извлечено {len(valid_tweets)} твитов")
         
         await status_msg.delete()
         await update.message.reply_text(response)
@@ -450,16 +467,18 @@ async def update_screenshot(query, tab, session):
         reply_markup=get_control_keyboard()
     )
 
-# Извлечение только текста твитов
-async def extract_tweets_from_page(tab):
+# Извлечение только текста твитов с увеличенным таймаутом
+async def extract_tweets_from_page(tab, timeout=10):
     try:
-        file_logger.debug("Начинаю извлечение твитов")
-        await asyncio.sleep(2)
+        file_logger.debug(f"Начинаю извлечение твитов (таймаут: {timeout}с)")
+        
+        # Ждем загрузки контента
+        await asyncio.sleep(3)
         
         tweets = await tab.extract_all(
             Tweet,
             scope='article[data-testid="tweet"]',
-            timeout=5
+            timeout=timeout
         )
         
         file_logger.debug(f"Извлечено {len(tweets)} твитов")
@@ -569,7 +588,7 @@ async def run_browser_task():
     
     file_logger.info("Перехожу на https://x.com...")
     await tab.go_to('https://x.com')
-    await asyncio.sleep(3)
+    await asyncio.sleep(5)
     
     cursor_x, cursor_y = 960, 540
     
@@ -592,6 +611,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 def main():
+    # Создаем приложение с drop_pending_updates=True чтобы избежать конфликтов
     application = Application.builder().token(TOKEN).build()
     
     application.add_handler(CommandHandler("start", start))
@@ -605,7 +625,12 @@ def main():
     application.add_error_handler(error_handler)
     
     file_logger.info("🚀 Бот запущен и готов к работе!")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    
+    # Запускаем с очисткой предыдущих обновлений
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True  # Игнорируем старые обновления
+    )
 
 if __name__ == "__main__":
     main()
