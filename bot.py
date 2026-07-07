@@ -42,7 +42,7 @@ X_COOKIES = [
 # Хранилище активных браузеров
 active_sessions = {}
 
-# Клавиатура управления
+# Клавиатура управления (без кнопки закрыть)
 def get_control_keyboard():
     keyboard = [
         [
@@ -59,9 +59,6 @@ def get_control_keyboard():
             InlineKeyboardButton("↙️", callback_data="down_left"),
             InlineKeyboardButton("⬇️", callback_data="down"),
             InlineKeyboardButton("↘️", callback_data="down_right")
-        ],
-        [
-            InlineKeyboardButton("❌ Закрыть", callback_data="close_browser")
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -246,11 +243,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cursor_x = 960
             cursor_y = 540
             js_code = 'window.location.reload();'
-        elif action == "close_browser":
-            await session["browser"].stop()
-            del active_sessions[user_id]
-            await query.edit_message_text("✅ Браузер успешно закрыт!")
-            return
         
         # Выполняем JavaScript в браузере
         if js_code:
