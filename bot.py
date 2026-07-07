@@ -42,7 +42,7 @@ X_COOKIES = [
     {"name": "__cf_bm", "value": "0lyNYlKnbjXejqIk_blw2x20TfMRtW3SWJ_jmpay.t4-1783123617.0158947-1.0.1.1-1rnugK6C5Aw5r.126FQ3rJYZTCG2WhtPATFYO5Ip0QukW40cCR0qDNfacg6VRv3vRh3w.4Un_NQ6hOnxQfvhm68Grg1hZiLbF6HAyxvxzmS06Q8AzQkKu_i248B5sxj7", "domain": ".x.com", "path": "/"}
 ]
 
-# Модель только для текста твита
+# Модель для текста твита
 class Tweet(ExtractionModel):
     text: str = Field(selector='div[data-testid="tweetText"]')
 
@@ -66,9 +66,6 @@ def get_control_keyboard():
             InlineKeyboardButton("↙️", callback_data="down_left"),
             InlineKeyboardButton("⬇️", callback_data="down"),
             InlineKeyboardButton("↘️", callback_data="down_right")
-        ],
-        [
-            InlineKeyboardButton("📝 Твиты", callback_data="extract_tweets")
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -102,7 +99,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "/open_browser - Открыть браузер\n"
         "/close_browser - Закрыть браузер\n"
-        "/tweets - Извлечь твиты"
+        "/tweets - Извлечь твиты\n"
+        "/search <запрос> - Поиск по Twitter\n"
+        "/p <username> - Перейти в профиль"
     )
 
 # Команда /open_browser
@@ -141,7 +140,142 @@ async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYP
             f"❌ Ошибка при запуске браузера:\n\n{str(e)}"
         )
 
-# Команда /tweets - только текст
+# Команда /p - переход в профиль
+async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    if user_id not in active_sessions:
+        await update.message.reply_text(
+            "❌ Нет активного браузера. Используйте /open_browser"
+        )
+        return
+    
+    # Получаем username
+    username = ' '.join(context.args)
+    if not username:
+        await update.message.reply_text(
+            "❌ Укажите username.\n"
+            "Пример: /p elonmusk"
+        )
+        return
+    
+    # Убираем @ если есть
+    username = username.replace('@', '')
+    
+    status_msg = await update.message.reply_text(f"👤 Перехожу в профиль @{username}...")
+    
+    try:
+        session = active_sessions[user_id]
+        tab = session["tab"]
+        
+        # Переходим в профиль
+        profile_url = f"https://x.com/{username}"
+        await tab.go_to(profile_url)
+        await asyncio.sleep(3)
+        
+        # Извлекаем твиты из профиля
+        tweets = await extract_tweets_from_page(tab)
+        
+        # Формируем ответ
+        response = f"👤 Профиль @{username}\n\n"
+        
+        if tweets:
+            response += f"📝 Последние твиты:\n\n"
+            for i, tweet in enumerate(tweets[:5], 1):
+                text = tweet.text.replace('\n', ' ').strip()
+                if len(text) > 150:
+                    text = text[:150] + "..."
+                response += f"{i}. {text}\n\n"
+            
+            if len(tweets) > 5:
+                response += f"И ещё {len(tweets) - 5} твитов..."
+        else:
+            response += "❌ Твиты не найдены"
+        
+        await status_msg.delete()
+        await update.message.reply_text(response)
+        
+        # Обновляем скриншот
+        cursor_x = session.get("cursor_x", 960)
+        cursor_y = session.get("cursor_y", 540)
+        screenshot_io = await get_screenshot_with_cursor(tab, cursor_x, cursor_y)
+        
+        await update.message.reply_photo(
+            photo=screenshot_io,
+            caption=f"👤 Профиль @{username}",
+            reply_markup=get_control_keyboard()
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка перехода в профиль: {e}")
+        await status_msg.edit_text(
+            f"❌ Ошибка при переходе в профиль:\n\n{str(e)}"
+        )
+
+# Команда /search
+async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    if user_id not in active_sessions:
+        await update.message.reply_text(
+            "❌ Нет активного браузера. Используйте /open_browser"
+        )
+        return
+    
+    query_text = ' '.join(context.args)
+    if not query_text:
+        await update.message.reply_text(
+            "❌ Укажите поисковый запрос.\n"
+            "Пример: /search Python"
+        )
+        return
+    
+    status_msg = await update.message.reply_text(f"🔍 Ищу: {query_text}...")
+    
+    try:
+        session = active_sessions[user_id]
+        tab = session["tab"]
+        
+        search_url = f"https://x.com/search?q={query_text.replace(' ', '%20')}&src=typed_query"
+        await tab.go_to(search_url)
+        await asyncio.sleep(3)
+        
+        tweets = await extract_tweets_from_page(tab)
+        
+        if not tweets:
+            await status_msg.edit_text(f"❌ По запросу '{query_text}' ничего не найдено")
+            return
+        
+        response = f"🔍 Результаты поиска: {query_text}\n\n"
+        for i, tweet in enumerate(tweets[:5], 1):
+            text = tweet.text.replace('\n', ' ').strip()
+            if len(text) > 150:
+                text = text[:150] + "..."
+            response += f"{i}. {text}\n\n"
+        
+        if len(tweets) > 5:
+            response += f"И ещё {len(tweets) - 5} твитов..."
+        
+        await status_msg.delete()
+        await update.message.reply_text(response)
+        
+        cursor_x = session.get("cursor_x", 960)
+        cursor_y = session.get("cursor_y", 540)
+        screenshot_io = await get_screenshot_with_cursor(tab, cursor_x, cursor_y)
+        
+        await update.message.reply_photo(
+            photo=screenshot_io,
+            caption="🔍 Результаты поиска на странице",
+            reply_markup=get_control_keyboard()
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка поиска: {e}")
+        await status_msg.edit_text(
+            f"❌ Ошибка при поиске:\n\n{str(e)}"
+        )
+
+# Команда /tweets
 async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
@@ -163,7 +297,6 @@ async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text("❌ Твиты не найдены на странице")
             return
         
-        # Формируем ответ только с текстом
         response = "📝 Твиты:\n\n"
         for i, tweet in enumerate(tweets[:10], 1):
             text = tweet.text.replace('\n', ' ').strip()
@@ -273,29 +406,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step = 200
     
     try:
-        if action == "extract_tweets":
-            await query.edit_message_text("🔄 Извлекаю твиты...")
-            
-            tweets = await extract_tweets_from_page(tab)
-            
-            if not tweets:
-                await query.edit_message_text("❌ Твиты не найдены на странице")
-                return
-            
-            response = "📝 Твиты:\n\n"
-            for i, tweet in enumerate(tweets[:5], 1):
-                text = tweet.text.replace('\n', ' ').strip()
-                if len(text) > 150:
-                    text = text[:150] + "..."
-                response += f"{i}. {text}\n\n"
-            
-            if len(tweets) > 5:
-                response += f"И ещё {len(tweets) - 5} твитов..."
-            
-            await query.edit_message_text(response)
-            return
-        
-        # Прокрутка
         cursor_x = session.get("cursor_x", 500)
         cursor_y = session.get("cursor_y", 300)
         js_code = ""
@@ -393,6 +503,8 @@ def main():
     application.add_handler(CommandHandler("open_browser", open_browser_command))
     application.add_handler(CommandHandler("close_browser", close_browser_command))
     application.add_handler(CommandHandler("tweets", tweets_command))
+    application.add_handler(CommandHandler("search", search_command))
+    application.add_handler(CommandHandler("p", profile_command))
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_error_handler(error_handler)
     
