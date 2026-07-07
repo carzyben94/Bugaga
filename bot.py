@@ -3,8 +3,8 @@ import asyncio
 import logging
 import base64
 from io import BytesIO
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from pydoll.browser.chromium import Chrome
 from pydoll.browser.options import ChromiumOptions
 
@@ -39,7 +39,31 @@ X_COOKIES = [
 ]
 
 # Хранилище активных браузеров
-active_browsers = {}
+active_sessions = {}
+
+# Клавиатура управления с диагоналями
+def get_control_keyboard():
+    keyboard = [
+        [
+            InlineKeyboardButton("↖️", callback_data="up_left"),
+            InlineKeyboardButton("⬆️", callback_data="up"),
+            InlineKeyboardButton("↗️", callback_data="up_right")
+        ],
+        [
+            InlineKeyboardButton("⬅️", callback_data="left"),
+            InlineKeyboardButton("🔄", callback_data="refresh"),
+            InlineKeyboardButton("➡️", callback_data="right")
+        ],
+        [
+            InlineKeyboardButton("↙️", callback_data="down_left"),
+            InlineKeyboardButton("⬇️", callback_data="down"),
+            InlineKeyboardButton("↘️", callback_data="down_right")
+        ],
+        [
+            InlineKeyboardButton("❌ Закрыть", callback_data="close_browser")
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -52,7 +76,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
-    if user_id in active_browsers:
+    if user_id in active_sessions:
         await update.message.reply_text(
             "⚠️ У вас уже есть активный браузер.\n"
             "Используйте /close_browser чтобы закрыть его."
@@ -62,15 +86,21 @@ async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYP
     status_msg = await update.message.reply_text("🔄 Запускаю браузер, подождите...")
     
     try:
-        screenshot, browser = await run_browser_task()
+        screenshot, browser, tab = await run_browser_task()
         
-        active_browsers[user_id] = browser
+        active_sessions[user_id] = {
+            "browser": browser,
+            "tab": tab,
+            "scroll_x": 0,
+            "scroll_y": 0
+        }
         
         await status_msg.delete()
         
         await update.message.reply_photo(
             photo=screenshot,
-            caption="✅ Браузер открыт и авторизован!"
+            caption="✅ Браузер открыт и авторизован!",
+            reply_markup=get_control_keyboard()
         )
     except Exception as e:
         logger.error(f"Ошибка браузера: {e}")
@@ -82,7 +112,7 @@ async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYP
 async def close_browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
-    if user_id not in active_browsers:
+    if user_id not in active_sessions:
         await update.message.reply_text(
             "❌ У вас нет активного браузера.\n"
             "Используйте /open_browser чтобы открыть его."
@@ -90,9 +120,9 @@ async def close_browser_command(update: Update, context: ContextTypes.DEFAULT_TY
         return
     
     try:
-        browser = active_browsers[user_id]
-        await browser.stop()
-        del active_browsers[user_id]
+        session = active_sessions[user_id]
+        await session["browser"].stop()
+        del active_sessions[user_id]
         
         await update.message.reply_text("✅ Браузер успешно закрыт!")
         logger.info(f"Браузер закрыт для пользователя {user_id}")
@@ -100,6 +130,103 @@ async def close_browser_command(update: Update, context: ContextTypes.DEFAULT_TY
         logger.error(f"Ошибка при закрытии браузера: {e}")
         await update.message.reply_text(
             f"❌ Ошибка при закрытии браузера:\n\n{str(e)}"
+        )
+
+# Обновление скриншота
+async def update_screenshot(update: Update, tab, session):
+    # Делаем скриншот
+    screenshot_base64 = await tab.take_screenshot(
+        path=None,
+        as_base64=True,
+        beyond_viewport=False
+    )
+    
+    screenshot_bytes = base64.b64decode(screenshot_base64)
+    screenshot_io = BytesIO(screenshot_bytes)
+    screenshot_io.seek(0)
+    
+    # Обновляем сообщение
+    await update.callback_query.edit_message_media(
+        media=(
+            screenshot_io,
+            "photo",
+            caption="✅ Браузер открыт и авторизован!"
+        ),
+        reply_markup=get_control_keyboard()
+    )
+
+# Обработка нажатий кнопок
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    action = query.data
+    
+    if user_id not in active_sessions:
+        await query.edit_message_text(
+            "❌ Браузер не активен. Используйте /open_browser"
+        )
+        return
+    
+    session = active_sessions[user_id]
+    tab = session["tab"]
+    step = 200  # Шаг прокрутки
+    
+    try:
+        # Выполняем действие
+        if action == "up":
+            await tab.scroll_by(0, -step)
+            session["scroll_y"] -= step
+        elif action == "down":
+            await tab.scroll_by(0, step)
+            session["scroll_y"] += step
+        elif action == "left":
+            await tab.scroll_by(-step, 0)
+            session["scroll_x"] -= step
+        elif action == "right":
+            await tab.scroll_by(step, 0)
+            session["scroll_x"] += step
+        elif action == "up_left":
+            await tab.scroll_by(-step, -step)
+            session["scroll_x"] -= step
+            session["scroll_y"] -= step
+        elif action == "up_right":
+            await tab.scroll_by(step, -step)
+            session["scroll_x"] += step
+            session["scroll_y"] -= step
+        elif action == "down_left":
+            await tab.scroll_by(-step, step)
+            session["scroll_x"] -= step
+            session["scroll_y"] += step
+        elif action == "down_right":
+            await tab.scroll_by(step, step)
+            session["scroll_x"] += step
+            session["scroll_y"] += step
+        elif action == "refresh":
+            # Обновляем страницу
+            await tab.go_to('https://x.com/home')
+            await asyncio.sleep(1)
+            session["scroll_x"] = 0
+            session["scroll_y"] = 0
+        elif action == "close_browser":
+            await session["browser"].stop()
+            del active_sessions[user_id]
+            await query.edit_message_text("✅ Браузер успешно закрыт!")
+            return
+        
+        # Небольшая пауза для применения скролла
+        await asyncio.sleep(0.5)
+        
+        # Обновляем скриншот
+        await update_screenshot(update, tab, session)
+        
+        logger.info(f"Пользователь {user_id}: {action} -> позиция ({session['scroll_x']}, {session['scroll_y']})")
+        
+    except Exception as e:
+        logger.error(f"Ошибка при выполнении действия {action}: {e}")
+        await query.edit_message_text(
+            f"❌ Ошибка:\n\n{str(e)}"
         )
 
 # Запуск браузера со скриншотом
@@ -136,7 +263,7 @@ async def run_browser_task():
     screenshot_io = BytesIO(screenshot_bytes)
     screenshot_io.seek(0)
     
-    return screenshot_io, browser
+    return screenshot_io, browser, tab
 
 # Обработка ошибок
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -153,6 +280,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("open_browser", open_browser_command))
     application.add_handler(CommandHandler("close_browser", close_browser_command))
+    application.add_handler(CallbackQueryHandler(button_callback))
     application.add_error_handler(error_handler)
     
     logger.info("🚀 Бот запущен и готов к работе!")
