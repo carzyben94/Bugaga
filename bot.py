@@ -7,6 +7,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from pydoll.browser.chromium import Chrome
 from pydoll.browser.options import ChromiumOptions
+from telegram.constants import ParseMode
 
 # Настройка логирования
 logging.basicConfig(
@@ -92,16 +93,22 @@ async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYP
             "browser": browser,
             "tab": tab,
             "scroll_x": 0,
-            "scroll_y": 0
+            "scroll_y": 0,
+            "message_id": None,
+            "chat_id": update.effective_chat.id
         }
         
         await status_msg.delete()
         
-        await update.message.reply_photo(
+        msg = await update.message.reply_photo(
             photo=screenshot,
             caption="✅ Браузер открыт и авторизован!",
             reply_markup=get_control_keyboard()
         )
+        
+        # Сохраняем ID сообщения для обновления
+        active_sessions[user_id]["message_id"] = msg.message_id
+        
     except Exception as e:
         logger.error(f"Ошибка браузера: {e}")
         await status_msg.edit_text(
@@ -134,23 +141,35 @@ async def close_browser_command(update: Update, context: ContextTypes.DEFAULT_TY
 
 # Обновление скриншота
 async def update_screenshot(update: Update, tab, session):
-    # Делаем скриншот
-    screenshot_base64 = await tab.take_screenshot(
-        path=None,
-        as_base64=True,
-        beyond_viewport=False
-    )
-    
-    screenshot_bytes = base64.b64decode(screenshot_base64)
-    screenshot_io = BytesIO(screenshot_bytes)
-    screenshot_io.seek(0)
-    
-    # Обновляем сообщение
-    await update.callback_query.edit_message_media(
-        media=screenshot_io,
-        caption="✅ Браузер открыт и авторизован!",
-        reply_markup=get_control_keyboard()
-    )
+    try:
+        # Делаем скриншот
+        screenshot_base64 = await tab.take_screenshot(
+            path=None,
+            as_base64=True,
+            beyond_viewport=False
+        )
+        
+        screenshot_bytes = base64.b64decode(screenshot_base64)
+        screenshot_io = BytesIO(screenshot_bytes)
+        screenshot_io.seek(0)
+        
+        # Обновляем сообщение с фото
+        await update.callback_query.edit_message_media(
+            media=screenshot_io,
+            caption="✅ Браузер открыт и авторизован!",
+            reply_markup=get_control_keyboard()
+        )
+    except Exception as e:
+        logger.error(f"Ошибка обновления скриншота: {e}")
+        # Если не удалось обновить, отправляем новое сообщение
+        try:
+            await update.callback_query.message.reply_photo(
+                photo=screenshot_io,
+                caption="✅ Браузер открыт и авторизован!",
+                reply_markup=get_control_keyboard()
+            )
+        except Exception as e2:
+            logger.error(f"Ошибка отправки нового сообщения: {e2}")
 
 # Обработка нажатий кнопок
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -168,57 +187,40 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     session = active_sessions[user_id]
     tab = session["tab"]
-    step = 200  # Шаг прокрутки
+    step = 200
     
     try:
         # Выполняем действие
         if action == "up":
             await tab.scroll_by(0, -step)
-            session["scroll_y"] -= step
         elif action == "down":
             await tab.scroll_by(0, step)
-            session["scroll_y"] += step
         elif action == "left":
             await tab.scroll_by(-step, 0)
-            session["scroll_x"] -= step
         elif action == "right":
             await tab.scroll_by(step, 0)
-            session["scroll_x"] += step
         elif action == "up_left":
             await tab.scroll_by(-step, -step)
-            session["scroll_x"] -= step
-            session["scroll_y"] -= step
         elif action == "up_right":
             await tab.scroll_by(step, -step)
-            session["scroll_x"] += step
-            session["scroll_y"] -= step
         elif action == "down_left":
             await tab.scroll_by(-step, step)
-            session["scroll_x"] -= step
-            session["scroll_y"] += step
         elif action == "down_right":
             await tab.scroll_by(step, step)
-            session["scroll_x"] += step
-            session["scroll_y"] += step
         elif action == "refresh":
-            # Обновляем страницу
             await tab.go_to('https://x.com/home')
             await asyncio.sleep(1)
-            session["scroll_x"] = 0
-            session["scroll_y"] = 0
         elif action == "close_browser":
             await session["browser"].stop()
             del active_sessions[user_id]
             await query.edit_message_text("✅ Браузер успешно закрыт!")
             return
         
-        # Небольшая пауза для применения скролла
+        # Небольшая пауза
         await asyncio.sleep(0.5)
         
         # Обновляем скриншот
         await update_screenshot(update, tab, session)
-        
-        logger.info(f"Пользователь {user_id}: {action} -> позиция ({session['scroll_x']}, {session['scroll_y']})")
         
     except Exception as e:
         logger.error(f"Ошибка при выполнении действия {action}: {e}")
