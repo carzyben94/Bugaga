@@ -87,15 +87,23 @@ async def run_browser_task():
         await asyncio.sleep(3)
         
         logger.info("Делаю скриншот...")
-        screenshot_data = await tab.take_screenshot(as_base64=False, beyond_viewport=False)
+        # Исправление: указываем as_base64=True и path=None
+        screenshot_base64 = await tab.take_screenshot(
+            path=None,
+            as_base64=True,
+            beyond_viewport=False
+        )
         
         title = await tab.title
         current_url = await tab.current_url
         
-        screenshot_bytes = BytesIO(screenshot_data)
-        screenshot_bytes.seek(0)
+        # Декодируем base64 в байты
+        import base64
+        screenshot_bytes = base64.b64decode(screenshot_base64)
+        screenshot_io = BytesIO(screenshot_bytes)
+        screenshot_io.seek(0)
         
-        return screenshot_bytes, title, current_url
+        return screenshot_io, title, current_url
 
 # Обработка ошибок
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
