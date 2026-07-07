@@ -38,22 +38,20 @@ X_COOKIES = [
     {"name": "__cf_bm", "value": "0lyNYlKnbjXejqIk_blw2x20TfMRtW3SWJ_jmpay.t4-1783123617.0158947-1.0.1.1-1rnugK6C5Aw5r.126FQ3rJYZTCG2WhtPATFYO5Ip0QukW40cCR0qDNfacg6VRv3vRh3w.4Un_NQ6hOnxQfvhm68Grg1hZiLbF6HAyxvxzmS06Q8AzQkKu_i248B5sxj7", "domain": ".x.com", "path": "/"}
 ]
 
-# Хранилище активных браузеров (в реальном проекте используйте БД)
+# Хранилище активных браузеров
 active_browsers = {}
 
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 Доступные команды:\n\n"
-        "/open_browser - Открыть браузер и авторизоваться на X.com\n"
+        "/open_browser - Открыть браузер\n"
         "/close_browser - Закрыть браузер"
     )
 
-# Команда /open_browser (бывший /browser)
+# Команда /open_browser
 async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
-    # Проверяем, есть ли уже активный браузер у пользователя
     if user_id in active_browsers:
         await update.message.reply_text(
             "⚠️ У вас уже есть активный браузер.\n"
@@ -64,19 +62,15 @@ async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYP
     status_msg = await update.message.reply_text("🔄 Запускаю браузер, подождите...")
     
     try:
-        screenshot, title, url, browser = await run_browser_task()
+        screenshot, browser = await run_browser_task()
         
-        # Сохраняем браузер в активные
         active_browsers[user_id] = browser
         
         await status_msg.delete()
         
         await update.message.reply_photo(
             photo=screenshot,
-            caption=f"✅ Браузер открыт и авторизован!\n\n"
-                   f"📄 Заголовок: {title}\n"
-                   f"🔗 URL: {url}\n\n"
-                   f"💡 Используйте /close_browser чтобы закрыть браузер."
+            caption="✅ Браузер открыт и авторизован!"
         )
     except Exception as e:
         logger.error(f"Ошибка браузера: {e}")
@@ -100,9 +94,7 @@ async def close_browser_command(update: Update, context: ContextTypes.DEFAULT_TY
         await browser.stop()
         del active_browsers[user_id]
         
-        await update.message.reply_text(
-            "✅ Браузер успешно закрыт!"
-        )
+        await update.message.reply_text("✅ Браузер успешно закрыт!")
         logger.info(f"Браузер закрыт для пользователя {user_id}")
     except Exception as e:
         logger.error(f"Ошибка при закрытии браузера: {e}")
@@ -140,16 +132,11 @@ async def run_browser_task():
         beyond_viewport=False
     )
     
-    title = await tab.title
-    current_url = await tab.current_url
-    
-    # Декодируем base64 в байты
     screenshot_bytes = base64.b64decode(screenshot_base64)
     screenshot_io = BytesIO(screenshot_bytes)
     screenshot_io.seek(0)
     
-    # Возвращаем браузер для дальнейшего использования
-    return screenshot_io, title, current_url, browser
+    return screenshot_io, browser
 
 # Обработка ошибок
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
