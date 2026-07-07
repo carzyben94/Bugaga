@@ -3,10 +3,13 @@ import asyncio
 import logging
 import base64
 from io import BytesIO
+from typing import Optional
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from pydoll.browser.chromium import Chrome
 from pydoll.browser.options import ChromiumOptions
+from pydoll.extractor import ExtractionModel, Field
 from PIL import Image, ImageDraw
 
 # Настройка логирования
@@ -39,10 +42,14 @@ X_COOKIES = [
     {"name": "__cf_bm", "value": "0lyNYlKnbjXejqIk_blw2x20TfMRtW3SWJ_jmpay.t4-1783123617.0158947-1.0.1.1-1rnugK6C5Aw5r.126FQ3rJYZTCG2WhtPATFYO5Ip0QukW40cCR0qDNfacg6VRv3vRh3w.4Un_NQ6hOnxQfvhm68Grg1hZiLbF6HAyxvxzmS06Q8AzQkKu_i248B5sxj7", "domain": ".x.com", "path": "/"}
 ]
 
+# Модель только для текста твита
+class Tweet(ExtractionModel):
+    text: str = Field(selector='div[data-testid="tweetText"]')
+
 # Хранилище активных браузеров
 active_sessions = {}
 
-# Клавиатура управления (без кнопки закрыть)
+# Клавиатура управления
 def get_control_keyboard():
     keyboard = [
         [
@@ -59,6 +66,9 @@ def get_control_keyboard():
             InlineKeyboardButton("↙️", callback_data="down_left"),
             InlineKeyboardButton("⬇️", callback_data="down"),
             InlineKeyboardButton("↘️", callback_data="down_right")
+        ],
+        [
+            InlineKeyboardButton("📝 Твиты", callback_data="extract_tweets")
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -70,7 +80,6 @@ def draw_cursor_on_image(image_bytes, cursor_x, cursor_y):
     
     cursor_size = 20
     
-    # Рисуем стрелку
     points = [
         (cursor_x, cursor_y),
         (cursor_x - cursor_size//2, cursor_y + cursor_size),
@@ -78,7 +87,6 @@ def draw_cursor_on_image(image_bytes, cursor_x, cursor_y):
     ]
     draw.polygon(points, fill="red", outline="black")
     
-    # Маленький кружок
     draw.ellipse(
         [(cursor_x - 3, cursor_y - 3), (cursor_x + 3, cursor_y + 3)],
         fill="black"
@@ -93,7 +101,8 @@ def draw_cursor_on_image(image_bytes, cursor_x, cursor_y):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "/open_browser - Открыть браузер\n"
-        "/close_browser - Закрыть браузер"
+        "/close_browser - Закрыть браузер\n"
+        "/tweets - Извлечь твиты"
     )
 
 # Команда /open_browser
@@ -130,6 +139,48 @@ async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.error(f"Ошибка браузера: {e}")
         await status_msg.edit_text(
             f"❌ Ошибка при запуске браузера:\n\n{str(e)}"
+        )
+
+# Команда /tweets - только текст
+async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    if user_id not in active_sessions:
+        await update.message.reply_text(
+            "❌ Нет активного браузера. Используйте /open_browser"
+        )
+        return
+    
+    status_msg = await update.message.reply_text("🔄 Извлекаю твиты...")
+    
+    try:
+        session = active_sessions[user_id]
+        tab = session["tab"]
+        
+        tweets = await extract_tweets_from_page(tab)
+        
+        if not tweets:
+            await status_msg.edit_text("❌ Твиты не найдены на странице")
+            return
+        
+        # Формируем ответ только с текстом
+        response = "📝 Твиты:\n\n"
+        for i, tweet in enumerate(tweets[:10], 1):
+            text = tweet.text.replace('\n', ' ').strip()
+            if len(text) > 200:
+                text = text[:200] + "..."
+            response += f"{i}. {text}\n\n"
+        
+        if len(tweets) > 10:
+            response += f"И ещё {len(tweets) - 10} твитов..."
+        
+        await status_msg.delete()
+        await update.message.reply_text(response)
+        
+    except Exception as e:
+        logger.error(f"Ошибка извлечения твитов: {e}")
+        await status_msg.edit_text(
+            f"❌ Ошибка при извлечении твитов:\n\n{str(e)}"
         )
 
 # Команда /close_browser
@@ -186,7 +237,24 @@ async def update_screenshot(query, tab, session):
         reply_markup=get_control_keyboard()
     )
 
-# Обработка нажатий кнопок через JavaScript
+# Извлечение только текста твитов
+async def extract_tweets_from_page(tab):
+    try:
+        await asyncio.sleep(2)
+        
+        tweets = await tab.extract_all(
+            Tweet,
+            scope='article[data-testid="tweet"]',
+            timeout=5
+        )
+        
+        logger.info(f"Извлечено {len(tweets)} твитов")
+        return tweets
+    except Exception as e:
+        logger.error(f"Ошибка извлечения твитов: {e}")
+        return []
+
+# Обработка нажатий кнопок
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -205,10 +273,31 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step = 200
     
     try:
+        if action == "extract_tweets":
+            await query.edit_message_text("🔄 Извлекаю твиты...")
+            
+            tweets = await extract_tweets_from_page(tab)
+            
+            if not tweets:
+                await query.edit_message_text("❌ Твиты не найдены на странице")
+                return
+            
+            response = "📝 Твиты:\n\n"
+            for i, tweet in enumerate(tweets[:5], 1):
+                text = tweet.text.replace('\n', ' ').strip()
+                if len(text) > 150:
+                    text = text[:150] + "..."
+                response += f"{i}. {text}\n\n"
+            
+            if len(tweets) > 5:
+                response += f"И ещё {len(tweets) - 5} твитов..."
+            
+            await query.edit_message_text(response)
+            return
+        
+        # Прокрутка
         cursor_x = session.get("cursor_x", 500)
         cursor_y = session.get("cursor_y", 300)
-        
-        # JavaScript код для выполнения в браузере
         js_code = ""
         
         if action == "up":
@@ -244,17 +333,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cursor_y = 540
             js_code = 'window.location.reload();'
         
-        # Выполняем JavaScript в браузере
         if js_code:
-            logger.info(f"Выполняю JS: {js_code}")
             await tab.execute_script(js_code)
             await asyncio.sleep(0.5)
         
-        # Сохраняем новую позицию курсора
         session["cursor_x"] = cursor_x
         session["cursor_y"] = cursor_y
         
-        # Обновляем скриншот
         await update_screenshot(query, tab, session)
         
     except Exception as e:
@@ -301,13 +386,13 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ Произошла ошибка. Попробуйте позже."
         )
 
-# Основная функция
 def main():
     application = Application.builder().token(TOKEN).build()
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("open_browser", open_browser_command))
     application.add_handler(CommandHandler("close_browser", close_browser_command))
+    application.add_handler(CommandHandler("tweets", tweets_command))
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_error_handler(error_handler)
     
