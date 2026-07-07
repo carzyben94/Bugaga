@@ -1,10 +1,10 @@
 import os
 import asyncio
 import logging
+from io import BytesIO
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-# Правильный импорт согласно документации
-from pydoll.browser import Chrome
+from pydoll.browser.chromium import Chrome
 from pydoll.browser.options import ChromiumOptions
 
 # Настройка логирования
@@ -40,28 +40,33 @@ X_COOKIES = [
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Доступные команды:\n"
+        "🤖 Доступные команды:\n\n"
         "/browser - Запустить браузер и открыть X.com"
     )
 
 # Команда /browser
 async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔄 Запускаю браузер, подождите...")
+    status_msg = await update.message.reply_text("🔄 Запускаю браузер, подождите...")
+    
     try:
-        result = await run_browser_task()
-        await update.message.reply_text(
-            f"✅ Браузер выполнил задачу!\n\n"
-            f"Результат: {result}"
+        screenshot, title, url = await run_browser_task()
+        
+        await status_msg.delete()
+        
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption=f"✅ Браузер выполнил задачу!\n\n"
+                   f"📄 Заголовок: {title}\n"
+                   f"🔗 URL: {url}"
         )
     except Exception as e:
         logger.error(f"Ошибка браузера: {e}")
-        await update.message.reply_text(
-            f"❌ Ошибка при запуске браузера:\n{str(e)}"
+        await status_msg.edit_text(
+            f"❌ Ошибка при запуске браузера:\n\n{str(e)}"
         )
 
-# Асинхронная задача для браузера
+# Запуск браузера со скриншотом
 async def run_browser_task():
-    # Настройка опций согласно документации [citation:7]
     options = ChromiumOptions()
     options.binary_location = CHROME_PATH
     options.headless = True
@@ -71,23 +76,26 @@ async def run_browser_task():
     options.add_argument('--disable-gpu')
     options.add_argument('--window-size=1920,1080')
 
-    # Используем контекстный менеджер согласно документации [citation:3]
     async with Chrome(options=options) as browser:
         tab = await browser.start()
         
-        # Устанавливаем куки согласно документации Tab.set_cookies() [citation:2][citation:4]
-        # Принимает список CookieParam словарей
+        logger.info("Устанавливаю куки...")
         await tab.set_cookies(X_COOKIES)
         
-        # Навигация по URL согласно документации [citation:2]
+        logger.info("Перехожу на https://x.com...")
         await tab.go_to('https://x.com')
         await asyncio.sleep(3)
         
-        # Используем свойства, а не методы [citation:2]
+        logger.info("Делаю скриншот...")
+        screenshot_data = await tab.take_screenshot(as_base64=False, beyond_viewport=False)
+        
         title = await tab.title
         current_url = await tab.current_url
         
-        return f"Заголовок: {title}\nURL: {current_url}\nСтатус: Авторизация выполнена"
+        screenshot_bytes = BytesIO(screenshot_data)
+        screenshot_bytes.seek(0)
+        
+        return screenshot_bytes, title, current_url
 
 # Обработка ошибок
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -105,7 +113,7 @@ def main():
     application.add_handler(CommandHandler("browser", browser_command))
     application.add_error_handler(error_handler)
     
-    logger.info("Бот запущен...")
+    logger.info("🚀 Бот запущен и готов к работе!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
