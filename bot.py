@@ -9,7 +9,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMe
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from pydoll.browser.chromium import Chrome
 from pydoll.browser.options import ChromiumOptions
-from pydoll.extractor import ExtractionModel, Field
+from pydoll.extraction import ExtractionModel, Field
 from PIL import Image, ImageDraw
 
 # Настройка логирования
@@ -49,12 +49,12 @@ X_COOKIES = [
     {"name": "__cf_bm", "value": "0lyNYlKnbjXejqIk_blw2x20TfMRtW3SWJ_jmpay.t4-1783123617.0158947-1.0.1.1-1rnugK6C5Aw5r.126FQ3rJYZTCG2WhtPATFYO5Ip0QukW40cCR0qDNfacg6VRv3vRh3w.4Un_NQ6hOnxQfvhm68Grg1hZiLbF6HAyxvxzmS06Q8AzQkKu_i248B5sxj7", "domain": ".x.com", "path": "/"}
 ]
 
-# Модель для текста твита с альтернативными селекторами
+# Модель для текста твита
 class Tweet(ExtractionModel):
-    text: str = Field(
-        selector='div[data-testid="tweetText"]',
-        default=''  # Если не найден, возвращаем пустую строку
-    )
+    text: str = Field(selector='div[data-testid="tweetText"]', default='')
+    author: Optional[str] = Field(selector='div[data-testid="User-Name"] a', default='')
+    likes: Optional[str] = Field(selector='button[data-testid="like"] span', default='0')
+    retweets: Optional[str] = Field(selector='button[data-testid="retweet"] span', default='0')
 
 # Хранилище активных браузеров
 active_sessions = {}
@@ -233,17 +233,13 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_logger.debug(f"Переход в профиль: {profile_url}")
         
         await tab.go_to(profile_url)
-        
-        # Ждем загрузки страницы
         await asyncio.sleep(5)
         
-        # Пробуем извлечь твиты с увеличенным таймаутом
         tweets = await extract_tweets_from_page(tab, timeout=10)
         
         response = f"👤 Профиль @{username}\n\n"
         
         if tweets:
-            # Фильтруем пустые твиты
             valid_tweets = [t for t in tweets if t.text and t.text.strip()]
             
             if valid_tweets:
@@ -252,12 +248,19 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     text = tweet.text.replace('\n', ' ').strip()
                     if len(text) > 200:
                         text = text[:200] + "..."
-                    response += f"{i}. {text}\n\n"
+                    response += f"{i}. {text}\n"
+                    if tweet.author:
+                        response += f"   👤 {tweet.author}"
+                    if tweet.likes:
+                        response += f"  ❤️ {tweet.likes}"
+                    if tweet.retweets:
+                        response += f"  🔄 {tweet.retweets}"
+                    response += "\n\n"
                 
                 if len(valid_tweets) > 5:
                     response += f"И ещё {len(valid_tweets) - 5} твитов..."
             else:
-                response += "❌ Твиты не найдены (пустые)"
+                response += "❌ Твиты не найдены"
         else:
             response += "❌ Твиты не найдены"
         
@@ -331,7 +334,14 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = tweet.text.replace('\n', ' ').strip()
             if len(text) > 200:
                 text = text[:200] + "..."
-            response += f"{i}. {text}\n\n"
+            response += f"{i}. {text}\n"
+            if tweet.author:
+                response += f"   👤 {tweet.author}"
+            if tweet.likes:
+                response += f"  ❤️ {tweet.likes}"
+            if tweet.retweets:
+                response += f"  🔄 {tweet.retweets}"
+            response += "\n\n"
         
         if len(valid_tweets) > 5:
             response += f"И ещё {len(valid_tweets) - 5} твитов..."
@@ -391,7 +401,14 @@ async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = tweet.text.replace('\n', ' ').strip()
             if len(text) > 200:
                 text = text[:200] + "..."
-            response += f"{i}. {text}\n\n"
+            response += f"{i}. {text}\n"
+            if tweet.author:
+                response += f"   👤 {tweet.author}"
+            if tweet.likes:
+                response += f"  ❤️ {tweet.likes}"
+            if tweet.retweets:
+                response += f"  🔄 {tweet.retweets}"
+            response += "\n\n"
         
         if len(valid_tweets) > 10:
             response += f"И ещё {len(valid_tweets) - 10} твитов..."
@@ -467,12 +484,11 @@ async def update_screenshot(query, tab, session):
         reply_markup=get_control_keyboard()
     )
 
-# Извлечение только текста твитов с увеличенным таймаутом
+# Извлечение твитов
 async def extract_tweets_from_page(tab, timeout=10):
     try:
         file_logger.debug(f"Начинаю извлечение твитов (таймаут: {timeout}с)")
         
-        # Ждем загрузки контента
         await asyncio.sleep(3)
         
         tweets = await tab.extract_all(
@@ -611,25 +627,24 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 def main():
-    # Создаем приложение с drop_pending_updates=True чтобы избежать конфликтов
     application = Application.builder().token(TOKEN).build()
     
+    # Регистрируем все команды
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("open_browser", open_browser_command))
     application.add_handler(CommandHandler("close_browser", close_browser_command))
     application.add_handler(CommandHandler("tweets", tweets_command))
     application.add_handler(CommandHandler("search", search_command))
     application.add_handler(CommandHandler("p", profile_command))
-    application.add_handler(CommandHandler("logs", logs_command))
+    application.add_handler(CommandHandler("logs", logs_command))  # <-- Добавил!
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_error_handler(error_handler)
     
     file_logger.info("🚀 Бот запущен и готов к работе!")
     
-    # Запускаем с очисткой предыдущих обновлений
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True  # Игнорируем старые обновления
+        drop_pending_updates=True
     )
 
 if __name__ == "__main__":
