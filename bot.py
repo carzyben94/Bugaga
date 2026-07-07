@@ -13,7 +13,6 @@ from pydoll.extractor import ExtractionModel, Field
 from PIL import Image, ImageDraw
 from pydantic import BaseModel
 import validex
-import asyncio
 
 # Настройка логирования
 logging.basicConfig(
@@ -59,7 +58,7 @@ class Tweet(ExtractionModel):
     likes: Optional[str] = Field(selector='button[data-testid="like"] span', default='0')
     retweets: Optional[str] = Field(selector='button[data-testid="retweet"] span', default='0')
 
-# Модель для ValidEx (упрощенная, только текст)
+# Модель для ValidEx
 class TweetData(BaseModel):
     text: str
 
@@ -209,7 +208,7 @@ async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYP
             f"❌ Ошибка при запуске браузера:\n\n{str(e)}"
         )
 
-# КОМАНДА /VALIDEX (ускоренная)
+# КОМАНДА /VALIDEX (исправленная)
 async def validex_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     file_logger.info(f"Команда /validex от пользователя {user_id}")
@@ -226,41 +225,49 @@ async def validex_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session = active_sessions[user_id]
         tab = session["tab"]
         
-        # Получаем только текст страницы (быстрее)
+        # Получаем HTML как строку
         html = await tab.execute_script('return document.documentElement.outerHTML;')
         
-        # Обрезаем HTML до разумного размера (первые 50000 символов)
+        # Принудительно преобразуем в строку
+        if isinstance(html, dict):
+            html = str(html)
+            file_logger.warning(f"HTML получен как словарь, конвертирован в строку")
+        
+        # Обрезаем до разумного размера
         if len(html) > 50000:
             html = html[:50000]
             file_logger.debug("HTML обрезан до 50000 символов")
         
-        # Создаем приложение ValidEx с таймаутом
+        # Создаем приложение ValidEx
         app = validex.App()
         app.add(html)
         
-        # Извлекаем только текст твитов (без автора, лайков)
+        # Извлекаем данные
         tweets = app.extract_all(TweetData)
         
         if not tweets:
             await status_msg.edit_text("❌ ValidEx не нашел твитов")
             return
         
-        # Берем только первые 5 твитов
+        # Ограничиваем количество
         tweets = tweets[:5]
         
         response = "🧠 ValidEx извлек данные:\n\n"
         for i, tweet in enumerate(tweets, 1):
-            text = tweet.text[:200] + "..." if len(tweet.text) > 200 else tweet.text
-            response += f"{i}. {text}\n\n"
+            if hasattr(tweet, 'text'):
+                text = tweet.text[:200] + "..." if len(tweet.text) > 200 else tweet.text
+                response += f"{i}. {text}\n\n"
+            elif isinstance(tweet, dict) and 'text' in tweet:
+                text = tweet['text'][:200] + "..." if len(tweet['text']) > 200 else tweet['text']
+                response += f"{i}. {text}\n\n"
+            else:
+                response += f"{i}. {str(tweet)[:200]}...\n\n"
         
         file_logger.info(f"ValidEx извлек {len(tweets)} твитов")
         
         await status_msg.delete()
         await update.message.reply_text(response)
         
-    except asyncio.TimeoutError:
-        file_logger.error("ValidEx таймаут")
-        await status_msg.edit_text("❌ ValidEx превысил время выполнения. Попробуйте /tweets")
     except Exception as e:
         file_logger.error(f"Ошибка ValidEx: {e}")
         await status_msg.edit_text(
