@@ -13,6 +13,7 @@ from pydoll.extractor import ExtractionModel, Field
 from PIL import Image, ImageDraw
 from pydantic import BaseModel
 import validex
+import asyncio
 
 # Настройка логирования
 logging.basicConfig(
@@ -58,12 +59,9 @@ class Tweet(ExtractionModel):
     likes: Optional[str] = Field(selector='button[data-testid="like"] span', default='0')
     retweets: Optional[str] = Field(selector='button[data-testid="retweet"] span', default='0')
 
-# Модель для ValidEx
+# Модель для ValidEx (упрощенная, только текст)
 class TweetData(BaseModel):
     text: str
-    author: Optional[str] = None
-    likes: Optional[int] = 0
-    retweets: Optional[int] = 0
 
 # Хранилище активных браузеров
 active_sessions = {}
@@ -211,7 +209,7 @@ async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYP
             f"❌ Ошибка при запуске браузера:\n\n{str(e)}"
         )
 
-# КОМАНДА /VALIDEX
+# КОМАНДА /VALIDEX (ускоренная)
 async def validex_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     file_logger.info(f"Команда /validex от пользователя {user_id}")
@@ -228,41 +226,41 @@ async def validex_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session = active_sessions[user_id]
         tab = session["tab"]
         
-        # Получаем HTML страницы
+        # Получаем только текст страницы (быстрее)
         html = await tab.execute_script('return document.documentElement.outerHTML;')
         
-        # Создаем приложение ValidEx
+        # Обрезаем HTML до разумного размера (первые 50000 символов)
+        if len(html) > 50000:
+            html = html[:50000]
+            file_logger.debug("HTML обрезан до 50000 символов")
+        
+        # Создаем приложение ValidEx с таймаутом
         app = validex.App()
         app.add(html)
         
-        # Извлекаем данные
+        # Извлекаем только текст твитов (без автора, лайков)
         tweets = app.extract_all(TweetData)
         
         if not tweets:
             await status_msg.edit_text("❌ ValidEx не нашел твитов")
             return
         
-        # Формируем ответ
-        response = "🧠 ValidEx извлек данные:\n\n"
-        for i, tweet in enumerate(tweets[:5], 1):
-            text = tweet.text[:200] + "..." if len(tweet.text) > 200 else tweet.text
-            response += f"{i}. {text}\n"
-            if tweet.author:
-                response += f"   👤 {tweet.author}"
-            if tweet.likes:
-                response += f"  ❤️ {tweet.likes}"
-            if tweet.retweets:
-                response += f"  🔄 {tweet.retweets}"
-            response += "\n\n"
+        # Берем только первые 5 твитов
+        tweets = tweets[:5]
         
-        if len(tweets) > 5:
-            response += f"И ещё {len(tweets) - 5} твитов..."
+        response = "🧠 ValidEx извлек данные:\n\n"
+        for i, tweet in enumerate(tweets, 1):
+            text = tweet.text[:200] + "..." if len(tweet.text) > 200 else tweet.text
+            response += f"{i}. {text}\n\n"
         
         file_logger.info(f"ValidEx извлек {len(tweets)} твитов")
         
         await status_msg.delete()
         await update.message.reply_text(response)
         
+    except asyncio.TimeoutError:
+        file_logger.error("ValidEx таймаут")
+        await status_msg.edit_text("❌ ValidEx превысил время выполнения. Попробуйте /tweets")
     except Exception as e:
         file_logger.error(f"Ошибка ValidEx: {e}")
         await status_msg.edit_text(
