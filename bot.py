@@ -208,7 +208,7 @@ async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYP
             f"❌ Ошибка при запуске браузера:\n\n{str(e)}"
         )
 
-# КОМАНДА /VALIDEX (исправленная)
+# КОМАНДА /VALIDEX
 async def validex_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     file_logger.info(f"Команда /validex от пользователя {user_id}")
@@ -225,31 +225,25 @@ async def validex_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session = active_sessions[user_id]
         tab = session["tab"]
         
-        # Получаем HTML как строку
         html = await tab.execute_script('return document.documentElement.outerHTML;')
         
-        # Принудительно преобразуем в строку
         if isinstance(html, dict):
             html = str(html)
             file_logger.warning(f"HTML получен как словарь, конвертирован в строку")
         
-        # Обрезаем до разумного размера
         if len(html) > 50000:
             html = html[:50000]
             file_logger.debug("HTML обрезан до 50000 символов")
         
-        # Создаем приложение ValidEx
         app = validex.App()
         app.add(html)
         
-        # Извлекаем данные
         tweets = app.extract_all(TweetData)
         
         if not tweets:
             await status_msg.edit_text("❌ ValidEx не нашел твитов")
             return
         
-        # Ограничиваем количество
         tweets = tweets[:5]
         
         response = "🧠 ValidEx извлек данные:\n\n"
@@ -527,9 +521,10 @@ async def close_browser_command(update: Update, context: ContextTypes.DEFAULT_TY
 async def get_screenshot_with_cursor(tab, cursor_x, cursor_y):
     file_logger.debug(f"Создание скриншота с курсором ({cursor_x}, {cursor_y})")
     
+    # Исправленный метод получения скриншота
     screenshot_base64 = await tab.take_screenshot(
+        path=None,
         as_base64=True,
-        quality=100,
         beyond_viewport=False
     )
     
