@@ -7,6 +7,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMe
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from pydoll.browser.chromium import Chrome
 from pydoll.browser.options import ChromiumOptions
+from PIL import Image, ImageDraw
 
 # Настройка логирования
 logging.basicConfig(
@@ -65,6 +66,36 @@ def get_control_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
+# Рисуем курсор на изображении
+def draw_cursor_on_image(image_bytes, cursor_x, cursor_y):
+    # Открываем изображение
+    image = Image.open(BytesIO(image_bytes))
+    draw = ImageDraw.Draw(image)
+    
+    # Размеры курсора
+    cursor_size = 20
+    
+    # Рисуем курсор в виде стрелки
+    # Треугольник (стрелка)
+    points = [
+        (cursor_x, cursor_y),  # Острие
+        (cursor_x - cursor_size//2, cursor_y + cursor_size),  # Левое крыло
+        (cursor_x + cursor_size//2, cursor_y + cursor_size),  # Правое крыло
+    ]
+    draw.polygon(points, fill="red", outline="black")
+    
+    # Маленький кружок для наглядности
+    draw.ellipse(
+        [(cursor_x - 3, cursor_y - 3), (cursor_x + 3, cursor_y + 3)],
+        fill="black"
+    )
+    
+    # Сохраняем в BytesIO
+    output = BytesIO()
+    image.save(output, format='PNG')
+    output.seek(0)
+    return output
+
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -86,11 +117,13 @@ async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYP
     status_msg = await update.message.reply_text("🔄 Запускаю браузер, подождите...")
     
     try:
-        screenshot, browser, tab = await run_browser_task()
+        screenshot, browser, tab, cursor_pos = await run_browser_task()
         
         active_sessions[user_id] = {
             "browser": browser,
-            "tab": tab
+            "tab": tab,
+            "cursor_x": cursor_pos[0],
+            "cursor_y": cursor_pos[1]
         }
         
         await status_msg.delete()
@@ -130,26 +163,34 @@ async def close_browser_command(update: Update, context: ContextTypes.DEFAULT_TY
             f"❌ Ошибка при закрытии браузера:\n\n{str(e)}"
         )
 
-# Функция для получения скриншота с курсором
-async def get_screenshot_with_cursor(tab):
+# Получение скриншота с курсором через Pillow
+async def get_screenshot_with_cursor(tab, cursor_x, cursor_y):
+    # Делаем скриншот без курсора
     screenshot_base64 = await tab.take_screenshot(
         path=None,
         as_base64=True,
-        beyond_viewport=False,
-        capture_cursor=True
+        beyond_viewport=False
     )
+    
     screenshot_bytes = base64.b64decode(screenshot_base64)
-    screenshot_io = BytesIO(screenshot_bytes)
-    screenshot_io.seek(0)
-    return screenshot_io
+    
+    # Рисуем курсор через Pillow
+    image_with_cursor = draw_cursor_on_image(screenshot_bytes, cursor_x, cursor_y)
+    
+    return image_with_cursor
 
 # Обновление скриншота
-async def update_screenshot(query, tab):
-    screenshot_io = await get_screenshot_with_cursor(tab)
+async def update_screenshot(query, tab, session):
+    cursor_x = session.get("cursor_x", 500)
+    cursor_y = session.get("cursor_y", 300)
+    
+    screenshot_io = await get_screenshot_with_cursor(tab, cursor_x, cursor_y)
+    
     media = InputMediaPhoto(
         media=screenshot_io,
         caption="✅ Браузер открыт и авторизован!"
     )
+    
     await query.edit_message_media(
         media=media,
         reply_markup=get_control_keyboard()
@@ -174,24 +215,42 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step = 200
     
     try:
+        # Обновляем позицию курсора
+        cursor_x = session.get("cursor_x", 500)
+        cursor_y = session.get("cursor_y", 300)
+        
         # Выполняем действие
         if action == "up":
+            cursor_y = max(0, cursor_y - step)
             await tab.scroll_by(0, -step)
         elif action == "down":
+            cursor_y = min(1080, cursor_y + step)
             await tab.scroll_by(0, step)
         elif action == "left":
+            cursor_x = max(0, cursor_x - step)
             await tab.scroll_by(-step, 0)
         elif action == "right":
+            cursor_x = min(1920, cursor_x + step)
             await tab.scroll_by(step, 0)
         elif action == "up_left":
+            cursor_x = max(0, cursor_x - step)
+            cursor_y = max(0, cursor_y - step)
             await tab.scroll_by(-step, -step)
         elif action == "up_right":
+            cursor_x = min(1920, cursor_x + step)
+            cursor_y = max(0, cursor_y - step)
             await tab.scroll_by(step, -step)
         elif action == "down_left":
+            cursor_x = max(0, cursor_x - step)
+            cursor_y = min(1080, cursor_y + step)
             await tab.scroll_by(-step, step)
         elif action == "down_right":
+            cursor_x = min(1920, cursor_x + step)
+            cursor_y = min(1080, cursor_y + step)
             await tab.scroll_by(step, step)
         elif action == "refresh":
+            cursor_x = 960
+            cursor_y = 540
             await tab.go_to('https://x.com/home')
             await asyncio.sleep(1)
         elif action == "close_browser":
@@ -200,10 +259,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("✅ Браузер успешно закрыт!")
             return
         
+        # Сохраняем новую позицию курсора
+        session["cursor_x"] = cursor_x
+        session["cursor_y"] = cursor_y
+        
         await asyncio.sleep(0.5)
         
-        # Обновляем скриншот
-        await update_screenshot(query, tab)
+        # Обновляем скриншот с курсором
+        await update_screenshot(query, tab, session)
         
     except Exception as e:
         logger.error(f"Ошибка при выполнении действия {action}: {e}")
@@ -234,10 +297,13 @@ async def run_browser_task():
     await tab.go_to('https://x.com')
     await asyncio.sleep(3)
     
-    logger.info("Делаю скриншот...")
-    screenshot_io = await get_screenshot_with_cursor(tab)
+    # Начальная позиция курсора
+    cursor_x, cursor_y = 960, 540
     
-    return screenshot_io, browser, tab
+    logger.info("Делаю скриншот...")
+    screenshot_io = await get_screenshot_with_cursor(tab, cursor_x, cursor_y)
+    
+    return screenshot_io, browser, tab, (cursor_x, cursor_y)
 
 # Обработка ошибок
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
