@@ -1,14 +1,13 @@
 import os
 import logging
 import asyncio
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
 from twscrape import API
 from twscrape.logger import set_log_level
 
 # ==================== НАСТРОЙКИ ====================
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-ADMIN_ID = os.environ.get("ADMIN_ID")
 
 set_log_level("ERROR")
 logging.basicConfig(level=logging.INFO)
@@ -37,16 +36,6 @@ async def init_api():
         api = API()
         await api.pool.add_account_cookies("temp", COOKIES)
         logging.info("✅ Аккаунт добавлен с куками")
-        
-        # Проверка
-        try:
-            test = await api.user_by_login("twitter")
-            if test:
-                logging.info(f"✅ Авторизация успешна!")
-                return True
-        except:
-            pass
-            
         return True
     except Exception as e:
         logging.error(f"❌ Ошибка: {e}")
@@ -74,18 +63,31 @@ def format_tweet(tweet, index=None):
 # ==================== КОМАНДЫ ====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Главное меню с компактными кнопками"""
-    keyboard = [
-        [InlineKeyboardButton("🔍 Поиск твитов", callback_data="help_search")],
-        [InlineKeyboardButton("👤 Профиль", callback_data="help_user")],
-        [InlineKeyboardButton("📊 Команды", callback_data="help_all")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
+    """Приветствие со списком команд"""
     await update.message.reply_text(
         "👋 Привет! Я Twitter-бот.\n\n"
-        "Используй команды или кнопки ниже:",
-        reply_markup=reply_markup
+        "📋 Команды:\n"
+        "/tweet <запрос> - поиск твитов\n"
+        "/user <username> - профиль\n"
+        "/tweets <username> - твиты пользователя\n"
+        "/trends - текущие тренды\n"
+        "/cookies - статус кук\n"
+        "/help - справка"
+    )
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Справка по командам"""
+    await update.message.reply_text(
+        "📋 Команды:\n\n"
+        "/tweet <запрос> - поиск твитов\n"
+        "Пример: /tweet python\n\n"
+        "/user <username> - профиль пользователя\n"
+        "Пример: /user elonmusk\n\n"
+        "/tweets <username> - последние твиты\n"
+        "Пример: /tweets elonmusk\n\n"
+        "/trends - показать текущие тренды\n\n"
+        "/cookies - проверить статус кук\n"
+        "/help - показать это сообщение"
     )
 
 async def search_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -164,57 +166,56 @@ async def user_tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:150]}")
 
+async def trends(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать текущие тренды"""
+    msg = await update.message.reply_text("📊 Загружаю тренды...")
+    
+    try:
+        # Получаем тренды
+        trends_data = await api.trends()
+        
+        if not trends_data:
+            await msg.edit_text("😕 Не удалось получить тренды")
+            return
+        
+        # Форматируем вывод
+        result = "🔥 **Текущие тренды Twitter**\n\n"
+        
+        # Если есть категории
+        if isinstance(trends_data, dict):
+            for category, items in trends_data.items():
+                if items:
+                    result += f"📌 **{category}**\n"
+                    for i, item in enumerate(items[:10], 1):
+                        result += f"{i}. {item}\n"
+                    result += "\n"
+        # Если просто список
+        elif isinstance(trends_data, list):
+            for i, trend in enumerate(trends_data[:20], 1):
+                # Если trend это объект с name
+                if hasattr(trend, 'name'):
+                    result += f"{i}. {trend.name}"
+                    if hasattr(trend, 'tweet_count') and trend.tweet_count:
+                        result += f" ({format_number(trend.tweet_count)} твитов)"
+                    result += "\n"
+                else:
+                    result += f"{i}. {trend}\n"
+        
+        # Если результат слишком длинный, обрезаем
+        if len(result) > 4000:
+            result = result[:3900] + "\n\n... и еще много трендов"
+        
+        await msg.edit_text(result, parse_mode="Markdown")
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка при получении трендов: {str(e)[:150]}")
+
 async def cookies_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user = await api.user_by_login("twitter")
         await update.message.reply_text(f"✅ Куки работают! Аккаунт: @{user.username}")
     except Exception as e:
         await update.message.reply_text(f"❌ Куки не работают: {str(e)[:100]}")
-
-async def reload_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if ADMIN_ID and str(update.effective_user.id) != ADMIN_ID:
-        await update.message.reply_text("⛔ Только для админа")
-        return
-    
-    global api
-    api = API()
-    if await init_api():
-        await update.message.reply_text("✅ Куки перезагружены")
-    else:
-        await update.message.reply_text("❌ Ошибка")
-
-# ==================== КНОПКИ ====================
-
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    data = query.data
-    
-    if data == "help_search":
-        await query.edit_message_text(
-            "🔍 /tweet <запрос>\n"
-            "Пример: /tweet python\n\n"
-            "Находит до 5 твитов."
-        )
-    
-    elif data == "help_user":
-        await query.edit_message_text(
-            "👤 /user <username>\n"
-            "Пример: /user elonmusk\n"
-            "/tweets <username> - твиты пользователя\n\n"
-            "Показывает профиль и статистику."
-        )
-    
-    elif data == "help_all":
-        await query.edit_message_text(
-            "📋 Команды:\n\n"
-            "/tweet <запрос> - поиск твитов\n"
-            "/user <username> - профиль\n"
-            "/tweets <username> - твиты пользователя\n"
-            "/cookies - статус кук\n"
-            "/reload - перезагрузка кук (админ)"
-        )
 
 # ==================== ЗАПУСК ====================
 
@@ -224,12 +225,12 @@ async def main():
     app = Application.builder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("tweet", search_tweet))
     app.add_handler(CommandHandler("user", get_user))
     app.add_handler(CommandHandler("tweets", user_tweets))
+    app.add_handler(CommandHandler("trends", trends))
     app.add_handler(CommandHandler("cookies", cookies_status))
-    app.add_handler(CommandHandler("reload", reload_cookies))
-    app.add_handler(CallbackQueryHandler(button_callback))
     
     logging.info("🚀 Бот запущен")
     
