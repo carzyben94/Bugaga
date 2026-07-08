@@ -63,6 +63,7 @@ def format_tweet(tweet, index=None):
 # ==================== КОМАНДЫ ====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Приветствие со списком команд"""
     await update.message.reply_text(
         "👋 Привет! Я Twitter-бот.\n\n"
         "📋 Команды:\n"
@@ -75,17 +76,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Справка по командам"""
     await update.message.reply_text(
         "📋 Команды:\n\n"
         "/tweet <запрос> - поиск твитов\n"
         "Пример: /tweet python\n\n"
-        "/user <username> - профиль\n"
+        "/user <username> - профиль пользователя\n"
         "Пример: /user elonmusk\n\n"
-        "/tweets <username> - твиты пользователя\n"
+        "/tweets <username> - последние твиты\n"
         "Пример: /tweets elonmusk\n\n"
         "/trends - текущие тренды\n\n"
-        "/cookies - статус кук\n"
-        "/help - справка"
+        "/cookies - проверить статус кук\n"
+        "/help - показать это сообщение"
     )
 
 async def search_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
