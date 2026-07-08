@@ -1,7 +1,6 @@
 import os
 import logging
 import asyncio
-from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
 from twscrape import API
@@ -31,27 +30,31 @@ COOKIES = (
 
 # ==================== API ====================
 api = None
-current_user = None
 
 async def init_api():
-    global api, current_user
+    global api
     try:
         api = API()
         await api.pool.add_account_cookies("temp", COOKIES)
         logging.info("✅ Аккаунт добавлен с куками")
         
-        # Получаем текущего пользователя
-        current_user = await api.user_by_login("temp")  # или любой существующий
-        logging.info(f"✅ Авторизован как: @{current_user.username if current_user else 'unknown'}")
+        # Проверка
+        try:
+            test = await api.user_by_login("twitter")
+            if test:
+                logging.info(f"✅ Авторизация успешна!")
+                return True
+        except:
+            pass
+            
         return True
     except Exception as e:
         logging.error(f"❌ Ошибка: {e}")
         return False
 
-# ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
+# ==================== ФОРМАТИРОВАНИЕ ====================
 
 def format_number(num):
-    """Форматирует число (1000 -> 1K, 1000000 -> 1M)"""
     if num >= 1_000_000:
         return f"{num/1_000_000:.1f}M"
     elif num >= 1_000:
@@ -59,79 +62,61 @@ def format_number(num):
     return str(num)
 
 def format_tweet(tweet, index=None):
-    """Форматирует твит для вывода"""
-    text = tweet.rawContent[:200] + "..." if len(tweet.rawContent) > 200 else tweet.rawContent
+    text = tweet.rawContent[:150] + "..." if len(tweet.rawContent) > 150 else tweet.rawContent
     result = ""
     if index:
         result += f"{index}. "
     result += f"{text}\n"
-    result += f"   ❤️ {format_number(tweet.likeCount)} | 🔄 {format_number(tweet.retweetCount)} | 💬 {format_number(tweet.replyCount)}"
-    if hasattr(tweet, 'created_at'):
-        result += f" | 🕐 {str(tweet.created_at)[:10]}"
+    result += f"   ❤️ {format_number(tweet.likeCount)} | 🔄 {format_number(tweet.retweetCount)}"
     result += "\n"
     return result
 
-# ==================== КОМАНДЫ БОТА ====================
+# ==================== КОМАНДЫ ====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Главное меню с компактными кнопками"""
     keyboard = [
         [InlineKeyboardButton("🔍 Поиск твитов", callback_data="help_search")],
-        [InlineKeyboardButton("👤 Инфо о пользователе", callback_data="help_user")],
-        [InlineKeyboardButton("📊 Тренды", callback_data="help_trends")],
-        [InlineKeyboardButton("❓ Помощь", callback_data="help_all")]
+        [InlineKeyboardButton("👤 Профиль", callback_data="help_user")],
+        [InlineKeyboardButton("📊 Команды", callback_data="help_all")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
-        "👋 Привет! Я бот для Twitter.\n\n"
-        "📌 *Основные команды:*\n"
-        "/tweet <запрос> - поиск твитов\n"
-        "/user <username> - инфо о пользователе\n"
-        "/tweets <username> - последние твиты пользователя\n"
-        "/followers <username> - список подписчиков\n"
-        "/following <username> - список подписок\n"
-        "/trends - текущие тренды\n"
-        "/search_user <запрос> - поиск пользователей\n"
-        "/cookies - статус авторизации\n\n"
-        "📌 *Дополнительно:*\n"
-        "/reload - перезагрузить куки (админ)",
-        parse_mode='Markdown',
+        "👋 Привет! Я Twitter-бот.\n\n"
+        "Используй команды или кнопки ниже:",
         reply_markup=reply_markup
     )
 
-# ==================== 1. ПОИСК ТВИТОВ ====================
-
 async def search_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("❌ Укажи запрос: /tweet запрос")
+        await update.message.reply_text("❌ /tweet <запрос>\nПример: /tweet python")
         return
     
     query = " ".join(context.args)
-    msg = await update.message.reply_text(f"🔍 Ищу: *{query}*...", parse_mode='Markdown')
+    msg = await update.message.reply_text(f"🔍 Ищу: {query}...")
     
     try:
         tweets = []
-        async for tweet in api.search(query, limit=10):
+        async for tweet in api.search(query, limit=5):
             tweets.append(tweet)
         
         if not tweets:
             await msg.edit_text("😕 Ничего не найдено")
             return
         
-        result = f"📊 *Результаты по запросу:* {query}\n\n"
-        for i, tweet in enumerate(tweets[:10], 1):
+        result = f"📊 Результаты: {query}\n\n"
+        for i, tweet in enumerate(tweets[:5], 1):
             result += format_tweet(tweet, i) + "\n"
         
-        await msg.edit_text(result, parse_mode='Markdown')
+        await msg.edit_text(result)
         
     except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-# ==================== 2. ИНФО О ПОЛЬЗОВАТЕЛЕ ====================
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:150]}")
 
 async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("❌ Укажи username: /user username")
+        await update.message.reply_text("❌ /user <username>\nПример: /user elonmusk")
         return
     
     username = context.args[0].replace("@", "")
@@ -140,197 +125,55 @@ async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user = await api.user_by_login(username)
         
-        # Создаём клавиатуру с действиями
-        keyboard = [
-            [InlineKeyboardButton("📝 Твиты", callback_data=f"usertweets_{username}")],
-            [InlineKeyboardButton("👥 Подписчики", callback_data=f"followers_{username}")],
-            [InlineKeyboardButton("📋 Подписки", callback_data=f"following_{username}")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
         result = (
-            f"👤 *{user.displayname}* (@{user.username})\n"
-            f"📝 {user.rawDescription[:300] if user.rawDescription else 'Нет описания'}\n\n"
-            f"📊 *Статистика:*\n"
-            f"   👥 Подписчики: {format_number(user.followersCount)}\n"
-            f"   📋 Подписки: {format_number(user.friendsCount)}\n"
-            f"   📝 Твитов: {format_number(user.statusesCount)}\n"
-            f"   ❤️ Лайков: {format_number(user.favouritesCount)}\n"
-            f"   📅 Регистрация: {str(user.created)[:10] if user.created else 'Н/Д'}\n"
-            f"   🔒 { 'Приватный' if user.protected else 'Публичный' } аккаунт"
+            f"👤 {user.displayname} (@{user.username})\n"
+            f"📝 {user.rawDescription[:150] if user.rawDescription else 'Нет описания'}\n\n"
+            f"👥 Подписчики: {format_number(user.followersCount)}\n"
+            f"📋 Подписки: {format_number(user.friendsCount)}\n"
+            f"📝 Твитов: {format_number(user.statusesCount)}"
         )
-        await msg.edit_text(result, parse_mode='Markdown', reply_markup=reply_markup)
+        await msg.edit_text(result)
         
     except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-# ==================== 3. ТВИТЫ ПОЛЬЗОВАТЕЛЯ ====================
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:150]}")
 
 async def user_tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("❌ Укажи username: /tweets username")
+        await update.message.reply_text("❌ /tweets <username>\nПример: /tweets elonmusk")
         return
     
     username = context.args[0].replace("@", "")
-    msg = await update.message.reply_text(f"📝 Получаю твиты @{username}...")
+    msg = await update.message.reply_text(f"📝 Твиты @{username}...")
     
     try:
         user = await api.user_by_login(username)
         tweets = []
-        async for tweet in api.user_tweets(user.id, limit=10):
+        async for tweet in api.user_tweets(user.id, limit=5):
             tweets.append(tweet)
         
         if not tweets:
             await msg.edit_text(f"😕 У @{username} нет твитов")
             return
         
-        result = f"📝 *Последние твиты @{username}:*\n\n"
-        for i, tweet in enumerate(tweets[:10], 1):
+        result = f"📝 Твиты @{username}:\n\n"
+        for i, tweet in enumerate(tweets[:5], 1):
             result += format_tweet(tweet, i) + "\n"
         
-        await msg.edit_text(result, parse_mode='Markdown')
+        await msg.edit_text(result)
         
     except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-# ==================== 4. ПОДПИСЧИКИ ====================
-
-async def get_followers(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Укажи username: /followers username")
-        return
-    
-    username = context.args[0].replace("@", "")
-    msg = await update.message.reply_text(f"👥 Получаю подписчиков @{username}...")
-    
-    try:
-        user = await api.user_by_login(username)
-        followers = []
-        async for follower in api.followers(user.id, limit=10):
-            followers.append(follower)
-        
-        if not followers:
-            await msg.edit_text(f"😕 У @{username} нет подписчиков")
-            return
-        
-        result = f"👥 *Подписчики @{username}:*\n\n"
-        for i, follower in enumerate(followers[:10], 1):
-            result += f"{i}. @{follower.username} - {follower.displayname}\n"
-            if follower.rawDescription:
-                desc = follower.rawDescription[:50] + "..." if len(follower.rawDescription) > 50 else follower.rawDescription
-                result += f"   📝 {desc}\n"
-        
-        await msg.edit_text(result, parse_mode='Markdown')
-        
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-# ==================== 5. ПОДПИСКИ ====================
-
-async def get_following(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Укажи username: /following username")
-        return
-    
-    username = context.args[0].replace("@", "")
-    msg = await update.message.reply_text(f"📋 Получаю подписки @{username}...")
-    
-    try:
-        user = await api.user_by_login(username)
-        following = []
-        async for follow in api.following(user.id, limit=10):
-            following.append(follow)
-        
-        if not following:
-            await msg.edit_text(f"😕 @{username} ни на кого не подписан")
-            return
-        
-        result = f"📋 *Подписки @{username}:*\n\n"
-        for i, follow in enumerate(following[:10], 1):
-            result += f"{i}. @{follow.username} - {follow.displayname}\n"
-            if follow.rawDescription:
-                desc = follow.rawDescription[:50] + "..." if len(follow.rawDescription) > 50 else follow.rawDescription
-                result += f"   📝 {desc}\n"
-        
-        await msg.edit_text(result, parse_mode='Markdown')
-        
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-# ==================== 6. ТРЕНДЫ ====================
-
-async def get_trends(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("📊 Получаю тренды...")
-    
-    try:
-        # Получаем тренды (WOEID = 1 для мировых)
-        trends = await api.trends(1)
-        
-        if not trends:
-            await msg.edit_text("😕 Не удалось получить тренды")
-            return
-        
-        result = "📊 *Тренды Twitter:*\n\n"
-        for i, trend in enumerate(trends[:10], 1):
-            result += f"{i}. {trend.name}\n"
-            if hasattr(trend, 'tweet_volume') and trend.tweet_volume:
-                result += f"   📊 {format_number(trend.tweet_volume)} твитов\n"
-        
-        await msg.edit_text(result, parse_mode='Markdown')
-        
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-# ==================== 7. ПОИСК ПОЛЬЗОВАТЕЛЕЙ ====================
-
-async def search_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Укажи запрос: /search_user запрос")
-        return
-    
-    query = " ".join(context.args)
-    msg = await update.message.reply_text(f"🔍 Ищу пользователей: *{query}*...", parse_mode='Markdown')
-    
-    try:
-        users = []
-        async for user in api.search_users(query, limit=10):
-            users.append(user)
-        
-        if not users:
-            await msg.edit_text("😕 Ничего не найдено")
-            return
-        
-        result = f"👤 *Результаты поиска пользователей:* {query}\n\n"
-        for i, user in enumerate(users[:10], 1):
-            result += f"{i}. @{user.username} - {user.displayname}\n"
-            if user.rawDescription:
-                desc = user.rawDescription[:80] + "..." if len(user.rawDescription) > 80 else user.rawDescription
-                result += f"   📝 {desc}\n"
-            result += f"   👥 {format_number(user.followersCount)} подписчиков\n\n"
-        
-        await msg.edit_text(result, parse_mode='Markdown')
-        
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-# ==================== 8. СТАТУС КУК ====================
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:150]}")
 
 async def cookies_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user = await api.user_by_login("twitter")
-        await update.message.reply_text(
-            f"✅ Куки работают!\n"
-            f"📦 Аккаунт: @{user.username}\n"
-            f"🔑 Авторизация: успешна"
-        )
+        await update.message.reply_text(f"✅ Куки работают! Аккаунт: @{user.username}")
     except Exception as e:
         await update.message.reply_text(f"❌ Куки не работают: {str(e)[:100]}")
 
-# ==================== 9. ПЕРЕЗАГРУЗКА КУК ====================
-
 async def reload_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ADMIN_ID and str(update.effective_user.id) != ADMIN_ID:
-        await update.message.reply_text("⛔ Только для администратора")
+        await update.message.reply_text("⛔ Только для админа")
         return
     
     global api
@@ -338,109 +181,57 @@ async def reload_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await init_api():
         await update.message.reply_text("✅ Куки перезагружены")
     else:
-        await update.message.reply_text("❌ Ошибка перезагрузки")
+        await update.message.reply_text("❌ Ошибка")
 
-# ==================== ОБРАБОТЧИК КНОПОК ====================
+# ==================== КНОПКИ ====================
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
     data = query.data
-    username = data.split('_', 1)[1] if '_' in data else None
     
     if data == "help_search":
         await query.edit_message_text(
-            "🔍 *Поиск твитов*\n\n"
-            "Используй: `/tweet запрос`\n"
-            "Пример: `/tweet python programming`\n\n"
-            "Найдёт до 10 последних твитов по вашему запросу.",
-            parse_mode='Markdown'
+            "🔍 /tweet <запрос>\n"
+            "Пример: /tweet python\n\n"
+            "Находит до 5 твитов."
         )
     
     elif data == "help_user":
         await query.edit_message_text(
-            "👤 *Информация о пользователе*\n\n"
-            "Используй: `/user username`\n"
-            "Пример: `/user elonmusk`\n\n"
-            "Покажет профиль, статистику и кнопки для быстрого доступа к твитам, подписчикам и подпискам.",
-            parse_mode='Markdown'
-        )
-    
-    elif data == "help_trends":
-        await query.edit_message_text(
-            "📊 *Тренды Twitter*\n\n"
-            "Используй: `/trends`\n\n"
-            "Покажет 10 самых популярных тем в Twitter на данный момент.",
-            parse_mode='Markdown'
+            "👤 /user <username>\n"
+            "Пример: /user elonmusk\n"
+            "/tweets <username> - твиты пользователя\n\n"
+            "Показывает профиль и статистику."
         )
     
     elif data == "help_all":
         await query.edit_message_text(
-            "📌 *Все команды бота:*\n\n"
-            "🔍 `/tweet <запрос>` - поиск твитов\n"
-            "👤 `/user <username>` - инфо о пользователе\n"
-            "📝 `/tweets <username>` - последние твиты\n"
-            "👥 `/followers <username>` - список подписчиков\n"
-            "📋 `/following <username>` - список подписок\n"
-            "📊 `/trends` - текущие тренды\n"
-            "🔍 `/search_user <запрос>` - поиск пользователей\n"
-            "🍪 `/cookies` - статус авторизации\n"
-            "🔄 `/reload` - перезагрузить куки (админ)",
-            parse_mode='Markdown'
+            "📋 Команды:\n\n"
+            "/tweet <запрос> - поиск твитов\n"
+            "/user <username> - профиль\n"
+            "/tweets <username> - твиты пользователя\n"
+            "/cookies - статус кук\n"
+            "/reload - перезагрузка кук (админ)"
         )
-    
-    elif data.startswith("usertweets_"):
-        await query.edit_message_text(f"📝 Получаю твиты @{username}...")
-        # Вызываем функцию с контекстом
-        context.args = [username]
-        await user_tweets(update, context)
-    
-    elif data.startswith("followers_"):
-        await query.edit_message_text(f"👥 Получаю подписчиков @{username}...")
-        context.args = [username]
-        await get_followers(update, context)
-    
-    elif data.startswith("following_"):
-        await query.edit_message_text(f"📋 Получаю подписки @{username}...")
-        context.args = [username]
-        await get_following(update, context)
 
 # ==================== ЗАПУСК ====================
 
 async def main():
-    # Инициализация
     await init_api()
     
-    # Создаём приложение
     app = Application.builder().token(TOKEN).build()
     
-    # Регистрируем команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("tweet", search_tweet))
     app.add_handler(CommandHandler("user", get_user))
     app.add_handler(CommandHandler("tweets", user_tweets))
-    app.add_handler(CommandHandler("followers", get_followers))
-    app.add_handler(CommandHandler("following", get_following))
-    app.add_handler(CommandHandler("trends", get_trends))
-    app.add_handler(CommandHandler("search_user", search_users))
     app.add_handler(CommandHandler("cookies", cookies_status))
     app.add_handler(CommandHandler("reload", reload_cookies))
-    
-    # Регистрируем обработчик кнопок
     app.add_handler(CallbackQueryHandler(button_callback))
     
     logging.info("🚀 Бот запущен")
-    logging.info("📋 Доступные команды:")
-    logging.info("  /tweet <запрос> - поиск твитов")
-    logging.info("  /user <username> - инфо о пользователе")
-    logging.info("  /tweets <username> - последние твиты")
-    logging.info("  /followers <username> - подписчики")
-    logging.info("  /following <username> - подписки")
-    logging.info("  /trends - тренды")
-    logging.info("  /search_user <запрос> - поиск пользователей")
-    logging.info("  /cookies - статус кук")
-    logging.info("  /reload - перезагрузка кук (админ)")
     
     await app.initialize()
     await app.start()
