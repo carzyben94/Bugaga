@@ -71,8 +71,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/tweet <запрос> - поиск твитов\n"
         "/user <username> - профиль\n"
         "/tweets <username> - твиты пользователя\n"
-        "/trends - тренды\n"
-        "/test - диагностика всех методов\n"
+        "/trends [категория] [лимит] - тренды\n"
+        "/trendsearch <тренд> - поиск по тренду\n"
+        "/test - диагностика\n"
         "/cookies - статус кук\n"
         "/help - справка"
     )
@@ -87,8 +88,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Пример: /user elonmusk\n\n"
         "/tweets <username> - последние твиты\n"
         "Пример: /tweets elonmusk\n\n"
-        "/trends - текущие тренды\n"
-        "/test - диагностика всех методов API\n\n"
+        "/trends [категория] [лимит] - текущие тренды\n"
+        "Категории: trending (по умолч.), news, sport, entertainment\n"
+        "Лимит: число (по умолч. 20)\n"
+        "Пример: /trends sport 10\n\n"
+        "/trendsearch <тренд> - поиск твитов по тренду\n"
+        "Пример: /trendsearch Haaland\n\n"
+        "/test - диагностика API\n"
         "/cookies - проверить статус кук\n"
         "/help - показать это сообщение"
     )
@@ -169,6 +175,114 @@ async def user_tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:150]}")
 
+async def trends(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать текущие тренды с поддержкой категорий и лимита"""
+    msg = await update.message.reply_text("📊 Загружаю тренды...")
+    
+    # Парсим аргументы
+    category = "trending"  # по умолчанию
+    limit = 20  # по умолчанию
+    
+    if context.args:
+        # Проверяем первый аргумент - категория или лимит
+        first_arg = context.args[0].lower()
+        if first_arg in ["trending", "news", "sport", "entertainment"]:
+            category = first_arg
+            if len(context.args) > 1:
+                try:
+                    limit = int(context.args[1])
+                    if limit > 50:
+                        limit = 50
+                    elif limit < 1:
+                        limit = 5
+                except ValueError:
+                    pass
+        else:
+            # Пробуем как лимит
+            try:
+                limit = int(first_arg)
+                if limit > 50:
+                    limit = 50
+                elif limit < 1:
+                    limit = 5
+            except ValueError:
+                pass
+    
+    try:
+        trends_data = []
+        async for trend in api.trends(category, limit=limit):
+            trends_data.append(trend)
+        
+        if not trends_data:
+            await msg.edit_text(
+                f"😕 Не удалось получить тренды\n"
+                f"Категория: {category}\n"
+                f"Попробуй /test для диагностики"
+            )
+            return
+        
+        # Название категории на русском
+        category_names = {
+            "trending": "🔥 Основные",
+            "news": "📰 Новости",
+            "sport": "⚽ Спорт",
+            "entertainment": "🎬 Развлечения"
+        }
+        cat_name = category_names.get(category, category.capitalize())
+        
+        result = f"**{cat_name} тренды Twitter**\n\n"
+        
+        for i, trend in enumerate(trends_data[:limit], 1):
+            name = trend.name if hasattr(trend, 'name') else str(trend)
+            count = trend.tweet_count if hasattr(trend, 'tweet_count') else None
+            
+            result += f"{i}. {name}"
+            if count:
+                result += f" ({format_number(count)} твитов)"
+            result += "\n"
+        
+        if len(result) > 4000:
+            result = result[:3900] + "\n\n... и еще много трендов"
+        
+        await msg.edit_text(result, parse_mode="Markdown")
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:150]}")
+
+async def trend_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Поиск твитов по конкретному тренду"""
+    if not context.args:
+        await update.message.reply_text(
+            "❌ /trendsearch <тренд>\n"
+            "Пример: /trendsearch Haaland\n\n"
+            "Ищет твиты по указанному тренду"
+        )
+        return
+    
+    query = " ".join(context.args)
+    msg = await update.message.reply_text(f"🔍 Ищу твиты по тренду: {query}...")
+    
+    try:
+        tweets = []
+        async for tweet in api.search_trend(query, limit=10):
+            tweets.append(tweet)
+        
+        if not tweets:
+            await msg.edit_text(f"😕 Не найдено твитов по тренду '{query}'")
+            return
+        
+        result = f"📊 **Твиты по тренду: {query}**\n\n"
+        for i, tweet in enumerate(tweets[:10], 1):
+            result += format_tweet(tweet, i) + "\n"
+        
+        if len(result) > 4000:
+            result = result[:3900] + "\n\n... и еще много твитов"
+        
+        await msg.edit_text(result, parse_mode="Markdown")
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:150]}")
+
 async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Полная диагностика всех методов API"""
     msg = await update.message.reply_text("🔄 Запускаю полную диагностику...")
@@ -193,19 +307,9 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 3. Тестируем каждый метод отдельно
     result += "🧪 **Тестирование методов:**\n"
     
-    # 3.1 trends()
-    result += "\n**1. api.trends('trending'):**\n"
-    try:
-        count = 0
-        async for trend in api.trends("trending", limit=5):
-            count += 1
-        result += f"   ✅ Получено {count} трендов\n"
-    except Exception as e:
-        result += f"   ❌ Ошибка: {str(e)[:100]}\n"
-    
-    # 3.2 trends() с другими категориями
-    for cat in ["news", "sport", "entertainment"]:
-        result += f"\n**api.trends('{cat}'):**\n"
+    # 3.1 trends() с разными категориями
+    for cat in ["trending", "news", "sport", "entertainment"]:
+        result += f"\n**api.trends('{cat}', limit=3):**\n"
         try:
             count = 0
             async for trend in api.trends(cat, limit=3):
@@ -214,13 +318,12 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             result += f"   ❌ Ошибка: {str(e)[:100]}\n"
     
-    # 3.3 trends_raw()
-    result += "\n**api.trends_raw('trending'):**\n"
+    # 3.2 trends_raw()
+    result += "\n**api.trends_raw('trending', limit=1):**\n"
     try:
         count = 0
-        async for raw in api.trends_raw("trending", limit=3):
+        async for raw in api.trends_raw("trending", limit=1):
             count += 1
-            # Показываем структуру первого элемента
             if count == 1:
                 data_str = json.dumps(raw, indent=2, ensure_ascii=False)[:200]
                 result += f"   Структура: {data_str}\n"
@@ -229,26 +332,15 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         result += f"   ❌ Ошибка: {str(e)[:100]}\n"
     
-    # 3.4 Поиск доступных методов с "available"
-    if hasattr(api, 'trends_available'):
-        result += "\n**api.trends_available():**\n"
-        try:
-            available = await api.trends_available()
-            result += f"   ✅ Получено {len(available)} локаций\n"
-            if available:
-                first = available[0]
-                result += f"   Первая: {first}\n"
-        except Exception as e:
-            result += f"   ❌ Ошибка: {str(e)[:100]}\n"
-    
-    # 3.5 Попытка получить WOEID через другой метод
-    if hasattr(api, 'available_trends'):
-        result += "\n**api.available_trends():**\n"
-        try:
-            available = await api.available_trends()
-            result += f"   ✅ Получено {len(available)} локаций\n"
-        except Exception as e:
-            result += f"   ❌ Ошибка: {str(e)[:100]}\n"
+    # 3.3 search_trend()
+    result += "\n**api.search_trend('twitter', limit=2):**\n"
+    try:
+        count = 0
+        async for tweet in api.search_trend("twitter", limit=2):
+            count += 1
+        result += f"   ✅ Получено {count} твитов\n"
+    except Exception as e:
+        result += f"   ❌ Ошибка: {str(e)[:100]}\n"
     
     # 4. Проверка других методов
     result += "\n📊 **Другие методы:**\n"
@@ -275,77 +367,6 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await msg.edit_text(result, parse_mode="Markdown")
 
-async def trends(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать текущие тренды"""
-    msg = await update.message.reply_text("📊 Загружаю тренды...")
-    
-    try:
-        trends_data = []
-        
-        # Пробуем через обычный trends
-        try:
-            async for trend in api.trends("trending", limit=20):
-                trends_data.append(trend)
-        except Exception as e:
-            logging.warning(f"Ошибка trends: {e}")
-        
-        # Если не получилось, пробуем другие категории
-        if not trends_data:
-            for cat in ["news", "sport", "entertainment"]:
-                try:
-                    async for trend in api.trends(cat, limit=10):
-                        trends_data.append(trend)
-                    if trends_data:
-                        break
-                except:
-                    continue
-        
-        # Если все еще пусто, пробуем через trends_raw
-        if not trends_data:
-            try:
-                async for raw in api.trends_raw("trending", limit=10):
-                    if isinstance(raw, dict) and 'trends' in raw:
-                        for t in raw['trends']:
-                            if isinstance(t, dict) and 'name' in t:
-                                trends_data.append(t)
-                    break
-            except:
-                pass
-        
-        if not trends_data:
-            await msg.edit_text(
-                "😕 Не удалось получить тренды\n\n"
-                "Возможные причины:\n"
-                "• Куки устарели\n"
-                "• API Twitter изменился\n"
-                "• Аккаунт ограничен\n\n"
-                "Используй /test для диагностики"
-            )
-            return
-        
-        result = "🔥 **Тренды Twitter**\n\n"
-        
-        for i, trend in enumerate(trends_data[:20], 1):
-            if isinstance(trend, dict):
-                name = trend.get('name', str(trend))
-                count = trend.get('tweet_count')
-            else:
-                name = trend.name if hasattr(trend, 'name') else str(trend)
-                count = trend.tweet_count if hasattr(trend, 'tweet_count') else None
-            
-            result += f"{i}. {name}"
-            if count:
-                result += f" ({format_number(count)} твитов)"
-            result += "\n"
-        
-        if len(result) > 4000:
-            result = result[:3900] + "\n\n... и еще много трендов"
-        
-        await msg.edit_text(result, parse_mode="Markdown")
-        
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:150]}")
-
 async def cookies_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user = await api.user_by_login("twitter")
@@ -366,6 +387,7 @@ async def main():
     app.add_handler(CommandHandler("user", get_user))
     app.add_handler(CommandHandler("tweets", user_tweets))
     app.add_handler(CommandHandler("trends", trends))
+    app.add_handler(CommandHandler("trendsearch", trend_search))
     app.add_handler(CommandHandler("test", test_command))
     app.add_handler(CommandHandler("cookies", cookies_status))
     
