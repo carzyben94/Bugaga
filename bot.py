@@ -70,7 +70,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/tweet <запрос> - поиск твитов\n"
         "/user <username> - профиль\n"
         "/tweets <username> - твиты пользователя\n"
-        "/trends - текущие тренды\n"
+        "/trends [woeid] - тренды (по умолчанию Worldwide)\n"
         "/cookies - статус кук\n"
         "/help - справка"
     )
@@ -85,7 +85,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Пример: /user elonmusk\n\n"
         "/tweets <username> - последние твиты\n"
         "Пример: /tweets elonmusk\n\n"
-        "/trends - показать текущие тренды\n\n"
+        "/trends [woeid] - показать тренды\n"
+        "Пример: /trends (мировые), /trends 23424936 (Россия)\n\n"
         "/cookies - проверить статус кук\n"
         "/help - показать это сообщение"
     )
@@ -171,35 +172,69 @@ async def trends(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("📊 Загружаю тренды...")
     
     try:
-        # Получаем тренды
-        trends_data = await api.trends()
+        # Получаем доступные локации трендов
+        available = await api.available_trends()
+        
+        if not available:
+            await msg.edit_text("😕 Не удалось получить список локаций")
+            return
+        
+        # Определяем WOEID
+        trend_id = None
+        location_name = "Worldwide"
+        
+        # Если пользователь указал WOEID
+        if context.args:
+            try:
+                trend_id = int(context.args[0])
+                # Ищем название локации
+                for loc in available:
+                    if loc.woeid == trend_id:
+                        location_name = loc.name
+                        break
+            except ValueError:
+                # Если ввели название, ищем по нему
+                query = " ".join(context.args).lower()
+                for loc in available:
+                    if query in loc.name.lower():
+                        trend_id = loc.woeid
+                        location_name = loc.name
+                        break
+                if not trend_id:
+                    await msg.edit_text(f"❌ Локация '{query}' не найдена")
+                    return
+        else:
+            # Без аргументов - ищем Worldwide или берем первый доступный
+            for loc in available:
+                if loc.name == "Worldwide" or loc.woeid == 1:
+                    trend_id = loc.woeid
+                    location_name = loc.name
+                    break
+            
+            if not trend_id:
+                trend_id = available[0].woeid
+                location_name = available[0].name
+        
+        # Получаем тренды для выбранной локации
+        trends_data = await api.trends(trend_id)
         
         if not trends_data:
             await msg.edit_text("😕 Не удалось получить тренды")
             return
         
         # Форматируем вывод
-        result = "🔥 **Текущие тренды Twitter**\n\n"
+        result = f"🔥 **Тренды Twitter**\n"
+        result += f"📍 {location_name}\n\n"
         
-        # Если есть категории
-        if isinstance(trends_data, dict):
-            for category, items in trends_data.items():
-                if items:
-                    result += f"📌 **{category}**\n"
-                    for i, item in enumerate(items[:10], 1):
-                        result += f"{i}. {item}\n"
-                    result += "\n"
-        # Если просто список
-        elif isinstance(trends_data, list):
-            for i, trend in enumerate(trends_data[:20], 1):
-                # Если trend это объект с name
-                if hasattr(trend, 'name'):
-                    result += f"{i}. {trend.name}"
-                    if hasattr(trend, 'tweet_count') and trend.tweet_count:
-                        result += f" ({format_number(trend.tweet_count)} твитов)"
-                    result += "\n"
-                else:
-                    result += f"{i}. {trend}\n"
+        # Обрабатываем тренды
+        for i, trend in enumerate(trends_data[:20], 1):
+            if hasattr(trend, 'name'):
+                result += f"{i}. {trend.name}"
+                if hasattr(trend, 'tweet_count') and trend.tweet_count:
+                    result += f" ({format_number(trend.tweet_count)} твитов)"
+                result += "\n"
+            else:
+                result += f"{i}. {trend}\n"
         
         # Если результат слишком длинный, обрезаем
         if len(result) > 4000:
