@@ -2,7 +2,7 @@ import os
 import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from twscrape import Twscrape
+from twscrape import API
 from twscrape.logger import set_log_level
 
 # ==================== НАСТРОЙКИ ====================
@@ -28,34 +28,35 @@ COOKIES = (
 )
 
 # ==================== ИНИЦИАЛИЗАЦИЯ ====================
-api = Twscrape()
+api = API()
 
 async def init_api():
     """Инициализация с куками из кода"""
     try:
-        await api.add_account(
+        await api.pool.add_account(
             username="temp",
             password="temp",
             email="temp@temp.com",
             cookies=COOKIES
         )
-        await api.login()
+        await api.pool.login_all()
         logging.info("✅ Twscrape инициализирован с куками из кода")
         return True
     except Exception as e:
-        logging.error(f"❌ Ошибка: {e}")
+        logging.error(f"❌ Ошибка инициализации: {e}")
         return False
 
-# ==================== КОМАНДЫ ====================
+# ==================== КОМАНДЫ БОТА ====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Привет! Я бот для Twitter.\n\n"
         "Доступные команды:\n"
-        "/tweet <запрос> - поиск твитов\n"
+        "/tweet <запрос> - поиск твитов (до 5 шт.)\n"
         "/user <username> - информация о пользователе\n"
         "/cookies - статус авторизации\n"
-        "/reload - перезагрузить куки (админ)"
+        "/reload - перезагрузить куки (только админ)\n\n"
+        "📌 Бот работает через неофициальное API (twscrape)"
     )
 
 async def search_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -75,16 +76,21 @@ async def search_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("😕 Ничего не найдено")
             return
         
-        result = f"📊 *Результаты:* {query}\n\n"
+        result = f"📊 *Результаты по запросу:* {query}\n\n"
         for i, tweet in enumerate(tweets[:5], 1):
             text = tweet.rawContent[:150] + "..." if len(tweet.rawContent) > 150 else tweet.rawContent
             result += f"{i}. {text}\n"
-            result += f"   ❤️ {tweet.likeCount} | 🔄 {tweet.retweetCount}\n\n"
+            result += f"   ❤️ {tweet.likeCount} | 🔄 {tweet.retweetCount}"
+            if hasattr(tweet, 'created_at'):
+                result += f" | 🕐 {str(tweet.created_at)[:10]}"
+            result += "\n\n"
         
         await update.message.reply_text(result, parse_mode='Markdown')
         
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        error_msg = str(e)[:200]
+        await update.message.reply_text(f"❌ Ошибка: {error_msg}")
+        logging.error(f"Ошибка search_tweet: {e}")
 
 async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -92,7 +98,7 @@ async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     username = context.args[0].replace("@", "")
-    await update.message.reply_text(f"👤 Ищу @{username}...")
+    await update.message.reply_text(f"👤 Ищу пользователя @{username}...")
     
     try:
         user = await api.user(username)
@@ -102,12 +108,15 @@ async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📝 {user.description[:200] if user.description else 'Нет описания'}\n\n"
             f"📊 Подписчики: {user.followersCount:,}\n"
             f"📊 Подписки: {user.friendsCount:,}\n"
-            f"📊 Твитов: {user.statusesCount:,}"
+            f"📊 Твитов: {user.statusesCount:,}\n"
+            f"📅 Регистрация: {str(user.created)[:10] if user.created else 'Н/Д'}"
         )
         await update.message.reply_text(result, parse_mode='Markdown')
         
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        error_msg = str(e)[:200]
+        await update.message.reply_text(f"❌ Ошибка: {error_msg}")
+        logging.error(f"Ошибка get_user: {e}")
 
 async def cookies_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Проверка статуса кук"""
@@ -116,8 +125,11 @@ async def cookies_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if test:
             await update.message.reply_text(
                 f"✅ Куки работают!\n"
-                f"📦 Текущий аккаунт: @{test.username}"
+                f"📦 Текущий аккаунт: @{test.username}\n"
+                f"🔑 Авторизация: успешна"
             )
+        else:
+            await update.message.reply_text("⚠️ Куки не работают, нужно обновить")
     except Exception as e:
         await update.message.reply_text(f"❌ Куки не работают: {str(e)[:100]}")
 
@@ -128,26 +140,41 @@ async def reload_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     global api
-    api = Twscrape()
+    api = API()
     
     if await init_api():
-        await update.message.reply_text("✅ Куки перезагружены")
+        await update.message.reply_text("✅ Куки перезагружены успешно")
     else:
-        await update.message.reply_text("❌ Ошибка перезагрузки")
+        await update.message.reply_text("❌ Ошибка перезагрузки кук")
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Глобальный обработчик ошибок"""
+    logging.error(f"Ошибка: {context.error}")
+    if update and update.effective_message:
+        await update.effective_message.reply_text(
+            "⚠️ Произошла ошибка. Попробуйте позже или используйте /reload"
+        )
 
 # ==================== ЗАПУСК ====================
 
 async def main():
+    # Инициализация
     await init_api()
     
+    # Создаём приложение
     app = Application.builder().token(TOKEN).build()
     
+    # Регистрируем команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("tweet", search_tweet))
     app.add_handler(CommandHandler("user", get_user))
     app.add_handler(CommandHandler("cookies", cookies_status))
     app.add_handler(CommandHandler("reload", reload_cookies))
     
+    # Регистрируем обработчик ошибок
+    app.add_error_handler(error_handler)
+    
+    # Запускаем
     logging.info("🚀 Бот запущен")
     app.run_polling()
 
