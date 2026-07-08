@@ -63,32 +63,29 @@ def format_tweet(tweet, index=None):
 # ==================== КОМАНДЫ ====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Приветствие со списком команд"""
     await update.message.reply_text(
         "👋 Привет! Я Twitter-бот.\n\n"
         "📋 Команды:\n"
         "/tweet <запрос> - поиск твитов\n"
         "/user <username> - профиль\n"
         "/tweets <username> - твиты пользователя\n"
-        "/trends [woeid] - тренды (по умолчанию Worldwide)\n"
+        "/trends - тренды\n"
         "/cookies - статус кук\n"
         "/help - справка"
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Справка по командам"""
     await update.message.reply_text(
         "📋 Команды:\n\n"
         "/tweet <запрос> - поиск твитов\n"
         "Пример: /tweet python\n\n"
-        "/user <username> - профиль пользователя\n"
+        "/user <username> - профиль\n"
         "Пример: /user elonmusk\n\n"
-        "/tweets <username> - последние твиты\n"
+        "/tweets <username> - твиты пользователя\n"
         "Пример: /tweets elonmusk\n\n"
-        "/trends [woeid] - показать тренды\n"
-        "Пример: /trends (мировые), /trends 23424936 (Россия)\n\n"
-        "/cookies - проверить статус кук\n"
-        "/help - показать это сообщение"
+        "/trends - текущие тренды\n\n"
+        "/cookies - статус кук\n"
+        "/help - справка"
     )
 
 async def search_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -172,78 +169,31 @@ async def trends(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("📊 Загружаю тренды...")
     
     try:
-        # Получаем доступные локации трендов
-        available = await api.available_trends()
-        
-        if not available:
-            await msg.edit_text("😕 Не удалось получить список локаций")
-            return
-        
-        # Определяем WOEID
-        trend_id = None
-        location_name = "Worldwide"
-        
-        # Если пользователь указал WOEID
-        if context.args:
-            try:
-                trend_id = int(context.args[0])
-                # Ищем название локации
-                for loc in available:
-                    if loc.woeid == trend_id:
-                        location_name = loc.name
-                        break
-            except ValueError:
-                # Если ввели название, ищем по нему
-                query = " ".join(context.args).lower()
-                for loc in available:
-                    if query in loc.name.lower():
-                        trend_id = loc.woeid
-                        location_name = loc.name
-                        break
-                if not trend_id:
-                    await msg.edit_text(f"❌ Локация '{query}' не найдена")
-                    return
-        else:
-            # Без аргументов - ищем Worldwide или берем первый доступный
-            for loc in available:
-                if loc.name == "Worldwide" or loc.woeid == 1:
-                    trend_id = loc.woeid
-                    location_name = loc.name
-                    break
-            
-            if not trend_id:
-                trend_id = available[0].woeid
-                location_name = available[0].name
-        
-        # Получаем тренды для выбранной локации
-        trends_data = await api.trends(trend_id)
+        # Категории: "trending", "news", "sport", "entertainment"
+        trends_data = []
+        async for trend in api.trends("trending", limit=20):
+            trends_data.append(trend)
         
         if not trends_data:
             await msg.edit_text("😕 Не удалось получить тренды")
             return
         
-        # Форматируем вывод
-        result = f"🔥 **Тренды Twitter**\n"
-        result += f"📍 {location_name}\n\n"
+        result = "🔥 **Тренды Twitter**\n\n"
         
-        # Обрабатываем тренды
         for i, trend in enumerate(trends_data[:20], 1):
-            if hasattr(trend, 'name'):
-                result += f"{i}. {trend.name}"
-                if hasattr(trend, 'tweet_count') and trend.tweet_count:
-                    result += f" ({format_number(trend.tweet_count)} твитов)"
-                result += "\n"
-            else:
-                result += f"{i}. {trend}\n"
+            name = trend.name if hasattr(trend, 'name') else str(trend)
+            result += f"{i}. {name}"
+            if hasattr(trend, 'tweet_count') and trend.tweet_count:
+                result += f" ({format_number(trend.tweet_count)} твитов)"
+            result += "\n"
         
-        # Если результат слишком длинный, обрезаем
         if len(result) > 4000:
             result = result[:3900] + "\n\n... и еще много трендов"
         
         await msg.edit_text(result, parse_mode="Markdown")
         
     except Exception as e:
-        await msg.edit_text(f"❌ Ошибка при получении трендов: {str(e)[:150]}")
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:150]}")
 
 async def cookies_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
