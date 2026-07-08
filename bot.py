@@ -77,6 +77,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 Привет! Я Twitter-бот.\n\n"
         "/tweet <запрос> - поиск твитов\n"
         "/tweets <username> - твиты пользователя\n"
+        "/polymarket - твиты @polymarket\n"
+        "/ateobreaking - твиты @ateobreaking\n"
         "/cookies - статус кук"
     )
 
@@ -133,6 +135,52 @@ async def user_tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:150]}")
 
+async def polymarket_tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Твиты @polymarket"""
+    msg = await update.message.reply_text("📝 Твиты @polymarket...")
+    
+    try:
+        user = await api.user_by_login("polymarket")
+        tweets = []
+        async for tweet in api.user_tweets(user.id, limit=5):
+            tweets.append(tweet)
+        
+        if not tweets:
+            await msg.edit_text("😕 У @polymarket нет твитов")
+            return
+        
+        result = f"📝 Твиты @polymarket:\n\n"
+        for i, tweet in enumerate(tweets[:5], 1):
+            result += format_tweet(tweet, i) + "\n"
+        
+        await msg.edit_text(result)
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:150]}")
+
+async def ateobreaking_tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Твиты @ateobreaking"""
+    msg = await update.message.reply_text("📝 Твиты @ateobreaking...")
+    
+    try:
+        user = await api.user_by_login("ateobreaking")
+        tweets = []
+        async for tweet in api.user_tweets(user.id, limit=5):
+            tweets.append(tweet)
+        
+        if not tweets:
+            await msg.edit_text("😕 У @ateobreaking нет твитов")
+            return
+        
+        result = f"📝 Твиты @ateobreaking:\n\n"
+        for i, tweet in enumerate(tweets[:5], 1):
+            result += format_tweet(tweet, i) + "\n"
+        
+        await msg.edit_text(result)
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:150]}")
+
 async def cookies_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user = await api.user_by_login("twitter")
@@ -150,6 +198,8 @@ async def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("tweet", search_tweet))
     app.add_handler(CommandHandler("tweets", user_tweets))
+    app.add_handler(CommandHandler("polymarket", polymarket_tweets))
+    app.add_handler(CommandHandler("ateobreaking", ateobreaking_tweets))
     app.add_handler(CommandHandler("cookies", cookies_status))
     
     logging.info("🚀 Бот запущен")
