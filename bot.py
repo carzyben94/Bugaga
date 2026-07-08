@@ -1,6 +1,7 @@
 import os
 import logging
 import asyncio
+import re
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from twscrape import API
@@ -50,13 +51,21 @@ def format_number(num):
         return f"{num/1_000:.1f}K"
     return str(num)
 
+def clean_text(text):
+    """Удаляет ссылки из текста"""
+    text = re.sub(r'https?://\S+|www\.\S+|t\.co/\S+', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
 def format_tweet(tweet, index=None):
     text = tweet.rawContent[:150] + "..." if len(tweet.rawContent) > 150 else tweet.rawContent
+    text = clean_text(text)
+    
     result = ""
     if index:
         result += f"{index}. "
     result += f"{text}\n"
-    result += f"   ❤️ {format_number(tweet.likeCount)} | 🔄 {format_number(tweet.retweetCount)}"
+    result += f"   ❤️ {format_number(tweet.likeCount)}"
     result += "\n"
     return result
 
