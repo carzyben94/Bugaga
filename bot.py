@@ -28,36 +28,69 @@ COOKIES = (
     "__cf_bm=kXHc9bKDnh3VBAj2Zf3fCc6UUjO5VmliR2SUQvCQ96U-1783519754.100902-1.0.1.1-B1vTWfu988KtDzfqK8x1LwZlZKPRJwVYH385IpVxdY3Gv8hcH4vShkh1WEMenfjcOJ7LagGdDQOtQkIXx1E.BVU7TQ3.u5YpaKD7fdsNsS3FU54NN9E5TMJ1cYSnnoEb"
 )
 
+# ==================== ПРОВЕРКА КУК ====================
+def validate_cookies():
+    required = ['auth_token', 'ct0']
+    missing = []
+    
+    for key in required:
+        if key not in COOKIES:
+            missing.append(key)
+    
+    if missing:
+        logging.error(f"❌ В куках отсутствуют: {missing}")
+        return False
+    
+    for part in COOKIES.split('; '):
+        if '=' in part:
+            name, value = part.split('=', 1)
+            if name in required and not value.strip():
+                logging.error(f"❌ {name} имеет пустое значение")
+                return False
+    
+    logging.info("✅ Куки валидны")
+    return True
+
 # ==================== ИНИЦИАЛИЗАЦИЯ ====================
 api = API()
 
 async def init_api():
-    """Инициализация с куками из кода"""
     try:
+        logging.info("🔄 Добавляем аккаунт с куками...")
         await api.pool.add_account(
             username="temp",
             password="temp",
             email="temp@temp.com",
             cookies=COOKIES
         )
+        
+        logging.info("🔄 Пытаемся войти...")
         await api.pool.login_all()
-        logging.info("✅ Twscrape инициализирован с куками из кода")
-        return True
+        
+        # Проверяем работу
+        logging.info("🔄 Проверяем авторизацию через api.user...")
+        test = await api.user("twitter")
+        if test:
+            logging.info(f"✅ Успех! Аккаунт: @{test.username}")
+            return True
+        else:
+            logging.warning("⚠️ Авторизация прошла, но пользователь не получен")
+            return False
+            
     except Exception as e:
         logging.error(f"❌ Ошибка инициализации: {e}")
         return False
 
-# ==================== КОМАНДЫ БОТА ====================
+# ==================== КОМАНДЫ ====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Привет! Я бот для Twitter.\n\n"
         "Доступные команды:\n"
-        "/tweet <запрос> - поиск твитов (до 5 шт.)\n"
+        "/tweet <запрос> - поиск твитов\n"
         "/user <username> - информация о пользователе\n"
         "/cookies - статус авторизации\n"
-        "/reload - перезагрузить куки (только админ)\n\n"
-        "📌 Бот работает через неофициальное API (twscrape)"
+        "/reload - перезагрузить куки (админ)"
     )
 
 async def search_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -69,7 +102,6 @@ async def search_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🔍 Ищу: *{query}*...", parse_mode='Markdown')
     
     try:
-        # Используем api.search (это работает через pool)
         tweets = []
         async for tweet in api.search(query, limit=5):
             tweets.append(tweet)
@@ -78,21 +110,16 @@ async def search_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("😕 Ничего не найдено")
             return
         
-        result = f"📊 *Результаты по запросу:* {query}\n\n"
+        result = f"📊 *Результаты:* {query}\n\n"
         for i, tweet in enumerate(tweets[:5], 1):
             text = tweet.rawContent[:150] + "..." if len(tweet.rawContent) > 150 else tweet.rawContent
             result += f"{i}. {text}\n"
-            result += f"   ❤️ {tweet.likeCount} | 🔄 {tweet.retweetCount}"
-            if hasattr(tweet, 'created_at'):
-                result += f" | 🕐 {str(tweet.created_at)[:10]}"
-            result += "\n\n"
+            result += f"   ❤️ {tweet.likeCount} | 🔄 {tweet.retweetCount}\n\n"
         
         await update.message.reply_text(result, parse_mode='Markdown')
         
     except Exception as e:
-        error_msg = str(e)[:200]
-        await update.message.reply_text(f"❌ Ошибка: {error_msg}")
-        logging.error(f"Ошибка search_tweet: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -100,10 +127,9 @@ async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     username = context.args[0].replace("@", "")
-    await update.message.reply_text(f"👤 Ищу пользователя @{username}...")
+    await update.message.reply_text(f"👤 Ищу @{username}...")
     
     try:
-        # Используем api.user (это работает через pool)
         user = await api.user(username)
         
         result = (
@@ -111,34 +137,24 @@ async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📝 {user.description[:200] if user.description else 'Нет описания'}\n\n"
             f"📊 Подписчики: {user.followersCount:,}\n"
             f"📊 Подписки: {user.friendsCount:,}\n"
-            f"📊 Твитов: {user.statusesCount:,}\n"
-            f"📅 Регистрация: {str(user.created)[:10] if user.created else 'Н/Д'}"
+            f"📊 Твитов: {user.statusesCount:,}"
         )
         await update.message.reply_text(result, parse_mode='Markdown')
         
     except Exception as e:
-        error_msg = str(e)[:200]
-        await update.message.reply_text(f"❌ Ошибка: {error_msg}")
-        logging.error(f"Ошибка get_user: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def cookies_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Проверка статуса кук"""
     try:
-        # Пробуем получить пользователя через pool
         user = await api.user("twitter")
-        if user:
-            await update.message.reply_text(
-                f"✅ Куки работают!\n"
-                f"📦 Текущий аккаунт: @{user.username}\n"
-                f"🔑 Авторизация: успешна"
-            )
-        else:
-            await update.message.reply_text("⚠️ Куки не работают, нужно обновить")
+        await update.message.reply_text(
+            f"✅ Куки работают!\n"
+            f"📦 Аккаунт: @{user.username}"
+        )
     except Exception as e:
         await update.message.reply_text(f"❌ Куки не работают: {str(e)[:100]}")
 
 async def reload_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Перезагрузить куки (только админ)"""
     if ADMIN_ID and str(update.effective_user.id) != ADMIN_ID:
         await update.message.reply_text("⛔ Только для администратора")
         return
@@ -147,58 +163,41 @@ async def reload_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     api = API()
     
     if await init_api():
-        await update.message.reply_text("✅ Куки перезагружены успешно")
+        await update.message.reply_text("✅ Куки перезагружены")
     else:
-        await update.message.reply_text("❌ Ошибка перезагрузки кук")
-
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Глобальный обработчик ошибок"""
-    logging.error(f"Ошибка: {context.error}")
-    if update and update.effective_message:
-        await update.effective_message.reply_text(
-            "⚠️ Произошла ошибка. Попробуйте позже или используйте /reload"
-        )
+        await update.message.reply_text("❌ Ошибка перезагрузки")
 
 # ==================== ЗАПУСК ====================
 
 async def main():
-    # Инициализация
-    await init_api()
+    validate_cookies()
     
-    # Создаём приложение
+    if not await init_api():
+        logging.warning("⚠️ Бот запущен, но куки не работают!")
+    
     app = Application.builder().token(TOKEN).build()
     
-    # Регистрируем команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("tweet", search_tweet))
     app.add_handler(CommandHandler("user", get_user))
     app.add_handler(CommandHandler("cookies", cookies_status))
     app.add_handler(CommandHandler("reload", reload_cookies))
     
-    # Регистрируем обработчик ошибок
-    app.add_error_handler(error_handler)
-    
-    # Запускаем
     logging.info("🚀 Бот запущен")
     
-    # Правильный способ запуска в python-telegram-bot >= 21.0
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
     
-    # Держим бота запущенным
     try:
         while True:
             await asyncio.sleep(1)
     except (KeyboardInterrupt, SystemExit):
-        logging.info("⏹️ Остановка бота...")
+        logging.info("⏹️ Остановка...")
     finally:
         await app.updater.stop()
         await app.stop()
         await app.shutdown()
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logging.info("⏹️ Программа завершена")
+    asyncio.run(main())
