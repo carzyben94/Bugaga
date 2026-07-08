@@ -69,6 +69,7 @@ async def search_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🔍 Ищу: *{query}*...", parse_mode='Markdown')
     
     try:
+        # Используем api.search (это работает через pool)
         tweets = []
         async for tweet in api.search(query, limit=5):
             tweets.append(tweet)
@@ -102,6 +103,7 @@ async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"👤 Ищу пользователя @{username}...")
     
     try:
+        # Используем api.user (это работает через pool)
         user = await api.user(username)
         
         result = (
@@ -122,11 +124,12 @@ async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cookies_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Проверка статуса кук"""
     try:
-        test = await api.user("twitter")
-        if test:
+        # Пробуем получить пользователя через pool
+        user = await api.user("twitter")
+        if user:
             await update.message.reply_text(
                 f"✅ Куки работают!\n"
-                f"📦 Текущий аккаунт: @{test.username}\n"
+                f"📦 Текущий аккаунт: @{user.username}\n"
                 f"🔑 Авторизация: успешна"
             )
         else:
@@ -185,7 +188,6 @@ async def main():
     
     # Держим бота запущенным
     try:
-        # Бесконечный цикл, пока бот работает
         while True:
             await asyncio.sleep(1)
     except (KeyboardInterrupt, SystemExit):
