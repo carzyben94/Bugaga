@@ -1,6 +1,7 @@
 import os
 import logging
 import asyncio
+import json
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from twscrape import API
@@ -71,6 +72,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/user <username> - профиль\n"
         "/tweets <username> - твиты пользователя\n"
         "/trends - тренды\n"
+        "/test_trends - диагностика трендов\n"
         "/cookies - статус кук\n"
         "/help - справка"
     )
@@ -85,7 +87,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Пример: /user elonmusk\n\n"
         "/tweets <username> - последние твиты\n"
         "Пример: /tweets elonmusk\n\n"
-        "/trends - текущие тренды\n\n"
+        "/trends - текущие тренды\n"
+        "/test_trends - диагностика трендов\n\n"
         "/cookies - проверить статус кук\n"
         "/help - показать это сообщение"
     )
@@ -166,27 +169,116 @@ async def user_tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:150]}")
 
+async def test_trends(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Тестовая команда для диагностики трендов"""
+    msg = await update.message.reply_text("🔄 Проверяю тренды...")
+    
+    try:
+        # Проверяем статус аккаунта
+        try:
+            user = await api.user_by_login("twitter")
+            status = f"✅ Аккаунт работает: @{user.username}"
+        except Exception as e:
+            status = f"❌ Аккаунт не работает: {str(e)[:50]}"
+        
+        result = f"📊 **Диагностика трендов:**\n\n"
+        result += f"Статус аккаунта: {status}\n\n"
+        
+        # Пробуем через trends_raw для отладки
+        result += "**Проверка trends_raw:**\n"
+        raw_data = []
+        try:
+            async for raw in api.trends_raw("trending", limit=3):
+                raw_data.append(raw)
+                break  # Берем первый результат для проверки
+            
+            if raw_data:
+                result += "✅ Данные получены через trends_raw\n"
+                # Показываем структуру
+                data_str = json.dumps(raw_data[0], indent=2, ensure_ascii=False)[:300]
+                result += f"\nСтруктура:\n```json\n{data_str}\n```"
+            else:
+                result += "❌ Данных нет через trends_raw"
+        except Exception as e:
+            result += f"❌ Ошибка trends_raw: {str(e)[:50]}"
+        
+        # Пробуем через обычный trends
+        result += "\n\n**Проверка trends:**\n"
+        try:
+            count = 0
+            async for trend in api.trends("trending", limit=3):
+                count += 1
+            result += f"✅ Получено {count} трендов через trends"
+        except Exception as e:
+            result += f"❌ Ошибка trends: {str(e)[:50]}"
+        
+        if len(result) > 4000:
+            result = result[:3900] + "\n\n... обрезано"
+        
+        await msg.edit_text(result, parse_mode="Markdown")
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка диагностики: {str(e)[:150]}")
+
 async def trends(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать текущие тренды"""
     msg = await update.message.reply_text("📊 Загружаю тренды...")
     
     try:
-        # Категории: "trending", "news", "sport", "entertainment"
         trends_data = []
-        async for trend in api.trends("trending", limit=20):
-            trends_data.append(trend)
+        
+        # Пробуем разные варианты получения трендов
+        try:
+            # Вариант 1: через raw и парсинг
+            async for raw in api.trends_raw("trending", limit=20):
+                # Если это объект с трендами
+                if hasattr(raw, 'get'):
+                    trends = raw.get('trends', [])
+                    for t in trends:
+                        if isinstance(t, dict) and 'name' in t:
+                            trends_data.append(t)
+                elif isinstance(raw, dict):
+                    trends = raw.get('trends', [])
+                    for t in trends:
+                        if isinstance(t, dict) and 'name' in t:
+                            trends_data.append(t)
+                break  # Берем только первую страницу
+        except Exception as e:
+            logging.warning(f"Ошибка в trends_raw: {e}")
+            # Вариант 2: через обычный trends
+            try:
+                async for trend in api.trends("trending", limit=20):
+                    trends_data.append(trend)
+            except Exception as e2:
+                logging.warning(f"Ошибка в trends: {e2}")
+                # Вариант 3: пробуем другие категории
+                categories = ["news", "sport", "entertainment"]
+                for cat in categories:
+                    try:
+                        async for trend in api.trends(cat, limit=10):
+                            trends_data.append(trend)
+                        if trends_data:
+                            break
+                    except:
+                        continue
         
         if not trends_data:
-            await msg.edit_text("😕 Не удалось получить тренды")
+            await msg.edit_text("😕 Не удалось получить тренды\n\nПопробуй позже или обнови куки")
             return
         
         result = "🔥 **Тренды Twitter**\n\n"
         
         for i, trend in enumerate(trends_data[:20], 1):
-            name = trend.name if hasattr(trend, 'name') else str(trend)
+            if isinstance(trend, dict):
+                name = trend.get('name', str(trend))
+                count = trend.get('tweet_count')
+            else:
+                name = trend.name if hasattr(trend, 'name') else str(trend)
+                count = trend.tweet_count if hasattr(trend, 'tweet_count') else None
+            
             result += f"{i}. {name}"
-            if hasattr(trend, 'tweet_count') and trend.tweet_count:
-                result += f" ({format_number(trend.tweet_count)} твитов)"
+            if count:
+                result += f" ({format_number(count)} твитов)"
             result += "\n"
         
         if len(result) > 4000:
@@ -217,6 +309,7 @@ async def main():
     app.add_handler(CommandHandler("user", get_user))
     app.add_handler(CommandHandler("tweets", user_tweets))
     app.add_handler(CommandHandler("trends", trends))
+    app.add_handler(CommandHandler("test_trends", test_trends))
     app.add_handler(CommandHandler("cookies", cookies_status))
     
     logging.info("🚀 Бот запущен")
