@@ -74,7 +74,6 @@ def format_tweet(tweet, index=None):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Приветствие со списком команд"""
     await update.message.reply_text(
-        "👋 Привет! Я Twitter-бот.\n\n"
         "/tweet <запрос> - поиск твитов\n"
         "/tweets <username> - твиты пользователя\n"
         "/polymarket - твиты @polymarket\n"
