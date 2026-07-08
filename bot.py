@@ -1,5 +1,6 @@
 import os
 import logging
+import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from twscrape import API
@@ -176,8 +177,15 @@ async def main():
     
     # Запускаем
     logging.info("🚀 Бот запущен")
-    app.run_polling()
+    try:
+        await app.run_polling()
+    except KeyboardInterrupt:
+        logging.info("⏹️ Бот остановлен")
+    finally:
+        await app.shutdown()  # <-- Корректное завершение
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("⏹️ Программа завершена")
