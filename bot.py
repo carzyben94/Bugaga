@@ -177,12 +177,23 @@ async def main():
     
     # Запускаем
     logging.info("🚀 Бот запущен")
+    
+    # Правильный способ запуска в python-telegram-bot >= 21.0
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    
+    # Держим бота запущенным
     try:
-        await app.run_polling()
-    except KeyboardInterrupt:
-        logging.info("⏹️ Бот остановлен")
+        # Бесконечный цикл, пока бот работает
+        while True:
+            await asyncio.sleep(1)
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("⏹️ Остановка бота...")
     finally:
-        await app.shutdown()  # <-- Корректное завершение
+        await app.updater.stop()
+        await app.stop()
+        await app.shutdown()
 
 if __name__ == "__main__":
     try:
