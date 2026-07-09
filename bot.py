@@ -166,7 +166,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 bg_file = await context.bot.get_file(file_id)
                 bg_bytes = await bg_file.download_as_bytearray()
                 
-                # Вырезаем объект
+                # Вырезаем объект через rembg
                 object_img = Image.open(io.BytesIO(object_bytes))
                 object_no_bg = remove(object_img)
                 
