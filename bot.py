@@ -1,252 +1,227 @@
 import os
 import logging
 import asyncio
-import re
+import sqlite3
+import io
+from PIL import Image
+from rembg import remove
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
-from twscrape import API
-from twscrape.logger import set_log_level
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ==================== НАСТРОЙКИ ====================
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
-set_log_level("ERROR")
 logging.basicConfig(level=logging.INFO)
 
-# ==================== КУКИ ====================
-COOKIES = (
-    "auth_token=c9d83e923e1ad6cf67d19a0bc4f9877a49087936; "
-    "ct0=39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb; "
-    "guest_id=v1%3A178267838599411411; "
-    "guest_id_marketing=v1%3A178267838599411411; "
-    "guest_id_ads=v1%3A178267838599411411; "
-    "lang=ru; "
-    "dnt=1; "
-    "__cuid=55d2d7c5-4888-430a-b024-dd785da46ef4; "
-    "personalization_id=\"v1_DKrxLZAC902dMFdd1QrVYg==\"; "
-    "twid=u%3D2067347503503052800; "
-    "__cf_bm=kXHc9bKDnh3VBAj2Zf3fCc6UUjO5VmliR2SUQvCQ96U-1783519754.100902-1.0.1.1-B1vTWfu988KtDzfqK8x1LwZlZKPRJwVYH385IpVxdY3Gv8hcH4vShkh1WEMenfjcOJ7LagGdDQOtQkIXx1E.BVU7TQ3.u5YpaKD7fdsNsS3FU54NN9E5TMJ1cYSnnoEb"
-)
+# ==================== БАЗА ДАННЫХ ====================
+def get_db():
+    return sqlite3.connect('bot_data.db')
 
-# ==================== API ====================
-api = None
+def init_db():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS backgrounds (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_id TEXT NOT NULL,
+            date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    conn.close()
+    logging.info("✅ База данных инициализирована")
 
-async def init_api():
-    global api
-    try:
-        api = API()
-        await api.pool.add_account_cookies("temp", COOKIES)
-        logging.info("✅ Аккаунт добавлен с куками")
-        return True
-    except Exception as e:
-        logging.error(f"❌ Ошибка: {e}")
-        return False
+async def count_bgs():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM backgrounds")
+    count = c.fetchone()[0]
+    conn.close()
+    return count
 
-# ==================== ФОРМАТИРОВАНИЕ ====================
-
-def clean_text(text):
-    """Удаляет ссылки из текста"""
-    text = re.sub(r'https?://\S+|www\.\S+|t\.co/\S+', '', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
-
-def format_tweet(tweet, index=None):
-    text = tweet.rawContent[:150] + "..." if len(tweet.rawContent) > 150 else tweet.rawContent
-    text = clean_text(text)
-    
-    result = ""
-    if index:
-        result += f"{index}. "
-    result += f"{text}\n"
-    return result
+# ==================== ХРАНИЛИЩЕ СЕССИЙ ====================
+user_sessions = {}
 
 # ==================== КОМАНДЫ ====================
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Приветствие со списком команд"""
     await update.message.reply_text(
-        "/tweet <запрос> - поиск твитов\n"
-        "/tweets <username> - твиты пользователя\n"
-        "/tweets_full <username> - все твиты в файл\n"
-        "/polymarket - твиты @polymarket\n"
-        "/ateobreaking - твиты @ateobreaking\n"
-        "/cookies - статус кук"
+        "🎨 Бот для замены фона!\n\n"
+        "/swap - заменить фон (сначала объект, потом фон)\n"
+        "/saveфон - сохранить фото как фон\n"
+        "/списокфонов - сколько фонов сохранено\n"
+        "/удалитьфон <ID> - удалить фон\n"
+        "/очиститьфоны - удалить все фоны\n"
+        "/cancel - отменить операцию"
     )
 
-async def search_tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ /tweet <запрос>\nПример: /tweet python")
-        return
+async def swap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_sessions[user_id] = {'step': 'waiting_for_object'}
     
-    query = " ".join(context.args)
-    msg = await update.message.reply_text(f"🔍 Ищу: {query}...")
-    
-    try:
-        tweets = []
-        async for tweet in api.search(query, limit=5):
-            tweets.append(tweet)
-        
-        if not tweets:
-            await msg.edit_text("😕 Ничего не найдено")
-            return
-        
-        result = f"📊 Результаты: {query}\n\n"
-        for i, tweet in enumerate(tweets[:5], 1):
-            result += format_tweet(tweet, i) + "\n"
-        
-        await msg.edit_text(result)
-        
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:150]}")
+    await update.message.reply_text(
+        "🖼️ Отправь мне **фото с объектом**, "
+        "а потом отправь **фото для нового фона**.\n\n"
+        "Я вырежу объект и помещу его на новый фон!\n"
+        "Чтобы отменить - /cancel"
+    )
 
-async def user_tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ /tweets <username>\nПример: /tweets elonmusk")
-        return
-    
-    username = context.args[0].replace("@", "")
-    msg = await update.message.reply_text(f"📝 Твиты @{username}...")
-    
-    try:
-        user = await api.user_by_login(username)
-        tweets = []
-        async for tweet in api.user_tweets(user.id, limit=5):
-            tweets.append(tweet)
-        
-        if not tweets:
-            await msg.edit_text(f"😕 У @{username} нет твитов")
-            return
-        
-        result = f"📝 Твиты @{username}:\n\n"
-        for i, tweet in enumerate(tweets[:5], 1):
-            result += format_tweet(tweet, i) + "\n"
-        
-        await msg.edit_text(result)
-        
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:150]}")
+async def save_bg(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("📸 Отправь мне фото, и я сохраню его как фон!")
+    context.user_data['waiting_for_save_bg'] = True
 
-async def tweets_full(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def list_bgs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    count = await count_bgs()
+    await update.message.reply_text(
+        f"📁 В базе {count} фонов.\n\n"
+        "Чтобы добавить - /saveфон\n"
+        "Чтобы удалить - /удалитьфон <ID>"
+    )
+
+async def delete_bg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("❌ /tweets_full <username>\nПример: /tweets_full elonmusk")
+        await update.message.reply_text("❌ /удалитьфон <ID>\nПример: /удалитьфон 5")
         return
     
-    username = context.args[0].replace("@", "")
-    msg = await update.message.reply_text(f"📥 Собираю все твиты @{username}... Это может занять время")
-    
     try:
-        user = await api.user_by_login(username)
+        bg_id = int(context.args[0])
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("DELETE FROM backgrounds WHERE id = ?", (bg_id,))
+        conn.commit()
+        deleted = c.rowcount > 0
+        conn.close()
         
-        # Собираем твиты (максимум 1000)
-        all_tweets = []
-        count = 0
-        async for tweet in api.user_tweets(user.id, limit=1000):
-            all_tweets.append(tweet)
-            count += 1
-            if count % 100 == 0:
-                try:
-                    await msg.edit_text(f"📥 Собрано {count} твитов @{username}...")
-                except:
-                    pass
-        
-        if not all_tweets:
-            await msg.edit_text(f"😕 У @{username} нет твитов")
-            return
-        
-        # Создаем файл
-        filename = f"{username}_tweets.txt"
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write(f"Все твиты @{username} (всего: {len(all_tweets)})\n")
-            f.write("="*50 + "\n\n")
+        if deleted:
+            await update.message.reply_text(f"✅ Фон #{bg_id} удалён")
+        else:
+            await update.message.reply_text(f"❌ Фон #{bg_id} не найден")
             
-            for i, tweet in enumerate(all_tweets, 1):
-                text = clean_text(tweet.rawContent)
-                f.write(f"{i}. {text}\n")
-                f.write(f"   📅 {tweet.date}\n")
-                f.write(f"   🔗 https://twitter.com/{username}/status/{tweet.id}\n\n")
+    except ValueError:
+        await update.message.reply_text("❌ Введи число")
+
+async def clear_bgs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("DELETE FROM backgrounds")
+    conn.commit()
+    conn.close()
+    await update.message.reply_text("🗑️ Все фоны удалены!")
+
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_sessions.pop(user_id, None)
+    context.user_data.pop('waiting_for_save_bg', None)
+    await update.message.reply_text("✅ Отменено!")
+
+# ==================== ОБРАБОТЧИК ФОТО ====================
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    session = user_sessions.get(user_id)
+    
+    try:
+        photo_file = await update.message.photo[-1].get_file()
+        file_id = photo_file.file_id
         
-        # Отправляем файл
-        with open(filename, "rb") as f:
-            await update.message.reply_document(
-                document=f,
-                filename=filename,
-                caption=f"📄 Все твиты @{username} ({len(all_tweets)} шт.)"
+        # ===== РЕЖИМ: Сохранение фона =====
+        if context.user_data.get('waiting_for_save_bg'):
+            conn = get_db()
+            c = conn.cursor()
+            c.execute("INSERT INTO backgrounds (file_id) VALUES (?)", (file_id,))
+            conn.commit()
+            bg_id = c.lastrowid
+            conn.close()
+            
+            await update.message.reply_text(
+                f"✅ Фото сохранено как фон #{bg_id}!\n"
+                f"Всего фонов: {await count_bgs()}"
             )
-        
-        # Удаляем временный файл
-        os.remove(filename)
-        await msg.delete()
-        
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:150]}")
-
-async def polymarket_tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Твиты @polymarket"""
-    msg = await update.message.reply_text("📝 Твиты @polymarket...")
-    
-    try:
-        user = await api.user_by_login("polymarket")
-        tweets = []
-        async for tweet in api.user_tweets(user.id, limit=5):
-            tweets.append(tweet)
-        
-        if not tweets:
-            await msg.edit_text("😕 У @polymarket нет твитов")
+            context.user_data['waiting_for_save_bg'] = False
             return
         
-        result = f"📝 Твиты @polymarket:\n\n"
-        for i, tweet in enumerate(tweets[:5], 1):
-            result += format_tweet(tweet, i) + "\n"
-        
-        await msg.edit_text(result)
-        
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:150]}")
-
-async def ateobreaking_tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Твиты @ateobreaking"""
-    msg = await update.message.reply_text("📝 Твиты @ateobreaking...")
-    
-    try:
-        user = await api.user_by_login("ateobreaking")
-        tweets = []
-        async for tweet in api.user_tweets(user.id, limit=5):
-            tweets.append(tweet)
-        
-        if not tweets:
-            await msg.edit_text("😕 У @ateobreaking нет твитов")
+        # ===== РЕЖИМ: Замена фона (/swap) =====
+        if session:
+            if session['step'] == 'waiting_for_object':
+                user_sessions[user_id]['object_file_id'] = file_id
+                user_sessions[user_id]['step'] = 'waiting_for_background'
+                
+                await update.message.reply_text(
+                    "✅ Объект сохранён!\n"
+                    "Теперь отправь **фото для нового фона**"
+                )
+                
+            elif session['step'] == 'waiting_for_background':
+                object_file_id = session.get('object_file_id')
+                if not object_file_id:
+                    await update.message.reply_text("❌ Ошибка: объект не найден. Начни заново: /swap")
+                    user_sessions.pop(user_id, None)
+                    return
+                
+                msg = await update.message.reply_text("🎨 Обрабатываю... (5-10 секунд)")
+                
+                # Скачиваем объект
+                object_file = await context.bot.get_file(object_file_id)
+                object_bytes = await object_file.download_as_bytearray()
+                
+                # Скачиваем фон
+                bg_file = await context.bot.get_file(file_id)
+                bg_bytes = await bg_file.download_as_bytearray()
+                
+                # Вырезаем объект
+                object_img = Image.open(io.BytesIO(object_bytes))
+                object_no_bg = remove(object_img)
+                
+                # Открываем фон
+                bg_img = Image.open(io.BytesIO(bg_bytes)).convert("RGBA")
+                
+                # Ресайзим объект под размер фона
+                bg_width, bg_height = bg_img.size
+                object_no_bg = object_no_bg.resize((bg_width, bg_height), Image.LANCZOS)
+                
+                # Накладываем объект на фон
+                bg_img.paste(object_no_bg, (0, 0), object_no_bg)
+                
+                # Сохраняем результат
+                result_img = io.BytesIO()
+                bg_img.save(result_img, format="PNG")
+                result_img.seek(0)
+                
+                # Отправляем результат
+                await msg.delete()
+                await update.message.reply_photo(
+                    photo=result_img,
+                    caption="✅ Готово! Используй /swap, чтобы сделать ещё"
+                )
+                
+                user_sessions.pop(user_id, None)
             return
         
-        result = f"📝 Твиты @ateobreaking:\n\n"
-        for i, tweet in enumerate(tweets[:5], 1):
-            result += format_tweet(tweet, i) + "\n"
-        
-        await msg.edit_text(result)
+        # ===== Если просто фото =====
+        await update.message.reply_text(
+            "📸 Хочешь заменить фон?\n"
+            "Используй /swap\n\n"
+            "Или сохранить фото как фон? /saveфон"
+        )
         
     except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:150]}")
-
-async def cookies_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        user = await api.user_by_login("twitter")
-        await update.message.reply_text(f"✅ Куки работают! Аккаунт: @{user.username}")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Куки не работают: {str(e)[:100]}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:150]}")
+        user_sessions.pop(user_id, None)
+        context.user_data.pop('waiting_for_save_bg', None)
 
 # ==================== ЗАПУСК ====================
-
 async def main():
-    await init_api()
+    init_db()
     
     app = Application.builder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("tweet", search_tweet))
-    app.add_handler(CommandHandler("tweets", user_tweets))
-    app.add_handler(CommandHandler("tweets_full", tweets_full))
-    app.add_handler(CommandHandler("polymarket", polymarket_tweets))
-    app.add_handler(CommandHandler("ateobreaking", ateobreaking_tweets))
-    app.add_handler(CommandHandler("cookies", cookies_status))
+    app.add_handler(CommandHandler("swap", swap_command))
+    app.add_handler(CommandHandler("saveфон", save_bg))
+    app.add_handler(CommandHandler("списокфонов", list_bgs))
+    app.add_handler(CommandHandler("удалитьфон", delete_bg))
+    app.add_handler(CommandHandler("очиститьфоны", clear_bgs))
+    app.add_handler(CommandHandler("cancel", cancel_command))
+    
+    app.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo))
     
     logging.info("🚀 Бот запущен")
     
