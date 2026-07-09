@@ -5,6 +5,9 @@ asyncio>=3.4.3
 Pillow>=10.0.0
 validex==0.0.3  
 twscrape
+numpy==1.23.5
 rembg==2.0.50
-numpy==1.24.3
-onnxruntime==1.15.1
+onnxruntime==1.14.1
+opencv-python-headless==4.5.5.64
+
+
