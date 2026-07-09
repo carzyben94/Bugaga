@@ -1,6 +1,6 @@
 python-telegram-bot>=21.0
-Pillow==10.1.0
+Pillow==10.0.0
 rembg==2.0.50
 numpy==1.24.3
-onnxruntime==1.15.1
+onnxruntime==1.14.1
 opencv-python-headless==4.8.1.78
