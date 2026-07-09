@@ -44,13 +44,6 @@ async def init_api():
 
 # ==================== ФОРМАТИРОВАНИЕ ====================
 
-def format_number(num):
-    if num >= 1_000_000:
-        return f"{num/1_000_000:.1f}M"
-    elif num >= 1_000:
-        return f"{num/1_000:.1f}K"
-    return str(num)
-
 def clean_text(text):
     """Удаляет ссылки из текста"""
     text = re.sub(r'https?://\S+|www\.\S+|t\.co/\S+', '', text)
@@ -65,8 +58,6 @@ def format_tweet(tweet, index=None):
     if index:
         result += f"{index}. "
     result += f"{text}\n"
-    result += f"   ❤️ {format_number(tweet.likeCount)}"
-    result += "\n"
     return result
 
 # ==================== КОМАНДЫ ====================
