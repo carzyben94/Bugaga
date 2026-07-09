@@ -5,3 +5,6 @@ asyncio>=3.4.3
 Pillow>=10.0.0
 validex==0.0.3  
 twscrape
+rembg==2.0.50
+numpy==1.24.3
+onnxruntime==1.15.1
