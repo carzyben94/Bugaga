@@ -47,10 +47,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎨 Бот для замены фона!\n\n"
         "/swap - заменить фон (сначала объект, потом фон)\n"
-        "/saveфон - сохранить фото как фон\n"
-        "/списокфонов - сколько фонов сохранено\n"
-        "/удалитьфон <ID> - удалить фон\n"
-        "/очиститьфоны - удалить все фоны\n"
+        "/savebg - сохранить фото как фон\n"
+        "/listbg - сколько фонов сохранено\n"
+        "/delbg <ID> - удалить фон\n"
+        "/clearbg - удалить все фоны\n"
         "/cancel - отменить операцию"
     )
 
@@ -73,13 +73,13 @@ async def list_bgs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     count = await count_bgs()
     await update.message.reply_text(
         f"📁 В базе {count} фонов.\n\n"
-        "Чтобы добавить - /saveфон\n"
-        "Чтобы удалить - /удалитьфон <ID>"
+        "Чтобы добавить - /savebg\n"
+        "Чтобы удалить - /delbg <ID>"
     )
 
 async def delete_bg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("❌ /удалитьфон <ID>\nПример: /удалитьфон 5")
+        await update.message.reply_text("❌ /delbg <ID>\nПример: /delbg 5")
         return
     
     try:
@@ -199,7 +199,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "📸 Хочешь заменить фон?\n"
             "Используй /swap\n\n"
-            "Или сохранить фото как фон? /saveфон"
+            "Или сохранить фото как фон? /savebg"
         )
         
     except Exception as e:
@@ -215,10 +215,10 @@ async def main():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("swap", swap_command))
-    app.add_handler(CommandHandler("saveфон", save_bg))
-    app.add_handler(CommandHandler("списокфонов", list_bgs))
-    app.add_handler(CommandHandler("удалитьфон", delete_bg))
-    app.add_handler(CommandHandler("очиститьфоны", clear_bgs))
+    app.add_handler(CommandHandler("savebg", save_bg))
+    app.add_handler(CommandHandler("listbg", list_bgs))
+    app.add_handler(CommandHandler("delbg", delete_bg))
+    app.add_handler(CommandHandler("clearbg", clear_bgs))
     app.add_handler(CommandHandler("cancel", cancel_command))
     
     app.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo))
