@@ -67,6 +67,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "/tweet <запрос> - поиск твитов\n"
         "/tweets <username> - твиты пользователя\n"
+        "/tweets_full <username> - все твиты в файл\n"
         "/polymarket - твиты @polymarket\n"
         "/ateobreaking - твиты @ateobreaking\n"
         "/cookies - статус кук"
@@ -121,6 +122,60 @@ async def user_tweets(update: Update, context: ContextTypes.DEFAULT_TYPE):
             result += format_tweet(tweet, i) + "\n"
         
         await msg.edit_text(result)
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {str(e)[:150]}")
+
+async def tweets_full(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("❌ /tweets_full <username>\nПример: /tweets_full elonmusk")
+        return
+    
+    username = context.args[0].replace("@", "")
+    msg = await update.message.reply_text(f"📥 Собираю все твиты @{username}... Это может занять время")
+    
+    try:
+        user = await api.user_by_login(username)
+        
+        # Собираем твиты (максимум 1000)
+        all_tweets = []
+        count = 0
+        async for tweet in api.user_tweets(user.id, limit=1000):
+            all_tweets.append(tweet)
+            count += 1
+            if count % 100 == 0:
+                try:
+                    await msg.edit_text(f"📥 Собрано {count} твитов @{username}...")
+                except:
+                    pass
+        
+        if not all_tweets:
+            await msg.edit_text(f"😕 У @{username} нет твитов")
+            return
+        
+        # Создаем файл
+        filename = f"{username}_tweets.txt"
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(f"Все твиты @{username} (всего: {len(all_tweets)})\n")
+            f.write("="*50 + "\n\n")
+            
+            for i, tweet in enumerate(all_tweets, 1):
+                text = clean_text(tweet.rawContent)
+                f.write(f"{i}. {text}\n")
+                f.write(f"   📅 {tweet.date}\n")
+                f.write(f"   🔗 https://twitter.com/{username}/status/{tweet.id}\n\n")
+        
+        # Отправляем файл
+        with open(filename, "rb") as f:
+            await update.message.reply_document(
+                document=f,
+                filename=filename,
+                caption=f"📄 Все твиты @{username} ({len(all_tweets)} шт.)"
+            )
+        
+        # Удаляем временный файл
+        os.remove(filename)
+        await msg.delete()
         
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:150]}")
@@ -188,6 +243,7 @@ async def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("tweet", search_tweet))
     app.add_handler(CommandHandler("tweets", user_tweets))
+    app.add_handler(CommandHandler("tweets_full", tweets_full))
     app.add_handler(CommandHandler("polymarket", polymarket_tweets))
     app.add_handler(CommandHandler("ateobreaking", ateobreaking_tweets))
     app.add_handler(CommandHandler("cookies", cookies_status))
