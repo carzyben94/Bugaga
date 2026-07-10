@@ -2,8 +2,10 @@ import asyncio
 import logging
 import os
 import base64
+import requests
+import io
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from pydoll.browser import Chrome
 from pydoll.browser.options import ChromiumOptions
 
@@ -14,13 +16,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Получаем токен из переменных окружения
+# Получаем токены из переменных окружения
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен!")
 
+AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
+if not AGNES_API_KEY:
+    logger.warning("⚠️ AGNES_API_KEY не установлен! Функция замены фона не будет работать.")
+
 # Путь к браузеру Google Chrome
 CHROME_PATH = "/usr/bin/google-chrome"
+AGNES_API_URL = "https://apihub.agnes-ai.com/v1/images/generations"
 
 # Глобальная переменная для хранения экземпляра браузера
 browser_instance = None
@@ -48,6 +55,62 @@ async def send_and_delete(update: Update, context: ContextTypes.DEFAULT_TYPE, te
     message = await update.message.reply_text(text)
     asyncio.create_task(delete_message_after_delay(context, update.effective_chat.id, message.message_id, delay))
     return message
+
+# --- ФУНКЦИИ ДЛЯ РАБОТЫ С AGNES AI ---
+
+def replace_background(image_data, new_background_prompt: str) -> str:
+    """
+    Заменяет фон на изображении через Agnes AI
+    
+    Args:
+        image_data: байты изображения
+        new_background_prompt: описание нового фона
+    
+    Returns:
+        str: URL сгенерированного изображения
+    """
+    if not AGNES_API_KEY:
+        raise ValueError("AGNES_API_KEY не установлен!")
+    
+    try:
+        # Кодируем изображение в base64
+        img_b64 = base64.b64encode(image_data).decode('utf-8')
+        
+        # Формируем запрос к Agnes AI
+        headers = {
+            "Authorization": f"Bearer {AGNES_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "agnes-image-2.1-flash",
+            "prompt": f"Replace the background with: {new_background_prompt}. Keep the main subject unchanged.",
+            "image": [f"data:image/jpeg;base64,{img_b64}"],
+            "size": "1024x1024",
+            "extra_body": {"response_format": "url"}
+        }
+        
+        logger.info(f"📤 Отправка запроса к Agnes AI...")
+        response = requests.post(AGNES_API_URL, json=payload, headers=headers, timeout=60)
+        
+        # Проверяем статус ответа
+        if response.status_code == 404:
+            logger.error("❌ Эндпоинт не найден. Проверьте URL API.")
+            return None
+        
+        response.raise_for_status()
+        
+        # Парсим ответ
+        result = response.json()
+        logger.info("✅ Изображение успешно сгенерировано")
+        
+        return result['data'][0]['url']
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ Ошибка запроса к Agnes AI: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"❌ Ошибка при замене фона: {e}")
+        return None
 
 # --- ФУНКЦИИ ДЛЯ РАБОТЫ С БРАУЗЕРОМ ---
 
@@ -131,13 +194,17 @@ def get_browser_status():
 
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает список команд в столбик"""
+    """Показывает список команд"""
     await update.message.reply_text(
         "/status - Статус браузера\n"
         "/open_bw - Открыть браузер\n"
         "/close_bw - Закрыть браузер\n"
         "/screen - Скриншот\n"
-        "/go <URL> - Перейти на сайт"
+        "/go <URL> - Перейти на сайт\n\n"
+        "📸 Для замены фона:\n"
+        "1. Отправьте фото\n"
+        "2. Напишите /bg <описание фона>\n"
+        "3. Получите результат!"
     )
 
 # Команда /status
@@ -167,7 +234,6 @@ async def close_browser_command(update: Update, context: ContextTypes.DEFAULT_TY
 # Команда /screen
 async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Делает скриншот всей страницы"""
-    # Это сообщение будет удалено через 2 секунды
     await send_and_delete(update, context, "📸 Делаю скриншот...", delay=2)
     
     screenshot_data, error = await take_screenshot()
@@ -181,10 +247,12 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             else:
                 screenshot_bytes = screenshot_data
             
-            # Фото НЕ УДАЛЯЕТСЯ
+            # Сохраняем скриншот в контексте
+            context.user_data['last_image'] = screenshot_bytes
+            
             await update.message.reply_photo(
                 screenshot_bytes,
-                caption="📸 Скриншот всей страницы"
+                caption="📸 Скриншот сохранен!\nДля замены фона используйте /bg <описание>"
             )
         except Exception as e:
             logger.error(f"Ошибка при отправке скриншота: {e}")
@@ -215,6 +283,87 @@ async def go_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка при переходе: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
+# --- ОБРАБОТКА ФОТО ---
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает загруженное фото"""
+    try:
+        # Получаем фото
+        photo_file = await update.message.photo[-1].get_file()
+        photo_bytes = await photo_file.download_as_bytearray()
+        
+        # Сохраняем фото в контексте
+        context.user_data['last_image'] = bytes(photo_bytes)
+        
+        await update.message.reply_text(
+            "📸 Фото сохранено!\n"
+            "Теперь напишите /bg <описание фона>\n"
+            "Пример: /bg beautiful beach sunset"
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при обработке фото: {e}")
+        await update.message.reply_text(f"❌ Ошибка при загрузке фото: {str(e)}")
+
+# Команда /bg - замена фона
+async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Заменяет фон на последнем изображении"""
+    if not AGNES_API_KEY:
+        await update.message.reply_text("❌ AGNES_API_KEY не настроен. Обратитесь к администратору.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Укажите описание нового фона.\n"
+            "Пример: /bg beautiful beach sunset"
+        )
+        return
+    
+    # Проверяем, есть ли сохраненное изображение
+    if 'last_image' not in context.user_data:
+        await update.message.reply_text(
+            "❌ Сначала загрузите фото или сделайте скриншот командой /screen"
+        )
+        return
+    
+    background_prompt = ' '.join(context.args)
+    await update.message.reply_text(f"🎨 Заменяю фон на: {background_prompt}\n⏳ Это может занять до 30 секунд...")
+    
+    try:
+        # Получаем изображение из контекста
+        image_data = context.user_data['last_image']
+        
+        # Запускаем замену фона в отдельном потоке, чтобы не блокировать бота
+        loop = asyncio.get_event_loop()
+        result_url = await loop.run_in_executor(
+            None, 
+            replace_background, 
+            image_data, 
+            background_prompt
+        )
+        
+        if result_url:
+            # Скачиваем и отправляем изображение
+            try:
+                response = requests.get(result_url, timeout=30)
+                if response.status_code == 200:
+                    await update.message.reply_photo(
+                        response.content,
+                        caption=f"🖼️ Новое изображение\nФон: {background_prompt}"
+                    )
+                else:
+                    await update.message.reply_text(f"✅ Готово! Ссылка: {result_url}")
+            except Exception as e:
+                logger.error(f"Ошибка при скачивании результата: {e}")
+                await update.message.reply_text(f"✅ Готово! Ссылка: {result_url}")
+        else:
+            await update.message.reply_text(
+                "❌ Не удалось заменить фон. Проверьте API ключ или попробуйте позже."
+            )
+            
+    except Exception as e:
+        logger.error(f"Ошибка при замене фона: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
 # --- ОСТАЛЬНЫЕ ОБРАБОТЧИКИ ---
 
 # Обработчик ошибок
@@ -234,13 +383,23 @@ def main():
         application.add_handler(CommandHandler("close_bw", close_browser_command))
         application.add_handler(CommandHandler("screen", screenshot_command))
         application.add_handler(CommandHandler("go", go_command))
+        application.add_handler(CommandHandler("bg", bg_command))
+        
+        # Регистрируем обработчик фото
+        application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
         
         # Регистрируем обработчик ошибок
         application.add_error_handler(error_handler)
 
         logger.info("🚀 Бот запущен!")
         logger.info(f"📁 Используемый браузер: {CHROME_PATH}")
-        logger.info("ℹ️ Доступные команды: /start, /status, /open_bw, /close_bw, /screen, /go")
+        logger.info("ℹ️ Доступные команды: /start, /status, /open_bw, /close_bw, /screen, /go, /bg")
+        logger.info("📸 Бот принимает фото для замены фона")
+        
+        if AGNES_API_KEY:
+            logger.info("✅ Agnes AI настроен")
+        else:
+            logger.warning("⚠️ Agnes AI не настроен (AGNES_API_KEY отсутствует)")
         
         # Запускаем бота
         application.run_polling(allowed_updates=Update.ALL_TYPES)
