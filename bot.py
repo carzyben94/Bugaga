@@ -219,7 +219,7 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             context.user_data['last_image'] = screenshot_bytes
             await update.message.reply_photo(
                 screenshot_bytes,
-                caption="📸 Скриншот сохранен!"
+                caption="📸 Скриншот сохранен!\nТеперь напишите /bg <описание фона>"
             )
         except Exception as e:
             await update.message.reply_text(f"❌ Ошибка: {str(e)}")
@@ -261,16 +261,21 @@ async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Agnes AI не настроен.")
         return
 
-    if not context.args:
+    # Проверяем, есть ли сохраненное изображение
+    if 'last_image' not in context.user_data:
         await update.message.reply_text(
-            "❌ Укажите описание нового фона.\n"
-            "Пример: /bg beach sunset\n"
-            "Пример: /bg ночь и луна"
+            "📸 Сначала загрузите картинку!\n"
+            "Просто отправьте мне фото, а затем напишите /bg <описание фона>"
         )
         return
 
-    if 'last_image' not in context.user_data:
-        await update.message.reply_text("❌ Сначала отправьте фото или сделайте скриншот.")
+    # Если нет описания - просим ввести
+    if not context.args:
+        await update.message.reply_text(
+            "✏️ Напишите описание нового фона.\n"
+            "Пример: /bg beach sunset\n"
+            "Пример: /bg ночь и луна"
+        )
         return
 
     prompt = ' '.join(context.args)
