@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Telegram Bot с Agnes AI агентом для управления браузером через Pydoll
-Версия: 3.1 - Исправлены все импорты
+Версия: 3.2 - Исправлен запуск и завершение
 """
 
 import asyncio
@@ -27,9 +27,9 @@ from telegram.ext import (
 # ============================================================
 # ПРАВИЛЬНЫЕ ИМПОРТЫ PYDOLL
 # ============================================================
-from pydoll.browser import Chrome  # ✅ ПРАВИЛЬНО
-from pydoll.browser.options import ChromiumOptions  # ✅ ПРАВИЛЬНО
-from pydoll.constants import Key  # ✅ ПРАВИЛЬНО
+from pydoll.browser import Chrome
+from pydoll.browser.options import ChromiumOptions
+from pydoll.constants import Key
 
 # Исключения
 try:
@@ -45,7 +45,6 @@ try:
         PydollException
     )
 except ImportError:
-    # Заглушки
     class PydollException(Exception): pass
     class ElementNotFound(Exception): pass
     class WaitElementTimeout(Exception): pass
@@ -373,7 +372,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "find_element",
-            "description": "Находит элемент по селектору",
+            "description": "Находит элемент по CSS селектору",
             "parameters": {
                 "type": "object",
                 "properties": {"selector": {"type": "string"}},
@@ -385,7 +384,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "click_element",
-            "description": "Кликает по элементу",
+            "description": "Кликает по элементу по CSS селектору",
             "parameters": {
                 "type": "object",
                 "properties": {"selector": {"type": "string"}},
@@ -397,7 +396,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "type_text",
-            "description": "Вводит текст в элемент",
+            "description": "Вводит текст в элемент по CSS селектору",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -412,7 +411,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "clear_field",
-            "description": "Очищает поле ввода",
+            "description": "Очищает поле ввода по CSS селектору",
             "parameters": {
                 "type": "object",
                 "properties": {"selector": {"type": "string"}},
@@ -424,7 +423,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_element_text",
-            "description": "Получает текст элемента",
+            "description": "Получает текст элемента по CSS селектору",
             "parameters": {
                 "type": "object",
                 "properties": {"selector": {"type": "string"}},
@@ -437,7 +436,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "take_screenshot",
-            "description": "Делает скриншот страницы",
+            "description": "Делает скриншот всей страницы",
             "parameters": {
                 "type": "object",
                 "properties": {"full_page": {"type": "boolean", "default": True}}
@@ -491,7 +490,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "execute_javascript",
-            "description": "Выполняет JavaScript код",
+            "description": "Выполняет JavaScript код на странице",
             "parameters": {
                 "type": "object",
                 "properties": {"script": {"type": "string"}},
@@ -504,7 +503,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "press_key",
-            "description": "Нажимает клавишу",
+            "description": "Нажимает клавишу (Enter, Tab, Escape, ArrowUp, ArrowDown, ArrowLeft, ArrowRight)",
             "parameters": {
                 "type": "object",
                 "properties": {"key": {"type": "string"}},
@@ -530,7 +529,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_cookies",
-            "description": "Получает cookies",
+            "description": "Получает все cookies текущей страницы",
             "parameters": {"type": "object", "properties": {}}
         }
     },
@@ -547,7 +546,7 @@ async def execute_tool(tool_name: str, arguments: Dict, user_id: int) -> Dict:
     tab = session.tab
 
     if not tab:
-        return {"success": False, "error": "⚠️ Браузер не открыт"}
+        return {"success": False, "error": "⚠️ Браузер не открыт. Используйте /open"}
 
     try:
         # Навигация
@@ -564,10 +563,14 @@ async def execute_tool(tool_name: str, arguments: Dict, user_id: int) -> Dict:
 
         elif tool_name == "go_back":
             await tab.go_back()
+            session.last_action = "go_back"
+            session.last_action_time = datetime.now()
             return {"success": True, "message": "↩️ Назад"}
 
         elif tool_name == "refresh_page":
             await tab.refresh()
+            session.last_action = "refresh_page"
+            session.last_action_time = datetime.now()
             return {"success": True, "message": "🔄 Обновлено"}
 
         # Поиск
@@ -579,12 +582,16 @@ async def execute_tool(tool_name: str, arguments: Dict, user_id: int) -> Dict:
         elif tool_name == "click_element":
             element = await tab.query(arguments["selector"])
             await element.click()
+            session.last_action = "click_element"
+            session.last_action_time = datetime.now()
             return {"success": True, "message": f"🖱️ Кликнут: {arguments['selector']}"}
 
         elif tool_name == "type_text":
             element = await tab.query(arguments["selector"])
             await element.clear()
             await element.type_text(arguments["text"])
+            session.last_action = "type_text"
+            session.last_action_time = datetime.now()
             return {"success": True, "message": f"⌨️ Введён текст"}
 
         elif tool_name == "clear_field":
@@ -604,8 +611,11 @@ async def execute_tool(tool_name: str, arguments: Dict, user_id: int) -> Dict:
                     beyond_viewport=arguments.get("full_page", True),
                     as_base64=True
                 )
+                session.last_action = "take_screenshot"
+                session.last_action_time = datetime.now()
                 return {"success": True, "screenshot": screenshot}
-            except:
+            except Exception as e:
+                logger.warning(f"Full page screenshot failed: {e}, trying without")
                 screenshot = await tab.take_screenshot(as_base64=True)
                 return {"success": True, "screenshot": screenshot}
 
@@ -699,10 +709,16 @@ async def process_with_agnes(user_message: str, user_id: int) -> Dict:
 - Заголовок: {session.page_title or 'нет'}
 
 Правила:
-1. Если браузер закрыт — сначала открой его
+1. Если браузер закрыт — сначала открой его через open_command
 2. Используй инструменты для действий
 3. Для скриншотов используй take_screenshot
 4. Отвечай понятно и по делу
+5. Если нужно перейти на сайт — используй go_to_url
+6. Для поиска элементов — используй find_element
+7. Для взаимодействия — click_element, type_text, clear_field
+8. Для навигации — go_back, refresh_page
+9. Для получения данных — get_page_title, get_current_url, get_page_source
+10. Для выполнения JS — execute_javascript
 """
 
         response = agnes_client.chat.completions.create(
@@ -723,7 +739,7 @@ async def process_with_agnes(user_message: str, user_id: int) -> Dict:
                 tool_name = tool_call.function.name
                 arguments = json.loads(tool_call.function.arguments)
 
-                logger.info(f"🔧 Вызов: {tool_name}")
+                logger.info(f"🔧 Вызов: {tool_name} с аргументами: {arguments}")
 
                 result = await execute_tool(tool_name, arguments, user_id)
                 results.append({"tool": tool_name, "result": result})
@@ -735,6 +751,7 @@ async def process_with_agnes(user_message: str, user_id: int) -> Dict:
                         "message": "📸 Скриншот готов"
                     }
 
+            # Формируем текстовый ответ
             if message.content:
                 content = message.content
             else:
@@ -753,7 +770,7 @@ async def process_with_agnes(user_message: str, user_id: int) -> Dict:
             return {"type": "text", "content": message.content or "✅ Готово!"}
 
     except Exception as e:
-        error_tracker.add_error(e, {"user_id": user_id})
+        error_tracker.add_error(e, {"user_id": user_id, "action": "process_with_agnes"})
         return {"type": "text", "content": f"❌ Ошибка: {str(e)}"}
 
 # ============================================================
@@ -762,20 +779,25 @@ async def process_with_agnes(user_message: str, user_id: int) -> Dict:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Приветствие"""
+    user_id = update.effective_user.id
+    audit_logger.info(f"User {user_id} запустил бота")
+
     await update.message.reply_text(
-        "🤖 **Бот с AI агентом**\n\n"
+        "🤖 **Бот с AI агентом на Agnes AI**\n\n"
         "Управляю браузером через естественный язык!\n\n"
         "📌 **Примеры:**\n"
         "• `Открой браузер`\n"
         "• `Перейди на google.com`\n"
-        "• `Найди кнопку и кликни`\n"
-        "• `Сделай скриншот`\n\n"
+        "• `Найди кнопку Войти и кликни`\n"
+        "• `Сделай скриншот`\n"
+        "• `Собери все цены с этой страницы`\n\n"
         "🔧 **Команды:**\n"
         "/open — Открыть браузер\n"
         "/close — Закрыть браузер\n"
-        "/status — Статус\n"
-        "/debug — Отладка\n"
-        "/errors — Ошибки",
+        "/status — Статус сессии\n"
+        "/debug — Детальная отладка\n"
+        "/errors — Показать ошибки\n\n"
+        "💡 Просто напиши, что нужно сделать!",
         parse_mode='Markdown'
     )
 
@@ -789,8 +811,9 @@ async def open_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session.last_action = "open_browser"
         session.last_action_time = datetime.now()
         await session.tab.current_url
-        await update.message.reply_text("✅ Браузер открыт!")
+        await update.message.reply_text("✅ Браузер успешно открыт!")
     except Exception as e:
+        error_tracker.add_error(e, {"user_id": user_id, "action": "open_command"})
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -802,54 +825,77 @@ async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await session_manager.close_session(user_id)
         await update.message.reply_text("✅ Браузер закрыт!")
     except Exception as e:
+        error_tracker.add_error(e, {"user_id": user_id, "action": "close_command"})
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Статус"""
+    """Статус сессии"""
     user_id = update.effective_user.id
     session = await session_manager.get_session(user_id)
 
+    status = "🟢 Активен" if session.is_active else "🔴 Не активен"
+
     message = (
-        f"📊 **Статус**\n\n"
+        f"📊 **Статус сессии**\n\n"
         f"🆔 Пользователь: `{user_id}`\n"
-        f"🌐 Браузер: {'✅ Активен' if session.is_active else '❌ Не активен'}\n"
+        f"🌐 Браузер: {status}\n"
+        f"🔒 Контекст: `{session.context_id or 'нет'}`\n"
         f"🔗 URL: `{session.current_url or 'нет'}`\n"
         f"📄 Заголовок: `{session.page_title or 'нет'}`\n"
-        f"⚡ Действие: {session.last_action or 'нет'}"
+        f"⚡ Последнее действие: {session.last_action or 'нет'}\n"
+        f"⏰ Обновлено: {session.last_action_time.strftime('%H:%M:%S')}"
     )
 
     await update.message.reply_text(message, parse_mode='Markdown')
 
 async def errors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ошибки (админ)"""
+    """Показывает последние ошибки (только для админов)"""
     user_id = update.effective_user.id
+
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text("⛔ Нет доступа")
+        await update.message.reply_text("⛔ У вас нет доступа к этой команде")
         return
 
-    errors = error_tracker.get_recent(10)
+    limit = 10
+    if context.args and context.args[0].isdigit():
+        limit = min(int(context.args[0]), 50)
+
+    errors = error_tracker.get_recent(limit)
+
     if not errors:
         await update.message.reply_text("✅ Ошибок нет")
         return
 
-    message = "📊 **Ошибки:**\n\n"
+    message = f"📊 **Последние {len(errors)} ошибок:**\n\n"
     for i, error in enumerate(errors, 1):
         message += f"**{i}. {error['error_type']}**\n"
-        message += f"💬 {error['error_message'][:100]}\n---\n"
+        message += f"⏰ {error['timestamp']}\n"
+        message += f"💬 {error['error_message'][:100]}\n"
+        if error.get('context', {}).get('function'):
+            message += f"📁 Функция: {error['context']['function']}\n"
+        message += "---\n"
 
-    await update.message.reply_text(message[:4000], parse_mode='Markdown')
+    if len(message) > 4000:
+        message = message[:4000] + "\n... (обрезано)"
+
+    await update.message.reply_text(message, parse_mode='Markdown')
 
 async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отладка (админ)"""
+    """Детальная отладка (только для админов)"""
     user_id = update.effective_user.id
+
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text("⛔ Нет доступа")
+        await update.message.reply_text("⛔ У вас нет доступа к этой команде")
         return
+
+    session = await session_manager.get_session(user_id)
 
     message = (
         f"🔍 **Отладка**\n\n"
         f"**Сессии:** {len(session_manager.sessions)}\n"
         f"**Браузер:** {'✅' if session_manager._browser else '❌'}\n"
+        f"**Контекст:** {session.context_id or 'нет'}\n"
+        f"**Вкладка:** {'✅' if session.tab else '❌'}\n"
         f"**Ошибок:** {len(error_tracker.errors)}\n"
         f"**Логи:** `{LOG_DIR.absolute()}`"
     )
@@ -857,17 +903,18 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(message, parse_mode='Markdown')
 
 async def clear_errors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Очистить ошибки (админ)"""
+    """Очищает лог ошибок (только для админов)"""
     user_id = update.effective_user.id
+
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text("⛔ Нет доступа")
+        await update.message.reply_text("⛔ У вас нет доступа к этой команде")
         return
 
     error_tracker.clear()
     await update.message.reply_text("🧹 Ошибки очищены")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка сообщений"""
+    """Обрабатывает текстовые сообщения"""
     user_id = update.effective_user.id
     user_message = update.message.text
 
@@ -888,18 +935,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     caption=result.get("message", "📸 Скриншот")
                 )
             except Exception as e:
-                await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+                error_tracker.add_error(e, {"user_id": user_id, "action": "send_screenshot"})
+                await update.message.reply_text(f"❌ Ошибка отправки скриншота: {str(e)}")
         else:
             await update.message.reply_text(result["content"])
 
     except Exception as e:
-        error_tracker.add_error(e, {"user_id": user_id})
+        error_tracker.add_error(e, {"user_id": user_id, "message": user_message})
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Глобальный обработчик ошибок"""
     error = context.error
     error_tracker.add_error(error, {
+        "update": update.to_dict() if update else None,
         "user_id": update.effective_user.id if update else None
     })
     error_logger.error(f"Ошибка: {error}\n{traceback.format_exc()}")
@@ -909,9 +958,9 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 
 async def cleanup_task():
-    """Очистка неактивных сессий"""
+    """Фоновая очистка неактивных сессий"""
     while True:
-        await asyncio.sleep(300)
+        await asyncio.sleep(300)  # Каждые 5 минут
         try:
             await session_manager.cleanup_inactive(max_age_seconds=1800)
         except Exception as e:
@@ -929,7 +978,7 @@ async def health_check_task():
             session_manager._browser = None
 
 # ============================================================
-# 11. ЗАПУСК
+# 11. ЗАПУСК (ИСПРАВЛЕННЫЙ)
 # ============================================================
 
 async def main():
@@ -957,19 +1006,39 @@ async def main():
         asyncio.create_task(health_check_task())
 
         logger.info("=" * 60)
-        logger.info("🚀 Бот запущен!")
+        logger.info("🚀 Бот с Agnes AI агентом запущен!")
         logger.info(f"📁 Логи: {LOG_DIR.absolute()}")
         logger.info(f"👥 Админы: {ADMIN_IDS or 'нет'}")
         logger.info(f"💾 Persistent: {PERSISTENT_SESSION}")
+        logger.info(f"🌐 Прокси: {PROXY_SERVER or 'нет'}")
         logger.info(f"📦 Инструментов: {len(TOOLS)}")
         logger.info("=" * 60)
 
-        await application.run_polling(allowed_updates=Update.ALL_TYPES)
+        # ✅ ПРАВИЛЬНЫЙ ЗАПУСК
+        await application.initialize()
+        await application.start()
+        await application.updater.start_polling()
 
+        # Бесконечное ожидание
+        while True:
+            await asyncio.sleep(1)
+
+    except KeyboardInterrupt:
+        logger.info("🛑 Бот остановлен пользователем")
     except Exception as e:
         logger.error(f"Критическая ошибка: {e}")
         logger.error(traceback.format_exc())
-        raise
+    finally:
+        # ✅ ПРАВИЛЬНОЕ ЗАВЕРШЕНИЕ
+        try:
+            if 'application' in locals():
+                await application.updater.stop()
+                await application.stop()
+                await application.shutdown()
+            await session_manager.close_all()
+        except Exception as e:
+            logger.error(f"Ошибка при завершении: {e}")
+        logger.info("✅ Бот корректно завершил работу")
 
 if __name__ == "__main__":
     asyncio.run(main())
