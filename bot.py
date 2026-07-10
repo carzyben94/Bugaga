@@ -1,10 +1,10 @@
 import os
 import logging
-import asyncio 
+import asyncio
 import sqlite3
 import io
 from PIL import Image
-from rembg import remove
+from rembg import remove, new_session
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -12,6 +12,13 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
 logging.basicConfig(level=logging.INFO)
+
+# ==================== ИНИЦИАЛИЗАЦИЯ МОДЕЛИ ====================
+# Создаём сессию с улучшенной моделью (один раз при старте)
+# Варианты: "birefnet-general-lite", "birefnet-portrait", "u2net", "u2netp"
+MODEL_NAME = "birefnet-general-lite"  # Можешь заменить на другую модель
+session = new_session(MODEL_NAME)
+logging.info(f"✅ Модель загружена: {MODEL_NAME}")
 
 # ==================== БАЗА ДАННЫХ ====================
 def get_db():
@@ -39,19 +46,20 @@ async def count_bgs():
     conn.close()
     return count
 
-# ==================== ХРАНИЛИЩЕ СЕССИЙ ====================
+# ==================== ХРАНИЛИЩЕ СЕССИЙ ПОЛЬЗОВАТЕЛЕЙ ====================
 user_sessions = {}
 
 # ==================== КОМАНДЫ ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎨 Бот для замены фона!\n\n"
-        "/swap - заменить фон (сначала объект, потом фон)\n"
-        "/savebg - сохранить фото как фон\n"
-        "/listbg - сколько фонов сохранено\n"
-        "/delbg <ID> - удалить фон\n"
-        "/clearbg - удалить все фоны\n"
-        "/cancel - отменить операцию"
+        "🔹 /swap - заменить фон (сначала объект, потом фон)\n"
+        "🔹 /savebg - сохранить фото как фон\n"
+        "🔹 /listbg - список фонов\n"
+        "🔹 /delbg <ID> - удалить фон\n"
+        "🔹 /clearbg - удалить все фоны\n"
+        "🔹 /cancel - отменить операцию\n\n"
+        f"🧠 Модель: {MODEL_NAME}"
     )
 
 async def swap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -59,10 +67,9 @@ async def swap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_sessions[user_id] = {'step': 'waiting_for_object'}
     
     await update.message.reply_text(
-        "🖼️ Отправь мне **фото с объектом**, "
-        "а потом отправь **фото для нового фона**.\n\n"
-        "Я вырежу объект и помещу его на новый фон!\n"
-        "Чтобы отменить - /cancel"
+        "🖼️ Шаг 1: Отправь **фото с объектом**\n"
+        "(человек, кот, товар — что угодно)\n\n"
+        "⬇️ После этого отправь **фото для нового фона**"
     )
 
 async def save_bg(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -71,11 +78,7 @@ async def save_bg(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def list_bgs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     count = await count_bgs()
-    await update.message.reply_text(
-        f"📁 В базе {count} фонов.\n\n"
-        "Чтобы добавить - /savebg\n"
-        "Чтобы удалить - /delbg <ID>"
-    )
+    await update.message.reply_text(f"📁 В базе {count} фонов.")
 
 async def delete_bg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -116,7 +119,7 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================== ОБРАБОТЧИК ФОТО ====================
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    session = user_sessions.get(user_id)
+    session_data = user_sessions.get(user_id)
     
     try:
         photo_file = await update.message.photo[-1].get_file()
@@ -139,8 +142,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         # ===== РЕЖИМ: Замена фона (/swap) =====
-        if session:
-            if session['step'] == 'waiting_for_object':
+        if session_data:
+            if session_data['step'] == 'waiting_for_object':
                 user_sessions[user_id]['object_file_id'] = file_id
                 user_sessions[user_id]['step'] = 'waiting_for_background'
                 
@@ -149,14 +152,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "Теперь отправь **фото для нового фона**"
                 )
                 
-            elif session['step'] == 'waiting_for_background':
-                object_file_id = session.get('object_file_id')
+            elif session_data['step'] == 'waiting_for_background':
+                object_file_id = session_data.get('object_file_id')
                 if not object_file_id:
                     await update.message.reply_text("❌ Ошибка: объект не найден. Начни заново: /swap")
                     user_sessions.pop(user_id, None)
                     return
                 
-                msg = await update.message.reply_text("🎨 Обрабатываю... (5-10 секунд)")
+                msg = await update.message.reply_text(f"🎨 Обрабатываю через {MODEL_NAME}... (5-10 секунд)")
                 
                 # Скачиваем объект
                 object_file = await context.bot.get_file(object_file_id)
@@ -166,9 +169,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 bg_file = await context.bot.get_file(file_id)
                 bg_bytes = await bg_file.download_as_bytearray()
                 
-                # Вырезаем объект через rembg
+                # Вырезаем объект через rembg с улучшенной моделью
                 object_img = Image.open(io.BytesIO(object_bytes))
-                object_no_bg = remove(object_img)
+                object_no_bg = remove(object_img, session=session)  # <-- ИСПОЛЬЗУЕМ УЛУЧШЕННУЮ МОДЕЛЬ
                 
                 # Открываем фон
                 bg_img = Image.open(io.BytesIO(bg_bytes)).convert("RGBA")
@@ -223,7 +226,7 @@ async def main():
     
     app.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo))
     
-    logging.info("🚀 Бот запущен")
+    logging.info(f"🚀 Бот запущен. Модель: {MODEL_NAME}")
     
     await app.initialize()
     await app.start()
