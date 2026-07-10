@@ -35,6 +35,20 @@ def normalize_url(url: str) -> str:
         url = 'https://' + url
     return url
 
+async def delete_message_after_delay(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, delay: int = 2):
+    """Удаляет сообщение через указанную задержку"""
+    await asyncio.sleep(delay)
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception as e:
+        logger.error(f"Ошибка при удалении сообщения: {e}")
+
+async def send_and_delete(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, delay: int = 2):
+    """Отправляет сообщение и удаляет его через delay секунд"""
+    message = await update.message.reply_text(text)
+    asyncio.create_task(delete_message_after_delay(context, update.effective_chat.id, message.message_id, delay))
+    return message
+
 # --- ФУНКЦИИ ДЛЯ РАБОТЫ С БРАУЗЕРОМ ---
 
 def get_browser_options():
@@ -137,7 +151,7 @@ async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYP
     """Открывает браузер"""
     success = await open_browser()
     if success:
-        await update.message.reply_text("🌐 Браузер открыт ✅")
+        await send_and_delete(update, context, "🌐 Браузер открыт ✅", delay=2)
     else:
         await update.message.reply_text("❌ Не удалось открыть браузер")
 
@@ -146,14 +160,15 @@ async def close_browser_command(update: Update, context: ContextTypes.DEFAULT_TY
     """Закрывает браузер"""
     success = await close_browser()
     if success:
-        await update.message.reply_text("❌ Браузер закрыт ✅")
+        await send_and_delete(update, context, "❌ Браузер закрыт ✅", delay=2)
     else:
         await update.message.reply_text("❌ Не удалось закрыть браузер")
 
 # Команда /screen
 async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Делает скриншот всей страницы"""
-    await update.message.reply_text("📸 Делаю скриншот...")
+    # Это сообщение будет удалено через 2 секунды
+    await send_and_delete(update, context, "📸 Делаю скриншот...", delay=2)
     
     screenshot_data, error = await take_screenshot()
     
@@ -166,6 +181,7 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             else:
                 screenshot_bytes = screenshot_data
             
+            # Фото НЕ УДАЛЯЕТСЯ
             await update.message.reply_photo(
                 screenshot_bytes,
                 caption="📸 Скриншот всей страницы"
