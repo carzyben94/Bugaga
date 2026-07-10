@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Telegram Bot с интерактивным окном браузера
-Версия: 8.3 - Полная поддержка кук с обновлением
+Версия: 8.4 - Куки ДО перехода на сайт
 """
 
 import asyncio
@@ -209,8 +209,11 @@ class SessionManager:
             logger.info("🌐 Браузер запущен")
         return self._browser
 
-    async def _set_cookies_for_tab(self, tab, cookies: List[Dict]) -> bool:
-        """Устанавливает куки для вкладки с обновлением страницы"""
+    async def _set_cookies_before_navigation(self, tab, cookies: List[Dict]) -> bool:
+        """
+        Устанавливает куки ДО перехода на сайт.
+        Правильный порядок: сначала куки → потом переход.
+        """
         try:
             domain = cookies[0].get("domain", "").lstrip('.')
             if not domain:
@@ -218,13 +221,13 @@ class SessionManager:
             
             url = f"https://{domain}"
             
-            # Шаг 1: Переходим на сайт
-            logger.info(f"🌐 Перехожу на {url}")
-            await tab.go_to(url)
-            await asyncio.sleep(2)
+            # Шаг 1: Сначала идём на пустую страницу (about:blank)
+            logger.info("📄 Открываю пустую страницу для установки кук...")
+            await tab.go_to("about:blank")
+            await asyncio.sleep(0.5)
             
-            # Шаг 2: Устанавливаем ВСЕ куки
-            logger.info(f"🍪 Устанавливаю {len(cookies)} кук...")
+            # Шаг 2: Устанавливаем ВСЕ куки ДО перехода на сайт
+            logger.info(f"🍪 Устанавливаю {len(cookies)} кук ДО перехода...")
             for cookie in cookies:
                 try:
                     await tab.set_cookie(
@@ -236,18 +239,39 @@ class SessionManager:
                         httpOnly=cookie.get("httpOnly", False),
                         sameSite=cookie.get("sameSite", "unspecified"),
                     )
+                    logger.debug(f"  ✅ {cookie['name']}={cookie['value'][:20]}...")
                 except Exception as e:
                     logger.warning(f"⚠️ Ошибка куки {cookie.get('name')}: {e}")
             
-            # Шаг 3: ОБНОВЛЯЕМ страницу - КЛЮЧЕВОЙ МОМЕНТ!
-            logger.info("🔄 Обновляю страницу для применения кук...")
-            await tab.refresh()
-            await asyncio.sleep(3)
+            # Шаг 3: Проверяем что куки установлены
+            cookies_after = await tab.get_cookies()
+            logger.info(f"🍪 Установлено кук: {len(cookies_after)}")
             
-            # Шаг 4: Проверяем что куки применились
+            # Шаг 4: ТЕПЕРЬ переходим на сайт (куки уже есть!)
+            logger.info(f"🌐 Перехожу на {url} с куками...")
+            await tab.go_to(url)
+            await asyncio.sleep(3)  # Ждём загрузку
+            
+            # Шаг 5: Проверяем результат
             current_url = await tab.current_url
             title = await tab.title
-            logger.info(f"✅ Куки установлены! URL: {current_url}, Заголовок: {title}")
+            logger.info(f"✅ Готово! URL: {current_url}, Заголовок: {title}")
+            
+            # Шаг 6: Проверяем авторизацию через JS
+            try:
+                check_auth = await tab.execute_script("""
+                    // Проверяем наличие элементов авторизованного пользователя
+                    const isLoggedIn = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]') !== null ||
+                                      document.querySelector('[data-testid="AppTabBar_Profile_Link"]') !== null ||
+                                      document.querySelector('[aria-label="Profile"]') !== null;
+                    return isLoggedIn;
+                """)
+                if check_auth:
+                    logger.info("✅ АВТОРИЗАЦИЯ ПОДТВЕРЖДЕНА!")
+                else:
+                    logger.warning("⚠️ Авторизация НЕ подтверждена (возможно куки устарели)")
+            except:
+                pass
             
             return True
         except Exception as e:
@@ -268,17 +292,17 @@ class SessionManager:
                 session.tab = await browser.new_tab()
                 session.is_active = True
                 
-                # Устанавливаем куки для X.com/Twitter с обновлением
+                # Устанавливаем куки ДО перехода
                 if not session.cookies_set:
                     try:
-                        success = await self._set_cookies_for_tab(session.tab, TWITTER_COOKIES)
+                        success = await self._set_cookies_before_navigation(session.tab, TWITTER_COOKIES)
                         if success:
                             session.cookies_set = True
                             session.cookies_domain = "x.com"
                             session.comments = [
                                 "🟢 Браузер открыт",
-                                "🍪 Куки X.com установлены (с обновлением)",
-                                "✅ Авторизация восстановлена"
+                                "🍪 Куки установлены ДО перехода",
+                                "✅ Авторизация должна работать"
                             ]
                         else:
                             session.comments = [
@@ -426,7 +450,7 @@ async def update_window(update: Update, context: ContextTypes.DEFAULT_TYPE, user
     
     # Показываем статус кук
     if session.cookies_set:
-        caption += f"🍪 Куки {session.cookies_domain} установлены ✅\n"
+        caption += f"🍪 Куки {session.cookies_domain} установлены (ДО перехода) ✅\n"
     
     # Комментарии (последние 5)
     for comment in session.comments[-5:]:
@@ -648,7 +672,7 @@ async def process_with_ai(user_message: str, user_id: int, update: Update, conte
 Текущее состояние:
 - URL: {session.current_url or 'не загружен'}
 - Браузер: {'открыт' if session.is_active else 'закрыт'}
-- Куки X.com: {'установлены ✅' if session.cookies_set else 'не установлены'}
+- Куки X.com: {'установлены ДО перехода ✅' if session.cookies_set else 'не установлены'}
 
 Доступные действия:
 - go_to_url: перейти на сайт
@@ -660,9 +684,9 @@ async def process_with_ai(user_message: str, user_id: int, update: Update, conte
 - js: выполнить JS
 - data: собрать данные
 
-Если запрос неполный — задай уточняющий вопрос.
-Если понятно — выполни действие.
-Отвечай кратко.
+Важно:
+- Куки уже установлены ПЕРЕД переходом на сайт
+- Авторизация должна работать автоматически
 """
     
     try:
@@ -802,8 +826,8 @@ TOOLS = [
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 **Бот с браузером**\n\n"
-        "🍪 Куки X.com (Twitter) установлены автоматически!\n"
-        "✅ Авторизация восстанавливается при открытии\n\n"
+        "🍪 Куки X.com (Twitter) установлены ДО перехода!\n"
+        "✅ Правильный порядок: куки → переход → авторизация\n\n"
         "Просто напиши что нужно сделать:\n"
         "• `Перейди на youtube.com`\n"
         "• `Найди котиков`\n"
@@ -820,7 +844,11 @@ async def open_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = await session_manager.get_session(user_id)
     
     if session.cookies_set:
-        session.comments = ["🟢 Браузер открыт", "🍪 Куки X.com установлены", "✅ Авторизация восстановлена"]
+        session.comments = [
+            "🟢 Браузер открыт",
+            "🍪 Куки установлены ДО перехода",
+            "✅ Авторизация должна работать"
+        ]
     else:
         session.comments = ["🟢 Браузер открыт", "⚠️ Куки не установлены"]
     
@@ -959,8 +987,8 @@ async def main():
         logger.info("=" * 60)
         logger.info("🚀 Бот с интерактивным окном запущен!")
         logger.info("📌 Команды: /open, /close")
-        logger.info("🍪 Куки X.com (Twitter) установлены с обновлением")
-        logger.info("✅ Авторизация восстанавливается автоматически")
+        logger.info("🍪 Куки X.com установлены ДО перехода")
+        logger.info("✅ Правильный порядок: куки → переход")
         logger.info("💬 Пиши что нужно сделать в чат!")
         logger.info("=" * 60)
         
