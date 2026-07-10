@@ -80,9 +80,20 @@ async def open_browser_and_fetch():
         title = await tab.title
         logger.info(f"Заголовок страницы: {title}")
         
-        # Можно также получить URL
-        current_url = await tab.url
-        logger.info(f"Текущий URL: {current_url}")
+        # Получаем текущий URL через метод get_url() или свойство
+        # В документации pydoll используется метод или свойство
+        try:
+            # Пробуем получить URL через свойство url
+            current_url = await tab.url
+            logger.info(f"Текущий URL: {current_url}")
+        except AttributeError:
+            # Если свойства url нет, пробуем через метод get_url()
+            try:
+                current_url = await tab.get_url()
+                logger.info(f"Текущий URL: {current_url}")
+            except AttributeError:
+                # Если и метода нет, просто пропускаем
+                logger.warning("Метод получения URL не найден, пропускаем")
         
         return title
 
