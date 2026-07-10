@@ -26,6 +26,15 @@ CHROME_PATH = "/usr/bin/google-chrome"
 browser_instance = None
 tab_instance = None
 
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+
+def normalize_url(url: str) -> str:
+    """Добавляет https:// если протокол не указан"""
+    url = url.strip()
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+    return url
+
 # --- ФУНКЦИИ ДЛЯ РАБОТЫ С БРАУЗЕРОМ ---
 
 def get_browser_options():
@@ -140,9 +149,7 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if error:
         await update.message.reply_text(f"❌ {error}")
     elif screenshot_data:
-        # Если данные в base64, декодируем их
         try:
-            # Проверяем, является ли screenshot_data строкой base64
             if isinstance(screenshot_data, str):
                 screenshot_bytes = base64.b64decode(screenshot_data)
             else:
@@ -170,7 +177,9 @@ async def go_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    url = context.args[0]
+    # Нормализуем URL - добавляем https:// если нужно
+    url = normalize_url(context.args[0])
+    
     await update.message.reply_text(f"🔗 Перехожу на {url}...")
     
     try:
@@ -182,6 +191,7 @@ async def go_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         title = await tab_instance.title
         await update.message.reply_text(f"✅ Перешел на {url}\n📄 Заголовок: {title}")
     except Exception as e:
+        logger.error(f"Ошибка при переходе: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 # --- ОСТАЛЬНЫЕ ОБРАБОТЧИКИ ---
