@@ -1,4 +1,4 @@
-Pydoll готовый лучше
+# Pydoll готовый лучше
 
 import asyncio
 import logging
