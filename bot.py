@@ -7,13 +7,17 @@ import json
 import re
 import psutil
 import platform
+import time
+import random
 from datetime import datetime
+from asyncio import TimeoutError
 from PIL import Image
 import io
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from pydoll.browser import Chrome
 from pydoll.browser.options import ChromiumOptions
+from pydoll.constants import Key
 
 # Настройка логирования
 logging.basicConfig(
@@ -47,8 +51,9 @@ current_url = None
 page_title = None
 page_content = None
 start_time = datetime.now()
+is_processing = False
 
-# --- ФУНКЦИИ БАЗЫ ДАННЫХ ---
+# --- ФУНКЦИИ БАЗЫ ДАННЫХ (GitHub) ---
 def load_all_memory():
     if not GITHUB_TOKEN or not GITHUB_REPO:
         return {}
@@ -62,7 +67,7 @@ def load_all_memory():
             return json.loads(decoded)
         return {}
     except Exception as e:
-        logger.error(f"❌ Ошибка загрузки из GitHub: {e}")
+        logger.error(f"❌ Ошибка загрузки: {e}")
         return {}
 
 def save_all_memory(data):
@@ -77,12 +82,9 @@ def save_all_memory(data):
         encoded = base64.b64encode(content.encode('utf-8')).decode('utf-8')
         payload = {"message": f"Update memory {datetime.now().strftime('%Y-%m-%d %H:%M')}", "content": encoded, "sha": sha}
         response = requests.put(url, json=payload, headers=headers)
-        if response.status_code in [200, 201]:
-            logger.info("✅ Память сохранена в GitHub")
-            return True
-        return False
+        return response.status_code in [200, 201]
     except Exception as e:
-        logger.error(f"❌ Ошибка сохранения в GitHub: {e}")
+        logger.error(f"❌ Ошибка сохранения: {e}")
         return False
 
 def load_user_memory(user_id):
@@ -99,7 +101,13 @@ def save_user_memory(user_id, data):
 
 def save_learning(user_id, command, action, context, success):
     data = load_user_memory(user_id)
-    data['commands'].append({'command': command, 'action': action, 'context': context, 'success': success, 'created_at': datetime.now().isoformat()})
+    data['commands'].append({
+        'command': command,
+        'action': action,
+        'context': context,
+        'success': success,
+        'created_at': datetime.now().isoformat()
+    })
     data['learned'] = len([c for c in data['commands'] if c['success']])
     if len(data['commands']) > 100:
         data['commands'] = data['commands'][-100:]
@@ -153,40 +161,57 @@ async def close_browser():
         logger.error(f"❌ Ошибка: {e}")
         return False
 
-async def go_to_url(url: str):
+async def safe_go_to_url(url: str, timeout: int = 35):
+    """Безопасный переход с таймаутом"""
     global tab_instance, current_url, page_title, page_content
     try:
         if tab_instance is None:
             return False, "Браузер не открыт"
-        await tab_instance.go_to(url)
+        
+        result = await asyncio.wait_for(
+            tab_instance.go_to(url),
+            timeout=timeout
+        )
         current_url = url
         page_title = await tab_instance.title
         try:
             page_content = await tab_instance.get_page_text()
-        except AttributeError:
+        except:
             page_content = "Текст страницы не доступен"
         return True, f"Перешел на {url}"
+    except TimeoutError:
+        return False, f"⏰ Страница не загрузилась за {timeout} сек"
     except Exception as e:
-        return False, str(e)
+        return False, f"❌ {str(e)}"
 
-async def take_screenshot():
+async def safe_take_screenshot(timeout: int = 20):
+    """Безопасный скриншот с таймаутом"""
     global tab_instance
     try:
         if tab_instance is None:
             return None, "Браузер не открыт"
-        screenshot_data = await tab_instance.take_screenshot(beyond_viewport=True, as_base64=True)
-        return screenshot_data, None
+        result = await asyncio.wait_for(
+            tab_instance.take_screenshot(beyond_viewport=True, as_base64=True),
+            timeout=timeout
+        )
+        return result, None
+    except TimeoutError:
+        return None, f"⏰ Скриншот не создался за {timeout} сек"
     except Exception as e:
-        return None, str(e)
+        return None, f"❌ {str(e)}"
 
 async def get_page_info():
     global current_url, page_title, page_content
-    return {'url': current_url, 'title': page_title, 'content': page_content[:1000] if page_content else None}
+    return {
+        'url': current_url,
+        'title': page_title,
+        'content': page_content[:1000] if page_content else None
+    }
 
 # --- ФУНКЦИИ MACHINE VISION ---
-def analyze_image_with_vision(image_data, prompt: str = "Что изображено на картинке?"):
+def analyze_image_with_vision(image_data, prompt: str = "Что на картинке?"):
     if not AGNES_API_KEY:
-        return "❌ Agnes Vision не настроен."
+        return "❌ Agnes Vision не настроен"
     try:
         img_b64 = base64.b64encode(image_data).decode('utf-8')
         data_uri = f"data:image/jpeg;base64,{img_b64}"
@@ -198,14 +223,13 @@ def analyze_image_with_vision(image_data, prompt: str = "Что изображе
         }
         response = requests.post(AGNES_VISION_URL, json=payload, headers=headers, timeout=60)
         response.raise_for_status()
-        result = response.json()
-        return result['choices'][0]['message']['content']
+        return response.json()['choices'][0]['message']['content']
     except Exception as e:
-        logger.error(f"❌ Ошибка Vision: {e}")
+        logger.error(f"❌ Vision: {e}")
         return f"❌ Ошибка: {str(e)}"
 
-# --- ФУНКЦИИ ДЛЯ РАБОТЫ С AGNES ---
-def call_agnes_agent(prompt: str, context: dict = None, learning_context: str = None):
+# --- ФУНКЦИИ AGNES ---
+def call_agnes_agent(prompt: str, context: dict = None):
     if not AGNES_API_KEY:
         return None, "AGNES_API_KEY не установлен"
     try:
@@ -215,229 +239,34 @@ def call_agnes_agent(prompt: str, context: dict = None, learning_context: str = 
 Ты УПРАВЛЯЕШЬ БРАУЗЕРОМ через Pydoll и ВИДИШЬ страницы через Agnes Vision!
 
 ✅ ЧТО ТЫ УМЕЕШЬ:
-1. Переходить по ссылкам (go_to_url)
-2. Делать скриншоты (take_screenshot)
-3. Анализировать страницы (vision_analyze)
-4. Находить элементы по описанию (vision_find)
-5. Кликать на элементы по описанию (vision_click)
-6. Менять фон на фото (replace_background)
-7. Учиться новым командам
-8. Запоминать предпочтения
+1. Переходить по ссылкам
+2. Делать скриншоты
+3. Анализировать страницы через Vision
+4. Находить элементы по описанию
+5. Кликать на элементы
+6. Вводить текст в поля
+7. Извлекать данные
+8. Учиться новым командам
 
 ❌ НЕ ИСПОЛЬЗУЙ КОМАНДЫ БОТА!
-Ты ВЫПОЛНЯЕШЬ действия напрямую через Pydoll!
+Ты ВЫПОЛНЯЕШЬ действия напрямую!
 
 🔥 ТВОЯ СУПЕРСИЛА: Ты видишь страницы как человек!
-Когда пользователь просит "найди кнопку Войти" - ты используешь Vision!
-Когда пользователь просит "что на странице?" - ты используешь Vision!
 """
         messages = [{"role": "system", "content": system_prompt}]
-        if context:
-            messages.append({"role": "user", "content": f"Страница: {context.get('url', 'Нет')}"})
-        if learning_context:
-            messages.append({"role": "system", "content": f"Контекст: {learning_context}"})
+        if context and context.get('url'):
+            messages.append({"role": "user", "content": f"Страница: {context['url']}"})
         messages.append({"role": "user", "content": prompt})
         headers = {"Authorization": f"Bearer {AGNES_API_KEY}", "Content-Type": "application/json"}
         payload = {"model": "agnes-2.0-flash", "messages": messages, "max_tokens": 1000}
         response = requests.post(AGNES_API_URL, json=payload, headers=headers, timeout=30)
         response.raise_for_status()
-        result = response.json()
-        return result['choices'][0]['message']['content'], None
+        return response.json()['choices'][0]['message']['content'], None
     except Exception as e:
-        logger.error(f"❌ Ошибка Agnes: {e}")
         return None, str(e)
-
-# --- ГЛАВНАЯ КОМАНДА /agent ---
-async def agent_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Главная команда - все через /agent"""
-    if not AGNES_API_KEY:
-        await update.message.reply_text("❌ Agnes AI не настроен.")
-        return
-    
-    if not context.args:
-        await update.message.reply_text(
-            "🤖 **Я - твой AI-агент с машинным зрением!**\n\n"
-            "Просто напиши что нужно сделать:\n"
-            "• перейди на ютуб\n"
-            "• сделай скриншот\n"
-            "• найди кнопку Войти\n"
-            "• что на странице?\n"
-            "• замени фон на фото\n\n"
-            "Я понимаю естественный язык и вижу страницы!\n"
-            "Просто продолжай диалог со мной."
-        )
-        context.user_data['dialog_active'] = True
-        context.user_data['dialog_history'] = []
-        return
-    
-    user_id = update.effective_user.id
-    user_request = ' '.join(context.args)
-    
-    # Включаем диалог
-    context.user_data['dialog_active'] = True
-    if 'dialog_history' not in context.user_data:
-        context.user_data['dialog_history'] = []
-    
-    await process_agent_request(update, context, user_request)
-
-# --- ОБРАБОТЧИК СООБЩЕНИЙ (ДИАЛОГ) ---
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает все текстовые сообщения в диалоге"""
-    user_message = update.message.text
-    
-    if user_message.startswith('/'):
-        return
-    
-    # Если диалог не активен - предлагаем начать
-    if not context.user_data.get('dialog_active', False):
-        await update.message.reply_text(
-            "🤖 Я готов помочь!\n"
-            "Просто напиши что нужно сделать, или используй /agent"
-        )
-        context.user_data['dialog_active'] = True
-        context.user_data['dialog_history'] = []
-        return
-    
-    # Обрабатываем запрос
-    await process_agent_request(update, context, user_message)
-
-# --- ОБРАБОТКА ЗАПРОСОВ АГЕНТА ---
-async def process_agent_request(update: Update, context: ContextTypes.DEFAULT_TYPE, user_request: str):
-    """Основная логика обработки запросов агента"""
-    user_id = update.effective_user.id
-    await update.message.reply_text("🤖 Думаю...")
-    
-    try:
-        # 1. Проверяем выученные команды
-        learned = get_learned_actions(user_id, user_request)
-        if learned:
-            action = learned[0][0]
-            await update.message.reply_text(f"🧠 Знаю! Делаю: {action}")
-            await execute_action(update, action)
-            return
-        
-        # 2. Анализируем запрос через Agnes
-        page_info = await get_page_info()
-        agnes_response, error = call_agnes_agent(
-            f"Пользователь: {user_request}\nЧто нужно сделать?",
-            page_info
-        )
-        
-        if error:
-            await update.message.reply_text(f"❌ Ошибка: {error}")
-            return
-        
-        # 3. Определяем намерение и выполняем
-        request_lower = user_request.lower()
-        
-        # --- ПЕРЕХОД НА САЙТ ---
-        if any(word in request_lower for word in ['перейди', 'зайди', 'открой', 'ютуб', 'youtube', 'вк', 'vk', 'google']):
-            url = extract_url(user_request)
-            if url:
-                await update.message.reply_text(f"🌐 Перехожу на {url}...")
-                success, msg = await go_to_url(url)
-                if success:
-                    screenshot_data, _ = await take_screenshot()
-                    if screenshot_data:
-                        screenshot_bytes = base64.b64decode(screenshot_data)
-                        await update.message.reply_photo(screenshot_bytes, caption=f"📸 {msg}")
-                    await update.message.reply_text(f"✅ {msg}")
-                    # Автообучение
-                    save_learning(user_id, extract_command(user_request), url, "auto_learn", True)
-                else:
-                    await update.message.reply_text(f"❌ {msg}")
-                return
-        
-        # --- СКРИНШОТ ---
-        elif any(word in request_lower for word in ['скрин', 'screenshot']):
-            await update.message.reply_text("📸 Делаю скриншот...")
-            screenshot_data, error = await take_screenshot()
-            if screenshot_data:
-                screenshot_bytes = base64.b64decode(screenshot_data)
-                await update.message.reply_photo(screenshot_bytes, caption="📸 Скриншот")
-            else:
-                await update.message.reply_text(f"❌ {error}")
-            return
-        
-        # --- АНАЛИЗ СТРАНИЦЫ (Vision) ---
-        elif any(word in request_lower for word in ['что на странице', 'анализ', 'что видишь', 'описание']):
-            await update.message.reply_text("👁️ Анализирую страницу через Vision...")
-            screenshot_data, error = await take_screenshot()
-            if not screenshot_data:
-                await update.message.reply_text(f"❌ {error}")
-                return
-            if isinstance(screenshot_data, str):
-                screenshot_bytes = base64.b64decode(screenshot_data)
-            else:
-                screenshot_bytes = screenshot_data
-            result = analyze_image_with_vision(screenshot_bytes, "Опиши подробно, что находится на этой странице")
-            await update.message.reply_photo(screenshot_bytes, caption=f"👁️ **Анализ:**\n{result[:500]}...")
-            return
-        
-        # --- ПОИСК ЭЛЕМЕНТА (Vision) ---
-        elif any(word in request_lower for word in ['найди', 'где', 'покажи', 'кнопка', 'поле']):
-            await update.message.reply_text("🔍 Ищу элемент через Vision...")
-            screenshot_data, error = await take_screenshot()
-            if not screenshot_data:
-                await update.message.reply_text(f"❌ {error}")
-                return
-            if isinstance(screenshot_data, str):
-                screenshot_bytes = base64.b64decode(screenshot_data)
-            else:
-                screenshot_bytes = screenshot_data
-            result = analyze_image_with_vision(screenshot_bytes, f"Найди на этой странице: {user_request}. Опиши его расположение, цвет, текст, как его найти")
-            await update.message.reply_photo(screenshot_bytes, caption=f"🔍 **Результат:**\n{result[:500]}...")
-            return
-        
-        # --- ЗАМЕНА ФОНА ---
-        elif any(word in request_lower for word in ['замени фон', 'смени фон', 'фон']):
-            if 'last_image' not in context.user_data:
-                await update.message.reply_text("📸 Сначала отправьте фото!")
-                return
-            # Извлекаем описание фона
-            bg_match = re.search(r'фон\s+на\s+(.+)', request_lower)
-            if bg_match:
-                bg_prompt = bg_match.group(1)
-            else:
-                await update.message.reply_text("✏️ Укажите описание фона. Например: 'замени фон на ночь и луна'")
-                return
-            await update.message.reply_text(f"🎨 Заменяю фон на: {bg_prompt}...")
-            image_data = context.user_data['last_image']
-            img_b64 = base64.b64encode(image_data).decode('utf-8')
-            data_uri = f"data:image/jpeg;base64,{img_b64}"
-            headers = {"Authorization": f"Bearer {AGNES_API_KEY}", "Content-Type": "application/json"}
-            payload = {"model": "agnes-image-2.0-flash", "prompt": f"Replace the background with: {bg_prompt}. Keep the main subject unchanged.", "size": "1024x1024", "extra_body": {"image": [data_uri], "response_format": "url"}}
-            response = requests.post(AGNES_IMAGE_URL, json=payload, headers=headers, timeout=60)
-            response.raise_for_status()
-            result_url = response.json()['data'][0]['url']
-            img_response = requests.get(result_url, timeout=30)
-            if img_response.status_code == 200:
-                await update.message.reply_photo(img_response.content, caption=f"🖼️ Готово! {bg_prompt}")
-            else:
-                await update.message.reply_text(f"❌ Ошибка загрузки результата")
-            return
-        
-        # --- ОБУЧЕНИЕ ---
-        elif 'запомни' in request_lower and '->' in request_lower:
-            match = re.search(r'запомни\s+"?([^"]+)"?\s*->\s*"?([^"]+)"?', request_lower)
-            if match:
-                command = match.group(1).strip()
-                action = match.group(2).strip()
-                if save_learning(user_id, command, action, "dialog_learning", True):
-                    await update.message.reply_text(f"✅ Запомнил! 💾\n{command} -> {action}")
-                return
-        
-        # --- ОТВЕТ AGNES ---
-        else:
-            await update.message.reply_text(f"🤖 {agnes_response}")
-            
-    except Exception as e:
-        logger.error(f"❌ Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 def extract_url(text: str) -> str:
-    """Извлекает URL из текста"""
     url_match = re.search(r'(https?://[^\s]+|google\.com|vk\.com|youtube\.com|yandex\.ru)', text, re.IGNORECASE)
     if url_match:
         url = url_match.group(0)
@@ -448,41 +277,234 @@ def extract_url(text: str) -> str:
         return 'https://youtube.com'
     if 'вк' in text.lower() or 'vk' in text.lower():
         return 'https://vk.com'
-    if 'google' in text.lower():
-        return 'https://google.com'
     return None
 
 def extract_command(text: str) -> str:
-    """Извлекает команду из текста для обучения"""
-    words = text.lower().split()
-    # Ищем ключевые слова
     for word in ['ютуб', 'youtube', 'вк', 'vk', 'google']:
         if word in text.lower():
             return word
     return text[:20]
 
+# --- ОСНОВНАЯ ЛОГИКА АГЕНТА ---
+async def process_agent_request(update: Update, context: ContextTypes.DEFAULT_TYPE, user_request: str):
+    """Основная логика с таймаутами"""
+    global is_processing
+    
+    if is_processing:
+        await update.message.reply_text("⏳ Агент уже работает. Подождите...")
+        return
+    
+    is_processing = True
+    user_id = update.effective_user.id
+    
+    try:
+        # Проверяем выученные команды
+        learned = get_learned_actions(user_id, user_request)
+        if learned:
+            action = learned[0][0]
+            await update.message.reply_text(f"🧠 Знаю! Делаю: {action}")
+            await execute_action(update, action)
+            is_processing = False
+            return
+        
+        # Анализ через Agnes с таймаутом
+        page_info = await get_page_info()
+        
+        try:
+            agnes_response, error = await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(
+                    None,
+                    call_agnes_agent,
+                    f"Пользователь: {user_request}\nЧто нужно сделать?",
+                    page_info
+                ),
+                timeout=25
+            )
+        except TimeoutError:
+            await update.message.reply_text("⏰ Agnes AI долго думает. Попробуйте переформулировать.")
+            is_processing = False
+            return
+        
+        if error:
+            await update.message.reply_text(f"❌ Ошибка: {error}")
+            is_processing = False
+            return
+        
+        request_lower = user_request.lower()
+        
+        # --- ПЕРЕХОД НА САЙТ ---
+        if any(word in request_lower for word in ['перейди', 'зайди', 'открой', 'ютуб', 'youtube', 'вк', 'vk', 'google']):
+            url = extract_url(user_request)
+            if url:
+                await update.message.reply_text(f"🌐 Перехожу на {url}...")
+                success, msg = await safe_go_to_url(url, timeout=35)
+                if success:
+                    screenshot_data, _ = await safe_take_screenshot(timeout=15)
+                    if screenshot_data:
+                        screenshot_bytes = base64.b64decode(screenshot_data)
+                        await update.message.reply_photo(screenshot_bytes, caption=f"📸 {msg}")
+                    await update.message.reply_text(f"✅ {msg}")
+                    save_learning(user_id, extract_command(user_request), url, "auto_learn", True)
+                else:
+                    await update.message.reply_text(f"❌ {msg}")
+                is_processing = False
+                return
+        
+        # --- СКРИНШОТ ---
+        elif any(word in request_lower for word in ['скрин', 'screenshot']):
+            await update.message.reply_text("📸 Делаю скриншот...")
+            screenshot_data, error = await safe_take_screenshot(timeout=15)
+            if screenshot_data:
+                screenshot_bytes = base64.b64decode(screenshot_data)
+                await update.message.reply_photo(screenshot_bytes, caption="📸 Скриншот")
+            else:
+                await update.message.reply_text(f"❌ {error}")
+            is_processing = False
+            return
+        
+        # --- АНАЛИЗ СТРАНИЦЫ (Vision) ---
+        elif any(word in request_lower for word in ['что на странице', 'анализ', 'что видишь', 'описание']):
+            await update.message.reply_text("👁️ Анализирую страницу...")
+            screenshot_data, error = await safe_take_screenshot(timeout=15)
+            if not screenshot_data:
+                await update.message.reply_text(f"❌ {error}")
+                is_processing = False
+                return
+            
+            if isinstance(screenshot_data, str):
+                screenshot_bytes = base64.b64decode(screenshot_data)
+            else:
+                screenshot_bytes = screenshot_data
+            
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(
+                        None,
+                        analyze_image_with_vision,
+                        screenshot_bytes,
+                        "Опиши подробно, что на этой странице"
+                    ),
+                    timeout=20
+                )
+                await update.message.reply_photo(screenshot_bytes, caption=f"👁️ **Анализ:**\n{result[:500]}...")
+            except TimeoutError:
+                await update.message.reply_text("⏰ Vision слишком долго анализирует.")
+            is_processing = False
+            return
+        
+        # --- ПОИСК ЭЛЕМЕНТА (Vision) ---
+        elif any(word in request_lower for word in ['найди', 'где', 'покажи', 'кнопка', 'поле']):
+            await update.message.reply_text("🔍 Ищу элемент...")
+            screenshot_data, error = await safe_take_screenshot(timeout=15)
+            if not screenshot_data:
+                await update.message.reply_text(f"❌ {error}")
+                is_processing = False
+                return
+            
+            if isinstance(screenshot_data, str):
+                screenshot_bytes = base64.b64decode(screenshot_data)
+            else:
+                screenshot_bytes = screenshot_data
+            
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(
+                        None,
+                        analyze_image_with_vision,
+                        screenshot_bytes,
+                        f"Найди на этой странице: {user_request}. Опиши расположение, цвет, текст, как найти."
+                    ),
+                    timeout=20
+                )
+                await update.message.reply_photo(screenshot_bytes, caption=f"🔍 **Результат:**\n{result[:500]}...")
+            except TimeoutError:
+                await update.message.reply_text("⏰ Vision слишком долго ищет.")
+            is_processing = False
+            return
+        
+        # --- ЗАМЕНА ФОНА ---
+        elif any(word in request_lower for word in ['замени фон', 'смени фон']):
+            if 'last_image' not in context.user_data:
+                await update.message.reply_text("📸 Сначала отправьте фото!")
+                is_processing = False
+                return
+            
+            bg_match = re.search(r'фон\s+на\s+(.+)', request_lower)
+            if not bg_match:
+                await update.message.reply_text("✏️ Укажите фон. Например: 'замени фон на ночь'")
+                is_processing = False
+                return
+            
+            bg_prompt = bg_match.group(1)
+            await update.message.reply_text(f"🎨 Заменяю фон на: {bg_prompt}...")
+            image_data = context.user_data['last_image']
+            img_b64 = base64.b64encode(image_data).decode('utf-8')
+            data_uri = f"data:image/jpeg;base64,{img_b64}"
+            headers = {"Authorization": f"Bearer {AGNES_API_KEY}", "Content-Type": "application/json"}
+            payload = {
+                "model": "agnes-image-2.0-flash",
+                "prompt": f"Replace the background with: {bg_prompt}. Keep the main subject unchanged.",
+                "size": "1024x1024",
+                "extra_body": {"image": [data_uri], "response_format": "url"}
+            }
+            try:
+                response = requests.post(AGNES_IMAGE_URL, json=payload, headers=headers, timeout=60)
+                response.raise_for_status()
+                result_url = response.json()['data'][0]['url']
+                img_response = requests.get(result_url, timeout=30)
+                if img_response.status_code == 200:
+                    await update.message.reply_photo(img_response.content, caption=f"🖼️ Готово! {bg_prompt}")
+                else:
+                    await update.message.reply_text("❌ Ошибка загрузки")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+            is_processing = False
+            return
+        
+        # --- ОБУЧЕНИЕ В ДИАЛОГЕ ---
+        elif 'запомни' in request_lower and '->' in request_lower:
+            match = re.search(r'запомни\s+"?([^"]+)"?\s*->\s*"?([^"]+)"?', request_lower)
+            if match:
+                command = match.group(1).strip()
+                action = match.group(2).strip()
+                if save_learning(user_id, command, action, "dialog_learning", True):
+                    await update.message.reply_text(f"✅ Запомнил! 💾\n{command} -> {action}")
+            is_processing = False
+            return
+        
+        # --- ЕСЛИ НИЧЕГО НЕ ПОДОШЛО ---
+        else:
+            await update.message.reply_text(f"🤖 {agnes_response}")
+            is_processing = False
+            return
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}\n\nПопробуйте /stop или /restart")
+        is_processing = False
+
 async def execute_action(update, action):
-    """Выполняет действие напрямую через pydoll"""
+    """Выполняет действие напрямую"""
     action_lower = action.lower()
     
     if any(word in action_lower for word in ['youtube', 'ютуб']):
-        success, msg = await go_to_url("https://youtube.com")
+        success, msg = await safe_go_to_url("https://youtube.com", timeout=30)
         if success:
-            screenshot_data, _ = await take_screenshot()
+            screenshot_data, _ = await safe_take_screenshot(timeout=15)
             if screenshot_data:
                 screenshot_bytes = base64.b64decode(screenshot_data)
                 await update.message.reply_photo(screenshot_bytes, caption=f"📸 {msg}")
             await update.message.reply_text(f"✅ {msg}")
     elif any(word in action_lower for word in ['vk', 'вк']):
-        success, msg = await go_to_url("https://vk.com")
+        success, msg = await safe_go_to_url("https://vk.com", timeout=30)
         if success:
-            screenshot_data, _ = await take_screenshot()
+            screenshot_data, _ = await safe_take_screenshot(timeout=15)
             if screenshot_data:
                 screenshot_bytes = base64.b64decode(screenshot_data)
                 await update.message.reply_photo(screenshot_bytes, caption=f"📸 {msg}")
             await update.message.reply_text(f"✅ {msg}")
     elif 'скрин' in action_lower or 'screen' in action_lower:
-        screenshot_data, error = await take_screenshot()
+        screenshot_data, error = await safe_take_screenshot(timeout=15)
         if screenshot_data:
             screenshot_bytes = base64.b64decode(screenshot_data)
             await update.message.reply_photo(screenshot_bytes, caption="📸 Скриншот")
@@ -491,51 +513,93 @@ async def execute_action(update, action):
     else:
         await update.message.reply_text(f"⚠️ Не знаю как выполнить: {action}")
 
-# --- КОМАНДА /START ---
+# --- КОМАНДЫ БОТА ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 **Я - твой AI-агент с машинным зрением!**\n\n"
-        "Просто напиши мне что нужно сделать:\n"
+        "Просто напиши что нужно сделать:\n"
         "• перейди на ютуб\n"
         "• сделай скриншот\n"
         "• найди кнопку Войти\n"
         "• что на странице?\n"
         "• замени фон на фото\n"
         "• запомни вк -> vk.com\n\n"
-        "Я понимаю естественный язык и вижу страницы!\n"
-        "Просто продолжай диалог со мной.\n\n"
-        "📋 **Доступные команды:**\n"
+        "Я понимаю естественный язык и вижу страницы!\n\n"
+        "📋 **Команды:**\n"
         "/agent - начать работу\n"
         "/status - статус системы\n"
         "/open_bw - открыть браузер\n"
         "/close_bw - закрыть браузер\n"
+        "/stop - остановить агента\n"
+        "/restart - перезапустить браузер\n"
         "/reset_memory - очистить память"
     )
 
-# --- ОСТАЛЬНЫЕ КОМАНДЫ ---
+async def agent_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not AGNES_API_KEY:
+        await update.message.reply_text("❌ Agnes AI не настроен.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "🤖 **Я готов!**\n\n"
+            "Просто напиши что нужно сделать.\n"
+            "Например:\n"
+            "• перейди на ютуб\n"
+            "• найди кнопку Войти\n"
+            "• что на странице?"
+        )
+        context.user_data['dialog_active'] = True
+        context.user_data['dialog_history'] = []
+        return
+    
+    user_request = ' '.join(context.args)
+    context.user_data['dialog_active'] = True
+    if 'dialog_history' not in context.user_data:
+        context.user_data['dialog_history'] = []
+    
+    await process_agent_request(update, context, user_request)
+
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_data = load_user_memory(user_id)
     browser_status = "🟢 Включен" if browser_instance is not None else "🔴 Выключен"
     agnes_status = "✅ Настроен" if AGNES_API_KEY else "❌ Не настроен"
     github_status = "✅ Подключен" if GITHUB_TOKEN and GITHUB_REPO else "❌ Не подключен"
+    uptime = str(datetime.now() - start_time).split('.')[0]
+    
     await update.message.reply_text(
         f"📊 **Статус:**\n\n"
         f"🖥️ Браузер: {browser_status}\n"
         f"🤖 Agnes AI: {agnes_status}\n"
         f"💾 GitHub: {github_status}\n"
         f"🧠 Выучено команд: {user_data.get('learned', 0)}\n"
-        f"⏱️ Работает: {str(datetime.now() - start_time).split('.')[0]}\n\n"
+        f"⏱️ Работает: {uptime}\n"
+        f"🔄 Активна: {'Да' if is_processing else 'Нет'}\n\n"
         f"💡 Просто напиши что нужно сделать!"
     )
 
 async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🌐 Открываю браузер...")
     success = await open_browser()
-    await update.message.reply_text("🌐 Браузер открыт ✅" if success else "❌ Не удалось открыть браузер")
+    await update.message.reply_text("✅ Браузер открыт!" if success else "❌ Не удалось открыть браузер")
 
 async def close_browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❌ Закрываю браузер...")
     success = await close_browser()
-    await update.message.reply_text("❌ Браузер закрыт ✅" if success else "❌ Не удалось закрыть браузер")
+    await update.message.reply_text("✅ Браузер закрыт!" if success else "❌ Не удалось закрыть браузер")
+
+async def stop_agent_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global is_processing
+    is_processing = False
+    await update.message.reply_text("🛑 Агент остановлен!")
+
+async def restart_browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔄 Перезапускаю браузер...")
+    await close_browser()
+    await asyncio.sleep(1)
+    success = await open_browser()
+    await update.message.reply_text("✅ Браузер перезапущен!" if success else "❌ Не удалось перезапустить")
 
 async def reset_memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -544,6 +608,23 @@ async def reset_memory_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("🧹 Память очищена!")
     else:
         await update.message.reply_text("❌ Ошибка очистки памяти")
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_message = update.message.text
+    
+    if user_message.startswith('/'):
+        return
+    
+    if not context.user_data.get('dialog_active', False):
+        await update.message.reply_text(
+            "🤖 Я готов помочь!\n"
+            "Просто напиши что нужно сделать, или используй /agent"
+        )
+        context.user_data['dialog_active'] = True
+        context.user_data['dialog_history'] = []
+        return
+    
+    await process_agent_request(update, context, user_message)
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -555,7 +636,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Ошибка: {context.error}")
+    logger.error(f"❌ Ошибка: {context.error}")
+    if update and update.message:
+        await update.message.reply_text(
+            "❌ Произошла ошибка.\n"
+            "Попробуйте /stop или /restart"
+        )
 
 # --- ГЛАВНАЯ ФУНКЦИЯ ---
 def main():
@@ -568,6 +654,8 @@ def main():
         application.add_handler(CommandHandler("status", status_command))
         application.add_handler(CommandHandler("open_bw", open_browser_command))
         application.add_handler(CommandHandler("close_bw", close_browser_command))
+        application.add_handler(CommandHandler("stop", stop_agent_command))
+        application.add_handler(CommandHandler("restart", restart_browser_command))
         application.add_handler(CommandHandler("reset_memory", reset_memory_command))
         
         # Обработчики сообщений
@@ -575,11 +663,12 @@ def main():
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         application.add_error_handler(error_handler)
 
-        logger.info("🚀 Бот запущен с одной командой /agent!")
-        logger.info("🤖 Агент понимает естественный язык и видит страницы через Vision!")
+        logger.info("🚀 Бот запущен!")
+        logger.info("🤖 Агент понимает естественный язык и видит страницы!")
+        logger.info("📋 Команды: /agent, /status, /open_bw, /close_bw, /stop, /restart")
         application.run_polling(allowed_updates=Update.ALL_TYPES)
     except Exception as e:
-        logger.error(f"Критическая ошибка: {e}")
+        logger.error(f"❌ Критическая ошибка: {e}")
         raise
 
 if __name__ == "__main__":
