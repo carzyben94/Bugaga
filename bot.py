@@ -1,5 +1,5 @@
 import asyncio
-import logging 
+import logging
 import os
 import base64
 import requests
@@ -60,7 +60,7 @@ async def send_and_delete(update: Update, context: ContextTypes.DEFAULT_TYPE, te
 
 def replace_background(image_data, new_background_prompt: str) -> str:
     """
-    Заменяет фон на изображении через Agnes AI
+    Заменяет фон на изображении через Agnes AI (image-to-image)
     
     Args:
         image_data: байты изображения
@@ -75,31 +75,36 @@ def replace_background(image_data, new_background_prompt: str) -> str:
     try:
         # Кодируем изображение в base64
         img_b64 = base64.b64encode(image_data).decode('utf-8')
+        data_uri = f"data:image/jpeg;base64,{img_b64}"
         
-        # Формируем запрос к Agnes AI
+        # Формируем запрос к Agnes AI (правильный формат для img2img)
         headers = {
             "Authorization": f"Bearer {AGNES_API_KEY}",
             "Content-Type": "application/json"
         }
+        
+        # ВАЖНО: для image-to-image используем agnes-image-2.0-flash
+        # и передаем image внутри extra_body
         payload = {
-            "model": "agnes-image-2.1-flash",
+            "model": "agnes-image-2.0-flash",  # Правильная модель для img2img
             "prompt": f"Replace the background with: {new_background_prompt}. Keep the main subject unchanged.",
-            "image": [f"data:image/jpeg;base64,{img_b64}"],
             "size": "1024x1024",
-            "extra_body": {"response_format": "url"}
+            "extra_body": {
+                "image": [data_uri],  # Изображение передается здесь!
+                "response_format": "url"
+            }
         }
         
-        logger.info(f"📤 Отправка запроса к Agnes AI...")
+        logger.info(f"📤 Отправка запроса к Agnes AI (img2img)...")
+        logger.info(f"📝 Промпт: {payload['prompt']}")
         response = requests.post(AGNES_API_URL, json=payload, headers=headers, timeout=60)
         
-        # Проверяем статус ответа
         if response.status_code == 404:
             logger.error("❌ Эндпоинт не найден. Проверьте URL API.")
             return None
         
         response.raise_for_status()
         
-        # Парсим ответ
         result = response.json()
         logger.info("✅ Изображение успешно сгенерировано")
         
@@ -288,7 +293,7 @@ async def go_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает загруженное фото"""
     try:
-        # Получаем фото
+        # Получаем фото в максимальном качестве
         photo_file = await update.message.photo[-1].get_file()
         photo_bytes = await photo_file.download_as_bytearray()
         
@@ -397,7 +402,7 @@ def main():
         logger.info("📸 Бот принимает фото для замены фона")
         
         if AGNES_API_KEY:
-            logger.info("✅ Agnes AI настроен")
+            logger.info("✅ Agnes AI настроен (модель: agnes-image-2.0-flash)")
         else:
             logger.warning("⚠️ Agnes AI не настроен (AGNES_API_KEY отсутствует)")
         
