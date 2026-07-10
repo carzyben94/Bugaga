@@ -4,7 +4,7 @@ import os
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from pydoll.browser import Chrome
-from pydoll.browser.options import ChromiumOptions # Импортируем ChromiumOptions
+from pydoll.browser.options import ChromiumOptions
 
 # Настройка логирования
 logging.basicConfig(
@@ -43,33 +43,47 @@ async def open_browser_and_fetch():
     Запускает Google Chrome, переходит на сайт и возвращает заголовок страницы.
     Используется контекстный менеджер для автоматического запуска и остановки.
     """
-    # Создаем объект опций ChromiumOptions для настройки браузера
-    # В документации pydoll для указания пути используется ChromiumOptions[citation:1][citation:2][citation:6]
+    # Создаем объект настроек ChromiumOptions
     options = ChromiumOptions()
-    options.binary_location = CHROME_PATH # Указываем путь к бинарному файлу Chrome[citation:4][citation:6][citation:7]
-
-    # Создаем экземпляр Chrome, передавая в него объект options
-    # Используем контекстный менеджер для автоматического управления[citation:8]
+    
+    # Указываем путь к бинарному файлу Google Chrome
+    options.binary_location = CHROME_PATH
+    
+    # Добавляем аргументы для работы в Docker/Railway
+    options.add_argument('--headless=new')           # Запуск в фоновом режиме
+    options.add_argument('--no-sandbox')             # Обход ограничений в контейнере
+    options.add_argument('--disable-dev-shm-usage')  # Обход проблем с памятью в Docker
+    options.add_argument('--disable-gpu')            # Отключаем GPU (не нужно в headless)
+    options.add_argument('--disable-blink-features=AutomationControlled')  # Скрываем автоматизацию
+    
+    # Увеличиваем таймаут для надежности (по умолчанию 10 секунд)
+    options.start_timeout = 30
+    
+    # Логируем настройки
+    logger.info(f"Запуск браузера по пути: {CHROME_PATH}")
+    logger.info("Аргументы: --headless=new, --no-sandbox, --disable-dev-shm-usage, --disable-gpu")
+    
+    # Создаем экземпляр браузера с настройками
     browser = Chrome(options=options)
-
+    
+    # Используем контекстный менеджер для автоматического управления
     async with browser:
-        # Получаем объект вкладки
+        # Запускаем браузер и получаем вкладку
         tab = await browser.start()
-
-        # Логируем успешный запуск
-        logger.info(f"Браузер запущен по пути: {CHROME_PATH}")
-
+        
+        logger.info("✅ Браузер успешно запущен!")
+        
         # Переходим на сайт
         await tab.go_to("https://example.com")
-
+        
         # Получаем заголовок страницы
         title = await tab.title
         logger.info(f"Заголовок страницы: {title}")
-
+        
         # Можно также получить URL
         current_url = await tab.url
         logger.info(f"Текущий URL: {current_url}")
-
+        
         return title
 
 # --- КОНЕЦ БЛОКА РАБОТЫ С БРАУЗЕРОМ ---
@@ -79,14 +93,27 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Ошибка: {context.error}")
 
 def main():
-    application = Application.builder().token(TOKEN).build()
+    """Главная функция запуска бота"""
+    try:
+        # Создаем приложение
+        application = Application.builder().token(TOKEN).build()
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_error_handler(error_handler)
+        # Регистрируем команду /start
+        application.add_handler(CommandHandler("start", start))
+        
+        # Регистрируем обработчик ошибок
+        application.add_error_handler(error_handler)
 
-    logger.info("Бот запущен!")
-    logger.info(f"Используемый браузер: {CHROME_PATH}")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+        logger.info("🚀 Бот запущен!")
+        logger.info(f"📁 Используемый браузер: {CHROME_PATH}")
+        logger.info("ℹ️ Ожидаю команды...")
+        
+        # Запускаем бота
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        
+    except Exception as e:
+        logger.error(f"Критическая ошибка при запуске бота: {e}")
+        raise
 
 if __name__ == "__main__":
     main()
