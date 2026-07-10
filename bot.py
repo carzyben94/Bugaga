@@ -182,13 +182,13 @@ def get_browser_status():
 # --- КОМАНДЫ БОТА ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🌐 Браузер:\n"
+        "🌐 Браузер :\n"
         "/status - Статус браузера\n"
         "/open_bw - Открыть браузер\n"
         "/close_bw - Закрыть браузер\n"
         "/screen - Скриншот\n"
-        "/go <URL> - Перейти на сайт\n\n"
-        "🎨 Категория Фотошоп:\n"
+        "/go <URL> - Перейти на сайт\n"
+        "🎨 Фотошоп :\n"
         "/bg - Замена фона\n"
         "/clear - Очистить кэш"
     )
