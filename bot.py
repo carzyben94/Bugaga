@@ -218,7 +218,7 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             context.user_data['last_image'] = screenshot_bytes
             await update.message.reply_photo(
                 screenshot_bytes,
-                caption="📸 Скриншот сохранен!\n/bg <описание>"
+                caption="📸 Скриншот сохранен!\nКакой фон? /bg <пишите сюда фон>"
             )
         except Exception as e:
             await update.message.reply_text(f"❌ Ошибка: {str(e)}")
@@ -249,7 +249,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         size_info = f" ({width}x{height})" if width and height else ""
         
         await update.message.reply_text(
-            f"📸 Фото сохранено{size_info}!\nТеперь напишите /bg <описание фона>"
+            f"📸 Фото сохранено{size_info}!\nКакой фон? /bg <пишите сюда фон>"
         )
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
