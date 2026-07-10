@@ -65,25 +65,16 @@ def get_image_size(image_data):
 
 # --- ФУНКЦИЯ ЗАМЕНЫ ФОНА (AGNES AI) ---
 def replace_background(image_data, new_background_prompt: str):
-    """
-    Заменяет фон на изображении через Agnes AI
-    
-    Returns:
-        tuple: (url, error_message)
-    """
     if not AGNES_API_KEY:
         return None, "AGNES_API_KEY не установлен!"
     
     try:
-        # Получаем размеры исходного изображения
         width, height = get_image_size(image_data)
         
-        # Если размеры не удалось определить, используем стандартный
         if width is None or height is None:
             size = "1024x1024"
             logger.info("⚠️ Использую стандартный размер: 1024x1024")
         else:
-            # Agnes AI принимает размеры в формате "ширинаxвысота"
             max_size = 2048
             if width > max_size or height > max_size:
                 ratio = min(max_size / width, max_size / height)
@@ -119,7 +110,6 @@ def replace_background(image_data, new_background_prompt: str):
         result = response.json()
         logger.info("✅ Изображение сгенерировано")
         
-        # Проверяем структуру ответа
         if 'data' in result and len(result['data']) > 0 and 'url' in result['data'][0]:
             return result['data'][0]['url'], None
         else:
@@ -197,10 +187,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/open_bw - Открыть браузер\n"
         "/close_bw - Закрыть браузер\n"
         "/screen - Скриншот\n"
-        "/go <URL> - Перейти на сайт\n\n"
-        "📸 Для замены фона:\n"
-        "1. Отправьте фото\n"
-        "2. Напишите /bg <описание фона>"
+        "/go <URL> - Перейти на сайт\n"
+        "/bg - Замена фона"
     )
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -274,7 +262,11 @@ async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        await update.message.reply_text("❌ Укажите описание фона. Пример: /bg beach sunset")
+        await update.message.reply_text(
+            "❌ Укажите описание нового фона.\n"
+            "Пример: /bg beach sunset\n"
+            "Пример: /bg ночь и луна"
+        )
         return
 
     if 'last_image' not in context.user_data:
@@ -289,7 +281,6 @@ async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         loop = asyncio.get_event_loop()
         result_url, error = await loop.run_in_executor(None, replace_background, image_data, prompt)
 
-        # Удаляем сообщение "Ожидайте..."
         try:
             await waiting_msg.delete()
         except:
@@ -303,18 +294,15 @@ async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info(f"📥 Скачиваю результат: {result_url}")
             
             try:
-                # Скачиваем изображение
                 response = requests.get(result_url, timeout=30)
                 
                 if response.status_code == 200:
-                    # Отправляем фото
                     await update.message.reply_photo(
                         response.content,
                         caption=f"🖼️ Готово! Новый фон: {prompt}"
                     )
                     logger.info("✅ Фото отправлено в чат")
                 else:
-                    # Если не удалось скачать
                     error_text = f"❌ Не удалось скачать результат (код: {response.status_code})"
                     await update.message.reply_text(error_text)
                     logger.error(error_text)
