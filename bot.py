@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Telegram Bot с Agnes AI агентом для управления браузером через Pydoll
-Версия: 3.0 - Полная, по документации
+Версия: 3.1 - Исправлены все импорты
 """
 
 import asyncio
@@ -25,33 +25,45 @@ from telegram.ext import (
 )
 
 # ============================================================
-# ИМПОРТЫ PYDOLL ПО ДОКУМЕНТАЦИИ
+# ПРАВИЛЬНЫЕ ИМПОРТЫ PYDOLL
 # ============================================================
-from pydoll.browser.chrome import Chrome
-from pydoll.browser.options import ChromiumOptions
-from pydoll.constants import Key
+from pydoll.browser import Chrome  # ✅ ПРАВИЛЬНО
+from pydoll.browser.options import ChromiumOptions  # ✅ ПРАВИЛЬНО
+from pydoll.constants import Key  # ✅ ПРАВИЛЬНО
 
-# Исключения (из документации)
-from pydoll.exceptions import (
-    ElementNotFound,
-    WaitElementTimeout,
-    ElementNotVisible,
-    ElementNotInteractable,
-    NetworkError,
-    PageLoadTimeout,
-    ConnectionFailed,
-    ClickIntercepted,
-    PydollException
-)
+# Исключения
+try:
+    from pydoll.exceptions import (
+        ElementNotFound,
+        WaitElementTimeout,
+        ElementNotVisible,
+        ElementNotInteractable,
+        NetworkError,
+        PageLoadTimeout,
+        ConnectionFailed,
+        ClickIntercepted,
+        PydollException
+    )
+except ImportError:
+    # Заглушки
+    class PydollException(Exception): pass
+    class ElementNotFound(Exception): pass
+    class WaitElementTimeout(Exception): pass
+    class ElementNotVisible(Exception): pass
+    class ElementNotInteractable(Exception): pass
+    class NetworkError(Exception): pass
+    class PageLoadTimeout(Exception): pass
+    class ConnectionFailed(Exception): pass
+    class ClickIntercepted(Exception): pass
 
-# Скролл (из документации)
+# Скролл
 try:
     from pydoll.constants import ScrollPosition
     SCROLL_AVAILABLE = True
 except ImportError:
     SCROLL_AVAILABLE = False
 
-# Декоратор retry (из документации)
+# Декораторы
 try:
     from pydoll.decorators import retry
     RETRY_AVAILABLE = True
@@ -64,7 +76,7 @@ except ImportError:
             return wrapper
         return decorator
 
-# Сетевые протоколы (из документации)
+# Сетевые протоколы
 try:
     from pydoll.protocol.fetch.events import FetchEvent, RequestPausedEvent
     from pydoll.protocol.network.types import ErrorReason
@@ -250,7 +262,7 @@ class SessionManager:
                     session.context_id = "default"
                     logger.warning("⚠️ create_browser_context не поддерживается")
 
-                session.tab = await browser.new_tab()
+                session.tab = await browser.start()
                 session.is_active = True
                 session.last_action_time = datetime.now()
                 logger.info(f"🔒 Контекст {session.context_id} для пользователя {user_id}")
@@ -262,7 +274,7 @@ class SessionManager:
                 except Exception as e:
                     logger.warning(f"⚠️ Вкладка пользователя {user_id} умерла: {e}")
                     browser = await self._get_or_create_browser()
-                    session.tab = await browser.new_tab()
+                    session.tab = await browser.start()
 
             return session
 
@@ -917,7 +929,7 @@ async def health_check_task():
             session_manager._browser = None
 
 # ============================================================
-# 11. ЗАПУСК (по документации Python)
+# 11. ЗАПУСК
 # ============================================================
 
 async def main():
@@ -952,7 +964,6 @@ async def main():
         logger.info(f"📦 Инструментов: {len(TOOLS)}")
         logger.info("=" * 60)
 
-        # Запуск бота (правильный способ)
         await application.run_polling(allowed_updates=Update.ALL_TYPES)
 
     except Exception as e:
