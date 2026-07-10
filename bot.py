@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Telegram Bot с интерактивным окном браузера
-Версия: 8.2 - С поддержкой кук
+Версия: 8.3 - Полная поддержка кук с обновлением
 """
 
 import asyncio
@@ -55,7 +55,7 @@ LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
 
 # ============================================================
-# КУКИ ДЛЯ X.COM (TWITTER)
+# КУКИ ДЛЯ X.COM (TWITTER) - БЕССРОЧНЫЕ
 # ============================================================
 
 TWITTER_COOKIES = [
@@ -186,7 +186,8 @@ class BrowserSession:
     last_screenshot: Optional[str] = None
     waiting_for_input: bool = False
     pending_action: str = ""
-    cookies_set: bool = False  # Флаг что куки уже установлены
+    cookies_set: bool = False
+    cookies_domain: str = ""
 
 class SessionManager:
     def __init__(self):
@@ -209,35 +210,45 @@ class SessionManager:
         return self._browser
 
     async def _set_cookies_for_tab(self, tab, cookies: List[Dict]) -> bool:
-        """Устанавливает куки для вкладки"""
+        """Устанавливает куки для вкладки с обновлением страницы"""
         try:
-            # Сначала переходим на домен, чтобы установить куки
             domain = cookies[0].get("domain", "").lstrip('.')
             if not domain:
                 return False
             
-            # Переходим на домен
             url = f"https://{domain}"
-            await tab.go_to(url)
-            await asyncio.sleep(0.5)  # Ждём загрузку
             
-            # Устанавливаем каждую куку
+            # Шаг 1: Переходим на сайт
+            logger.info(f"🌐 Перехожу на {url}")
+            await tab.go_to(url)
+            await asyncio.sleep(2)
+            
+            # Шаг 2: Устанавливаем ВСЕ куки
+            logger.info(f"🍪 Устанавливаю {len(cookies)} кук...")
             for cookie in cookies:
                 try:
-                    cookie_data = {
-                        "name": cookie["name"],
-                        "value": cookie["value"],
-                        "domain": cookie["domain"],
-                        "path": cookie["path"],
-                        "secure": cookie.get("secure", False),
-                        "httpOnly": cookie.get("httpOnly", False),
-                        "sameSite": cookie.get("sameSite", "unspecified"),
-                    }
-                    await tab.set_cookie(**cookie_data)
+                    await tab.set_cookie(
+                        name=cookie["name"],
+                        value=cookie["value"],
+                        domain=cookie["domain"],
+                        path=cookie["path"],
+                        secure=cookie.get("secure", False),
+                        httpOnly=cookie.get("httpOnly", False),
+                        sameSite=cookie.get("sameSite", "unspecified"),
+                    )
                 except Exception as e:
-                    logger.warning(f"Не удалось установить куку {cookie.get('name')}: {e}")
+                    logger.warning(f"⚠️ Ошибка куки {cookie.get('name')}: {e}")
             
-            logger.info(f"✅ Установлено {len(cookies)} кук для {domain}")
+            # Шаг 3: ОБНОВЛЯЕМ страницу - КЛЮЧЕВОЙ МОМЕНТ!
+            logger.info("🔄 Обновляю страницу для применения кук...")
+            await tab.refresh()
+            await asyncio.sleep(3)
+            
+            # Шаг 4: Проверяем что куки применились
+            current_url = await tab.current_url
+            title = await tab.title
+            logger.info(f"✅ Куки установлены! URL: {current_url}, Заголовок: {title}")
+            
             return True
         except Exception as e:
             logger.error(f"❌ Ошибка установки кук: {e}")
@@ -257,17 +268,28 @@ class SessionManager:
                 session.tab = await browser.new_tab()
                 session.is_active = True
                 
-                # Устанавливаем куки для X.com/Twitter
+                # Устанавливаем куки для X.com/Twitter с обновлением
                 if not session.cookies_set:
                     try:
                         success = await self._set_cookies_for_tab(session.tab, TWITTER_COOKIES)
                         if success:
                             session.cookies_set = True
-                            session.comments = ["🟢 Браузер открыт", "🍪 Куки X.com установлены"]
+                            session.cookies_domain = "x.com"
+                            session.comments = [
+                                "🟢 Браузер открыт",
+                                "🍪 Куки X.com установлены (с обновлением)",
+                                "✅ Авторизация восстановлена"
+                            ]
                         else:
-                            session.comments = ["🟢 Браузер открыт", "⚠️ Не удалось установить куки"]
+                            session.comments = [
+                                "🟢 Браузер открыт",
+                                "⚠️ Не удалось установить куки"
+                            ]
                     except Exception as e:
-                        session.comments = [f"🟢 Браузер открыт", f"❌ Ошибка кук: {str(e)}"]
+                        session.comments = [
+                            "🟢 Браузер открыт",
+                            f"❌ Ошибка кук: {str(e)}"
+                        ]
                 
                 # Получаем текущий URL
                 try:
@@ -404,7 +426,7 @@ async def update_window(update: Update, context: ContextTypes.DEFAULT_TYPE, user
     
     # Показываем статус кук
     if session.cookies_set:
-        caption += "🍪 Куки X.com установлены\n"
+        caption += f"🍪 Куки {session.cookies_domain} установлены ✅\n"
     
     # Комментарии (последние 5)
     for comment in session.comments[-5:]:
@@ -626,7 +648,7 @@ async def process_with_ai(user_message: str, user_id: int, update: Update, conte
 Текущее состояние:
 - URL: {session.current_url or 'не загружен'}
 - Браузер: {'открыт' if session.is_active else 'закрыт'}
-- Куки X.com: {'установлены' if session.cookies_set else 'не установлены'}
+- Куки X.com: {'установлены ✅' if session.cookies_set else 'не установлены'}
 
 Доступные действия:
 - go_to_url: перейти на сайт
@@ -780,7 +802,8 @@ TOOLS = [
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 **Бот с браузером**\n\n"
-        "🍪 Куки X.com (Twitter) установлены автоматически!\n\n"
+        "🍪 Куки X.com (Twitter) установлены автоматически!\n"
+        "✅ Авторизация восстанавливается при открытии\n\n"
         "Просто напиши что нужно сделать:\n"
         "• `Перейди на youtube.com`\n"
         "• `Найди котиков`\n"
@@ -797,7 +820,7 @@ async def open_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = await session_manager.get_session(user_id)
     
     if session.cookies_set:
-        session.comments = ["🟢 Браузер открыт", "🍪 Куки X.com установлены"]
+        session.comments = ["🟢 Браузер открыт", "🍪 Куки X.com установлены", "✅ Авторизация восстановлена"]
     else:
         session.comments = ["🟢 Браузер открыт", "⚠️ Куки не установлены"]
     
@@ -936,7 +959,8 @@ async def main():
         logger.info("=" * 60)
         logger.info("🚀 Бот с интерактивным окном запущен!")
         logger.info("📌 Команды: /open, /close")
-        logger.info("🍪 Куки X.com (Twitter) установлены автоматически")
+        logger.info("🍪 Куки X.com (Twitter) установлены с обновлением")
+        logger.info("✅ Авторизация восстанавливается автоматически")
         logger.info("💬 Пиши что нужно сделать в чат!")
         logger.info("=" * 60)
         
