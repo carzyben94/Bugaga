@@ -53,7 +53,6 @@ async def send_and_delete(update, context, text, delay=2):
     return message
 
 def get_image_size(image_data):
-    """Получает размеры изображения"""
     try:
         img = Image.open(io.BytesIO(image_data))
         width, height = img.size
@@ -219,7 +218,7 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             context.user_data['last_image'] = screenshot_bytes
             await update.message.reply_photo(
                 screenshot_bytes,
-                caption="📸 Скриншот сохранен!\nТеперь напишите /bg <описание фона>"
+                caption="📸 Скриншот сохранен!\n/bg <описание>"
             )
         except Exception as e:
             await update.message.reply_text(f"❌ Ошибка: {str(e)}")
@@ -263,18 +262,15 @@ async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Проверяем, есть ли сохраненное изображение
     if 'last_image' not in context.user_data:
-        await update.message.reply_text(
-            "📸 Сначала загрузите картинку!\n"
-            "Просто отправьте мне фото, а затем напишите /bg <описание фона>"
-        )
+        await update.message.reply_text("📸 Сначала загрузите картинку!")
         return
 
-    # Если нет описания - просим ввести
+    # Если нет описания
     if not context.args:
         await update.message.reply_text(
             "✏️ Напишите описание нового фона.\n"
-            "Пример: /bg beach sunset\n"
-            "Пример: /bg ночь и луна"
+            "Пример: /bg beach \n"
+            "Пример: /bg water"
         )
         return
 
@@ -296,30 +292,22 @@ async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if result_url:
-            logger.info(f"📥 Скачиваю результат: {result_url}")
-            
             try:
                 response = requests.get(result_url, timeout=30)
                 
                 if response.status_code == 200:
                     await update.message.reply_photo(
                         response.content,
-                        caption=f"🖼️ Готово! Новый фон: {prompt}"
+                        caption="🖼️ Готово!"
                     )
-                    logger.info("✅ Фото отправлено в чат")
                 else:
-                    error_text = f"❌ Не удалось скачать результат (код: {response.status_code})"
-                    await update.message.reply_text(error_text)
-                    logger.error(error_text)
+                    await update.message.reply_text(f"❌ Ошибка {response.status_code}")
                     
-            except requests.exceptions.Timeout:
-                await update.message.reply_text("❌ Таймаут при скачивании результата")
             except Exception as e:
-                error_text = f"❌ Ошибка при скачивании: {str(e)}"
-                await update.message.reply_text(error_text)
-                logger.error(error_text)
+                logger.error(f"Ошибка скачивания: {e}")
+                await update.message.reply_text(f"❌ Ошибка: {str(e)}")
         else:
-            await update.message.reply_text("❌ Не удалось заменить фон.")
+            await update.message.reply_text("❌ Не удалось заменить фон")
 
     except Exception as e:
         logger.error(f"Ошибка: {e}")
