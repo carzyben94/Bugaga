@@ -187,7 +187,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/open_bw - Открыть браузер\n"
         "/close_bw - Закрыть браузер\n"
         "/screen - Скриншот\n"
-        "/go <URL> - Перейти на сайт\n"
+        "/go - Перейти на сайт\n"
         "🎨 Фотошоп :\n"
         "/bg - Замена фона\n"
         "/clear - Очистить кэш"
