@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Telegram Bot с полным контролем браузера через Pydoll
-Версия: 9.0 - ВСЕ ВОЗМОЖНОСТИ
+Версия: 9.1 - Исправлена ошибка форматирования
 """
 
 import asyncio
@@ -434,23 +434,23 @@ async def update_window(update: Update, context: ContextTypes.DEFAULT_TYPE, user
         screenshot_bytes = base64.b64decode(screenshot)
         session.last_screenshot = screenshot
     except Exception as e:
-        session.comments.append(f"❌ Ошибка скриншота: {str(e)}")
+        session.comments.append("❌ Ошибка скриншота: " + str(e))
     
     caption = "🌐 Браузер\n"
-    caption += f"URL: {session.current_url or 'не загружен'}\n"
-    caption += f"Заголовок: {session.page_title or 'не загружен'}\n"
-    caption += f"Вкладок: {len(session.tabs)}\n"
+    caption += "URL: " + (session.current_url or 'не загружен') + "\n"
+    caption += "Заголовок: " + (session.page_title or 'не загружен') + "\n"
+    caption += "Вкладок: " + str(len(session.tabs)) + "\n"
     caption += "─" * 20 + "\n"
     
     if session.cookies_set:
-        caption += f"🍪 Куки {session.cookies_domain} установлены ✅\n"
+        caption += "🍪 Куки " + session.cookies_domain + " установлены ✅\n"
     
     for comment in session.comments[-5:]:
         safe_comment = comment.replace('_', '\\_').replace('*', '\\*').replace('`', '\\`')
-        caption += f"💬 {safe_comment}\n"
+        caption += "💬 " + safe_comment + "\n"
     
     if session.waiting_for_input:
-        caption += f"\n✏️ {session.pending_action}"
+        caption += "\n✏️ " + session.pending_action
     
     reply_markup = get_main_keyboard()
     msg_id = context.user_data.get('view_message_id')
@@ -507,7 +507,7 @@ async def update_window(update: Update, context: ContextTypes.DEFAULT_TYPE, user
     except Exception as e:
         if "Message is not modified" in str(e):
             return
-        logger.warning(f"Ошибка: {e}")
+        logger.warning("Ошибка: " + str(e))
         clean_caption = caption.replace('**', '').replace('`', '').replace('_', '').replace('*', '')
         try:
             if msg_id and not force_new:
@@ -551,7 +551,7 @@ async def update_window(update: Update, context: ContextTypes.DEFAULT_TYPE, user
             pass
 
 # ============================================================
-# ВЫПОЛНЕНИЕ ДЕЙСТВИЙ - ВСЕ ВОЗМОЖНОСТИ
+# ВЫПОЛНЕНИЕ ДЕЙСТВИЙ - ИСПРАВЛЕНО
 # ============================================================
 
 async def execute_action(action: str, user_id: int, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str = ""):
@@ -571,7 +571,7 @@ async def execute_action(action: str, user_id: int, update: Update, context: Con
         if action == "go_to_url":
             if not text.startswith(('http://', 'https://')):
                 text = 'https://' + text
-            session.comments.append(f"🔗 Перехожу на {text}")
+            session.comments.append("🔗 Перехожу на " + text)
             await tab.go_to(text)
             session.current_url = await tab.current_url
             session.page_title = await tab.title
@@ -598,7 +598,7 @@ async def execute_action(action: str, user_id: int, update: Update, context: Con
             session.tabs.append(new_tab)
             session.tab = new_tab
             session.current_tab_index = len(session.tabs) - 1
-            session.comments.append(f"✅ Вкладка {session.current_tab_index + 1}")
+            session.comments.append("✅ Вкладка " + str(session.current_tab_index + 1))
         
         elif action == "close_tab":
             if len(session.tabs) > 1:
@@ -617,11 +617,11 @@ async def execute_action(action: str, user_id: int, update: Update, context: Con
                 if 0 <= index < len(session.tabs):
                     session.current_tab_index = index
                     session.tab = session.tabs[index]
-                    session.comments.append(f"✅ Переключился на вкладку {index + 1}")
+                    session.comments.append("✅ Переключился на вкладку " + str(index + 1))
                 else:
-                    session.comments.append(f"❌ Вкладка {text} не найдена")
+                    session.comments.append("❌ Вкладка " + str(text) + " не найдена")
             except:
-                session.comments.append(f"❌ Неверный номер вкладки: {text}")
+                session.comments.append("❌ Неверный номер вкладки: " + str(text))
         
         # ============================================================
         # ПОИСК ЭЛЕМЕНТОВ
@@ -630,34 +630,40 @@ async def execute_action(action: str, user_id: int, update: Update, context: Con
             try:
                 element = await tab.query(text)
                 element_text = await element.text
-                session.comments.append(f"✅ Найден элемент: {element_text[:100]}")
+                if element_text:
+                    session.comments.append("✅ Найден элемент: " + element_text[:100])
+                else:
+                    session.comments.append("✅ Элемент найден")
             except ElementNotFound:
-                session.comments.append(f"❌ Элемент не найден: {text}")
+                session.comments.append("❌ Элемент не найден: " + str(text))
         
         elif action == "find_element_by_xpath":
             try:
                 element = await tab.query(text)
                 element_text = await element.text
-                session.comments.append(f"✅ Найден элемент по XPath: {element_text[:100]}")
+                if element_text:
+                    session.comments.append("✅ По XPath: " + element_text[:100])
+                else:
+                    session.comments.append("✅ Элемент найден по XPath")
             except:
-                session.comments.append(f"❌ Элемент не найден по XPath: {text}")
+                session.comments.append("❌ Элемент не найден по XPath: " + str(text))
         
         elif action == "find_element_by_text":
             try:
                 elements = await tab.find(tag_name="*", text=text, find_all=True)
                 if elements:
-                    session.comments.append(f"✅ Найдено {len(elements)} элементов с текстом '{text}'")
+                    session.comments.append("✅ Найдено " + str(len(elements)) + " элементов с текстом '" + str(text) + "'")
                 else:
-                    session.comments.append(f"❌ Текст '{text}' не найден")
+                    session.comments.append("❌ Текст '" + str(text) + "' не найден")
             except:
-                session.comments.append(f"❌ Ошибка поиска текста: {text}")
+                session.comments.append("❌ Ошибка поиска текста: " + str(text))
         
         elif action == "find_all_elements":
             try:
                 elements = await tab.find(tag_name=text, find_all=True) if text else await tab.find(tag_name="*", find_all=True)
-                session.comments.append(f"✅ Найдено {len(elements)} элементов")
+                session.comments.append("✅ Найдено " + str(len(elements)) + " элементов")
             except:
-                session.comments.append(f"❌ Ошибка поиска элементов")
+                session.comments.append("❌ Ошибка поиска элементов")
         
         # ============================================================
         # ВЗАИМОДЕЙСТВИЕ
@@ -666,17 +672,17 @@ async def execute_action(action: str, user_id: int, update: Update, context: Con
             try:
                 element = await tab.query(text)
                 await element.click()
-                session.comments.append(f"🖱️ Кликнул по {text}")
+                session.comments.append("🖱️ Кликнул по " + str(text))
             except:
-                session.comments.append(f"❌ Не удалось кликнуть: {text}")
+                session.comments.append("❌ Не удалось кликнуть: " + str(text))
         
         elif action == "click_humanize":
             try:
                 element = await tab.query(text)
                 await element.click(humanize=True)
-                session.comments.append(f"🖱️ Кликнул (humanize) по {text}")
+                session.comments.append("🖱️ Кликнул (humanize) по " + str(text))
             except:
-                session.comments.append(f"❌ Не удалось кликнуть: {text}")
+                session.comments.append("❌ Не удалось кликнуть: " + str(text))
         
         elif action == "type_text":
             parts = text.split('|', 1)
@@ -686,9 +692,9 @@ async def execute_action(action: str, user_id: int, update: Update, context: Con
                     element = await tab.query(selector)
                     await element.clear()
                     await element.type_text(value)
-                    session.comments.append(f"⌨️ Ввёл текст в {selector}")
-                except:
-                    session.comments.append(f"❌ Не удалось ввести текст")
+                    session.comments.append("⌨️ Ввёл текст в " + selector)
+                except Exception as e:
+                    session.comments.append("❌ Ошибка ввода: " + str(e))
             else:
                 session.comments.append("❌ Формат: selector|текст")
         
@@ -700,9 +706,9 @@ async def execute_action(action: str, user_id: int, update: Update, context: Con
                     element = await tab.query(selector)
                     await element.clear()
                     await element.type_text(value, humanize=True)
-                    session.comments.append(f"⌨️ Ввёл текст (humanize) в {selector}")
-                except:
-                    session.comments.append(f"❌ Не удалось ввести текст")
+                    session.comments.append("⌨️ Ввёл текст (humanize) в " + selector)
+                except Exception as e:
+                    session.comments.append("❌ Ошибка ввода: " + str(e))
             else:
                 session.comments.append("❌ Формат: selector|текст")
         
@@ -710,17 +716,20 @@ async def execute_action(action: str, user_id: int, update: Update, context: Con
             try:
                 element = await tab.query(text)
                 await element.clear()
-                session.comments.append(f"🧹 Очистил {text}")
+                session.comments.append("🧹 Очистил " + str(text))
             except:
-                session.comments.append(f"❌ Не удалось очистить: {text}")
+                session.comments.append("❌ Не удалось очистить: " + str(text))
         
         elif action == "get_text":
             try:
                 element = await tab.query(text)
                 element_text = await element.text
-                session.comments.append(f"📄 Текст: {element_text[:200]}")
+                if element_text:
+                    session.comments.append("📄 Текст: " + element_text[:200])
+                else:
+                    session.comments.append("📄 Текст пуст")
             except:
-                session.comments.append(f"❌ Не удалось получить текст: {text}")
+                session.comments.append("❌ Не удалось получить текст: " + str(text))
         
         elif action == "get_attribute":
             parts = text.split('|', 1)
@@ -729,9 +738,12 @@ async def execute_action(action: str, user_id: int, update: Update, context: Con
                 try:
                     element = await tab.query(selector)
                     value = await element.get_attribute(attr)
-                    session.comments.append(f"📄 {attr}: {value[:100]}")
+                    if value:
+                        session.comments.append("📄 " + attr + ": " + str(value)[:100])
+                    else:
+                        session.comments.append("📄 " + attr + ": пусто")
                 except:
-                    session.comments.append(f"❌ Не удалось получить атрибут")
+                    session.comments.append("❌ Не удалось получить атрибут")
             else:
                 session.comments.append("❌ Формат: selector|атрибут")
         
@@ -739,25 +751,28 @@ async def execute_action(action: str, user_id: int, update: Update, context: Con
             try:
                 element = await tab.query(text)
                 value = await element.value
-                session.comments.append(f"📄 Значение: {value[:100]}")
+                if value:
+                    session.comments.append("📄 Значение: " + str(value)[:100])
+                else:
+                    session.comments.append("📄 Значение пусто")
             except:
-                session.comments.append(f"❌ Не удалось получить значение: {text}")
+                session.comments.append("❌ Не удалось получить значение: " + str(text))
         
         elif action == "is_visible":
             try:
                 element = await tab.query(text)
                 visible = await element.is_visible()
-                session.comments.append(f"👁️ Видим: {visible}")
+                session.comments.append("👁️ Видим: " + str(visible))
             except:
-                session.comments.append(f"❌ Элемент не найден: {text}")
+                session.comments.append("❌ Элемент не найден: " + str(text))
         
         elif action == "is_enabled":
             try:
                 element = await tab.query(text)
                 enabled = await element.is_interactable()
-                session.comments.append(f"🔘 Доступен: {enabled}")
+                session.comments.append("🔘 Доступен: " + str(enabled))
             except:
-                session.comments.append(f"❌ Элемент не найден: {text}")
+                session.comments.append("❌ Элемент не найден: " + str(text))
         
         # ============================================================
         # ПРОКРУТКА
@@ -765,20 +780,20 @@ async def execute_action(action: str, user_id: int, update: Update, context: Con
         elif action == "scroll_up":
             amount = int(text) if text else 300
             await tab.execute_script(f"window.scrollBy(0, -{amount})")
-            session.comments.append(f"⬆️ Вверх на {amount}")
+            session.comments.append("⬆️ Вверх на " + str(amount))
         
         elif action == "scroll_down":
             amount = int(text) if text else 300
             await tab.execute_script(f"window.scrollBy(0, {amount})")
-            session.comments.append(f"⬇️ Вниз на {amount}")
+            session.comments.append("⬇️ Вниз на " + str(amount))
         
         elif action == "scroll_to_element":
             try:
                 element = await tab.query(text)
                 await tab.scroll.to_element(element, smooth=True)
-                session.comments.append(f"📜 Прокрутил к {text}")
+                session.comments.append("📜 Прокрутил к " + str(text))
             except:
-                session.comments.append(f"❌ Не удалось прокрутить к {text}")
+                session.comments.append("❌ Не удалось прокрутить к " + str(text))
         
         elif action == "scroll_to_top":
             await tab.execute_script("window.scrollTo(0, 0)")
@@ -806,38 +821,41 @@ async def execute_action(action: str, user_id: int, update: Update, context: Con
                 element = await tab.query(text)
                 screenshot = await element.take_screenshot(as_base64=True)
                 session.last_screenshot = screenshot
-                session.comments.append(f"📸 Скриншот элемента {text}")
+                session.comments.append("📸 Скриншот элемента " + str(text))
             except:
-                session.comments.append(f"❌ Не удалось сделать скриншот элемента: {text}")
+                session.comments.append("❌ Не удалось сделать скриншот элемента: " + str(text))
         
         # ============================================================
         # ДАННЫЕ
         # ============================================================
         elif action == "get_page_title":
             title = await tab.title
-            session.comments.append(f"📄 {title}")
+            session.comments.append("📄 " + str(title))
         
         elif action == "get_current_url":
             url = await tab.current_url
-            session.comments.append(f"🔗 {url}")
+            session.comments.append("🔗 " + str(url))
         
         elif action == "get_page_source":
             source = await tab.page_source
-            session.comments.append(f"📄 HTML: {len(source)} символов")
+            session.comments.append("📄 HTML: " + str(len(source)) + " символов")
         
         elif action == "get_cookies":
             cookies = await tab.get_cookies()
-            session.comments.append(f"🍪 Кук: {len(cookies)}")
+            session.comments.append("🍪 Кук: " + str(len(cookies)))
             for cookie in cookies[:3]:
-                session.comments.append(f"  • {cookie.get('name')}: {cookie.get('value', '')[:20]}")
+                session.comments.append("  • " + cookie.get('name', '') + ": " + str(cookie.get('value', ''))[:20])
         
         elif action == "set_cookie":
             parts = text.split('|', 2)
             if len(parts) >= 2:
                 name, value = parts[0].strip(), parts[1].strip()
                 domain = parts[2].strip() if len(parts) > 2 else None
-                await tab.set_cookie(name=name, value=value, domain=domain)
-                session.comments.append(f"🍪 Кука установлена: {name}")
+                try:
+                    await tab.set_cookie(name=name, value=value, domain=domain)
+                    session.comments.append("🍪 Кука установлена: " + name)
+                except Exception as e:
+                    session.comments.append("❌ Ошибка куки: " + str(e))
             else:
                 session.comments.append("❌ Формат: name|value|domain")
         
@@ -846,15 +864,18 @@ async def execute_action(action: str, user_id: int, update: Update, context: Con
             session.comments.append("🍪 Все куки очищены")
         
         # ============================================================
-        # JAVASCRIPT
+        # JAVASCRIPT (ИСПРАВЛЕНО)
         # ============================================================
         elif action == "execute_js":
             try:
                 result = await tab.execute_script(text)
                 result_str = str(result)
-                session.comments.append(f"⚡ JS результат: {result_str[:100]}")
+                if len(result_str) > 100:
+                    session.comments.append("⚡ JS результат: " + result_str[:100] + "...")
+                else:
+                    session.comments.append("⚡ JS результат: " + result_str)
             except Exception as e:
-                session.comments.append(f"❌ Ошибка JS: {str(e)}")
+                session.comments.append("❌ Ошибка JS: " + str(e))
         
         elif action == "execute_js_on_element":
             parts = text.split('|', 1)
@@ -863,9 +884,13 @@ async def execute_action(action: str, user_id: int, update: Update, context: Con
                 try:
                     element = await tab.query(selector)
                     result = await tab.execute_script(script, element=element)
-                    session.comments.append(f"⚡ JS на элементе: {str(result)[:100]}")
-                except:
-                    session.comments.append(f"❌ Ошибка JS на элементе")
+                    result_str = str(result)
+                    if len(result_str) > 100:
+                        session.comments.append("⚡ JS на элементе: " + result_str[:100] + "...")
+                    else:
+                        session.comments.append("⚡ JS на элементе: " + result_str)
+                except Exception as e:
+                    session.comments.append("❌ Ошибка JS на элементе: " + str(e))
             else:
                 session.comments.append("❌ Формат: selector|script")
         
@@ -874,7 +899,7 @@ async def execute_action(action: str, user_id: int, update: Update, context: Con
         # ============================================================
         elif action == "wait":
             seconds = float(text) if text else 1
-            session.comments.append(f"⏳ Жду {seconds}с")
+            session.comments.append("⏳ Жду " + str(seconds) + "с")
             await asyncio.sleep(seconds)
             session.comments.append("✅ Готово")
         
@@ -884,33 +909,33 @@ async def execute_action(action: str, user_id: int, update: Update, context: Con
             timeout = int(parts[1]) if len(parts) > 1 else 10
             try:
                 await tab.find(selector, timeout=timeout)
-                session.comments.append(f"✅ Элемент появился: {selector}")
+                session.comments.append("✅ Элемент появился: " + selector)
             except:
-                session.comments.append(f"❌ Элемент не появился: {selector}")
+                session.comments.append("❌ Элемент не появился: " + selector)
         
         elif action == "wait_for_visible":
             try:
                 element = await tab.query(text)
                 await element.wait_until(is_visible=True, timeout=10)
-                session.comments.append(f"✅ Элемент видим: {text}")
+                session.comments.append("✅ Элемент видим: " + str(text))
             except:
-                session.comments.append(f"❌ Элемент не стал видимым: {text}")
+                session.comments.append("❌ Элемент не стал видимым: " + str(text))
         
         # ============================================================
         # КУКИ (расширенные)
         # ============================================================
         elif action == "get_all_cookies":
             cookies = await browser.get_cookies(browser_context_id=session.context_id)
-            session.comments.append(f"🍪 Всего кук в браузере: {len(cookies)}")
+            session.comments.append("🍪 Всего кук в браузере: " + str(len(cookies)))
             for cookie in cookies[:5]:
-                session.comments.append(f"  • {cookie.get('name')}")
+                session.comments.append("  • " + cookie.get('name', ''))
         
         elif action == "delete_cookie":
             try:
                 await tab.delete_cookie(text)
-                session.comments.append(f"🍪 Кука удалена: {text}")
+                session.comments.append("🍪 Кука удалена: " + str(text))
             except:
-                session.comments.append(f"❌ Не удалось удалить куку: {text}")
+                session.comments.append("❌ Не удалось удалить куку: " + str(text))
         
         elif action == "clear_all_cookies":
             await tab.clear_browser_cookies()
@@ -933,7 +958,7 @@ async def execute_action(action: str, user_id: int, update: Update, context: Con
         
         elif action == "get_window_bounds":
             bounds = await tab.get_window_bounds()
-            session.comments.append(f"🖥️ Размеры: {bounds}")
+            session.comments.append("🖥️ Размеры: " + str(bounds))
         
         # ============================================================
         # SHADOW DOM
@@ -943,14 +968,14 @@ async def execute_action(action: str, user_id: int, update: Update, context: Con
                 element = await tab.query(text)
                 shadow = await element.get_shadow_root()
                 session.shadow_roots.append(shadow)
-                session.comments.append(f"🌑 Получен shadow root для {text}")
+                session.comments.append("🌑 Получен shadow root для " + str(text))
             except:
-                session.comments.append(f"❌ Не удалось получить shadow root: {text}")
+                session.comments.append("❌ Не удалось получить shadow root: " + str(text))
         
         elif action == "find_shadow_roots":
             try:
                 roots = await tab.find_shadow_roots(deep=True, timeout=5)
-                session.comments.append(f"🌑 Найдено shadow roots: {len(roots)}")
+                session.comments.append("🌑 Найдено shadow roots: " + str(len(roots)))
             except:
                 session.comments.append("❌ Не удалось найти shadow roots")
         
@@ -960,9 +985,9 @@ async def execute_action(action: str, user_id: int, update: Update, context: Con
         elif action == "http_get":
             try:
                 response = await tab.request.get(text)
-                session.comments.append(f"🌐 GET: {response.status_code}")
-            except:
-                session.comments.append(f"❌ Ошибка GET запроса: {text}")
+                session.comments.append("🌐 GET: " + str(response.status_code))
+            except Exception as e:
+                session.comments.append("❌ Ошибка GET: " + str(e))
         
         elif action == "http_post":
             parts = text.split('|', 1)
@@ -970,9 +995,9 @@ async def execute_action(action: str, user_id: int, update: Update, context: Con
                 url, data = parts[0].strip(), parts[1].strip()
                 try:
                     response = await tab.request.post(url, json=json.loads(data))
-                    session.comments.append(f"🌐 POST: {response.status_code}")
-                except:
-                    session.comments.append(f"❌ Ошибка POST запроса")
+                    session.comments.append("🌐 POST: " + str(response.status_code))
+                except Exception as e:
+                    session.comments.append("❌ Ошибка POST: " + str(e))
             else:
                 session.comments.append("❌ Формат: url|json_data")
         
@@ -989,10 +1014,10 @@ async def execute_action(action: str, user_id: int, update: Update, context: Con
             return
         
         else:
-            session.comments.append(f"❌ Неизвестное действие: {action}")
+            session.comments.append("❌ Неизвестное действие: " + str(action))
         
     except Exception as e:
-        session.comments.append(f"❌ Ошибка: {str(e)}")
+        session.comments.append("❌ Ошибка: " + str(e))
     
     await update_window(update, context, user_id)
 
@@ -1026,7 +1051,6 @@ async def process_with_ai(user_message: str, user_id: int, update: Update, conte
             await execute_action("type_text", user_id, update, context, user_message)
         return
     
-    # РАСШИРЕННЫЙ ПРОМТ
     system_prompt = f"""
 Ты — AI агент, управляющий браузером через Pydoll.
 
@@ -1206,7 +1230,6 @@ async def process_with_ai(user_message: str, user_id: int, update: Update, conte
                 # Скриншоты
                 elif tool_name == "screenshot":
                     await execute_action("screenshot", user_id, update, context)
-                    # Возвращаем скриншот отдельно
                     if session.last_screenshot:
                         return {"type": "screenshot", "data": session.last_screenshot}
                 elif tool_name == "screenshot_full_page":
@@ -1264,7 +1287,7 @@ async def process_with_ai(user_message: str, user_id: int, update: Update, conte
                     await execute_action("http_get", user_id, update, context, arguments.get("url", ""))
                 elif tool_name == "http_post":
                     url = arguments.get("url", "")
-                    data = arguments.get("data", "{}")
+                    data = arguments.get("data", {})
                     await execute_action("http_post", user_id, update, context, f"{url}|{json.dumps(data)}")
                 
                 # Окна
@@ -1281,14 +1304,14 @@ async def process_with_ai(user_message: str, user_id: int, update: Update, conte
                 elif tool_name == "ask":
                     session.waiting_for_input = True
                     session.pending_action = arguments.get("action", "search")
-                    session.comments.append(f"❓ {arguments.get('question', '')}")
+                    session.comments.append("❓ " + arguments.get('question', ''))
                     await update_window(update, context, user_id)
         else:
-            session.comments.append(f"💬 {message.content}")
+            session.comments.append("💬 " + str(message.content))
             await update_window(update, context, user_id)
             
     except Exception as e:
-        session.comments.append(f"❌ Ошибка AI: {str(e)}")
+        session.comments.append("❌ Ошибка AI: " + str(e))
         await update_window(update, context, user_id)
 
 # ============================================================
@@ -1314,11 +1337,11 @@ TOOLS = [
     # Взаимодействие
     {"type": "function", "function": {"name": "click", "description": "Кликнуть", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]}}},
     {"type": "function", "function": {"name": "click_humanize", "description": "Кликнуть как человек", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]}}},
-    {"type": "function", "function": {"name": "type_text", "description": "Ввести текст", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}, "text": {"type": "string"}}, "required": ["selector", "text"]}}},
+    {"type": "function", "function": {"name": "type_text", "description": "Ввести текст (формат: selector|текст)", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}, "text": {"type": "string"}}, "required": ["selector", "text"]}}},
     {"type": "function", "function": {"name": "type_text_humanize", "description": "Ввести текст как человек", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}, "text": {"type": "string"}}, "required": ["selector", "text"]}}},
     {"type": "function", "function": {"name": "clear", "description": "Очистить поле", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]}}},
     {"type": "function", "function": {"name": "get_text", "description": "Получить текст", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]}}},
-    {"type": "function", "function": {"name": "get_attribute", "description": "Получить атрибут", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}, "attribute": {"type": "string"}}, "required": ["selector", "attribute"]}}},
+    {"type": "function", "function": {"name": "get_attribute", "description": "Получить атрибут (формат: selector|атрибут)", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}, "attribute": {"type": "string"}}, "required": ["selector", "attribute"]}}},
     {"type": "function", "function": {"name": "get_value", "description": "Получить значение", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]}}},
     {"type": "function", "function": {"name": "is_visible", "description": "Проверить видимость", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]}}},
     {"type": "function", "function": {"name": "is_enabled", "description": "Проверить доступность", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]}}},
@@ -1340,16 +1363,16 @@ TOOLS = [
     {"type": "function", "function": {"name": "get_current_url", "description": "Текущий URL", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "get_page_source", "description": "HTML код", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "get_cookies", "description": "Все куки", "parameters": {"type": "object", "properties": {}}}},
-    {"type": "function", "function": {"name": "set_cookie", "description": "Установить куку", "parameters": {"type": "object", "properties": {"name": {"type": "string"}, "value": {"type": "string"}, "domain": {"type": "string"}}, "required": ["name", "value"]}}},
+    {"type": "function", "function": {"name": "set_cookie", "description": "Установить куку (формат: name|value|domain)", "parameters": {"type": "object", "properties": {"name": {"type": "string"}, "value": {"type": "string"}, "domain": {"type": "string"}}, "required": ["name", "value"]}}},
     {"type": "function", "function": {"name": "clear_cookies", "description": "Очистить куки", "parameters": {"type": "object", "properties": {}}}},
     
     # JavaScript
     {"type": "function", "function": {"name": "execute_js", "description": "Выполнить JavaScript", "parameters": {"type": "object", "properties": {"script": {"type": "string"}}, "required": ["script"]}}},
-    {"type": "function", "function": {"name": "execute_js_on_element", "description": "JS на элементе", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}, "script": {"type": "string"}}, "required": ["selector", "script"]}}},
+    {"type": "function", "function": {"name": "execute_js_on_element", "description": "JS на элементе (формат: selector|script)", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}, "script": {"type": "string"}}, "required": ["selector", "script"]}}},
     
     # Ожидание
     {"type": "function", "function": {"name": "wait", "description": "Подождать секунд", "parameters": {"type": "object", "properties": {"seconds": {"type": "number"}}}}},
-    {"type": "function", "function": {"name": "wait_for_element", "description": "Ждать появления элемента", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}, "timeout": {"type": "integer"}}, "required": ["selector"]}}},
+    {"type": "function", "function": {"name": "wait_for_element", "description": "Ждать появления элемента (формат: selector|timeout)", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}, "timeout": {"type": "integer"}}, "required": ["selector"]}}},
     {"type": "function", "function": {"name": "wait_for_visible", "description": "Ждать видимости элемента", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]}}},
     
     # Shadow DOM
@@ -1358,7 +1381,7 @@ TOOLS = [
     
     # HTTP
     {"type": "function", "function": {"name": "http_get", "description": "GET запрос", "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}}},
-    {"type": "function", "function": {"name": "http_post", "description": "POST запрос", "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "data": {"type": "object"}}, "required": ["url"]}}},
+    {"type": "function", "function": {"name": "http_post", "description": "POST запрос (формат: url|json)", "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "data": {"type": "object"}}, "required": ["url"]}}},
     
     # Окна
     {"type": "function", "function": {"name": "set_window_maximized", "description": "Развернуть окно", "parameters": {"type": "object", "properties": {}}}},
@@ -1503,7 +1526,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await process_with_ai(text, user_id, update, context)
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Ошибка: {context.error}\n{traceback.format_exc()}")
+    logger.error("Ошибка: " + str(context.error) + "\n" + traceback.format_exc())
 
 # ============================================================
 # ЗАПУСК
@@ -1539,7 +1562,7 @@ async def main():
     except KeyboardInterrupt:
         logger.info("🛑 Бот остановлен")
     except Exception as e:
-        logger.error(f"Ошибка: {e}")
+        logger.error("Ошибка: " + str(e))
     finally:
         await session_manager.close_all()
 
