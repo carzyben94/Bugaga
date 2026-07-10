@@ -32,6 +32,13 @@ AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
 if not AGNES_API_KEY:
     logger.warning("⚠️ AGNES_API_KEY не установлен!")
 
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+GITHUB_REPO = os.environ.get("GITHUB_REPO")  # username/repo
+GITHUB_PATH = "agent_memory.json"
+
+if not GITHUB_TOKEN or not GITHUB_REPO:
+    logger.warning("⚠️ GITHUB_TOKEN или GITHUB_REPO не установлены! Память не будет сохраняться.")
+
 CHROME_PATH = "/usr/bin/google-chrome"
 AGNES_API_URL = "https://apihub.agnes-ai.com/v1/chat/completions"
 AGNES_IMAGE_URL = "https://apihub.agnes-ai.com/v1/images/generations"
@@ -155,166 +162,145 @@ RESOURCE_LIBRARY = {
     }
 }
 
-# --- ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ ---
-def init_db():
-    conn = sqlite3.connect('agent_memory.db')
-    cursor = conn.cursor()
+# --- ФУНКЦИИ РАБОТЫ С GITHUB ---
+def load_all_memory():
+    """Загружает всю память из GitHub"""
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        return {}
     
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS agent_learning (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            command TEXT,
-            action TEXT,
-            context TEXT,
-            success INTEGER,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS agent_questions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            question TEXT,
-            answer TEXT,
-            status TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS agent_help_requests (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            task TEXT,
-            reason TEXT,
-            status TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS agent_prompts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            original_prompt TEXT,
-            optimized_prompt TEXT,
-            result TEXT,
-            success INTEGER,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS agent_experiments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            goal TEXT,
-            attempts INTEGER,
-            best_result TEXT,
-            status TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS agent_stats (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            total_commands INTEGER DEFAULT 0,
-            total_learned INTEGER DEFAULT 0,
-            total_experiments INTEGER DEFAULT 0,
-            success_rate REAL DEFAULT 0,
-            last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
-
-init_db()
-
-# --- ФУНКЦИИ СТАТИСТИКИ ---
-def get_agent_stats(user_id):
-    conn = sqlite3.connect('agent_memory.db')
-    cursor = conn.cursor()
-    
-    cursor.execute(
-        'SELECT total_commands, total_learned, total_experiments, success_rate FROM agent_stats WHERE user_id = ?',
-        (user_id,)
-    )
-    stats = cursor.fetchone()
-    
-    if not stats:
-        stats = (0, 0, 0, 0.0)
-    
-    cursor.execute(
-        'SELECT COUNT(*) FROM agent_learning WHERE user_id = ? AND success = 1',
-        (user_id,)
-    )
-    learned_count = cursor.fetchone()[0]
-    
-    cursor.execute(
-        'SELECT COUNT(*) FROM agent_experiments WHERE user_id = ? AND status = "completed"',
-        (user_id,)
-    )
-    experiments_count = cursor.fetchone()[0]
-    
-    cursor.execute(
-        'SELECT command, action, created_at FROM agent_learning WHERE user_id = ? ORDER BY created_at DESC LIMIT 3',
-        (user_id,)
-    )
-    recent_actions = cursor.fetchall()
-    
-    conn.close()
-    
-    return {
-        'total_commands': stats[0],
-        'total_learned': stats[1],
-        'total_experiments': stats[2],
-        'success_rate': stats[3],
-        'learned_count': learned_count,
-        'experiments_count': experiments_count,
-        'recent_actions': recent_actions
-    }
-
-def update_agent_stats(user_id, command_type, success=True):
-    conn = sqlite3.connect('agent_memory.db')
-    cursor = conn.cursor()
-    
-    cursor.execute(
-        'SELECT total_commands, total_learned, total_experiments, success_rate FROM agent_stats WHERE user_id = ?',
-        (user_id,)
-    )
-    stats = cursor.fetchone()
-    
-    if stats:
-        total_commands, total_learned, total_experiments, success_rate = stats
-        total_commands += 1
+    try:
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_PATH}"
+        headers = {
+            "Authorization": f"token {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
+        }
         
-        if command_type == 'learn':
-            total_learned += 1
-        elif command_type == 'experiment':
-            total_experiments += 1
+        response = requests.get(url, headers=headers)
         
-        if success:
-            success_rate = (success_rate * (total_commands - 1) + 1) / total_commands
+        if response.status_code == 200:
+            content = response.json()['content']
+            decoded = base64.b64decode(content).decode('utf-8')
+            return json.loads(decoded)
         else:
-            success_rate = (success_rate * (total_commands - 1)) / total_commands
-        
-        cursor.execute(
-            'UPDATE agent_stats SET total_commands = ?, total_learned = ?, total_experiments = ?, success_rate = ?, last_active = CURRENT_TIMESTAMP WHERE user_id = ?',
-            (total_commands, total_learned, total_experiments, success_rate, user_id)
-        )
-    else:
-        cursor.execute(
-            'INSERT INTO agent_stats (user_id, total_commands, total_learned, total_experiments, success_rate) VALUES (?, ?, ?, ?, ?)',
-            (user_id, 1, 1 if command_type == 'learn' else 0, 1 if command_type == 'experiment' else 0, 1.0)
-        )
+            logger.info("📭 GitHub память пуста или не создана")
+            return {}
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка загрузки из GitHub: {e}")
+        return {}
+
+def save_all_memory(data):
+    """Сохраняет всю память в GitHub"""
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        logger.warning("⚠️ GitHub не настроен, память не сохранена")
+        return False
     
-    conn.commit()
-    conn.close()
+    try:
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_PATH}"
+        headers = {
+            "Authorization": f"token {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+        
+        # Проверяем существование файла
+        response = requests.get(url, headers=headers)
+        sha = response.json().get('sha') if response.status_code == 200 else None
+        
+        # Сохраняем
+        content = json.dumps(data, indent=2, ensure_ascii=False)
+        encoded = base64.b64encode(content.encode('utf-8')).decode('utf-8')
+        
+        payload = {
+            "message": f"Update agent memory {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            "content": encoded,
+            "sha": sha
+        }
+        
+        response = requests.put(url, json=payload, headers=headers)
+        
+        if response.status_code in [200, 201]:
+            logger.info("✅ Память сохранена в GitHub")
+            return True
+        else:
+            logger.error(f"❌ Ошибка сохранения: {response.status_code}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка сохранения в GitHub: {e}")
+        return False
+
+def load_user_memory(user_id):
+    """Загружает память конкретного пользователя"""
+    all_data = load_all_memory()
+    user_key = str(user_id)
+    if user_key not in all_data:
+        return {
+            "commands": [],
+            "experiments": [],
+            "knowledge": [],
+            "learned": 0,
+            "created_at": datetime.now().isoformat()
+        }
+    return all_data[user_key]
+
+def save_user_memory(user_id, data):
+    """Сохраняет память конкретного пользователя"""
+    all_data = load_all_memory()
+    all_data[str(user_id)] = data
+    return save_all_memory(all_data)
+
+def save_learning(user_id, command, action, context, success):
+    """Сохраняет обучение в GitHub"""
+    data = load_user_memory(user_id)
+    
+    data['commands'].append({
+        'command': command,
+        'action': action,
+        'context': context,
+        'success': success,
+        'created_at': datetime.now().isoformat()
+    })
+    
+    data['learned'] = len([c for c in data['commands'] if c['success']])
+    
+    # Ограничиваем размер (храним последние 100 команд)
+    if len(data['commands']) > 100:
+        data['commands'] = data['commands'][-100:]
+    
+    return save_user_memory(user_id, data)
+
+def get_learned_actions(user_id, command):
+    """Получает выученные действия из GitHub"""
+    data = load_user_memory(user_id)
+    
+    results = []
+    for item in data.get('commands', []):
+        if command.lower() in item['command'].lower() and item['success']:
+            results.append((item['action'], item['context']))
+    
+    return results[:5]
+
+def save_experiment_memory(user_id, goal, attempts, best_result, status):
+    """Сохраняет эксперимент в GitHub"""
+    data = load_user_memory(user_id)
+    
+    data['experiments'].append({
+        'goal': goal,
+        'attempts': attempts,
+        'best_result': best_result,
+        'status': status,
+        'created_at': datetime.now().isoformat()
+    })
+    
+    if len(data['experiments']) > 50:
+        data['experiments'] = data['experiments'][-50:]
+    
+    return save_user_memory(user_id, data)
+
+def get_experiments_memory(user_id):
+    """Получает эксперименты из GitHub"""
+    data = load_user_memory(user_id)
+    return data.get('experiments', [])
 
 # --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ---
 browser_instance = None
@@ -374,7 +360,6 @@ async def go_to_url(url: str):
         current_url = url
         page_title = await tab_instance.title
         
-        # Получаем текст страницы через get_page_text (по документации pydoll)
         try:
             page_content = await tab_instance.get_page_text()
         except AttributeError:
@@ -408,19 +393,19 @@ def call_agnes_agent(prompt: str, context: dict = None, learning_context: str = 
         return None, "AGNES_API_KEY не установлен"
     
     try:
-        system_prompt = """Ты - AI агент, управляющий браузером. У тебя есть доступ к библиотеке полезных ресурсов.
-        
-        Если ты не знаешь, как решить проблему - обратись к библиотеке ресурсов.
-        
+        system_prompt = """Ты - AI агент, который помогает пользователю управлять браузером.
         Ты можешь:
         1. Переходить по ссылкам
         2. Делать скриншоты
         3. Получать информацию со страницы
         4. Анализировать контент страницы
-        5. Искать информацию в библиотеке ресурсов
-        6. Предлагать пользователю полезные ссылки
+        5. Объяснять, что происходит на странице
+        6. Давать советы и рекомендации
+        7. Учиться на основе опыта пользователя
         
-        Если пользователь спрашивает о чем-то, что связано с программированием, AI, Python - предложи соответствующие ресурсы из библиотеки."""
+        Отвечай дружелюбно и полезно.
+        Если пользователь просит что-то сделать - объясни, что ты делаешь.
+        Если не знаешь ответ - честно скажи."""
         
         messages = [
             {"role": "system", "content": system_prompt}
@@ -458,21 +443,26 @@ def call_agnes_agent(prompt: str, context: dict = None, learning_context: str = 
 
 # --- КОМАНДА /STATUS ---
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает статус браузера и показатели агента"""
     user_id = update.effective_user.id
     
     browser_status = "🟢 Включен" if browser_instance is not None and tab_instance is not None else "🔴 Выключен"
-    stats = get_agent_stats(user_id)
+    user_data = load_user_memory(user_id)
     
     uptime = datetime.now() - start_time
     uptime_str = str(uptime).split('.')[0]
     
-    memory = psutil.virtual_memory()
-    memory_used = memory.used / (1024**3)
-    memory_total = memory.total / (1024**3)
-    cpu_percent = psutil.cpu_percent(interval=0.5)
+    try:
+        memory = psutil.virtual_memory()
+        memory_used = memory.used / (1024**3)
+        memory_total = memory.total / (1024**3)
+        cpu_percent = psutil.cpu_percent(interval=0.5)
+    except:
+        memory_used = 0
+        memory_total = 0
+        cpu_percent = 0
     
     agnes_status = "✅ Настроен" if AGNES_API_KEY else "❌ Не настроен"
+    github_status = "✅ Подключен" if GITHUB_TOKEN and GITHUB_REPO else "❌ Не подключен"
     
     response = (
         "📊 **Статус системы**\n\n"
@@ -484,19 +474,17 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         "🤖 **Агент:**\n"
         f"  • Agnes AI: {agnes_status}\n"
-        f"  • Команд выполнено: {stats['total_commands']}\n"
-        f"  • Выучено команд: {stats['learned_count']}\n"
-        f"  • Экспериментов: {stats['experiments_count']}\n"
-        f"  • Успешность: {stats['success_rate']*100:.1f}%\n\n"
+        f"  • Команд выучено: {user_data.get('learned', 0)}\n"
+        f"  • Экспериментов: {len(user_data.get('experiments', []))}\n\n"
         
-        "🧠 **Память агента:**\n"
-        f"  • Всего знаний: {stats['total_learned']}\n"
-        f"  • Успешных действий: {len([a for a in stats['recent_actions'] if a])}\n\n"
+        "💾 **Хранилище:**\n"
+        f"  • GitHub: {github_status}\n"
+        f"  • Команд в памяти: {len(user_data.get('commands', []))}\n\n"
         
         "⚙️ **Система:**\n"
         f"  • Время работы: {uptime_str}\n"
         f"  • CPU: {cpu_percent}%\n"
-        f"  • Память: {memory_used:.1f}GB / {memory_total:.1f}GB ({memory.percent}%)\n"
+        f"  • Память: {memory_used:.1f}GB / {memory_total:.1f}GB\n"
         f"  • OS: {platform.system()} {platform.release()}\n\n"
         
         "📚 **Библиотека:**\n"
@@ -504,23 +492,25 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"  • Категорий: {len(RESOURCE_LIBRARY)}\n\n"
     )
     
-    if stats['recent_actions']:
-        response += "🔄 **Последние действия:**\n"
-        for cmd, action, date in stats['recent_actions']:
-            date_str = date[:16] if date else "недавно"
-            response += f"  • {cmd} -> {action[:30]}... ({date_str})\n"
+    # Последние выученные команды
+    commands = user_data.get('commands', [])[-3:]
+    if commands:
+        response += "🔄 **Последние выученные команды:**\n"
+        for cmd in commands:
+            response += f"  • {cmd.get('command', '')} -> {cmd.get('action', '')[:30]}...\n"
     
-    if stats['total_commands'] < 5:
-        response += "\n💡 **Совет:** Используйте /learn, чтобы научить меня новым командам!"
-    elif stats['learned_count'] < 3:
-        response += "\n💡 **Совет:** Я еще мало знаю. Научите меня чему-нибудь через /learn!"
+    if user_data.get('learned', 0) < 3:
+        response += "\n💡 **Совет:** Научите меня новым командам через /learn!"
     
     if not AGNES_API_KEY:
-        response += "\n⚠️ **Внимание:** Agnes AI не настроен! Некоторые функции недоступны."
+        response += "\n⚠️ **Внимание:** Agnes AI не настроен!"
+    
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        response += "\n⚠️ **Внимание:** GitHub не настроен! Память не сохраняется!"
     
     await update.message.reply_text(response)
 
-# --- ОСТАЛЬНЫЕ КОМАНДЫ ---
+# --- КОМАНДА /START ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🌐 **Браузер:**\n"
@@ -540,11 +530,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/library find <текст> - Поиск ресурсов\n"
         "🤖 **Агент:**\n"
         "/agent <запрос> - Управление через AI\n"
+        "/dialog - Начать диалог\n"
+        "/end_dialog - Закончить диалог\n"
+        "/clear_dialog - Очистить историю\n"
         "/learn <команда -> действие> - Научить агента\n"
         "/knowledge - Что умеет агент\n"
-        "/help_agent <описание> - Помочь агенту"
+        "/help_agent <описание> - Помочь агенту\n"
+        "💾 **Память:**\n"
+        "/reset_memory - Очистить память агента"
     )
 
+# --- КОМАНДЫ БРАУЗЕРА ---
 async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     success = await open_browser()
     if success:
@@ -582,6 +578,7 @@ async def go_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"❌ {msg}")
 
+# --- ЗАМЕНА ФОНА ---
 def replace_background(image_data, new_background_prompt: str):
     if not AGNES_API_KEY:
         return None, "AGNES_API_KEY не установлен!"
@@ -650,27 +647,7 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("📭 Кэш пуст")
 
-def save_learning(user_id, command, action, context, success):
-    conn = sqlite3.connect('agent_memory.db')
-    cursor = conn.cursor()
-    cursor.execute(
-        'INSERT INTO agent_learning (user_id, command, action, context, success) VALUES (?, ?, ?, ?, ?)',
-        (user_id, command, action, context, 1 if success else 0)
-    )
-    conn.commit()
-    conn.close()
-
-def get_learned_actions(user_id, command):
-    conn = sqlite3.connect('agent_memory.db')
-    cursor = conn.cursor()
-    cursor.execute(
-        'SELECT action, context FROM agent_learning WHERE user_id = ? AND command LIKE ? AND success = 1 ORDER BY created_at DESC LIMIT 5',
-        (user_id, f'%{command}%')
-    )
-    results = cursor.fetchall()
-    conn.close()
-    return results
-
+# --- КОМАНДЫ ОБУЧЕНИЯ ---
 async def learn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text(
@@ -690,51 +667,47 @@ async def learn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         command = parts[0].strip()
         action = parts[1].strip()
         
-        save_learning(user_id, command, action, "user_taught", True)
-        update_agent_stats(user_id, 'learn', True)
-        
-        await update.message.reply_text(
-            f"✅ Я запомнил!\n"
-            f"Команда: {command}\n"
-            f"Действие: {action}"
-        )
+        if save_learning(user_id, command, action, "user_taught", True):
+            await update.message.reply_text(
+                f"✅ Я запомнил!\n"
+                f"Команда: {command}\n"
+                f"Действие: {action}\n"
+                f"💾 Сохранено в GitHub"
+            )
+        else:
+            await update.message.reply_text(
+                f"✅ Я запомнил!\n"
+                f"Команда: {command}\n"
+                f"Действие: {action}\n"
+                f"⚠️ Но GitHub не настроен, память не сохранена"
+            )
     else:
         await update.message.reply_text("❌ Неправильный формат. Используйте: /learn команда -> действие")
 
 async def knowledge_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    data = load_user_memory(user_id)
     
-    conn = sqlite3.connect('agent_memory.db')
-    cursor = conn.cursor()
+    commands = data.get('commands', [])
+    experiments = data.get('experiments', [])
     
-    cursor.execute(
-        'SELECT command, action FROM agent_learning WHERE user_id = ? AND success = 1 ORDER BY created_at DESC LIMIT 10',
-        (user_id,)
-    )
-    learnings = cursor.fetchall()
+    response = "🧠 **Что я умею:**\n\n"
     
-    cursor.execute(
-        'SELECT goal, best_result FROM agent_experiments WHERE user_id = ? AND status = "completed" ORDER BY created_at DESC LIMIT 3',
-        (user_id,)
-    )
-    experiments = cursor.fetchall()
-    
-    conn.close()
-    
-    response = "🧠 Что я умею:\n\n"
-    
-    if learnings:
-        response += "📚 Выученные команды:\n"
-        for cmd, action in learnings:
-            response += f"• {cmd} -> {action}\n"
+    if commands:
+        response += "📚 **Выученные команды:**\n"
+        for cmd in commands[-10:]:
+            if cmd['success']:
+                response += f"• {cmd['command']} -> {cmd['action']}\n"
     
     if experiments:
-        response += "\n🧪 Успешные эксперименты:\n"
-        for goal, result in experiments:
-            response += f"• {goal[:50]}...\n"
+        response += "\n🧪 **Успешные эксперименты:**\n"
+        for exp in experiments[-3:]:
+            response += f"• {exp['goal'][:50]}...\n"
     
-    if not learnings and not experiments:
-        response = "📭 Я пока ничего не выучил. Научи меня чему-нибудь!"
+    if not commands and not experiments:
+        response = "📭 Я пока ничего не выучил. Научи меня чему-нибудь через /learn!"
+    
+    response += f"\n\n💾 Всего команд: {len(commands)}\nВсего экспериментов: {len(experiments)}"
     
     await update.message.reply_text(response)
 
@@ -750,14 +723,238 @@ async def help_agent_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_id = update.effective_user.id
     help_text = ' '.join(context.args)
     
-    save_learning(user_id, help_text, "user_helped", "help_agent", True)
-    update_agent_stats(user_id, 'learn', True)
+    if save_learning(user_id, help_text, "user_helped", "help_agent", True):
+        await update.message.reply_text(
+            f"✅ Спасибо за помощь! Я запомнил.\n"
+            f"📝 Вы сказали: {help_text}\n"
+            f"💾 Сохранено в GitHub"
+        )
+    else:
+        await update.message.reply_text(
+            f"✅ Спасибо за помощь! Я запомнил.\n"
+            f"📝 Вы сказали: {help_text}\n"
+            f"⚠️ Но GitHub не настроен, память не сохранена"
+        )
+
+# --- КОМАНДА СБРОСА ПАМЯТИ ---
+async def reset_memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сбрасывает память агента для пользователя"""
+    user_id = update.effective_user.id
+    
+    data = {
+        "commands": [],
+        "experiments": [],
+        "knowledge": [],
+        "learned": 0,
+        "created_at": datetime.now().isoformat()
+    }
+    
+    if save_user_memory(user_id, data):
+        await update.message.reply_text("🧹 Память агента очищена!")
+    else:
+        await update.message.reply_text("❌ Не удалось очистить память. Проверьте настройки GitHub.")
+
+# --- ДИАЛОГ С АГЕНТОМ ---
+async def dialog_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['dialog_active'] = True
+    context.user_data['dialog_history'] = []
     
     await update.message.reply_text(
-        f"✅ Спасибо за помощь! Я запомнил.\n"
-        f"📝 Вы сказали: {help_text}"
+        "🗣️ **Начинаем диалог!**\n\n"
+        "Я готов общаться. Просто напишите мне сообщение.\n"
+        "Я могу:\n"
+        "• Перейти на сайт по ссылке\n"
+        "• Сделать скриншот\n"
+        "• Рассказать, что на странице\n"
+        "• Ответить на ваши вопросы\n"
+        "• Научиться новым командам\n\n"
+        "Чтобы закончить диалог, напишите /end_dialog"
     )
 
+async def end_dialog_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['dialog_active'] = False
+    context.user_data['dialog_history'] = []
+    
+    await update.message.reply_text(
+        "👋 **Диалог завершен!**\n"
+        "Буду рад пообщаться снова!"
+    )
+
+async def clear_dialog_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if 'dialog_history' in context.user_data:
+        context.user_data['dialog_history'] = []
+        await update.message.reply_text("🧹 История диалога очищена!")
+    else:
+        await update.message.reply_text("📭 История пуста")
+
+# --- ОБРАБОТЧИК СООБЩЕНИЙ (ДИАЛОГ) ---
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_message = update.message.text
+    
+    if user_message.startswith('/'):
+        return
+    
+    if 'dialog_active' not in context.user_data or not context.user_data['dialog_active']:
+        await update.message.reply_text(
+            "👋 Привет! Чтобы начать диалог, используйте /dialog"
+        )
+        context.user_data['dialog_active'] = True
+        context.user_data['dialog_history'] = []
+        return
+    
+    # --- ОБУЧЕНИЕ В ДИАЛОГЕ ---
+    learn_patterns = ['запомни', 'запомни что', 'научись', 'когда я говорю', 'делай так', 'запомни это', 'это значит']
+    is_teaching = any(pattern in user_message.lower() for pattern in learn_patterns)
+    
+    if is_teaching:
+        match = re.search(r'когда я говорю\s+"?([^"]+)"?\s+делай\s+"?([^"]+)"?', user_message.lower())
+        if match:
+            command = match.group(1).strip()
+            action = match.group(2).strip()
+            if save_learning(user_id, command, action, "dialog_learning", True):
+                await update.message.reply_text(
+                    f"✅ Запомнил! 💾 Сохранено в GitHub\n"
+                    f"Команда: {command}\n"
+                    f"Действие: {action}"
+                )
+            return
+        
+        match = re.search(r'"([^"]+)"\s*[->=]\s*"?([^"]+)"?', user_message)
+        if match:
+            command = match.group(1).strip()
+            action = match.group(2).strip()
+            if save_learning(user_id, command, action, "dialog_learning", True):
+                await update.message.reply_text(
+                    f"✅ Запомнил! 💾 Сохранено в GitHub\n"
+                    f"Команда: {command}\n"
+                    f"Действие: {action}"
+                )
+            return
+        
+        match = re.search(r'запомни\s+"?([^"]+)"?', user_message)
+        if match:
+            command = match.group(1).strip()
+            await update.message.reply_text(
+                f"✅ Запомнил: {command}\n"
+                f"Уточните, что делать через /learn {command} -> действие"
+            )
+            return
+    
+    # --- ПРОВЕРКА ВЫУЧЕННЫХ КОМАНД ---
+    learned = get_learned_actions(user_id, user_message)
+    if learned:
+        action = learned[0][0]
+        await update.message.reply_text(f"🧠 Я знаю это! Делаю: {action}")
+        
+        if "/go" in action:
+            url = action.replace("/go", "").strip()
+            success, msg = await go_to_url(url)
+            if success:
+                screenshot_data, _ = await take_screenshot()
+                if screenshot_data:
+                    screenshot_bytes = base64.b64decode(screenshot_data)
+                    await update.message.reply_photo(screenshot_bytes, caption=f"📸 {msg}")
+                await update.message.reply_text(f"✅ {msg}")
+            else:
+                await update.message.reply_text(f"❌ {msg}")
+        elif "/screen" in action:
+            screenshot_data, error = await take_screenshot()
+            if screenshot_data:
+                screenshot_bytes = base64.b64decode(screenshot_data)
+                await update.message.reply_photo(screenshot_bytes, caption="📸 Скриншот")
+            else:
+                await update.message.reply_text(f"❌ {error}")
+        else:
+            await update.message.reply_text(f"⚠️ Не знаю как выполнить: {action}")
+        return
+    
+    # --- ОБЫЧНЫЙ ДИАЛОГ ---
+    await update.message.reply_text("🤖 Думаю...")
+    
+    try:
+        page_info = await get_page_info()
+        
+        if 'dialog_history' not in context.user_data:
+            context.user_data['dialog_history'] = []
+        
+        context.user_data['dialog_history'].append({"role": "user", "content": user_message})
+        
+        system_prompt = """Ты - AI агент, который помогает пользователю управлять браузером.
+        Ты можешь:
+        1. Переходить по ссылкам
+        2. Делать скриншоты
+        3. Получать информацию со страницы
+        4. Анализировать контент страницы
+        5. Объяснять, что происходит на странице
+        6. Давать советы и рекомендации
+        7. Учиться на основе опыта пользователя
+        
+        Отвечай дружелюбно и полезно."""
+        
+        messages = [{"role": "system", "content": system_prompt}]
+        
+        if page_info['url']:
+            messages.append({
+                "role": "user",
+                "content": f"Текущая страница: {page_info['url']}\nЗаголовок: {page_info['title']}"
+            })
+        
+        history = context.user_data['dialog_history'][-10:]
+        for msg in history:
+            messages.append(msg)
+        
+        messages.append({"role": "user", "content": user_message})
+        
+        headers = {
+            "Authorization": f"Bearer {AGNES_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": "agnes-2.0-flash",
+            "messages": messages,
+            "max_tokens": 1000
+        }
+        
+        response = requests.post(AGNES_API_URL, json=payload, headers=headers, timeout=30)
+        response.raise_for_status()
+        
+        result = response.json()
+        agent_reply = result['choices'][0]['message']['content']
+        
+        context.user_data['dialog_history'].append({"role": "assistant", "content": agent_reply})
+        
+        await update.message.reply_text(f"🤖 {agent_reply}")
+        
+        # Проверяем действия
+        if any(word in user_message.lower() for word in ['перейди', 'зайди', 'открой', 'google', 'vk', 'youtube', 'яндекс']):
+            url_match = re.search(r'(https?://[^\s]+|google\.com|vk\.com|youtube\.com|yandex\.ru)', user_message)
+            if url_match:
+                url = url_match.group(0)
+                if not url.startswith('http'):
+                    url = 'https://' + url
+                success, msg = await go_to_url(url)
+                if success:
+                    screenshot_data, _ = await take_screenshot()
+                    if screenshot_data:
+                        screenshot_bytes = base64.b64decode(screenshot_data)
+                        await update.message.reply_photo(screenshot_bytes, caption=f"📸 {msg}")
+                    await update.message.reply_text(f"✅ {msg}")
+        
+        elif any(word in user_message.lower() for word in ['скрин', 'screenshot', 'фото']):
+            screenshot_data, error = await take_screenshot()
+            if screenshot_data:
+                screenshot_bytes = base64.b64decode(screenshot_data)
+                await update.message.reply_photo(screenshot_bytes, caption="📸 Скриншот")
+            else:
+                await update.message.reply_text(f"❌ {error}")
+        
+    except Exception as e:
+        logger.error(f"Ошибка в диалоге: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
+# --- КОМАНДА /AGENT ---
 async def agent_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not AGNES_API_KEY:
         await update.message.reply_text("❌ Agnes AI не настроен.")
@@ -765,13 +962,15 @@ async def agent_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not context.args:
         await update.message.reply_text(
-            "🤖 Команды агента:\n"
+            "🤖 **Команды агента:**\n"
             "/agent <запрос> - Управление через AI\n"
-            "/experiment <цель> - Эксперимент с промтами\n"
+            "/dialog - Начать диалог\n"
+            "/end_dialog - Закончить диалог\n"
             "/learn <команда -> действие> - Научить агента\n"
             "/knowledge - Что умеет агент\n"
             "/library - Библиотека ресурсов\n"
-            "/help_agent <описание> - Помочь агенту"
+            "/help_agent <описание> - Помочь агенту\n"
+            "/reset_memory - Очистить память"
         )
         return
     
@@ -792,24 +991,17 @@ async def agent_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     screenshot_data, _ = await take_screenshot()
                     if screenshot_data:
                         screenshot_bytes = base64.b64decode(screenshot_data)
-                        await update.message.reply_photo(
-                            screenshot_bytes,
-                            caption=f"📸 {msg}"
-                        )
+                        await update.message.reply_photo(screenshot_bytes, caption=f"📸 {msg}")
                     await update.message.reply_text(f"✅ {msg}")
-                    update_agent_stats(user_id, 'command', True)
                 else:
                     await update.message.reply_text(f"❌ {msg}")
-                    update_agent_stats(user_id, 'command', False)
             elif "/screen" in action:
                 screenshot_data, error = await take_screenshot()
                 if screenshot_data:
                     screenshot_bytes = base64.b64decode(screenshot_data)
                     await update.message.reply_photo(screenshot_bytes, caption="📸 Скриншот")
-                    update_agent_stats(user_id, 'command', True)
                 else:
                     await update.message.reply_text(f"❌ {error}")
-                    update_agent_stats(user_id, 'command', False)
             else:
                 await update.message.reply_text(f"⚠️ Не знаю как выполнить: {action}")
             return
@@ -826,10 +1018,9 @@ async def agent_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Помогите мне: /help_agent <описание>\n"
                 f"Или посмотрите в библиотеке ресурсов: /library"
             )
-            update_agent_stats(user_id, 'command', False)
             return
         
-        await update.message.reply_text(f"🤖 Агент:\n{agnes_response}")
+        await update.message.reply_text(f"🤖 {agnes_response}")
         
         if any(word in user_request.lower() for word in ['перейди', 'зайди', 'открой', 'google', 'vk', 'youtube']):
             url_match = re.search(r'(https?://[^\s]+|google\.com|vk\.com|youtube\.com|yandex\.ru)', user_request)
@@ -837,68 +1028,43 @@ async def agent_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 url = url_match.group(0)
                 if not url.startswith('http'):
                     url = 'https://' + url
-                
                 success, msg = await go_to_url(url)
                 if success:
                     screenshot_data, _ = await take_screenshot()
                     if screenshot_data:
                         screenshot_bytes = base64.b64decode(screenshot_data)
-                        await update.message.reply_photo(
-                            screenshot_bytes,
-                            caption=f"📸 {msg}"
-                        )
+                        await update.message.reply_photo(screenshot_bytes, caption=f"📸 {msg}")
                     await update.message.reply_text(f"✅ {msg}")
-                    update_agent_stats(user_id, 'command', True)
-                else:
-                    await update.message.reply_text(f"❌ {msg}")
-                    update_agent_stats(user_id, 'command', False)
         
         elif any(word in user_request.lower() for word in ['скрин', 'screenshot']):
             screenshot_data, error = await take_screenshot()
             if screenshot_data:
                 screenshot_bytes = base64.b64decode(screenshot_data)
                 await update.message.reply_photo(screenshot_bytes, caption="📸 Скриншот")
-                update_agent_stats(user_id, 'command', True)
             else:
                 await update.message.reply_text(f"❌ {error}")
-                update_agent_stats(user_id, 'command', False)
         
     except Exception as e:
         logger.error(f"Ошибка агента: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-        update_agent_stats(user_id, 'command', False)
 
 # --- ЭКСПЕРИМЕНТЫ ---
-def save_experiment(user_id, goal, attempts, best_result, status):
-    conn = sqlite3.connect('agent_memory.db')
-    cursor = conn.cursor()
-    cursor.execute(
-        'INSERT INTO agent_experiments (user_id, goal, attempts, best_result, status) VALUES (?, ?, ?, ?, ?)',
-        (user_id, goal, attempts, best_result, status)
-    )
-    conn.commit()
-    conn.close()
+def save_experiment_memory(user_id, goal, attempts, best_result, status):
+    data = load_user_memory(user_id)
+    data['experiments'].append({
+        'goal': goal,
+        'attempts': attempts,
+        'best_result': best_result,
+        'status': status,
+        'created_at': datetime.now().isoformat()
+    })
+    if len(data['experiments']) > 50:
+        data['experiments'] = data['experiments'][-50:]
+    return save_user_memory(user_id, data)
 
-def get_experiments(user_id):
-    conn = sqlite3.connect('agent_memory.db')
-    cursor = conn.cursor()
-    cursor.execute(
-        'SELECT goal, attempts, best_result, status FROM agent_experiments WHERE user_id = ? ORDER BY created_at DESC LIMIT 5',
-        (user_id,)
-    )
-    results = cursor.fetchall()
-    conn.close()
-    return results
-
-def save_prompt_optimization(user_id, original, optimized, result, success):
-    conn = sqlite3.connect('agent_memory.db')
-    cursor = conn.cursor()
-    cursor.execute(
-        'INSERT INTO agent_prompts (user_id, original_prompt, optimized_prompt, result, success) VALUES (?, ?, ?, ?, ?)',
-        (user_id, original, optimized, result, 1 if success else 0)
-    )
-    conn.commit()
-    conn.close()
+def get_experiments_memory(user_id):
+    data = load_user_memory(user_id)
+    return data.get('experiments', [])
 
 async def agent_experiment_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not AGNES_API_KEY:
@@ -965,7 +1131,6 @@ async def agent_experiment_command(update: Update, context: ContextTypes.DEFAULT
             if not best_result or len(current_result) > len(best_result):
                 best_result = current_result
                 best_prompt = current_prompt
-                save_prompt_optimization(user_id, goal, current_prompt, current_result, True)
             
             await update.message.reply_text(
                 f"📊 Результат попытки {attempts}:\n"
@@ -982,8 +1147,7 @@ async def agent_experiment_command(update: Update, context: ContextTypes.DEFAULT
             await update.message.reply_text(f"❌ Ошибка: {str(e)}")
             break
     
-    save_experiment(user_id, goal, attempts, best_result, "completed")
-    update_agent_stats(user_id, 'experiment', True)
+    save_experiment_memory(user_id, goal, attempts, best_result, "completed")
     
     if best_result:
         await update.message.reply_text(
@@ -991,7 +1155,8 @@ async def agent_experiment_command(update: Update, context: ContextTypes.DEFAULT
             f"🎯 Цель: {goal}\n"
             f"🔄 Попыток: {attempts}\n"
             f"📝 Лучший промт: {best_prompt}\n\n"
-            f"✨ Результат:\n{best_result}"
+            f"✨ Результат:\n{best_result}\n\n"
+            f"💾 Сохранено в GitHub"
         )
     else:
         await update.message.reply_text(
@@ -1052,6 +1217,25 @@ def optimize_prompt(original_prompt, context, feedback=""):
     except Exception as e:
         logger.error(f"Ошибка оптимизации: {e}")
         return original_prompt, str(e)
+
+async def experiments_history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    experiments = get_experiments_memory(user_id)
+    
+    if not experiments:
+        await update.message.reply_text("📭 Вы пока не проводили экспериментов.")
+        return
+    
+    response = "🧪 История экспериментов:\n\n"
+    for exp in experiments[-5:]:
+        response += f"🎯 {exp['goal'][:50]}...\n"
+        response += f"🔄 Попыток: {exp['attempts']}\n"
+        response += f"📊 Статус: {exp['status']}\n\n"
+    
+    await update.message.reply_text(response)
+
+async def stop_experiment_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🛑 Эксперимент остановлен по вашему запросу.")
 
 # --- БИБЛИОТЕКА РЕСУРСОВ ---
 async def library_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1125,26 +1309,7 @@ async def library_category_command(update: Update, context: ContextTypes.DEFAULT
     
     await update.message.reply_text(response)
 
-async def experiments_history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    experiments = get_experiments(user_id)
-    
-    if not experiments:
-        await update.message.reply_text("📭 Вы пока не проводили экспериментов.")
-        return
-    
-    response = "🧪 История экспериментов:\n\n"
-    for goal, attempts, best_result, status in experiments:
-        response += f"🎯 {goal[:50]}...\n"
-        response += f"🔄 Попыток: {attempts}\n"
-        response += f"📊 Статус: {status}\n"
-        response += f"✨ Результат: {best_result[:100]}...\n\n"
-    
-    await update.message.reply_text(response)
-
-async def stop_experiment_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🛑 Эксперимент остановлен по вашему запросу.")
-
+# --- ОБРАБОТЧИК ФОТО ---
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         photo_file = await update.message.photo[-1].get_file()
@@ -1154,37 +1319,60 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
+# --- ОБРАБОТЧИК ОШИБОК ---
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Ошибка: {context.error}")
 
+# --- ГЛАВНАЯ ФУНКЦИЯ ---
 def main():
     try:
         application = Application.builder().token(TOKEN).build()
 
-        application.add_handler(CommandHandler("start", start))
+        # Браузер
         application.add_handler(CommandHandler("status", status_command))
         application.add_handler(CommandHandler("open_bw", open_browser_command))
         application.add_handler(CommandHandler("close_bw", close_browser_command))
         application.add_handler(CommandHandler("screen", screenshot_command))
         application.add_handler(CommandHandler("go", go_command))
+        
+        # Фотошоп
         application.add_handler(CommandHandler("bg", bg_command))
         application.add_handler(CommandHandler("clear", clear_command))
+        
+        # Эксперименты
+        application.add_handler(CommandHandler("experiment", agent_experiment_command))
+        application.add_handler(CommandHandler("experiments", experiments_history_command))
+        application.add_handler(CommandHandler("stop_experiment", stop_experiment_command))
+        
+        # Ресурсы
+        application.add_handler(CommandHandler("library", library_command))
+        application.add_handler(CommandHandler("library", library_category_command))
+        
+        # Агент
         application.add_handler(CommandHandler("agent", agent_command))
         application.add_handler(CommandHandler("learn", learn_command))
         application.add_handler(CommandHandler("knowledge", knowledge_command))
         application.add_handler(CommandHandler("help_agent", help_agent_command))
-        application.add_handler(CommandHandler("experiment", agent_experiment_command))
-        application.add_handler(CommandHandler("experiments", experiments_history_command))
-        application.add_handler(CommandHandler("stop_experiment", stop_experiment_command))
-        application.add_handler(CommandHandler("library", library_command))
-        application.add_handler(CommandHandler("library", library_category_command))
+        application.add_handler(CommandHandler("reset_memory", reset_memory_command))
+        
+        # Диалог
+        application.add_handler(CommandHandler("dialog", dialog_command))
+        application.add_handler(CommandHandler("end_dialog", end_dialog_command))
+        application.add_handler(CommandHandler("clear_dialog", clear_dialog_command))
+        
+        # Старт
+        application.add_handler(CommandHandler("start", start))
+        
+        # Обработчики сообщений
         application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        
+        # Ошибки
         application.add_error_handler(error_handler)
 
         logger.info("🚀 Бот запущен!")
         logger.info("📚 Библиотека ресурсов загружена!")
-        logger.info("🧪 Агент может экспериментировать с промтами!")
-        logger.info("📊 Добавлена расширенная статистика в /status!")
+        logger.info("💾 GitHub хранилище подключено!" if GITHUB_TOKEN and GITHUB_REPO else "⚠️ GitHub не настроен!")
         application.run_polling(allowed_updates=Update.ALL_TYPES)
 
     except Exception as e:
