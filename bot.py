@@ -35,37 +35,6 @@ def normalize_url(url: str) -> str:
         url = 'https://' + url
     return url
 
-async def delete_message_after_delay(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, delay: int = 3):
-    """Удаляет сообщение через указанную задержку"""
-    await asyncio.sleep(delay)
-    try:
-        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
-    except Exception as e:
-        logger.error(f"Ошибка при удалении сообщения: {e}")
-
-async def send_and_delete(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, delay: int = 3):
-    """Отправляет сообщение и удаляет его через delay секунд"""
-    message = await update.message.reply_text(text)
-    asyncio.create_task(delete_message_after_delay(context, update.effective_chat.id, message.message_id, delay))
-    return message
-
-async def send_photo_and_delete(update: Update, context: ContextTypes.DEFAULT_TYPE, photo: bytes, caption: str = "", delay: int = 10):
-    """Отправляет фото и удаляет его через delay секунд"""
-    message = await update.message.reply_photo(photo, caption=caption)
-    asyncio.create_task(delete_message_after_delay(context, update.effective_chat.id, message.message_id, delay))
-    return message
-
-async def delete_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE, delay: int = 1):
-    """Удаляет сообщение пользователя"""
-    try:
-        await asyncio.sleep(delay)
-        await context.bot.delete_message(
-            chat_id=update.effective_chat.id,
-            message_id=update.message.message_id
-        )
-    except Exception as e:
-        logger.error(f"Ошибка при удалении сообщения пользователя: {e}")
-
 # --- ФУНКЦИИ ДЛЯ РАБОТЫ С БРАУЗЕРОМ ---
 
 def get_browser_options():
@@ -148,70 +117,44 @@ def get_browser_status():
 
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает список команд"""
-    # Удаляем сообщение пользователя
-    asyncio.create_task(delete_user_message(update, context))
-    
-    await send_and_delete(
-        update,
-        context,
-        "/status - Статус браузера\n"
-        "/open_bw - Открыть браузер\n"
-        "/close_bw - Закрыть браузер\n"
-        "/screen - Скриншот всей страницы\n"
-        "/go <URL> - Перейти на сайт",
-        delay=10
+    """Показывает список команд в одну строку"""
+    await update.message.reply_text(
+        "/status - Статус браузера | /open_bw - Открыть браузер | /close_bw - Закрыть браузер | /screen - Скриншот | /go <URL> - Перейти на сайт"
     )
 
 # Команда /status
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает статус браузера"""
-    # Удаляем сообщение пользователя
-    asyncio.create_task(delete_user_message(update, context))
-    
+    """Показывает статус браузера в одну строку"""
     status = get_browser_status()
-    await send_and_delete(update, context, f"📊 Статус браузера: {status}", delay=5)
+    await update.message.reply_text(f"📊 Статус браузера: {status}")
 
 # Команда /open_bw
 async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Открывает браузер"""
-    # Удаляем сообщение пользователя
-    asyncio.create_task(delete_user_message(update, context))
-    
-    await send_and_delete(update, context, "🌐 Открываю браузер...", delay=0)
-    
+    """Открывает браузер в одну строку"""
     success = await open_browser()
     if success:
-        await send_and_delete(update, context, "✅ Браузер успешно открыт!", delay=3)
+        await update.message.reply_text("🌐 Браузер открыт ✅")
     else:
-        await send_and_delete(update, context, "❌ Не удалось открыть браузер. Проверьте логи.", delay=5)
+        await update.message.reply_text("❌ Не удалось открыть браузер")
 
 # Команда /close_bw
 async def close_browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Закрывает браузер"""
-    # Удаляем сообщение пользователя
-    asyncio.create_task(delete_user_message(update, context))
-    
-    await send_and_delete(update, context, "❌ Закрываю браузер...", delay=0)
-    
+    """Закрывает браузер в одну строку"""
     success = await close_browser()
     if success:
-        await send_and_delete(update, context, "✅ Браузер успешно закрыт!", delay=3)
+        await update.message.reply_text("❌ Браузер закрыт ✅")
     else:
-        await send_and_delete(update, context, "❌ Не удалось закрыть браузер. Проверьте логи.", delay=5)
+        await update.message.reply_text("❌ Не удалось закрыть браузер")
 
 # Команда /screen
 async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Делает скриншот всей страницы"""
-    # Удаляем сообщение пользователя
-    asyncio.create_task(delete_user_message(update, context))
-    
-    await send_and_delete(update, context, "📸 Делаю скриншот всей страницы...", delay=0)
+    """Делает скриншот всей страницы в одну строку"""
+    await update.message.reply_text("📸 Делаю скриншот...")
     
     screenshot_data, error = await take_screenshot()
     
     if error:
-        await send_and_delete(update, context, f"❌ {error}", delay=5)
+        await update.message.reply_text(f"❌ {error}")
     elif screenshot_data:
         try:
             if isinstance(screenshot_data, str):
@@ -219,59 +162,38 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             else:
                 screenshot_bytes = screenshot_data
             
-            await send_photo_and_delete(
-                update,
-                context,
+            await update.message.reply_photo(
                 screenshot_bytes,
-                caption="📸 Скриншот всей страницы",
-                delay=10
+                caption="📸 Скриншот всей страницы"
             )
         except Exception as e:
             logger.error(f"Ошибка при отправке скриншота: {e}")
-            await send_and_delete(update, context, f"❌ Ошибка при отправке скриншота: {str(e)}", delay=5)
+            await update.message.reply_text(f"❌ Ошибка: {str(e)}")
     else:
-        await send_and_delete(update, context, "❌ Не удалось сделать скриншот", delay=5)
+        await update.message.reply_text("❌ Не удалось сделать скриншот")
 
 # Команда /go
 async def go_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Переходит на указанный URL"""
-    # Удаляем сообщение пользователя
-    asyncio.create_task(delete_user_message(update, context))
+    """Переходит на указанный URL в одну строку"""
+    global tab_instance
     
     if not context.args:
-        await send_and_delete(
-            update,
-            context,
-            "❌ Укажите URL.\nПример: /go https://example.com",
-            delay=5
-        )
+        await update.message.reply_text("❌ Укажите URL. Пример: /go https://example.com")
         return
     
     url = normalize_url(context.args[0])
     
-    await send_and_delete(update, context, f"🔗 Перехожу на {url}...", delay=0)
-    
     try:
         if tab_instance is None:
-            await send_and_delete(
-                update,
-                context,
-                "❌ Браузер не открыт. Используйте /open_bw",
-                delay=5
-            )
+            await update.message.reply_text("❌ Браузер не открыт. Используйте /open_bw")
             return
         
         await tab_instance.go_to(url)
         title = await tab_instance.title
-        await send_and_delete(
-            update,
-            context,
-            f"✅ Перешел на {url}\n📄 Заголовок: {title}",
-            delay=5
-        )
+        await update.message.reply_text(f"✅ Перешел на {url} | 📄 {title}")
     except Exception as e:
         logger.error(f"Ошибка при переходе: {e}")
-        await send_and_delete(update, context, f"❌ Ошибка: {str(e)}", delay=5)
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 # --- ОСТАЛЬНЫЕ ОБРАБОТЧИКИ ---
 
