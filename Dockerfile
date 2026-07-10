@@ -1,9 +1,12 @@
-FROM python:3.14-slim 
 
-# Установка Chromium и зависимостей
+FROM python:3.14-slim
+
+# Установка зависимостей
 RUN apt-get update && apt-get install -y \
-    chromium \
-    chromium-driver \
+    wget \
+    gnupg \
+    curl \
+    unzip \
     fonts-liberation \
     libasound2 \
     libatk-bridge2.0-0 \
@@ -21,12 +24,19 @@ RUN apt-get update && apt-get install -y \
     xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Проверка установки Chromium
-RUN chromium --version || echo "Chromium installed"
+# Установка Google Chrome (новый способ без apt-key)
+RUN curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome-keyring.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
+
+RUN apt-get update && apt-get install -y google-chrome-stable \
+    && rm -rf /var/lib/apt/lists/*
+
+# Проверка установки
+RUN google-chrome --version || echo "Google Chrome installed"
 
 # Переменные окружения
-ENV CHROME_PATH=/usr/bin/chromium
-ENV CHROMIUM_PATH=/usr/bin/chromium
+ENV CHROME_PATH=/usr/bin/google-chrome
+ENV CHROME_BIN=/usr/bin/google-chrome
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
