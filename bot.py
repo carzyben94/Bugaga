@@ -64,9 +64,15 @@ def get_image_size(image_data):
         return None, None
 
 # --- ФУНКЦИЯ ЗАМЕНЫ ФОНА (AGNES AI) ---
-def replace_background(image_data, new_background_prompt: str) -> str:
+def replace_background(image_data, new_background_prompt: str):
+    """
+    Заменяет фон на изображении через Agnes AI
+    
+    Returns:
+        tuple: (url, error_message)
+    """
     if not AGNES_API_KEY:
-        raise ValueError("AGNES_API_KEY не установлен!")
+        return None, "AGNES_API_KEY не установлен!"
     
     try:
         # Получаем размеры исходного изображения
@@ -78,10 +84,8 @@ def replace_background(image_data, new_background_prompt: str) -> str:
             logger.info("⚠️ Использую стандартный размер: 1024x1024")
         else:
             # Agnes AI принимает размеры в формате "ширинаxвысота"
-            # Ограничиваем максимальный размер для API (обычно 2048x2048)
             max_size = 2048
             if width > max_size or height > max_size:
-                # Масштабируем с сохранением пропорций
                 ratio = min(max_size / width, max_size / height)
                 width = int(width * ratio)
                 height = int(height * ratio)
@@ -101,7 +105,7 @@ def replace_background(image_data, new_background_prompt: str) -> str:
         payload = {
             "model": "agnes-image-2.0-flash",
             "prompt": f"Replace the background with: {new_background_prompt}. Keep the main subject unchanged.",
-            "size": size,  # Используем размер оригинального изображения
+            "size": size,
             "extra_body": {
                 "image": [data_uri],
                 "response_format": "url"
@@ -109,18 +113,27 @@ def replace_background(image_data, new_background_prompt: str) -> str:
         }
         
         logger.info(f"📤 Отправка запроса к Agnes AI...")
-        logger.info(f"📏 Размер запроса: {size}")
         response = requests.post(AGNES_API_URL, json=payload, headers=headers, timeout=60)
         response.raise_for_status()
         
         result = response.json()
         logger.info("✅ Изображение сгенерировано")
         
-        return result['data'][0]['url']
+        # Проверяем структуру ответа
+        if 'data' in result and len(result['data']) > 0 and 'url' in result['data'][0]:
+            return result['data'][0]['url'], None
+        else:
+            logger.error(f"❌ Неожиданный ответ от API: {result}")
+            return None, "Неожиданный ответ от API"
         
+    except requests.exceptions.Timeout:
+        return None, "Таймаут запроса к Agnes AI"
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ Ошибка запроса: {e}")
+        return None, f"Ошибка запроса: {str(e)}"
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
-        return None
+        return None, str(e)
 
 # --- ФУНКЦИИ БРАУЗЕРА ---
 def get_browser_options():
@@ -245,7 +258,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo_bytes = await photo_file.download_as_bytearray()
         context.user_data['last_image'] = bytes(photo_bytes)
         
-        # Определяем размеры для информации
         width, height = get_image_size(photo_bytes)
         size_info = f" ({width}x{height})" if width and height else ""
         
@@ -270,26 +282,49 @@ async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     prompt = ' '.join(context.args)
-    await update.message.reply_text(f"🎨 Заменяю фон: {prompt}\n⏳ Ожидайте...")
+    waiting_msg = await update.message.reply_text(f"🎨 Заменяю фон: {prompt}\n⏳ Ожидайте...")
 
     try:
         image_data = context.user_data['last_image']
         loop = asyncio.get_event_loop()
-        result_url = await loop.run_in_executor(None, replace_background, image_data, prompt)
+        result_url, error = await loop.run_in_executor(None, replace_background, image_data, prompt)
+
+        # Удаляем сообщение "Ожидайте..."
+        try:
+            await waiting_msg.delete()
+        except:
+            pass
+
+        if error:
+            await update.message.reply_text(f"❌ Ошибка: {error}")
+            return
 
         if result_url:
+            logger.info(f"📥 Скачиваю результат: {result_url}")
+            
             try:
+                # Скачиваем изображение
                 response = requests.get(result_url, timeout=30)
+                
                 if response.status_code == 200:
+                    # Отправляем фото
                     await update.message.reply_photo(
                         response.content,
                         caption=f"🖼️ Готово! Новый фон: {prompt}"
                     )
+                    logger.info("✅ Фото отправлено в чат")
                 else:
-                    await update.message.reply_text(f"✅ Готово, но не удалось скачать.")
+                    # Если не удалось скачать
+                    error_text = f"❌ Не удалось скачать результат (код: {response.status_code})"
+                    await update.message.reply_text(error_text)
+                    logger.error(error_text)
+                    
+            except requests.exceptions.Timeout:
+                await update.message.reply_text("❌ Таймаут при скачивании результата")
             except Exception as e:
-                logger.error(f"Ошибка скачивания: {e}")
-                await update.message.reply_text("✅ Готово! Результат сохранен.")
+                error_text = f"❌ Ошибка при скачивании: {str(e)}"
+                await update.message.reply_text(error_text)
+                logger.error(error_text)
         else:
             await update.message.reply_text("❌ Не удалось заменить фон.")
 
