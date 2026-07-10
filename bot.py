@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Telegram Bot с интерактивным окном браузера
-Версия: 8.0 - Одно окно, без спама
+Версия: 8.2 - С поддержкой кук
 """
 
 import asyncio
@@ -55,6 +55,123 @@ LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
 
 # ============================================================
+# КУКИ ДЛЯ X.COM (TWITTER)
+# ============================================================
+
+TWITTER_COOKIES = [
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "__cuid",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "lang",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "ru"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "dnt",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "1"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "guest_id",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "v1%3A178267838599411411"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "guest_id_marketing",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "v1%3A178267838599411411"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "guest_id_ads",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "v1%3A178267838599411411"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "personalization_id",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "\"v1_DKrxLZAC902dMFdd1QrVYg==\""
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "twid",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "u%3D2067347503503052800"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "auth_token",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "ct0",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb"
+    }
+]
+
+# ============================================================
 # УПРАВЛЕНИЕ БРАУЗЕРОМ
 # ============================================================
 
@@ -69,6 +186,7 @@ class BrowserSession:
     last_screenshot: Optional[str] = None
     waiting_for_input: bool = False
     pending_action: str = ""
+    cookies_set: bool = False  # Флаг что куки уже установлены
 
 class SessionManager:
     def __init__(self):
@@ -90,6 +208,41 @@ class SessionManager:
             logger.info("🌐 Браузер запущен")
         return self._browser
 
+    async def _set_cookies_for_tab(self, tab, cookies: List[Dict]) -> bool:
+        """Устанавливает куки для вкладки"""
+        try:
+            # Сначала переходим на домен, чтобы установить куки
+            domain = cookies[0].get("domain", "").lstrip('.')
+            if not domain:
+                return False
+            
+            # Переходим на домен
+            url = f"https://{domain}"
+            await tab.go_to(url)
+            await asyncio.sleep(0.5)  # Ждём загрузку
+            
+            # Устанавливаем каждую куку
+            for cookie in cookies:
+                try:
+                    cookie_data = {
+                        "name": cookie["name"],
+                        "value": cookie["value"],
+                        "domain": cookie["domain"],
+                        "path": cookie["path"],
+                        "secure": cookie.get("secure", False),
+                        "httpOnly": cookie.get("httpOnly", False),
+                        "sameSite": cookie.get("sameSite", "unspecified"),
+                    }
+                    await tab.set_cookie(**cookie_data)
+                except Exception as e:
+                    logger.warning(f"Не удалось установить куку {cookie.get('name')}: {e}")
+            
+            logger.info(f"✅ Установлено {len(cookies)} кук для {domain}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка установки кук: {e}")
+            return False
+
     async def get_session(self, user_id: int) -> BrowserSession:
         async with self._lock:
             if user_id not in self.sessions:
@@ -103,9 +256,25 @@ class SessionManager:
                 browser = await self._get_or_create_browser()
                 session.tab = await browser.new_tab()
                 session.is_active = True
-                session.comments = ["🟢 Браузер готов"]
-                session.current_url = await session.tab.current_url
-                session.page_title = await session.tab.title
+                
+                # Устанавливаем куки для X.com/Twitter
+                if not session.cookies_set:
+                    try:
+                        success = await self._set_cookies_for_tab(session.tab, TWITTER_COOKIES)
+                        if success:
+                            session.cookies_set = True
+                            session.comments = ["🟢 Браузер открыт", "🍪 Куки X.com установлены"]
+                        else:
+                            session.comments = ["🟢 Браузер открыт", "⚠️ Не удалось установить куки"]
+                    except Exception as e:
+                        session.comments = [f"🟢 Браузер открыт", f"❌ Ошибка кук: {str(e)}"]
+                
+                # Получаем текущий URL
+                try:
+                    session.current_url = await session.tab.current_url
+                    session.page_title = await session.tab.title
+                except:
+                    pass
             
             return session
 
@@ -184,9 +353,10 @@ def get_sites_keyboard():
         ],
         [
             InlineKeyboardButton("📘 GitHub", callback_data="site_github"),
-            InlineKeyboardButton("🟦 Wikipedia", callback_data="site_wikipedia"),
+            InlineKeyboardButton("🐦 X/Twitter", callback_data="site_x"),
         ],
         [
+            InlineKeyboardButton("🟦 Wikipedia", callback_data="site_wikipedia"),
             InlineKeyboardButton("🔙 Назад", callback_data="menu_main"),
         ],
     ]
@@ -231,6 +401,10 @@ async def update_window(update: Update, context: ContextTypes.DEFAULT_TYPE, user
     caption += f"🔗 `{session.current_url or 'не загружен'}`\n"
     caption += f"📄 {session.page_title or 'не загружен'}\n"
     caption += "─" * 20 + "\n"
+    
+    # Показываем статус кук
+    if session.cookies_set:
+        caption += "🍪 Куки X.com установлены\n"
     
     # Комментарии (последние 5)
     for comment in session.comments[-5:]:
@@ -317,7 +491,6 @@ async def execute_action(action: str, user_id: int, update: Update, context: Con
         elif action == "search":
             session.comments.append(f"🔍 Ищу '{text}'...")
             
-            # Пробуем найти поле поиска
             selectors = [
                 'input[type="search"]',
                 'input[name="q"]',
@@ -372,21 +545,36 @@ async def execute_action(action: str, user_id: int, update: Update, context: Con
         
         elif action == "js":
             session.comments.append("⚡ Выполняю JS...")
-            result = await tab.execute_script(text)
-            session.comments.append(f"✅ Результат: {str(result)[:100]}")
+            try:
+                result = await tab.execute_script(text)
+                result_str = str(result)
+                session.comments.append(f"✅ Результат: {result_str[:100]}")
+                if len(result_str) > 100:
+                    session.comments.append(f"   ... и ещё {len(result_str) - 100} символов")
+            except Exception as e:
+                session.comments.append(f"❌ Ошибка JS: {str(e)}")
         
         elif action == "data":
             session.comments.append("📊 Собираю данные...")
-            result = await tab.execute_script(f"""
-                const elements = document.querySelectorAll('{text}');
-                return Array.from(elements).map(el => el.innerText.trim()).slice(0, 10);
-            """)
-            if result:
-                session.comments.append(f"📊 Найдено: {len(result)} элементов")
-                for item in result[:3]:
-                    session.comments.append(f"  • {item[:50]}")
-            else:
-                session.comments.append("❌ Ничего не найдено")
+            try:
+                result = await tab.execute_script(f"""
+                    const elements = document.querySelectorAll('{text}');
+                    return Array.from(elements).map(el => el.innerText.trim());
+                """)
+                
+                if result and isinstance(result, list) and len(result) > 0:
+                    session.comments.append(f"📊 Найдено: {len(result)} элементов")
+                    for i, item in enumerate(result[:3]):
+                        if isinstance(item, str):
+                            session.comments.append(f"  • {item[:50]}")
+                        else:
+                            session.comments.append(f"  • {str(item)[:50]}")
+                    if len(result) > 3:
+                        session.comments.append(f"  ... и ещё {len(result) - 3}")
+                else:
+                    session.comments.append("❌ Ничего не найдено")
+            except Exception as e:
+                session.comments.append(f"❌ Ошибка сбора данных: {str(e)}")
         
         elif action == "close":
             await session_manager.close_session(user_id)
@@ -438,6 +626,7 @@ async def process_with_ai(user_message: str, user_id: int, update: Update, conte
 Текущее состояние:
 - URL: {session.current_url or 'не загружен'}
 - Браузер: {'открыт' if session.is_active else 'закрыт'}
+- Куки X.com: {'установлены' if session.cookies_set else 'не установлены'}
 
 Доступные действия:
 - go_to_url: перейти на сайт
@@ -591,6 +780,7 @@ TOOLS = [
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 **Бот с браузером**\n\n"
+        "🍪 Куки X.com (Twitter) установлены автоматически!\n\n"
         "Просто напиши что нужно сделать:\n"
         "• `Перейди на youtube.com`\n"
         "• `Найди котиков`\n"
@@ -605,7 +795,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def open_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     session = await session_manager.get_session(user_id)
-    session.comments = ["🟢 Браузер открыт", "💬 Напиши что нужно сделать"]
+    
+    if session.cookies_set:
+        session.comments = ["🟢 Браузер открыт", "🍪 Куки X.com установлены"]
+    else:
+        session.comments = ["🟢 Браузер открыт", "⚠️ Куки не установлены"]
+    
     await update_window(update, context, user_id)
 
 async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -679,6 +874,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "google": "google.com",
             "github": "github.com",
             "wikipedia": "wikipedia.org",
+            "x": "x.com",
         }
         if site in sites:
             await execute_action("go_to_url", user_id, update, context, sites[site])
@@ -740,6 +936,7 @@ async def main():
         logger.info("=" * 60)
         logger.info("🚀 Бот с интерактивным окном запущен!")
         logger.info("📌 Команды: /open, /close")
+        logger.info("🍪 Куки X.com (Twitter) установлены автоматически")
         logger.info("💬 Пиши что нужно сделать в чат!")
         logger.info("=" * 60)
         
