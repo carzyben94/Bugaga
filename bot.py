@@ -1,6 +1,6 @@
 import asyncio
 import logging
-import os 
+import os
 import base64
 import requests
 import json
@@ -240,7 +240,6 @@ def get_agent_stats(user_id):
     conn = sqlite3.connect('agent_memory.db')
     cursor = conn.cursor()
     
-    # Получаем общую статистику
     cursor.execute(
         'SELECT total_commands, total_learned, total_experiments, success_rate FROM agent_stats WHERE user_id = ?',
         (user_id,)
@@ -250,21 +249,18 @@ def get_agent_stats(user_id):
     if not stats:
         stats = (0, 0, 0, 0.0)
     
-    # Получаем количество выученных команд
     cursor.execute(
         'SELECT COUNT(*) FROM agent_learning WHERE user_id = ? AND success = 1',
         (user_id,)
     )
     learned_count = cursor.fetchone()[0]
     
-    # Получаем количество экспериментов
     cursor.execute(
         'SELECT COUNT(*) FROM agent_experiments WHERE user_id = ? AND status = "completed"',
         (user_id,)
     )
     experiments_count = cursor.fetchone()[0]
     
-    # Получаем последние действия
     cursor.execute(
         'SELECT command, action, created_at FROM agent_learning WHERE user_id = ? ORDER BY created_at DESC LIMIT 3',
         (user_id,)
@@ -302,7 +298,6 @@ def update_agent_stats(user_id, command_type, success=True):
         elif command_type == 'experiment':
             total_experiments += 1
         
-        # Обновляем процент успеха
         if success:
             success_rate = (success_rate * (total_commands - 1) + 1) / total_commands
         else:
@@ -378,7 +373,12 @@ async def go_to_url(url: str):
         await tab_instance.go_to(url)
         current_url = url
         page_title = await tab_instance.title
-        page_content = await tab_instance.get_text()
+        
+        # Получаем текст страницы через get_page_text (по документации pydoll)
+        try:
+            page_content = await tab_instance.get_page_text()
+        except AttributeError:
+            page_content = "Текст страницы не доступен"
         
         return True, f"Перешел на {url}"
     except Exception as e:
@@ -456,33 +456,24 @@ def call_agnes_agent(prompt: str, context: dict = None, learning_context: str = 
         logger.error(f"Ошибка Agnes: {e}")
         return None, str(e)
 
-# --- КОМАНДА /STATUS (ОБНОВЛЕННАЯ) ---
+# --- КОМАНДА /STATUS ---
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает статус браузера и показатели агента"""
     user_id = update.effective_user.id
     
-    # Статус браузера
     browser_status = "🟢 Включен" if browser_instance is not None and tab_instance is not None else "🔴 Выключен"
-    
-    # Статистика агента
     stats = get_agent_stats(user_id)
     
-    # Информация о системе
     uptime = datetime.now() - start_time
     uptime_str = str(uptime).split('.')[0]
     
-    # Память
     memory = psutil.virtual_memory()
-    memory_used = memory.used / (1024**3)  # GB
-    memory_total = memory.total / (1024**3)  # GB
-    
-    # CPU
+    memory_used = memory.used / (1024**3)
+    memory_total = memory.total / (1024**3)
     cpu_percent = psutil.cpu_percent(interval=0.5)
     
-    # Проверка API ключей
     agnes_status = "✅ Настроен" if AGNES_API_KEY else "❌ Не настроен"
     
-    # Создаем ответ
     response = (
         "📊 **Статус системы**\n\n"
         
@@ -513,14 +504,12 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"  • Категорий: {len(RESOURCE_LIBRARY)}\n\n"
     )
     
-    # Добавляем последние действия
     if stats['recent_actions']:
         response += "🔄 **Последние действия:**\n"
         for cmd, action, date in stats['recent_actions']:
             date_str = date[:16] if date else "недавно"
             response += f"  • {cmd} -> {action[:30]}... ({date_str})\n"
     
-    # Добавляем рекомендации
     if stats['total_commands'] < 5:
         response += "\n💡 **Совет:** Используйте /learn, чтобы научить меня новым командам!"
     elif stats['learned_count'] < 3:
@@ -556,7 +545,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/help_agent <описание> - Помочь агенту"
     )
 
-# --- ОСТАЛЬНЫЕ КОМАНДЫ (без изменений) ---
 async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     success = await open_browser()
     if success:
@@ -594,7 +582,6 @@ async def go_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"❌ {msg}")
 
-# --- ЗАМЕНА ФОНА ---
 def replace_background(image_data, new_background_prompt: str):
     if not AGNES_API_KEY:
         return None, "AGNES_API_KEY не установлен!"
@@ -662,6 +649,27 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🧹 Кэш очищен!")
     else:
         await update.message.reply_text("📭 Кэш пуст")
+
+def save_learning(user_id, command, action, context, success):
+    conn = sqlite3.connect('agent_memory.db')
+    cursor = conn.cursor()
+    cursor.execute(
+        'INSERT INTO agent_learning (user_id, command, action, context, success) VALUES (?, ?, ?, ?, ?)',
+        (user_id, command, action, context, 1 if success else 0)
+    )
+    conn.commit()
+    conn.close()
+
+def get_learned_actions(user_id, command):
+    conn = sqlite3.connect('agent_memory.db')
+    cursor = conn.cursor()
+    cursor.execute(
+        'SELECT action, context FROM agent_learning WHERE user_id = ? AND command LIKE ? AND success = 1 ORDER BY created_at DESC LIMIT 5',
+        (user_id, f'%{command}%')
+    )
+    results = cursor.fetchall()
+    conn.close()
+    return results
 
 async def learn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -861,6 +869,37 @@ async def agent_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         update_agent_stats(user_id, 'command', False)
 
 # --- ЭКСПЕРИМЕНТЫ ---
+def save_experiment(user_id, goal, attempts, best_result, status):
+    conn = sqlite3.connect('agent_memory.db')
+    cursor = conn.cursor()
+    cursor.execute(
+        'INSERT INTO agent_experiments (user_id, goal, attempts, best_result, status) VALUES (?, ?, ?, ?, ?)',
+        (user_id, goal, attempts, best_result, status)
+    )
+    conn.commit()
+    conn.close()
+
+def get_experiments(user_id):
+    conn = sqlite3.connect('agent_memory.db')
+    cursor = conn.cursor()
+    cursor.execute(
+        'SELECT goal, attempts, best_result, status FROM agent_experiments WHERE user_id = ? ORDER BY created_at DESC LIMIT 5',
+        (user_id,)
+    )
+    results = cursor.fetchall()
+    conn.close()
+    return results
+
+def save_prompt_optimization(user_id, original, optimized, result, success):
+    conn = sqlite3.connect('agent_memory.db')
+    cursor = conn.cursor()
+    cursor.execute(
+        'INSERT INTO agent_prompts (user_id, original_prompt, optimized_prompt, result, success) VALUES (?, ?, ?, ?, ?)',
+        (user_id, original, optimized, result, 1 if success else 0)
+    )
+    conn.commit()
+    conn.close()
+
 async def agent_experiment_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not AGNES_API_KEY:
         await update.message.reply_text("❌ Agnes AI не настроен.")
@@ -871,8 +910,7 @@ async def agent_experiment_command(update: Update, context: ContextTypes.DEFAULT
             "🧪 Агент-экспериментатор:\n"
             "/experiment <цель>\n\n"
             "Примеры:\n"
-            "/experiment создать логотип для бота\n"
-            "/experiment написать пост для Instagram"
+            "/experiment создать логотип для бота"
         )
         return
     
@@ -1118,58 +1156,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Ошибка: {context.error}")
-
-def save_learning(user_id, command, action, context, success):
-    conn = sqlite3.connect('agent_memory.db')
-    cursor = conn.cursor()
-    cursor.execute(
-        'INSERT INTO agent_learning (user_id, command, action, context, success) VALUES (?, ?, ?, ?, ?)',
-        (user_id, command, action, context, 1 if success else 0)
-    )
-    conn.commit()
-    conn.close()
-
-def get_learned_actions(user_id, command):
-    conn = sqlite3.connect('agent_memory.db')
-    cursor = conn.cursor()
-    cursor.execute(
-        'SELECT action, context FROM agent_learning WHERE user_id = ? AND command LIKE ? AND success = 1 ORDER BY created_at DESC LIMIT 5',
-        (user_id, f'%{command}%')
-    )
-    results = cursor.fetchall()
-    conn.close()
-    return results
-
-def save_experiment(user_id, goal, attempts, best_result, status):
-    conn = sqlite3.connect('agent_memory.db')
-    cursor = conn.cursor()
-    cursor.execute(
-        'INSERT INTO agent_experiments (user_id, goal, attempts, best_result, status) VALUES (?, ?, ?, ?, ?)',
-        (user_id, goal, attempts, best_result, status)
-    )
-    conn.commit()
-    conn.close()
-
-def get_experiments(user_id):
-    conn = sqlite3.connect('agent_memory.db')
-    cursor = conn.cursor()
-    cursor.execute(
-        'SELECT goal, attempts, best_result, status FROM agent_experiments WHERE user_id = ? ORDER BY created_at DESC LIMIT 5',
-        (user_id,)
-    )
-    results = cursor.fetchall()
-    conn.close()
-    return results
-
-def save_prompt_optimization(user_id, original, optimized, result, success):
-    conn = sqlite3.connect('agent_memory.db')
-    cursor = conn.cursor()
-    cursor.execute(
-        'INSERT INTO agent_prompts (user_id, original_prompt, optimized_prompt, result, success) VALUES (?, ?, ?, ?, ?)',
-        (user_id, original, optimized, result, 1 if success else 0)
-    )
-    conn.commit()
-    conn.close()
 
 def main():
     try:
