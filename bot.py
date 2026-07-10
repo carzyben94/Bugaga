@@ -93,10 +93,9 @@ async def take_screenshot():
         if tab_instance is None:
             return None, "❌ Браузер не открыт. Используйте /open_bw"
         
-        # Делаем скриншот всей страницы через правильный метод take_screenshot
         screenshot_data = await tab_instance.take_screenshot(
-            beyond_viewport=True,  # Вся страница
-            as_base64=True         # Возвращаем в формате base64
+            beyond_viewport=True,
+            as_base64=True
         )
         
         logger.info("📸 Скриншот всей страницы сделан")
@@ -177,7 +176,6 @@ async def go_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Нормализуем URL - добавляем https:// если нужно
     url = normalize_url(context.args[0])
     
     await update.message.reply_text(f"🔗 Перехожу на {url}...")
