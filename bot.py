@@ -182,12 +182,15 @@ def get_browser_status():
 # --- КОМАНДЫ БОТА ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
+        "🌐 Браузер:\n"
         "/status - Статус браузера\n"
         "/open_bw - Открыть браузер\n"
         "/close_bw - Закрыть браузер\n"
         "/screen - Скриншот\n"
-        "/go <URL> - Перейти на сайт\n"
-        "/bg - Замена фона"
+        "/go <URL> - Перейти на сайт\n\n"
+        "🎨 Категория Фотошоп:\n"
+        "/bg - Замена фона\n"
+        "/clear - Очистить кэш"
     )
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -218,7 +221,7 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             context.user_data['last_image'] = screenshot_bytes
             await update.message.reply_photo(
                 screenshot_bytes,
-                caption="📸 Скриншот сохранен!\nКакой фон? /bg <пишите сюда фон>"
+                caption="📸 Скриншот сохранен!\n/bg <описание>"
             )
         except Exception as e:
             await update.message.reply_text(f"❌ Ошибка: {str(e)}")
@@ -249,10 +252,19 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         size_info = f" ({width}x{height})" if width and height else ""
         
         await update.message.reply_text(
-            f"📸 Фото сохранено{size_info}!\nКакой фон? /bg <пишите сюда фон>"
+            f"📸 Фото сохранено{size_info}!\n/bg <описание>"
         )
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
+# --- КОМАНДА ОЧИСТКИ КЭША ---
+async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Очищает сохраненное изображение"""
+    if 'last_image' in context.user_data:
+        del context.user_data['last_image']
+        await update.message.reply_text("🧹 Кэш очищен!")
+    else:
+        await update.message.reply_text("📭 Кэш пуст")
 
 # --- ГЛАВНАЯ КОМАНДА /bg ---
 async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -328,6 +340,7 @@ def main():
         application.add_handler(CommandHandler("screen", screenshot_command))
         application.add_handler(CommandHandler("go", go_command))
         application.add_handler(CommandHandler("bg", bg_command))
+        application.add_handler(CommandHandler("clear", clear_command))
         application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
         application.add_error_handler(error_handler)
 
