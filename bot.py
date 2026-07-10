@@ -21,83 +21,157 @@ if not TOKEN:
 # Путь к браузеру Google Chrome
 CHROME_PATH = "/usr/bin/google-chrome"
 
-# Обработчик команды /start
+# Глобальная переменная для хранения экземпляра браузера
+browser_instance = None
+tab_instance = None
+
+# --- ФУНКЦИИ ДЛЯ РАБОТЫ С БРАУЗЕРОМ ---
+
+def get_browser_options():
+    """Создает и возвращает настроенный объект ChromiumOptions"""
+    options = ChromiumOptions()
+    options.binary_location = CHROME_PATH
+    options.add_argument('--headless=new')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-gpu')
+    options.start_timeout = 30
+    return options
+
+async def open_browser():
+    """Открывает браузер и создает новую вкладку"""
+    global browser_instance, tab_instance
+    
+    try:
+        if browser_instance is None:
+            options = get_browser_options()
+            browser_instance = Chrome(options=options)
+            await browser_instance.start()
+            tab_instance = await browser_instance.start()
+            logger.info("✅ Браузер успешно открыт")
+            return True
+        else:
+            logger.info("ℹ️ Браузер уже открыт")
+            return True
+    except Exception as e:
+        logger.error(f"❌ Ошибка при открытии браузера: {e}")
+        return False
+
+async def close_browser():
+    """Закрывает браузер"""
+    global browser_instance, tab_instance
+    
+    try:
+        if browser_instance is not None:
+            await browser_instance.stop()
+            browser_instance = None
+            tab_instance = None
+            logger.info("✅ Браузер успешно закрыт")
+            return True
+        else:
+            logger.info("ℹ️ Браузер уже закрыт")
+            return True
+    except Exception as e:
+        logger.error(f"❌ Ошибка при закрытии браузера: {e}")
+        return False
+
+async def take_screenshot():
+    """Делает скриншот всей страницы"""
+    global tab_instance
+    
+    try:
+        if tab_instance is None:
+            return None, "❌ Браузер не открыт. Используйте /open_bw"
+        
+        # Делаем скриншот всей страницы
+        screenshot_data = await tab_instance.screenshot(
+            capture_beyond_viewport=True  # Вся страница
+        )
+        
+        logger.info("📸 Скриншот всей страницы сделан")
+        return screenshot_data, None
+    except Exception as e:
+        logger.error(f"❌ Ошибка при создании скриншота: {e}")
+        return None, str(e)
+
+# --- КОМАНДЫ БОТА ---
+
+# Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает список команд"""
     await update.message.reply_text(
-        "👋 Привет! Я бот на Railway.\n"
-        "🚀 Запускаю браузер Google Chrome..."
+        "/open_bw - Открыть браузер\n"
+        "/close_bw - Закрыть браузер\n"
+        "/screen - Скриншот всей страницы\n"
+        "/go <URL> - Перейти на сайт"
     )
 
+# Команда /open_bw
+async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Открывает браузер"""
+    await update.message.reply_text("🌐 Открываю браузер...")
+    
+    success = await open_browser()
+    if success:
+        await update.message.reply_text("✅ Браузер успешно открыт!")
+    else:
+        await update.message.reply_text("❌ Не удалось открыть браузер. Проверьте логи.")
+
+# Команда /close_bw
+async def close_browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Закрывает браузер"""
+    await update.message.reply_text("❌ Закрываю браузер...")
+    
+    success = await close_browser()
+    if success:
+        await update.message.reply_text("✅ Браузер успешно закрыт!")
+    else:
+        await update.message.reply_text("❌ Не удалось закрыть браузер. Проверьте логи.")
+
+# Команда /screen
+async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Делает скриншот всей страницы"""
+    await update.message.reply_text("📸 Делаю скриншот всей страницы...")
+    
+    screenshot_data, error = await take_screenshot()
+    
+    if error:
+        await update.message.reply_text(f"❌ {error}")
+    elif screenshot_data:
+        await update.message.reply_photo(
+            screenshot_data,
+            caption="📸 Скриншот всей страницы"
+        )
+    else:
+        await update.message.reply_text("❌ Не удалось сделать скриншот")
+
+# Команда /go
+async def go_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Переходит на указанный URL"""
+    global tab_instance
+    
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Укажите URL.\n"
+            "Пример: /go https://example.com"
+        )
+        return
+    
+    url = context.args[0]
+    await update.message.reply_text(f"🔗 Перехожу на {url}...")
+    
     try:
-        # Запускаем асинхронную задачу с Pydoll
-        result = await open_browser_and_fetch()
-        await update.message.reply_text(f"✅ Готово! Заголовок страницы: {result}")
+        if tab_instance is None:
+            await update.message.reply_text("❌ Браузер не открыт. Используйте /open_bw")
+            return
+        
+        await tab_instance.go_to(url)
+        title = await tab_instance.title
+        await update.message.reply_text(f"✅ Перешел на {url}\n📄 Заголовок: {title}")
     except Exception as e:
-        logger.error(f"Ошибка при работе браузера: {e}")
-        await update.message.reply_text(f"❌ Произошла ошибка: {str(e)}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
-# --- БЛОК РАБОТЫ С БРАУЗЕРОМ (по документации pydoll) ---
-
-async def open_browser_and_fetch():
-    """
-    Запускает Google Chrome, переходит на сайт и возвращает заголовок страницы.
-    Используется контекстный менеджер для автоматического запуска и остановки.
-    """
-    # Создаем объект настроек ChromiumOptions
-    options = ChromiumOptions()
-    
-    # Указываем путь к бинарному файлу Google Chrome
-    options.binary_location = CHROME_PATH
-    
-    # Добавляем аргументы для работы в Docker/Railway
-    options.add_argument('--headless=new')           # Запуск в фоновом режиме
-    options.add_argument('--no-sandbox')             # Обход ограничений в контейнере
-    options.add_argument('--disable-dev-shm-usage')  # Обход проблем с памятью в Docker
-    options.add_argument('--disable-gpu')            # Отключаем GPU (не нужно в headless)
-    options.add_argument('--disable-blink-features=AutomationControlled')  # Скрываем автоматизацию
-    
-    # Увеличиваем таймаут для надежности (по умолчанию 10 секунд)
-    options.start_timeout = 30
-    
-    # Логируем настройки
-    logger.info(f"Запуск браузера по пути: {CHROME_PATH}")
-    logger.info("Аргументы: --headless=new, --no-sandbox, --disable-dev-shm-usage, --disable-gpu")
-    
-    # Создаем экземпляр браузера с настройками
-    browser = Chrome(options=options)
-    
-    # Используем контекстный менеджер для автоматического управления
-    async with browser:
-        # Запускаем браузер и получаем вкладку
-        tab = await browser.start()
-        
-        logger.info("✅ Браузер успешно запущен!")
-        
-        # Переходим на сайт
-        await tab.go_to("https://example.com")
-        
-        # Получаем заголовок страницы
-        title = await tab.title
-        logger.info(f"Заголовок страницы: {title}")
-        
-        # Получаем текущий URL через метод get_url() или свойство
-        # В документации pydoll используется метод или свойство
-        try:
-            # Пробуем получить URL через свойство url
-            current_url = await tab.url
-            logger.info(f"Текущий URL: {current_url}")
-        except AttributeError:
-            # Если свойства url нет, пробуем через метод get_url()
-            try:
-                current_url = await tab.get_url()
-                logger.info(f"Текущий URL: {current_url}")
-            except AttributeError:
-                # Если и метода нет, просто пропускаем
-                logger.warning("Метод получения URL не найден, пропускаем")
-        
-        return title
-
-# --- КОНЕЦ БЛОКА РАБОТЫ С БРАУЗЕРОМ ---
+# --- ОСТАЛЬНЫЕ ОБРАБОТЧИКИ ---
 
 # Обработчик ошибок
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -109,15 +183,19 @@ def main():
         # Создаем приложение
         application = Application.builder().token(TOKEN).build()
 
-        # Регистрируем команду /start
+        # Регистрируем команды
         application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("open_bw", open_browser_command))
+        application.add_handler(CommandHandler("close_bw", close_browser_command))
+        application.add_handler(CommandHandler("screen", screenshot_command))
+        application.add_handler(CommandHandler("go", go_command))
         
         # Регистрируем обработчик ошибок
         application.add_error_handler(error_handler)
 
         logger.info("🚀 Бот запущен!")
         logger.info(f"📁 Используемый браузер: {CHROME_PATH}")
-        logger.info("ℹ️ Ожидаю команды...")
+        logger.info("ℹ️ Доступные команды: /start, /open_bw, /close_bw, /screen, /go")
         
         # Запускаем бота
         application.run_polling(allowed_updates=Update.ALL_TYPES)
