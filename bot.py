@@ -117,20 +117,24 @@ def get_browser_status():
 
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает список команд в одну строку"""
+    """Показывает список команд в столбик"""
     await update.message.reply_text(
-        "/status - Статус браузера | /open_bw - Открыть браузер | /close_bw - Закрыть браузер | /screen - Скриншот | /go <URL> - Перейти на сайт"
+        "/status - Статус браузера\n"
+        "/open_bw - Открыть браузер\n"
+        "/close_bw - Закрыть браузер\n"
+        "/screen - Скриншот\n"
+        "/go <URL> - Перейти на сайт"
     )
 
 # Команда /status
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает статус браузера в одну строку"""
+    """Показывает статус браузера"""
     status = get_browser_status()
     await update.message.reply_text(f"📊 Статус браузера: {status}")
 
 # Команда /open_bw
 async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Открывает браузер в одну строку"""
+    """Открывает браузер"""
     success = await open_browser()
     if success:
         await update.message.reply_text("🌐 Браузер открыт ✅")
@@ -139,7 +143,7 @@ async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
 # Команда /close_bw
 async def close_browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Закрывает браузер в одну строку"""
+    """Закрывает браузер"""
     success = await close_browser()
     if success:
         await update.message.reply_text("❌ Браузер закрыт ✅")
@@ -148,7 +152,7 @@ async def close_browser_command(update: Update, context: ContextTypes.DEFAULT_TY
 
 # Команда /screen
 async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Делает скриншот всей страницы в одну строку"""
+    """Делает скриншот всей страницы"""
     await update.message.reply_text("📸 Делаю скриншот...")
     
     screenshot_data, error = await take_screenshot()
@@ -174,7 +178,7 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 # Команда /go
 async def go_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Переходит на указанный URL в одну строку"""
+    """Переходит на указанный URL"""
     global tab_instance
     
     if not context.args:
@@ -190,7 +194,7 @@ async def go_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await tab_instance.go_to(url)
         title = await tab_instance.title
-        await update.message.reply_text(f"✅ Перешел на {url} | 📄 {title}")
+        await update.message.reply_text(f"✅ Перешел на {url}\n📄 {title}")
     except Exception as e:
         logger.error(f"Ошибка при переходе: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
