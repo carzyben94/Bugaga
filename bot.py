@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import base64
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from pydoll.browser import Chrome
@@ -83,9 +84,10 @@ async def take_screenshot():
         if tab_instance is None:
             return None, "❌ Браузер не открыт. Используйте /open_bw"
         
-        # Делаем скриншот всей страницы
-        screenshot_data = await tab_instance.screenshot(
-            capture_beyond_viewport=True  # Вся страница
+        # Делаем скриншот всей страницы через правильный метод take_screenshot
+        screenshot_data = await tab_instance.take_screenshot(
+            beyond_viewport=True,  # Вся страница
+            as_base64=True         # Возвращаем в формате base64
         )
         
         logger.info("📸 Скриншот всей страницы сделан")
@@ -138,10 +140,21 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if error:
         await update.message.reply_text(f"❌ {error}")
     elif screenshot_data:
-        await update.message.reply_photo(
-            screenshot_data,
-            caption="📸 Скриншот всей страницы"
-        )
+        # Если данные в base64, декодируем их
+        try:
+            # Проверяем, является ли screenshot_data строкой base64
+            if isinstance(screenshot_data, str):
+                screenshot_bytes = base64.b64decode(screenshot_data)
+            else:
+                screenshot_bytes = screenshot_data
+            
+            await update.message.reply_photo(
+                screenshot_bytes,
+                caption="📸 Скриншот всей страницы"
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при отправке скриншота: {e}")
+            await update.message.reply_text(f"❌ Ошибка при отправке скриншота: {str(e)}")
     else:
         await update.message.reply_text("❌ Не удалось сделать скриншот")
 
