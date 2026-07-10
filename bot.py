@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Telegram Bot с полным контролем браузера через Pydoll
-Версия: 9.1 - Исправлена ошибка форматирования
+Версия: 9.2 - Полностью исправлена ошибка форматирования
 """
 
 import asyncio
@@ -242,7 +242,7 @@ class SessionManager:
             if not domain:
                 return False
             
-            logger.info(f"🍪 Устанавливаю {len(cookies)} кук")
+            logger.info("🍪 Устанавливаю " + str(len(cookies)) + " кук")
             
             formatted_cookies = []
             for cookie in cookies:
@@ -260,10 +260,10 @@ class SessionManager:
                 browser_context_id=context_id
             )
             
-            logger.info(f"✅ Установлено {len(formatted_cookies)} кук")
+            logger.info("✅ Установлено " + str(len(formatted_cookies)) + " кук")
             return True
         except Exception as e:
-            logger.error(f"❌ Ошибка установки кук: {e}")
+            logger.error("❌ Ошибка установки кук: " + str(e))
             return False
 
     async def get_session(self, user_id: int) -> BrowserSession:
@@ -271,7 +271,7 @@ class SessionManager:
             if user_id not in self.sessions:
                 session = BrowserSession()
                 self.sessions[user_id] = session
-                logger.info(f"🆕 Сессия для {user_id}")
+                logger.info("🆕 Сессия для " + str(user_id))
             
             session = self.sessions[user_id]
             
@@ -280,7 +280,7 @@ class SessionManager:
                 
                 try:
                     session.context_id = await browser.create_browser_context()
-                    logger.info(f"🔒 Создан контекст {session.context_id}")
+                    logger.info("🔒 Создан контекст " + str(session.context_id))
                 except AttributeError:
                     session.context_id = None
                 
@@ -308,7 +308,7 @@ class SessionManager:
                                 "✅ Готов к работе"
                             ]
                     except Exception as e:
-                        session.comments = [f"🟢 Браузер открыт", f"❌ Ошибка: {str(e)}"]
+                        session.comments = ["🟢 Браузер открыт", "❌ Ошибка: " + str(e)]
                 
                 try:
                     session.current_url = await session.tab.current_url
@@ -333,7 +333,7 @@ class SessionManager:
                     except:
                         pass
                 del self.sessions[user_id]
-                logger.info(f"❌ Сессия {user_id} закрыта")
+                logger.info("❌ Сессия " + str(user_id) + " закрыта")
 
     async def close_all(self):
         for user_id in list(self.sessions.keys()):
@@ -551,7 +551,7 @@ async def update_window(update: Update, context: ContextTypes.DEFAULT_TYPE, user
             pass
 
 # ============================================================
-# ВЫПОЛНЕНИЕ ДЕЙСТВИЙ - ИСПРАВЛЕНО
+# ВЫПОЛНЕНИЕ ДЕЙСТВИЙ - ПОЛНОСТЬЮ ИСПРАВЛЕНО
 # ============================================================
 
 async def execute_action(action: str, user_id: int, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str = ""):
@@ -652,11 +652,11 @@ async def execute_action(action: str, user_id: int, update: Update, context: Con
             try:
                 elements = await tab.find(tag_name="*", text=text, find_all=True)
                 if elements:
-                    session.comments.append("✅ Найдено " + str(len(elements)) + " элементов с текстом '" + str(text) + "'")
+                    session.comments.append("✅ Найдено " + str(len(elements)) + " элементов с текстом")
                 else:
-                    session.comments.append("❌ Текст '" + str(text) + "' не найден")
+                    session.comments.append("❌ Текст не найден")
             except:
-                session.comments.append("❌ Ошибка поиска текста: " + str(text))
+                session.comments.append("❌ Ошибка поиска текста")
         
         elif action == "find_all_elements":
             try:
@@ -779,12 +779,12 @@ async def execute_action(action: str, user_id: int, update: Update, context: Con
         # ============================================================
         elif action == "scroll_up":
             amount = int(text) if text else 300
-            await tab.execute_script(f"window.scrollBy(0, -{amount})")
+            await tab.execute_script("window.scrollBy(0, -" + str(amount) + ")")
             session.comments.append("⬆️ Вверх на " + str(amount))
         
         elif action == "scroll_down":
             amount = int(text) if text else 300
-            await tab.execute_script(f"window.scrollBy(0, {amount})")
+            await tab.execute_script("window.scrollBy(0, " + str(amount) + ")")
             session.comments.append("⬇️ Вниз на " + str(amount))
         
         elif action == "scroll_to_element":
@@ -864,7 +864,7 @@ async def execute_action(action: str, user_id: int, update: Update, context: Con
             session.comments.append("🍪 Все куки очищены")
         
         # ============================================================
-        # JAVASCRIPT (ИСПРАВЛЕНО)
+        # JAVASCRIPT
         # ============================================================
         elif action == "execute_js":
             try:
@@ -1022,7 +1022,7 @@ async def execute_action(action: str, user_id: int, update: Update, context: Con
     await update_window(update, context, user_id)
 
 # ============================================================
-# ОБРАБОТКА AI - РАСШИРЕННАЯ
+# ОБРАБОТКА AI
 # ============================================================
 
 async def process_with_ai(user_message: str, user_id: int, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1051,17 +1051,16 @@ async def process_with_ai(user_message: str, user_id: int, update: Update, conte
             await execute_action("type_text", user_id, update, context, user_message)
         return
     
-    system_prompt = f"""
-Ты — AI агент, управляющий браузером через Pydoll.
-
-**ТЕКУЩЕЕ СОСТОЯНИЕ:**
-- URL: {session.current_url or 'не загружен'}
-- Заголовок: {session.page_title or 'не загружен'}
-- Браузер: {'открыт' if session.is_active else 'закрыт'}
-- Куки: {'установлены' if session.cookies_set else 'не установлены'}
-- Вкладок: {len(session.tabs)}
-
-**ВСЕ ВОЗМОЖНОСТИ (инструменты):**
+    # Формируем системный промпт БЕЗ f-строк
+    system_prompt = "Ты — AI агент, управляющий браузером через Pydoll.\n\n"
+    system_prompt += "**ТЕКУЩЕЕ СОСТОЯНИЕ:**\n"
+    system_prompt += "- URL: " + (session.current_url or 'не загружен') + "\n"
+    system_prompt += "- Заголовок: " + (session.page_title or 'не загружен') + "\n"
+    system_prompt += "- Браузер: " + ('открыт' if session.is_active else 'закрыт') + "\n"
+    system_prompt += "- Куки: " + ('установлены' if session.cookies_set else 'не установлены') + "\n"
+    system_prompt += "- Вкладок: " + str(len(session.tabs)) + "\n\n"
+    
+    system_prompt += """**ВСЕ ВОЗМОЖНОСТИ (инструменты):**
 
 📌 НАВИГАЦИЯ:
 - go_to_url(url) - перейти на сайт
@@ -1161,7 +1160,6 @@ async def process_with_ai(user_message: str, user_id: int, update: Update, conte
                 tool_name = tool_call.function.name
                 arguments = json.loads(tool_call.function.arguments)
                 
-                # Навигация
                 if tool_name == "go_to_url":
                     await execute_action("go_to_url", user_id, update, context, arguments.get("url", ""))
                 elif tool_name == "go_back":
@@ -1176,8 +1174,6 @@ async def process_with_ai(user_message: str, user_id: int, update: Update, conte
                     await execute_action("close_tab", user_id, update, context)
                 elif tool_name == "switch_tab":
                     await execute_action("switch_tab", user_id, update, context, str(arguments.get("index", 1)))
-                
-                # Поиск
                 elif tool_name == "find_element":
                     await execute_action("find_element", user_id, update, context, arguments.get("selector", ""))
                 elif tool_name == "find_element_by_xpath":
@@ -1186,8 +1182,6 @@ async def process_with_ai(user_message: str, user_id: int, update: Update, conte
                     await execute_action("find_element_by_text", user_id, update, context, arguments.get("text", ""))
                 elif tool_name == "find_all_elements":
                     await execute_action("find_all_elements", user_id, update, context, arguments.get("selector", ""))
-                
-                # Взаимодействие
                 elif tool_name == "click":
                     await execute_action("click", user_id, update, context, arguments.get("selector", ""))
                 elif tool_name == "click_humanize":
@@ -1195,11 +1189,11 @@ async def process_with_ai(user_message: str, user_id: int, update: Update, conte
                 elif tool_name == "type_text":
                     selector = arguments.get("selector", "")
                     text = arguments.get("text", "")
-                    await execute_action("type_text", user_id, update, context, f"{selector}|{text}")
+                    await execute_action("type_text", user_id, update, context, selector + "|" + text)
                 elif tool_name == "type_text_humanize":
                     selector = arguments.get("selector", "")
                     text = arguments.get("text", "")
-                    await execute_action("type_text_humanize", user_id, update, context, f"{selector}|{text}")
+                    await execute_action("type_text_humanize", user_id, update, context, selector + "|" + text)
                 elif tool_name == "clear":
                     await execute_action("clear", user_id, update, context, arguments.get("selector", ""))
                 elif tool_name == "get_text":
@@ -1207,15 +1201,13 @@ async def process_with_ai(user_message: str, user_id: int, update: Update, conte
                 elif tool_name == "get_attribute":
                     selector = arguments.get("selector", "")
                     attr = arguments.get("attribute", "")
-                    await execute_action("get_attribute", user_id, update, context, f"{selector}|{attr}")
+                    await execute_action("get_attribute", user_id, update, context, selector + "|" + attr)
                 elif tool_name == "get_value":
                     await execute_action("get_value", user_id, update, context, arguments.get("selector", ""))
                 elif tool_name == "is_visible":
                     await execute_action("is_visible", user_id, update, context, arguments.get("selector", ""))
                 elif tool_name == "is_enabled":
                     await execute_action("is_enabled", user_id, update, context, arguments.get("selector", ""))
-                
-                # Прокрутка
                 elif tool_name == "scroll_up":
                     await execute_action("scroll_up", user_id, update, context, str(arguments.get("amount", 300)))
                 elif tool_name == "scroll_down":
@@ -1226,8 +1218,6 @@ async def process_with_ai(user_message: str, user_id: int, update: Update, conte
                     await execute_action("scroll_to_top", user_id, update, context)
                 elif tool_name == "scroll_to_bottom":
                     await execute_action("scroll_to_bottom", user_id, update, context)
-                
-                # Скриншоты
                 elif tool_name == "screenshot":
                     await execute_action("screenshot", user_id, update, context)
                     if session.last_screenshot:
@@ -1240,8 +1230,6 @@ async def process_with_ai(user_message: str, user_id: int, update: Update, conte
                     await execute_action("screenshot_element", user_id, update, context, arguments.get("selector", ""))
                     if session.last_screenshot:
                         return {"type": "screenshot", "data": session.last_screenshot}
-                
-                # Данные
                 elif tool_name == "get_page_title":
                     await execute_action("get_page_title", user_id, update, context)
                 elif tool_name == "get_current_url":
@@ -1254,43 +1242,33 @@ async def process_with_ai(user_message: str, user_id: int, update: Update, conte
                     name = arguments.get("name", "")
                     value = arguments.get("value", "")
                     domain = arguments.get("domain", "")
-                    await execute_action("set_cookie", user_id, update, context, f"{name}|{value}|{domain}")
+                    await execute_action("set_cookie", user_id, update, context, name + "|" + value + "|" + domain)
                 elif tool_name == "clear_cookies":
                     await execute_action("clear_cookies", user_id, update, context)
-                
-                # JavaScript
                 elif tool_name == "execute_js":
                     await execute_action("execute_js", user_id, update, context, arguments.get("script", ""))
                 elif tool_name == "execute_js_on_element":
                     selector = arguments.get("selector", "")
                     script = arguments.get("script", "")
-                    await execute_action("execute_js_on_element", user_id, update, context, f"{selector}|{script}")
-                
-                # Ожидание
+                    await execute_action("execute_js_on_element", user_id, update, context, selector + "|" + script)
                 elif tool_name == "wait":
                     await execute_action("wait", user_id, update, context, str(arguments.get("seconds", 1)))
                 elif tool_name == "wait_for_element":
                     selector = arguments.get("selector", "")
                     timeout = str(arguments.get("timeout", 10))
-                    await execute_action("wait_for_element", user_id, update, context, f"{selector}|{timeout}")
+                    await execute_action("wait_for_element", user_id, update, context, selector + "|" + timeout)
                 elif tool_name == "wait_for_visible":
                     await execute_action("wait_for_visible", user_id, update, context, arguments.get("selector", ""))
-                
-                # Shadow DOM
                 elif tool_name == "get_shadow_root":
                     await execute_action("get_shadow_root", user_id, update, context, arguments.get("selector", ""))
                 elif tool_name == "find_shadow_roots":
                     await execute_action("find_shadow_roots", user_id, update, context)
-                
-                # HTTP
                 elif tool_name == "http_get":
                     await execute_action("http_get", user_id, update, context, arguments.get("url", ""))
                 elif tool_name == "http_post":
                     url = arguments.get("url", "")
                     data = arguments.get("data", {})
-                    await execute_action("http_post", user_id, update, context, f"{url}|{json.dumps(data)}")
-                
-                # Окна
+                    await execute_action("http_post", user_id, update, context, url + "|" + json.dumps(data))
                 elif tool_name == "set_window_maximized":
                     await execute_action("set_window_maximized", user_id, update, context)
                 elif tool_name == "set_window_minimized":
@@ -1299,8 +1277,6 @@ async def process_with_ai(user_message: str, user_id: int, update: Update, conte
                     await execute_action("set_window_fullscreen", user_id, update, context)
                 elif tool_name == "get_window_bounds":
                     await execute_action("get_window_bounds", user_id, update, context)
-                
-                # Вопрос
                 elif tool_name == "ask":
                     session.waiting_for_input = True
                     session.pending_action = arguments.get("action", "search")
@@ -1315,11 +1291,10 @@ async def process_with_ai(user_message: str, user_id: int, update: Update, conte
         await update_window(update, context, user_id)
 
 # ============================================================
-# ИНСТРУМЕНТЫ ДЛЯ AI (РАСШИРЕННЫЕ)
+# ИНСТРУМЕНТЫ ДЛЯ AI
 # ============================================================
 
 TOOLS = [
-    # Навигация
     {"type": "function", "function": {"name": "go_to_url", "description": "Переходит на URL", "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}}},
     {"type": "function", "function": {"name": "go_back", "description": "Назад", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "go_forward", "description": "Вперёд", "parameters": {"type": "object", "properties": {}}}},
@@ -1327,14 +1302,10 @@ TOOLS = [
     {"type": "function", "function": {"name": "new_tab", "description": "Новая вкладка", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "close_tab", "description": "Закрыть вкладку", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "switch_tab", "description": "Переключить вкладку", "parameters": {"type": "object", "properties": {"index": {"type": "integer"}}, "required": ["index"]}}},
-    
-    # Поиск
     {"type": "function", "function": {"name": "find_element", "description": "Найти элемент по CSS", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]}}},
     {"type": "function", "function": {"name": "find_element_by_xpath", "description": "Найти по XPath", "parameters": {"type": "object", "properties": {"xpath": {"type": "string"}}, "required": ["xpath"]}}},
     {"type": "function", "function": {"name": "find_element_by_text", "description": "Найти по тексту", "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}},
     {"type": "function", "function": {"name": "find_all_elements", "description": "Найти все элементы", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}}}}},
-    
-    # Взаимодействие
     {"type": "function", "function": {"name": "click", "description": "Кликнуть", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]}}},
     {"type": "function", "function": {"name": "click_humanize", "description": "Кликнуть как человек", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]}}},
     {"type": "function", "function": {"name": "type_text", "description": "Ввести текст (формат: selector|текст)", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}, "text": {"type": "string"}}, "required": ["selector", "text"]}}},
@@ -1345,51 +1316,33 @@ TOOLS = [
     {"type": "function", "function": {"name": "get_value", "description": "Получить значение", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]}}},
     {"type": "function", "function": {"name": "is_visible", "description": "Проверить видимость", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]}}},
     {"type": "function", "function": {"name": "is_enabled", "description": "Проверить доступность", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]}}},
-    
-    # Прокрутка
     {"type": "function", "function": {"name": "scroll_up", "description": "Прокрутить вверх", "parameters": {"type": "object", "properties": {"amount": {"type": "integer"}}}}},
     {"type": "function", "function": {"name": "scroll_down", "description": "Прокрутить вниз", "parameters": {"type": "object", "properties": {"amount": {"type": "integer"}}}}},
     {"type": "function", "function": {"name": "scroll_to_element", "description": "Прокрутить к элементу", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]}}},
     {"type": "function", "function": {"name": "scroll_to_top", "description": "Прокрутить вверх страницы", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "scroll_to_bottom", "description": "Прокрутить вниз страницы", "parameters": {"type": "object", "properties": {}}}},
-    
-    # Скриншоты
     {"type": "function", "function": {"name": "screenshot", "description": "Скриншот страницы", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "screenshot_full_page", "description": "Полный скриншот страницы", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "screenshot_element", "description": "Скриншот элемента", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]}}},
-    
-    # Данные
     {"type": "function", "function": {"name": "get_page_title", "description": "Заголовок страницы", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "get_current_url", "description": "Текущий URL", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "get_page_source", "description": "HTML код", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "get_cookies", "description": "Все куки", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "set_cookie", "description": "Установить куку (формат: name|value|domain)", "parameters": {"type": "object", "properties": {"name": {"type": "string"}, "value": {"type": "string"}, "domain": {"type": "string"}}, "required": ["name", "value"]}}},
     {"type": "function", "function": {"name": "clear_cookies", "description": "Очистить куки", "parameters": {"type": "object", "properties": {}}}},
-    
-    # JavaScript
     {"type": "function", "function": {"name": "execute_js", "description": "Выполнить JavaScript", "parameters": {"type": "object", "properties": {"script": {"type": "string"}}, "required": ["script"]}}},
     {"type": "function", "function": {"name": "execute_js_on_element", "description": "JS на элементе (формат: selector|script)", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}, "script": {"type": "string"}}, "required": ["selector", "script"]}}},
-    
-    # Ожидание
     {"type": "function", "function": {"name": "wait", "description": "Подождать секунд", "parameters": {"type": "object", "properties": {"seconds": {"type": "number"}}}}},
     {"type": "function", "function": {"name": "wait_for_element", "description": "Ждать появления элемента (формат: selector|timeout)", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}, "timeout": {"type": "integer"}}, "required": ["selector"]}}},
     {"type": "function", "function": {"name": "wait_for_visible", "description": "Ждать видимости элемента", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]}}},
-    
-    # Shadow DOM
     {"type": "function", "function": {"name": "get_shadow_root", "description": "Получить shadow root", "parameters": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]}}},
     {"type": "function", "function": {"name": "find_shadow_roots", "description": "Найти все shadow roots", "parameters": {"type": "object", "properties": {}}}},
-    
-    # HTTP
     {"type": "function", "function": {"name": "http_get", "description": "GET запрос", "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}}},
     {"type": "function", "function": {"name": "http_post", "description": "POST запрос (формат: url|json)", "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "data": {"type": "object"}}, "required": ["url"]}}},
-    
-    # Окна
     {"type": "function", "function": {"name": "set_window_maximized", "description": "Развернуть окно", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "set_window_minimized", "description": "Свернуть окно", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "set_window_fullscreen", "description": "Полноэкранный режим", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "get_window_bounds", "description": "Размеры окна", "parameters": {"type": "object", "properties": {}}}},
-    
-    # Вопрос
     {"type": "function", "function": {"name": "ask", "description": "Задать вопрос пользователю", "parameters": {"type": "object", "properties": {"question": {"type": "string"}, "action": {"type": "string", "enum": ["search", "go_to_url", "js", "data", "click", "type_text"]}}, "required": ["question"]}}},
 ]
 
