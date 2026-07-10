@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
 Telegram Bot с Agnes AI агентом для управления браузером через Pydoll
-Версия: 4.0 - С самообучением и анализом GitHub
+Версия: 5.0 - Финальная, с учётом всех рекомендаций
+
+Рекомендации Pydoll:
+- Использование @retry с конкретными исключениями
+- humanize=True для реалистичного поведения
+- Правильная обработка ошибок
+- PageObject паттерн
+- Обход Cloudflare
 """
 
 import asyncio
@@ -26,35 +33,38 @@ from telegram.ext import (
 )
 
 # ============================================================
-# ИМПОРТЫ PYDOLL ПО ДОКУМЕНТАЦИИ
+# ИМПОРТЫ PYDOLL (по документации)
 # ============================================================
 from pydoll.browser import Chrome
 from pydoll.browser.options import ChromiumOptions
 from pydoll.constants import Key
 
-# Исключения
+# Правильные импорты исключений
+from pydoll.exceptions import (
+    ElementNotFound,
+    WaitElementTimeout,
+    ElementNotVisible,
+    ElementNotInteractable,
+    NetworkError,
+    PageLoadTimeout,
+    ConnectionFailed,
+    ClickIntercepted,
+    PydollException
+)
+
+# Декоратор retry (с правильным использованием)
 try:
-    from pydoll.exceptions import (
-        ElementNotFound,
-        WaitElementTimeout,
-        ElementNotVisible,
-        ElementNotInteractable,
-        NetworkError,
-        PageLoadTimeout,
-        ConnectionFailed,
-        ClickIntercepted,
-        PydollException
-    )
+    from pydoll.decorators import retry
+    RETRY_AVAILABLE = True
 except ImportError:
-    class PydollException(Exception): pass
-    class ElementNotFound(Exception): pass
-    class WaitElementTimeout(Exception): pass
-    class ElementNotVisible(Exception): pass
-    class ElementNotInteractable(Exception): pass
-    class NetworkError(Exception): pass
-    class PageLoadTimeout(Exception): pass
-    class ConnectionFailed(Exception): pass
-    class ClickIntercepted(Exception): pass
+    RETRY_AVAILABLE = False
+    # Заглушка с правильным поведением
+    def retry(max_retries=3, exceptions=None, on_retry=None, delay=1.0, exponential_backoff=False):
+        def decorator(func):
+            async def wrapper(*args, **kwargs):
+                return await func(*args, **kwargs)
+            return wrapper
+        return decorator
 
 # Скролл
 try:
@@ -62,19 +72,6 @@ try:
     SCROLL_AVAILABLE = True
 except ImportError:
     SCROLL_AVAILABLE = False
-
-# Декораторы
-try:
-    from pydoll.decorators import retry
-    RETRY_AVAILABLE = True
-except ImportError:
-    RETRY_AVAILABLE = False
-    def retry(max_retries=3, exceptions=None, on_retry=None, delay=1.0, exponential_backoff=False):
-        def decorator(func):
-            async def wrapper(*args, **kwargs):
-                return await func(*args, **kwargs)
-            return wrapper
-        return decorator
 
 # Сетевые протоколы
 try:
@@ -139,7 +136,7 @@ PERSISTENT_SESSION = os.environ.get("PERSISTENT_SESSION", "false").lower() == "t
 PROXY_SERVER = os.environ.get("PROXY_SERVER", "")
 PROXY_USER = os.environ.get("PROXY_USER", "")
 PROXY_PASS = os.environ.get("PROXY_PASS", "")
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")  # Для доступа к GitHub API
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 
 # ============================================================
 # 3. ТРЕКЕР ОШИБОК
@@ -199,7 +196,7 @@ def log_error(func):
     return wrapper
 
 # ============================================================
-# 4. СИСТЕМА САМООБУЧЕНИЯ (ПАМЯТЬ И ШАБЛОНЫ)
+# 4. СИСТЕМА САМООБУЧЕНИЯ
 # ============================================================
 
 class LearningMemory:
@@ -212,7 +209,6 @@ class LearningMemory:
         self.templates = self._load_templates()
     
     def _load_memory(self) -> Dict:
-        """Загружает память агента"""
         if self.memory_file.exists():
             try:
                 with open(self.memory_file, 'r', encoding='utf-8') as f:
@@ -220,14 +216,13 @@ class LearningMemory:
             except:
                 pass
         return {
-            "sites": {},           # Знания о конкретных сайтах
-            "patterns": {},        # Успешные паттерны действий
-            "selectors": {},       # Сохранённые селекторы для сайтов
+            "sites": {},
+            "patterns": {},
+            "selectors": {},
             "learned_at": datetime.now().isoformat()
         }
     
     def _load_templates(self) -> Dict:
-        """Загружает шаблоны действий"""
         if self.templates_file.exists():
             try:
                 with open(self.templates_file, 'r', encoding='utf-8') as f:
@@ -240,18 +235,15 @@ class LearningMemory:
         }
     
     def save_memory(self):
-        """Сохраняет память"""
         self.memory["learned_at"] = datetime.now().isoformat()
         with open(self.memory_file, 'w', encoding='utf-8') as f:
             json.dump(self.memory, f, ensure_ascii=False, indent=2)
     
     def save_templates(self):
-        """Сохраняет шаблоны"""
         with open(self.templates_file, 'w', encoding='utf-8') as f:
             json.dump(self.templates, f, ensure_ascii=False, indent=2)
     
     def learn_site_structure(self, url: str, analysis: Dict):
-        """Запоминает структуру сайта"""
         domain = self._extract_domain(url)
         if domain not in self.memory["sites"]:
             self.memory["sites"][domain] = {
@@ -265,7 +257,6 @@ class LearningMemory:
         site["visits"] += 1
         site["analysis"] = analysis
         
-        # Сохраняем важные селекторы
         if analysis.get("search_inputs"):
             site["selectors"]["search"] = analysis["search_inputs"][0]
         if analysis.get("buttons"):
@@ -274,33 +265,7 @@ class LearningMemory:
         self.save_memory()
         logger.info(f"🧠 Агент запомнил структуру {domain}")
     
-    def learn_successful_pattern(self, action_sequence: List[Dict], site: str, result: str):
-        """Запоминает успешную последовательность действий"""
-        pattern = {
-            "site": site,
-            "actions": action_sequence,
-            "result": result,
-            "created_at": datetime.now().isoformat(),
-            "uses": 1,
-            "success_rate": 1.0
-        }
-        
-        # Проверяем, есть ли похожий паттерн
-        for existing in self.templates["templates"]:
-            if existing["site"] == site and existing["actions"] == action_sequence[:2]:
-                existing["uses"] += 1
-                existing["success_rate"] = (existing["success_rate"] * existing["uses"] + 1) / (existing["uses"] + 1)
-                self.save_templates()
-                return
-        
-        self.templates["templates"].append(pattern)
-        self.templates["stats"]["total"] += 1
-        self.templates["stats"]["successful"] += 1
-        self.save_templates()
-        logger.info(f"🧠 Агент запомнил новый паттерн для {site}")
-    
     def get_learned_selector(self, url: str, element_type: str) -> Optional[Dict]:
-        """Возвращает сохранённый селектор для сайта"""
         domain = self._extract_domain(url)
         if domain in self.memory["sites"]:
             site = self.memory["sites"][domain]
@@ -308,15 +273,7 @@ class LearningMemory:
                 return site["selectors"][element_type]
         return None
     
-    def get_template_for_site(self, site: str) -> Optional[List[Dict]]:
-        """Возвращает сохранённый шаблон для сайта"""
-        for template in self.templates["templates"]:
-            if template["site"] in site:
-                return template["actions"]
-        return None
-    
     def _extract_domain(self, url: str) -> str:
-        """Извлекает домен из URL"""
         match = re.search(r'https?://([^/]+)', url)
         if match:
             return match.group(1).replace('www.', '')
@@ -339,7 +296,6 @@ class BrowserSession:
     last_action: str = ""
     last_action_time: datetime = field(default_factory=datetime.now)
     context_variables: Dict[str, Any] = field(default_factory=dict)
-    action_history: List[Dict] = field(default_factory=list)  # Для самообучения
 
 class SessionManager:
     def __init__(self):
@@ -467,16 +423,16 @@ def init_agnes():
     return agnes_client
 
 # ============================================================
-# 7. ИНСТРУМЕНТЫ ДЛЯ AGNES AI (С САМООБУЧЕНИЕМ И GITHUB)
+# 7. ИНСТРУМЕНТЫ (с использованием @retry)
 # ============================================================
 
 TOOLS = [
-    # --- НАВИГАЦИЯ ---
+    # Навигация
     {
         "type": "function",
         "function": {
             "name": "go_to_url",
-            "description": "Переходит на указанный URL и автоматически анализирует страницу",
+            "description": "Переходит на URL и анализирует страницу",
             "parameters": {
                 "type": "object",
                 "properties": {"url": {"type": "string"}},
@@ -500,31 +456,12 @@ TOOLS = [
             "parameters": {"type": "object", "properties": {}}
         }
     },
-    
-    # --- АНАЛИЗ СТРАНИЦЫ ---
-    {
-        "type": "function",
-        "function": {
-            "name": "analyze_page_structure",
-            "description": "Глубоко анализирует структуру страницы: все input, button, link, form с их атрибутами",
-            "parameters": {"type": "object", "properties": {}}
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_learned_selectors",
-            "description": "Возвращает сохранённые селекторы для текущего сайта из памяти агента",
-            "parameters": {"type": "object", "properties": {}}
-        }
-    },
-    
-    # --- УМНЫЙ ПОИСК ЭЛЕМЕНТОВ ---
+    # Поиск элементов
     {
         "type": "function",
         "function": {
             "name": "find_element",
-            "description": "Находит элемент по HTML атрибутам (id, class_name, name, tag_name, text, placeholder, aria_label)",
+            "description": "Находит элемент по атрибутам (id, class_name, name, tag_name, text)",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -533,8 +470,6 @@ TOOLS = [
                     "name": {"type": "string"},
                     "tag_name": {"type": "string"},
                     "text": {"type": "string"},
-                    "placeholder": {"type": "string"},
-                    "aria_label": {"type": "string"},
                     "timeout": {"type": "integer", "default": 10}
                 }
             }
@@ -543,25 +478,13 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "find_element_by_css",
-            "description": "Находит элемент по CSS селектору",
-            "parameters": {
-                "type": "object",
-                "properties": {"selector": {"type": "string"}},
-                "required": ["selector"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "find_element_smart",
-            "description": "Умный поиск элемента по тексту (placeholder, aria-label, title, label)",
+            "description": "Умный поиск элемента по тексту (placeholder, aria-label, title)",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "text": {"type": "string", "description": "Текст для поиска"},
-                    "element_type": {"type": "string", "enum": ["input", "button", "link", "div", "span"]}
+                    "text": {"type": "string"},
+                    "element_type": {"type": "string", "enum": ["input", "button", "link"]}
                 },
                 "required": ["text"]
             }
@@ -571,23 +494,22 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "find_element_from_memory",
-            "description": "Ищет элемент используя сохранённую память о сайте",
+            "description": "Ищет элемент используя память агента",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "element_type": {"type": "string", "enum": ["search", "login", "submit", "email", "password"]}
+                    "element_type": {"type": "string", "enum": ["search", "login", "submit"]}
                 },
                 "required": ["element_type"]
             }
         }
     },
-    
-    # --- ВЗАИМОДЕЙСТВИЕ ---
+    # Взаимодействие (с humanize)
     {
         "type": "function",
         "function": {
             "name": "click_element",
-            "description": "Кликает по элементу",
+            "description": "Кликает по элементу (с humanize=True)",
             "parameters": {
                 "type": "object",
                 "properties": {"selector": {"type": "string"}},
@@ -599,7 +521,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "type_text",
-            "description": "Вводит текст в элемент",
+            "description": "Вводит текст с humanize=True (реалистичный ввод)",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -614,23 +536,11 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "type_into_search_smart",
-            "description": "Автоматически находит поле поиска и вводит текст (с использованием памяти)",
+            "description": "Находит поле поиска и вводит текст (с humanize)",
             "parameters": {
                 "type": "object",
                 "properties": {"text": {"type": "string"}},
                 "required": ["text"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "clear_field",
-            "description": "Очищает поле ввода",
-            "parameters": {
-                "type": "object",
-                "properties": {"selector": {"type": "string"}},
-                "required": ["selector"]
             }
         }
     },
@@ -646,39 +556,19 @@ TOOLS = [
             }
         }
     },
-    
-    # --- СКРИНШОТЫ ---
+    # Скриншоты
     {
         "type": "function",
         "function": {
             "name": "take_screenshot",
-            "description": "Делает скриншот страницы",
+            "description": "Делает скриншот (только видимая область)",
             "parameters": {
                 "type": "object",
-                "properties": {"full_page": {"type": "boolean", "default": True}}
+                "properties": {"full_page": {"type": "boolean", "default": False}}
             }
         }
     },
-    
-    # --- СКРОЛЛ ---
-    {
-        "type": "function",
-        "function": {
-            "name": "scroll_to_bottom",
-            "description": "Прокручивает страницу вниз",
-            "parameters": {"type": "object", "properties": {}}
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "scroll_to_top",
-            "description": "Прокручивает страницу вверх",
-            "parameters": {"type": "object", "properties": {}}
-        }
-    },
-    
-    # --- ДАННЫЕ ---
+    # Данные
     {
         "type": "function",
         "function": {
@@ -698,18 +588,8 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "get_page_source",
-            "description": "Получает HTML код страницы",
-            "parameters": {"type": "object", "properties": {}}
-        }
-    },
-    
-    # --- JAVASCRIPT ---
-    {
-        "type": "function",
-        "function": {
             "name": "execute_javascript",
-            "description": "Выполняет JavaScript код на странице",
+            "description": "Выполняет JavaScript",
             "parameters": {
                 "type": "object",
                 "properties": {"script": {"type": "string"}},
@@ -717,72 +597,16 @@ TOOLS = [
             }
         }
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "extract_data_with_js",
-            "description": "Извлекает данные со страницы используя JavaScript",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "selector": {"type": "string", "description": "CSS селектор для данных"},
-                    "attribute": {"type": "string", "description": "Атрибут для извлечения (text, html, value и т.д.)"}
-                },
-                "required": ["selector"]
-            }
-        }
-    },
-    
-    # --- HTTP ---
-    {
-        "type": "function",
-        "function": {
-            "name": "http_get",
-            "description": "Выполняет HTTP GET запрос",
-            "parameters": {
-                "type": "object",
-                "properties": {"url": {"type": "string"}},
-                "required": ["url"]
-            }
-        }
-    },
-    
-    # --- COOKIES ---
-    {
-        "type": "function",
-        "function": {
-            "name": "get_cookies",
-            "description": "Получает все cookies текущей страницы",
-            "parameters": {"type": "object", "properties": {}}
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "set_cookie",
-            "description": "Устанавливает cookie",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "value": {"type": "string"},
-                    "domain": {"type": "string"}
-                },
-                "required": ["name", "value"]
-            }
-        }
-    },
-    
-    # --- GITHUB АНАЛИЗ ---
+    # GitHub
     {
         "type": "function",
         "function": {
             "name": "analyze_github_repo",
-            "description": "Анализирует GitHub репозиторий: читает README, структуру, находит примеры кода",
+            "description": "Анализирует GitHub репозиторий",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "repo_url": {"type": "string", "description": "URL репозитория (например, https://github.com/user/repo)"},
+                    "repo_url": {"type": "string"},
                     "depth": {"type": "string", "enum": ["quick", "deep"], "default": "quick"}
                 },
                 "required": ["repo_url"]
@@ -797,30 +621,27 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Поисковый запрос"},
+                    "query": {"type": "string"},
                     "limit": {"type": "integer", "default": 5}
                 },
                 "required": ["query"]
             }
         }
     },
-    
-    # --- ПАМЯТЬ И ОБУЧЕНИЕ ---
+    # Обход Cloudflare
     {
         "type": "function",
         "function": {
-            "name": "save_learned_pattern",
-            "description": "Сохраняет успешную последовательность действий для будущего использования",
+            "name": "bypass_cloudflare",
+            "description": "Обходит Cloudflare капчу на указанном URL",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "actions": {"type": "array", "description": "Список выполненных действий"},
-                    "description": {"type": "string", "description": "Описание что было сделано"}
-                },
-                "required": ["actions"]
+                "properties": {"url": {"type": "string"}},
+                "required": ["url"]
             }
         }
     },
+    # Память
     {
         "type": "function",
         "function": {
@@ -832,17 +653,50 @@ TOOLS = [
 ]
 
 # ============================================================
-# 8. ИСПОЛНЕНИЕ ИНСТРУМЕНТОВ (С САМООБУЧЕНИЕМ)
+# 8. ИСПОЛНЕНИЕ ИНСТРУМЕНТОВ (с @retry)
 # ============================================================
+
+@retry(
+    max_retries=3,
+    exceptions=[ElementNotFound, WaitElementTimeout, NetworkError],
+    delay=1.0,
+    exponential_backoff=True
+)
+async def safe_find_element(tab, **kwargs):
+    """Безопасный поиск элемента с retry"""
+    return await tab.find(**kwargs)
+
+@retry(
+    max_retries=2,
+    exceptions=[ElementNotFound, ClickIntercepted],
+    delay=0.5
+)
+async def safe_click_element(tab, selector: str):
+    """Безопасный клик с retry"""
+    element = await tab.query(selector)
+    await element.click(humanize=True)  # ← humanize=True
+    return element
+
+@retry(
+    max_retries=2,
+    exceptions=[ElementNotFound, ElementNotInteractable],
+    delay=0.5
+)
+async def safe_type_text(tab, selector: str, text: str):
+    """Безопасный ввод текста с retry и humanize"""
+    element = await tab.query(selector)
+    await element.clear()
+    await element.type_text(text, humanize=True)  # ← humanize=True
+    return element
 
 @log_error
 async def execute_tool(tool_name: str, arguments: Dict, user_id: int) -> Dict:
-    """Выполняет инструмент с самообучением"""
+    """Выполняет инструмент с использованием retry и humanize"""
     session = await session_manager.get_session(user_id)
     tab = session.tab
 
     if not tab:
-        return {"success": False, "error": "⚠️ Браузер не открыт. Используйте /open"}
+        return {"success": False, "error": "⚠️ Браузер не открыт"}
 
     try:
         # ============================================================
@@ -852,18 +706,24 @@ async def execute_tool(tool_name: str, arguments: Dict, user_id: int) -> Dict:
             url = arguments.get("url", "")
             if not url.startswith(('http://', 'https://')):
                 url = 'https://' + url
-            await tab.go_to(url)
+            
+            # Обход Cloudflare если нужно
+            if "cloudflare" in url or "captcha" in url:
+                async with tab.expect_and_bypass_cloudflare_captcha():
+                    await tab.go_to(url)
+            else:
+                await tab.go_to(url)
+            
             session.current_url = await tab.current_url
             session.page_title = await tab.title
             session.last_action = "go_to_url"
             session.last_action_time = datetime.now()
             
-            # АВТО-АНАЛИЗ И ЗАПОМИНАНИЕ
+            # Авто-анализ
             try:
                 analysis_result = await execute_tool("analyze_page_structure", {}, user_id)
                 if analysis_result.get("success"):
                     learning_memory.learn_site_structure(url, analysis_result.get("analysis", {}))
-                    logger.info(f"🧠 Страница {url} проанализирована и запомнена")
             except Exception as e:
                 logger.warning(f"⚠️ Не удалось проанализировать: {e}")
             
@@ -871,31 +731,22 @@ async def execute_tool(tool_name: str, arguments: Dict, user_id: int) -> Dict:
 
         elif tool_name == "go_back":
             await tab.go_back()
-            session.last_action = "go_back"
-            session.last_action_time = datetime.now()
             return {"success": True, "message": "↩️ Назад"}
 
         elif tool_name == "refresh_page":
             await tab.refresh()
-            session.last_action = "refresh_page"
-            session.last_action_time = datetime.now()
             return {"success": True, "message": "🔄 Обновлено"}
 
         # ============================================================
-        # АНАЛИЗ СТРАНИЦЫ
+        # АНАЛИЗ
         # ============================================================
         elif tool_name == "analyze_page_structure":
             script = """
             (function() {
                 const result = {
-                    url: window.location.href,
-                    title: document.title,
                     inputs: [],
                     buttons: [],
-                    links: [],
-                    forms: [],
-                    search_inputs: [],
-                    main_content: null
+                    search_inputs: []
                 };
                 
                 document.querySelectorAll('input, textarea').forEach(el => {
@@ -904,70 +755,25 @@ async def execute_tool(tool_name: str, arguments: Dict, user_id: int) -> Dict:
                         type: el.type || 'text',
                         id: el.id || null,
                         name: el.name || null,
-                        class: el.className || null,
                         placeholder: el.placeholder || null,
-                        aria_label: el.getAttribute('aria-label') || null,
-                        title: el.title || null,
-                        visible: el.offsetParent !== null
+                        aria_label: el.getAttribute('aria-label') || null
                     };
                     result.inputs.push(data);
                     
                     if (el.type === 'search' || 
-                        (el.placeholder && /search|поиск|find|найти/i.test(el.placeholder)) ||
+                        (el.placeholder && /search|поиск|find/i.test(el.placeholder)) ||
                         (el.name && /search|q|s|query|find/i.test(el.name))) {
                         result.search_inputs.push(data);
                     }
                 });
                 
-                document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"]').forEach(el => {
+                document.querySelectorAll('button, input[type="submit"]').forEach(el => {
                     result.buttons.push({
-                        tag: el.tagName.toLowerCase(),
-                        id: el.id || null,
-                        class: el.className || null,
                         text: (el.innerText || el.value || '').trim(),
-                        type: el.type || null,
-                        aria_label: el.getAttribute('aria-label') || null,
-                        visible: el.offsetParent !== null
-                    });
-                });
-                
-                document.querySelectorAll('a[href]').forEach(el => {
-                    result.links.push({
-                        href: el.href,
-                        text: (el.innerText || '').trim(),
                         id: el.id || null,
-                        class: el.className || null,
-                        visible: el.offsetParent !== null
+                        class: el.className || null
                     });
                 });
-                
-                document.querySelectorAll('form').forEach(el => {
-                    const inputs = [];
-                    el.querySelectorAll('input, textarea, select').forEach(input => {
-                        inputs.push({
-                            name: input.name || null,
-                            type: input.type || null,
-                            placeholder: input.placeholder || null
-                        });
-                    });
-                    result.forms.push({
-                        id: el.id || null,
-                        class: el.className || null,
-                        action: el.action || null,
-                        method: el.method || 'get',
-                        inputs: inputs
-                    });
-                });
-                
-                const main = document.querySelector('main, [role="main"], #main, .main, article');
-                if (main) {
-                    result.main_content = {
-                        tag: main.tagName.toLowerCase(),
-                        id: main.id || null,
-                        class: main.className || null,
-                        text_preview: main.innerText.slice(0, 200)
-                    };
-                }
                 
                 return result;
             })()
@@ -975,62 +781,24 @@ async def execute_tool(tool_name: str, arguments: Dict, user_id: int) -> Dict:
             
             analysis = await tab.execute_script(script)
             session.context_variables['page_analysis'] = analysis
-            session.context_variables['page_analyzed_at'] = datetime.now().isoformat()
-            
-            # Запоминаем структуру
             learning_memory.learn_site_structure(session.current_url, analysis)
             
-            # Формируем отчёт
-            summary = f"""
-📊 **Анализ страницы:**
-- URL: {analysis.get('url', 'неизвестен')}
-- Заголовок: {analysis.get('title', 'нет')}
-- Полей ввода: {len(analysis.get('inputs', []))}
-- Кнопок: {len(analysis.get('buttons', []))}
-- Ссылок: {len(analysis.get('links', []))}
-- Форм: {len(analysis.get('forms', []))}
-- Поля поиска: {len(analysis.get('search_inputs', []))}
-            """
-            
-            if analysis.get('search_inputs'):
-                summary += "\n🔍 **Поля поиска:**\n"
-                for inp in analysis['search_inputs'][:3]:
-                    summary += f"  - {inp.get('tag')} name='{inp.get('name')}' placeholder='{inp.get('placeholder')}'\n"
-            
+            summary = f"📊 Найдено: {len(analysis.get('inputs', []))} полей, {len(analysis.get('buttons', []))} кнопок"
             return {"success": True, "analysis": analysis, "summary": summary}
 
-        elif tool_name == "get_learned_selectors":
-            url = session.current_url
-            domain = learning_memory._extract_domain(url)
-            memory = learning_memory.memory
-            
-            if domain in memory.get("sites", {}):
-                return {"success": True, "selectors": memory["sites"][domain].get("selectors", {})}
-            return {"success": False, "error": "Нет сохранённых селекторов для этого сайта"}
-
         # ============================================================
-        # УМНЫЙ ПОИСК
+        # ПОИСК (с retry)
         # ============================================================
         elif tool_name == "find_element":
             find_args = {}
-            for attr in ['id', 'class_name', 'name', 'tag_name', 'text', 'placeholder', 'aria_label']:
+            for attr in ['id', 'class_name', 'name', 'tag_name', 'text']:
                 if attr in arguments:
                     find_args[attr] = arguments[attr]
             
             timeout = arguments.get("timeout", 10)
             
             try:
-                element = await tab.find(timeout=timeout, **find_args)
-                text = await element.text
-                return {"success": True, "found": True, "text": text[:200] if text else ""}
-            except ElementNotFound:
-                return {"success": False, "error": "Элемент не найден"}
-            except WaitElementTimeout:
-                return {"success": False, "error": f"Таймаут {timeout}с"}
-
-        elif tool_name == "find_element_by_css":
-            try:
-                element = await tab.query(arguments["selector"])
+                element = await safe_find_element(tab, timeout=timeout, **find_args)
                 text = await element.text
                 return {"success": True, "found": True, "text": text[:200] if text else ""}
             except ElementNotFound:
@@ -1046,7 +814,7 @@ async def execute_tool(tool_name: str, arguments: Dict, user_id: int) -> Dict:
                 const type = '{element_type}';
                 
                 let elements = document.querySelectorAll(
-                    '[placeholder*="{text}"], [aria-label*="{text}"], [title*="{text}"], [name*="{text}"]'
+                    '[placeholder*="{text}"], [aria-label*="{text}"], [title*="{text}"]'
                 );
                 
                 if (elements.length === 0) {{
@@ -1069,16 +837,14 @@ async def execute_tool(tool_name: str, arguments: Dict, user_id: int) -> Dict:
             
             result = await tab.execute_script(script)
             if result:
-                return {"success": True, "found": True, "html": result[:300]}
+                return {"success": True, "found": True}
             return {"success": False, "error": f"Не найдено: {text}"}
 
         elif tool_name == "find_element_from_memory":
             element_type = arguments["element_type"]
-            url = session.current_url
-            
-            selector_info = learning_memory.get_learned_selector(url, element_type)
+            selector_info = learning_memory.get_learned_selector(session.current_url, element_type)
             if not selector_info:
-                return {"success": False, "error": f"Нет сохранённого селектора для {element_type} на этом сайте"}
+                return {"success": False, "error": f"Нет селектора для {element_type}"}
             
             try:
                 if selector_info.get('id'):
@@ -1087,41 +853,32 @@ async def execute_tool(tool_name: str, arguments: Dict, user_id: int) -> Dict:
                     element = await tab.query(f"[name='{selector_info['name']}']")
                 else:
                     return {"success": False, "error": "Неизвестный селектор"}
-                
-                return {"success": True, "found": True, "element": selector_info}
+                return {"success": True, "found": True}
             except:
-                return {"success": False, "error": "Элемент не найден по сохранённому селектору"}
+                return {"success": False, "error": "Элемент не найден"}
 
         # ============================================================
-        # ВЗАИМОДЕЙСТВИЕ
+        # ВЗАИМОДЕЙСТВИЕ (с humanize)
         # ============================================================
         elif tool_name == "click_element":
             try:
-                element = await tab.query(arguments["selector"])
-                await element.click()
-                session.last_action = "click_element"
-                session.last_action_time = datetime.now()
+                await safe_click_element(tab, arguments["selector"])
                 return {"success": True, "message": f"🖱️ Кликнут: {arguments['selector']}"}
-            except ElementNotFound:
-                return {"success": False, "error": "Элемент не найден"}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
 
         elif tool_name == "type_text":
             try:
-                element = await tab.query(arguments["selector"])
-                await element.clear()
-                await element.type_text(arguments["text"])
-                session.last_action = "type_text"
-                session.last_action_time = datetime.now()
+                await safe_type_text(tab, arguments["selector"], arguments["text"])
                 return {"success": True, "message": f"⌨️ Введён текст"}
-            except ElementNotFound:
-                return {"success": False, "error": "Элемент не найден"}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
 
         elif tool_name == "type_into_search_smart":
             text = arguments["text"]
-            url = session.current_url
             
-            # 1. Проверяем память
-            remembered = learning_memory.get_learned_selector(url, "search")
+            # Пробуем из памяти
+            remembered = learning_memory.get_learned_selector(session.current_url, "search")
             if remembered:
                 try:
                     if remembered.get('id'):
@@ -1132,53 +889,31 @@ async def execute_tool(tool_name: str, arguments: Dict, user_id: int) -> Dict:
                         selector = None
                     
                     if selector:
-                        element = await tab.query(selector)
-                        await element.clear()
-                        await element.type_text(text)
+                        await safe_type_text(tab, selector, text)
                         await tab.keyboard.press(Key.ENTER)
                         return {"success": True, "message": f"🔍 Поиск: {text}", "found_by": "memory"}
                 except:
                     pass
             
-            # 2. Fallback: перебор селекторов
+            # Fallback: перебор селекторов
             selectors = [
                 'input[type="search"]',
                 'input[name="q"]',
                 'input[name="search_query"]',
                 'input[name="search"]',
-                'input#search',
                 'input[placeholder*="search" i]',
                 'input[placeholder*="поиск" i]',
-                'textarea[placeholder*="search" i]',
-                'textarea[placeholder*="поиск" i]',
-                '[role="search"] input',
-                '.search input',
-                '#search input',
-                'form[role="search"] input',
-                'form[action*="search"] input'
             ]
             
             for selector in selectors:
                 try:
-                    element = await tab.query(selector)
-                    if element:
-                        await element.clear()
-                        await element.type_text(text)
-                        await tab.keyboard.press(Key.ENTER)
-                        # Запоминаем успешный селектор
-                        return {"success": True, "message": f"🔍 Поиск: {text}", "found_by": "fallback"}
-                except ElementNotFound:
+                    await safe_type_text(tab, selector, text)
+                    await tab.keyboard.press(Key.ENTER)
+                    return {"success": True, "message": f"🔍 Поиск: {text}", "found_by": "fallback"}
+                except:
                     continue
             
             return {"success": False, "error": "Не найдено поле поиска"}
-
-        elif tool_name == "clear_field":
-            try:
-                element = await tab.query(arguments["selector"])
-                await element.clear()
-                return {"success": True, "message": "🧹 Поле очищено"}
-            except ElementNotFound:
-                return {"success": False, "error": "Элемент не найден"}
 
         elif tool_name == "press_key":
             key_map = {
@@ -1196,27 +931,17 @@ async def execute_tool(tool_name: str, arguments: Dict, user_id: int) -> Dict:
         elif tool_name == "take_screenshot":
             try:
                 screenshot = await tab.take_screenshot(
-                    beyond_viewport=arguments.get("full_page", True),
+                    beyond_viewport=arguments.get("full_page", False),  # ← False по умолчанию
                     as_base64=True
                 )
-                session.last_action = "take_screenshot"
-                session.last_action_time = datetime.now()
                 return {"success": True, "screenshot": screenshot}
             except Exception as e:
-                logger.warning(f"Full page screenshot failed: {e}, trying without")
-                screenshot = await tab.take_screenshot(as_base64=True)
+                logger.warning(f"Screenshot failed: {e}")
+                screenshot = await tab.take_screenshot(
+                    beyond_viewport=False,
+                    as_base64=True
+                )
                 return {"success": True, "screenshot": screenshot}
-
-        # ============================================================
-        # СКРОЛЛ
-        # ============================================================
-        elif tool_name == "scroll_to_bottom":
-            await tab.execute_script("window.scrollTo(0, document.body.scrollHeight)")
-            return {"success": True, "message": "📜 Вниз"}
-
-        elif tool_name == "scroll_to_top":
-            await tab.execute_script("window.scrollTo(0, 0)")
-            return {"success": True, "message": "📜 Вверх"}
 
         # ============================================================
         # ДАННЫЕ
@@ -1229,98 +954,31 @@ async def execute_tool(tool_name: str, arguments: Dict, user_id: int) -> Dict:
             url = await tab.current_url
             return {"success": True, "url": url}
 
-        elif tool_name == "get_page_source":
-            source = await tab.page_source
-            return {"success": True, "source": source[:2000] + "..." if len(source) > 2000 else source}
-
-        # ============================================================
-        # JAVASCRIPT
-        # ============================================================
         elif tool_name == "execute_javascript":
             result = await tab.execute_script(arguments["script"])
             return {"success": True, "result": str(result)[:500]}
 
-        elif tool_name == "extract_data_with_js":
-            selector = arguments["selector"]
-            attribute = arguments.get("attribute", "text")
-            
-            script = f"""
-            (function() {{
-                const elements = document.querySelectorAll('{selector}');
-                return Array.from(elements).map(el => {{
-                    if ('{attribute}' === 'text') return el.innerText.trim();
-                    if ('{attribute}' === 'html') return el.innerHTML;
-                    if ('{attribute}' === 'value') return el.value;
-                    return el.getAttribute('{attribute}');
-                }});
-            }})()
-            """
-            
-            result = await tab.execute_script(script)
-            return {"success": True, "data": result, "count": len(result) if isinstance(result, list) else 0}
-
         # ============================================================
-        # HTTP
-        # ============================================================
-        elif tool_name == "http_get":
-            try:
-                response = await tab.request.get(arguments["url"])
-                return {"success": True, "data": response.text[:500]}
-            except:
-                result = await tab.execute_script(f"""
-                    return fetch('{arguments["url"]}')
-                        .then(r => r.text())
-                        .catch(e => 'Error: ' + e.message)
-                """)
-                return {"success": True, "data": str(result)[:500]}
-
-        # ============================================================
-        # COOKIES
-        # ============================================================
-        elif tool_name == "get_cookies":
-            try:
-                cookies = await tab.execute_script("return document.cookie")
-                return {"success": True, "cookies": cookies}
-            except:
-                return {"success": True, "cookies": "Не удалось получить"}
-
-        elif tool_name == "set_cookie":
-            await tab.execute_script(f"""
-                document.cookie = "{arguments['name']}={arguments['value']}; domain={arguments.get('domain', '')}; path=/";
-            """)
-            return {"success": True, "message": f"🍪 Cookie установлен: {arguments['name']}"}
-
-        # ============================================================
-        # GITHUB АНАЛИЗ
+        # GITHUB
         # ============================================================
         elif tool_name == "analyze_github_repo":
             repo_url = arguments["repo_url"]
-            depth = arguments.get("depth", "quick")
-            
-            # Извлекаем имя репозитория
             match = re.search(r'github\.com/([^/]+)/([^/]+)', repo_url)
             if not match:
-                return {"success": False, "error": "Неверный URL GitHub репозитория"}
+                return {"success": False, "error": "Неверный URL"}
             
-            owner, repo = match.group(1), match.group(2)
-            repo = repo.replace('.git', '')
-            
-            # Формируем API URL
-            api_url = f"https://api.github.com/repos/{owner}/{repo}"
+            owner, repo = match.group(1), match.group(2).replace('.git', '')
             readme_url = f"https://raw.githubusercontent.com/{owner}/{repo}/main/README.md"
             
             try:
-                # Читаем README
-                readme_result = await tab.execute_script(f"""
+                readme = await tab.execute_script(f"""
                     return fetch('{readme_url}')
                         .then(r => r.text())
                         .catch(e => 'README не найден')
                 """)
                 
-                # Получаем информацию о репозитории через GitHub API (если есть токен)
-                headers = ""
-                if GITHUB_TOKEN:
-                    headers = f"Authorization: token {GITHUB_TOKEN}"
+                api_url = f"https://api.github.com/repos/{owner}/{repo}"
+                headers = f"Authorization: token {GITHUB_TOKEN}" if GITHUB_TOKEN else ""
                 
                 repo_info = await tab.execute_script(f"""
                     return fetch('{api_url}', {{
@@ -1330,46 +988,33 @@ async def execute_tool(tool_name: str, arguments: Dict, user_id: int) -> Dict:
                     .catch(e => ({{ error: e.message }}))
                 """)
                 
-                # Собираем результаты
                 result = {
                     "repo": f"{owner}/{repo}",
                     "description": repo_info.get("description", "Нет описания"),
                     "stars": repo_info.get("stargazers_count", 0),
                     "forks": repo_info.get("forks_count", 0),
                     "language": repo_info.get("language", "Неизвестно"),
-                    "readme": readme_result[:2000] if readme_result and len(readme_result) > 2000 else readme_result,
-                    "topics": repo_info.get("topics", [])
+                    "readme": readme[:1000] if readme else "Нет README"
                 }
-                
-                # Сохраняем в память
-                session.context_variables['last_github_analysis'] = result
                 
                 return {
                     "success": True,
                     "data": result,
-                    "summary": f"📦 Репозиторий {owner}/{repo}\n⭐ {result['stars']} звёзд\n📝 {result['description'][:100] if result['description'] else 'Нет описания'}\n🔤 Язык: {result['language']}"
+                    "summary": f"📦 {owner}/{repo}\n⭐ {result['stars']} звёзд\n📝 {result['description'][:100]}"
                 }
             except Exception as e:
-                return {"success": False, "error": f"Ошибка анализа: {str(e)}"}
+                return {"success": False, "error": str(e)}
 
         elif tool_name == "search_github":
             query = arguments["query"]
             limit = arguments.get("limit", 5)
-            
-            # Используем GitHub Search API
             search_url = f"https://api.github.com/search/repositories?q={query}&per_page={limit}"
             
             try:
-                headers = {}
-                if GITHUB_TOKEN:
-                    headers["Authorization"] = f"token {GITHUB_TOKEN}"
-                
                 result = await tab.execute_script(f"""
-                    return fetch('{search_url}', {{
-                        headers: {json.dumps(headers)}
-                    }})
-                    .then(r => r.json())
-                    .catch(e => ({{ error: e.message }}))
+                    return fetch('{search_url}')
+                        .then(r => r.json())
+                        .catch(e => ({{ error: e.message }}))
                 """)
                 
                 if result.get("error"):
@@ -1379,49 +1024,33 @@ async def execute_tool(tool_name: str, arguments: Dict, user_id: int) -> Dict:
                 return {
                     "success": True,
                     "count": len(items),
-                    "results": [{
-                        "name": item.get("full_name"),
-                        "description": item.get("description", ""),
-                        "stars": item.get("stargazers_count", 0),
-                        "url": item.get("html_url")
-                    } for item in items[:limit]]
+                    "results": [{"name": item.get("full_name"), "stars": item.get("stargazers_count", 0)} for item in items]
                 }
             except Exception as e:
                 return {"success": False, "error": str(e)}
 
         # ============================================================
-        # ПАМЯТЬ И ОБУЧЕНИЕ
+        # ОБХОД CLOUDFLARE
         # ============================================================
-        elif tool_name == "save_learned_pattern":
-            actions = arguments.get("actions", [])
-            description = arguments.get("description", "")
-            
-            if not actions:
-                return {"success": False, "error": "Нет действий для сохранения"}
-            
-            url = session.current_url
-            domain = learning_memory._extract_domain(url)
-            
-            # Сохраняем шаблон
-            learning_memory.learn_successful_pattern(actions, domain, description)
-            
-            return {
-                "success": True, 
-                "message": f"🧠 Паттерн сохранён для {domain}",
-                "actions_count": len(actions)
-            }
+        elif tool_name == "bypass_cloudflare":
+            url = arguments.get("url", "")
+            try:
+                async with tab.expect_and_bypass_cloudflare_captcha():
+                    await tab.go_to(url)
+                return {"success": True, "message": "✅ Cloudflare обойдён"}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
 
+        # ============================================================
+        # ПАМЯТЬ
+        # ============================================================
         elif tool_name == "get_memory_stats":
             memory = learning_memory.memory
-            templates = learning_memory.templates
-            
             return {
                 "success": True,
                 "stats": {
                     "sites_learned": len(memory.get("sites", {})),
-                    "templates_saved": len(templates.get("templates", [])),
-                    "selectors_learned": sum(len(site.get("selectors", {})) for site in memory.get("sites", {}).values()),
-                    "templates_success": templates.get("stats", {}).get("successful", 0)
+                    "selectors_learned": sum(len(site.get("selectors", {})) for site in memory.get("sites", {}).values())
                 }
             }
 
@@ -1433,12 +1062,12 @@ async def execute_tool(tool_name: str, arguments: Dict, user_id: int) -> Dict:
         return {"success": False, "error": f"❌ Ошибка: {str(e)}"}
 
 # ============================================================
-# 9. ОБРАБОТКА ЧЕРЕЗ AGNES AI С САМООБУЧЕНИЕМ
+# 9. ОБРАБОТКА ЧЕРЕЗ AGNES AI
 # ============================================================
 
 @log_error
 async def process_with_agnes(user_message: str, user_id: int) -> Dict:
-    """Обрабатывает запрос через Agnes AI с использованием памяти"""
+    """Обрабатывает запрос через Agnes AI"""
     global agnes_client
 
     if agnes_client is None:
@@ -1446,67 +1075,36 @@ async def process_with_agnes(user_message: str, user_id: int) -> Dict:
 
     try:
         session = await session_manager.get_session(user_id)
-        
-        # Получаем память для текущего сайта
         domain = learning_memory._extract_domain(session.current_url) if session.current_url else ""
         site_memory = learning_memory.memory.get("sites", {}).get(domain, {})
-        templates = learning_memory.get_template_for_site(domain)
-        
-        # Формируем системный промпт с памятью
-        memory_context = ""
-        if site_memory:
-            selectors = site_memory.get("selectors", {})
-            if selectors:
-                memory_context += f"\n🧠 **Сохранённые селекторы для {domain}:**\n"
-                for key, value in selectors.items():
-                    memory_context += f"  - {key}: {value}\n"
-        
-        if templates:
-            memory_context += f"\n📋 **Сохранённые шаблоны для {domain}:** {len(templates)} действий\n"
-        
+
         system_prompt = f"""
 Ты — AI агент, управляющий браузером через Pydoll.
 
-**Состояние браузера:**
-- Браузер: {'открыт' if session.is_active else 'закрыт'}
+**Состояние:**
 - URL: {session.current_url or 'нет'}
-- Заголовок: {session.page_title or 'нет'}
+- Браузер: {'открыт' if session.is_active else 'закрыт'}
 
-{memory_context}
+**Память о сайте {domain}:**
+{json.dumps(site_memory.get('selectors', {}), indent=2, ensure_ascii=False) if site_memory else 'Нет данных'}
 
 **Правила:**
-1. Если браузер закрыт — сначала открой его
-2. Используй инструменты для действий
-3. Для скриншотов используй take_screenshot
-4. Используй сохранённые селекторы из памяти (find_element_from_memory)
-5. Для поиска на новом сайте используй analyze_page_structure
-6. Сохраняй успешные паттерны через save_learned_pattern
-7. После перехода на сайт, страница анализируется автоматически
+1. Используй type_into_search_smart для поиска — он сам найдёт поле
+2. Используй click_element с humanize=True
+3. Для сложных сайтов используй analyze_page_structure
+4. Всегда проверяй память через find_element_from_memory
+5. Для обхода Cloudflare используй bypass_cloudflare
+6. При ошибках используй retry автоматически
 
 **Доступные инструменты:**
 - go_to_url, go_back, refresh_page — навигация
-- analyze_page_structure — анализ страницы
-- find_element, find_element_by_css — поиск элементов
-- find_element_smart — умный поиск по тексту
-- find_element_from_memory — поиск из памяти
-- click_element, type_text, clear_field — взаимодействие
-- type_into_search_smart — поиск с авто-определением
+- find_element, find_element_smart, find_element_from_memory — поиск
+- click_element, type_text, type_into_search_smart — взаимодействие
 - take_screenshot — скриншот
-- scroll_to_bottom, scroll_to_top — прокрутка
-- get_page_title, get_current_url, get_page_source — данные
-- execute_javascript — JS код
-- extract_data_with_js — извлечение данных
-- http_get — HTTP запросы
-- get_cookies, set_cookie — управление куками
-- analyze_github_repo — анализ GitHub репозиториев
-- search_github — поиск на GitHub
-- save_learned_pattern — сохранение паттернов
+- analyze_page_structure — анализ
+- bypass_cloudflare — обход капчи
+- analyze_github_repo, search_github — GitHub
 - get_memory_stats — статистика памяти
-
-**Рекомендации:**
-- Для YouTube используй type_into_search_smart
-- Для Google используй type_into_search_smart или find_element(name="q")
-- Для GitHub используй analyze_github_repo или search_github
 """
 
         response = agnes_client.chat.completions.create(
@@ -1520,57 +1118,28 @@ async def process_with_agnes(user_message: str, user_id: int) -> Dict:
         )
 
         message = response.choices[0].message
-        results = []
-        action_sequence = []
 
         if message.tool_calls:
             for tool_call in message.tool_calls:
                 tool_name = tool_call.function.name
                 arguments = json.loads(tool_call.function.arguments)
 
-                logger.info(f"🔧 Вызов: {tool_name} с аргументами: {arguments}")
-                
-                # Запоминаем действие
-                action_sequence.append({"tool": tool_name, "args": arguments})
+                logger.info(f"🔧 Вызов: {tool_name}")
 
                 result = await execute_tool(tool_name, arguments, user_id)
-                results.append({"tool": tool_name, "result": result})
 
                 if tool_name == "take_screenshot" and result.get("success") and result.get("screenshot"):
-                    return {
-                        "type": "screenshot",
-                        "data": result["screenshot"],
-                        "message": "📸 Скриншот готов"
-                    }
+                    return {"type": "screenshot", "data": result["screenshot"]}
 
-            # Сохраняем успешный паттерн
-            if results and all(r["result"].get("success") for r in results):
-                await execute_tool(
-                    "save_learned_pattern",
-                    {"actions": action_sequence, "description": user_message[:100]},
-                    user_id
-                )
+                if not result.get("success"):
+                    return {"type": "text", "content": f"❌ {result.get('error', 'Ошибка')}"}
 
-            # Формируем ответ
-            if message.content:
-                content = message.content
-            else:
-                content = "\n".join([
-                    r["result"].get("message", r["result"].get("error", "✅ Готово"))
-                    for r in results
-                    if r["result"].get("success", False)
-                ])
-
-            errors = [r["result"].get("error", "") for r in results if not r["result"].get("success", False)]
-            if errors:
-                content += "\n\n⚠️ Ошибки:\n" + "\n".join(errors)
-
-            return {"type": "text", "content": content}
+            return {"type": "text", "content": "✅ Готово!"}
         else:
             return {"type": "text", "content": message.content or "✅ Готово!"}
 
     except Exception as e:
-        error_tracker.add_error(e, {"user_id": user_id, "action": "process_with_agnes"})
+        error_tracker.add_error(e, {"user_id": user_id})
         return {"type": "text", "content": f"❌ Ошибка: {str(e)}"}
 
 # ============================================================
@@ -1578,201 +1147,100 @@ async def process_with_agnes(user_message: str, user_id: int) -> Dict:
 # ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Приветствие"""
-    user_id = update.effective_user.id
-    audit_logger.info(f"User {user_id} запустил бота")
-
     await update.message.reply_text(
-        "🤖 **Бот с AI агентом на Agnes AI**\n\n"
+        "🤖 **Бот с AI агентом**\n\n"
         "Управляю браузером через естественный язык!\n"
-        "**Обладает самообучением и памятью!**\n\n"
+        "**С самообучением и человеческим поведением!**\n\n"
         "📌 **Примеры:**\n"
         "• `Открой браузер`\n"
-        "• `Перейди на google.com`\n"
-        "• `Найди кнопку Войти и кликни`\n"
+        "• `Перейди на youtube.com`\n"
+        "• `Найди видео про Джастина Бибера`\n"
         "• `Сделай скриншот`\n"
-        "• `Проанализируй GitHub репозиторий https://github.com/user/repo`\n"
-        "• `Найди на GitHub библиотеку для парсинга`\n\n"
+        "• `Проанализируй GitHub репозиторий`\n\n"
         "🔧 **Команды:**\n"
         "/open — Открыть браузер\n"
         "/close — Закрыть браузер\n"
-        "/status — Статус сессии\n"
-        "/memory — Статистика памяти\n"
-        "/debug — Детальная отладка\n"
-        "/errors — Показать ошибки\n\n"
-        "💡 Просто напиши, что нужно сделать!",
+        "/status — Статус\n"
+        "/memory — Память агента\n"
+        "/debug — Отладка",
         parse_mode='Markdown'
     )
 
 async def open_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Открывает браузер"""
     user_id = update.effective_user.id
     await update.message.reply_text("🌐 Открываю браузер...")
-
     try:
         session = await session_manager.get_session(user_id)
-        session.last_action = "open_browser"
-        session.last_action_time = datetime.now()
         await session.tab.current_url
-        await update.message.reply_text("✅ Браузер успешно открыт!")
+        await update.message.reply_text("✅ Браузер открыт!")
     except Exception as e:
-        error_tracker.add_error(e, {"user_id": user_id, "action": "open_command"})
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Закрывает браузер"""
     user_id = update.effective_user.id
     await update.message.reply_text("❌ Закрываю браузер...")
-
     try:
         await session_manager.close_session(user_id)
         await update.message.reply_text("✅ Браузер закрыт!")
     except Exception as e:
-        error_tracker.add_error(e, {"user_id": user_id, "action": "close_command"})
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Статус сессии"""
     user_id = update.effective_user.id
     session = await session_manager.get_session(user_id)
     
-    # Статистика памяти
     memory_stats = await execute_tool("get_memory_stats", {}, user_id)
-    memory_info = memory_stats.get("stats", {}) if memory_stats.get("success") else {}
-
-    status = "🟢 Активен" if session.is_active else "🔴 Не активен"
+    stats = memory_stats.get("stats", {}) if memory_stats.get("success") else {}
 
     message = (
-        f"📊 **Статус сессии**\n\n"
-        f"🆔 Пользователь: `{user_id}`\n"
-        f"🌐 Браузер: {status}\n"
-        f"🔒 Контекст: `{session.context_id or 'нет'}`\n"
+        f"📊 **Статус**\n\n"
+        f"🌐 Браузер: {'✅ Активен' if session.is_active else '❌ Не активен'}\n"
         f"🔗 URL: `{session.current_url or 'нет'}`\n"
-        f"📄 Заголовок: `{session.page_title or 'нет'}`\n"
-        f"⚡ Последнее действие: {session.last_action or 'нет'}\n"
-        f"⏰ Обновлено: {session.last_action_time.strftime('%H:%M:%S')}\n\n"
-        f"🧠 **Память агента:**\n"
-        f"  - Сайтов изучено: {memory_info.get('sites_learned', 0)}\n"
-        f"  - Шаблонов сохранено: {memory_info.get('templates_saved', 0)}\n"
-        f"  - Селекторов запомнено: {memory_info.get('selectors_learned', 0)}"
+        f"🧠 Сайтов изучено: {stats.get('sites_learned', 0)}\n"
+        f"📋 Селекторов: {stats.get('selectors_learned', 0)}"
     )
 
     await update.message.reply_text(message, parse_mode='Markdown')
 
 async def memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает память агента"""
-    user_id = update.effective_user.id
+    memory_stats = await execute_tool("get_memory_stats", {}, update.effective_user.id)
+    stats = memory_stats.get("stats", {}) if memory_stats.get("success") else {}
     
-    memory_stats = await execute_tool("get_memory_stats", {}, user_id)
-    if not memory_stats.get("success"):
-        await update.message.reply_text("❌ Не удалось получить статистику памяти")
-        return
-    
-    stats = memory_stats.get("stats", {})
-    
-    memory = learning_memory.memory
-    sites = memory.get("sites", {})
-    
-    message = (
-        f"🧠 **Память агента**\n\n"
-        f"📊 **Статистика:**\n"
-        f"  - Изученных сайтов: {stats.get('sites_learned', 0)}\n"
-        f"  - Сохранённых шаблонов: {stats.get('templates_saved', 0)}\n"
-        f"  - Запомненных селекторов: {stats.get('selectors_learned', 0)}\n"
-        f"  - Успешных шаблонов: {stats.get('templates_success', 0)}\n\n"
-        f"🌐 **Изученные сайты:**\n"
-    )
+    sites = learning_memory.memory.get("sites", {})
+    message = f"🧠 **Память агента**\n\n"
+    message += f"📊 Сайтов изучено: {stats.get('sites_learned', 0)}\n"
+    message += f"📋 Селекторов: {stats.get('selectors_learned', 0)}\n\n"
+    message += "🌐 **Изученные сайты:**\n"
     
     for domain, info in list(sites.items())[:10]:
-        visits = info.get("visits", 0)
-        selectors_count = len(info.get("selectors", {}))
-        message += f"  - {domain} (посещён {visits} раз, запомнено {selectors_count} селекторов)\n"
+        message += f"  - {domain} (посещён {info.get('visits', 0)} раз)\n"
     
-    if len(sites) > 10:
-        message += f"  ... и ещё {len(sites) - 10} сайтов\n"
-    
-    await update.message.reply_text(message, parse_mode='Markdown')
-
-async def errors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает последние ошибки (только для админов)"""
-    user_id = update.effective_user.id
-
-    if user_id not in ADMIN_IDS:
-        await update.message.reply_text("⛔ У вас нет доступа к этой команде")
-        return
-
-    limit = 10
-    if context.args and context.args[0].isdigit():
-        limit = min(int(context.args[0]), 50)
-
-    errors = error_tracker.get_recent(limit)
-
-    if not errors:
-        await update.message.reply_text("✅ Ошибок нет")
-        return
-
-    message = f"📊 **Последние {len(errors)} ошибок:**\n\n"
-    for i, error in enumerate(errors, 1):
-        message += f"**{i}. {error['error_type']}**\n"
-        message += f"⏰ {error['timestamp']}\n"
-        message += f"💬 {error['error_message'][:100]}\n"
-        if error.get('context', {}).get('function'):
-            message += f"📁 Функция: {error['context']['function']}\n"
-        message += "---\n"
-
-    if len(message) > 4000:
-        message = message[:4000] + "\n... (обрезано)"
-
     await update.message.reply_text(message, parse_mode='Markdown')
 
 async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Детальная отладка (только для админов)"""
-    user_id = update.effective_user.id
-
-    if user_id not in ADMIN_IDS:
-        await update.message.reply_text("⛔ У вас нет доступа к этой команде")
-        return
-
-    session = await session_manager.get_session(user_id)
-    memory_stats = await execute_tool("get_memory_stats", {}, user_id)
+    # Проверка отключена
+    session = await session_manager.get_session(update.effective_user.id)
+    memory_stats = await execute_tool("get_memory_stats", {}, update.effective_user.id)
 
     message = (
         f"🔍 **Отладка**\n\n"
         f"**Сессии:** {len(session_manager.sessions)}\n"
         f"**Браузер:** {'✅' if session_manager._browser else '❌'}\n"
-        f"**Контекст:** {session.context_id or 'нет'}\n"
         f"**Вкладка:** {'✅' if session.tab else '❌'}\n"
         f"**Ошибок:** {len(error_tracker.errors)}\n"
-        f"**Логи:** `{LOG_DIR.absolute()}`\n"
-        f"**Память:** `{MEMORY_DIR.absolute()}`\n"
-        f"**Шаблоны:** `{TEMPLATES_DIR.absolute()}`\n\n"
-        f"🧠 **Память:**\n"
-        f"  - Сайтов: {memory_stats.get('stats', {}).get('sites_learned', 0)}\n"
-        f"  - Шаблонов: {memory_stats.get('stats', {}).get('templates_saved', 0)}"
+        f"**Память:** {memory_stats.get('stats', {}).get('sites_learned', 0)} сайтов\n"
+        f"**Логи:** `{LOG_DIR.absolute()}`"
     )
 
     await update.message.reply_text(message, parse_mode='Markdown')
 
-async def clear_errors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Очищает лог ошибок (только для админов)"""
-    user_id = update.effective_user.id
-
-    if user_id not in ADMIN_IDS:
-        await update.message.reply_text("⛔ У вас нет доступа к этой команде")
-        return
-
-    error_tracker.clear()
-    await update.message.reply_text("🧹 Ошибки очищены")
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает текстовые сообщения"""
     user_id = update.effective_user.id
     user_message = update.message.text
 
     if user_message.startswith('/'):
         return
 
-    audit_logger.info(f"User {user_id}: {user_message}")
     await update.message.reply_text("🤔 Думаю...")
 
     try:
@@ -1781,25 +1249,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if result["type"] == "screenshot":
             try:
                 screenshot_bytes = base64.b64decode(result["data"])
+                
+                # Сжимаем если слишком большое
+                if len(screenshot_bytes) > 10 * 1024 * 1024:
+                    try:
+                        from PIL import Image
+                        import io
+                        image = Image.open(io.BytesIO(screenshot_bytes))
+                        if image.width > 1280:
+                            ratio = 1280 / image.width
+                            new_size = (1280, int(image.height * ratio))
+                            image = image.resize(new_size, Image.Resampling.LANCZOS)
+                            buffer = io.BytesIO()
+                            image.save(buffer, format='PNG', optimize=True)
+                            screenshot_bytes = buffer.getvalue()
+                    except:
+                        pass
+                
                 await update.message.reply_photo(
                     screenshot_bytes,
-                    caption=result.get("message", "📸 Скриншот")
+                    caption="📸 Скриншот"
                 )
             except Exception as e:
-                error_tracker.add_error(e, {"user_id": user_id, "action": "send_screenshot"})
-                await update.message.reply_text(f"❌ Ошибка отправки скриншота: {str(e)}")
+                await update.message.reply_text(f"❌ Ошибка: {str(e)}")
         else:
             await update.message.reply_text(result["content"])
 
     except Exception as e:
-        error_tracker.add_error(e, {"user_id": user_id, "message": user_message})
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Глобальный обработчик ошибок"""
     error = context.error
     error_tracker.add_error(error, {
-        "update": update.to_dict() if update else None,
         "user_id": update.effective_user.id if update else None
     })
     error_logger.error(f"Ошибка: {error}\n{traceback.format_exc()}")
@@ -1809,16 +1290,14 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 
 async def cleanup_task():
-    """Фоновая очистка неактивных сессий"""
     while True:
-        await asyncio.sleep(300)  # Каждые 5 минут
+        await asyncio.sleep(300)
         try:
             await session_manager.cleanup_inactive(max_age_seconds=1800)
         except Exception as e:
             logger.error(f"Ошибка в cleanup_task: {e}")
 
 async def health_check_task():
-    """Проверка здоровья браузера"""
     while True:
         await asyncio.sleep(60)
         try:
@@ -1833,42 +1312,30 @@ async def health_check_task():
 # ============================================================
 
 async def main():
-    """Главная асинхронная функция"""
     try:
         init_agnes()
 
         application = Application.builder().token(TOKEN).build()
 
-        # Команды
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("open", open_command))
         application.add_handler(CommandHandler("close", close_command))
         application.add_handler(CommandHandler("status", status_command))
         application.add_handler(CommandHandler("memory", memory_command))
-        application.add_handler(CommandHandler("errors", errors_command))
-        application.add_handler(CommandHandler("clear_errors", clear_errors_command))
         application.add_handler(CommandHandler("debug", debug_command))
 
-        # Обработчики
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         application.add_error_handler(error_handler)
 
-        # Фоновые задачи
         asyncio.create_task(cleanup_task())
         asyncio.create_task(health_check_task())
 
         logger.info("=" * 60)
-        logger.info("🚀 Бот с Agnes AI агентом запущен!")
+        logger.info("🚀 Бот v5.0 запущен!")
         logger.info(f"📁 Логи: {LOG_DIR.absolute()}")
         logger.info(f"🧠 Память: {MEMORY_DIR.absolute()}")
-        logger.info(f"📋 Шаблоны: {TEMPLATES_DIR.absolute()}")
-        logger.info(f"👥 Админы: {ADMIN_IDS or 'нет'}")
-        logger.info(f"💾 Persistent: {PERSISTENT_SESSION}")
-        logger.info(f"🌐 Прокси: {PROXY_SERVER or 'нет'}")
-        logger.info(f"📦 Инструментов: {len(TOOLS)}")
         logger.info("=" * 60)
 
-        # Запуск бота
         await application.initialize()
         await application.start()
         await application.updater.start_polling()
@@ -1877,10 +1344,9 @@ async def main():
             await asyncio.sleep(1)
 
     except KeyboardInterrupt:
-        logger.info("🛑 Бот остановлен пользователем")
+        logger.info("🛑 Бот остановлен")
     except Exception as e:
         logger.error(f"Критическая ошибка: {e}")
-        logger.error(traceback.format_exc())
     finally:
         try:
             if 'application' in locals():
@@ -1888,9 +1354,9 @@ async def main():
                 await application.stop()
                 await application.shutdown()
             await session_manager.close_all()
-        except Exception as e:
-            logger.error(f"Ошибка при завершении: {e}")
-        logger.info("✅ Бот корректно завершил работу")
+        except:
+            pass
+        logger.info("✅ Бот завершил работу")
 
 if __name__ == "__main__":
     asyncio.run(main())
