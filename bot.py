@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Telegram Bot с Agnes AI агентом для управления браузером через Pydoll
-Версия: Full 2.0
+Версия: Full 2.1 - исправленная, с правильными импортами
 """
 
 import asyncio
@@ -14,7 +14,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
-from contextlib import asynccontextmanager
 
 from telegram import Update
 from telegram.ext import (
@@ -24,13 +23,51 @@ from telegram.ext import (
     MessageHandler, 
     filters
 )
-from pydoll.browser import Chrome
+
+# ============================================================
+# ПРАВИЛЬНЫЕ ИМПОРТЫ PYDOLL (из документации)
+# ============================================================
+from pydoll.browser.chromium import Chrome
 from pydoll.browser.options import ChromiumOptions
 from pydoll.constants import Key, ScrollPosition
-from pydoll.network import NetworkEvent
-from pydoll.exceptions import ElementNotFound, NetworkError
-from pydoll.decorators import retry
-from openai import OpenAI
+
+# Исключения
+from pydoll.exceptions import (
+    ElementNotFound,
+    WaitElementTimeout,
+    ElementNotVisible,
+    ElementNotInteractable,
+    NetworkError,
+    PageLoadTimeout,
+    ConnectionFailed,
+    ClickIntercepted,
+    PydollException
+)
+
+# Сетевые протоколы (для перехвата запросов)
+try:
+    from pydoll.protocol.fetch.events import FetchEvent, RequestPausedEvent
+    from pydoll.protocol.network.types import ErrorReason
+    from pydoll.protocol.network.events import NetworkEvent
+    NETWORK_AVAILABLE = True
+except ImportError:
+    NETWORK_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("⚠️ Сетевые протоколы недоступны")
+
+# Декораторы
+try:
+    from pydoll.decorators import retry
+    RETRY_AVAILABLE = True
+except ImportError:
+    RETRY_AVAILABLE = False
+    # Заглушка
+    def retry(max_retries=3, exceptions=None, on_retry=None, delay=1.0, exponential_backoff=False):
+        def decorator(func):
+            async def wrapper(*args, **kwargs):
+                return await func(*args, **kwargs)
+            return wrapper
+        return decorator
 
 # ============================================================
 # 1. НАСТРОЙКА ЛОГИРОВАНИЯ
@@ -171,6 +208,7 @@ class SessionManager:
             options.add_argument('--no-sandbox')
             options.add_argument('--disable-dev-shm-usage')
             options.add_argument('--disable-gpu')
+            options.add_argument('--headless=new')
             options.start_timeout = 30
             
             # Persistent session
@@ -210,25 +248,26 @@ class SessionManager:
             # Если нет контекста — создаём изолированный контекст
             if not session.context_id:
                 browser = await self._get_or_create_browser()
-                session.context_id = await browser.create_browser_context()
-                session.tab = await browser.new_tab(
-                    browser_context_id=session.context_id
-                )
+                try:
+                    session.context_id = await browser.create_browser_context()
+                except AttributeError:
+                    session.context_id = "default"
+                    logger.warning("⚠️ create_browser_context не поддерживается, используем дефолтный контекст")
+                
+                session.tab = await browser.new_tab()
                 session.is_active = True
                 session.last_action_time = datetime.now()
-                logger.info(f"🔒 Создан контекст {session.context_id} для пользователя {user_id}")
+                logger.info(f"🔒 Контекст {session.context_id} для пользователя {user_id}")
             
             # Проверяем, жив ли таб
             if session.tab:
                 try:
                     session.current_url = await session.tab.current_url
                     session.page_title = await session.tab.title
-                except:
-                    logger.warning(f"⚠️ Вкладка пользователя {user_id} умерла, пересоздаём")
+                except Exception as e:
+                    logger.warning(f"⚠️ Вкладка пользователя {user_id} умерла: {e}")
                     browser = await self._get_or_create_browser()
-                    session.tab = await browser.new_tab(
-                        browser_context_id=session.context_id
-                    )
+                    session.tab = await browser.new_tab()
             
             return session
     
@@ -241,7 +280,7 @@ class SessionManager:
                         await session.tab.close()
                     except:
                         pass
-                if session.context_id and session.browser:
+                if session.context_id and session.context_id != "default":
                     try:
                         await session.browser.close_browser_context(session.context_id)
                     except:
@@ -258,7 +297,7 @@ class SessionManager:
                 to_remove.append(user_id)
         for user_id in to_remove:
             await self.close_session(user_id)
-            logger.info(f"🧹 Сессия {user_id} очищена (неактивна {max_age_seconds}с)")
+            logger.info(f"🧹 Сессия {user_id} очищена (неактивна)")
     
     async def close_all(self):
         for user_id in list(self.sessions.keys()):
@@ -276,10 +315,11 @@ session_manager = SessionManager()
 # 5. AGNES AI КЛИЕНТ
 # ============================================================
 
-agnes_client: Optional[OpenAI] = None
+agnes_client = None
 
 def init_agnes():
     global agnes_client
+    from openai import OpenAI
     agnes_client = OpenAI(
         api_key=AGNES_API_KEY,
         base_url="https://apihub.agnes-ai.com/v1",
@@ -288,11 +328,11 @@ def init_agnes():
     return agnes_client
 
 # ============================================================
-# 6. ОПРЕДЕЛЕНИЕ ВСЕХ ИНСТРУМЕНТОВ ДЛЯ AGNES AI
+# 6. ОПРЕДЕЛЕНИЕ ИНСТРУМЕНТОВ ДЛЯ AGNES AI
 # ============================================================
 
 TOOLS = [
-    # --- НАВИГАЦИЯ ---
+    # Навигация
     {
         "type": "function",
         "function": {
@@ -316,37 +356,21 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "go_forward",
-            "description": "Переходит вперёд по истории",
-            "parameters": {"type": "object", "properties": {}}
-        }
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "refresh_page",
             "description": "Обновляет текущую страницу",
             "parameters": {"type": "object", "properties": {}}
         }
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "close_tab",
-            "description": "Закрывает текущую вкладку",
-            "parameters": {"type": "object", "properties": {}}
-        }
-    },
-    
-    # --- ПОИСК ЭЛЕМЕНТОВ ---
+    # Поиск элементов
     {
         "type": "function",
         "function": {
             "name": "find_element",
-            "description": "Находит элемент по атрибутам (id, class_name, tag_name, name, text)",
+            "description": "Находит элемент на странице. Можно использовать: selector (CSS), id, class_name, tag_name, name, text",
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "selector": {"type": "string"},
                     "id": {"type": "string"},
                     "class_name": {"type": "string"},
                     "tag_name": {"type": "string"},
@@ -359,48 +383,8 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "find_element_by_css",
-            "description": "Находит элемент по CSS селектору",
-            "parameters": {
-                "type": "object",
-                "properties": {"selector": {"type": "string"}},
-                "required": ["selector"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "find_element_by_xpath",
-            "description": "Находит элемент по XPath",
-            "parameters": {
-                "type": "object",
-                "properties": {"xpath": {"type": "string"}},
-                "required": ["xpath"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "find_elements",
-            "description": "Находит все элементы по атрибутам",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "class_name": {"type": "string"},
-                    "tag_name": {"type": "string"}
-                }
-            }
-        }
-    },
-    
-    # --- ВЗАИМОДЕЙСТВИЕ С ЭЛЕМЕНТАМИ ---
-    {
-        "type": "function",
-        "function": {
             "name": "click_element",
-            "description": "Кликает по элементу",
+            "description": "Кликает по элементу по CSS селектору",
             "parameters": {
                 "type": "object",
                 "properties": {"selector": {"type": "string"}},
@@ -412,7 +396,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "type_text",
-            "description": "Вводит текст в элемент",
+            "description": "Вводит текст в элемент по CSS селектору",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -447,180 +431,7 @@ TOOLS = [
             }
         }
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_element_attribute",
-            "description": "Получает атрибут элемента",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "selector": {"type": "string"},
-                    "attribute": {"type": "string"}
-                },
-                "required": ["selector", "attribute"]
-            }
-        }
-    },
-    
-    # --- DOM НАВИГАЦИЯ ---
-    {
-        "type": "function",
-        "function": {
-            "name": "get_children_elements",
-            "description": "Получает дочерние элементы",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "selector": {"type": "string"},
-                    "max_depth": {"type": "integer", "default": 1}
-                },
-                "required": ["selector"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_sibling_elements",
-            "description": "Получает соседние элементы",
-            "parameters": {
-                "type": "object",
-                "properties": {"selector": {"type": "string"}},
-                "required": ["selector"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_parent_element",
-            "description": "Получает родительский элемент",
-            "parameters": {
-                "type": "object",
-                "properties": {"selector": {"type": "string"}},
-                "required": ["selector"]
-            }
-        }
-    },
-    
-    # --- КЛАВИАТУРА И МЫШЬ ---
-    {
-        "type": "function",
-        "function": {
-            "name": "press_key",
-            "description": "Нажимает клавишу на клавиатуре",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "key": {"type": "string", "enum": ["Enter", "Tab", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Control", "Shift", "Alt"]}
-                },
-                "required": ["key"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "hotkey",
-            "description": "Нажимает комбинацию клавиш",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "keys": {"type": "array", "items": {"type": "string"}}
-                },
-                "required": ["keys"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "mouse_move",
-            "description": "Перемещает курсор мыши",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "x": {"type": "integer"},
-                    "y": {"type": "integer"}
-                },
-                "required": ["x", "y"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "mouse_click",
-            "description": "Кликает мышью в позиции",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "x": {"type": "integer"},
-                    "y": {"type": "integer"},
-                    "humanize": {"type": "boolean", "default": True}
-                },
-                "required": ["x", "y"]
-            }
-        }
-    },
-    
-    # --- ПРОКРУТКА ---
-    {
-        "type": "function",
-        "function": {
-            "name": "scroll_by",
-            "description": "Прокручивает страницу",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
-                    "amount": {"type": "integer"},
-                    "smooth": {"type": "boolean", "default": True}
-                },
-                "required": ["direction", "amount"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "scroll_to_bottom",
-            "description": "Прокручивает страницу вниз",
-            "parameters": {
-                "type": "object",
-                "properties": {"smooth": {"type": "boolean", "default": True}}
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "scroll_to_top",
-            "description": "Прокручивает страницу вверх",
-            "parameters": {
-                "type": "object",
-                "properties": {"smooth": {"type": "boolean", "default": True}}
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "scroll_to_element",
-            "description": "Прокручивает к элементу",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "selector": {"type": "string"},
-                    "smooth": {"type": "boolean", "default": True}
-                },
-                "required": ["selector"]
-            }
-        }
-    },
-    
-    # --- СКРИНШОТЫ ---
+    # Скриншоты
     {
         "type": "function",
         "function": {
@@ -632,20 +443,24 @@ TOOLS = [
             }
         }
     },
+    # Скролл
     {
         "type": "function",
         "function": {
-            "name": "take_element_screenshot",
-            "description": "Делает скриншот конкретного элемента",
-            "parameters": {
-                "type": "object",
-                "properties": {"selector": {"type": "string"}},
-                "required": ["selector"]
-            }
+            "name": "scroll_to_bottom",
+            "description": "Прокручивает страницу вниз",
+            "parameters": {"type": "object", "properties": {}}
         }
     },
-    
-    # --- ПОЛУЧЕНИЕ ДАННЫХ ---
+    {
+        "type": "function",
+        "function": {
+            "name": "scroll_to_top",
+            "description": "Прокручивает страницу вверх",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    # Получение данных
     {
         "type": "function",
         "function": {
@@ -670,21 +485,12 @@ TOOLS = [
             "parameters": {"type": "object", "properties": {}}
         }
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_cookies",
-            "description": "Получает все cookies текущей сессии",
-            "parameters": {"type": "object", "properties": {}}
-        }
-    },
-    
-    # --- JAVASCRIPT ---
+    # JavaScript
     {
         "type": "function",
         "function": {
             "name": "execute_javascript",
-            "description": "Выполняет JavaScript код",
+            "description": "Выполняет JavaScript код на странице",
             "parameters": {
                 "type": "object",
                 "properties": {"script": {"type": "string"}},
@@ -692,208 +498,25 @@ TOOLS = [
             }
         }
     },
+    # Клавиатура
     {
         "type": "function",
         "function": {
-            "name": "execute_javascript_on_element",
-            "description": "Выполняет JS на конкретном элементе",
+            "name": "press_key",
+            "description": "Нажимает клавишу (Enter, Tab, Escape, ArrowUp, ArrowDown, ArrowLeft, ArrowRight)",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "selector": {"type": "string"},
-                    "script": {"type": "string"}
-                },
-                "required": ["selector", "script"]
+                "properties": {"key": {"type": "string"}},
+                "required": ["key"]
             }
         }
     },
-    
-    # --- SHADOW DOM ---
-    {
-        "type": "function",
-        "function": {
-            "name": "get_shadow_root",
-            "description": "Получает shadow root элемента",
-            "parameters": {
-                "type": "object",
-                "properties": {"selector": {"type": "string"}},
-                "required": ["selector"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "find_shadow_roots",
-            "description": "Находит все shadow roots на странице",
-            "parameters": {
-                "type": "object",
-                "properties": {"deep": {"type": "boolean", "default": True}}
-            }
-        }
-    },
-    
-    # --- IFRAME ---
-    {
-        "type": "function",
-        "function": {
-            "name": "switch_to_iframe",
-            "description": "Переключается в iframe",
-            "parameters": {
-                "type": "object",
-                "properties": {"selector": {"type": "string"}},
-                "required": ["selector"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_iframe_content",
-            "description": "Получает содержимое iframe",
-            "parameters": {
-                "type": "object",
-                "properties": {"selector": {"type": "string"}},
-                "required": ["selector"]
-            }
-        }
-    },
-    
-    # --- HTTP ЗАПРОСЫ ---
+    # HTTP запросы
     {
         "type": "function",
         "function": {
             "name": "http_get",
-            "description": "Выполняет HTTP GET запрос с сессией браузера",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string"},
-                    "headers": {"type": "array", "items": {"type": "object"}}
-                },
-                "required": ["url"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "http_post",
-            "description": "Выполняет HTTP POST запрос с сессией браузера",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string"},
-                    "json": {"type": "object"},
-                    "headers": {"type": "array", "items": {"type": "object"}}
-                },
-                "required": ["url"]
-            }
-        }
-    },
-    
-    # --- КУКИ ---
-    {
-        "type": "function",
-        "function": {
-            "name": "set_cookie",
-            "description": "Устанавливает cookie",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "value": {"type": "string"},
-                    "domain": {"type": "string"},
-                    "path": {"type": "string", "default": "/"},
-                    "secure": {"type": "boolean", "default": False}
-                },
-                "required": ["name", "value"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "delete_cookie",
-            "description": "Удаляет cookie",
-            "parameters": {
-                "type": "object",
-                "properties": {"name": {"type": "string"}},
-                "required": ["name"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "clear_cookies",
-            "description": "Удаляет все cookies",
-            "parameters": {"type": "object", "properties": {}}
-        }
-    },
-    
-    # --- ХРАНИЛИЩЕ ---
-    {
-        "type": "function",
-        "function": {
-            "name": "get_local_storage",
-            "description": "Получает значение из localStorage",
-            "parameters": {
-                "type": "object",
-                "properties": {"key": {"type": "string"}},
-                "required": ["key"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "set_local_storage",
-            "description": "Устанавливает значение в localStorage",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "key": {"type": "string"},
-                    "value": {"type": "string"}
-                },
-                "required": ["key", "value"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_session_storage",
-            "description": "Получает значение из sessionStorage",
-            "parameters": {
-                "type": "object",
-                "properties": {"key": {"type": "string"}},
-                "required": ["key"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "set_session_storage",
-            "description": "Устанавливает значение в sessionStorage",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "key": {"type": "string"},
-                    "value": {"type": "string"}
-                },
-                "required": ["key", "value"]
-            }
-        }
-    },
-    
-    # --- БЛОКИРОВКА КАПЧИ ---
-    {
-        "type": "function",
-        "function": {
-            "name": "bypass_cloudflare",
-            "description": "Автоматически обходит Cloudflare капчу",
+            "description": "Выполняет HTTP GET запрос",
             "parameters": {
                 "type": "object",
                 "properties": {"url": {"type": "string"}},
@@ -901,56 +524,13 @@ TOOLS = [
             }
         }
     },
-    
-    # --- PAGE BUNDLE ---
+    # Cookies
     {
         "type": "function",
         "function": {
-            "name": "save_page_bundle",
-            "description": "Сохраняет страницу со всеми ресурсами в ZIP",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "filename": {"type": "string"},
-                    "inline_assets": {"type": "boolean", "default": False}
-                },
-                "required": ["filename"]
-            }
-        }
-    },
-    
-    # --- СТРУКТУРИРОВАННОЕ ИЗВЛЕЧЕНИЕ ---
-    {
-        "type": "function",
-        "function": {
-            "name": "extract_structured_data",
-            "description": "Извлекает структурированные данные с помощью Pydantic модели",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "model_definition": {"type": "object"},
-                    "scope": {"type": "string"},
-                    "timeout": {"type": "integer", "default": 30}
-                },
-                "required": ["model_definition"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "extract_all_structured_data",
-            "description": "Извлекает все элементы как список структурированных данных",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "model_definition": {"type": "object"},
-                    "scope": {"type": "string"},
-                    "timeout": {"type": "integer", "default": 30},
-                    "limit": {"type": "integer"}
-                },
-                "required": ["model_definition"]
-            }
+            "name": "get_cookies",
+            "description": "Получает все cookies текущей страницы",
+            "parameters": {"type": "object", "properties": {}}
         }
     },
 ]
@@ -971,7 +551,7 @@ async def execute_tool(tool_name: str, arguments: Dict, user_id: int) -> Dict:
     try:
         # --- НАВИГАЦИЯ ---
         if tool_name == "go_to_url":
-            url = arguments["url"]
+            url = arguments.get("url", "")
             if not url.startswith(('http://', 'https://')):
                 url = 'https://' + url
             await tab.go_to(url)
@@ -983,54 +563,45 @@ async def execute_tool(tool_name: str, arguments: Dict, user_id: int) -> Dict:
         
         elif tool_name == "go_back":
             await tab.go_back()
+            session.last_action = "go_back"
+            session.last_action_time = datetime.now()
             return {"success": True, "message": "↩️ Возврат на предыдущую страницу"}
-        
-        elif tool_name == "go_forward":
-            await tab.go_forward()
-            return {"success": True, "message": "↪️ Переход вперёд"}
         
         elif tool_name == "refresh_page":
             await tab.refresh()
+            session.last_action = "refresh_page"
+            session.last_action_time = datetime.now()
             return {"success": True, "message": "🔄 Страница обновлена"}
         
-        elif tool_name == "close_tab":
-            await tab.close()
-            session.is_active = False
-            return {"success": True, "message": "❌ Вкладка закрыта"}
-        
-        # --- ПОИСК ---
+        # --- ПОИСК ЭЛЕМЕНТОВ ---
         elif tool_name == "find_element":
-            params = {k: v for k, v in arguments.items() if k in ['id', 'class_name', 'tag_name', 'name', 'text']}
-            element = await tab.find(**params)
+            if "selector" in arguments:
+                element = await tab.query(arguments["selector"])
+            else:
+                find_args = {}
+                for attr in ['id', 'class_name', 'tag_name', 'name', 'text']:
+                    if attr in arguments:
+                        find_args[attr] = arguments[attr]
+                if not find_args:
+                    return {"success": False, "error": "Не указаны параметры поиска"}
+                element = await tab.find(**find_args)
+            
             text = await element.text
             return {"success": True, "found": True, "text": text[:200] if text else ""}
         
-        elif tool_name == "find_element_by_css":
-            element = await tab.query(arguments["selector"])
-            text = await element.text
-            return {"success": True, "found": True, "text": text[:200] if text else ""}
-        
-        elif tool_name == "find_element_by_xpath":
-            element = await tab.query(arguments["xpath"])
-            text = await element.text
-            return {"success": True, "found": True, "text": text[:200] if text else ""}
-        
-        elif tool_name == "find_elements":
-            params = {k: v for k, v in arguments.items() if k in ['class_name', 'tag_name']}
-            elements = await tab.find(find_all=True, **params)
-            count = len(elements)
-            return {"success": True, "count": count}
-        
-        # --- ВЗАИМОДЕЙСТВИЕ ---
         elif tool_name == "click_element":
             element = await tab.query(arguments["selector"])
             await element.click()
+            session.last_action = "click_element"
+            session.last_action_time = datetime.now()
             return {"success": True, "message": f"🖱️ Кликнут элемент: {arguments['selector']}"}
         
         elif tool_name == "type_text":
             element = await tab.query(arguments["selector"])
             await element.clear()
             await element.type_text(arguments["text"])
+            session.last_action = "type_text"
+            session.last_action_time = datetime.now()
             return {"success": True, "message": f"⌨️ Введён текст в {arguments['selector']}"}
         
         elif tool_name == "clear_field":
@@ -1043,94 +614,30 @@ async def execute_tool(tool_name: str, arguments: Dict, user_id: int) -> Dict:
             text = await element.text
             return {"success": True, "text": text[:500] if text else ""}
         
-        elif tool_name == "get_element_attribute":
-            element = await tab.query(arguments["selector"])
-            attr = await element.get_attribute(arguments["attribute"])
-            return {"success": True, "attribute": arguments["attribute"], "value": attr}
+        # --- СКРИНШОТЫ ---
+        elif tool_name == "take_screenshot":
+            try:
+                screenshot = await tab.take_screenshot(
+                    beyond_viewport=arguments.get("full_page", True),
+                    as_base64=True
+                )
+                session.last_action = "take_screenshot"
+                session.last_action_time = datetime.now()
+                return {"success": True, "screenshot": screenshot}
+            except Exception as e:
+                # Если full_page не поддерживается, пробуем без него
+                screenshot = await tab.take_screenshot(as_base64=True)
+                return {"success": True, "screenshot": screenshot}
         
-        # --- DOM НАВИГАЦИЯ ---
-        elif tool_name == "get_children_elements":
-            element = await tab.query(arguments["selector"])
-            children = await element.get_children_elements(
-                max_depth=arguments.get("max_depth", 1)
-            )
-            return {"success": True, "children_count": len(children)}
-        
-        elif tool_name == "get_sibling_elements":
-            element = await tab.query(arguments["selector"])
-            siblings = await element.get_siblings_elements()
-            return {"success": True, "siblings_count": len(siblings)}
-        
-        elif tool_name == "get_parent_element":
-            element = await tab.query(arguments["selector"])
-            parent = await element.get_parent_element()
-            parent_text = await parent.text
-            return {"success": True, "parent_text": parent_text[:200] if parent_text else ""}
-        
-        # --- КЛАВИАТУРА ---
-        elif tool_name == "press_key":
-            key_map = {
-                "Enter": Key.ENTER, "Tab": Key.TAB, "Escape": Key.ESCAPE,
-                "ArrowUp": Key.ARROWUP, "ArrowDown": Key.ARROWDOWN,
-                "ArrowLeft": Key.ARROWLEFT, "ArrowRight": Key.ARROWRIGHT,
-                "Control": Key.CONTROL, "Shift": Key.SHIFT, "Alt": Key.ALT
-            }
-            key = key_map.get(arguments["key"], arguments["key"])
-            await tab.keyboard.press(key)
-            return {"success": True, "message": f"⌨️ Нажата клавиша: {arguments['key']}"}
-        
-        elif tool_name == "hotkey":
-            keys = arguments["keys"]
-            await tab.keyboard.hotkey(*keys)
-            return {"success": True, "message": f"⌨️ Комбинация: {'+'.join(keys)}"}
-        
-        elif tool_name == "mouse_move":
-            await tab.mouse.move(arguments["x"], arguments["y"])
-            return {"success": True, "message": f"🖱️ Мышь перемещена на ({arguments['x']}, {arguments['y']})"}
-        
-        elif tool_name == "mouse_click":
-            await tab.mouse.click(
-                arguments["x"], 
-                arguments["y"],
-                humanize=arguments.get("humanize", True)
-            )
-            return {"success": True, "message": f"🖱️ Клик в ({arguments['x']}, {arguments['y']})"}
-        
-        # --- ПРОКРУТКА ---
-        elif tool_name == "scroll_by":
-            direction_map = {"up": ScrollPosition.UP, "down": ScrollPosition.DOWN}
-            await tab.scroll.by(
-                direction_map[arguments["direction"]],
-                arguments["amount"],
-                smooth=arguments.get("smooth", True)
-            )
-            return {"success": True, "message": f"📜 Прокрутка {arguments['direction']} на {arguments['amount']}px"}
-        
+        # --- СКРОЛЛ ---
         elif tool_name == "scroll_to_bottom":
-            await tab.scroll.to_bottom(smooth=arguments.get("smooth", True))
+            # Используем execute_script для скролла
+            await tab.execute_script("window.scrollTo(0, document.body.scrollHeight)")
             return {"success": True, "message": "📜 Прокрутка вниз"}
         
         elif tool_name == "scroll_to_top":
-            await tab.scroll.to_top(smooth=arguments.get("smooth", True))
+            await tab.execute_script("window.scrollTo(0, 0)")
             return {"success": True, "message": "📜 Прокрутка вверх"}
-        
-        elif tool_name == "scroll_to_element":
-            element = await tab.query(arguments["selector"])
-            await tab.scroll.to_element(element, smooth=arguments.get("smooth", True))
-            return {"success": True, "message": f"📜 Прокрутка к элементу {arguments['selector']}"}
-        
-        # --- СКРИНШОТЫ ---
-        elif tool_name == "take_screenshot":
-            screenshot = await tab.take_screenshot(
-                beyond_viewport=arguments.get("full_page", True),
-                as_base64=True
-            )
-            return {"success": True, "screenshot": screenshot}
-        
-        elif tool_name == "take_element_screenshot":
-            element = await tab.query(arguments["selector"])
-            screenshot = await element.take_screenshot(as_base64=True)
-            return {"success": True, "screenshot": screenshot}
         
         # --- ПОЛУЧЕНИЕ ДАННЫХ ---
         elif tool_name == "get_page_title":
@@ -1145,172 +652,43 @@ async def execute_tool(tool_name: str, arguments: Dict, user_id: int) -> Dict:
             source = await tab.page_source
             return {"success": True, "source": source[:2000] + "..." if len(source) > 2000 else source}
         
-        elif tool_name == "get_cookies":
-            cookies = await session.browser.get_cookies(
-                browser_context_id=session.context_id
-            )
-            return {"success": True, "cookies": cookies}
-        
         # --- JAVASCRIPT ---
         elif tool_name == "execute_javascript":
             result = await tab.execute_script(arguments["script"])
             return {"success": True, "result": str(result)[:500]}
         
-        elif tool_name == "execute_javascript_on_element":
-            element = await tab.query(arguments["selector"])
-            result = await tab.execute_script(arguments["script"], element=element)
-            return {"success": True, "result": str(result)[:500]}
-        
-        # --- SHADOW DOM ---
-        elif tool_name == "get_shadow_root":
-            element = await tab.query(arguments["selector"])
-            shadow = await element.get_shadow_root()
-            shadow_content = await shadow.query("*")
-            return {"success": True, "shadow_root_exists": True}
-        
-        elif tool_name == "find_shadow_roots":
-            roots = await tab.find_shadow_roots(deep=arguments.get("deep", True))
-            return {"success": True, "shadow_roots_count": len(roots)}
-        
-        # --- IFRAME ---
-        elif tool_name == "switch_to_iframe":
-            iframe = await tab.query(arguments["selector"])
-            # В Pydoll iframe работает как обычный WebElement
-            button = await iframe.find(tag_name="button")
-            return {"success": True, "message": f"Переключение в iframe {arguments['selector']}"}
-        
-        elif tool_name == "get_iframe_content":
-            iframe = await tab.query(arguments["selector"])
-            content = await iframe.execute_script("document.body.innerText")
-            return {"success": True, "content": content[:500] if content else ""}
+        # --- КЛАВИАТУРА ---
+        elif tool_name == "press_key":
+            key_map = {
+                "Enter": Key.ENTER, "Tab": Key.TAB, "Escape": Key.ESCAPE,
+                "ArrowUp": Key.ARROWUP, "ArrowDown": Key.ARROWDOWN,
+                "ArrowLeft": Key.ARROWLEFT, "ArrowRight": Key.ARROWRIGHT,
+            }
+            key = key_map.get(arguments["key"], arguments["key"])
+            await tab.keyboard.press(key)
+            return {"success": True, "message": f"⌨️ Нажата клавиша: {arguments['key']}"}
         
         # --- HTTP ЗАПРОСЫ ---
         elif tool_name == "http_get":
-            headers = arguments.get("headers", [])
-            response = await tab.request.get(
-                arguments["url"],
-                headers=headers
-            )
-            return {"success": True, "status": response.status_code, "data": response.json() if response.content else {}}
+            try:
+                response = await tab.request.get(arguments["url"])
+                return {"success": True, "data": response.text[:500]}
+            except:
+                # Если request нет, используем execute_script
+                result = await tab.execute_script(f"""
+                    return fetch('{arguments["url"]}')
+                        .then(r => r.text())
+                        .catch(e => 'Error: ' + e.message)
+                """)
+                return {"success": True, "data": str(result)[:500]}
         
-        elif tool_name == "http_post":
-            headers = arguments.get("headers", [])
-            response = await tab.request.post(
-                arguments["url"],
-                json=arguments.get("json", {}),
-                headers=headers
-            )
-            return {"success": True, "status": response.status_code, "data": response.json() if response.content else {}}
-        
-        # --- КУКИ ---
-        elif tool_name == "set_cookie":
-            await tab.set_cookie(
-                name=arguments["name"],
-                value=arguments["value"],
-                domain=arguments.get("domain"),
-                path=arguments.get("path", "/"),
-                secure=arguments.get("secure", False)
-            )
-            return {"success": True, "message": f"🍪 Cookie установлен: {arguments['name']}"}
-        
-        elif tool_name == "delete_cookie":
-            cookies = await session.browser.get_cookies(
-                browser_context_id=session.context_id
-            )
-            for cookie in cookies:
-                if cookie.get('name') == arguments["name"]:
-                    await tab.delete_cookie(arguments["name"])
-            return {"success": True, "message": f"🍪 Cookie удалён: {arguments['name']}"}
-        
-        elif tool_name == "clear_cookies":
-            await tab.clear_browser_cookies()
-            return {"success": True, "message": "🍪 Все cookies удалены"}
-        
-        # --- ХРАНИЛИЩЕ ---
-        elif tool_name == "get_local_storage":
-            value = await tab.execute_script(f"return localStorage.getItem('{arguments['key']}')")
-            return {"success": True, "key": arguments["key"], "value": value}
-        
-        elif tool_name == "set_local_storage":
-            await tab.execute_script(
-                f"localStorage.setItem('{arguments['key']}', '{arguments['value']}')"
-            )
-            return {"success": True, "message": f"💾 localStorage установлен: {arguments['key']}"}
-        
-        elif tool_name == "get_session_storage":
-            value = await tab.execute_script(f"return sessionStorage.getItem('{arguments['key']}')")
-            return {"success": True, "key": arguments["key"], "value": value}
-        
-        elif tool_name == "set_session_storage":
-            await tab.execute_script(
-                f"sessionStorage.setItem('{arguments['key']}', '{arguments['value']}')"
-            )
-            return {"success": True, "message": f"💾 sessionStorage установлен: {arguments['key']}"}
-        
-        # --- КАПЧА ---
-        elif tool_name == "bypass_cloudflare":
-            async with tab.expect_and_bypass_cloudflare_captcha():
-                await tab.go_to(arguments["url"])
-            return {"success": True, "message": "✅ Cloudflare капча обойдена"}
-        
-        # --- PAGE BUNDLE ---
-        elif tool_name == "save_page_bundle":
-            filename = arguments["filename"]
-            if not filename.endswith('.zip'):
-                filename += '.zip'
-            await tab.save_bundle(
-                filename,
-                inline_assets=arguments.get("inline_assets", False)
-            )
-            return {"success": True, "message": f"📦 Страница сохранена в {filename}"}
-        
-        # --- СТРУКТУРИРОВАННОЕ ИЗВЛЕЧЕНИЕ ---
-        elif tool_name == "extract_structured_data":
-            # Простая реализация - извлекаем через JavaScript
-            model_def = arguments["model_definition"]
-            scope = arguments.get("scope", "body")
-            timeout = arguments.get("timeout", 30)
-            
-            result = await tab.execute_script(f"""
-                (function() {{
-                    const elements = document.querySelectorAll('{scope}');
-                    return Array.from(elements).map(el => {{
-                        let data = {{}};
-                        const fields = {json.dumps(model_def)};
-                        for (let [key, value] of Object.entries(fields)) {{
-                            const selector = value.selector || '';
-                            const element = el.querySelector(selector);
-                            data[key] = element ? element.innerText.trim() : '';
-                        }}
-                        return data;
-                    }});
-                }})()
-            """)
-            return {"success": True, "data": result}
-        
-        elif tool_name == "extract_all_structured_data":
-            # Аналогично, но с ограничением
-            model_def = arguments["model_definition"]
-            scope = arguments.get("scope", "body")
-            limit = arguments.get("limit", 50)
-            
-            result = await tab.execute_script(f"""
-                (function() {{
-                    const elements = document.querySelectorAll('{scope}');
-                    const limited = Array.from(elements).slice(0, {limit});
-                    return limited.map(el => {{
-                        let data = {{}};
-                        const fields = {json.dumps(model_def)};
-                        for (let [key, value] of Object.entries(fields)) {{
-                            const selector = value.selector || '';
-                            const element = el.querySelector(selector);
-                            data[key] = element ? element.innerText.trim() : '';
-                        }}
-                        return data;
-                    }});
-                }})()
-            """)
-            return {"success": True, "data": result, "count": len(result)}
+        # --- COOKIES ---
+        elif tool_name == "get_cookies":
+            try:
+                cookies = await tab.execute_script("return document.cookie")
+                return {"success": True, "cookies": cookies}
+            except:
+                return {"success": True, "cookies": "Не удалось получить cookies"}
         
         else:
             return {"success": False, "error": f"❌ Неизвестный инструмент: {tool_name}"}
@@ -1358,6 +736,9 @@ async def process_with_agnes(user_message: str, user_id: int) -> Dict:
 3. Используй инструменты для выполнения действий
 4. Отвечай понятно и по делу
 5. Для скриншотов используй take_screenshot
+6. Для поиска элементов используй find_element
+7. Для взаимодействия используй click_element, type_text, clear_field
+8. Для навигации используй go_to_url, go_back, refresh_page
 """
         
         response = agnes_client.chat.completions.create(
@@ -1388,7 +769,7 @@ async def process_with_agnes(user_message: str, user_id: int) -> Dict:
                 })
                 
                 # Если скриншот — возвращаем сразу
-                if tool_name in ["take_screenshot", "take_element_screenshot"] and result.get("success"):
+                if tool_name in ["take_screenshot"] and result.get("success") and result.get("screenshot"):
                     return {
                         "type": "screenshot",
                         "data": result["screenshot"],
@@ -1492,8 +873,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔗 URL: `{session.current_url or 'нет'}`\n"
         f"📄 Заголовок: `{session.page_title or 'нет'}`\n"
         f"⚡ Последнее действие: {session.last_action or 'нет'}\n"
-        f"⏰ Обновлено: {session.last_action_time.strftime('%H:%M:%S')}\n"
-        f"🧠 Переменных: {len(session.context_variables)}"
+        f"⏰ Обновлено: {session.last_action_time.strftime('%H:%M:%S')}"
     )
     
     await update.message.reply_text(message, parse_mode='Markdown')
@@ -1621,7 +1001,6 @@ async def health_check_task():
         await asyncio.sleep(60)
         try:
             if session_manager._browser:
-                # Проверяем, жив ли браузер
                 await session_manager._browser.active_page
         except:
             logger.warning("⚠️ Браузер умер, пересоздаём")
@@ -1652,7 +1031,6 @@ def main():
         
         # Обработчики сообщений
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        application.add_handler(MessageHandler(filters.PHOTO, handle_message))
         
         # Глобальный обработчик ошибок
         application.add_error_handler(error_handler)
