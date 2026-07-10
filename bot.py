@@ -35,6 +35,37 @@ def normalize_url(url: str) -> str:
         url = 'https://' + url
     return url
 
+async def delete_message_after_delay(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, delay: int = 3):
+    """Удаляет сообщение через указанную задержку"""
+    await asyncio.sleep(delay)
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception as e:
+        logger.error(f"Ошибка при удалении сообщения: {e}")
+
+async def send_and_delete(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, delay: int = 3):
+    """Отправляет сообщение и удаляет его через delay секунд"""
+    message = await update.message.reply_text(text)
+    asyncio.create_task(delete_message_after_delay(context, update.effective_chat.id, message.message_id, delay))
+    return message
+
+async def send_photo_and_delete(update: Update, context: ContextTypes.DEFAULT_TYPE, photo: bytes, caption: str = "", delay: int = 10):
+    """Отправляет фото и удаляет его через delay секунд"""
+    message = await update.message.reply_photo(photo, caption=caption)
+    asyncio.create_task(delete_message_after_delay(context, update.effective_chat.id, message.message_id, delay))
+    return message
+
+async def delete_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE, delay: int = 1):
+    """Удаляет сообщение пользователя"""
+    try:
+        await asyncio.sleep(delay)
+        await context.bot.delete_message(
+            chat_id=update.effective_chat.id,
+            message_id=update.message.message_id
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при удалении сообщения пользователя: {e}")
+
 # --- ФУНКЦИИ ДЛЯ РАБОТЫ С БРАУЗЕРОМ ---
 
 def get_browser_options():
@@ -104,49 +135,83 @@ async def take_screenshot():
         logger.error(f"❌ Ошибка при создании скриншота: {e}")
         return None, str(e)
 
+def get_browser_status():
+    """Возвращает статус браузера"""
+    global browser_instance, tab_instance
+    
+    if browser_instance is not None and tab_instance is not None:
+        return "🟢 Включен"
+    else:
+        return "🔴 Выключен"
+
 # --- КОМАНДЫ БОТА ---
 
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает список команд"""
-    await update.message.reply_text(
+    # Удаляем сообщение пользователя
+    asyncio.create_task(delete_user_message(update, context))
+    
+    await send_and_delete(
+        update,
+        context,
+        "/status - Статус браузера\n"
         "/open_bw - Открыть браузер\n"
         "/close_bw - Закрыть браузер\n"
         "/screen - Скриншот всей страницы\n"
-        "/go <URL> - Перейти на сайт"
+        "/go <URL> - Перейти на сайт",
+        delay=10
     )
+
+# Команда /status
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает статус браузера"""
+    # Удаляем сообщение пользователя
+    asyncio.create_task(delete_user_message(update, context))
+    
+    status = get_browser_status()
+    await send_and_delete(update, context, f"📊 Статус браузера: {status}", delay=5)
 
 # Команда /open_bw
 async def open_browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Открывает браузер"""
-    await update.message.reply_text("🌐 Открываю браузер...")
+    # Удаляем сообщение пользователя
+    asyncio.create_task(delete_user_message(update, context))
+    
+    await send_and_delete(update, context, "🌐 Открываю браузер...", delay=0)
     
     success = await open_browser()
     if success:
-        await update.message.reply_text("✅ Браузер успешно открыт!")
+        await send_and_delete(update, context, "✅ Браузер успешно открыт!", delay=3)
     else:
-        await update.message.reply_text("❌ Не удалось открыть браузер. Проверьте логи.")
+        await send_and_delete(update, context, "❌ Не удалось открыть браузер. Проверьте логи.", delay=5)
 
 # Команда /close_bw
 async def close_browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Закрывает браузер"""
-    await update.message.reply_text("❌ Закрываю браузер...")
+    # Удаляем сообщение пользователя
+    asyncio.create_task(delete_user_message(update, context))
+    
+    await send_and_delete(update, context, "❌ Закрываю браузер...", delay=0)
     
     success = await close_browser()
     if success:
-        await update.message.reply_text("✅ Браузер успешно закрыт!")
+        await send_and_delete(update, context, "✅ Браузер успешно закрыт!", delay=3)
     else:
-        await update.message.reply_text("❌ Не удалось закрыть браузер. Проверьте логи.")
+        await send_and_delete(update, context, "❌ Не удалось закрыть браузер. Проверьте логи.", delay=5)
 
 # Команда /screen
 async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Делает скриншот всей страницы"""
-    await update.message.reply_text("📸 Делаю скриншот всей страницы...")
+    # Удаляем сообщение пользователя
+    asyncio.create_task(delete_user_message(update, context))
+    
+    await send_and_delete(update, context, "📸 Делаю скриншот всей страницы...", delay=0)
     
     screenshot_data, error = await take_screenshot()
     
     if error:
-        await update.message.reply_text(f"❌ {error}")
+        await send_and_delete(update, context, f"❌ {error}", delay=5)
     elif screenshot_data:
         try:
             if isinstance(screenshot_data, str):
@@ -154,43 +219,59 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             else:
                 screenshot_bytes = screenshot_data
             
-            await update.message.reply_photo(
+            await send_photo_and_delete(
+                update,
+                context,
                 screenshot_bytes,
-                caption="📸 Скриншот всей страницы"
+                caption="📸 Скриншот всей страницы",
+                delay=10
             )
         except Exception as e:
             logger.error(f"Ошибка при отправке скриншота: {e}")
-            await update.message.reply_text(f"❌ Ошибка при отправке скриншота: {str(e)}")
+            await send_and_delete(update, context, f"❌ Ошибка при отправке скриншота: {str(e)}", delay=5)
     else:
-        await update.message.reply_text("❌ Не удалось сделать скриншот")
+        await send_and_delete(update, context, "❌ Не удалось сделать скриншот", delay=5)
 
 # Команда /go
 async def go_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Переходит на указанный URL"""
-    global tab_instance
+    # Удаляем сообщение пользователя
+    asyncio.create_task(delete_user_message(update, context))
     
     if not context.args:
-        await update.message.reply_text(
-            "❌ Укажите URL.\n"
-            "Пример: /go https://example.com"
+        await send_and_delete(
+            update,
+            context,
+            "❌ Укажите URL.\nПример: /go https://example.com",
+            delay=5
         )
         return
     
     url = normalize_url(context.args[0])
     
-    await update.message.reply_text(f"🔗 Перехожу на {url}...")
+    await send_and_delete(update, context, f"🔗 Перехожу на {url}...", delay=0)
     
     try:
         if tab_instance is None:
-            await update.message.reply_text("❌ Браузер не открыт. Используйте /open_bw")
+            await send_and_delete(
+                update,
+                context,
+                "❌ Браузер не открыт. Используйте /open_bw",
+                delay=5
+            )
             return
         
         await tab_instance.go_to(url)
         title = await tab_instance.title
-        await update.message.reply_text(f"✅ Перешел на {url}\n📄 Заголовок: {title}")
+        await send_and_delete(
+            update,
+            context,
+            f"✅ Перешел на {url}\n📄 Заголовок: {title}",
+            delay=5
+        )
     except Exception as e:
         logger.error(f"Ошибка при переходе: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+        await send_and_delete(update, context, f"❌ Ошибка: {str(e)}", delay=5)
 
 # --- ОСТАЛЬНЫЕ ОБРАБОТЧИКИ ---
 
@@ -206,6 +287,7 @@ def main():
 
         # Регистрируем команды
         application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("status", status_command))
         application.add_handler(CommandHandler("open_bw", open_browser_command))
         application.add_handler(CommandHandler("close_bw", close_browser_command))
         application.add_handler(CommandHandler("screen", screenshot_command))
@@ -216,7 +298,7 @@ def main():
 
         logger.info("🚀 Бот запущен!")
         logger.info(f"📁 Используемый браузер: {CHROME_PATH}")
-        logger.info("ℹ️ Доступные команды: /start, /open_bw, /close_bw, /screen, /go")
+        logger.info("ℹ️ Доступные команды: /start, /status, /open_bw, /close_bw, /screen, /go")
         
         # Запускаем бота
         application.run_polling(allowed_updates=Update.ALL_TYPES)
