@@ -1,4 +1,3 @@
-Хром
 
 import os
 import logging 
