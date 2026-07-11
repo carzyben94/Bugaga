@@ -26,6 +26,131 @@ AGNES_API_URL = os.getenv("AGNES_API_URL", "https://apihub.agnes-ai.com/v1/chat/
 
 CHROME_PATH = "/usr/bin/google-chrome"
 
+# ---------- Куки для X.com (Twitter) ----------
+X_COOKIES = [
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "__cuid",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "lang",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "ru"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "dnt",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "1"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "guest_id",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "v1%3A178267838599411411"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "guest_id_marketing",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "v1%3A178267838599411411"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "guest_id_ads",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "v1%3A178267838599411411"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "personalization_id",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "\"v1_DKrxLZAC902dMFdd1QrVYg==\""
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "twid",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "u%3D2067347503503052800"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "auth_token",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "ct0",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "__cf_bm",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "Eb4nVvazwJ5mDp0c.6Ye5ub0rukgdQkcFzPf8.wdbIQ-1783798267.7075489-1.0.1.1-59IptPdWY9w0zyKvebR59I.8iB4M1DWfNNZQW0.c.E4lDCU3wTfEcds69RVBkOeQ9LUDZNLGRv6z8InGbCsH1RaTCKaqehL94yq0FgvU7QB9cbE8BO4.2Y8BMRnN_Nks"
+    }
+]
+
 # ---------- Логирование ----------
 
 LOG_FILE = "bot_logs.txt"
@@ -98,6 +223,49 @@ def create_page():
         file_logger.log(f"❌ Ошибка: {e}", "ERROR")
         return None
 
+# ---------- Глобальная установка кук ----------
+
+def set_cookies_global():
+    """Установка кук в глобальном контексте через HTTP запрос"""
+    try:
+        file_logger.log("🍪 Глобальная установка кук X.com...")
+        
+        # Получаем страницу
+        response = requests.get("http://localhost:9222/json")
+        pages = response.json()
+        
+        if not pages:
+            file_logger.log("❌ Нет доступных страниц", "ERROR")
+            return False
+        
+        # Берем первую страницу
+        page = pages[0]
+        page_id = page.get("id")
+        
+        # Формируем URL для установки кук через DevTools
+        for cookie in X_COOKIES:
+            cookie_str = f"{cookie['name']}={cookie['value']}; domain={cookie['domain']}; path={cookie['path']}"
+            # Используем HTTP запрос для установки кук
+            requests.get(f"http://localhost:9222/json", params={
+                "method": "Network.setCookie",
+                "params": json.dumps({
+                    "name": cookie['name'],
+                    "value": cookie['value'],
+                    "domain": cookie['domain'],
+                    "path": cookie['path'],
+                    "secure": cookie['secure'],
+                    "httpOnly": cookie['httpOnly'],
+                    "sameSite": cookie['sameSite']
+                })
+            })
+        
+        file_logger.log(f"✅ Глобально установлено {len(X_COOKIES)} кук")
+        return True
+        
+    except Exception as e:
+        file_logger.log(f"❌ Ошибка глобальной установки кук: {e}", "ERROR")
+        return False
+
 # ---------- CDP Client ----------
 
 class CDPClient:
@@ -108,6 +276,7 @@ class CDPClient:
         self.user_id = None
         self.full_snapshot = None
         self.history = []
+        self.cookies_set = False
     
     async def connect(self):
         if self.connected:
@@ -136,7 +305,11 @@ class CDPClient:
             await self.send("Page.enable", {})
             await self.send("Runtime.enable", {})
             await self.send("DOM.enable", {})
-            file_logger.log("✅ Page, Runtime, DOM включены")
+            await self.send("Network.enable", {})
+            file_logger.log("✅ Page, Runtime, DOM, Network включены")
+            
+            # Устанавливаем куки
+            await self.set_cookies(X_COOKIES)
             
             await self.navigate("https://google.com")
             
@@ -144,6 +317,43 @@ class CDPClient:
             
         except Exception as e:
             file_logger.log(f"❌ Connect error: {e}", "ERROR")
+            return False
+    
+    async def set_cookies(self, cookies):
+        """Установка кук в браузере"""
+        try:
+            file_logger.log(f"🍪 Установка {len(cookies)} кук...")
+            
+            # Форматируем куки для CDP
+            cdp_cookies = []
+            for cookie in cookies:
+                cdp_cookie = {
+                    "name": cookie.get("name"),
+                    "value": cookie.get("value"),
+                    "domain": cookie.get("domain"),
+                    "path": cookie.get("path", "/"),
+                    "secure": cookie.get("secure", False),
+                    "httpOnly": cookie.get("httpOnly", False),
+                    "sameSite": cookie.get("sameSite", "unspecified"),
+                    "session": cookie.get("session", True)
+                }
+                cdp_cookies.append(cdp_cookie)
+            
+            # Отправляем куки через CDP
+            result = await self.send("Network.setCookies", {
+                "cookies": cdp_cookies
+            })
+            
+            if "error" not in result:
+                self.cookies_set = True
+                file_logger.log(f"✅ Установлено {len(cookies)} кук")
+                return True
+            else:
+                file_logger.log(f"❌ Ошибка установки кук: {result.get('error')}", "ERROR")
+                return False
+                
+        except Exception as e:
+            file_logger.log(f"❌ Ошибка установки кук: {e}", "ERROR")
             return False
     
     async def send(self, method, params=None):
@@ -373,6 +583,7 @@ class CDPClient:
 📄 **СТРАНИЦА:** {info.get('title', 'Нет заголовка')}
 🔗 **URL:** {info.get('url', 'Нет URL')}
 📊 **ВСЕГО ЭЛЕМЕНТОВ:** {info.get('total', 0)}
+🍪 **КУКИ УСТАНОВЛЕНЫ:** {'✅ Да' if self.cookies_set else '❌ Нет'}
 
 🔘 **КНОПКИ ({len(info.get('buttons', []))}):**
 """
@@ -694,6 +905,37 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
         file_logger.log(f"Execute error: {e}", "ERROR")
         return f"❌ Ошибка: {str(e)}"
 
+# ---------- Команда для установки кук ----------
+
+async def set_cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для ручной установки кук"""
+    user_id = update.message.from_user.id
+    
+    if user_id not in clients:
+        await update.message.reply_text("❌ Сначала отправьте команду (например, 'Открой Google') чтобы инициализировать браузер")
+        return
+    
+    client = clients[user_id]
+    
+    try:
+        await update.message.reply_text("🍪 Устанавливаю куки для X.com...")
+        
+        # Используем те же куки, что и при инициализации
+        result = await client.set_cookies(X_COOKIES)
+        
+        if result:
+            await update.message.reply_text(f"✅ Установлено {len(X_COOKIES)} кук для X.com")
+            
+            # Проверяем установку кук
+            cookies_check = await client.eval_js("document.cookie")
+            await update.message.reply_text(f"📋 Текущие куки в браузере:\n{cookies_check[:500] if cookies_check else 'Нет кук'}")
+        else:
+            await update.message.reply_text("❌ Не удалось установить куки")
+            
+    except Exception as e:
+        file_logger.log(f"❌ Ошибка: {e}", "ERROR")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
 # ---------- Обработчик ----------
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -747,8 +989,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Введи в поле поиска текст Привет и нажми Enter\n"
         "• Что ты видишь?\n"
         "• Сделай скриншот\n\n"
+        "🍪 **Куки X.com установлены автоматически при старте**\n\n"
         "/cdp - статус браузера\n"
-        "/logs - логи"
+        "/logs - логи\n"
+        "/set_cookies - принудительно установить куки X.com"
     )
 
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -798,13 +1042,73 @@ def main():
     print("🚀 Запуск бота...")
     file_logger.log("🚀 Запуск бота...")
     
+    # Запускаем Chrome
     start_chrome()
     
+    # Устанавливаем куки глобально
+    file_logger.log("🍪 Глобальная установка кук X.com...")
+    
+    # Пробуем установить куки через CDP
+    try:
+        # Создаем временный клиент для установки кук
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        async def setup_cookies_global():
+            ws_url = get_page_ws_url()
+            if not ws_url:
+                ws_url = create_page()
+            
+            if ws_url:
+                ws = await websockets.connect(ws_url)
+                try:
+                    # Отправляем команды для включения Network
+                    await ws.send(json.dumps({"id": 1, "method": "Network.enable", "params": {}}))
+                    await ws.recv()
+                    
+                    # Форматируем куки для CDP
+                    cdp_cookies = []
+                    for cookie in X_COOKIES:
+                        cdp_cookie = {
+                            "name": cookie.get("name"),
+                            "value": cookie.get("value"),
+                            "domain": cookie.get("domain"),
+                            "path": cookie.get("path", "/"),
+                            "secure": cookie.get("secure", False),
+                            "httpOnly": cookie.get("httpOnly", False),
+                            "sameSite": cookie.get("sameSite", "unspecified"),
+                            "session": cookie.get("session", True)
+                        }
+                        cdp_cookies.append(cdp_cookie)
+                    
+                    # Отправляем куки
+                    await ws.send(json.dumps({
+                        "id": 2,
+                        "method": "Network.setCookies",
+                        "params": {"cookies": cdp_cookies}
+                    }))
+                    result = await ws.recv()
+                    file_logger.log(f"✅ Глобально установлено {len(X_COOKIES)} кук")
+                    
+                finally:
+                    await ws.close()
+            else:
+                file_logger.log("❌ Не удалось получить WebSocket для глобальной установки кук", "ERROR")
+        
+        loop.run_until_complete(setup_cookies_global())
+        loop.close()
+        
+    except Exception as e:
+        file_logger.log(f"❌ Ошибка глобальной установки кук: {e}", "ERROR")
+    
+    # Запускаем бота
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("cdp", cdp))
     app.add_handler(CommandHandler("logs", logs_command))
     app.add_handler(CommandHandler("clear_logs", clear_logs_command))
+    app.add_handler(CommandHandler("set_cookies", set_cookies_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print("🚀 Бот запущен!")
