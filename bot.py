@@ -7,7 +7,7 @@ import requests
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, filters, MessageHandler
 import websockets
-import base64
+import re
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -24,15 +24,12 @@ AGNES_API_URL = os.getenv("AGNES_API_URL", "https://api.agnes.ai/v1/chat/complet
 
 CHROME_PATH = "/usr/bin/google-chrome"
 chrome_ws_url = None
-cdp_protocol = None
-cdp_full_docs = ""
 
-# ---------- Функции запуска Chrome ----------
+# ---------- Запуск Chrome ----------
 
 def start_chrome():
     """Запускает Chrome в фоновом режиме"""
     try:
-        # Проверяем, не запущен ли уже Chrome
         result = subprocess.run(
             ["pgrep", "-f", "google-chrome"],
             capture_output=True,
@@ -43,7 +40,6 @@ def start_chrome():
             logger.info("✅ Chrome уже запущен")
             return True
         
-        # Запускаем Chrome
         chrome_cmd = [
             CHROME_PATH,
             "--headless",
@@ -79,30 +75,6 @@ def get_websocket_url():
         return chrome_ws_url
     except Exception as e:
         logger.error(f"Ошибка получения WebSocket URL: {e}")
-        return None
-
-def load_cdp_protocol():
-    """Загружает полную спецификацию CDP"""
-    global cdp_protocol, cdp_full_docs
-    
-    try:
-        response = requests.get("http://localhost:9222/json/protocol")
-        cdp_protocol = response.json()
-        
-        # Краткая информация о доменах
-        domains = cdp_protocol.get("domains", [])
-        cdp_full_docs = f"📚 CDP содержит {len(domains)} доменов.\n\n"
-        
-        # Список всех доменов и их команд (сжато для токенов)
-        for domain in domains[:15]:  # Ограничиваем для размера
-            domain_name = domain.get("domain", "")
-            commands = [cmd.get("name") for cmd in domain.get("commands", [])[:10]]
-            cdp_full_docs += f"**{domain_name}**: {', '.join(commands)}\n"
-        
-        logger.info(f"✅ Загружена CDP спецификация: {len(domains)} доменов")
-        return cdp_protocol
-    except Exception as e:
-        logger.error(f"❌ Ошибка загрузки CDP протокола: {e}")
         return None
 
 # ---------- CDP Команды ----------
@@ -150,69 +122,125 @@ async def evaluate_js(session_id: str, expression: str):
     if "result" in response:
         result = response["result"].get("result", {})
         return result.get("value", result.get("description", "undefined"))
-    return "❌ Ошибка выполнения JS"
+    return f"❌ Ошибка: {response}"
+
+# ---------- Прямое выполнение без Agnes (запасной план) ----------
+
+async def execute_direct_command(command: str, page_id: str, session_id: str) -> str:
+    """Выполняет команду напрямую, если Agnes не отвечает"""
+    
+    # Открыть Google
+    if "google" in command.lower() or "гугл" in command.lower():
+        await cdp_send("Page.navigate", {"url": "https://google.com"}, session_id)
+        title = await evaluate_js(session_id, "document.title")
+        return f"✅ Открыл Google\n📄 Заголовок: {title}"
+    
+    # Открыть X/Twitter
+    if "x.com" in command.lower() or "twitter" in command.lower() or "твиттер" in command.lower():
+        await cdp_send("Page.navigate", {"url": "https://x.com"}, session_id)
+        title = await evaluate_js(session_id, "document.title")
+        return f"✅ Открыл X.com\n📄 Заголовок: {title}"
+    
+    # Скриншот
+    if "скриншот" in command.lower() or "screenshot" in command.lower():
+        response = await cdp_send("Page.captureScreenshot", {"format": "png"}, session_id)
+        if "result" in response:
+            import base64
+            img_data = base64.b64decode(response["result"]["data"])
+            with open("screenshot.png", "wb") as f:
+                f.write(img_data)
+            return "✅ Скриншот сделан!"
+        return "❌ Не удалось сделать скриншот"
+    
+    # Заголовок страницы
+    if "заголовок" in command.lower() or "title" in command.lower():
+        title = await evaluate_js(session_id, "document.title")
+        return f"📄 Заголовок: {title}"
+    
+    # Поиск (прямая навигация)
+    if "найди" in command.lower() or "поиск" in command.lower():
+        # Извлекаем поисковый запрос
+        query = command.replace("найди", "").replace("поиск", "").strip()
+        if query:
+            search_url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
+            await cdp_send("Page.navigate", {"url": search_url}, session_id)
+            return f"✅ Ищу: {query}\n🔍 Открыл страницу поиска"
+    
+    # Помощь
+    return """
+❌ Не понял команду.
+
+Попробуйте:
+• "Открой Google"
+• "Зайди в X.com"
+• "Сделай скриншот"
+• "Найди погоду в Москве"
+• "Что на странице?"
+"""
 
 # ---------- Agnes AI ----------
 
-async def ask_agnes(prompt: str, context: str = "") -> dict:
+async def ask_agnes(prompt: str) -> dict:
     """Отправляет запрос к Agnes API"""
     
     if not AGNES_API_KEY:
-        raise ValueError("AGNES_API_KEY не установлен!")
+        return {"error": "AGNES_API_KEY не установлен"}
     
     headers = {
         "Authorization": f"Bearer {AGNES_API_KEY}",
         "Content-Type": "application/json"
     }
     
-    system_prompt = f"""
-    Ты AI-агент с ПОЛНЫМ контролем над браузером через CDP (Chrome DevTools Protocol).
+    system_prompt = """
+    Ты AI-агент для управления браузером через CDP.
     
-    Доступные инструменты:
-    1. **exec_cdp(domain, command, params)** - выполнить ЛЮБУЮ CDP команду
-    2. **eval_js(js_code)** - выполнить произвольный JavaScript
+    Инструменты:
+    - exec_cdp(domain, command, params) - выполнить CDP команду
+    - eval_js(code) - выполнить JavaScript
     
-    Ты можешь делать ВСЁ в браузере!
-    
-    ВСЕГДА используй exec_cdp для навигации: Page.navigate
-    ВСЕГДА используй eval_js для взаимодействия с DOM
-    
-    {cdp_full_docs}
-    
-    ОТВЕЧАЙ В ФОРМАТЕ JSON:
-    {{
-        "reasoning": "что я делаю",
+    ОТВЕЧАЙ ТОЛЬКО JSON:
+    {
         "actions": [
-            {{"tool": "exec_cdp", "params": {{"domain": "Page", "command": "navigate", "params": {{"url": "https://google.com"}}}}}},
-            {{"tool": "eval_js", "params": {{"code": "document.title"}}}}
+            {"tool": "exec_cdp", "params": {"domain": "Page", "command": "navigate", "params": {"url": "https://google.com"}}}
         ]
-    }}
+    }
+    
+    Для простых команд используй eval_js:
+    {"tool": "eval_js", "params": {"code": "document.title"}}
     """
     
     data = {
         "model": "agnes-v1",
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Контекст: {context}\nЗапрос: {prompt}"}
+            {"role": "user", "content": prompt}
         ],
         "temperature": 0.3,
-        "max_tokens": 1000
+        "max_tokens": 500
     }
     
     try:
-        response = requests.post(AGNES_API_URL, headers=headers, json=data, timeout=60)
+        response = requests.post(AGNES_API_URL, headers=headers, json=data, timeout=30)
         response.raise_for_status()
         result = response.json()
         
         content = result["choices"][0]["message"]["content"]
+        
+        # Пытаемся извлечь JSON
         try:
-            return json.loads(content)
+            # Ищем JSON в ответе
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group())
         except:
-            return {"reasoning": "прямой ответ", "actions": [], "message": content}
+            pass
+        
+        # Если не JSON, пробуем распарсить как простой текст
+        return {"actions": [], "message": content}
             
     except Exception as e:
         logger.error(f"Agnes API error: {e}")
-        return {"reasoning": "ошибка", "actions": [], "error": str(e)}
+        return {"error": str(e)}
 
 async def execute_tool(tool: str, params: dict, page_id: str, session_id: str) -> str:
     """Выполняет инструмент агента"""
@@ -225,33 +253,29 @@ async def execute_tool(tool: str, params: dict, page_id: str, session_id: str) -
         method = f"{domain}.{command}"
         
         try:
-            if page_id:
-                session_id = await attach_to_page(page_id)
-                response = await cdp_send(method, cmd_params, session_id)
-            else:
-                response = await cdp_send(method, cmd_params)
+            response = await cdp_send(method, cmd_params, session_id)
             
             if "result" in response:
                 result = json.dumps(response["result"], indent=2, ensure_ascii=False)
-                return f"✅ {domain}.{command} выполнено: {result[:500]}"
+                return f"✅ {domain}.{command} выполнено"
             else:
                 return f"❌ Ошибка: {response.get('error', {}).get('message', 'Неизвестная ошибка')}"
                 
         except Exception as e:
-            return f"❌ Ошибка выполнения {domain}.{command}: {str(e)}"
+            return f"❌ Ошибка: {str(e)}"
     
     elif tool == "eval_js":
         code = params.get("code", "")
         try:
             result = await evaluate_js(session_id, code)
-            return f"✅ JS результат: {result}"
+            return f"✅ Результат: {result}"
         except Exception as e:
             return f"❌ Ошибка JS: {str(e)}"
     
     else:
         return f"⚠️ Неизвестный инструмент: {tool}"
 
-# ---------- Обработчики ----------
+# ---------- Обработчик сообщений ----------
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обрабатывает сообщения"""
@@ -264,41 +288,45 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.chat.send_action(action="typing")
     
     try:
+        # Создаём вкладку
         page_id = await create_tab()
         session_id = await attach_to_page(page_id)
         
+        # Сначала пробуем Agnes
         response = await ask_agnes(user_message)
         
-        results = []
-        
-        if response.get("reasoning"):
-            results.append(f"🧠 {response['reasoning']}")
-        
-        for action in response.get("actions", []):
-            tool = action.get("tool")
-            params = action.get("params", {})
+        # Если есть actions, выполняем их
+        if "actions" in response and response["actions"]:
+            results = []
+            for action in response["actions"]:
+                tool = action.get("tool")
+                params = action.get("params", {})
+                result = await execute_tool(tool, params, page_id, session_id)
+                results.append(result)
             
-            result = await execute_tool(tool, params, page_id, session_id)
-            results.append(result)
+            if results:
+                await update.message.reply_text("\n\n".join(results))
+                return
         
-        if results:
-            await update.message.reply_text("\n\n".join(results))
-        else:
-            await update.message.reply_text("✅ Готово!")
+        # Если Agnes не сработал, используем прямые команды
+        result = await execute_direct_command(user_message, page_id, session_id)
+        await update.message.reply_text(result)
             
     except Exception as e:
         logger.error(f"Handle error: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
+# ---------- Команды ----------
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "🤖 **AI-агент с полным контролем браузера**\n\n"
+        "🤖 **AI-агент для управления браузером**\n\n"
         "Просто напиши что нужно сделать!\n\n"
         "Примеры:\n"
-        "• Открой Google и найди погоду\n"
+        "• Открой Google\n"
         "• Зайди в X.com\n"
         "• Сделай скриншот\n"
-        "• Напиши сообщение\n\n"
+        "• Найди погоду в Москве\n\n"
         "/cdp - статус браузера"
     )
 
@@ -325,7 +353,6 @@ async def cdp_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 📦 Версия: {version}
 🔌 Порт: 9222
-🧠 Агент: Agnes AI
 📊 Статус: Готов к работе"""
                 
                 await update.message.reply_text(status_text)
@@ -342,7 +369,6 @@ def main() -> None:
         logger.warning("⚠️ Chrome не запустился")
     
     get_websocket_url()
-    load_cdp_protocol()
     
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
