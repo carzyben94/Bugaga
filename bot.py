@@ -98,7 +98,7 @@ def create_page():
         file_logger.log(f"❌ Ошибка: {e}", "ERROR")
         return None
 
-# ---------- CDP Client ----------
+# ---------- CDP Client (полностью переписан) ----------
 
 class CDPClient:
     def __init__(self):
@@ -106,6 +106,7 @@ class CDPClient:
         self.connected = False
         self.msg_id = 0
         self.user_id = None
+        self.pending_requests = {}  # Для отслеживания ответов
     
     async def connect(self):
         if self.connected:
@@ -131,9 +132,13 @@ class CDPClient:
             self.connected = True
             file_logger.log("✅ WebSocket подключен")
             
-            await self._send("Page.enable", {})
-            await self._send("Runtime.enable", {})
+            # Активируем домены
+            await self.send("Page.enable", {})
+            await self.send("Runtime.enable", {})
             file_logger.log("✅ Page.enable и Runtime.enable")
+            
+            # Открываем Google
+            await self.navigate("https://google.com")
             
             return True
             
@@ -141,36 +146,47 @@ class CDPClient:
             file_logger.log(f"❌ Connect error: {e}", "ERROR")
             return False
     
-    async def _send(self, method, params=None):
+    async def send(self, method, params=None):
+        """Отправляет команду и получает ответ"""
         if not self.connected:
             await self.connect()
         
         self.msg_id += 1
+        msg_id = self.msg_id
+        
         msg = {
-            "id": self.msg_id,
+            "id": msg_id,
             "method": method,
             "params": params or {}
         }
         
         try:
+            # Отправляем запрос
             await self.ws.send(json.dumps(msg))
+            file_logger.log(f"📤 {method} (id: {msg_id})")
+            
+            # Ждём ответ
             response = await asyncio.wait_for(self.ws.recv(), timeout=30)
             data = json.loads(response)
             
-            if "error" in data:
-                file_logger.log(f"❌ {method}: {data['error']}", "ERROR")
+            # Проверяем, что это ответ на наш запрос
+            if data.get("id") == msg_id:
+                file_logger.log(f"📥 {method} (id: {msg_id}) - OK")
+                return data
             else:
-                file_logger.log(f"✅ {method}")
-            
-            return data
+                file_logger.log(f"⚠️ Получен ответ с другим id: {data.get('id')} != {msg_id}")
+                return data
+                
+        except asyncio.TimeoutError:
+            file_logger.log(f"❌ {method} timeout", "ERROR")
+            return {"error": "Timeout"}
         except Exception as e:
-            file_logger.log(f"❌ Send error: {e}", "ERROR")
-            self.connected = False
+            file_logger.log(f"❌ {method} error: {e}", "ERROR")
             return {"error": str(e)}
     
     async def navigate(self, url):
         file_logger.log(f"🌐 Навигация на {url}")
-        resp = await self._send("Page.navigate", {"url": url})
+        resp = await self.send("Page.navigate", {"url": url})
         
         # Ждём загрузки
         for i in range(10):
@@ -183,17 +199,18 @@ class CDPClient:
         return resp
     
     async def eval_js(self, code):
-        """Выполняет JavaScript и возвращает результат"""
-        resp = await self._send("Runtime.evaluate", {"expression": code})
+        """Выполняет JavaScript"""
+        resp = await self.send("Runtime.evaluate", {"expression": code})
         
-        # Правильный парсинг Runtime.evaluate
+        # Парсим ответ Runtime.evaluate
         if "result" in resp:
             result_obj = resp["result"]
-            if "result" in result_obj:
-                return result_obj["result"].get("value", "")
-            elif "value" in result_obj:
-                return result_obj["value"]
-        
+            # Проверяем разные форматы
+            if isinstance(result_obj, dict):
+                if "result" in result_obj:
+                    return result_obj["result"].get("value", "")
+                elif "value" in result_obj:
+                    return result_obj["value"]
         return None
     
     async def screenshot(self):
@@ -215,22 +232,22 @@ class CDPClient:
             # Делаем скриншот
             file_logger.log("📸 Делаю скриншот...")
             
-            resp = await self._send("Page.captureScreenshot", {
+            resp = await self.send("Page.captureScreenshot", {
                 "format": "png",
                 "captureBeyondViewport": True,
                 "fromSurface": True
             })
             
-            file_logger.log(f"📸 Ответ: {json.dumps(resp, indent=2)[:300]}")
+            file_logger.log(f"📸 Ответ Page.captureScreenshot: {json.dumps(resp, indent=2)[:300]}")
             
-            # Правильный парсинг Page.captureScreenshot
+            # Проверяем результат
             if "result" in resp and "data" in resp["result"]:
                 file_logger.log("✅ Скриншот сделан")
                 return base64.b64decode(resp["result"]["data"])
             
             # Пробуем без параметров
             file_logger.log("⚠️ Пробую без параметров...")
-            resp2 = await self._send("Page.captureScreenshot", {})
+            resp2 = await self.send("Page.captureScreenshot", {})
             
             if "result" in resp2 and "data" in resp2["result"]:
                 file_logger.log("✅ Скриншот сделан (2)")
