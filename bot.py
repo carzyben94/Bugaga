@@ -7,6 +7,7 @@ import requests
 import re
 import base64
 import asyncio
+import random
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, filters, MessageHandler
 import websockets
@@ -713,42 +714,89 @@ class CDPClient:
             return False
     
     async def get_page_description(self):
+        """Возвращает описание страницы с безопасной обработкой типов"""
         if not self.full_snapshot:
             await self.get_maximum_snapshot()
         
         info = self.full_snapshot or {}
         
-        desc = f"""
-📄 СТРАНИЦА: {info.get('title', 'Нет заголовка')}
-🔗 URL: {info.get('url', 'Нет URL')}
-📊 ВСЕГО ЭЛЕМЕНТОВ: {info.get('total', 0)}
-
-🔘 КНОПКИ ({len(info.get('buttons', [])) if isinstance(info.get('buttons', []), list) else 0}):
-"""
-        buttons = info.get('buttons', [])
-        if isinstance(buttons, list):
-            for el in buttons[:20]:
-                if isinstance(el, dict):
-                    text = el.get('text', '') or el.get('attrs', {}).get('value', '')
-                    if text:
-                        desc += f"  • {text[:30]}\n"
-        else:
-            desc += "  • (нет данных)\n"
+        # Безопасно получаем значения
+        title = info.get('title', 'Нет заголовка') if isinstance(info, dict) else 'Нет заголовка'
+        url = info.get('url', 'Нет URL') if isinstance(info, dict) else 'Нет URL'
+        total = info.get('total', 0) if isinstance(info, dict) else 0
         
-        desc += f"\n📝 ПОЛЯ ВВОДА ({len(info.get('fields', [])) if isinstance(info.get('fields', []), list) else 0}):\n"
-        fields = info.get('fields', [])
-        if isinstance(fields, list):
-            for el in fields[:20]:
-                if isinstance(el, dict):
-                    attrs = el.get('attrs', {})
-                    field_type = el.get('field_type', 'unknown')
-                    name = attrs.get('name', '')
-                    placeholder = attrs.get('placeholder', '')
-                    field_name = name or placeholder or f"{field_type}"
-                    selector = el.get('field_selector', '')
-                    desc += f"  • {field_name[:30]} → {selector}\n"
-        else:
+        desc = f"""
+📄 СТРАНИЦА: {title}
+🔗 URL: {url}
+📊 ВСЕГО ЭЛЕМЕНТОВ: {total}
+
+🔘 КНОПКИ:
+"""
+        
+        # Безопасно обрабатываем кнопки
+        buttons = info.get('buttons') if isinstance(info, dict) else None
+        if buttons is None:
             desc += "  • (нет данных)\n"
+        elif isinstance(buttons, list):
+            if len(buttons) == 0:
+                desc += "  • (нет кнопок)\n"
+            else:
+                for el in buttons[:20]:
+                    if isinstance(el, dict):
+                        text = el.get('text', '')
+                        if not text:
+                            text = el.get('attrs', {}).get('value', '')
+                        if text:
+                            desc += f"  • {text[:30]}\n"
+                    elif isinstance(el, str):
+                        desc += f"  • {el[:30]}\n"
+        else:
+            desc += f"  • (неизвестный формат: {type(buttons).__name__})\n"
+        
+        desc += f"\n📝 ПОЛЯ ВВОДА:\n"
+        
+        # Безопасно обрабатываем поля
+        fields = info.get('fields') if isinstance(info, dict) else None
+        if fields is None:
+            desc += "  • (нет данных)\n"
+        elif isinstance(fields, list):
+            if len(fields) == 0:
+                desc += "  • (нет полей)\n"
+            else:
+                for el in fields[:20]:
+                    if isinstance(el, dict):
+                        attrs = el.get('attrs', {})
+                        field_type = el.get('field_type', 'unknown')
+                        name = attrs.get('name', '')
+                        placeholder = attrs.get('placeholder', '')
+                        field_name = name or placeholder or f"{field_type}"
+                        selector = el.get('field_selector', '')
+                        desc += f"  • {field_name[:30]} → {selector}\n"
+                    elif isinstance(el, str):
+                        desc += f"  • {el[:30]}\n"
+        else:
+            desc += f"  • (неизвестный формат: {type(fields).__name__})\n"
+        
+        desc += f"\n🔗 ССЫЛКИ:\n"
+        
+        # Безопасно обрабатываем ссылки
+        links = info.get('links') if isinstance(info, dict) else None
+        if links is None:
+            desc += "  • (нет данных)\n"
+        elif isinstance(links, list):
+            if len(links) == 0:
+                desc += "  • (нет ссылок)\n"
+            else:
+                for el in links[:15]:
+                    if isinstance(el, dict):
+                        text = el.get('text', '')[:30]
+                        href = el.get('attrs', {}).get('href', '')[:50]
+                        if text:
+                            desc += f"  • {text} → {href}\n"
+                    elif isinstance(el, str):
+                        desc += f"  • {el[:30]}\n"
+        else:
+            desc += f"  • (неизвестный формат: {type(links).__name__})\n"
         
         return desc
     
