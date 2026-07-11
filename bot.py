@@ -2,7 +2,7 @@ import os
 import logging
 import json
 import subprocess
-import time 
+import time
 import requests
 import re
 import base64
@@ -57,7 +57,7 @@ def start_chrome():
         
         subprocess.Popen([
             CHROME_PATH,
-            "--headless",
+            "--headless=new",  # Новый headless режим
             "--remote-debugging-port=9222",
             "--no-sandbox",
             "--disable-dev-shm-usage",
@@ -106,7 +106,6 @@ class CDPClient:
         self.connected = False
         self.msg_id = 0
         self.user_id = None
-        self.page_loaded = False
     
     async def connect(self):
         if self.connected:
@@ -123,16 +122,18 @@ class CDPClient:
             return False
         
         try:
-            self.ws = await websockets.connect(ws_url)
+            self.ws = await websockets.connect(
+                ws_url,
+                ping_interval=20,
+                ping_timeout=60,
+                close_timeout=10
+            )
             self.connected = True
             file_logger.log("✅ WebSocket подключен")
             
             await self._send("Page.enable", {})
             await self._send("Runtime.enable", {})
             file_logger.log("✅ Page.enable и Runtime.enable")
-            
-            # Открываем Google при первом подключении
-            await self.navigate("https://google.com")
             
             return True
             
@@ -153,7 +154,7 @@ class CDPClient:
         
         try:
             await self.ws.send(json.dumps(msg))
-            response = await self.ws.recv()
+            response = await asyncio.wait_for(self.ws.recv(), timeout=30)
             data = json.loads(response)
             
             if "error" in data:
@@ -164,19 +165,19 @@ class CDPClient:
             return data
         except Exception as e:
             file_logger.log(f"❌ Send error: {e}", "ERROR")
+            self.connected = False
             return {"error": str(e)}
     
     async def navigate(self, url):
-        file_logger.log(f"Навигация на {url}")
+        file_logger.log(f"🌐 Навигация на {url}")
         resp = await self._send("Page.navigate", {"url": url})
         
-        # Ждём загрузки
-        for i in range(5):
+        # Ждём загрузки страницы
+        for i in range(10):
             await asyncio.sleep(1)
             title = await self.eval_js("document.title")
             if title and title != "":
                 file_logger.log(f"📄 Страница загружена: {title}")
-                self.page_loaded = True
                 break
         
         return resp
@@ -188,32 +189,40 @@ class CDPClient:
         return None
     
     async def screenshot(self):
-        """Скриншот страницы"""
+        """Делает скриншот страницы"""
         try:
-            # Убеждаемся, что страница загружена
-            if not self.page_loaded:
-                file_logger.log("🌐 Открываю Google перед скриншотом...")
+            # Проверяем соединение
+            if not self.connected:
+                await self.connect()
+            
+            # Открываем Google если страница пустая
+            title = await self.eval_js("document.title")
+            file_logger.log(f"📄 Текущий заголовок: {title}")
+            
+            if not title or title == "":
+                file_logger.log("🌐 Открываю Google...")
                 await self.navigate("https://google.com")
                 await asyncio.sleep(2)
             
+            # Делаем скриншот
             file_logger.log("📸 Делаю скриншот...")
             
-            # Способ 1: с captureBeyondViewport
             resp = await self._send("Page.captureScreenshot", {
                 "format": "png",
                 "captureBeyondViewport": True,
                 "fromSurface": True
             })
             
+            # Логируем ответ
+            file_logger.log(f"📸 Ответ: {json.dumps(resp, indent=2)[:300]}")
+            
             if "result" in resp and "data" in resp["result"]:
                 file_logger.log("✅ Скриншот сделан")
                 return base64.b64decode(resp["result"]["data"])
             
-            # Способ 2: без параметров
+            # Пробуем без параметров
             file_logger.log("⚠️ Пробую без параметров...")
-            resp2 = await self._send("Page.captureScreenshot", {
-                "format": "png"
-            })
+            resp2 = await self._send("Page.captureScreenshot", {})
             
             if "result" in resp2 and "data" in resp2["result"]:
                 file_logger.log("✅ Скриншот сделан (2)")
@@ -244,9 +253,12 @@ async def ask_agnes(prompt: str) -> dict:
     }
     
     system_prompt = """
-    Ты AI-агент для управления браузером.
-    Отвечай ТОЛЬКО JSON:
-    {"action": "navigate|screenshot|js", "params": {...}}
+    Ты AI-агент для управления браузером через CDP.
+    Отвечай ТОЛЬКО JSON.
+    Доступные действия:
+    - navigate: {"action": "navigate", "params": {"url": "https://..."}}
+    - screenshot: {"action": "screenshot", "params": {}}
+    - js: {"action": "js", "params": {"code": "javascript"}}
     """
     
     data = {
