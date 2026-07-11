@@ -170,6 +170,7 @@ class CDPClient:
         self.dialog_timeout = 300
         self.ref_elements = {}
         self.frame_tree = None
+        self.accessibility_tree = []
     
     async def connect(self):
         if self.connected:
@@ -201,7 +202,7 @@ class CDPClient:
             await self.send("DOM.enable", {})
             await self.send("Network.enable", {})
             
-            # Target.setAutoAttach для OOPIF (как в Hermes)
+            # Target.setAutoAttach для OOPIF
             await self.send("Target.setAutoAttach", {
                 "autoAttach": True,
                 "flatten": True,
@@ -441,9 +442,6 @@ class CDPClient:
                     raise
         return {"error": f"Max retries exceeded: {last_error}"}
     
-    # ============================================
-    # HERMES: send — ТОЛЬКО ЯВНЫЙ session_id
-    # ============================================
     async def send(self, method, params=None, session_id=None):
         if not self.connected:
             await self.connect()
@@ -457,13 +455,8 @@ class CDPClient:
             "params": params or {}
         }
         
-        # ✅ Только явный session_id (как в Hermes)
         if session_id:
             msg["sessionId"] = session_id
-        
-        # ❌ НЕ подставляем автоматически
-        # НЕТ: elif method.startswith("Page.") or method.startswith("Runtime."):
-        #     if self.connected_tabs: ...
         
         try:
             await self.ws.send(json.dumps(msg))
@@ -582,9 +575,10 @@ class CDPClient:
             return None
     
     # ============================================
-    # HERMES: Получение Ref ID (ТОЛЬКО главная страница)
+    # HERMES: Accessibility Tree (полный переход)
     # ============================================
     async def get_accessibility_tree(self):
+        """Возвращает accessibility tree как в Hermes"""
         try:
             js_code = """
             (function() {
@@ -646,9 +640,15 @@ class CDPClient:
             """
             result = await self.eval_js(js_code)
             
-            if result and isinstance(result, list):
-                return result
-            return []
+            if result is None:
+                return []
+            if not isinstance(result, list):
+                return []
+            
+            # Сохраняем в ref_elements
+            self.accessibility_tree = result
+            self.ref_elements = {el['ref']: el for el in result}
+            return result
         except Exception as e:
             file_logger.log(f"❌ Accessibility tree error: {e}", "ERROR")
             return []
@@ -688,9 +688,6 @@ class CDPClient:
             file_logger.log(f"❌ fill_by_ref error: {e}", "ERROR")
             return {"error": str(e)}
     
-    # ============================================
-    # HERMES: Базовые методы (без iframe)
-    # ============================================
     async def click_element(self, selector):
         js_code = """
         (function() {
@@ -769,7 +766,7 @@ class CDPClient:
         return await self.eval_js(js_code)
     
     # ============================================
-    # HERMES: Получение snapshot (только главная страница)
+    # HERMES: Получение snapshot (только accessibility tree)
     # ============================================
     async def get_maximum_snapshot(self):
         try:
@@ -777,259 +774,34 @@ class CDPClient:
             
             url = await self.eval_js("window.location.href") or ""
             is_x = "x.com" in url
-            max_elements = 2000 if is_x else 500
             
-            # ✅ Только frame_tree для информации (как в Hermes)
+            # Получаем accessibility tree (вместо полного DOM)
+            ref_elements = await self.get_accessibility_tree()
+            
+            # Только frame_tree для информации (не для действий)
             frame_tree_resp = await self.send("Page.getFrameTree", {})
             self.frame_tree = None
             if "result" in frame_tree_resp:
                 self.frame_tree = frame_tree_resp["result"].get("frameTree", {})
                 file_logger.log(f"📦 FrameTree получен")
             
-            # ✅ ТОЛЬКО главная страница (как в Hermes)
-            ref_elements = await self.get_accessibility_tree()
-            
-            # ❌ НЕ собираем iframe (как в Hermes)
-            # iframe_refs = []
-            # for session_id, info in self.connected_tabs.items():
-            #     if info.get("type") in ["iframe", "frame"]:
-            #         iframe_els = await self.get_accessibility_tree(session_id)
-            #         if iframe_els:
-            #             iframe_refs.extend(iframe_els)
-            
-            all_refs = ref_elements
-            
-            js_code = """
-            (function() {
-                const result = [];
-                const all = document.querySelectorAll('*');
-                let count = 0;
-                const maxCount = """ + str(max_elements) + """;
-                
-                for (const el of all) {
-                    if (count >= maxCount) break;
-                    
-                    const tag = el.tagName.toLowerCase();
-                    const rect = el.getBoundingClientRect();
-                    const style = window.getComputedStyle(el);
-                    
-                    const visible = rect.width > 0 && rect.height > 0 && 
-                                   style.display !== 'none' && 
-                                   style.visibility !== 'hidden';
-                    
-                    const attrs = {};
-                    for (const attr of el.attributes) {
-                        attrs[attr.name] = attr.value;
-                    }
-                    
-                    const important = ['a', 'button', 'input', 'textarea', 'select', 'form',
-                                      'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'img', 'video',
-                                      'iframe', 'div', 'span', 'section', 'article', 'nav',
-                                      'header', 'footer', 'main', 'aside', 'ul', 'ol', 'li',
-                                      'label', 'option', 'legend', 'fieldset', 'dialog'];
-                    
-                    if (important.includes(tag)) {
-                        result.push({
-                            tag: tag,
-                            text: (el.textContent || '').trim().slice(0, 100),
-                            id: el.id || '',
-                            class: el.className || '',
-                            attrs: attrs,
-                            visible: visible,
-                            x: Math.round(rect.x),
-                            y: Math.round(rect.y),
-                            width: Math.round(rect.width),
-                            height: Math.round(rect.height),
-                            style: {
-                                display: style.display,
-                                visibility: style.visibility,
-                                position: style.position,
-                                color: style.color,
-                                fontSize: style.fontSize,
-                                backgroundColor: style.backgroundColor,
-                                cursor: style.cursor
-                            },
-                            parent: el.parentElement ? el.parentElement.tagName.toLowerCase() : null,
-                            children: el.children.length
-                        });
-                        count++;
-                    }
-                }
-                
-                return result;
-            })()
-            """
-            result = await self.eval_js(js_code)
-            
-            if result is None:
-                elements = []
-            elif isinstance(result, list):
-                elements = result
-            elif isinstance(result, str):
-                try:
-                    parsed = json.loads(result)
-                    if isinstance(parsed, list):
-                        elements = parsed
-                    else:
-                        elements = []
-                except:
-                    elements = []
-            else:
-                elements = []
-            
-            if not elements:
-                simple_result = await self.eval_js("""
-                    (function() {
-                        const result = [];
-                        document.querySelectorAll('button, a, input, textarea, select, form, h1, h2, h3').forEach(el => {
-                            result.push({
-                                tag: el.tagName.toLowerCase(),
-                                text: (el.textContent || el.value || '').trim().slice(0, 50),
-                                id: el.id || '',
-                                class: el.className || ''
-                            });
-                        });
-                        return result;
-                    })()
-                """)
-                if isinstance(simple_result, list):
-                    elements = simple_result
-                    file_logger.log(f"✅ Упрощённый сбор: {len(elements)} элементов")
-            
-            if len(elements) > max_elements:
-                elements = elements[:max_elements]
-                file_logger.log(f"⚠️ Ограничил слепок до {max_elements} элементов")
-            
+            # Получаем базовую информацию о странице
             title = await self.eval_js("document.title") or "Нет заголовка"
             url_final = await self.eval_js("window.location.href") or "Нет URL"
             
             if self.pending_dialogs:
                 file_logger.log(f"💬 Есть ожидающие диалоги: {len(self.pending_dialogs)}")
             
-            all_fields = []
-            
-            inputs = [e for e in elements if e.get('tag') == 'input']
-            for inp in inputs:
-                attrs = inp.get('attrs', {})
-                inp['field_type'] = 'input'
-                inp['field_selector'] = f"input[name='{attrs.get('name', '')}']" if attrs.get('name') else f"input[type='{attrs.get('type', 'text')}']"
-                all_fields.append(inp)
-            
-            textareas = [e for e in elements if e.get('tag') == 'textarea']
-            for ta in textareas:
-                attrs = ta.get('attrs', {})
-                ta['field_type'] = 'textarea'
-                ta['field_selector'] = f"textarea[name='{attrs.get('name', '')}']" if attrs.get('name') else "textarea"
-                all_fields.append(ta)
-            
-            selects = [e for e in elements if e.get('tag') == 'select']
-            for sel in selects:
-                attrs = sel.get('attrs', {})
-                sel['field_type'] = 'select'
-                sel['field_selector'] = f"select[name='{attrs.get('name', '')}']" if attrs.get('name') else "select"
-                all_fields.append(sel)
-            
-            contenteditables = [e for e in elements if e.get('attrs', {}).get('contenteditable') == 'true']
-            for ce in contenteditables:
-                class_name = ce.get('class', '')
-                if isinstance(class_name, list):
-                    class_name = ' '.join(class_name)
-                
-                if ce.get('id'):
-                    ce['field_selector'] = f"#{ce.get('id')}"
-                elif class_name:
-                    ce['field_selector'] = f".{class_name.replace(' ', '.')}"
-                else:
-                    ce['field_selector'] = "div[contenteditable='true']"
-                all_fields.append(ce)
-            
-            roles = [e for e in elements if e.get('attrs', {}).get('role') in ['textbox', 'searchbox', 'combobox']]
-            for role in roles:
-                role['field_type'] = 'role'
-                role['field_selector'] = role.get('id') and f"#{role.get('id')}" or f"[role='{role.get('attrs', {}).get('role')}']"
-                all_fields.append(role)
-            
-            buttons = []
-            button_texts = set()
-            
-            for el in elements:
-                tag = el.get('tag', '')
-                attrs = el.get('attrs', {})
-                role = attrs.get('role', '')
-                class_name = attrs.get('class', '')
-                if isinstance(class_name, list):
-                    class_name = ' '.join(class_name)
-                class_name_lower = class_name.lower() if isinstance(class_name, str) else ''
-                text = el.get('text', '') or attrs.get('value', '') or attrs.get('aria-label', '') or attrs.get('title', '')
-                
-                is_button = False
-                
-                if tag == 'button':
-                    is_button = True
-                elif tag == 'input' and attrs.get('type') in ['submit', 'button', 'image']:
-                    is_button = True
-                elif role == 'button':
-                    is_button = True
-                elif tag == 'a' and (role == 'button' or 'button' in class_name_lower):
-                    is_button = True
-                elif tag in ['div', 'span'] and role == 'button':
-                    is_button = True
-                elif 'btn' in class_name_lower or 'button' in class_name_lower:
-                    is_button = True
-                elif attrs.get('onclick') or attrs.get('data-action') or attrs.get('data-testid', '').endswith('btn'):
-                    is_button = True
-                elif attrs.get('tabindex') and attrs.get('role') in ['link', 'menuitem', 'option']:
-                    is_button = True
-                elif 'button' in attrs.get('aria-label', '').lower() or 'btn' in attrs.get('aria-label', '').lower():
-                    is_button = True
-                
-                if is_button:
-                    if text:
-                        if text not in button_texts:
-                            button_texts.add(text)
-                            buttons.append(el)
-                    else:
-                        unique_key = f"{tag}_{attrs.get('data-testid', '')}"
-                        if unique_key not in button_texts:
-                            button_texts.add(unique_key)
-                            buttons.append(el)
-            
-            for el in elements:
-                attrs = el.get('attrs', {})
-                role = attrs.get('role', '')
-                if role == 'button' and el not in buttons:
-                    buttons.append(el)
-            
-            links = [e for e in elements if e.get('tag') == 'a' and e.get('attrs', {}).get('href')]
-            forms = [e for e in elements if e.get('tag') == 'form']
-            headings = [e for e in elements if e.get('tag') in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']]
-            visible = [e for e in elements if e.get('visible')]
-            
-            self.ref_elements = {el['ref']: el for el in all_refs}
-            
             self.full_snapshot = {
                 "title": title,
                 "url": url_final,
-                "total": len(elements),
-                "all_elements": elements,
-                "buttons": buttons,
-                "fields": all_fields,
-                "inputs": inputs,
-                "textareas": textareas,
-                "selects": selects,
-                "contenteditables": contenteditables,
-                "roles": roles,
-                "links": links,
-                "forms": forms,
-                "headings": headings,
-                "visible": visible,
+                "ref_elements": ref_elements,
                 "pending_dialogs": self.pending_dialogs.copy() if self.pending_dialogs else [],
                 "frame_tree": self.frame_tree if self.frame_tree else None,
-                "connected_tabs": self.connected_tabs.copy() if self.connected_tabs else {},
-                "ref_elements": all_refs
+                "connected_tabs": self.connected_tabs.copy() if self.connected_tabs else {}
             }
             
-            file_logger.log(f"✅ Максимальный слепок: {len(elements)} элементов, {len(buttons)} кнопок, {len(all_fields)} полей, {len(all_refs)} Ref ID")
+            file_logger.log(f"✅ Максимальный слепок: {len(ref_elements)} Ref ID элементов")
             return True
             
         except Exception as e:
@@ -1039,23 +811,10 @@ class CDPClient:
             self.full_snapshot = {
                 "title": "Ошибка загрузки",
                 "url": "",
-                "total": 0,
-                "all_elements": [],
-                "buttons": [],
-                "fields": [],
-                "inputs": [],
-                "textareas": [],
-                "selects": [],
-                "contenteditables": [],
-                "roles": [],
-                "links": [],
-                "forms": [],
-                "headings": [],
-                "visible": [],
+                "ref_elements": [],
                 "pending_dialogs": self.pending_dialogs.copy() if self.pending_dialogs else [],
                 "frame_tree": None,
-                "connected_tabs": self.connected_tabs.copy() if self.connected_tabs else {},
-                "ref_elements": []
+                "connected_tabs": self.connected_tabs.copy() if self.connected_tabs else {}
             }
             return False
     
@@ -1111,12 +870,10 @@ class CDPClient:
         
         title = info.get('title', 'Нет заголовка') if isinstance(info, dict) else 'Нет заголовка'
         url = info.get('url', 'Нет URL') if isinstance(info, dict) else 'Нет URL'
-        total = info.get('total', 0) if isinstance(info, dict) else 0
         
         desc_lines = []
         desc_lines.append(f"📄 СТРАНИЦА: {title}")
         desc_lines.append(f"🔗 URL: {url}")
-        desc_lines.append(f"📊 ВСЕГО ЭЛЕМЕНТОВ: {total}")
         desc_lines.append("")
         desc_lines.append("🆔 ДОСТУПНЫЕ ЭЛЕМЕНТЫ (Ref ID):")
         
@@ -1133,45 +890,26 @@ class CDPClient:
         desc_lines.append("")
         desc_lines.append("🔘 КНОПКИ:")
         
-        buttons = info.get('buttons') if isinstance(info, dict) else None
-        if buttons is None:
-            desc_lines.append("  • (нет данных)")
-        elif isinstance(buttons, list):
-            if len(buttons) == 0:
-                desc_lines.append("  • (нет кнопок)")
-            else:
-                for el in buttons[:20]:
-                    if isinstance(el, dict):
-                        text = el.get('text', '')
-                        if not text:
-                            text = el.get('attrs', {}).get('value', '')
-                        if not text:
-                            text = el.get('attrs', {}).get('aria-label', '')
-                        if not text:
-                            text = el.get('attrs', {}).get('title', '')
-                        if text:
-                            desc_lines.append(f"  • {text[:40]}")
-                        else:
-                            desc_lines.append(f"  • <{el.get('tag', 'unknown')}>")
+        buttons = [el for el in ref_elements if el.get('action') == 'click']
+        if buttons:
+            for el in buttons[:20]:
+                text = el.get('text', '')[:30]
+                ref = el.get('ref', '')
+                desc_lines.append(f"  • {text} → {ref}")
+        else:
+            desc_lines.append("  • (нет кнопок)")
         
         desc_lines.append("")
         desc_lines.append("📝 ПОЛЯ ВВОДА:")
         
-        fields = info.get('fields') if isinstance(info, dict) else None
-        if fields is None:
-            desc_lines.append("  • (нет данных)")
-        elif isinstance(fields, list):
-            if len(fields) == 0:
-                desc_lines.append("  • (нет полей)")
-            else:
-                for el in fields[:15]:
-                    if isinstance(el, dict):
-                        attrs = el.get('attrs', {})
-                        field_type = el.get('field_type', 'unknown')
-                        name = attrs.get('name', '')
-                        placeholder = attrs.get('placeholder', '')
-                        field_name = name or placeholder or field_type
-                        desc_lines.append(f"  • {field_name[:30]}")
+        inputs = [el for el in ref_elements if el.get('action') == 'type']
+        if inputs:
+            for el in inputs[:15]:
+                text = el.get('text', '')[:30]
+                ref = el.get('ref', '')
+                desc_lines.append(f"  • {text} → {ref}")
+        else:
+            desc_lines.append("  • (нет полей)")
         
         dialogs = info.get('pending_dialogs') if isinstance(info, dict) else None
         if dialogs and isinstance(dialogs, list) and len(dialogs) > 0:
@@ -1181,15 +919,6 @@ class CDPClient:
                 desc_lines.append(f"  • {d.get('message', '')} (тип: {d.get('type', 'unknown')})")
             desc_lines.append("")
             desc_lines.append(f"📋 Текущая политика: {CURRENT_DIALOG_POLICY}")
-        
-        connected_tabs = info.get('connected_tabs') if isinstance(info, dict) else None
-        if connected_tabs:
-            desc_lines.append("")
-            desc_lines.append("📦 IFRAME/ФРЕЙМЫ:")
-            for sid, tab_info in connected_tabs.items():
-                tab_url = tab_info.get('url', '')
-                if tab_url:
-                    desc_lines.append(f"  • {tab_url[:60]}")
         
         desc_lines.append("")
         desc_lines.append("💡 КАК ИСПОЛЬЗОВАТЬ Ref ID:")
