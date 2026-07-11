@@ -10,6 +10,15 @@ import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, filters, MessageHandler
 import websockets
+from io import BytesIO
+
+# Пытаемся импортировать PIL
+try:
+    from PIL import Image
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+    logging.warning("⚠️ PIL не установлен, скриншоты могут не работать")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -723,31 +732,63 @@ class CDPClient:
             
             file_logger.log("📸 Делаю скриншот...")
             
-            # Используем JPEG с качеством 80 для меньшего размера
+            # Пробуем сделать скриншот в PNG
             resp = await self.send("Page.captureScreenshot", {
-                "format": "jpeg",
-                "quality": 80,
+                "format": "png",
                 "captureBeyondViewport": True,
-                "fromSurface": True,
-                "optimizeForSpeed": True
+                "fromSurface": True
             })
             
             if "result" in resp and "data" in resp["result"]:
                 img_data = base64.b64decode(resp["result"]["data"])
                 
-                # Проверяем, что изображение не слишком маленькое
                 if len(img_data) < 100:
                     file_logger.log("❌ Скриншот слишком маленький", "ERROR")
                     return None
                 
                 file_logger.log(f"✅ Скриншот сделан ({len(img_data)} байт)")
                 
-                # Проверяем заголовок JPEG (FF D8) или PNG (89 50 4E 47)
-                if img_data[:2] == b'\xff\xd8' or img_data[:4] == b'\x89PNG':
-                    return img_data
+                # Если есть PIL - обрабатываем изображение
+                if PIL_AVAILABLE:
+                    try:
+                        # Открываем изображение
+                        img = Image.open(BytesIO(img_data))
+                        width, height = img.size
+                        file_logger.log(f"📐 Размер изображения: {width}x{height}")
+                        
+                        # Если изображение слишком большое - уменьшаем
+                        max_width = 1920
+                        max_height = 1080
+                        
+                        if width > max_width or height > max_height:
+                            # Вычисляем новые размеры
+                            ratio = min(max_width/width, max_height/height)
+                            new_width = int(width * ratio)
+                            new_height = int(height * ratio)
+                            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                            file_logger.log(f"📐 Изменен размер: {new_width}x{new_height}")
+                            
+                            # Сохраняем в JPEG с качеством 85
+                            output = BytesIO()
+                            img.convert('RGB').save(output, format='JPEG', quality=85, optimize=True)
+                            img_data = output.getvalue()
+                            file_logger.log(f"📦 Новый размер: {len(img_data)} байт")
+                        else:
+                            # Если размер нормальный - конвертируем в JPEG
+                            output = BytesIO()
+                            img.convert('RGB').save(output, format='JPEG', quality=90, optimize=True)
+                            img_data = output.getvalue()
+                            file_logger.log(f"📦 Сжат до: {len(img_data)} байт")
+                        
+                        return img_data
+                        
+                    except Exception as e:
+                        file_logger.log(f"⚠️ Ошибка обработки изображения: {e}", "WARNING")
+                        # Если обработка не удалась - возвращаем как есть
+                        return img_data
                 else:
-                    file_logger.log("❌ Невалидный формат изображения", "ERROR")
-                    return None
+                    # Если PIL нет - возвращаем как есть
+                    return img_data
             
             file_logger.log("❌ Не удалось получить скриншот", "ERROR")
             return None
@@ -914,7 +955,7 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
         elif action_type == "screenshot":
             img_data = await client.screenshot()
             if img_data:
-                with open("screenshot.png", "wb") as f:
+                with open("screenshot.jpg", "wb") as f:
                     f.write(img_data)
                 return "screenshot"
             return "❌ Не удалось сделать скриншот"
@@ -1033,11 +1074,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if "error" not in response:
                 result = await execute_action(client, response)
                 if result == "screenshot":
-                    if os.path.exists("screenshot.png") and os.path.getsize("screenshot.png") > 0:
-                        with open("screenshot.png", "rb") as photo:
-                            await update.message.reply_photo(photo=photo)
-                    else:
-                        await update.message.reply_text("❌ Файл скриншота поврежден")
+                    # Проверяем наличие файла
+                    screenshot_files = ["screenshot.jpg", "screenshot.png"]
+                    sent = False
+                    for file in screenshot_files:
+                        if os.path.exists(file) and os.path.getsize(file) > 0:
+                            try:
+                                with open(file, "rb") as photo:
+                                    await update.message.reply_photo(photo=photo)
+                                sent = True
+                                break
+                            except Exception as e:
+                                file_logger.log(f"❌ Ошибка отправки {file}: {e}", "ERROR")
+                    
+                    if not sent:
+                        await update.message.reply_text("❌ Не удалось отправить скриншот")
                 else:
                     await update.message.reply_text(result)
                 return
@@ -1113,6 +1164,13 @@ def main():
     print("🚀 Запуск бота...")
     file_logger.log("🚀 Запуск бота...")
     
+    if PIL_AVAILABLE:
+        print("✅ PIL доступен для обработки изображений")
+        file_logger.log("✅ PIL доступен для обработки изображений")
+    else:
+        print("⚠️ PIL не установлен! Установите: pip install Pillow")
+        file_logger.log("⚠️ PIL не установлен! Установите: pip install Pillow")
+    
     start_chrome_with_mask()
     
     app = Application.builder().token(TOKEN).build()
@@ -1124,8 +1182,8 @@ def main():
     app.add_handler(CommandHandler("mask", mask_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("🚀 Бот запущен с маскировкой и автопереподключением!")
-    file_logger.log("🚀 Бот запущен с маскировкой и автопереподключением!")
+    print("🚀 Бот запущен с маскировкой и обработкой скриншотов!")
+    file_logger.log("🚀 Бот запущен с маскировкой и обработкой скриншотов!")
     app.run_polling()
 
 if __name__ == "__main__":
