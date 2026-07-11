@@ -106,19 +106,6 @@ class CDPClient:
         self.connected = False
         self.msg_id = 0
         self.user_id = None
-        self.page_info = {
-            "title": "Нет данных",
-            "url": "Нет данных",
-            "total": 0,
-            "buttons": [],
-            "inputs": [],
-            "links": [],
-            "forms": [],
-            "headings": [],
-            "visible": [],
-            "interactive": [],
-            "all_elements": []
-        }
         self.full_snapshot = None
         self.history = []
     
@@ -207,15 +194,19 @@ class CDPClient:
                 break
     
     async def eval_js(self, code):
+        """Выполняет JavaScript и возвращает результат"""
         try:
-            resp = await self.send("Runtime.evaluate", {"expression": code})
+            resp = await self.send("Runtime.evaluate", {
+                "expression": code,
+                "returnByValue": True
+            })
+            
             if "result" in resp:
                 result_obj = resp["result"]
-                if isinstance(result_obj, dict):
-                    if "result" in result_obj:
-                        return result_obj["result"].get("value", "")
-                    elif "value" in result_obj:
-                        return result_obj["value"]
+                if "result" in result_obj:
+                    return result_obj["result"].get("value", "")
+                elif "value" in result_obj:
+                    return result_obj["value"]
             return None
         except Exception as e:
             file_logger.log(f"❌ eval_js error: {e}", "ERROR")
@@ -224,14 +215,16 @@ class CDPClient:
     async def get_maximum_snapshot(self):
         """МАКСИМАЛЬНО полный слепок страницы"""
         try:
-            # 1. Полное DOM дерево с Shadow DOM
+            file_logger.log("📸 Делаю максимальный слепок...")
+            
+            # 1. DOM дерево
             dom = await self.send("DOM.getDocument", {
                 "depth": -1,
                 "pierce": True,
                 "includeShadowRoots": True
             })
             
-            # 2. Полный снимок со стилями и позицией
+            # 2. Снимок со стилями
             snapshot = await self.send("DOMSnapshot.captureSnapshot", {
                 "computedStyles": [
                     "display", "visibility", "position", 
@@ -239,9 +232,7 @@ class CDPClient:
                     "width", "height", "margin", "padding",
                     "border", "cursor", "pointer-events"
                 ],
-                "includeDOMRects": True,
-                "includeTextColorOpacities": True,
-                "includePaintOrder": True
+                "includeDOMRects": True
             })
             
             # 3. ВСЕ элементы с полной информацией
@@ -251,31 +242,24 @@ class CDPClient:
                     const all = document.querySelectorAll('*');
                     
                     all.forEach(el => {
+                        const tag = el.tagName.toLowerCase();
                         const rect = el.getBoundingClientRect();
                         const style = window.getComputedStyle(el);
                         
-                        // Проверяем видимость
                         const visible = rect.width > 0 && rect.height > 0 && 
                                        style.display !== 'none' && 
                                        style.visibility !== 'hidden';
                         
-                        // Проверяем интерактивность
-                        const tag = el.tagName.toLowerCase();
                         const interactive = ['a', 'button', 'input', 'select', 'textarea'].includes(tag) ||
                                            el.getAttribute('role') === 'button' ||
                                            el.getAttribute('onclick') !== null ||
                                            el.getAttribute('tabindex') !== null;
                         
-                        // Собираем атрибуты
                         const attrs = {};
                         for (const attr of el.attributes) {
                             attrs[attr.name] = attr.value;
                         }
                         
-                        // Получаем родителей
-                        const parent = el.parentElement;
-                        
-                        // Только важные элементы
                         const important = ['a', 'button', 'input', 'textarea', 'select', 'form',
                                           'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'img', 'video',
                                           'iframe', 'div', 'span', 'section', 'article', 'nav',
@@ -306,7 +290,7 @@ class CDPClient:
                                     pointerEvents: style.pointerEvents,
                                     opacity: style.opacity
                                 },
-                                parent: parent ? parent.tagName.toLowerCase() : null,
+                                parent: el.parentElement ? el.parentElement.tagName.toLowerCase() : null,
                                 children: el.children.length,
                                 hasShadow: el.shadowRoot ? true : false
                             });
@@ -315,19 +299,18 @@ class CDPClient:
                     
                     return result;
                 })()
-            """)
+            """) or []
             
             title = await self.eval_js("document.title") or "Нет заголовка"
             url = await self.eval_js("window.location.href") or "Нет URL"
             
-            # Структурируем
             self.full_snapshot = {
                 "title": title,
                 "url": url,
-                "total": len(elements) if elements else 0,
+                "total": len(elements),
                 "dom": dom,
                 "snapshot": snapshot,
-                "all_elements": elements[:500] if elements else [],
+                "all_elements": elements[:500],
                 "buttons": [e for e in elements if e.get('interactive') and e.get('tag') in ['button', 'a']],
                 "inputs": [e for e in elements if e.get('tag') == 'input' and e.get('attrs', {}).get('type') not in ['hidden', 'submit', 'button']],
                 "links": [e for e in elements if e.get('tag') == 'a' and e.get('attrs', {}).get('href')],
@@ -337,31 +320,15 @@ class CDPClient:
                 "interactive": [e for e in elements if e.get('interactive') and e.get('visible')]
             }
             
-            # Обновляем page_info для обратной совместимости
-            self.page_info = {
-                "title": title,
-                "url": url,
-                "total": len(elements) if elements else 0,
-                "buttons": [e.get('text') or e.get('attrs', {}).get('value', '') for e in self.full_snapshot.get('buttons', [])[:20]],
-                "inputs": [e.get('attrs', {}).get('placeholder', '') or e.get('attrs', {}).get('name', '') for e in self.full_snapshot.get('inputs', [])[:20]],
-                "links": [e.get('text', '') for e in self.full_snapshot.get('links', [])[:20]],
-                "forms": [e.get('attrs', {}).get('action', '') for e in self.full_snapshot.get('forms', [])[:10]],
-                "headings": [e.get('text', '') for e in self.full_snapshot.get('headings', [])[:10]],
-                "visible": [f"{e.get('tag')}: {e.get('text', '')[:30]}" for e in self.full_snapshot.get('visible', [])[:20]],
-                "interactive": [f"{e.get('tag')}: {e.get('text', '')[:30]}" for e in self.full_snapshot.get('interactive', [])[:20]],
-                "all_elements": self.full_snapshot.get('all_elements', [])
-            }
-            
             file_logger.log(f"✅ Максимальный слепок: {len(elements)} элементов, {len(self.full_snapshot.get('buttons', []))} кнопок, {len(self.full_snapshot.get('inputs', []))} полей")
             return True
             
         except Exception as e:
             file_logger.log(f"❌ Maximum snapshot error: {e}", "ERROR")
-            self.full_snapshot = None
             return False
     
     async def get_page_description(self):
-        """Возвращает МАКСИМАЛЬНО полное описание страницы для агента"""
+        """Возвращает максимальное описание страницы"""
         if not self.full_snapshot:
             await self.get_maximum_snapshot()
         
@@ -379,7 +346,10 @@ class CDPClient:
             text = el.get('text', '') or el.get('attrs', {}).get('value', '')
             tag = el.get('tag', '')
             selector = el.get('id', '') or el.get('class', '') or tag
-            desc += f"  • {text[:30] if text else tag} → selector: {selector}\n"
+            if text:
+                desc += f"  • {text[:30]} → selector: {selector}\n"
+            else:
+                desc += f"  • <{tag}> → selector: {selector}\n"
         
         desc += f"\n─────────────────────────────────\n"
         desc += f"📝 **ПОЛЯ ВВОДА ({len(info.get('inputs', []))}):**\n"
@@ -395,7 +365,8 @@ class CDPClient:
         for el in info.get('links', [])[:15]:
             text = el.get('text', '')[:30]
             href = el.get('attrs', {}).get('href', '')[:50]
-            desc += f"  • {text} → {href}\n"
+            if text:
+                desc += f"  • {text} → {href}\n"
         
         desc += f"\n─────────────────────────────────\n"
         desc += f"📋 **ФОРМЫ ({len(info.get('forms', []))}):**\n"
@@ -403,12 +374,6 @@ class CDPClient:
             action = el.get('attrs', {}).get('action', '')
             method = el.get('attrs', {}).get('method', '')
             desc += f"  • action: {action[:30]}, method: {method}\n"
-        
-        desc += f"\n─────────────────────────────────\n"
-        desc += f"📑 **ЗАГОЛОВКИ ({len(info.get('headings', []))}):**\n"
-        for el in info.get('headings', [])[:10]:
-            text = el.get('text', '')[:40]
-            desc += f"  • {text}\n"
         
         desc += f"\n─────────────────────────────────\n"
         desc += f"👁️ **ВИДИМЫЕ ЭЛЕМЕНТЫ ({len(info.get('visible', []))}):**\n"
@@ -426,9 +391,9 @@ class CDPClient:
             const el = document.querySelector('{selector}');
             if (el) {{
                 el.click();
-                return {{ success: true, selector: '{selector}' }};
+                return {{ success: true }};
             }}
-            return {{ success: false, selector: '{selector}' }};
+            return {{ success: false }};
         }})()
         """
         return await self.eval_js(js_code)
@@ -515,6 +480,21 @@ class CDPClient:
         """
         return await self.eval_js(js_code)
     
+    async def reload(self):
+        await self.send("Page.reload", {})
+        await asyncio.sleep(2)
+        await self.get_maximum_snapshot()
+    
+    async def back(self):
+        await self.send("Page.goBack", {})
+        await asyncio.sleep(2)
+        await self.get_maximum_snapshot()
+    
+    async def forward(self):
+        await self.send("Page.goForward", {})
+        await asyncio.sleep(2)
+        await self.get_maximum_snapshot()
+    
     async def screenshot(self):
         try:
             if not self.connected:
@@ -558,37 +538,17 @@ AGENT_CODE = """
 📌 **ТВОЙ КОД (что ты умеешь делать):**
 
 1. navigate(url) - открыть сайт
-   → navigate("https://google.com")
-
 2. click(selector) - кликнуть по элементу
-   → click("button:contains('Войти')")
-   → click("input[type='submit']")
-   → click("#login-btn")
-
 3. fill(selector, value) - заполнить поле
-   → fill("input[name='q']", "Привет")
-   → fill("input[placeholder='Поиск']", "текст")
-
 4. press_enter() - нажать Enter
-   → press_enter()
-
 5. screenshot() - сделать скриншот
-   → screenshot()
-
 6. answer(text) - ответить пользователю
-   → answer("На странице есть кнопка Войти")
-
 7. scroll(amount) - прокрутить
-   → scroll(500)
-
-8. scroll_to(selector) - прокрутить к элементу
-   → scroll_to("#form")
-
-9. back() - назад
-10. forward() - вперёд
-11. reload() - обновить
-12. wait_for(selector, timeout) - ждать элемент
-13. get_text(selector) - получить текст
+8. back() - назад
+9. forward() - вперёд
+10. reload() - обновить
+11. wait_for(selector, timeout) - ждать элемент
+12. get_text(selector) - получить текст
 
 📝 **КАК ВЫБИРАТЬ СЕЛЕКТОРЫ:**
 - По ID: "#search"
@@ -596,16 +556,9 @@ AGENT_CODE = """
 - По типу: "input[type='text']"
 - По имени: "input[name='q']"
 - По тексту: "button:contains('Войти')"
-- По placeholder: "input[placeholder='Поиск']"
-
-⚠️ **ПРАВИЛА:**
-1. Смотри на страницу
-2. Выбери правильную функцию
-3. Подставь правильный селектор
-4. Выполни
 """
 
-# ---------- Агент с МАКСИМАЛЬНЫМ слепком ----------
+# ---------- Агент ----------
 
 async def ask_agnes(prompt: str, client: CDPClient) -> dict:
     if not AGNES_API_KEY:
@@ -616,40 +569,15 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
         "Content-Type": "application/json"
     }
     
-    # Получаем МАКСИМАЛЬНО полное описание страницы
-    page_desc = "Страница не загружена"
-    if client:
-        page_desc = await client.get_page_description()
+    page_desc = await client.get_page_description()
     
     system_prompt = f"""
 {AGENT_CODE}
 
-📄 **МАКСИМАЛЬНО ПОЛНЫЙ СЛЕПОК СТРАНИЦЫ:**
-
+📄 **МАКСИМАЛЬНЫЙ СЛЕПОК СТРАНИЦЫ:**
 {page_desc}
 
-🎯 **ЗАДАНИЕ:**
-1. Посмотри на страницу
-2. Пойми, что хочет пользователь
-3. Выбери правильную функцию из списка выше
-4. Используй правильный селектор из списка выше
-5. Выполни
-
-📝 **ПРИМЕРЫ ПРАВИЛЬНЫХ ОТВЕТОВ:**
-- Найти что-то: 
-  → {{"action": "fill", "params": {{"selector": "input[name='q']", "value": "текст"}}}}
-  → {{"action": "press_enter", "params": {{}}}}
-  
-- Нажать на кнопку:
-  → {{"action": "click", "params": {{"selector": "button:contains('Войти')"}}}}
-
-- Сделать скриншот:
-  → {{"action": "screenshot", "params": {{}}}}
-
-- Ответить на вопрос:
-  → {{"action": "answer", "params": {{"text": "На странице есть поле поиска и кнопка 'Поиск'"}}}}
-
-⚠️ **ОТВЕЧАЙ ТОЛЬКО JSON!**
+📝 **ОТВЕЧАЙ ТОЛЬКО JSON!**
 """
 
     data = {
@@ -743,18 +671,15 @@ async def execute_action(client: CDPClient, action: dict) -> str:
             return f"❌ Элемент не найден: {selector}"
         
         elif action_type == "back":
-            await client.send("Page.goBack", {})
-            await client.get_maximum_snapshot()
+            await client.back()
             return "✅ Назад"
         
         elif action_type == "forward":
-            await client.send("Page.goForward", {})
-            await client.get_maximum_snapshot()
+            await client.forward()
             return "✅ Вперёд"
         
         elif action_type == "reload":
-            await client.send("Page.reload", {})
-            await client.get_maximum_snapshot()
+            await client.reload()
             return "✅ Обновлено"
         
         elif action_type == "wait_for":
@@ -808,10 +733,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         client = clients[user_id]
         
-        # Обновляем максимальный слепок
         await client.get_maximum_snapshot()
         
-        # Спрашиваем агента
         if AGNES_API_KEY:
             response = await ask_agnes(prompt, client)
             if "error" not in response:
@@ -833,13 +756,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🧠 **МАКСИМАЛЬНЫЙ АГЕНТ С ПОЛНЫМ СЛЕПКОМ**\n\n"
-        "Я вижу ВСЁ на странице:\n"
-        "• Все кнопки, поля, ссылки\n"
-        "• Позицию и размеры элементов\n"
-        "• Стили и видимость\n"
-        "• Интерактивность\n"
-        "• Shadow DOM и iframe\n\n"
+        "🧠 **МАКСИМАЛЬНЫЙ АГЕНТ**\n\n"
+        "Я вижу ВСЁ на странице!\n\n"
         "💡 **Примеры команд:**\n"
         "• Открой Google\n"
         "• Нажми на кнопку Войти\n"
