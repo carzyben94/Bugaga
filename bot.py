@@ -71,28 +71,35 @@ class CDPClient:
         self.msg_id = 0
     
     async def connect(self):
+        """Подключение к Chrome и создание сессии"""
         if not self.connected:
             self.ws = await websockets.connect(self.ws_url)
             self.connected = True
             logger.info("✅ WebSocket подключен")
             
-            resp = await self.send("Target.createTarget", {"url": "about:blank"})
+            # Создаём новую вкладку
+            resp = await self._send_raw("Target.createTarget", {"url": "about:blank"})
             if "result" in resp:
                 self.target_id = resp["result"]["targetId"]
-                logger.info(f"✅ Вкладка: {self.target_id}")
+                logger.info(f"✅ Вкладка создана: {self.target_id}")
+            else:
+                logger.error(f"❌ Не удалось создать вкладку: {resp}")
+                return False
             
-            if self.target_id:
-                resp = await self.send("Target.attachToTarget", {"targetId": self.target_id})
-                if "result" in resp:
-                    self.session_id = resp["result"]["sessionId"]
-                    logger.info(f"✅ Подключен к вкладке")
+            # Подключаемся к вкладке
+            resp = await self._send_raw("Target.attachToTarget", {"targetId": self.target_id})
+            if "result" in resp:
+                self.session_id = resp["result"]["sessionId"]
+                logger.info(f"✅ Подключен к вкладке, sessionId: {self.session_id}")
+                return True
+            else:
+                logger.error(f"❌ Не удалось подключиться: {resp}")
+                return False
         
-        return self.ws
+        return True
     
-    async def send(self, method, params=None):
-        if not self.connected:
-            await self.connect()
-        
+    async def _send_raw(self, method, params=None, session_id=None):
+        """Отправка сырого запроса без автоматической сессии"""
         self.msg_id += 1
         msg = {
             "id": self.msg_id,
@@ -100,9 +107,8 @@ class CDPClient:
             "params": params or {}
         }
         
-        if method.startswith("Page.") or method.startswith("Runtime.") or method.startswith("Network."):
-            if self.session_id:
-                msg["sessionId"] = self.session_id
+        if session_id:
+            msg["sessionId"] = session_id
         
         try:
             await self.ws.send(json.dumps(msg))
@@ -119,10 +125,24 @@ class CDPClient:
             logger.error(f"❌ Send error: {e}")
             return {"error": str(e)}
     
+    async def send(self, method, params=None):
+        """Отправка запроса с автоматической подстановкой sessionId"""
+        if not self.connected:
+            await self.connect()
+        
+        # Для Page.* и Runtime.* нужен sessionId
+        if method.startswith("Page.") or method.startswith("Runtime.") or method.startswith("Network."):
+            if not self.session_id:
+                logger.error(f"❌ Нет sessionId для {method}")
+                return {"error": "No sessionId"}
+            return await self._send_raw(method, params, self.session_id)
+        else:
+            return await self._send_raw(method, params)
+    
     async def navigate(self, url):
         """Переход по URL"""
         resp = await self.send("Page.navigate", {"url": url})
-        time.sleep(3)
+        time.sleep(2)
         return resp
     
     async def eval_js(self, code):
@@ -135,6 +155,10 @@ class CDPClient:
     async def screenshot(self):
         """Скриншот страницы"""
         try:
+            # Проверяем подключение
+            if not await self.connect():
+                return None
+            
             # Проверяем, что страница загружена
             title = await self.eval_js("document.title")
             logger.info(f"📄 Текущая страница: {title}")
@@ -143,6 +167,7 @@ class CDPClient:
             if not title or title == "":
                 logger.info("🌐 Открываю Google для скриншота...")
                 await self.navigate("https://google.com")
+                time.sleep(2)
             
             # Делаем скриншот
             resp = await self.send("Page.captureScreenshot", {
@@ -150,8 +175,6 @@ class CDPClient:
                 "captureBeyondViewport": True,
                 "fromSurface": True
             })
-            
-            logger.info(f"📸 Ответ CDP: {json.dumps(resp, indent=2)[:200]}")
             
             if "result" in resp and "data" in resp["result"]:
                 logger.info("✅ Скриншот сделан")
