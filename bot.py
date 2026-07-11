@@ -11,6 +11,7 @@ import random
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, filters, MessageHandler
 import websockets
+from typing import Optional, Dict, List, Any
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -154,453 +155,333 @@ def create_page():
         file_logger.log(f"❌ Ошибка: {e}", "ERROR")
         return None
 
-# ---------- CDP Client ----------
+# ============================================
+# 🧠 CDP SUPERVISOR (как в Hermes)
+# ============================================
 
-class CDPClient:
-    def __init__(self):
+class CDPSupervisor:
+    """
+    Полноценный CDP Supervisor как в Hermes.
+    Живёт в фоновом процессе, держит WebSocket,
+    перехватывает события, обрабатывает диалоги и iframe.
+    """
+    
+    def __init__(self, user_id: int, ws_url: str):
+        self.user_id = user_id
+        self.ws_url = ws_url
         self.ws = None
         self.connected = False
         self.msg_id = 0
-        self.user_id = None
-        self.full_snapshot = None
-        self.history = []
-        self.cookies_set = False
-        self.pending_dialogs = []
-        self.connected_tabs = {}
-        self.dialog_timeout = 300
-        self.ref_elements = {}
-        self.frame_tree = None
-        self.accessibility_tree = []
+        self.running = False
+        
+        # Состояние
         self.page_loaded = False
-    
-    async def connect(self):
-        if self.connected:
-            return True
+        self.pending_dialogs = []
+        self.frame_tree = {}
+        self.connected_tabs = {}
+        self.ref_elements = {}
+        self.full_snapshot = None
         
-        file_logger.log(f"Подключение для пользователя {self.user_id}")
+        # Таймауты
+        self.dialog_timeout = 300
+        self.ping_interval = 60
+        self.ping_timeout = 180
         
-        ws_url = get_page_ws_url()
-        if not ws_url:
-            ws_url = create_page()
+        # Задачи
+        self.supervisor_task = None
+        self.dialog_timeout_task = None
+    
+    # ============================================
+    # ЗАПУСК И УПРАВЛЕНИЕ
+    # ============================================
+    
+    async def start(self):
+        """Запускает супервайзера в фоне"""
+        if self.running:
+            return
         
-        if not ws_url:
-            file_logger.log("❌ Не удалось получить WebSocket URL", "ERROR")
-            return False
-        
-        try:
-            self.ws = await websockets.connect(
-                ws_url,
-                ping_interval=60,
-                ping_timeout=180,
-                close_timeout=30,
-                max_size=20_000_000
-            )
-            self.connected = True
-            file_logger.log("✅ WebSocket подключен")
-            
-            await self.send("Page.enable", {})
-            await self.send("Runtime.enable", {})
-            await self.send("DOM.enable", {})
-            await self.send("Network.enable", {})
-            
-            await self.send("Target.setAutoAttach", {
-                "autoAttach": True,
-                "flatten": True,
-                "waitForDebuggerOnStart": False
-            })
-            file_logger.log("✅ Target.setAutoAttach включён")
-            
-            file_logger.log("✅ Page, Runtime, DOM, Network включены")
-            
-            await self.set_x_cookies()
-            
-            # Открываем Google и ждём загрузки
-            await self.navigate("https://google.com")
-            
-            return True
-            
-        except Exception as e:
-            file_logger.log(f"❌ Connect error: {e}", "ERROR")
-            return False
+        file_logger.log(f"🧠 Запуск CDP Supervisor для пользователя {self.user_id}")
+        self.running = True
+        self.supervisor_task = asyncio.create_task(self._run())
+        return True
     
-    async def mask_browser(self):
-        """Маскировка браузера только после загрузки страницы"""
-        try:
-            # Ждём загрузки страницы
-            if not self.page_loaded:
-                file_logger.log("⚠️ Страница ещё не загружена, пропускаю маскировку")
-                return True
-            
-            js_code = """
-            (function() {
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => undefined,
-                    configurable: true
-                });
-                
-                Object.defineProperty(navigator, 'plugins', {
-                    get: () => {
-                        const plugins = [
-                            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
-                            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
-                            { name: 'Native Client', filename: 'internal-nacl-plugin' }
-                        ];
-                        plugins.length = 3;
-                        plugins.item = function(i) { return this[i]; };
-                        plugins.namedItem = function(name) {
-                            for (let i = 0; i < this.length; i++) {
-                                if (this[i].name === name) return this[i];
-                            }
-                            return null;
-                        };
-                        return plugins;
-                    },
-                    configurable: true
-                });
-                
-                Object.defineProperty(navigator, 'languages', {
-                    get: () => ['ru-RU', 'ru', 'en-US', 'en'],
-                    configurable: true
-                });
-                
-                window.chrome = {
-                    runtime: {
-                        connect: function() {},
-                        sendMessage: function() {},
-                        getManifest: function() {
-                            return {
-                                version: '120.0.6099.109',
-                                name: 'Chrome'
-                            };
-                        }
-                    },
-                    loadTimes: function() {
-                        return {
-                            connectionInfo: '100mbps',
-                            npnNegotiatedProtocol: 'h2',
-                            wasAlternateProtocolAvailable: true,
-                            wasNpnNegotiated: true
-                        };
-                    },
-                    csi: function() {
-                        return {
-                            startE: Date.now() - 1000,
-                            pageT: 1000
-                        };
-                    },
-                    app: {
-                        isInstalled: false,
-                        getDetails: function() {},
-                        installState: function() {
-                            return 'disabled';
-                        }
-                    },
-                    webstore: {
-                        onInstallStageChanged: {},
-                        onDownloadProgress: {}
-                    }
-                };
-                
-                const getParameter = WebGLRenderingContext.prototype.getParameter;
-                WebGLRenderingContext.prototype.getParameter = function(parameter) {
-                    if (parameter === 37445) {
-                        return 'Intel Inc.';
-                    }
-                    if (parameter === 37446) {
-                        return 'Intel Iris OpenGL Engine';
-                    }
-                    if (parameter === 37447) {
-                        return 'OpenGL 4.6';
-                    }
-                    return getParameter(parameter);
-                };
-                
-                Object.defineProperty(navigator, 'connection', {
-                    get: () => ({
-                        effectiveType: '4g',
-                        rtt: 50,
-                        downlink: 10,
-                        saveData: false,
-                        type: 'cellular'
-                    }),
-                    configurable: true
-                });
-                
-                Object.defineProperty(performance, 'memory', {
-                    get: () => ({
-                        totalJSHeapSize: 100000000,
-                        usedJSHeapSize: 50000000,
-                        jsHeapSizeLimit: 200000000
-                    }),
-                    configurable: true
-                });
-                
-                Object.defineProperty(navigator, 'hardwareConcurrency', {
-                    get: () => 8,
-                    configurable: true
-                });
-                
-                Object.defineProperty(navigator, 'platform', {
-                    get: () => 'Win32',
-                    configurable: true
-                });
-                
-                delete window.__cdp__;
-                delete window.__CDP__;
-                delete window.__playwright__;
-                delete window.__pw_manual__;
-                delete window.__playwright_evaluation_script__;
-                delete window.__pw_hook__;
-                delete window.__selenium_evaluate__;
-                delete window.__webdriver_evaluate__;
-                delete window.__driver_unwrapped__;
-                delete window.__webdriver_script_evaluate__;
-                delete window.__webdriver_script_function__;
-                
-                if (navigator.mediaDevices) {
-                    Object.defineProperty(navigator.mediaDevices, 'enumerateDevices', {
-                        value: async function() {
-                            return [
-                                { deviceId: 'default', kind: 'audioinput', label: 'Default' },
-                                { deviceId: 'default', kind: 'videoinput', label: 'Default' }
-                            ];
-                        }
-                    });
-                }
-                
-                Object.defineProperty(Intl.DateTimeFormat.prototype, 'resolvedOptions', {
-                    value: function() {
-                        const result = Object.getOwnPropertyDescriptor(
-                            Intl.DateTimeFormat.prototype.resolvedOptions,
-                            'value'
-                        ).call(this);
-                        result.timeZone = 'Europe/Moscow';
-                        return result;
-                    }
-                });
-                
-                Object.defineProperty(screen, 'availWidth', { value: 1920 });
-                Object.defineProperty(screen, 'availHeight', { value: 1040 });
-                
-                Object.defineProperty(navigator, 'doNotTrack', {
-                    get: () => '1',
-                    configurable: true
-                });
-                
-                return { success: true };
-            })()
-            """
-            result = await self.eval_js(js_code)
-            if result and result.get("success"):
-                file_logger.log("✅ Браузер замаскирован")
-            return True
-        except Exception as e:
-            file_logger.log(f"❌ Mask error: {e}", "ERROR")
-            return False
+    async def stop(self):
+        """Останавливает супервайзера"""
+        self.running = False
+        if self.supervisor_task:
+            self.supervisor_task.cancel()
+        if self.ws:
+            await self.ws.close()
+        file_logger.log(f"🧠 CDP Supervisor остановлен для {self.user_id}")
     
-    async def set_x_cookies(self):
-        try:
-            file_logger.log("🍪 Устанавливаю куки для X.com...")
-            
-            for cookie in X_COOKIES:
-                cdp_cookie = {
-                    "name": cookie["name"],
-                    "value": cookie["value"],
-                    "domain": cookie["domain"],
-                    "path": cookie.get("path", "/"),
-                    "secure": cookie.get("secure", False),
-                    "httpOnly": cookie.get("httpOnly", False),
-                }
-                
-                same_site = cookie.get("sameSite", "unspecified")
-                if same_site.lower() == "none":
-                    cdp_cookie["sameSite"] = "None"
-                elif same_site.lower() == "lax":
-                    cdp_cookie["sameSite"] = "Lax"
-                elif same_site.lower() == "strict":
-                    cdp_cookie["sameSite"] = "Strict"
-                else:
-                    cdp_cookie["sameSite"] = "Unspecified"
-                
-                await self.send("Network.setCookie", cdp_cookie)
-                file_logger.log(f"✅ Кука установлена: {cookie['name']}")
-            
-            self.cookies_set = True
-            file_logger.log(f"✅ Установлено {len(X_COOKIES)} кук для X.com")
-            return True
-        except Exception as e:
-            file_logger.log(f"❌ Ошибка установки кук: {e}", "ERROR")
-            return False
-    
-    async def safe_send(self, method, params=None, retry=3):
-        last_error = None
-        for attempt in range(retry):
+    async def _run(self):
+        """Основной цикл супервайзера"""
+        while self.running:
             try:
-                return await self.send(method, params)
+                await self._connect()
+                await self._setup_domains()
+                await self._navigate_to_default()
+                await self._event_loop()
+            except websockets.ConnectionClosed:
+                file_logger.log(f"⚠️ WebSocket закрыт, переподключаюсь...")
+                await asyncio.sleep(5)
             except Exception as e:
-                last_error = e
-                error_str = str(e)
-                if "keepalive ping timeout" in error_str or "1011" in error_str:
-                    file_logger.log(f"⚠️ Потеря соединения, переподключаюсь... (попытка {attempt+1}/{retry})")
-                    self.connected = False
-                    await self.connect()
-                    await asyncio.sleep(2)
-                else:
-                    raise
-        return {"error": f"Max retries exceeded: {last_error}"}
+                file_logger.log(f"❌ Supervisor error: {e}", "ERROR")
+                await asyncio.sleep(5)
     
-    async def send(self, method, params=None, session_id=None):
-        if not self.connected:
-            await self.connect()
-        
-        self.msg_id += 1
-        msg_id = self.msg_id
-        
-        msg = {
-            "id": msg_id,
-            "method": method,
-            "params": params or {}
-        }
-        
-        if session_id:
-            msg["sessionId"] = session_id
-        
-        try:
-            await self.ws.send(json.dumps(msg))
-            
-            while True:
-                response = await asyncio.wait_for(self.ws.recv(), timeout=30)
-                data = json.loads(response)
-                
-                if "method" in data and data["method"] == "Page.javascriptDialogOpening":
-                    dialog_params = data.get("params", {})
-                    dialog_message = dialog_params.get('message', '')
-                    dialog_type = dialog_params.get('type', '')
-                    
-                    file_logger.log(f"💬 Диалог обнаружен: {dialog_message} (тип: {dialog_type})")
-                    
-                    if CURRENT_DIALOG_POLICY == "auto_dismiss":
-                        file_logger.log("🚫 Политика: auto_dismiss — закрываю диалог")
-                        await self.send("Page.handleJavaScriptDialog", {"accept": False})
-                        continue
-                    elif CURRENT_DIALOG_POLICY == "auto_accept":
-                        file_logger.log("✅ Политика: auto_accept — принимаю диалог")
-                        await self.send("Page.handleJavaScriptDialog", {"accept": True})
-                        continue
-                    else:
-                        self.pending_dialogs.append({
-                            "message": dialog_message,
-                            "type": dialog_type,
-                            "defaultPrompt": dialog_params.get("defaultPrompt", ""),
-                            "timestamp": time.time()
-                        })
-                        if len(self.pending_dialogs) > 0:
-                            asyncio.create_task(self._dialog_timeout_check())
-                    continue
-                
-                if "method" in data and data["method"] == "Target.attachedToTarget":
-                    target_info = data.get("params", {}).get("targetInfo", {})
-                    session_id_new = data.get("params", {}).get("sessionId")
-                    if session_id_new:
-                        self.connected_tabs[session_id_new] = {
-                            "target_id": target_info.get("targetId"),
-                            "url": target_info.get("url"),
-                            "type": target_info.get("type"),
-                            "session_id": session_id_new
-                        }
-                        file_logger.log(f"🔗 Прикреплён фрейм: {target_info.get('url', '')[:50]} (session: {session_id_new[:8]})")
-                    continue
-                
-                if data.get("id") == msg_id:
-                    if "error" in data:
-                        file_logger.log(f"❌ {method}: {data['error']}", "ERROR")
-                    return data
-                
-        except asyncio.TimeoutError:
-            file_logger.log(f"❌ {method} timeout", "ERROR")
-            return {"error": "Timeout"}
-        except Exception as e:
-            file_logger.log(f"❌ {method} error: {e}", "ERROR")
-            return {"error": str(e)}
+    # ============================================
+    # ПОДКЛЮЧЕНИЕ
+    # ============================================
     
-    async def _dialog_timeout_check(self):
-        await asyncio.sleep(self.dialog_timeout)
-        if self.pending_dialogs:
-            file_logger.log(f"⏰ Таймаут диалога ({self.dialog_timeout}с), закрываю")
-            dialog = self.pending_dialogs.pop(0)
-            await self.send("Page.handleJavaScriptDialog", {"accept": False})
+    async def _connect(self):
+        """Подключается к Chrome"""
+        file_logger.log(f"🔗 Подключение к Chrome для {self.user_id}")
+        self.ws = await websockets.connect(
+            self.ws_url,
+            ping_interval=self.ping_interval,
+            ping_timeout=self.ping_timeout,
+            close_timeout=30,
+            max_size=20_000_000
+        )
+        self.connected = True
+        file_logger.log(f"✅ WebSocket подключен для {self.user_id}")
     
-    async def wait_for_page_load(self, timeout=15):
-        """Ждёт загрузки страницы (как в Hermes)"""
+    async def _setup_domains(self):
+        """Включает все нужные домены"""
+        await self._send("Page.enable", {})
+        await self._send("Runtime.enable", {})
+        await self._send("DOM.enable", {})
+        await self._send("Network.enable", {})
+        await self._send("Target.setAutoAttach", {
+            "autoAttach": True,
+            "flatten": True,
+            "waitForDebuggerOnStart": False
+        })
+        file_logger.log("✅ Domains enabled")
+    
+    async def _navigate_to_default(self):
+        """Открывает страницу по умолчанию"""
+        await self._send("Page.navigate", {"url": "https://google.com"})
+        await self._wait_for_page_load()
+    
+    # ============================================
+    # ОЖИДАНИЕ ЗАГРУЗКИ
+    # ============================================
+    
+    async def _wait_for_page_load(self, timeout=15):
+        """Ждёт загрузки страницы"""
         for i in range(timeout):
             await asyncio.sleep(1)
             try:
-                title = await self.eval_js("document.title")
-                if title and title != "":
-                    self.page_loaded = True
-                    file_logger.log(f"📄 Страница загружена: {title}")
-                    return True
+                resp = await self._send("Runtime.evaluate", {
+                    "expression": "document.title",
+                    "returnByValue": True
+                })
+                if "result" in resp and "result" in resp["result"]:
+                    title = resp["result"]["result"].get("value", "")
+                    if title:
+                        self.page_loaded = True
+                        file_logger.log(f"📄 Страница загружена: {title}")
+                        return True
             except:
                 pass
         file_logger.log(f"⚠️ Страница не загрузилась за {timeout} секунд")
         return False
     
-    async def navigate(self, url):
-        file_logger.log(f"🌐 Навигация на {url}")
-        await self.send("Page.navigate", {"url": url})
-        
-        # Ждём загрузки страницы
-        await self.wait_for_page_load()
-        
-        # Маскируем браузер после загрузки
-        await self.mask_browser()
-        
-        # Получаем snapshot
-        await self.get_maximum_snapshot()
+    # ============================================
+    # ОТПРАВКА КОМАНД
+    # ============================================
     
-    async def eval_js(self, code, session_id=None):
+    async def _send(self, method, params=None, session_id=None):
+        """Отправляет команду в Chrome"""
+        if not self.connected:
+            return {"error": "Not connected"}
+        
+        self.msg_id += 1
+        msg = {
+            "id": self.msg_id,
+            "method": method,
+            "params": params or {}
+        }
+        if session_id:
+            msg["sessionId"] = session_id
+        
         try:
-            resp = await self.safe_send("Runtime.evaluate", {
-                "expression": code,
-                "returnByValue": True,
-                "awaitPromise": True
-            }, session_id)
-            
-            if "result" in resp:
-                result_obj = resp["result"]
-                
-                if "exceptionDetails" in result_obj:
-                    file_logger.log(f"❌ JS ошибка: {result_obj['exceptionDetails']}", "ERROR")
-                    return None
-                
-                if "result" in result_obj:
-                    remote = result_obj["result"]
-                    if remote.get("type") == "undefined":
-                        return None
-                    if "value" in remote:
-                        return remote["value"]
-                    if "objectId" in remote:
-                        return remote
-                
-                if "value" in result_obj:
-                    return result_obj["value"]
-            
-            return None
+            await self.ws.send(json.dumps(msg))
+            response = await asyncio.wait_for(self.ws.recv(), timeout=30)
+            return json.loads(response)
         except Exception as e:
-            file_logger.log(f"❌ eval_js error: {e}", "ERROR")
-            return None
+            file_logger.log(f"❌ Send error: {e}", "ERROR")
+            return {"error": str(e)}
+    
+    async def _send_with_session(self, method, params=None, session_id=None):
+        """Отправляет с явной сессией"""
+        return await self._send(method, params, session_id)
     
     # ============================================
-    # HERMES: Accessibility Tree
+    # ОСНОВНОЙ ЦИКЛ ОБРАБОТКИ СОБЫТИЙ
     # ============================================
-    async def get_accessibility_tree(self):
-        """Возвращает accessibility tree (только после загрузки страницы)"""
-        try:
-            # Проверяем, что страница загружена
-            if not self.page_loaded:
-                file_logger.log("⚠️ Страница не загружена, пропускаю сбор элементов")
-                return []
+    
+    async def _event_loop(self):
+        """Главный цикл обработки событий"""
+        while self.running and self.connected:
+            try:
+                response = await asyncio.wait_for(self.ws.recv(), timeout=30)
+                data = json.loads(response)
+                
+                # Обрабатываем события
+                if "method" in data:
+                    await self._handle_event(data)
+                
+                # Игнорируем ответы на наши запросы
+                if "id" in data:
+                    continue
+                    
+            except asyncio.TimeoutError:
+                # Heartbeat
+                continue
+            except websockets.ConnectionClosed:
+                file_logger.log("⚠️ WebSocket закрыт")
+                self.connected = False
+                break
+            except Exception as e:
+                file_logger.log(f"❌ Event loop error: {e}", "ERROR")
+    
+    async def _handle_event(self, data):
+        """Обрабатывает событие от Chrome"""
+        method = data.get("method")
+        params = data.get("params", {})
+        
+        # ============================================
+        # ДИАЛОГИ
+        # ============================================
+        if method == "Page.javascriptDialogOpening":
+            dialog_message = params.get('message', '')
+            dialog_type = params.get('type', '')
             
+            file_logger.log(f"💬 Диалог обнаружен: {dialog_message} (тип: {dialog_type})")
+            
+            # Применяем политику
+            if CURRENT_DIALOG_POLICY == "auto_dismiss":
+                file_logger.log("🚫 auto_dismiss — закрываю диалог")
+                await self._send("Page.handleJavaScriptDialog", {"accept": False})
+                return
+            elif CURRENT_DIALOG_POLICY == "auto_accept":
+                file_logger.log("✅ auto_accept — принимаю диалог")
+                await self._send("Page.handleJavaScriptDialog", {"accept": True})
+                return
+            
+            # Добавляем в очередь
+            self.pending_dialogs.append({
+                "message": dialog_message,
+                "type": dialog_type,
+                "defaultPrompt": params.get("defaultPrompt", ""),
+                "timestamp": time.time()
+            })
+            
+            # Запускаем таймаут
+            if self.dialog_timeout_task is None or self.dialog_timeout_task.done():
+                self.dialog_timeout_task = asyncio.create_task(self._dialog_timeout_check())
+            return
+        
+        # ============================================
+        # IFRAME (OOPIF)
+        # ============================================
+        if method == "Target.attachedToTarget":
+            target_info = params.get("targetInfo", {})
+            session_id = params.get("sessionId")
+            if session_id:
+                self.connected_tabs[session_id] = {
+                    "target_id": target_info.get("targetId"),
+                    "url": target_info.get("url", ""),
+                    "type": target_info.get("type", ""),
+                    "session_id": session_id
+                }
+                file_logger.log(f"🔗 Прикреплён фрейм: {target_info.get('url', '')[:50]} (session: {session_id[:8]})")
+            return
+        
+        # ============================================
+        # ЗАГРУЗКА СТРАНИЦЫ
+        # ============================================
+        if method == "Page.loadEventFired":
+            self.page_loaded = True
+            file_logger.log("📄 Page.loadEventFired — страница загружена")
+            await self._update_snapshot()
+            return
+        
+        if method == "Page.frameNavigated":
+            file_logger.log(f"🧭 Frame navigated: {params.get('frame', {}).get('url', '')[:50]}")
+            await self._update_snapshot()
+            return
+        
+        # ============================================
+        # КОНСОЛЬ
+        # ============================================
+        if method == "Runtime.consoleAPICalled":
+            args = params.get("args", [])
+            for arg in args:
+                if arg.get("type") == "string":
+                    file_logger.log(f"📝 Console: {arg.get('value', '')}")
+            return
+    
+    async def _dialog_timeout_check(self):
+        """Проверяет таймаут диалогов"""
+        await asyncio.sleep(self.dialog_timeout)
+        if self.pending_dialogs:
+            file_logger.log(f"⏰ Таймаут диалога ({self.dialog_timeout}с), закрываю")
+            dialog = self.pending_dialogs.pop(0)
+            await self._send("Page.handleJavaScriptDialog", {"accept": False})
+    
+    # ============================================
+    # ОБНОВЛЕНИЕ SNAPSHOT
+    # ============================================
+    
+    async def _update_snapshot(self):
+        """Обновляет snapshot страницы"""
+        try:
+            # Получаем accessibility tree
+            ref_elements = await self._get_accessibility_tree()
+            
+            # Получаем frame tree
+            frame_tree_resp = await self._send("Page.getFrameTree", {})
+            if "result" in frame_tree_resp:
+                self.frame_tree = frame_tree_resp["result"].get("frameTree", {})
+            
+            # Получаем базовую информацию
+            title_resp = await self._send("Runtime.evaluate", {
+                "expression": "document.title",
+                "returnByValue": True
+            })
+            title = "Нет заголовка"
+            if "result" in title_resp and "result" in title_resp["result"]:
+                title = title_resp["result"]["result"].get("value", "Нет заголовка")
+            
+            url_resp = await self._send("Runtime.evaluate", {
+                "expression": "window.location.href",
+                "returnByValue": True
+            })
+            url = "Нет URL"
+            if "result" in url_resp and "result" in url_resp["result"]:
+                url = url_resp["result"]["result"].get("value", "Нет URL")
+            
+            self.full_snapshot = {
+                "title": title,
+                "url": url,
+                "ref_elements": ref_elements,
+                "pending_dialogs": self.pending_dialogs.copy(),
+                "frame_tree": self.frame_tree,
+                "connected_tabs": self.connected_tabs.copy()
+            }
+            
+            file_logger.log(f"✅ Snapshot обновлён: {len(ref_elements)} Ref ID элементов")
+            return True
+        except Exception as e:
+            file_logger.log(f"❌ Snapshot error: {e}", "ERROR")
+            return False
+    
+    async def _get_accessibility_tree(self):
+        """Получает accessibility tree (только интерактивные элементы)"""
+        try:
             js_code = """
             (function() {
                 const result = [];
@@ -659,240 +540,40 @@ class CDPClient:
                 return result;
             })()
             """
-            result = await self.eval_js(js_code)
+            resp = await self._send("Runtime.evaluate", {
+                "expression": js_code,
+                "returnByValue": True,
+                "awaitPromise": True
+            })
             
-            if result is None:
-                return []
-            if not isinstance(result, list):
-                return []
-            
-            self.accessibility_tree = result
-            self.ref_elements = {el['ref']: el for el in result}
-            return result
+            if "result" in resp and "result" in resp["result"]:
+                result = resp["result"]["result"].get("value", [])
+                if isinstance(result, list):
+                    return result
+            return []
         except Exception as e:
             file_logger.log(f"❌ Accessibility tree error: {e}", "ERROR")
             return []
     
     # ============================================
-    # HERMES: Действия по Ref ID
+    # ПУБЛИЧНЫЕ МЕТОДЫ ДЛЯ АГЕНТА
     # ============================================
-    async def click_by_ref(self, ref_id):
-        try:
-            if ref_id not in self.ref_elements:
-                return {"error": f"Элемент {ref_id} не найден"}
-            
-            el_info = self.ref_elements[ref_id]
-            selector = el_info.get('selector')
-            
-            if not selector:
-                return {"error": f"Нет селектора для {ref_id}"}
-            
-            return await self.click_element(selector)
-        except Exception as e:
-            file_logger.log(f"❌ click_by_ref error: {e}", "ERROR")
-            return {"error": str(e)}
     
-    async def fill_by_ref(self, ref_id, value):
-        try:
-            if ref_id not in self.ref_elements:
-                return {"error": f"Элемент {ref_id} не найден"}
-            
-            el_info = self.ref_elements[ref_id]
-            selector = el_info.get('selector')
-            
-            if not selector:
-                return {"error": f"Нет селектора для {ref_id}"}
-            
-            return await self.fill_element(selector, value)
-        except Exception as e:
-            file_logger.log(f"❌ fill_by_ref error: {e}", "ERROR")
-            return {"error": str(e)}
-    
-    async def click_element(self, selector):
-        js_code = """
-        (function() {
-            const el = document.querySelector(""" + '"' + selector + '"' + """);
-            if (el) {
-                el.click();
-                return { success: true, method: 'click' };
-            }
-            return { success: false };
-        })()
-        """
-        result = await self.eval_js(js_code)
-        
-        if result and result.get("success"):
-            return result
-        
-        js_code2 = """
-        (function() {
-            const el = document.querySelector(""" + '"' + selector + '"' + """);
-            if (el) {
-                const event = new MouseEvent('click', {
-                    view: window,
-                    bubbles: true,
-                    cancelable: true
-                });
-                el.dispatchEvent(event);
-                return { success: true, method: 'dispatchEvent' };
-            }
-            return { success: false };
-        })()
-        """
-        return await self.eval_js(js_code2)
-    
-    async def fill_element(self, selector, value):
-        escaped_value = value.replace("'", "\\'").replace('"', '\\"')
-        
-        js_code = """
-        (function() {
-            const el = document.querySelector(""" + '"' + selector + '"' + """);
-            if (el) {
-                el.value = '""" + escaped_value + """';
-                el.dispatchEvent(new Event('input', { bubbles: true }));
-                el.dispatchEvent(new Event('change', { bubbles: true }));
-                return { success: true };
-            }
-            return { success: false };
-        })()
-        """
-        return await self.eval_js(js_code)
-    
-    async def press_enter(self):
-        js_code = """
-        (function() {
-            const active = document.activeElement;
-            if (active) {
-                const event = new KeyboardEvent('keydown', {
-                    key: 'Enter',
-                    code: 'Enter',
-                    keyCode: 13,
-                    which: 13,
-                    bubbles: true,
-                    cancelable: true
-                });
-                active.dispatchEvent(event);
-                
-                const form = active.closest('form');
-                if (form) {
-                    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-                }
-                
-                return { success: true, element: active.tagName };
-            }
-            return { success: false };
-        })()
-        """
-        return await self.eval_js(js_code)
-    
-    # ============================================
-    # HERMES: Получение snapshot
-    # ============================================
-    async def get_maximum_snapshot(self):
-        try:
-            file_logger.log("📸 Делаю максимальный слепок...")
-            
-            # Проверяем загрузку страницы
-            if not self.page_loaded:
-                file_logger.log("⚠️ Страница не загружена, пропускаю слепок")
-                return False
-            
-            url = await self.eval_js("window.location.href") or ""
-            
-            # Получаем accessibility tree
-            ref_elements = await self.get_accessibility_tree()
-            
-            # FrameTree для информации
-            frame_tree_resp = await self.send("Page.getFrameTree", {})
-            self.frame_tree = None
-            if "result" in frame_tree_resp:
-                self.frame_tree = frame_tree_resp["result"].get("frameTree", {})
-                file_logger.log(f"📦 FrameTree получен")
-            
-            title = await self.eval_js("document.title") or "Нет заголовка"
-            url_final = await self.eval_js("window.location.href") or "Нет URL"
-            
-            if self.pending_dialogs:
-                file_logger.log(f"💬 Есть ожидающие диалоги: {len(self.pending_dialogs)}")
-            
-            self.full_snapshot = {
-                "title": title,
-                "url": url_final,
-                "ref_elements": ref_elements,
-                "pending_dialogs": self.pending_dialogs.copy() if self.pending_dialogs else [],
-                "frame_tree": self.frame_tree if self.frame_tree else None,
-                "connected_tabs": self.connected_tabs.copy() if self.connected_tabs else {}
-            }
-            
-            file_logger.log(f"✅ Максимальный слепок: {len(ref_elements)} Ref ID элементов")
-            return True
-            
-        except Exception as e:
-            file_logger.log(f"❌ Maximum snapshot error: {e}", "ERROR")
-            import traceback
-            file_logger.log(traceback.format_exc(), "ERROR")
-            self.full_snapshot = {
-                "title": "Ошибка загрузки",
-                "url": "",
-                "ref_elements": [],
-                "pending_dialogs": self.pending_dialogs.copy() if self.pending_dialogs else [],
-                "frame_tree": None,
-                "connected_tabs": self.connected_tabs.copy() if self.connected_tabs else {}
-            }
-            return False
-    
-    async def handle_dialog(self, accept=True, prompt_text=""):
-        try:
-            if not self.pending_dialogs:
-                return {"error": "Нет ожидающих диалогов"}
-            
-            dialog = self.pending_dialogs.pop(0)
-            result = await self.send("Page.handleJavaScriptDialog", {
-                "accept": accept,
-                "promptText": prompt_text
-            })
-            file_logger.log(f"✅ Диалог обработан: {dialog.get('message', '')}")
-            return {"success": True, "dialog": dialog}
-        except Exception as e:
-            file_logger.log(f"❌ Dialog error: {e}", "ERROR")
-            return {"error": str(e)}
-    
-    async def cdp_command(self, method, params=None, frame_id=None):
-        try:
-            if frame_id:
-                session_id = None
-                for sid, info in self.connected_tabs.items():
-                    if info.get("target_id") == frame_id:
-                        session_id = sid
-                        break
-                if session_id:
-                    return await self.send(method, params, session_id)
-            
-            return await self.send(method, params)
-        except Exception as e:
-            file_logger.log(f"❌ CDP command error: {e}", "ERROR")
-            return {"error": str(e)}
-    
-    async def set_dialog_policy(self, policy):
-        global CURRENT_DIALOG_POLICY
-        if policy in DIALOG_POLICY:
-            CURRENT_DIALOG_POLICY = policy
-            file_logger.log(f"📋 Политика диалогов: {policy}")
-            return True
-        return False
-    
-    # ============================================
-    # HERMES: get_page_description
-    # ============================================
-    async def get_page_description(self):
+    async def get_snapshot(self):
+        """Возвращает текущий snapshot для агента"""
         if not self.full_snapshot:
-            await self.get_maximum_snapshot()
+            await self._update_snapshot()
+        return self.full_snapshot
+    
+    async def get_description(self):
+        """Возвращает описание страницы для агента"""
+        snapshot = await self.get_snapshot()
+        if not snapshot:
+            return "Страница не загружена"
         
-        info = self.full_snapshot or {}
-        ref_elements = info.get('ref_elements', [])
-        
-        title = info.get('title', 'Нет заголовка') if isinstance(info, dict) else 'Нет заголовка'
-        url = info.get('url', 'Нет URL') if isinstance(info, dict) else 'Нет URL'
+        ref_elements = snapshot.get('ref_elements', [])
+        title = snapshot.get('title', 'Нет заголовка')
+        url = snapshot.get('url', 'Нет URL')
         
         desc_lines = []
         desc_lines.append(f"📄 СТРАНИЦА: {title}")
@@ -910,38 +591,30 @@ class CDPClient:
         else:
             desc_lines.append("  • (нет данных)")
         
-        desc_lines.append("")
-        desc_lines.append("🔘 КНОПКИ:")
-        
-        buttons = [el for el in ref_elements if el.get('action') == 'click']
-        if buttons:
-            for el in buttons[:20]:
-                text = el.get('text', '')[:30]
-                ref = el.get('ref', '')
-                desc_lines.append(f"  • {text} → {ref}")
-        else:
-            desc_lines.append("  • (нет кнопок)")
-        
-        desc_lines.append("")
-        desc_lines.append("📝 ПОЛЯ ВВОДА:")
-        
-        inputs = [el for el in ref_elements if el.get('action') == 'type']
-        if inputs:
-            for el in inputs[:15]:
-                text = el.get('text', '')[:30]
-                ref = el.get('ref', '')
-                desc_lines.append(f"  • {text} → {ref}")
-        else:
-            desc_lines.append("  • (нет полей)")
-        
-        dialogs = info.get('pending_dialogs') if isinstance(info, dict) else None
-        if dialogs and isinstance(dialogs, list) and len(dialogs) > 0:
+        # Диалоги
+        dialogs = snapshot.get('pending_dialogs', [])
+        if dialogs:
             desc_lines.append("")
             desc_lines.append(f"💬 ОЖИДАЮЩИЕ ДИАЛОГИ ({len(dialogs)}):")
             for d in dialogs:
                 desc_lines.append(f"  • {d.get('message', '')} (тип: {d.get('type', 'unknown')})")
             desc_lines.append("")
-            desc_lines.append(f"📋 Текущая политика: {CURRENT_DIALOG_POLICY}")
+            desc_lines.append("💡 Для обработки диалога используй: handle_dialog(accept=True)")
+        
+        # iframe
+        frame_tree = snapshot.get('frame_tree', {})
+        if frame_tree:
+            desc_lines.append("")
+            desc_lines.append("📦 IFRAME/ФРЕЙМЫ:")
+            main_frame = frame_tree.get('frame', {})
+            if main_frame:
+                desc_lines.append(f"  • Главный: {main_frame.get('url', '')[:60]}")
+            children = frame_tree.get('childFrames', [])
+            if children:
+                for child in children[:5]:
+                    child_url = child.get('frame', {}).get('url', '')
+                    if child_url:
+                        desc_lines.append(f"  • Дочерний: {child_url[:60]}")
         
         desc_lines.append("")
         desc_lines.append("💡 КАК ИСПОЛЬЗОВАТЬ Ref ID:")
@@ -950,71 +623,211 @@ class CDPClient:
         
         return "\n".join(desc_lines)
     
-    async def reload(self):
-        await self.send("Page.reload", {})
-        await asyncio.sleep(2)
-        await self.wait_for_page_load()
-        await self.get_maximum_snapshot()
+    async def click_by_ref(self, ref_id):
+        """Клик по Ref ID"""
+        if not self.full_snapshot:
+            await self._update_snapshot()
+        
+        ref_elements = self.full_snapshot.get('ref_elements', [])
+        ref_map = {el['ref']: el for el in ref_elements}
+        
+        if ref_id not in ref_map:
+            return {"error": f"Элемент {ref_id} не найден"}
+        
+        el_info = ref_map[ref_id]
+        selector = el_info.get('selector')
+        
+        if not selector:
+            return {"error": f"Нет селектора для {ref_id}"}
+        
+        # Пробуем кликнуть
+        js_code = f"""
+        (function() {{
+            const el = document.querySelector("{selector}");
+            if (el) {{
+                el.click();
+                return {{ success: true }};
+            }}
+            return {{ success: false }};
+        }})()
+        """
+        resp = await self._send("Runtime.evaluate", {
+            "expression": js_code,
+            "returnByValue": True,
+            "awaitPromise": True
+        })
+        
+        if "result" in resp and "result" in resp["result"]:
+            result = resp["result"]["result"].get("value", {})
+            if result and result.get("success"):
+                await self._update_snapshot()
+                return {"success": True}
+        
+        return {"success": False}
+    
+    async def fill_by_ref(self, ref_id, value):
+        """Заполнение поля по Ref ID"""
+        if not self.full_snapshot:
+            await self._update_snapshot()
+        
+        ref_elements = self.full_snapshot.get('ref_elements', [])
+        ref_map = {el['ref']: el for el in ref_elements}
+        
+        if ref_id not in ref_map:
+            return {"error": f"Элемент {ref_id} не найден"}
+        
+        el_info = ref_map[ref_id]
+        selector = el_info.get('selector')
+        
+        if not selector:
+            return {"error": f"Нет селектора для {ref_id}"}
+        
+        escaped_value = value.replace("'", "\\'").replace('"', '\\"')
+        
+        js_code = f"""
+        (function() {{
+            const el = document.querySelector("{selector}");
+            if (el) {{
+                el.value = '{escaped_value}';
+                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                return {{ success: true }};
+            }}
+            return {{ success: false }};
+        }})()
+        """
+        resp = await self._send("Runtime.evaluate", {
+            "expression": js_code,
+            "returnByValue": True,
+            "awaitPromise": True
+        })
+        
+        if "result" in resp and "result" in resp["result"]:
+            result = resp["result"]["result"].get("value", {})
+            if result and result.get("success"):
+                await self._update_snapshot()
+                return {"success": True}
+        
+        return {"success": False}
+    
+    async def handle_dialog(self, accept=True, prompt_text=""):
+        """Обрабатывает диалог"""
+        if not self.pending_dialogs:
+            return {"error": "Нет ожидающих диалогов"}
+        
+        dialog = self.pending_dialogs.pop(0)
+        resp = await self._send("Page.handleJavaScriptDialog", {
+            "accept": accept,
+            "promptText": prompt_text
+        })
+        
+        if "error" not in resp:
+            file_logger.log(f"✅ Диалог обработан: {dialog.get('message', '')}")
+            await self._update_snapshot()
+            return {"success": True, "dialog": dialog}
+        
+        return {"error": resp.get("error", "Unknown error")}
+    
+    async def navigate(self, url):
+        """Переход на URL"""
+        await self._send("Page.navigate", {"url": url})
+        await self._wait_for_page_load()
+        await self._update_snapshot()
+        return {"success": True}
     
     async def screenshot(self):
-        try:
-            if not self.connected:
-                await self.connect()
-            
-            # Ждём загрузки страницы
-            if not self.page_loaded:
-                await self.wait_for_page_load()
-            
-            await asyncio.sleep(2)
-            
-            title = await self.eval_js("document.title")
-            file_logger.log(f"📄 Текущий заголовок: {title}")
-            
-            if not title or title == "":
-                file_logger.log("🌐 Открываю Google...")
-                await self.navigate("https://google.com")
-                await asyncio.sleep(3)
-            
-            body = await self.eval_js("document.body.innerText.slice(0, 50)")
-            if not body or body == "":
-                file_logger.log("⚠️ Страница пустая, жду...")
-                await asyncio.sleep(5)
-            
-            url = await self.eval_js("window.location.href") or ""
-            
-            file_logger.log("📸 Делаю скриншот...")
-            
-            if "x.com" in url:
-                file_logger.log("📸 X.com: пробую специальный режим...")
-                resp = await self.send("Page.captureScreenshot", {
-                    "format": "png",
-                    "fromSurface": True
-                })
-            else:
-                resp = await self.send("Page.captureScreenshot", {
-                    "format": "png",
-                    "captureBeyondViewport": True,
-                    "fromSurface": True
-                })
-            
-            if "result" in resp and "data" in resp["result"]:
-                img_data = base64.b64decode(resp["result"]["data"])
-                if len(img_data) > 100:
-                    file_logger.log("✅ Скриншот сделан")
-                    return img_data
-            
-            return None
-                
-        except Exception as e:
-            file_logger.log(f"❌ Screenshot error: {e}", "ERROR")
-            return None
+        """Делает скриншот"""
+        resp = await self._send("Page.captureScreenshot", {
+            "format": "png",
+            "captureBeyondViewport": True,
+            "fromSurface": True
+        })
+        
+        if "result" in resp and "data" in resp["result"]:
+            img_data = base64.b64decode(resp["result"]["data"])
+            if len(img_data) > 100:
+                return img_data
+        
+        return None
 
-# ---------- Хранилище ----------
+# ---------- Хранилище супервайзеров ----------
 
-clients = {}
+supervisors = {}
 
-# ---------- КОД АГЕНТА ----------
-AGENT_CODE = """
+async def get_supervisor(user_id: int) -> CDPSupervisor:
+    """Получает или создает супервайзера для пользователя"""
+    if user_id not in supervisors:
+        ws_url = get_page_ws_url()
+        if not ws_url:
+            ws_url = create_page()
+            if not ws_url:
+                return None
+        
+        supervisor = CDPSupervisor(user_id, ws_url)
+        await supervisor.start()
+        supervisors[user_id] = supervisor
+    
+    return supervisors[user_id]
+
+# ---------- ОБРАБОТЧИК ТЕЛЕГРАМ ----------
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
+    
+    user_id = update.message.from_user.id
+    prompt = update.message.text
+    
+    file_logger.log(f"Сообщение от {user_id}: {prompt[:100]}...")
+    
+    await update.message.chat.send_action(action="typing")
+    
+    try:
+        # Получаем супервайзера
+        supervisor = await get_supervisor(user_id)
+        if not supervisor:
+            await update.message.reply_text("❌ Не удалось подключиться к браузеру")
+            return
+        
+        # Получаем описание страницы
+        page_desc = await supervisor.get_description()
+        
+        # Спрашиваем Agnes
+        if AGNES_API_KEY:
+            response = await ask_agnes(prompt, page_desc)
+            if "error" not in response:
+                result = await execute_action(supervisor, response)
+                if result == "screenshot":
+                    img_data = await supervisor.screenshot()
+                    if img_data:
+                        with open("screenshot.png", "wb") as f:
+                            f.write(img_data)
+                        with open("screenshot.png", "rb") as photo:
+                            await update.message.reply_photo(photo=photo)
+                    else:
+                        await update.message.reply_text("❌ Не удалось сделать скриншот")
+                else:
+                    await update.message.reply_text(result)
+                return
+        
+        await update.message.reply_text("❌ Не понял команду. Попробуйте переформулировать.")
+            
+    except Exception as e:
+        file_logger.log(f"❌ Ошибка: {e}", "ERROR")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
+# ---------- Agnes AI ----------
+
+async def ask_agnes(prompt: str, page_desc: str) -> dict:
+    if not AGNES_API_KEY:
+        return {"error": "AGNES_API_KEY не установлен"}
+    
+    headers = {
+        "Authorization": f"Bearer {AGNES_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    AGENT_CODE = """
 Ты агент для управления браузером.
 
 ⚠️ ВАЖНО: Используй ТОЛЬКО Ref ID из snapshot!
@@ -1026,8 +839,7 @@ AGENT_CODE = """
 - press_enter() - нажать Enter
 - screenshot() - сделать скриншот
 - answer(text) - ответить пользователю
-- handle_dialog(accept, prompt_text) - обработать диалог
-- set_dialog_policy(policy) - установить политику диалогов
+- handle_dialog(accept) - обработать диалог
 
 📌 ФОРМАТ ОТВЕТА (ТОЛЬКО Ref ID):
 {"action": "click", "params": {"ref": "e8"}}
@@ -1036,19 +848,6 @@ AGENT_CODE = """
 ⚠️ НЕ ИСПОЛЬЗУЙ ТЕКСТ! ТОЛЬКО REF ID!
 ОТВЕЧАЙ ТОЛЬКО JSON!
 """
-
-# ---------- Агент ----------
-
-async def ask_agnes(prompt: str, client: CDPClient) -> dict:
-    if not AGNES_API_KEY:
-        return {"error": "AGNES_API_KEY не установлен"}
-    
-    headers = {
-        "Authorization": f"Bearer {AGNES_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    page_desc = await client.get_page_description()
     
     system_prompt = f"""
 {AGENT_CODE}
@@ -1081,28 +880,19 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
             if json_match:
                 try:
                     result = json.loads(json_match.group())
-                    
                     if isinstance(result, dict):
                         if 'ref' in result and 'params' not in result:
                             result = {"action": result.get('action', 'click'), "params": {"ref": result.get('ref')}}
-                    
                     if isinstance(result, list):
                         for i, item in enumerate(result):
                             if isinstance(item, dict) and 'ref' in item and 'params' not in item:
                                 result[i] = {"action": item.get('action', 'click'), "params": {"ref": item.get('ref')}}
-                    
                     if isinstance(result, list) or (isinstance(result, dict) and 'action' in result):
                         return result
-                except Exception as e:
-                    file_logger.log(f"⚠️ Ошибка парсинга JSON: {e}")
+                except:
                     pass
             
             return {"action": "answer", "params": {"text": content}}
-        except requests.exceptions.Timeout:
-            file_logger.log(f"⚠️ Попытка {attempt + 1} таймаут, повтор...")
-            if attempt == 2:
-                return {"action": "answer", "params": {"text": "⏳ Превышено время ожидания. Попробуйте ещё раз."}}
-            await asyncio.sleep(2)
         except Exception as e:
             file_logger.log(f"Agnes error: {e}", "ERROR")
             return {"action": "answer", "params": {"text": f"❌ Ошибка: {str(e)}"}}
@@ -1111,16 +901,16 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
 
 # ---------- Выполнение действий ----------
 
-async def execute_action(client: CDPClient, action) -> str:
+async def execute_action(supervisor: CDPSupervisor, action) -> str:
     if isinstance(action, list):
         results = []
         for a in action:
-            result = await execute_single_action(client, a)
+            result = await execute_single_action(supervisor, a)
             results.append(result)
         return "\n\n".join(results)
-    return await execute_single_action(client, action)
+    return await execute_single_action(supervisor, action)
 
-async def execute_single_action(client: CDPClient, action: dict) -> str:
+async def execute_single_action(supervisor: CDPSupervisor, action: dict) -> str:
     action_type = action.get("action")
     params = action.get("params", {})
     
@@ -1129,29 +919,14 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
     try:
         if action_type == "navigate":
             url = params.get("url", "https://google.com")
-            await client.navigate(url)
-            title = await client.eval_js("document.title")
-            return f"""✅ Открыл: {url}
-
-📄 Заголовок: {title}
-🔗 URL: {url}
-
-💡 Используй Ref ID для действий: click e5, fill e5 "текст\""""
-        
-        elif action_type == "screenshot":
-            img_data = await client.screenshot()
-            if img_data:
-                with open("screenshot.png", "wb") as f:
-                    f.write(img_data)
-                return "screenshot"
-            return "❌ Не удалось сделать скриншот"
+            await supervisor.navigate(url)
+            return f"✅ Открыл: {url}"
         
         elif action_type == "click":
             ref = params.get("ref")
             if ref:
-                result = await client.click_by_ref(ref)
+                result = await supervisor.click_by_ref(ref)
                 if result and result.get("success"):
-                    await client.get_maximum_snapshot()
                     return f"✅ Кликнул: {ref}"
                 return f"❌ Не удалось кликнуть {ref}"
             return "❌ Нет ref"
@@ -1160,45 +935,21 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
             ref = params.get("ref")
             value = params.get("value", "")
             if ref:
-                result = await client.fill_by_ref(ref, value)
+                result = await supervisor.fill_by_ref(ref, value)
                 if result and result.get("success"):
-                    await client.get_maximum_snapshot()
                     return f"✅ Заполнил: {ref} = {value}"
                 return f"❌ Не удалось заполнить {ref}"
             return "❌ Нет ref"
         
-        elif action_type == "press_enter":
-            result = await client.press_enter()
-            if result and result.get("success"):
-                await client.get_maximum_snapshot()
-                return "✅ Нажал Enter"
-            return "❌ Не удалось нажать Enter"
-        
         elif action_type == "handle_dialog":
             accept = params.get("accept", True)
-            prompt_text = params.get("prompt_text", "")
-            result = await client.handle_dialog(accept, prompt_text)
-            if result.get("success"):
+            result = await supervisor.handle_dialog(accept)
+            if result and result.get("success"):
                 return f"✅ Диалог обработан: {result.get('dialog', {}).get('message', '')}"
-            return f"❌ Ошибка обработки диалога: {result.get('error', '')}"
+            return f"❌ Ошибка: {result.get('error', '')}"
         
-        elif action_type == "set_dialog_policy":
-            policy = params.get("policy", "must_respond")
-            result = await client.set_dialog_policy(policy)
-            if result:
-                return f"📋 Политика диалогов изменена на: {policy}"
-            return f"❌ Неверная политика: {policy}. Доступные: must_respond, auto_dismiss, auto_accept"
-        
-        elif action_type == "cdp":
-            method = params.get("method")
-            cdp_params = params.get("params", {})
-            frame_id = params.get("frame_id")
-            
-            if not method:
-                return "❌ Нет метода"
-            
-            result = await client.cdp_command(method, cdp_params, frame_id)
-            return f"✅ CDP команда выполнена: {method}\n{json.dumps(result, indent=2, ensure_ascii=False)[:500]}"
+        elif action_type == "screenshot":
+            return "screenshot"
         
         elif action_type == "answer":
             return f"📝 {params.get('text', 'Нет ответа')}"
@@ -1210,55 +961,42 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
         file_logger.log(f"Execute error: {e}", "ERROR")
         return f"❌ Ошибка: {str(e)}"
 
-# ---------- Обработчик ----------
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
-        return
-    
-    user_id = update.message.from_user.id
-    prompt = update.message.text
-    
-    file_logger.log(f"Сообщение от {user_id}: {prompt[:100]}...")
-    
-    await update.message.chat.send_action(action="typing")
-    
-    try:
-        if user_id not in clients:
-            client = CDPClient()
-            client.user_id = user_id
-            await client.connect()
-            clients[user_id] = client
-        
-        client = clients[user_id]
-        
-        await client.get_maximum_snapshot()
-        
-        if AGNES_API_KEY:
-            response = await ask_agnes(prompt, client)
-            if "error" not in response:
-                result = await execute_action(client, response)
-                if result == "screenshot":
-                    with open("screenshot.png", "rb") as photo:
-                        await update.message.reply_photo(photo=photo)
-                else:
-                    await update.message.reply_text(result)
-                return
-        
-        await update.message.reply_text("❌ Не понял команду. Попробуйте переформулировать.")
-            
-    except Exception as e:
-        file_logger.log(f"❌ Ошибка: {e}", "ERROR")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-
 # ---------- Команды ----------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
+        "🧠 **CDP Supervisor (Hermes)**\n\n"
+        "Я вижу ВСЁ на странице:\n"
+        "• Все кнопки, поля, ссылки\n"
+        "• Диалоги (alert/confirm/prompt)\n"
+        "• iframe и фреймы\n"
+        "• Структуру страницы\n\n"
+        "💡 Просто напиши что нужно сделать!\n\n"
         "/cdp - статус браузера\n"
         "/logs - логи\n"
         "/dialog_policy - политика диалогов"
     )
+
+async def cdp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    if user_id in supervisors:
+        supervisor = supervisors[user_id]
+        snapshot = await supervisor.get_snapshot()
+        if snapshot:
+            ref_count = len(snapshot.get('ref_elements', []))
+            dialogs = len(snapshot.get('pending_dialogs', []))
+            frames = len(snapshot.get('connected_tabs', {}))
+            await update.message.reply_text(
+                f"✅ **Браузер активен**\n\n"
+                f"🆔 Ref ID элементов: {ref_count}\n"
+                f"💬 Ожидающих диалогов: {dialogs}\n"
+                f"📦 Фреймов: {frames}\n"
+                f"📊 Статус: Готов"
+            )
+        else:
+            await update.message.reply_text("❌ Нет данных")
+    else:
+        await update.message.reply_text("❌ Браузер не запущен")
 
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -1274,39 +1012,7 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
-async def clear_logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        with open(LOG_FILE, 'w', encoding='utf-8') as f:
-            f.write(f"=== Логи очищены ===\n")
-            f.write(f"Время очистки: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write("=" * 50 + "\n\n")
-        await update.message.reply_text("✅ Логи очищены")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-
-async def cdp(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        response = requests.get("http://localhost:9222/json")
-        pages = response.json()
-        
-        status_text = f"✅ **Браузер активен**\n\n"
-        status_text += f"📄 Страниц: {len(pages)}\n\n"
-        
-        for page in pages[:3]:
-            title = page.get('title', 'без названия')[:30]
-            url = page.get('url', '')[:40]
-            status_text += f"• {title}\n  {url}\n\n"
-        
-        await update.message.reply_text(status_text)
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-
 async def dialog_policy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    if user_id not in clients:
-        await update.message.reply_text("❌ Сначала откройте браузер")
-        return
-    
     await update.message.reply_text(
         f"📋 Текущая политика диалогов: **{CURRENT_DIALOG_POLICY}**\n\n"
         "Доступные политики:\n"
@@ -1319,8 +1025,8 @@ async def dialog_policy_command(update: Update, context: ContextTypes.DEFAULT_TY
 # ---------- Main ----------
 
 def main():
-    print("🚀 Запуск бота...")
-    file_logger.log("🚀 Запуск бота...")
+    print("🚀 Запуск бота с CDP Supervisor...")
+    file_logger.log("🚀 Запуск бота с CDP Supervisor...")
     
     start_chrome()
     
@@ -1328,7 +1034,6 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("cdp", cdp))
     app.add_handler(CommandHandler("logs", logs_command))
-    app.add_handler(CommandHandler("clear_logs", clear_logs_command))
     app.add_handler(CommandHandler("dialog_policy", dialog_policy_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
