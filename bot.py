@@ -100,7 +100,7 @@ class CDPClient:
             "params": params or {}
         }
         
-        # sessionId нужен только для Page.* и Runtime.*
+        # sessionId для Page.* и Runtime.*
         if method.startswith("Page.") or method.startswith("Runtime.") or method.startswith("Network."):
             if self.session_id:
                 msg["sessionId"] = self.session_id
@@ -123,7 +123,7 @@ class CDPClient:
     async def navigate(self, url):
         """Переход по URL"""
         resp = await self.send("Page.navigate", {"url": url})
-        time.sleep(2)  # Ждём загрузки
+        time.sleep(2)
         return resp
     
     async def eval_js(self, code):
@@ -134,15 +134,12 @@ class CDPClient:
         return None
     
     async def screenshot(self):
-        """Скриншот страницы"""
+        """Скриншот страницы (без Page.enable)"""
         try:
-            # Включаем Page домен
-            await self.send("Page.enable", {})
-            
-            # Делаем скриншот
             resp = await self.send("Page.captureScreenshot", {
                 "format": "png",
-                "captureBeyondViewport": True
+                "captureBeyondViewport": True,
+                "fromSurface": True
             })
             
             if "result" in resp:
@@ -307,6 +304,49 @@ async def execute_action(client: CDPClient, action: dict) -> str:
         logger.error(f"Execute error: {e}")
         return f"❌ Ошибка выполнения: {str(e)}"
 
+# ---------- Прямые команды (запасной план) ----------
+
+async def execute_command(client: CDPClient, command: str) -> str:
+    cmd = command.lower()
+    
+    if "google" in cmd or "гугл" in cmd:
+        await client.navigate("https://google.com")
+        title = await client.eval_js("document.title")
+        return f"✅ Открыл Google\n📄 {title}"
+    
+    if "x.com" in cmd or "twitter" in cmd or "твиттер" in cmd:
+        await client.navigate("https://x.com")
+        title = await client.eval_js("document.title")
+        return f"✅ Открыл X.com\n📄 {title}"
+    
+    if "скриншот" in cmd or "screenshot" in cmd:
+        img_data = await client.screenshot()
+        if img_data:
+            with open("screenshot.png", "wb") as f:
+                f.write(img_data)
+            return "screenshot"
+        return "❌ Не удалось сделать скриншот"
+    
+    if cmd.startswith("http"):
+        await client.navigate(cmd)
+        title = await client.eval_js("document.title")
+        return f"✅ Открыл\n📄 {title}"
+    
+    if "заголовок" in cmd or "title" in cmd:
+        title = await client.eval_js("document.title")
+        return f"📄 Заголовок: {title}"
+    
+    return """
+🤖 **Управление браузером**
+
+Примеры:
+• "Открой Google" — открыть Google
+• "Зайди в X.com" — открыть X (Twitter)
+• "Сделай скриншот" — скриншот страницы
+• "https://example.com" — открыть любой URL
+• "Заголовок" — показать заголовок
+"""
+
 # ---------- Обработчик ----------
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -356,49 +396,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-
-# ---------- Прямые команды (запасной план) ----------
-
-async def execute_command(client: CDPClient, command: str) -> str:
-    cmd = command.lower()
-    
-    if "google" in cmd or "гугл" in cmd:
-        await client.navigate("https://google.com")
-        title = await client.eval_js("document.title")
-        return f"✅ Открыл Google\n📄 {title}"
-    
-    if "x.com" in cmd or "twitter" in cmd or "твиттер" in cmd:
-        await client.navigate("https://x.com")
-        title = await client.eval_js("document.title")
-        return f"✅ Открыл X.com\n📄 {title}"
-    
-    if "скриншот" in cmd or "screenshot" in cmd:
-        img_data = await client.screenshot()
-        if img_data:
-            with open("screenshot.png", "wb") as f:
-                f.write(img_data)
-            return "screenshot"
-        return "❌ Не удалось сделать скриншот"
-    
-    if cmd.startswith("http"):
-        await client.navigate(cmd)
-        title = await client.eval_js("document.title")
-        return f"✅ Открыл\n📄 {title}"
-    
-    if "заголовок" in cmd or "title" in cmd:
-        title = await client.eval_js("document.title")
-        return f"📄 Заголовок: {title}"
-    
-    return """
-🤖 **Управление браузером**
-
-Примеры:
-• "Открой Google" — открыть Google
-• "Зайди в X.com" — открыть X (Twitter)
-• "Сделай скриншот" — скриншот страницы
-• "https://example.com" — открыть любой URL
-• "Заголовок" — показать заголовок
-"""
 
 # ---------- Команды ----------
 
