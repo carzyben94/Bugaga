@@ -81,7 +81,6 @@ def start_chrome():
             "--user-data-dir=/tmp/chrome-profile",
             "--window-size=1920,1080",
             
-            # === МАСКИРОВКА HEADLESS ===
             "--disable-blink-features=AutomationControlled",
             "--disable-features=IsolateOrigins,site-per-process",
             "--disable-web-security",
@@ -89,10 +88,8 @@ def start_chrome():
             "--disable-features=BlockInsecurePrivateNetworkRequests",
             "--disable-features=TranslateUI,BlinkGenPropertyTrees",
             
-            # === МАСКИРОВКА USER-AGENT ===
             "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             
-            # === НАСТРОЙКИ БЕЗОПАСНОСТИ ===
             "--disable-default-apps",
             "--disable-extensions",
             "--disable-component-extensions-with-background-pages",
@@ -107,16 +104,13 @@ def start_chrome():
             "--disable-sync",
             "--disable-breakpad",
             
-            # === НАСТРОЙКИ ПРОИЗВОДИТЕЛЬНОСТИ ===
             "--metrics-recording-only",
             "--no-first-run",
             "--safebrowsing-disable-auto-update",
             "--force-color-profile=srgb",
             
-            # === WEBRTC ЗАЩИТА ===
             "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
             
-            # === ПОДДЕРЖКА CDP ===
             "--enable-automation"
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         
@@ -685,8 +679,17 @@ class CDPClient:
             
             contenteditables = [e for e in elements if e.get('attrs', {}).get('contenteditable') == 'true']
             for ce in contenteditables:
-                ce['field_type'] = 'contenteditable'
-                ce['field_selector'] = ce.get('id') and f"#{ce.get('id')}" or ce.get('class') and f".{ce.get('class').split(' ').join('.')}" or "div[contenteditable='true']"
+                # ✅ ИСПРАВЛЕНО: безопасная обработка class
+                class_name = ce.get('class', '')
+                if isinstance(class_name, list):
+                    class_name = ' '.join(class_name)
+                
+                if ce.get('id'):
+                    ce['field_selector'] = f"#{ce.get('id')}"
+                elif class_name:
+                    ce['field_selector'] = f".{class_name.replace(' ', '.')}"
+                else:
+                    ce['field_selector'] = "div[contenteditable='true']"
                 all_fields.append(ce)
             
             roles = [e for e in elements if e.get('attrs', {}).get('role') in ['textbox', 'searchbox', 'combobox']]
@@ -1071,25 +1074,18 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
                 try:
                     result = json.loads(json_match.group())
                     
-                    # ============================================
-                    # 🔧 ИСПРАВЛЯЕМ НЕПРАВИЛЬНЫЙ ФОРМАТ
-                    # ============================================
                     if isinstance(result, dict):
-                        # Если есть url но нет params — исправляем
                         if 'url' in result and 'params' not in result:
                             file_logger.log("⚠️ Исправляю формат: добавил params")
                             action = result.get('action', 'navigate')
                             url = result.get('url')
                             result = {"action": action, "params": {"url": url}}
-                        # Если есть text но нет params — исправляем
                         if 'text' in result and 'params' not in result:
                             file_logger.log("⚠️ Исправляю формат: добавил params")
                             result = {"action": "answer", "params": {"text": result.get('text')}}
-                        # Если есть selector но нет params — исправляем
                         if 'selector' in result and 'params' not in result:
                             file_logger.log("⚠️ Исправляю формат: добавил params")
                             result = {"action": "click", "params": {"selector": result.get('selector')}}
-                        # Если есть value но нет params — исправляем
                         if 'value' in result and 'params' not in result:
                             file_logger.log("⚠️ Исправляю формат: добавил params")
                             result = {"action": "fill", "params": {"selector": result.get('selector', 'input'), "value": result.get('value')}}
