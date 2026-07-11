@@ -679,7 +679,6 @@ class CDPClient:
             
             contenteditables = [e for e in elements if e.get('attrs', {}).get('contenteditable') == 'true']
             for ce in contenteditables:
-                # ✅ ИСПРАВЛЕНО: безопасная обработка class
                 class_name = ce.get('class', '')
                 if isinstance(class_name, list):
                     class_name = ' '.join(class_name)
@@ -698,11 +697,71 @@ class CDPClient:
                 role['field_selector'] = role.get('id') and f"#{role.get('id')}" or f"[role='{role.get('attrs', {}).get('role')}']"
                 all_fields.append(role)
             
+            # ============================================
+            # ✅ УЛУЧШЕННЫЙ СБОР КНОПОК — ВСЕ ВОЗМОЖНЫЕ ВАРИАНТЫ
+            # ============================================
             buttons = []
+            button_texts = set()  # Для избежания дубликатов
+            
             for el in elements:
                 tag = el.get('tag', '')
                 attrs = el.get('attrs', {})
-                if tag == 'button' or (tag == 'input' and attrs.get('type') in ['submit', 'button']):
+                role = attrs.get('role', '')
+                class_name = attrs.get('class', '')
+                if isinstance(class_name, list):
+                    class_name = ' '.join(class_name)
+                class_name_lower = class_name.lower() if isinstance(class_name, str) else ''
+                text = el.get('text', '') or attrs.get('value', '') or attrs.get('aria-label', '') or attrs.get('title', '')
+                
+                # Проверка, является ли элемент кнопкой
+                is_button = False
+                
+                # 1. Тег button
+                if tag == 'button':
+                    is_button = True
+                # 2. input с type submit/button
+                elif tag == 'input' and attrs.get('type') in ['submit', 'button', 'image']:
+                    is_button = True
+                # 3. role="button"
+                elif role == 'button':
+                    is_button = True
+                # 4. a с role="button" или классом button
+                elif tag == 'a' and (role == 'button' or 'button' in class_name_lower):
+                    is_button = True
+                # 5. div/span с role="button"
+                elif tag in ['div', 'span'] and role == 'button':
+                    is_button = True
+                # 6. Любой элемент с классом, содержащим "btn" или "button"
+                elif 'btn' in class_name_lower or 'button' in class_name_lower:
+                    is_button = True
+                # 7. Элемент с атрибутами клика
+                elif attrs.get('onclick') or attrs.get('data-action') or attrs.get('data-testid', '').endswith('btn'):
+                    is_button = True
+                # 8. Элемент с tabindex и ролью (кликабельный)
+                elif attrs.get('tabindex') and attrs.get('role') in ['link', 'menuitem', 'option']:
+                    is_button = True
+                # 9. Элемент с aria-label, содержащим "button" или "btn"
+                elif 'button' in attrs.get('aria-label', '').lower() or 'btn' in attrs.get('aria-label', '').lower():
+                    is_button = True
+                
+                if is_button:
+                    # Проверяем на дубликаты по тексту
+                    if text:
+                        if text not in button_texts:
+                            button_texts.add(text)
+                            buttons.append(el)
+                    else:
+                        # Если нет текста, добавляем с тегом
+                        unique_key = f"{tag}_{attrs.get('data-testid', '')}"
+                        if unique_key not in button_texts:
+                            button_texts.add(unique_key)
+                            buttons.append(el)
+            
+            # Добавляем все элементы с role='button' (дополнительная проверка)
+            for el in elements:
+                attrs = el.get('attrs', {})
+                role = attrs.get('role', '')
+                if role == 'button' and el not in buttons:
                     buttons.append(el)
             
             links = [e for e in elements if e.get('tag') == 'a' and e.get('attrs', {}).get('href')]
@@ -807,7 +866,7 @@ class CDPClient:
 🔗 URL: {url}
 📊 ВСЕГО ЭЛЕМЕНТОВ: {total}
 
-🔘 КНОПКИ:
+🔘 КНОПКИ ({len(info.get('buttons', [])) if isinstance(info.get('buttons', []), list) else 0}):
 """
         
         buttons = info.get('buttons') if isinstance(info, dict) else None
@@ -817,15 +876,21 @@ class CDPClient:
             if len(buttons) == 0:
                 desc += "  • (нет кнопок)\n"
             else:
-                for el in buttons[:20]:
+                for el in buttons[:30]:
                     if isinstance(el, dict):
                         text = el.get('text', '')
                         if not text:
                             text = el.get('attrs', {}).get('value', '')
+                        if not text:
+                            text = el.get('attrs', {}).get('aria-label', '')
+                        if not text:
+                            text = el.get('attrs', {}).get('title', '')
                         if text:
-                            desc += f"  • {text[:30]}\n"
+                            desc += f"  • {text[:40]}\n"
+                        else:
+                            desc += f"  • <{el.get('tag', 'unknown')}>\n"
                     elif isinstance(el, str):
-                        desc += f"  • {el[:30]}\n"
+                        desc += f"  • {el[:40]}\n"
         else:
             desc += f"  • (неизвестный формат: {type(buttons).__name__})\n"
         
