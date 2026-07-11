@@ -73,11 +73,14 @@ def start_chrome():
         
         subprocess.Popen([
             CHROME_PATH,
+            
+            # ✅ КРИТИЧЕСКИ ВАЖНО: без этого порт не открывается!
             "--remote-debugging-port=9222",
+            
             "--no-sandbox",
             "--disable-dev-shm-usage",
             
-            # ✅ Pydoll stealth-флаги (без headless!)
+            # Pydoll stealth-флаги (без headless!)
             "--disable-blink-features=AutomationControlled",
             "--no-first-run",
             "--no-default-browser-check",
@@ -99,22 +102,22 @@ def start_chrome():
             "--safebrowsing-disable-auto-update",
             "--force-color-profile=srgb",
             
-            # ✅ WebRTC защита
+            # WebRTC защита
             "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
             
-            # ✅ Реалистичный User-Agent
+            # Реалистичный User-Agent
             f"--user-agent={user_agent}",
             
             # ⚠️ НЕ ИСПОЛЬЗУЕМ HEADLESS (как в Pydoll)
             # "--headless=new",  # ❌ УБРАНО!
             
-            # ✅ Дополнительные флаги для производительности
+            # Дополнительные флаги для производительности
             "--disable-gpu",
             "--disable-software-rasterizer"
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         
         time.sleep(5)
-        file_logger.log("✅ Chrome запущен (Pydoll маскировка, без headless)")
+        file_logger.log("✅ Chrome запущен (Pydoll маскировка, без headless, remote-debugging-port=9222)")
         return True
     except Exception as e:
         file_logger.log(f"❌ Ошибка: {e}", "ERROR")
@@ -367,25 +370,31 @@ class CDPSupervisor:
             )
             
             # ✅ 2. Эмуляция геолокации (опционально)
-            await asyncio.wait_for(
-                self._send("Emulation.setGeolocationOverride", {
-                    "latitude": 37.7749,
-                    "longitude": -122.4194,
-                    "accuracy": 100
-                }),
-                timeout=5
-            )
+            try:
+                await asyncio.wait_for(
+                    self._send("Emulation.setGeolocationOverride", {
+                        "latitude": 37.7749,
+                        "longitude": -122.4194,
+                        "accuracy": 100
+                    }),
+                    timeout=5
+                )
+            except:
+                pass
             
             # ✅ 3. Эмуляция размера экрана
-            await asyncio.wait_for(
-                self._send("Emulation.setDeviceMetricsOverride", {
-                    "width": 1920,
-                    "height": 1080,
-                    "deviceScaleFactor": 1,
-                    "mobile": False
-                }),
-                timeout=5
-            )
+            try:
+                await asyncio.wait_for(
+                    self._send("Emulation.setDeviceMetricsOverride", {
+                        "width": 1920,
+                        "height": 1080,
+                        "deviceScaleFactor": 1,
+                        "mobile": False
+                    }),
+                    timeout=5
+                )
+            except:
+                pass
             
             # ✅ 4. Включение всех доменов
             await asyncio.wait_for(self._send("Page.enable", {}), timeout=10)
@@ -402,18 +411,21 @@ class CDPSupervisor:
             )
             
             # ✅ 5. Настройка Network для маскировки
-            await asyncio.wait_for(
-                self._send("Network.setExtraHTTPHeaders", {
-                    "headers": {
-                        "Accept-Language": "en-US,en;q=0.9",
-                        "Accept-Encoding": "gzip, deflate, br",
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                        "Connection": "keep-alive",
-                        "Upgrade-Insecure-Requests": "1"
-                    }
-                }),
-                timeout=10
-            )
+            try:
+                await asyncio.wait_for(
+                    self._send("Network.setExtraHTTPHeaders", {
+                        "headers": {
+                            "Accept-Language": "en-US,en;q=0.9",
+                            "Accept-Encoding": "gzip, deflate, br",
+                            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                            "Connection": "keep-alive",
+                            "Upgrade-Insecure-Requests": "1"
+                        }
+                    }),
+                    timeout=10
+                )
+            except:
+                pass
             
             file_logger.log("✅ Domains enabled (Pydoll маскировка)")
         except asyncio.TimeoutError:
@@ -530,12 +542,10 @@ class CDPSupervisor:
             
             HTMLCanvasElement.prototype.toDataURL = function(type) {
                 const result = originalToDataURL.call(this, type);
-                // Добавляем небольшой шум в изображение
                 return result;
             };
             
             HTMLCanvasElement.prototype.toBlob = function(callback, type) {
-                // Добавляем небольшой шум в изображение
                 originalToBlob.call(this, callback, type);
             };
             
@@ -817,7 +827,6 @@ class CDPSupervisor:
         try:
             ref_elements = await self._get_accessibility_tree()
             
-            # ✅ Получаем информацию с таймаутами (Google может блокировать JS)
             title = "Страница загружена"
             url = "Неизвестный URL"
             
