@@ -163,6 +163,8 @@ class CDPClient:
         self.full_snapshot = None
         self.history = []
         self.cookies_set = False
+        self.pending_dialogs = []  # Хранилище для диалогов
+        self.connected_tabs = {}   # Хранилище для iframe
     
     async def connect(self):
         if self.connected:
@@ -193,6 +195,24 @@ class CDPClient:
             await self.send("Runtime.enable", {})
             await self.send("DOM.enable", {})
             await self.send("Network.enable", {})
+            
+            # ============================================
+            # 🆕 HERMES: Автоматическое подключение к iframe
+            # ============================================
+            await self.send("Target.setAutoAttach", {
+                "autoAttach": True,
+                "flatten": True,
+                "waitForDebuggerOnStart": False
+            })
+            file_logger.log("✅ Target.setAutoAttach включён")
+            
+            # ============================================
+            # 🆕 HERMES: Получение дерева фреймов
+            # ============================================
+            frame_tree = await self.send("Page.getFrameTree", {})
+            if "result" in frame_tree:
+                file_logger.log(f"✅ FrameTree получен")
+            
             file_logger.log("✅ Page, Runtime, DOM, Network включены")
             
             # 🎭 МАСКИРУЕМ БРАУЗЕР
@@ -493,13 +513,38 @@ class CDPClient:
                 response = await asyncio.wait_for(self.ws.recv(), timeout=30)
                 data = json.loads(response)
                 
+                # ============================================
+                # 🆕 HERMES: Обработка диалогов
+                # ============================================
+                if "method" in data and data["method"] == "Page.javascriptDialogOpening":
+                    dialog_params = data.get("params", {})
+                    file_logger.log(f"💬 Диалог обнаружен: {dialog_params.get('message', '')}")
+                    self.pending_dialogs.append({
+                        "message": dialog_params.get("message", ""),
+                        "type": dialog_params.get("type", ""),
+                        "defaultPrompt": dialog_params.get("defaultPrompt", "")
+                    })
+                    continue
+                
+                # ============================================
+                # 🆕 HERMES: Обработка новых фреймов (iframe)
+                # ============================================
+                if "method" in data and data["method"] == "Target.attachedToTarget":
+                    target_info = data.get("params", {}).get("targetInfo", {})
+                    session_id = data.get("params", {}).get("sessionId")
+                    if session_id:
+                        self.connected_tabs[session_id] = {
+                            "target_id": target_info.get("targetId"),
+                            "url": target_info.get("url"),
+                            "type": target_info.get("type")
+                        }
+                        file_logger.log(f"🔗 Прикреплён фрейм: {target_info.get('url', '')[:50]}")
+                    continue
+                
                 if data.get("id") == msg_id:
                     if "error" in data:
                         file_logger.log(f"❌ {method}: {data['error']}", "ERROR")
                     return data
-                
-                if "method" in data:
-                    continue
                 
         except asyncio.TimeoutError:
             file_logger.log(f"❌ {method} timeout", "ERROR")
@@ -570,7 +615,15 @@ class CDPClient:
             # Для X.com увеличиваем лимит
             max_elements = 2000 if is_x else 500
             
-            elements = await self.eval_js(f"""
+            # ============================================
+            # 🆕 HERMES: Получение дерева фреймов
+            # ============================================
+            frame_tree = await self.send("Page.getFrameTree", {})
+            if "result" in frame_tree:
+                file_logger.log(f"📦 FrameTree получен")
+                self.frame_tree = frame_tree["result"].get("frameTree", {})
+            
+            result = await self.eval_js(f"""
                 (function() {{
                     const result = [];
                     const all = document.querySelectorAll('*');
@@ -631,8 +684,42 @@ class CDPClient:
                 }})()
             """)
             
-            if elements is None:
+            # ✅ ПРАВИЛЬНАЯ ОБРАБОТКА ТИПА ДАННЫХ (из Hermes)
+            if result is None:
                 elements = []
+            elif isinstance(result, list):
+                elements = result
+            elif isinstance(result, str):
+                try:
+                    parsed = json.loads(result)
+                    if isinstance(parsed, list):
+                        elements = parsed
+                    else:
+                        elements = []
+                except:
+                    elements = []
+            else:
+                elements = []
+            
+            # Если пусто — пробуем упрощённый сбор
+            if not elements:
+                simple_result = await self.eval_js("""
+                    (function() {
+                        const result = [];
+                        document.querySelectorAll('button, a, input, textarea, select, form, h1, h2, h3').forEach(el => {
+                            result.push({
+                                tag: el.tagName.toLowerCase(),
+                                text: (el.textContent || el.value || '').trim().slice(0, 50),
+                                id: el.id || '',
+                                class: el.className || ''
+                            });
+                        });
+                        return result;
+                    })()
+                """)
+                if isinstance(simple_result, list):
+                    elements = simple_result
+                    file_logger.log(f"✅ Упрощённый сбор: {len(elements)} элементов")
             
             if len(elements) > max_elements:
                 elements = elements[:max_elements]
@@ -640,6 +727,10 @@ class CDPClient:
             
             title = await self.eval_js("document.title") or "Нет заголовка"
             url_final = await self.eval_js("window.location.href") or "Нет URL"
+            
+            # Проверяем диалоги
+            if self.pending_dialogs:
+                file_logger.log(f"💬 Есть ожидающие диалоги: {len(self.pending_dialogs)}")
             
             all_fields = []
             
@@ -703,7 +794,10 @@ class CDPClient:
                 "links": links,
                 "forms": forms,
                 "headings": headings,
-                "visible": visible
+                "visible": visible,
+                "pending_dialogs": self.pending_dialogs,  # ✅ Диалоги в слепок
+                "frame_tree": getattr(self, 'frame_tree', None),  # ✅ Дерево фреймов в слепок
+                "connected_tabs": self.connected_tabs  # ✅ Подключенные iframe
             }
             
             file_logger.log(f"✅ Максимальный слепок: {len(elements)} элементов, {len(buttons)} кнопок, {len(all_fields)} полей")
@@ -711,7 +805,66 @@ class CDPClient:
             
         except Exception as e:
             file_logger.log(f"❌ Maximum snapshot error: {e}", "ERROR")
+            self.full_snapshot = {
+                "title": "Ошибка загрузки",
+                "url": "",
+                "total": 0,
+                "all_elements": [],
+                "buttons": [],
+                "fields": [],
+                "inputs": [],
+                "textareas": [],
+                "selects": [],
+                "contenteditables": [],
+                "roles": [],
+                "links": [],
+                "forms": [],
+                "headings": [],
+                "visible": [],
+                "pending_dialogs": self.pending_dialogs,
+                "frame_tree": None,
+                "connected_tabs": {}
+            }
             return False
+    
+    async def handle_dialog(self, accept=True, prompt_text=""):
+        """Обрабатывает диалог (alert/confirm/prompt)"""
+        try:
+            if not self.pending_dialogs:
+                return {"error": "Нет ожидающих диалогов"}
+            
+            dialog = self.pending_dialogs.pop(0)
+            result = await self.send("Page.handleJavaScriptDialog", {
+                "accept": accept,
+                "promptText": prompt_text
+            })
+            file_logger.log(f"✅ Диалог обработан: {dialog.get('message', '')}")
+            return {"success": True, "dialog": dialog}
+        except Exception as e:
+            file_logger.log(f"❌ Dialog error: {e}", "ERROR")
+            return {"error": str(e)}
+    
+    # ============================================
+    # 🆕 HERMES: Универсальный CDP-инструмент
+    # ============================================
+    async def cdp_command(self, method, params=None, frame_id=None):
+        """Выполняет любую CDP-команду"""
+        try:
+            # Если указан frame_id, используем его
+            if frame_id:
+                # Находим session_id для frame
+                session_id = None
+                for sid, info in self.connected_tabs.items():
+                    if info.get("target_id") == frame_id:
+                        session_id = sid
+                        break
+                if session_id:
+                    return await self.send(method, params, session_id)
+            
+            return await self.send(method, params)
+        except Exception as e:
+            file_logger.log(f"❌ CDP command error: {e}", "ERROR")
+            return {"error": str(e)}
     
     async def get_page_description(self):
         """Возвращает описание страницы с безопасной обработкой типов"""
@@ -797,6 +950,31 @@ class CDPClient:
                         desc += f"  • {el[:30]}\n"
         else:
             desc += f"  • (неизвестный формат: {type(links).__name__})\n"
+        
+        # ============================================
+        # 🆕 HERMES: Информация о диалогах
+        # ============================================
+        dialogs = info.get('pending_dialogs') if isinstance(info, dict) else None
+        if dialogs and isinstance(dialogs, list) and len(dialogs) > 0:
+            desc += f"\n💬 ОЖИДАЮЩИЕ ДИАЛОГИ ({len(dialogs)}):\n"
+            for d in dialogs:
+                desc += f"  • {d.get('message', '')} (тип: {d.get('type', 'unknown')})\n"
+            desc += "\n💡 Для обработки диалога используй: handle_dialog(accept=True, prompt_text='')\n"
+        
+        # ============================================
+        # 🆕 HERMES: Информация о iframe
+        # ============================================
+        frame_tree = info.get('frame_tree') if isinstance(info, dict) else None
+        if frame_tree:
+            desc += f"\n📦 IFRAME/ФРЕЙМЫ:\n"
+            desc += f"  • Главный фрейм: {frame_tree.get('frame', {}).get('url', '')[:50]}\n"
+            
+            children = frame_tree.get('childFrames', [])
+            if children:
+                for child in children[:5]:
+                    child_url = child.get('frame', {}).get('url', '')
+                    if child_url:
+                        desc += f"  • Дочерний фрейм: {child_url[:50]}\n"
         
         return desc
     
@@ -920,6 +1098,8 @@ AGENT_CODE = """
 - press_enter() - нажать Enter
 - screenshot() - сделать скриншот
 - answer(text) - ответить пользователю
+- handle_dialog(accept, prompt_text) - обработать диалог (alert/confirm/prompt)
+- cdp(method, params, frame_id) - выполнить любую CDP-команду
 
 СЕЛЕКТОРЫ:
 - По ID: #APjFqb
@@ -994,7 +1174,7 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
     
     return {"action": "answer", "params": {"text": "❌ Не удалось получить ответ"}}
 
-# ---------- Выполнение действий с пояснениями ----------
+# ---------- Выполнение действий ----------
 
 async def execute_action(client: CDPClient, action) -> str:
     if isinstance(action, list):
@@ -1067,6 +1247,31 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
 📝 Команда выполнена.
 💡 Страница загружается, я могу показать результат."""
             return "❌ Не удалось нажать Enter"
+        
+        # ============================================
+        # 🆕 HERMES: Обработка диалогов
+        # ============================================
+        elif action_type == "handle_dialog":
+            accept = params.get("accept", True)
+            prompt_text = params.get("prompt_text", "")
+            result = await client.handle_dialog(accept, prompt_text)
+            if result.get("success"):
+                return f"✅ Диалог обработан: {result.get('dialog', {}).get('message', '')}"
+            return f"❌ Ошибка обработки диалога: {result.get('error', '')}"
+        
+        # ============================================
+        # 🆕 HERMES: Универсальная CDP-команда
+        # ============================================
+        elif action_type == "cdp":
+            method = params.get("method")
+            cdp_params = params.get("params", {})
+            frame_id = params.get("frame_id")
+            
+            if not method:
+                return "❌ Нет метода"
+            
+            result = await client.cdp_command(method, cdp_params, frame_id)
+            return f"✅ CDP команда выполнена: {method}\n{json.dumps(result, indent=2, ensure_ascii=False)[:500]}"
         
         elif action_type == "answer":
             return f"📝 {params.get('text', 'Нет ответа')}"
