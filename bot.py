@@ -106,6 +106,7 @@ class CDPClient:
         self.connected = False
         self.msg_id = 0
         self.user_id = None
+        self.page_loaded = False
     
     async def connect(self):
         if self.connected:
@@ -129,6 +130,10 @@ class CDPClient:
             await self._send("Page.enable", {})
             await self._send("Runtime.enable", {})
             file_logger.log("✅ Page.enable и Runtime.enable")
+            
+            # Открываем Google при первом подключении
+            await self.navigate("https://google.com")
+            
             return True
             
         except Exception as e:
@@ -163,7 +168,18 @@ class CDPClient:
     
     async def navigate(self, url):
         file_logger.log(f"Навигация на {url}")
-        return await self._send("Page.navigate", {"url": url})
+        resp = await self._send("Page.navigate", {"url": url})
+        
+        # Ждём загрузки
+        for i in range(5):
+            await asyncio.sleep(1)
+            title = await self.eval_js("document.title")
+            if title and title != "":
+                file_logger.log(f"📄 Страница загружена: {title}")
+                self.page_loaded = True
+                break
+        
+        return resp
     
     async def eval_js(self, code):
         resp = await self._send("Runtime.evaluate", {"expression": code})
@@ -172,62 +188,38 @@ class CDPClient:
         return None
     
     async def screenshot(self):
-        """Делает скриншот страницы (даже пустой)"""
+        """Скриншот страницы"""
         try:
+            # Убеждаемся, что страница загружена
+            if not self.page_loaded:
+                file_logger.log("🌐 Открываю Google перед скриншотом...")
+                await self.navigate("https://google.com")
+                await asyncio.sleep(2)
+            
             file_logger.log("📸 Делаю скриншот...")
             
-            # Пробуем 3 разных способа
-            
             # Способ 1: с captureBeyondViewport
-            resp1 = await self._send("Page.captureScreenshot", {
+            resp = await self._send("Page.captureScreenshot", {
                 "format": "png",
                 "captureBeyondViewport": True,
                 "fromSurface": True
             })
             
-            if "result" in resp1 and "data" in resp1["result"]:
-                file_logger.log("✅ Скриншот (способ 1)")
-                return base64.b64decode(resp1["result"]["data"])
+            if "result" in resp and "data" in resp["result"]:
+                file_logger.log("✅ Скриншот сделан")
+                return base64.b64decode(resp["result"]["data"])
             
             # Способ 2: без параметров
-            file_logger.log("⚠️ Пробую способ 2...")
+            file_logger.log("⚠️ Пробую без параметров...")
             resp2 = await self._send("Page.captureScreenshot", {
                 "format": "png"
             })
             
             if "result" in resp2 and "data" in resp2["result"]:
-                file_logger.log("✅ Скриншот (способ 2)")
+                file_logger.log("✅ Скриншот сделан (2)")
                 return base64.b64decode(resp2["result"]["data"])
             
-            # Способ 3: через Browser.captureScreenshot
-            file_logger.log("⚠️ Пробую способ 3 (Browser)...")
-            resp3 = await self._send("Browser.captureScreenshot", {
-                "format": "png"
-            })
-            
-            if "result" in resp3 and "data" in resp3["result"]:
-                file_logger.log("✅ Скриншот (способ 3)")
-                return base64.b64decode(resp3["result"]["data"])
-            
-            # Способ 4: с clip
-            file_logger.log("⚠️ Пробую способ 4 (clip)...")
-            resp4 = await self._send("Page.captureScreenshot", {
-                "format": "png",
-                "clip": {
-                    "x": 0,
-                    "y": 0,
-                    "width": 1920,
-                    "height": 1080,
-                    "scale": 1
-                }
-            })
-            
-            if "result" in resp4 and "data" in resp4["result"]:
-                file_logger.log("✅ Скриншот (способ 4)")
-                return base64.b64decode(resp4["result"]["data"])
-            
-            # Если ничего не сработало
-            file_logger.log(f"❌ Все способы не удались", "ERROR")
+            file_logger.log(f"❌ Ошибка: {resp}", "ERROR")
             return None
                 
         except Exception as e:
@@ -291,7 +283,6 @@ async def execute_action(client: CDPClient, action: dict) -> str:
     if action_type == "navigate":
         url = params.get("url", "https://google.com")
         await client.navigate(url)
-        await asyncio.sleep(2)
         title = await client.eval_js("document.title")
         return f"✅ Открыл: {url}\n📄 {title}"
     
@@ -319,13 +310,11 @@ async def execute_command(client: CDPClient, command: str) -> str:
     
     if "google" in cmd or "гугл" in cmd:
         await client.navigate("https://google.com")
-        await asyncio.sleep(2)
         title = await client.eval_js("document.title")
         return f"✅ Открыл Google\n📄 {title}"
     
     if "ютуб" in cmd or "youtube" in cmd:
         await client.navigate("https://youtube.com")
-        await asyncio.sleep(2)
         title = await client.eval_js("document.title")
         return f"✅ Открыл YouTube\n📄 {title}"
     
@@ -339,7 +328,6 @@ async def execute_command(client: CDPClient, command: str) -> str:
     
     if cmd.startswith("http"):
         await client.navigate(cmd)
-        await asyncio.sleep(2)
         title = await client.eval_js("document.title")
         return f"✅ Открыл\n📄 {title}"
     
@@ -355,7 +343,6 @@ async def execute_command(client: CDPClient, command: str) -> str:
 • Зайди в ютуб
 • Сделай скриншот
 • https://example.com
-• Заголовок
 """
 
 # ---------- Команды ----------
@@ -368,8 +355,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Открой Google\n"
         "• Зайди в ютуб\n"
         "• Сделай скриншот\n"
-        "• https://youtube.com\n"
-        "• Заголовок\n\n"
+        "• https://youtube.com\n\n"
         "Команды:\n"
         "/cdp - статус браузера\n"
         "/logs - получить логи\n"
