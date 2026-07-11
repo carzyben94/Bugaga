@@ -578,7 +578,18 @@ class CDPClient:
                             attrs[attr.name] = attr.value;
                         }
                         
-                        const important = ['a', 'button', 'input', 'textarea', 'select', 'form',
+                        // Ищем все интерактивные элементы
+                        const isInteractive = (
+                            tag === 'button' ||
+                            tag === 'a' ||
+                            attrs.role === 'button' ||
+                            (attrs['data-testid'] && attrs['data-testid'].toLowerCase().includes('obst')) ||
+                            (attrs['aria-label'] && attrs['aria-label'].toLowerCase().includes('обзор')) ||
+                            (attrs['aria-label'] && attrs['aria-label'].toLowerCase().includes('explore')) ||
+                            (attrs['aria-label'] && attrs['aria-label'].toLowerCase().includes('review'))
+                        );
+                        
+                        const important = ['button', 'a', 'input', 'textarea', 'select', 'form',
                                           'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'img', 'video',
                                           'iframe', 'div', 'span', 'section', 'article', 'nav',
                                           'header', 'footer', 'main', 'aside', 'ul', 'ol', 'li',
@@ -588,10 +599,16 @@ class CDPClient:
                         const hasText = (el.textContent || '').trim().length > 0;
                         const hasRole = attrs.role || attrs['aria-label'] || attrs['aria-labelledby'];
                         
-                        if (important.includes(tag) || hasRole || (hasText && tag === 'span')) {
+                        if (important.includes(tag) || hasRole || isInteractive || (hasText && tag === 'span')) {
+                            // Получаем текст из разных источников
+                            let text = (el.textContent || '').trim().slice(0, 200);
+                            if (!text && attrs['aria-label']) {
+                                text = attrs['aria-label'];
+                            }
+                            
                             result.push({
                                 tag: tag,
-                                text: (el.textContent || '').trim().slice(0, 200),
+                                text: text,
                                 id: el.id || '',
                                 class: el.className || '',
                                 attrs: attrs,
@@ -610,7 +627,8 @@ class CDPClient:
                                     cursor: style.cursor
                                 },
                                 parent: el.parentElement ? el.parentElement.tagName.toLowerCase() : null,
-                                children: el.children.length
+                                children: el.children.length,
+                                isInteractive: isInteractive
                             });
                         }
                     });
@@ -663,11 +681,23 @@ class CDPClient:
                 role['field_selector'] = role.get('id') and f"#{role.get('id')}" or f"[role='{role.get('attrs', {}).get('role')}']"
                 all_fields.append(role)
             
+            # Ищем ВСЕ кнопки и интерактивные элементы
             buttons = []
             for el in elements:
                 tag = el.get('tag', '')
                 attrs = el.get('attrs', {})
-                if tag == 'button' or (tag == 'input' and attrs.get('type') in ['submit', 'button']):
+                is_interactive = el.get('isInteractive', False)
+                
+                # Проверяем все возможные варианты кнопок
+                if (tag == 'button' or 
+                    (tag == 'input' and attrs.get('type') in ['submit', 'button']) or
+                    attrs.get('role') == 'button' or
+                    is_interactive or
+                    attrs.get('data-testid') == 'obst' or
+                    'button' in (attrs.get('class', '') or '').lower() or
+                    (attrs.get('aria-label') and 'обзор' in attrs.get('aria-label', '').lower()) or
+                    (attrs.get('aria-label') and 'explore' in attrs.get('aria-label', '').lower()) or
+                    (attrs.get('aria-label') and 'review' in attrs.get('aria-label', '').lower())):
                     buttons.append(el)
             
             links = [e for e in elements if e.get('tag') == 'a' and e.get('attrs', {}).get('href')]
@@ -701,6 +731,55 @@ class CDPClient:
             file_logger.log(f"❌ Maximum snapshot error: {e}", "ERROR")
             return False
     
+    async def find_clickable_elements(self):
+        """Поиск всех кликабельных элементов на странице"""
+        try:
+            result = await self.eval_js("""
+                (function() {
+                    const result = [];
+                    const all = document.querySelectorAll('*');
+                    
+                    all.forEach(el => {
+                        const style = window.getComputedStyle(el);
+                        const cursor = style.cursor;
+                        const isClickable = (
+                            el.tagName === 'BUTTON' ||
+                            el.tagName === 'A' ||
+                            el.getAttribute('role') === 'button' ||
+                            cursor === 'pointer' ||
+                            el.onclick !== null ||
+                            el.getAttribute('data-testid') === 'obst' ||
+                            (el.getAttribute('aria-label') && 
+                             (el.getAttribute('aria-label').toLowerCase().includes('обзор') ||
+                              el.getAttribute('aria-label').toLowerCase().includes('explore') ||
+                              el.getAttribute('aria-label').toLowerCase().includes('review')))
+                        );
+                        
+                        if (isClickable) {
+                            const item = {
+                                tag: el.tagName.toLowerCase(),
+                                text: el.textContent?.trim() || el.getAttribute('aria-label') || el.getAttribute('title') || '',
+                                id: el.id || '',
+                                class: el.className || '',
+                                attrs: {}
+                            };
+                            for (const attr of el.attributes) {
+                                item.attrs[attr.name] = attr.value;
+                            }
+                            result.push(item);
+                        }
+                    });
+                    
+                    return result;
+                })()
+            """)
+            
+            return result if result else []
+            
+        except Exception as e:
+            file_logger.log(f"❌ find_clickable_elements error: {e}", "ERROR")
+            return []
+    
     async def get_page_description(self):
         """Полное описание страницы со всеми кнопками"""
         if not self.full_snapshot:
@@ -722,7 +801,7 @@ class CDPClient:
                 text = el.get('text', '')
                 if not text:
                     attrs = el.get('attrs', {})
-                    text = attrs.get('aria-label', '') or attrs.get('value', '') or attrs.get('title', '')
+                    text = attrs.get('aria-label', '') or attrs.get('value', '') or attrs.get('title', '') or attrs.get('data-testid', '')
                 
                 # Если текст есть - показываем
                 if text and text.strip():
@@ -734,8 +813,9 @@ class CDPClient:
                     tag = el.get('tag', '')
                     attrs = el.get('attrs', {})
                     aria_label = attrs.get('aria-label', '')
-                    if aria_label:
-                        buttons_text += f"  🏷️ {tag} [aria-label={aria_label[:30]}]\n"
+                    data_testid = attrs.get('data-testid', '')
+                    if aria_label or data_testid:
+                        buttons_text += f"  🏷️ {tag} [aria-label={aria_label[:30]}] [data-testid={data_testid[:30]}]\n"
         
         # Формируем поля ввода
         fields_text = ""
@@ -769,12 +849,21 @@ class CDPClient:
     async def click_element(self, selector):
         js_code = f"""
         (function() {{
-            const el = document.querySelector('{selector}');
+            let el = document.querySelector('{selector}');
+            
+            // Если не нашли по селектору - пробуем найти по aria-label
+            if (!el) {{
+                const label = '{selector}'.replace(/[aria-label="]/g, '');
+                if (label) {{
+                    el = document.querySelector(`[aria-label*="${{label}}"]`);
+                }}
+            }}
+            
             if (el) {{
                 el.click();
                 return {{ success: true }};
             }}
-            return {{ success: false }};
+            return {{ success: false, error: 'Element not found' }};
         }})()
         """
         return await self.eval_js(js_code)
@@ -886,12 +975,18 @@ AGENT_CODE = """
 - По классу: .gLFyf
 - По имени: input[name='q']
 - По aria-label: [aria-label="текст"]
+- По data-testid: [data-testid="obst"]
 
 ⚠️ ЕСЛИ НУЖНО НЕСКОЛЬКО ДЕЙСТВИЙ - ВОЗВРАЩАЙ МАССИВ:
 [{"action": "fill", "params": {"selector": "#APjFqb", "value": "текст"}}, {"action": "press_enter", "params": {}}]
 
 ⚠️ ЕСЛИ ПРОСТО ОТВЕТИТЬ - ИСПОЛЬЗУЙ ФОРМАТ:
 {"action": "answer", "params": {"text": "твой ответ"}}
+
+🔍 ДЛЯ ПОИСКА КНОПКИ ИСПОЛЬЗУЙ:
+- Сначала проверь все кнопки в описании
+- Если кнопка не найдена - попробуй поискать по aria-label
+- На X.com кнопки часто имеют data-testid="obst"
 """
 
 # ---------- Агент ----------
@@ -923,7 +1018,7 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.3,
-        "max_tokens": 1500
+        "max_tokens": 2000
     }
     
     for attempt in range(3):
@@ -1069,6 +1164,72 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
 
 # ---------- Команды ----------
 
+async def find_button_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Поиск кнопки на странице"""
+    user_id = update.message.from_user.id
+    button_name = ' '.join(context.args) if context.args else 'Обзор'
+    
+    if user_id not in clients:
+        await update.message.reply_text("❌ Сначала откройте страницу (например, 'Зайди на x.com')")
+        return
+    
+    client = clients[user_id]
+    
+    try:
+        await update.message.reply_text(f"🔍 Ищу кнопку '{button_name}'...")
+        
+        # Ищем все кликабельные элементы
+        elements = await client.find_clickable_elements()
+        
+        if not elements:
+            await update.message.reply_text("❌ Не удалось найти элементы на странице")
+            return
+        
+        found = []
+        for el in elements:
+            text = el.get('text', '').lower()
+            attrs = el.get('attrs', {})
+            aria_label = attrs.get('aria-label', '').lower()
+            data_testid = attrs.get('data-testid', '').lower()
+            title_attr = attrs.get('title', '').lower()
+            
+            # Ищем совпадения
+            search_term = button_name.lower()
+            if (search_term in text or 
+                search_term in aria_label or 
+                search_term in data_testid or
+                search_term in title_attr):
+                found.append(el)
+        
+        if found:
+            msg = f"✅ Найдено {len(found)} элементов с '{button_name}':\n\n"
+            for el in found[:20]:
+                attrs = el.get('attrs', {})
+                text = el.get('text', '') or attrs.get('aria-label', '') or attrs.get('title', '') or el.get('tag', '')
+                selector = el.get('id') and f"#{el.get('id')}" or (el.get('class') and f".{el.get('class', '').split()[0] if el.get('class') else ''}")
+                data_testid = attrs.get('data-testid', '')
+                aria_label = attrs.get('aria-label', '')
+                
+                msg += f"  • {text[:50]}\n"
+                if selector:
+                    msg += f"    Селектор: {selector}\n"
+                if data_testid:
+                    msg += f"    data-testid: {data_testid}\n"
+                if aria_label:
+                    msg += f"    aria-label: {aria_label}\n"
+                msg += "\n"
+            
+            if len(found) > 20:
+                msg += f"... и еще {len(found) - 20} элементов"
+                
+            await update.message.reply_text(msg)
+        else:
+            await update.message.reply_text(f"❌ Кнопка '{button_name}' не найдена\n\n💡 Попробуйте:\n• Проверить написание (Обзор, обзор, explore)\n• Использовать /find_button [название]\n• Сделать скриншот и посмотреть визуально")
+            
+    except Exception as e:
+        file_logger.log(f"❌ Ошибка: {e}", "ERROR")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
 async def set_cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     
@@ -1186,6 +1347,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Сделай скриншот\n"
         "• Зайди на x.com\n"
         "• Нажми на кнопку Обзор\n\n"
+        "🔍 **Поиск кнопок:**\n"
+        "/find_button Обзор - найти кнопку\n"
+        "/find_button explore - найти кнопку\n\n"
         "/cdp - статус браузера\n"
         "/logs - логи\n"
         "/set_cookies - установить куки\n"
@@ -1253,6 +1417,7 @@ def main():
     app.add_handler(CommandHandler("clear_logs", clear_logs_command))
     app.add_handler(CommandHandler("set_cookies", set_cookies_command))
     app.add_handler(CommandHandler("mask", mask_command))
+    app.add_handler(CommandHandler("find_button", find_button_command))  # Новая команда
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print("🚀 Бот запущен!")
