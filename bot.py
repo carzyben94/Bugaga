@@ -80,7 +80,7 @@ def start_chrome():
             "--user-data-dir=/tmp/chrome-profile",
             "--window-size=1920,1080",
             
-            # === МАСКИРОВКА HEADLESS (из Pydoll) ===
+            # === МАСКИРОВКА HEADLESS ===
             "--disable-blink-features=AutomationControlled",
             "--disable-features=IsolateOrigins,site-per-process",
             "--disable-web-security",
@@ -88,10 +88,10 @@ def start_chrome():
             "--disable-features=BlockInsecurePrivateNetworkRequests",
             "--disable-features=TranslateUI,BlinkGenPropertyTrees",
             
-            # === МАСКИРОВКА USER-AGENT (из Pydoll) ===
+            # === МАСКИРОВКА USER-AGENT ===
             "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             
-            # === НАСТРОЙКИ БЕЗОПАСНОСТИ (из Pydoll) ===
+            # === НАСТРОЙКИ БЕЗОПАСНОСТИ ===
             "--disable-default-apps",
             "--disable-extensions",
             "--disable-component-extensions-with-background-pages",
@@ -106,13 +106,13 @@ def start_chrome():
             "--disable-sync",
             "--disable-breakpad",
             
-            # === НАСТРОЙКИ ПРОИЗВОДИТЕЛЬНОСТИ (из Pydoll) ===
+            # === НАСТРОЙКИ ПРОИЗВОДИТЕЛЬНОСТИ ===
             "--metrics-recording-only",
             "--no-first-run",
             "--safebrowsing-disable-auto-update",
             "--force-color-profile=srgb",
             
-            # === WEBRTC ЗАЩИТА (из Pydoll) ===
+            # === WEBRTC ЗАЩИТА ===
             "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
             
             # === ПОДДЕРЖКА CDP ===
@@ -194,7 +194,7 @@ class CDPClient:
             await self.send("Network.enable", {})
             file_logger.log("✅ Page, Runtime, DOM, Network включены")
             
-            # 🎭 МАСКИРУЕМ БРАУЗЕР (полная маскировка из Pydoll)
+            # 🎭 МАСКИРУЕМ БРАУЗЕР
             await self.mask_browser()
             file_logger.log("✅ Браузер замаскирован")
             
@@ -216,7 +216,7 @@ class CDPClient:
             js_code = """
             (function() {
                 // ============================================
-                // 1. МАСКИРОВКА navigator.webdriver (Pydoll)
+                // 1. МАСКИРОВКА navigator.webdriver
                 // ============================================
                 Object.defineProperty(navigator, 'webdriver', {
                     get: () => undefined,
@@ -224,7 +224,7 @@ class CDPClient:
                 });
                 
                 // ============================================
-                // 2. МАСКИРОВКА navigator.plugins (Pydoll)
+                // 2. МАСКИРОВКА navigator.plugins
                 // ============================================
                 Object.defineProperty(navigator, 'plugins', {
                     get: () => {
@@ -247,7 +247,7 @@ class CDPClient:
                 });
                 
                 // ============================================
-                // 3. МАСКИРОВКА navigator.languages (Pydoll)
+                // 3. МАСКИРОВКА navigator.languages
                 // ============================================
                 Object.defineProperty(navigator, 'languages', {
                     get: () => ['ru-RU', 'ru', 'en-US', 'en'],
@@ -255,7 +255,7 @@ class CDPClient:
                 });
                 
                 // ============================================
-                // 4. МАСКИРОВКА window.chrome (Pydoll)
+                // 4. МАСКИРОВКА window.chrome
                 // ============================================
                 window.chrome = {
                     runtime: {
@@ -296,7 +296,7 @@ class CDPClient:
                 };
                 
                 // ============================================
-                // 5. МАСКИРОВКА WebGL (Pydoll)
+                // 5. МАСКИРОВКА WebGL
                 // ============================================
                 const getParameter = WebGLRenderingContext.prototype.getParameter;
                 WebGLRenderingContext.prototype.getParameter = function(parameter) {
@@ -313,7 +313,7 @@ class CDPClient:
                 };
                 
                 // ============================================
-                // 6. МАСКИРОВКА navigator.connection (Pydoll)
+                // 6. МАСКИРОВКА navigator.connection
                 // ============================================
                 Object.defineProperty(navigator, 'connection', {
                     get: () => ({
@@ -327,7 +327,7 @@ class CDPClient:
                 });
                 
                 // ============================================
-                // 7. МАСКИРОВКА performance.memory (Pydoll)
+                // 7. МАСКИРОВКА performance.memory
                 // ============================================
                 Object.defineProperty(performance, 'memory', {
                     get: () => ({
@@ -339,7 +339,7 @@ class CDPClient:
                 });
                 
                 // ============================================
-                // 8. МАСКИРОВКА navigator.hardwareConcurrency (Pydoll)
+                // 8. МАСКИРОВКА navigator.hardwareConcurrency
                 // ============================================
                 Object.defineProperty(navigator, 'hardwareConcurrency', {
                     get: () => 8,
@@ -347,7 +347,7 @@ class CDPClient:
                 });
                 
                 // ============================================
-                // 9. МАСКИРОВКА navigator.platform (Pydoll)
+                // 9. МАСКИРОВКА navigator.platform
                 // ============================================
                 Object.defineProperty(navigator, 'platform', {
                     get: () => 'Win32',
@@ -355,7 +355,7 @@ class CDPClient:
                 });
                 
                 // ============================================
-                // 10. УДАЛЕНИЕ CDP СЛЕДОВ (Pydoll)
+                // 10. УДАЛЕНИЕ CDP СЛЕДОВ
                 // ============================================
                 delete window.__cdp__;
                 delete window.__CDP__;
@@ -370,7 +370,7 @@ class CDPClient:
                 delete window.__webdriver_script_function__;
                 
                 // ============================================
-                // 11. МАСКИРОВКА navigator.mediaDevices (Pydoll)
+                // 11. МАСКИРОВКА navigator.mediaDevices
                 // ============================================
                 if (navigator.mediaDevices) {
                     Object.defineProperty(navigator.mediaDevices, 'enumerateDevices', {
@@ -384,7 +384,7 @@ class CDPClient:
                 }
                 
                 // ============================================
-                // 12. МАСКИРОВКА timezone (Pydoll)
+                // 12. МАСКИРОВКА timezone
                 // ============================================
                 Object.defineProperty(Intl.DateTimeFormat.prototype, 'resolvedOptions', {
                     value: function() {
@@ -398,13 +398,13 @@ class CDPClient:
                 });
                 
                 // ============================================
-                // 13. МАСКИРОВКА screen (Pydoll)
+                // 13. МАСКИРОВКА screen
                 // ============================================
                 Object.defineProperty(screen, 'availWidth', { value: 1920 });
                 Object.defineProperty(screen, 'availHeight', { value: 1040 });
                 
                 // ============================================
-                // 14. МАСКИРОВКА navigator.doNotTrack (Pydoll)
+                // 14. МАСКИРОВКА navigator.doNotTrack
                 // ============================================
                 Object.defineProperty(navigator, 'doNotTrack', {
                     get: () => '1',
@@ -683,6 +683,7 @@ class CDPClient:
             return False
     
     async def get_page_description(self):
+        """Возвращает описание страницы с безопасной обработкой типов"""
         if not self.full_snapshot:
             await self.get_maximum_snapshot()
         
@@ -693,7 +694,7 @@ class CDPClient:
 🔗 URL: {info.get('url', 'Нет URL')}
 📊 ВСЕГО ЭЛЕМЕНТОВ: {info.get('total', 0)}
 
-🔘 КНОПКИ ({len(info.get('buttons', []))}):
+🔘 КНОПКИ ({len(info.get('buttons', [])) if isinstance(info.get('buttons', []), list) else 0}):
 """
         buttons = info.get('buttons', [])
         if isinstance(buttons, list):
@@ -705,7 +706,7 @@ class CDPClient:
         else:
             desc += "  • (нет данных)\n"
         
-        desc += f"\n📝 ПОЛЯ ВВОДА ({len(info.get('fields', []))}):\n"
+        desc += f"\n📝 ПОЛЯ ВВОДА ({len(info.get('fields', [])) if isinstance(info.get('fields', []), list) else 0}):\n"
         fields = info.get('fields', [])
         if isinstance(fields, list):
             for el in fields[:15]:
@@ -801,7 +802,6 @@ class CDPClient:
             
             file_logger.log("📸 Делаю скриншот...")
             
-            # Для X.com специальный режим
             if "x.com" in url:
                 file_logger.log("📸 X.com: пробую специальный режим...")
                 resp = await self.send("Page.captureScreenshot", {
