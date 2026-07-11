@@ -501,6 +501,9 @@ AGENT_CODE = """
 
 ⚠️ ЕСЛИ НУЖНО НЕСКОЛЬКО ДЕЙСТВИЙ - ВОЗВРАЩАЙ МАССИВ:
 [{"action": "fill", "params": {"selector": "#APjFqb", "value": "текст"}}, {"action": "press_enter", "params": {}}]
+
+⚠️ ЕСЛИ ПРОСТО ОТВЕТИТЬ - ИСПОЛЬЗУЙ ФОРМАТ:
+{"action": "answer", "params": {"text": "твой ответ"}}
 """
 
 # ---------- Агент ----------
@@ -543,25 +546,64 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
             
             file_logger.log(f"Agnes ответ: {content[:200]}...")
             
+            # Если ответ пустой
+            if not content or not content.strip():
+                return {"action": "answer", "params": {"text": "⚠️ Получен пустой ответ от AI"}}
+            
             # Пробуем найти JSON
             json_match = re.search(r'\[.*\]|\{.*\}', content, re.DOTALL)
             if json_match:
                 try:
-                    data = json.loads(json_match.group())
-                    # Если это массив с одним элементом
-                    if isinstance(data, list) and len(data) == 1:
-                        data = data[0]
-                    # Если это объект с action и text
-                    if isinstance(data, dict) and data.get("action") == "answer":
-                        # Приводим к единому формату
-                        if "text" in data and "params" not in data:
-                            data["params"] = {"text": data.pop("text")}
-                    return data
-                except:
-                    pass
+                    parsed = json.loads(json_match.group())
+                    
+                    # Если это массив
+                    if isinstance(parsed, list):
+                        if len(parsed) == 0:
+                            return {"action": "answer", "params": {"text": "⚠️ AI вернул пустой массив"}}
+                        if len(parsed) == 1:
+                            parsed = parsed[0]
+                        else:
+                            # Если массив действий - возвращаем как есть
+                            return parsed
+                    
+                    # Если это объект
+                    if isinstance(parsed, dict):
+                        # Если есть поле "answer" без "action"
+                        if "answer" in parsed and "action" not in parsed:
+                            return {"action": "answer", "params": {"text": parsed["answer"]}}
+                        
+                        # Если есть "action" и "text" без "params"
+                        if "action" in parsed and "text" in parsed and "params" not in parsed:
+                            parsed["params"] = {"text": parsed.pop("text")}
+                            return parsed
+                        
+                        # Если есть "action" и "answer" без "params"
+                        if "action" in parsed and "answer" in parsed and "params" not in parsed:
+                            parsed["params"] = {"text": parsed.pop("answer")}
+                            return parsed
+                        
+                        # Если есть только "text"
+                        if "text" in parsed and "action" not in parsed:
+                            return {"action": "answer", "params": {"text": parsed["text"]}}
+                        
+                        # Если нет "action" - добавляем answer
+                        if "action" not in parsed:
+                            return {"action": "answer", "params": {"text": json.dumps(parsed, ensure_ascii=False)}}
+                        
+                        return parsed
+                    
+                except json.JSONDecodeError as e:
+                    file_logger.log(f"⚠️ Ошибка парсинга JSON: {e}", "WARNING")
+                    # Если не JSON, но есть текст - отвечаем им
+                    if content.strip():
+                        return {"action": "answer", "params": {"text": content}}
             
-            # Если не удалось распарсить JSON
-            return {"action": "answer", "params": {"text": content}}
+            # Если не удалось найти JSON, но есть текст
+            if content.strip():
+                return {"action": "answer", "params": {"text": content}}
+            else:
+                return {"action": "answer", "params": {"text": "⚠️ Получен пустой ответ от AI"}}
+                
         except requests.exceptions.Timeout:
             file_logger.log(f"⚠️ Попытка {attempt + 1} таймаут, повтор...")
             if attempt == 2:
@@ -588,6 +630,10 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
     # НОРМАЛИЗАЦИЯ: если text есть в корне, переносим в params
     if "text" in action and "params" not in action:
         action["params"] = {"text": action.pop("text")}
+    
+    # Если есть answer без action
+    if "answer" in action and "action" not in action:
+        action = {"action": "answer", "params": {"text": action.pop("answer")}}
     
     action_type = action.get("action")
     params = action.get("params", {})
