@@ -77,23 +77,23 @@ def start_chrome():
             "--no-sandbox",
             "--disable-dev-shm-usage",
             
-            # ✅ Из Pydoll: базовые stealth-флаги
-            "--disable-blink-features=AutomationControlled",  # убирает navigator.webdriver
+            # Stealth-флаги
+            "--disable-blink-features=AutomationControlled",
             "--no-first-run",
             "--no-default-browser-check",
             "--lang=en-US",
             "--accept-lang=en-US,en;q=0.9",
             
-            # ✅ WebRTC защита
+            # WebRTC защита
             "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
             
-            # ✅ Реалистичный User-Agent
+            # Реалистичный User-Agent
             f"--user-agent={user_agent}",
             
-            # ✅ Headless нового поколения
+            # Headless нового поколения
             "--headless=new",
             
-            # ✅ Оптимизация
+            # Оптимизация
             "--disable-extensions",
             "--disable-popup-blocking",
             "--disable-background-timer-throttling",
@@ -162,6 +162,7 @@ class CDPSupervisor:
         self._ready_event = asyncio.Event()
         self._dialog_counter = 0
         self._navigation_lock = asyncio.Lock()
+        self._navigation_future = None  # ✅ Для ожидания загрузки
         
         self.dialog_timeout = DIALOG_TIMEOUT_SECONDS
         self.ping_interval = 60
@@ -216,7 +217,7 @@ class CDPSupervisor:
         file_logger.log(f"🧠 CDP Supervisor остановлен для {self.user_id}")
     
     async def _run(self):
-        """Основной цикл супервайзера"""
+        """Основной цикл супервайзера - БЕЗ ПРИНУДИТЕЛЬНОЙ НАВИГАЦИИ"""
         file_logger.log("🚀 Запуск CDP Supervisor...")
         
         while self.running and not self._stop_event.is_set():
@@ -265,27 +266,15 @@ class CDPSupervisor:
                 if not ready:
                     raise Exception("Supervisor не готов")
                 
-                # 7. Навигация на about:blank (обход Google)
-                file_logger.log("🌐 Открываю about:blank...")
-                try:
-                    result = await asyncio.wait_for(
-                        self.navigate("about:blank"),
-                        timeout=15
-                    )
-                    if result.get("success"):
-                        file_logger.log("✅ about:blank загружен")
-                    else:
-                        file_logger.log(f"⚠️ Ошибка: {result.get('error')}")
-                except asyncio.TimeoutError:
-                    file_logger.log("⚠️ Таймаут навигации")
-                
-                file_logger.log("✅ Supervisor готов к работе!")
+                # ✅ НЕ ОТКРЫВАЕМ НИКАКУЮ СТРАНИЦУ ПРИНУДИТЕЛЬНО
+                # Просто говорим, что готовы и ждем команд
+                file_logger.log("✅ Supervisor готов к работе! Ожидаю команды...")
                 self._ready_event.set()
                 
-                # 8. Heartbeat
+                # 7. Heartbeat
                 self.heartbeat_task = asyncio.create_task(self._heartbeat())
                 
-                # 9. Ждем завершения
+                # 8. Ждем завершения
                 await asyncio.gather(
                     self.event_loop_task,
                     self.heartbeat_task,
@@ -307,9 +296,8 @@ class CDPSupervisor:
         while time.time() - start < timeout:
             if (self.connected and 
                 self.ws and 
-                not self._is_ws_closed() and 
-                self.page_loaded and
-                self.full_snapshot is not None):
+                not self._is_ws_closed() and
+                self._ready_event.is_set()):  # ✅ Просто проверяем, что supervisor готов
                 return True
             await asyncio.sleep(0.5)
         return False
@@ -330,7 +318,7 @@ class CDPSupervisor:
                 url = self.full_snapshot.get('url', 'Без URL')
                 status_parts.append(f"📄 {title} ({url[:50]}...)")
         else:
-            status_parts.append("⏳ Страница загружается...")
+            status_parts.append("⏳ Страница не загружена")
         
         if self.pending_dialogs:
             status_parts.append(f"💬 Ожидающих диалогов: {len(self.pending_dialogs)}")
@@ -355,11 +343,11 @@ class CDPSupervisor:
         file_logger.log(f"✅ WebSocket подключен для {self.user_id}")
     
     async def _setup_domains(self):
-        """Настройка доменов с маскировкой через CDP (как в Pydoll)"""
+        """Настройка доменов с маскировкой через CDP"""
         try:
             user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             
-            # ✅ СНАЧАЛА: User-Agent синхронизация через CDP (КРИТИЧЕСКИ ВАЖНО!)
+            # ✅ User-Agent синхронизация через CDP
             await asyncio.wait_for(
                 self._send("Emulation.setUserAgentOverride", {
                     "userAgent": user_agent,
@@ -381,7 +369,7 @@ class CDPSupervisor:
                 timeout=10
             )
             
-            # ✅ ПОТОМ остальные домены
+            # ✅ Остальные домены
             await asyncio.wait_for(self._send("Page.enable", {}), timeout=10)
             await asyncio.wait_for(self._send("Runtime.enable", {}), timeout=10)
             await asyncio.wait_for(self._send("DOM.enable", {}), timeout=10)
@@ -400,10 +388,10 @@ class CDPSupervisor:
             raise
     
     async def _inject_stealth_scripts(self):
-        """Инъекция скриптов для согласованности (как в Pydoll)"""
+        """Инъекция скриптов для согласованности"""
         try:
             js_code = """
-            // Синхронизация navigator свойств (Pydoll стиль)
+            // Синхронизация navigator свойств
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             
             // Подмена navigator.plugins
@@ -431,25 +419,24 @@ class CDPSupervisor:
                 get: () => ['en-US', 'en', 'ru'] 
             });
             
-            // Подмена WebGL (защита от fingerprint)
+            // Подмена WebGL
             const getParameter = WebGLRenderingContext.prototype.getParameter;
             WebGLRenderingContext.prototype.getParameter = function(parameter) {
-                if (parameter === 37445) { // UNMASKED_VENDOR_WEBGL
+                if (parameter === 37445) {
                     return 'Intel Inc.';
                 }
-                if (parameter === 37446) { // UNMASKED_RENDERER_WEBGL
+                if (parameter === 37446) {
                     return 'Intel Iris OpenGL Engine';
                 }
                 return getParameter.call(this, parameter);
             };
             
-            // Подмена WebGL2
             const getParameter2 = WebGL2RenderingContext.prototype.getParameter;
             WebGL2RenderingContext.prototype.getParameter = function(parameter) {
-                if (parameter === 37445) { // UNMASKED_VENDOR_WEBGL
+                if (parameter === 37445) {
                     return 'Intel Inc.';
                 }
-                if (parameter === 37446) { // UNMASKED_RENDERER_WEBGL
+                if (parameter === 37446) {
                     return 'Intel Iris OpenGL Engine';
                 }
                 return getParameter2.call(this, parameter);
@@ -546,6 +533,18 @@ class CDPSupervisor:
         method = data.get("method")
         params = data.get("params", {})
         
+        # ✅ ОБРАБОТКА СОБЫТИЯ ЗАГРУЗКИ (ГЛАВНОЕ!)
+        if method == "Page.loadEventFired":
+            self.page_loaded = True
+            file_logger.log("📄 Page.loadEventFired — страница загружена")
+            
+            # ✅ Завершаем Future если есть
+            if self._navigation_future and not self._navigation_future.done():
+                self._navigation_future.set_result(True)
+            
+            await self._update_snapshot()
+            return
+        
         if method == "Page.javascriptDialogOpening":
             dialog_message = params.get('message', '')
             dialog_type = params.get('type', '')
@@ -608,17 +607,23 @@ class CDPSupervisor:
                     file_logger.log(f"🔗 OOPIF обнаружен: {target_info.get('url', '')[:50]}")
             return
         
-        if method == "Page.loadEventFired":
-            self.page_loaded = True
-            file_logger.log("📄 Page.loadEventFired — страница загружена")
-            await self._update_snapshot()
-            return
-        
         if method == "Page.frameNavigated":
             frame = params.get('frame', {})
             file_logger.log(f"🧭 Frame navigated: {frame.get('url', '')[:50]}")
-            await self._update_snapshot()
             return
+    
+    async def _wait_for_navigation(self, timeout=30):
+        """Ждет события Page.loadEventFired"""
+        future = asyncio.get_event_loop().create_future()
+        self._navigation_future = future
+        
+        try:
+            await asyncio.wait_for(future, timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
+        finally:
+            self._navigation_future = None
     
     async def _dialog_timeout_check(self):
         await asyncio.sleep(self.dialog_timeout)
@@ -792,9 +797,7 @@ class CDPSupervisor:
             await self._connect()
             await self._setup_domains()
             await self._inject_stealth_scripts()
-        if not self.page_loaded:
-            await self._wait_for_page_load()
-        return self.connected and self.page_loaded
+        return self.connected
     
     async def _wait_for_page_load(self, timeout=15):
         for i in range(timeout):
@@ -817,7 +820,7 @@ class CDPSupervisor:
         return False
     
     async def navigate(self, url):
-        """Безопасная навигация с таймаутами"""
+        """Навигация с ожиданием события Page.loadEventFired"""
         async with self._navigation_lock:
             try:
                 file_logger.log(f"🌐 Навигация на {url}")
@@ -826,7 +829,7 @@ class CDPSupervisor:
                     file_logger.log("⚠️ Соединение потеряно, переподключаюсь...")
                     await self._reconnect()
                 
-                # Отправляем команду навигации
+                # ✅ 1. Отправляем команду навигации
                 result = await asyncio.wait_for(
                     self._send("Page.navigate", {"url": url}),
                     timeout=15
@@ -836,22 +839,16 @@ class CDPSupervisor:
                     file_logger.log(f"❌ Ошибка: {result.get('error')}")
                     return {"success": False, "error": result.get("error")}
                 
-                # Ждем загрузки
-                loaded = await asyncio.wait_for(
-                    self._wait_for_page_load(),
-                    timeout=15
-                )
+                # ✅ 2. Ждем события Page.loadEventFired (ГЛАВНОЕ!)
+                loaded = await self._wait_for_navigation(timeout=30)
                 
-                if not loaded:
+                if loaded:
+                    file_logger.log(f"✅ Страница загружена: {url}")
+                    await self._update_snapshot()
+                    return {"success": True}
+                else:
                     file_logger.log(f"⚠️ Страница не загрузилась: {url}")
-                    try:
-                        await self._send("Page.stopLoading", {})
-                    except:
-                        pass
                     return {"success": False, "error": "Page load timeout"}
-                
-                await self._update_snapshot()
-                return {"success": True}
                 
             except asyncio.TimeoutError:
                 file_logger.log(f"⚠️ Таймаут навигации на {url}")
