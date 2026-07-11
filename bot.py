@@ -456,9 +456,7 @@ class CDPClient:
         if session_id:
             msg["sessionId"] = session_id
         elif method.startswith("Page.") or method.startswith("Runtime.") or method.startswith("DOM."):
-            # Для iframe используем session_id из connected_tabs
             if self.connected_tabs:
-                # Если есть активный iframe, используем его session_id
                 for sid, info in self.connected_tabs.items():
                     if info.get("type") == "iframe" or "frame" in info.get("type", ""):
                         msg["sessionId"] = sid
@@ -647,7 +645,6 @@ class CDPClient:
             
             if result and isinstance(result, list):
                 if session_id:
-                    # Для iframe добавляем префикс
                     prefixed = []
                     for el in result:
                         el['ref'] = f"if_{session_id[:8]}_{el['ref']}"
@@ -670,10 +667,8 @@ class CDPClient:
             el_info = self.ref_elements[ref_id]
             selector = el_info.get('selector')
             
-            # Пробуем найти сессию для iframe
             session_id = None
             if ref_id.startswith('if_'):
-                # Извлекаем session_id из ref
                 parts = ref_id.split('_')
                 if len(parts) >= 3:
                     session_prefix = parts[1]
@@ -717,7 +712,6 @@ class CDPClient:
             return {"error": str(e)}
     
     async def click_element(self, selector, session_id=None):
-        # Пробуем обычный клик
         js_code = f"""
         (function() {{
             const el = document.querySelector("{selector}");
@@ -733,7 +727,6 @@ class CDPClient:
         if result and result.get("success"):
             return result
         
-        # Пробуем через dispatchEvent
         js_code2 = f"""
         (function() {{
             const el = document.querySelector("{selector}");
@@ -806,17 +799,14 @@ class CDPClient:
             is_x = "x.com" in url
             max_elements = 2000 if is_x else 500
             
-            # Получаем frame tree
             frame_tree_resp = await self.send("Page.getFrameTree", {})
             self.frame_tree = None
             if "result" in frame_tree_resp:
                 self.frame_tree = frame_tree_resp["result"].get("frameTree", {})
                 file_logger.log(f"📦 FrameTree получен")
             
-            # Получаем Ref ID для основной страницы
             ref_elements = await self.get_accessibility_tree()
             
-            # Получаем Ref ID для каждого iframe
             iframe_refs = []
             for session_id, info in self.connected_tabs.items():
                 if info.get("type") in ["iframe", "frame"]:
@@ -826,10 +816,8 @@ class CDPClient:
                         iframe_refs.extend(iframe_els)
                         file_logger.log(f"✅ Получено {len(iframe_els)} элементов из iframe")
             
-            # Объединяем все Ref ID
             all_refs = ref_elements + iframe_refs
             
-            # Основной сбор элементов
             result = await self.eval_js(f"""
                 (function() {{
                     const result = [];
@@ -1035,7 +1023,6 @@ class CDPClient:
             headings = [e for e in elements if e.get('tag') in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']]
             visible = [e for e in elements if e.get('visible')]
             
-            # Обновляем ref_elements
             self.ref_elements = {el['ref']: el for el in all_refs}
             
             self.full_snapshot = {
@@ -1221,7 +1208,6 @@ class CDPClient:
             desc += "\n💡 Для обработки диалога используй: handle_dialog(accept=True, prompt_text='')\n"
             desc += f"📋 Текущая политика: {CURRENT_DIALOG_POLICY}\n"
         
-        # Информация об iframe
         connected_tabs = info.get('connected_tabs') if isinstance(info, dict) else None
         if connected_tabs:
             desc += f"\n📦 IFRAME/ФРЕЙМЫ:\n"
@@ -1297,7 +1283,7 @@ class CDPClient:
 
 clients = {}
 
-# ---------- КОД АГЕНТА ----------
+# ---------- КОД АГЕНТА (ИСПРАВЛЕН) ----------
 
 AGENT_CODE = """
 Ты агент для управления браузером.
@@ -1314,8 +1300,8 @@ AGENT_CODE = """
 - handle_dialog(accept, prompt_text) - обработать диалог
 
 📌 ФОРМАТ ОТВЕТА (ТОЛЬКО Ref ID):
-{"action": "click", "params": {"ref": "e8"}}
-{"action": "fill", "params": {"ref": "e5", "value": "Spinoza"}}
+{{"action": "click", "params": {{"ref": "e8"}}}}
+{{"action": "fill", "params": {{"ref": "e5", "value": "Spinoza"}}}}
 
 ⚠️ НЕ ИСПОЛЬЗУЙ ТЕКСТ! ТОЛЬКО REF ID!
 ОТВЕЧАЙ ТОЛЬКО JSON!
