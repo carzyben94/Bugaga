@@ -178,7 +178,10 @@ class CDPSupervisor:
         self.ref_elements = {}
         self.full_snapshot = None
         self.oopifs = {}
-        self._pending_requests = {}
+        
+        # ✅ СИНХРОНИЗАЦИЯ (как в Hermes)
+        self._pending_requests = {}  # {msg_id: asyncio.Future}
+        self._recv_lock = asyncio.Lock()  # синхронизация recv
         self._stop_event = asyncio.Event()
         self._ready_event = asyncio.Event()
         
@@ -208,7 +211,6 @@ class CDPSupervisor:
         self.supervisor_task = asyncio.create_task(self._run())
         self.heartbeat_task = asyncio.create_task(self._heartbeat())
         
-        # Ждём готовности
         try:
             await asyncio.wait_for(self._ready_event.wait(), timeout=30)
             return True
@@ -242,7 +244,7 @@ class CDPSupervisor:
                 await self._setup_domains()
                 await self._navigate_to_default()
                 self._ready_event.set()
-                await self._event_loop()
+                await self._event_loop()  # ✅ ВЫЗЫВАЕМ _event_loop
             except websockets.ConnectionClosed:
                 file_logger.log(f"⚠️ WebSocket закрыт, переподключаюсь...")
                 await asyncio.sleep(5)
@@ -311,11 +313,11 @@ class CDPSupervisor:
         return False
     
     # ============================================
-    # ОТПРАВКА КОМАНД
+    # ОТПРАВКА КОМАНД (С СИНХРОНИЗАЦИЕЙ)
     # ============================================
     
     async def _send(self, method, params=None, session_id=None):
-        """Отправляет команду в Chrome"""
+        """Отправляет команду в Chrome с синхронизацией (как в Hermes)"""
         if not self.connected:
             return {"error": "Not connected"}
         
@@ -329,29 +331,57 @@ class CDPSupervisor:
         if session_id:
             msg["sessionId"] = session_id
         
+        # ✅ Создаём Future для ожидания ответа
+        future = asyncio.get_event_loop().create_future()
+        self._pending_requests[msg_id] = future
+        
         try:
             await self.ws.send(json.dumps(msg))
+            response = await asyncio.wait_for(future, timeout=30)
+            return response
             
-            # Ждём ответ с правильным id
-            while True:
-                response = await asyncio.wait_for(self.ws.recv(), timeout=30)
+        except asyncio.TimeoutError:
+            self._pending_requests.pop(msg_id, None)
+            return {"error": "Timeout"}
+        except Exception as e:
+            self._pending_requests.pop(msg_id, None)
+            file_logger.log(f"❌ Send error: {e}", "ERROR")
+            return {"error": str(e)}
+    
+    # ============================================
+    # ✅ ОСНОВНОЙ ЦИКЛ ОБРАБОТКИ СОБЫТИЙ (Hermes)
+    # ============================================
+    
+    async def _event_loop(self):
+        """Главный цикл обработки событий (как в Hermes)"""
+        while self.running and self.connected:
+            try:
+                # ✅ Используем Lock для безопасного recv
+                async with self._recv_lock:
+                    response = await asyncio.wait_for(self.ws.recv(), timeout=30)
+                
                 data = json.loads(response)
                 
-                if data.get("id") == msg_id:
-                    if "error" in data:
-                        file_logger.log(f"❌ {method}: {data['error']}", "ERROR")
-                    return data
+                # ✅ Проверяем, есть ли ожидающий запрос с этим id
+                if "id" in data and data["id"] in self._pending_requests:
+                    future = self._pending_requests.pop(data["id"])
+                    if not future.done():
+                        future.set_result(data)
+                    continue
                 
-                # Обрабатываем события
+                # ✅ Если это событие (без id) — обрабатываем
                 if "method" in data:
                     await self._handle_event(data)
                     
-        except asyncio.TimeoutError:
-            file_logger.log(f"❌ {method} timeout", "ERROR")
-            return {"error": "Timeout"}
-        except Exception as e:
-            file_logger.log(f"❌ Send error: {e}", "ERROR")
-            return {"error": str(e)}
+            except asyncio.TimeoutError:
+                continue
+            except websockets.ConnectionClosed:
+                self.connected = False
+                file_logger.log("⚠️ WebSocket закрыт")
+                break
+            except Exception as e:
+                file_logger.log(f"❌ Event loop error: {e}", "ERROR")
+                await asyncio.sleep(1)
     
     # ============================================
     # ОБРАБОТКА СОБЫТИЙ
@@ -423,7 +453,8 @@ class CDPSupervisor:
             return
         
         if method == "Page.frameNavigated":
-            file_logger.log(f"🧭 Frame navigated: {params.get('frame', {}).get('url', '')[:50]}")
+            frame = params.get('frame', {})
+            file_logger.log(f"🧭 Frame navigated: {frame.get('url', '')[:50]}")
             await self._update_snapshot()
             return
     
@@ -614,7 +645,6 @@ class CDPSupervisor:
         if full:
             return self.full_snapshot
         else:
-            # Компактный вывод
             snapshot = self.full_snapshot or {}
             return {
                 "title": snapshot.get("title", "Нет заголовка"),
@@ -662,7 +692,6 @@ class CDPSupervisor:
         if not selector:
             return {"error": "Нет селектора"}
         
-        # Получаем координаты
         js_code = f"""
         (function() {{
             const el = document.querySelector("{selector}");
@@ -684,14 +713,11 @@ class CDPSupervisor:
         if "result" in resp and "result" in resp["result"]:
             pos = resp["result"]["result"].get("value")
             if pos:
-                # Случайное смещение
                 x = pos["x"] + random.randint(-3, 3)
                 y = pos["y"] + random.randint(-3, 3)
                 
-                # Случайная задержка
                 await asyncio.sleep(random.uniform(0.05, 0.15))
                 
-                # Клик через Input
                 await self._send("Input.dispatchMouseEvent", {
                     "type": "mousePressed",
                     "x": x,
@@ -734,11 +760,9 @@ class CDPSupervisor:
         if not selector:
             return {"error": "Нет селектора"}
         
-        # Кликаем по полю
         await self._humanized_click(ref_id)
         await asyncio.sleep(random.uniform(0.1, 0.3))
         
-        # Вводим по символам
         for char in text:
             await self._send("Input.dispatchKeyEvent", {
                 "type": "keyDown",
@@ -977,24 +1001,22 @@ async def ask_agnes(prompt: str, page_desc: str) -> dict:
     }
     
     AGENT_CODE = """
-Ты агент для управления браузером.
+🤖 АГЕНТ ДЛЯ УПРАВЛЕНИЯ БРАУЗЕРОМ
 
-⚠️ ВАЖНО: Используй ТОЛЬКО Ref ID из snapshot!
+📌 ДОСТУПНЫЕ ДЕЙСТВИЯ (ТОЛЬКО Ref ID):
+1. navigate(url) - открыть сайт
+2. click(ref) - кликнуть по элементу
+3. fill(ref, value) - заполнить поле
+4. press_enter() - нажать Enter
+5. screenshot() - скриншот
+6. answer(text) - ответить
+7. handle_dialog(accept) - обработать диалог
 
-ДОСТУПНЫЕ ДЕЙСТВИЯ:
-- navigate(url) - открыть сайт
-- click(ref) - кликнуть по элементу (ref = "e8")
-- fill(ref, value) - заполнить поле (ref = "e5", value = "текст")
-- press_enter() - нажать Enter
-- screenshot() - сделать скриншот
-- answer(text) - ответить пользователю
-- handle_dialog(accept) - обработать диалог
-
-📌 ФОРМАТ ОТВЕТА (ТОЛЬКО Ref ID):
+📌 ПРИМЕРЫ:
 {"action": "click", "params": {"ref": "e8"}}
 {"action": "fill", "params": {"ref": "e5", "value": "Spinoza"}}
 
-⚠️ НЕ ИСПОЛЬЗУЙ ТЕКСТ! ТОЛЬКО REF ID!
+⚠️ НЕ ИСПОЛЬЗУЙ selector/text — ТОЛЬКО Ref ID!
 ОТВЕЧАЙ ТОЛЬКО JSON!
 """
     
