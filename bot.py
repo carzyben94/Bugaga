@@ -1283,8 +1283,7 @@ class CDPClient:
 
 clients = {}
 
-# ---------- КОД АГЕНТА (ИСПРАВЛЕН) ----------
-
+# ---------- КОД АГЕНТА ----------
 AGENT_CODE = """
 Ты агент для управления браузером.
 
@@ -1298,10 +1297,11 @@ AGENT_CODE = """
 - screenshot() - сделать скриншот
 - answer(text) - ответить пользователю
 - handle_dialog(accept, prompt_text) - обработать диалог
+- set_dialog_policy(policy) - установить политику диалогов
 
 📌 ФОРМАТ ОТВЕТА (ТОЛЬКО Ref ID):
-{{"action": "click", "params": {{"ref": "e8"}}}}
-{{"action": "fill", "params": {{"ref": "e5", "value": "Spinoza"}}}}
+{"action": "click", "params": {"ref": "e8"}}
+{"action": "fill", "params": {"ref": "e5", "value": "Spinoza"}}
 
 ⚠️ НЕ ИСПОЛЬЗУЙ ТЕКСТ! ТОЛЬКО REF ID!
 ОТВЕЧАЙ ТОЛЬКО JSON!
@@ -1457,7 +1457,7 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
             result = await client.set_dialog_policy(policy)
             if result:
                 return f"📋 Политика диалогов изменена на: {policy}"
-            return f"❌ Неверная политика: {policy}"
+            return f"❌ Неверная политика: {policy}. Доступные: must_respond, auto_dismiss, auto_accept"
         
         elif action_type == "cdp":
             method = params.get("method")
@@ -1607,4 +1607,4 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
-    main() 
+    main()
