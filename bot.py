@@ -83,21 +83,19 @@ def start_chrome():
         return False
 
 def get_page_ws_url():
-    """Получает WebSocket URL для ПЕРВОЙ вкладки (не для браузера!)"""
+    """Получает WebSocket URL для ПЕРВОЙ вкладки"""
     try:
         response = requests.get("http://localhost:9222/json")
         pages = response.json()
         
         file_logger.log(f"📄 Доступные страницы: {len(pages)}")
         
-        # Берём первую страницу
         for page in pages:
             if page.get("type") == "page":
                 ws_url = page.get("webSocketDebuggerUrl")
                 file_logger.log(f"✅ WebSocket страницы: {ws_url}")
                 return ws_url
         
-        # Если нет страниц, создаём
         file_logger.log("⚠️ Нет страниц, создаю новую...")
         return None
         
@@ -106,7 +104,7 @@ def get_page_ws_url():
         return None
 
 def create_page():
-    """Создаёт новую страницу и возвращает её WebSocket URL"""
+    """Создаёт новую страницу"""
     try:
         response = requests.get("http://localhost:9222/json/new?about:blank")
         data = response.json()
@@ -127,16 +125,13 @@ class CDPClient:
         self.user_id = None
     
     async def connect(self):
-        """Подключение к странице, а не к браузеру"""
         if self.connected:
             return True
         
         file_logger.log(f"Подключение для пользователя {self.user_id}")
         
-        # Получаем WebSocket URL страницы
         ws_url = get_page_ws_url()
         if not ws_url:
-            # Создаём новую страницу
             ws_url = create_page()
         
         if not ws_url:
@@ -148,7 +143,6 @@ class CDPClient:
             self.connected = True
             file_logger.log("✅ WebSocket подключен к странице")
             
-            # Включаем Page и Runtime
             await self._send("Page.enable", {})
             await self._send("Runtime.enable", {})
             file_logger.log("✅ Page.enable и Runtime.enable")
@@ -160,7 +154,6 @@ class CDPClient:
             return False
     
     async def _send(self, method, params=None):
-        """Отправка запроса (sessionId не нужен для прямого подключения к странице)"""
         if not self.connected:
             await self.connect()
         
@@ -178,10 +171,8 @@ class CDPClient:
             
             if "error" in data:
                 file_logger.log(f"❌ {method}: {data['error']}", "ERROR")
-                logger.error(f"❌ {method}: {data['error']}")
             else:
                 file_logger.log(f"✅ {method}")
-                logger.info(f"✅ {method}")
             
             return data
         except Exception as e:
@@ -190,7 +181,9 @@ class CDPClient:
     
     async def navigate(self, url):
         file_logger.log(f"Навигация на {url}")
-        return await self._send("Page.navigate", {"url": url})
+        resp = await self._send("Page.navigate", {"url": url})
+        time.sleep(3)
+        return resp
     
     async def eval_js(self, code):
         resp = await self._send("Runtime.evaluate", {"expression": code})
@@ -199,31 +192,57 @@ class CDPClient:
         return None
     
     async def screenshot(self):
+        """Скриншот страницы"""
         try:
             # Проверяем страницу
             title = await self.eval_js("document.title")
             file_logger.log(f"📄 Заголовок: {title}")
             
             if not title or title == "":
-                file_logger.log("🌐 Открываю Google...")
+                file_logger.log("🌐 Открываю Google для скриншота...")
                 await self.navigate("https://google.com")
                 time.sleep(2)
             
+            # Делаем скриншот с полным логированием
+            file_logger.log("📸 Делаю скриншот...")
+            
             resp = await self._send("Page.captureScreenshot", {
                 "format": "png",
-                "captureBeyondViewport": True
+                "captureBeyondViewport": True,
+                "fromSurface": True
             })
             
+            # Логируем полный ответ
+            file_logger.log(f"📸 Ответ CDP: {json.dumps(resp, indent=2)}")
+            
+            # Проверяем результат
             if "result" in resp and "data" in resp["result"]:
                 file_logger.log("✅ Скриншот сделан")
                 return base64.b64decode(resp["result"]["data"])
             else:
-                file_logger.log(f"❌ Ошибка: {resp}", "ERROR")
+                # Пробуем без captureBeyondViewport
+                file_logger.log("⚠️ Повторная попытка без captureBeyondViewport")
+                resp2 = await self._send("Page.captureScreenshot", {
+                    "format": "png"
+                })
+                
+                file_logger.log(f"📸 Ответ CDP (2): {json.dumps(resp2, indent=2)}")
+                
+                if "result" in resp2 and "data" in resp2["result"]:
+                    file_logger.log("✅ Скриншот сделан (повторная попытка)")
+                    return base64.b64decode(resp2["result"]["data"])
+                
+                file_logger.log(f"❌ Ошибка скриншота: {resp}", "ERROR")
                 return None
                 
         except Exception as e:
             file_logger.log(f"❌ Screenshot error: {e}", "ERROR")
             return None
+    
+    async def close(self):
+        if self.ws:
+            await self.ws.close()
+            self.connected = False
 
 # ---------- Хранилище ----------
 
@@ -243,9 +262,18 @@ async def ask_agnes(prompt: str) -> dict:
     }
     
     system_prompt = """
-    Ты AI-агент для управления браузером.
-    Отвечай ТОЛЬКО JSON:
-    {"action": "navigate|screenshot|js|click|fill", "params": {...}}
+    Ты AI-агент для управления браузером через CDP.
+    
+    Доступные действия (возвращай ТОЛЬКО JSON):
+    {
+        "action": "navigate|screenshot|js|click|fill",
+        "params": {...}
+    }
+    
+    Примеры:
+    {"action": "navigate", "params": {"url": "https://youtube.com"}}
+    {"action": "screenshot", "params": {}}
+    {"action": "js", "params": {"code": "document.title"}}
     """
     
     data = {
@@ -263,7 +291,7 @@ async def ask_agnes(prompt: str) -> dict:
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
         
-        file_logger.log(f"Agnes ответ: {content[:100]}...")
+        file_logger.log(f"Agnes ответ: {content[:200]}...")
         
         json_match = re.search(r'\{.*\}', content, re.DOTALL)
         if json_match:
@@ -282,7 +310,6 @@ async def execute_action(client: CDPClient, action: dict) -> str:
     if action_type == "navigate":
         url = params.get("url", "https://google.com")
         await client.navigate(url)
-        time.sleep(2)
         title = await client.eval_js("document.title")
         return f"✅ Открыл: {url}\n📄 {title}"
     
@@ -299,8 +326,40 @@ async def execute_action(client: CDPClient, action: dict) -> str:
         result = await client.eval_js(code)
         return f"✅ Результат: {result}"
     
+    elif action_type == "click":
+        selector = params.get("selector")
+        code = f"""
+        (function() {{
+            const el = document.querySelector('{selector}');
+            if (el) {{
+                el.click();
+                return '✅ Кликнул: {selector}';
+            }}
+            return '❌ Элемент не найден: {selector}';
+        }})()
+        """
+        result = await client.eval_js(code)
+        return result
+    
+    elif action_type == "fill":
+        selector = params.get("selector")
+        value = params.get("value", "")
+        code = f"""
+        (function() {{
+            const el = document.querySelector('{selector}');
+            if (el) {{
+                el.value = '{value}';
+                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                return '✅ Заполнил: {selector} = {value}';
+            }}
+            return '❌ Элемент не найден: {selector}';
+        }})()
+        """
+        result = await client.eval_js(code)
+        return result
+    
     else:
-        return f"⚠️ Неизвестно: {action_type}"
+        return f"⚠️ Неизвестное действие: {action_type}"
 
 # ---------- Прямые команды ----------
 
@@ -310,13 +369,11 @@ async def execute_command(client: CDPClient, command: str) -> str:
     
     if "google" in cmd or "гугл" in cmd:
         await client.navigate("https://google.com")
-        time.sleep(2)
         title = await client.eval_js("document.title")
         return f"✅ Открыл Google\n📄 {title}"
     
     if "ютуб" in cmd or "youtube" in cmd:
         await client.navigate("https://youtube.com")
-        time.sleep(2)
         title = await client.eval_js("document.title")
         return f"✅ Открыл YouTube\n📄 {title}"
     
@@ -330,7 +387,6 @@ async def execute_command(client: CDPClient, command: str) -> str:
     
     if cmd.startswith("http"):
         await client.navigate(cmd)
-        time.sleep(2)
         title = await client.eval_js("document.title")
         return f"✅ Открыл\n📄 {title}"
     
@@ -391,10 +447,12 @@ async def cdp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pages = response.json()
         
         status_text = f"✅ **Браузер активен**\n\n"
-        status_text += f"📄 Страниц: {len(pages)}\n"
+        status_text += f"📄 Страниц: {len(pages)}\n\n"
         
         for page in pages[:3]:
-            status_text += f"• {page.get('title', 'без названия')[:30]}\n"
+            title = page.get('title', 'без названия')[:30]
+            url = page.get('url', '')[:40]
+            status_text += f"• {title}\n  {url}\n\n"
         
         await update.message.reply_text(status_text)
     except Exception as e:
