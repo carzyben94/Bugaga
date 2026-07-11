@@ -205,12 +205,10 @@ class CDPClient:
             if "result" in resp:
                 result_obj = resp["result"]
                 
-                # Проверяем на ошибки выполнения
                 if "exceptionDetails" in result_obj:
                     file_logger.log(f"❌ JS ошибка: {result_obj['exceptionDetails']}", "ERROR")
                     return None
                 
-                # Парсим RemoteObject
                 if "result" in result_obj:
                     remote = result_obj["result"]
                     if remote.get("type") == "undefined":
@@ -218,7 +216,6 @@ class CDPClient:
                     if "value" in remote:
                         return remote["value"]
                     if "objectId" in remote:
-                        # Для сложных объектов пробуем получить через другой метод
                         return remote
                 
                 if "value" in result_obj:
@@ -230,29 +227,11 @@ class CDPClient:
             return None
     
     async def get_maximum_snapshot(self):
-        """МАКСИМАЛЬНО полный слепок страницы"""
+        """МАКСИМАЛЬНО полный слепок страницы - находит ЛЮБЫЕ поля"""
         try:
             file_logger.log("📸 Делаю максимальный слепок...")
             
-            # 1. DOM дерево
-            dom = await self.send("DOM.getDocument", {
-                "depth": -1,
-                "pierce": True,
-                "includeShadowRoots": True
-            })
-            
-            # 2. Снимок со стилями
-            snapshot = await self.send("DOMSnapshot.captureSnapshot", {
-                "computedStyles": [
-                    "display", "visibility", "position", 
-                    "color", "font-size", "background-color",
-                    "width", "height", "margin", "padding",
-                    "border", "cursor", "pointer-events"
-                ],
-                "includeDOMRects": True
-            })
-            
-            # 3. ВСЕ элементы с полной информацией
+            # Получаем ВСЕ элементы с полной информацией
             elements = await self.eval_js("""
                 (function() {
                     const result = [];
@@ -267,20 +246,17 @@ class CDPClient:
                                        style.display !== 'none' && 
                                        style.visibility !== 'hidden';
                         
-                        const interactive = ['a', 'button', 'input', 'select', 'textarea'].includes(tag) ||
-                                           el.getAttribute('role') === 'button' ||
-                                           el.getAttribute('onclick') !== null ||
-                                           el.getAttribute('tabindex') !== null;
-                        
                         const attrs = {};
                         for (const attr of el.attributes) {
                             attrs[attr.name] = attr.value;
                         }
                         
+                        // Все важные элементы
                         const important = ['a', 'button', 'input', 'textarea', 'select', 'form',
                                           'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'img', 'video',
                                           'iframe', 'div', 'span', 'section', 'article', 'nav',
-                                          'header', 'footer', 'main', 'aside', 'ul', 'ol', 'li'];
+                                          'header', 'footer', 'main', 'aside', 'ul', 'ol', 'li',
+                                          'label', 'option', 'legend', 'fieldset', 'dialog'];
                         
                         if (important.includes(tag)) {
                             result.push({
@@ -290,8 +266,6 @@ class CDPClient:
                                 class: el.className || '',
                                 attrs: attrs,
                                 visible: visible,
-                                interactive: interactive,
-                                disabled: el.disabled || false,
                                 x: Math.round(rect.x),
                                 y: Math.round(rect.y),
                                 width: Math.round(rect.width),
@@ -303,13 +277,10 @@ class CDPClient:
                                     color: style.color,
                                     fontSize: style.fontSize,
                                     backgroundColor: style.backgroundColor,
-                                    cursor: style.cursor,
-                                    pointerEvents: style.pointerEvents,
-                                    opacity: style.opacity
+                                    cursor: style.cursor
                                 },
                                 parent: el.parentElement ? el.parentElement.tagName.toLowerCase() : null,
-                                children: el.children.length,
-                                hasShadow: el.shadowRoot ? true : false
+                                children: el.children.length
                             });
                         }
                     });
@@ -324,60 +295,86 @@ class CDPClient:
             title = await self.eval_js("document.title") or "Нет заголовка"
             url = await self.eval_js("window.location.href") or "Нет URL"
             
-            # Фильтруем элементы
-            buttons = []
-            inputs = []
-            links = []
-            forms = []
-            headings = []
-            interactive = []
-            visible = []
+            # УНИВЕРСАЛЬНЫЙ ПОИСК ПОЛЕЙ - ЛЮБЫЕ ПОЛЯ
+            all_fields = []
             
+            # 1. input (все типы)
+            inputs = [e for e in elements if e.get('tag') == 'input']
+            for inp in inputs:
+                attrs = inp.get('attrs', {})
+                inp['field_type'] = 'input'
+                inp['field_selector'] = f"input[name='{attrs.get('name', '')}']" if attrs.get('name') else f"input[type='{attrs.get('type', 'text')}']"
+                all_fields.append(inp)
+            
+            # 2. textarea
+            textareas = [e for e in elements if e.get('tag') == 'textarea']
+            for ta in textareas:
+                attrs = ta.get('attrs', {})
+                ta['field_type'] = 'textarea'
+                ta['field_selector'] = f"textarea[name='{attrs.get('name', '')}']" if attrs.get('name') else "textarea"
+                all_fields.append(ta)
+            
+            # 3. select (выпадающие списки)
+            selects = [e for e in elements if e.get('tag') == 'select']
+            for sel in selects:
+                attrs = sel.get('attrs', {})
+                sel['field_type'] = 'select'
+                sel['field_selector'] = f"select[name='{attrs.get('name', '')}']" if attrs.get('name') else "select"
+                all_fields.append(sel)
+            
+            # 4. div с contenteditable (редактируемые)
+            contenteditables = [e for e in elements if e.get('attrs', {}).get('contenteditable') == 'true']
+            for ce in contenteditables:
+                ce['field_type'] = 'contenteditable'
+                ce['field_selector'] = ce.get('id') and f"#{ce.get('id')}" or ce.get('class') and f".{ce.get('class').split(' ').join('.')}" or "div[contenteditable='true']"
+                all_fields.append(ce)
+            
+            # 5. Любые элементы с role="textbox", "searchbox", "combobox"
+            roles = [e for e in elements if e.get('attrs', {}).get('role') in ['textbox', 'searchbox', 'combobox']]
+            for role in roles:
+                role['field_type'] = 'role'
+                role['field_selector'] = role.get('id') and f"#{role.get('id')}" or f"[role='{role.get('attrs', {}).get('role')}']"
+                all_fields.append(role)
+            
+            # Фильтруем кнопки
+            buttons = []
             for el in elements:
                 tag = el.get('tag', '')
                 attrs = el.get('attrs', {})
-                
-                # Кнопки
                 if tag == 'button' or (tag == 'input' and attrs.get('type') in ['submit', 'button']):
                     buttons.append(el)
-                # Поля ввода
-                elif tag == 'input' and attrs.get('type') not in ['hidden', 'submit', 'button']:
-                    inputs.append(el)
-                # Ссылки
-                elif tag == 'a' and attrs.get('href'):
-                    links.append(el)
-                # Формы
-                elif tag == 'form':
-                    forms.append(el)
-                # Заголовки
-                elif tag in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
-                    headings.append(el)
-                
-                # Интерактивные
-                if el.get('interactive') and el.get('visible'):
-                    interactive.append(el)
-                
-                # Видимые
-                if el.get('visible'):
-                    visible.append(el)
+            
+            # Ссылки
+            links = [e for e in elements if e.get('tag') == 'a' and e.get('attrs', {}).get('href')]
+            
+            # Формы
+            forms = [e for e in elements if e.get('tag') == 'form']
+            
+            # Заголовки
+            headings = [e for e in elements if e.get('tag') in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']]
+            
+            # Видимые элементы
+            visible = [e for e in elements if e.get('visible')]
             
             self.full_snapshot = {
                 "title": title,
                 "url": url,
                 "total": len(elements),
-                "dom": dom,
-                "snapshot": snapshot,
                 "all_elements": elements[:500],
                 "buttons": buttons,
+                "fields": all_fields,  # ← ВСЕ ПОЛЯ!
                 "inputs": inputs,
+                "textareas": textareas,
+                "selects": selects,
+                "contenteditables": contenteditables,
+                "roles": roles,
                 "links": links,
                 "forms": forms,
                 "headings": headings,
-                "visible": visible,
-                "interactive": interactive
+                "visible": visible
             }
             
-            file_logger.log(f"✅ Максимальный слепок: {len(elements)} элементов, {len(buttons)} кнопок, {len(inputs)} полей")
+            file_logger.log(f"✅ Максимальный слепок: {len(elements)} элементов, {len(buttons)} кнопок, {len(all_fields)} полей")
             return True
             
         except Exception as e:
@@ -385,7 +382,7 @@ class CDPClient:
             return False
     
     async def get_page_description(self):
-        """Возвращает максимальное описание страницы"""
+        """Возвращает максимальное описание страницы с ВСЕМИ полями"""
         if not self.full_snapshot:
             await self.get_maximum_snapshot()
         
@@ -401,19 +398,28 @@ class CDPClient:
 """
         for el in info.get('buttons', [])[:20]:
             text = el.get('text', '') or el.get('attrs', {}).get('value', '')
-            tag = el.get('tag', '')
             if text:
                 desc += f"  • {text[:30]}\n"
             else:
-                desc += f"  • <{tag}>\n"
+                desc += f"  • <{el.get('tag', '')}>\n"
         
         desc += f"\n─────────────────────────────────\n"
-        desc += f"📝 **ПОЛЯ ВВОДА ({len(info.get('inputs', []))}):**\n"
-        for el in info.get('inputs', [])[:20]:
+        desc += f"📝 **ВСЕ ПОЛЯ ВВОДА ({len(info.get('fields', []))}):**\n"
+        for el in info.get('fields', [])[:30]:
             attrs = el.get('attrs', {})
-            placeholder = attrs.get('placeholder', '')
+            field_type = el.get('field_type', 'unknown')
+            
+            # Определяем название поля
             name = attrs.get('name', '')
-            desc += f"  • {placeholder or name or 'поле'}\n"
+            placeholder = attrs.get('placeholder', '')
+            label = attrs.get('aria-label', '')
+            title = attrs.get('title', '')
+            field_name = name or placeholder or label or title or f"{field_type}"
+            
+            # Показываем селектор
+            selector = el.get('field_selector', '')
+            
+            desc += f"  • {field_name[:30]} → {field_type} → selector: {selector}\n"
         
         desc += f"\n─────────────────────────────────\n"
         desc += f"🔗 **ССЫЛКИ ({len(info.get('links', []))}):**\n"
@@ -422,6 +428,13 @@ class CDPClient:
             href = el.get('attrs', {}).get('href', '')[:50]
             if text:
                 desc += f"  • {text} → {href}\n"
+        
+        desc += f"\n─────────────────────────────────\n"
+        desc += f"📋 **ФОРМЫ ({len(info.get('forms', []))}):**\n"
+        for el in info.get('forms', [])[:5]:
+            action = el.get('attrs', {}).get('action', '')
+            method = el.get('attrs', {}).get('method', '')
+            desc += f"  • action: {action[:30]}, method: {method}\n"
         
         desc += f"\n─────────────────────────────────\n"
         desc += f"👁️ **ВИДИМЫЕ ЭЛЕМЕНТЫ ({len(info.get('visible', []))}):**\n"
@@ -600,10 +613,17 @@ AGENT_CODE = """
 
 📝 **КАК ВЫБИРАТЬ СЕЛЕКТОРЫ:**
 - По ID: "#search"
-- По классу: ".gLFyf"
+- По классу: ".gLFyf"  
 - По типу: "input[type='text']"
 - По имени: "input[name='q']"
 - По тексту: "button:contains('Войти')"
+
+⚠️ **ПОЛЯ МОГУТ БЫТЬ:**
+- input (все типы)
+- textarea
+- select (выпадающие списки)
+- contenteditable (редактируемые div)
+- role="textbox", role="searchbox"
 """
 
 # ---------- Агент ----------
@@ -812,11 +832,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🧠 **МАКСИМАЛЬНЫЙ АГЕНТ**\n\n"
-        "Я вижу ВСЁ на странице!\n\n"
+        "Я вижу ВСЁ на странице, включая ЛЮБЫЕ поля:\n"
+        "• input (все типы)\n"
+        "• textarea\n"
+        "• select (выпадающие списки)\n"
+        "• contenteditable\n"
+        "• role='textbox', role='searchbox'\n\n"
         "💡 **Примеры команд:**\n"
         "• Открой Google\n"
-        "• Нажми на кнопку Войти\n"
-        "• Введи в поле текст Привет\n"
+        "• Какие поля есть на странице?\n"
+        "• Введи в поле поиска текст Привет\n"
         "• Нажми Enter\n"
         "• Что ты видишь?\n"
         "• Сделай скриншот\n\n"
