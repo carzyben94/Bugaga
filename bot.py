@@ -100,7 +100,6 @@ class CDPClient:
             "params": params or {}
         }
         
-        # sessionId для Page.* и Runtime.*
         if method.startswith("Page.") or method.startswith("Runtime.") or method.startswith("Network."):
             if self.session_id:
                 msg["sessionId"] = self.session_id
@@ -123,7 +122,7 @@ class CDPClient:
     async def navigate(self, url):
         """Переход по URL"""
         resp = await self.send("Page.navigate", {"url": url})
-        time.sleep(2)
+        time.sleep(3)
         return resp
     
     async def eval_js(self, code):
@@ -134,19 +133,31 @@ class CDPClient:
         return None
     
     async def screenshot(self):
-        """Скриншот страницы (без Page.enable)"""
+        """Скриншот страницы"""
         try:
+            # Проверяем, что страница загружена
+            title = await self.eval_js("document.title")
+            logger.info(f"📄 Текущая страница: {title}")
+            
+            # Если страница пустая, открываем Google
+            if not title or title == "":
+                logger.info("🌐 Открываю Google для скриншота...")
+                await self.navigate("https://google.com")
+            
+            # Делаем скриншот
             resp = await self.send("Page.captureScreenshot", {
                 "format": "png",
                 "captureBeyondViewport": True,
                 "fromSurface": True
             })
             
-            if "result" in resp:
+            logger.info(f"📸 Ответ CDP: {json.dumps(resp, indent=2)[:200]}")
+            
+            if "result" in resp and "data" in resp["result"]:
                 logger.info("✅ Скриншот сделан")
                 return base64.b64decode(resp["result"]["data"])
             else:
-                logger.error(f"❌ Screenshot error: {resp}")
+                logger.error(f"❌ Ошибка скриншота: {resp}")
                 return None
                 
         except Exception as e:
@@ -336,6 +347,10 @@ async def execute_command(client: CDPClient, command: str) -> str:
         title = await client.eval_js("document.title")
         return f"📄 Заголовок: {title}"
     
+    if "текст" in cmd or "читай" in cmd:
+        text = await client.eval_js("document.body.innerText.slice(0, 500)")
+        return f"📄 Текст:\n{text}..."
+    
     return """
 🤖 **Управление браузером**
 
@@ -345,6 +360,7 @@ async def execute_command(client: CDPClient, command: str) -> str:
 • "Сделай скриншот" — скриншот страницы
 • "https://example.com" — открыть любой URL
 • "Заголовок" — показать заголовок
+• "Текст" — показать текст страницы
 """
 
 # ---------- Обработчик ----------
