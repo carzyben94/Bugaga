@@ -1,4 +1,3 @@
- 
 FROM python:3.14-slim
 
 # Установка зависимостей
@@ -24,30 +23,34 @@ RUN apt-get update && apt-get install -y \
     xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Установка Google Chrome (новый способ без apt-key)
+# Установка Google Chrome (последняя версия)
 RUN curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome-keyring.gpg \
-    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
-
-RUN apt-get update && apt-get install -y google-chrome-stable \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
+    && apt-get update \
+    && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
-# Проверка установки
-RUN google-chrome --version || echo "Google Chrome installed"
+# Проверка версии
+RUN google-chrome --version
 
 # Переменные окружения
 ENV CHROME_PATH=/usr/bin/google-chrome
 ENV CHROME_BIN=/usr/bin/google-chrome
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV DISPLAY=:99  # Для headless режима
 
 WORKDIR /app
 
 # Установка Python зависимостей
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
 
 # Копирование бота
 COPY bot.py .
+
+# Проверка Chrome
+RUN google-chrome --version && which google-chrome
 
 CMD ["python", "-u", "bot.py"]
