@@ -8,7 +8,6 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, filters, MessageHandler
 import websockets
 import base64
-import re
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -26,9 +25,61 @@ AGNES_API_URL = os.getenv("AGNES_API_URL", "https://api.agnes.ai/v1/chat/complet
 CHROME_PATH = "/usr/bin/google-chrome"
 chrome_ws_url = None
 cdp_protocol = None
-cdp_full_docs = ""  # Полная документация в текстовом виде
+cdp_full_docs = ""
 
-# ---------- Загрузка CDP протокола ----------
+# ---------- Функции запуска Chrome ----------
+
+def start_chrome():
+    """Запускает Chrome в фоновом режиме"""
+    try:
+        # Проверяем, не запущен ли уже Chrome
+        result = subprocess.run(
+            ["pgrep", "-f", "google-chrome"],
+            capture_output=True,
+            text=True
+        )
+        
+        if result.stdout:
+            logger.info("✅ Chrome уже запущен")
+            return True
+        
+        # Запускаем Chrome
+        chrome_cmd = [
+            CHROME_PATH,
+            "--headless",
+            "--remote-debugging-port=9222",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--user-data-dir=/tmp/chrome-profile"
+        ]
+        
+        subprocess.Popen(
+            chrome_cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True
+        )
+        
+        time.sleep(3)
+        logger.info("✅ Chrome запущен на порту 9222")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка запуска Chrome: {e}")
+        return False
+
+def get_websocket_url():
+    """Получает WebSocket URL для Chrome"""
+    global chrome_ws_url
+    try:
+        response = requests.get("http://localhost:9222/json/version")
+        data = response.json()
+        chrome_ws_url = data.get("webSocketDebuggerUrl")
+        return chrome_ws_url
+    except Exception as e:
+        logger.error(f"Ошибка получения WebSocket URL: {e}")
+        return None
 
 def load_cdp_protocol():
     """Загружает полную спецификацию CDP"""
@@ -38,139 +89,103 @@ def load_cdp_protocol():
         response = requests.get("http://localhost:9222/json/protocol")
         cdp_protocol = response.json()
         
-        # Преобразуем в читаемый текст
-        cdp_full_docs = format_cdp_docs(cdp_protocol)
+        # Краткая информация о доменах
+        domains = cdp_protocol.get("domains", [])
+        cdp_full_docs = f"📚 CDP содержит {len(domains)} доменов.\n\n"
         
-        logger.info(f"✅ Загружена CDP спецификация: {len(cdp_protocol.get('domains', []))} доменов")
-        logger.info(f"📄 Размер документации: {len(cdp_full_docs)} символов")
+        # Список всех доменов и их команд (сжато для токенов)
+        for domain in domains[:15]:  # Ограничиваем для размера
+            domain_name = domain.get("domain", "")
+            commands = [cmd.get("name") for cmd in domain.get("commands", [])[:10]]
+            cdp_full_docs += f"**{domain_name}**: {', '.join(commands)}\n"
+        
+        logger.info(f"✅ Загружена CDP спецификация: {len(domains)} доменов")
         return cdp_protocol
     except Exception as e:
         logger.error(f"❌ Ошибка загрузки CDP протокола: {e}")
         return None
 
-def format_cdp_docs(protocol):
-    """Преобразует CDP протокол в читаемый текст для агента"""
-    docs = []
-    docs.append("# ПОЛНАЯ СПЕЦИФИКАЦИЯ CDP (Chrome DevTools Protocol)\n")
-    
-    for domain in protocol.get("domains", []):
-        domain_name = domain.get("domain", "")
-        docs.append(f"\n## Домен: {domain_name}")
-        docs.append(f"Описание: {domain.get('description', 'Нет описания')}\n")
-        
-        # Команды
-        if domain.get("commands"):
-            docs.append(f"### Команды ({len(domain['commands'])}):")
-            for cmd in domain["commands"]:
-                cmd_name = cmd.get("name", "")
-                docs.append(f"\n#### {domain_name}.{cmd_name}")
-                docs.append(f"Описание: {cmd.get('description', 'Нет описания')}")
-                
-                if cmd.get("parameters"):
-                    docs.append("Параметры:")
-                    for param in cmd["parameters"]:
-                        name = param.get("name", "")
-                        ptype = param.get("type", "any")
-                        desc = param.get("description", "")
-                        optional = " (опционально)" if param.get("optional") else ""
-                        docs.append(f"  - {name}: {ptype}{optional} - {desc}")
-                
-                if cmd.get("returns"):
-                    docs.append("Возвращает:")
-                    for ret in cmd["returns"]:
-                        name = ret.get("name", "")
-                        rtype = ret.get("type", "any")
-                        desc = ret.get("description", "")
-                        docs.append(f"  - {name}: {rtype} - {desc}")
-        
-        # События
-        if domain.get("events"):
-            docs.append(f"\n### События ({len(domain['events'])}):")
-            for event in domain["events"]:
-                event_name = event.get("name", "")
-                docs.append(f"\n#### {domain_name}.{event_name}")
-                docs.append(f"Описание: {event.get('description', 'Нет описания')}")
-                
-                if event.get("parameters"):
-                    docs.append("Параметры:")
-                    for param in event["parameters"]:
-                        name = param.get("name", "")
-                        ptype = param.get("type", "any")
-                        desc = param.get("description", "")
-                        docs.append(f"  - {name}: {ptype} - {desc}")
-        
-        # Типы
-        if domain.get("types"):
-            docs.append(f"\n### Типы ({len(domain['types'])}):")
-            for typ in domain["types"]:
-                typ_name = typ.get("id", "")
-                docs.append(f"\n#### {domain_name}.{typ_name}")
-                docs.append(f"Описание: {typ.get('description', 'Нет описания')}")
-                
-                if typ.get("properties"):
-                    docs.append("Свойства:")
-                    for prop in typ["properties"]:
-                        name = prop.get("name", "")
-                        ptype = prop.get("type", "any")
-                        desc = prop.get("description", "")
-                        docs.append(f"  - {name}: {ptype} - {desc}")
-        
-        docs.append("\n" + "-" * 50 + "\n")
-    
-    return "\n".join(docs)
+# ---------- CDP Команды ----------
 
-# ---------- Agnes AI с ВСЕЙ документацией ----------
+async def cdp_send(method: str, params: dict = None, session_id: str = None):
+    """Отправляет команду в Chrome через CDP"""
+    global chrome_ws_url
+    
+    if not chrome_ws_url:
+        chrome_ws_url = get_websocket_url()
+        if not chrome_ws_url:
+            raise Exception("Chrome WebSocket URL не получен")
+    
+    async with websockets.connect(chrome_ws_url) as websocket:
+        message = {
+            "id": int(time.time() * 1000),
+            "method": method,
+            "params": params or {}
+        }
+        if session_id:
+            message["sessionId"] = session_id
+        
+        await websocket.send(json.dumps(message))
+        response = await websocket.recv()
+        return json.loads(response)
+
+async def create_tab(url: str = "about:blank"):
+    """Создаёт новую вкладку"""
+    response = await cdp_send("Target.createTarget", {"url": url})
+    return response["result"]["targetId"]
+
+async def attach_to_page(page_id: str):
+    """Подключается к странице"""
+    response = await cdp_send("Target.attachToTarget", {"targetId": page_id})
+    return response["result"]["sessionId"]
+
+async def evaluate_js(session_id: str, expression: str):
+    """Выполняет JavaScript на странице"""
+    response = await cdp_send(
+        "Runtime.evaluate",
+        {"expression": expression},
+        session_id
+    )
+    
+    if "result" in response:
+        result = response["result"].get("result", {})
+        return result.get("value", result.get("description", "undefined"))
+    return "❌ Ошибка выполнения JS"
+
+# ---------- Agnes AI ----------
 
 async def ask_agnes(prompt: str, context: str = "") -> dict:
-    """Отправляет запрос к Agnes API с ПОЛНОЙ документацией CDP"""
+    """Отправляет запрос к Agnes API"""
     
     if not AGNES_API_KEY:
         raise ValueError("AGNES_API_KEY не установлен!")
-    
-    global cdp_full_docs
-    
-    # Загружаем протокол если ещё нет
-    if not cdp_full_docs:
-        load_cdp_protocol()
     
     headers = {
         "Authorization": f"Bearer {AGNES_API_KEY}",
         "Content-Type": "application/json"
     }
     
-    # Обрезаем документацию если слишком большая (для токенов)
-    max_docs_len = 10000  # Ограничиваем для экономии токенов
-    docs_to_send = cdp_full_docs[:max_docs_len]
-    if len(cdp_full_docs) > max_docs_len:
-        docs_to_send += f"\n... (документация обрезана, всего {len(cdp_full_docs)} символов)"
-    
     system_prompt = f"""
     Ты AI-агент с ПОЛНЫМ контролем над браузером через CDP (Chrome DevTools Protocol).
     
-    Вот ПОЛНАЯ документация CDP:
+    Доступные инструменты:
+    1. **exec_cdp(domain, command, params)** - выполнить ЛЮБУЮ CDP команду
+    2. **eval_js(js_code)** - выполнить произвольный JavaScript
     
-    {docs_to_send}
+    Ты можешь делать ВСЁ в браузере!
     
-    📚 Твои инструменты (вызывай через JSON):
-    1. **search_cdp(query)** - искать в документации
-    2. **exec_cdp(domain, command, params)** - выполнить ЛЮБУЮ CDP команду
-    3. **eval_js(js_code)** - выполнить произвольный JavaScript
+    ВСЕГДА используй exec_cdp для навигации: Page.navigate
+    ВСЕГДА используй eval_js для взаимодействия с DOM
     
-    Ты можешь делать ВСЁ! Просто найди нужную команду в документации и выполни её.
+    {cdp_full_docs}
     
     ОТВЕЧАЙ В ФОРМАТЕ JSON:
     {{
-        "reasoning": "почему я выбрал эти действия",
+        "reasoning": "что я делаю",
         "actions": [
-            {{"tool": "search_cdp", "params": {{"query": "Page.navigate"}}}},
-            {{"tool": "exec_cdp", "params": {{"domain": "Page", "command": "navigate", "params": {{"url": "https://google.com"}}}}}}
+            {{"tool": "exec_cdp", "params": {{"domain": "Page", "command": "navigate", "params": {{"url": "https://google.com"}}}}}},
+            {{"tool": "eval_js", "params": {{"code": "document.title"}}}}
         ]
-    }}
-    
-    Если нужно просто ответить:
-    {{
-        "reasoning": "просто отвечаю",
-        "actions": []
     }}
     """
     
@@ -181,7 +196,7 @@ async def ask_agnes(prompt: str, context: str = "") -> dict:
             {"role": "user", "content": f"Контекст: {context}\nЗапрос: {prompt}"}
         ],
         "temperature": 0.3,
-        "max_tokens": 2000
+        "max_tokens": 1000
     }
     
     try:
@@ -199,25 +214,142 @@ async def ask_agnes(prompt: str, context: str = "") -> dict:
         logger.error(f"Agnes API error: {e}")
         return {"reasoning": "ошибка", "actions": [], "error": str(e)}
 
-# ---------- Остальной код (CDP команды, обработчики и т.д.) ----------
+async def execute_tool(tool: str, params: dict, page_id: str, session_id: str) -> str:
+    """Выполняет инструмент агента"""
+    
+    if tool == "exec_cdp":
+        domain = params.get("domain")
+        command = params.get("command")
+        cmd_params = params.get("params", {})
+        
+        method = f"{domain}.{command}"
+        
+        try:
+            if page_id:
+                session_id = await attach_to_page(page_id)
+                response = await cdp_send(method, cmd_params, session_id)
+            else:
+                response = await cdp_send(method, cmd_params)
+            
+            if "result" in response:
+                result = json.dumps(response["result"], indent=2, ensure_ascii=False)
+                return f"✅ {domain}.{command} выполнено: {result[:500]}"
+            else:
+                return f"❌ Ошибка: {response.get('error', {}).get('message', 'Неизвестная ошибка')}"
+                
+        except Exception as e:
+            return f"❌ Ошибка выполнения {domain}.{command}: {str(e)}"
+    
+    elif tool == "eval_js":
+        code = params.get("code", "")
+        try:
+            result = await evaluate_js(session_id, code)
+            return f"✅ JS результат: {result}"
+        except Exception as e:
+            return f"❌ Ошибка JS: {str(e)}"
+    
+    else:
+        return f"⚠️ Неизвестный инструмент: {tool}"
 
-# ... (все остальные функции из предыдущего кода остаются без изменений)
+# ---------- Обработчики ----------
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает сообщения"""
+    
+    if not update.message or not update.message.text:
+        return
+    
+    user_message = update.message.text
+    
+    await update.message.chat.send_action(action="typing")
+    
+    try:
+        page_id = await create_tab()
+        session_id = await attach_to_page(page_id)
+        
+        response = await ask_agnes(user_message)
+        
+        results = []
+        
+        if response.get("reasoning"):
+            results.append(f"🧠 {response['reasoning']}")
+        
+        for action in response.get("actions", []):
+            tool = action.get("tool")
+            params = action.get("params", {})
+            
+            result = await execute_tool(tool, params, page_id, session_id)
+            results.append(result)
+        
+        if results:
+            await update.message.reply_text("\n\n".join(results))
+        else:
+            await update.message.reply_text("✅ Готово!")
+            
+    except Exception as e:
+        logger.error(f"Handle error: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        "🤖 **AI-агент с полным контролем браузера**\n\n"
+        "Просто напиши что нужно сделать!\n\n"
+        "Примеры:\n"
+        "• Открой Google и найди погоду\n"
+        "• Зайди в X.com\n"
+        "• Сделай скриншот\n"
+        "• Напиши сообщение\n\n"
+        "/cdp - статус браузера"
+    )
+
+async def cdp_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Статус браузера"""
+    try:
+        ws_url = get_websocket_url()
+        if not ws_url:
+            await update.message.reply_text("❌ Chrome не доступен")
+            return
+        
+        async with websockets.connect(ws_url) as websocket:
+            await websocket.send(json.dumps({
+                "id": 1,
+                "method": "Browser.getVersion"
+            }))
+            
+            response = await websocket.recv()
+            data = json.loads(response)
+            
+            if "result" in data:
+                version = data["result"].get("product", "Unknown")
+                status_text = f"""✅ **Браузер активен**
+
+📦 Версия: {version}
+🔌 Порт: 9222
+🧠 Агент: Agnes AI
+📊 Статус: Готов к работе"""
+                
+                await update.message.reply_text(status_text)
+            else:
+                await update.message.reply_text("❌ Не удалось получить статус")
+                
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
+# ---------- Main ----------
 
 def main() -> None:
     if not start_chrome():
         logger.warning("⚠️ Chrome не запустился")
     
     get_websocket_url()
-    load_cdp_protocol()  # Загружаем ВСЮ документацию
+    load_cdp_protocol()
     
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("cdp", cdp_command))
-    app.add_handler(CommandHandler("docs", docs_command))
-    app.add_handler(CommandHandler("domains", domains_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    logger.info("🚀 Бот с ПОЛНОЙ CDP документацией запущен!")
+    logger.info("🚀 Бот запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
