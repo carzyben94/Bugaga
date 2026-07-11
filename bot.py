@@ -198,15 +198,32 @@ class CDPClient:
         try:
             resp = await self.send("Runtime.evaluate", {
                 "expression": code,
-                "returnByValue": True
+                "returnByValue": True,
+                "awaitPromise": True
             })
             
             if "result" in resp:
                 result_obj = resp["result"]
+                
+                # Проверяем на ошибки выполнения
+                if "exceptionDetails" in result_obj:
+                    file_logger.log(f"❌ JS ошибка: {result_obj['exceptionDetails']}", "ERROR")
+                    return None
+                
+                # Парсим RemoteObject
                 if "result" in result_obj:
-                    return result_obj["result"].get("value", "")
-                elif "value" in result_obj:
+                    remote = result_obj["result"]
+                    if remote.get("type") == "undefined":
+                        return None
+                    if "value" in remote:
+                        return remote["value"]
+                    if "objectId" in remote:
+                        # Для сложных объектов пробуем получить через другой метод
+                        return remote
+                
+                if "value" in result_obj:
                     return result_obj["value"]
+            
             return None
         except Exception as e:
             file_logger.log(f"❌ eval_js error: {e}", "ERROR")
@@ -299,10 +316,50 @@ class CDPClient:
                     
                     return result;
                 })()
-            """) or []
+            """)
+            
+            if elements is None:
+                elements = []
             
             title = await self.eval_js("document.title") or "Нет заголовка"
             url = await self.eval_js("window.location.href") or "Нет URL"
+            
+            # Фильтруем элементы
+            buttons = []
+            inputs = []
+            links = []
+            forms = []
+            headings = []
+            interactive = []
+            visible = []
+            
+            for el in elements:
+                tag = el.get('tag', '')
+                attrs = el.get('attrs', {})
+                
+                # Кнопки
+                if tag == 'button' or (tag == 'input' and attrs.get('type') in ['submit', 'button']):
+                    buttons.append(el)
+                # Поля ввода
+                elif tag == 'input' and attrs.get('type') not in ['hidden', 'submit', 'button']:
+                    inputs.append(el)
+                # Ссылки
+                elif tag == 'a' and attrs.get('href'):
+                    links.append(el)
+                # Формы
+                elif tag == 'form':
+                    forms.append(el)
+                # Заголовки
+                elif tag in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+                    headings.append(el)
+                
+                # Интерактивные
+                if el.get('interactive') and el.get('visible'):
+                    interactive.append(el)
+                
+                # Видимые
+                if el.get('visible'):
+                    visible.append(el)
             
             self.full_snapshot = {
                 "title": title,
@@ -311,16 +368,16 @@ class CDPClient:
                 "dom": dom,
                 "snapshot": snapshot,
                 "all_elements": elements[:500],
-                "buttons": [e for e in elements if e.get('interactive') and e.get('tag') in ['button', 'a']],
-                "inputs": [e for e in elements if e.get('tag') == 'input' and e.get('attrs', {}).get('type') not in ['hidden', 'submit', 'button']],
-                "links": [e for e in elements if e.get('tag') == 'a' and e.get('attrs', {}).get('href')],
-                "forms": [e for e in elements if e.get('tag') == 'form'],
-                "headings": [e for e in elements if e.get('tag') in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']],
-                "visible": [e for e in elements if e.get('visible')],
-                "interactive": [e for e in elements if e.get('interactive') and e.get('visible')]
+                "buttons": buttons,
+                "inputs": inputs,
+                "links": links,
+                "forms": forms,
+                "headings": headings,
+                "visible": visible,
+                "interactive": interactive
             }
             
-            file_logger.log(f"✅ Максимальный слепок: {len(elements)} элементов, {len(self.full_snapshot.get('buttons', []))} кнопок, {len(self.full_snapshot.get('inputs', []))} полей")
+            file_logger.log(f"✅ Максимальный слепок: {len(elements)} элементов, {len(buttons)} кнопок, {len(inputs)} полей")
             return True
             
         except Exception as e:
@@ -340,16 +397,15 @@ class CDPClient:
 📊 **ВСЕГО ЭЛЕМЕНТОВ:** {info.get('total', 0)}
 
 ─────────────────────────────────
-🔘 **КНОПКИ И ИНТЕРАКТИВНЫЕ ЭЛЕМЕНТЫ ({len(info.get('interactive', []))}):**
+🔘 **КНОПКИ ({len(info.get('buttons', []))}):**
 """
-        for el in info.get('interactive', [])[:20]:
+        for el in info.get('buttons', [])[:20]:
             text = el.get('text', '') or el.get('attrs', {}).get('value', '')
             tag = el.get('tag', '')
-            selector = el.get('id', '') or el.get('class', '') or tag
             if text:
-                desc += f"  • {text[:30]} → selector: {selector}\n"
+                desc += f"  • {text[:30]}\n"
             else:
-                desc += f"  • <{tag}> → selector: {selector}\n"
+                desc += f"  • <{tag}>\n"
         
         desc += f"\n─────────────────────────────────\n"
         desc += f"📝 **ПОЛЯ ВВОДА ({len(info.get('inputs', []))}):**\n"
@@ -357,8 +413,7 @@ class CDPClient:
             attrs = el.get('attrs', {})
             placeholder = attrs.get('placeholder', '')
             name = attrs.get('name', '')
-            selector = f"input[name='{name}']" if name else f"input[placeholder='{placeholder}']"
-            desc += f"  • {placeholder or name or 'поле'} → selector: {selector}\n"
+            desc += f"  • {placeholder or name or 'поле'}\n"
         
         desc += f"\n─────────────────────────────────\n"
         desc += f"🔗 **ССЫЛКИ ({len(info.get('links', []))}):**\n"
@@ -367,13 +422,6 @@ class CDPClient:
             href = el.get('attrs', {}).get('href', '')[:50]
             if text:
                 desc += f"  • {text} → {href}\n"
-        
-        desc += f"\n─────────────────────────────────\n"
-        desc += f"📋 **ФОРМЫ ({len(info.get('forms', []))}):**\n"
-        for el in info.get('forms', [])[:5]:
-            action = el.get('attrs', {}).get('action', '')
-            method = el.get('attrs', {}).get('method', '')
-            desc += f"  • action: {action[:30]}, method: {method}\n"
         
         desc += f"\n─────────────────────────────────\n"
         desc += f"👁️ **ВИДИМЫЕ ЭЛЕМЕНТЫ ({len(info.get('visible', []))}):**\n"
@@ -578,6 +626,13 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
 {page_desc}
 
 📝 **ОТВЕЧАЙ ТОЛЬКО JSON!**
+
+Примеры:
+{{"action": "navigate", "params": {{"url": "https://google.com"}}}}
+{{"action": "click", "params": {{"selector": "button:contains('Войти')"}}}}
+{{"action": "fill", "params": {{"selector": "input[name='q']", "value": "текст"}}}}
+{{"action": "answer", "params": {{"text": "На странице есть поле поиска и кнопка 'Поиск'"}}}}
+{{"action": "screenshot", "params": {{}}}}
 """
 
     data = {
