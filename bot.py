@@ -8,6 +8,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, filters, MessageHandler
 import websockets
 import re
+import base64
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -72,6 +73,7 @@ def get_websocket_url():
         response = requests.get("http://localhost:9222/json/version")
         data = response.json()
         chrome_ws_url = data.get("webSocketDebuggerUrl")
+        logger.info(f"✅ WebSocket URL: {chrome_ws_url}")
         return chrome_ws_url
     except Exception as e:
         logger.error(f"Ошибка получения WebSocket URL: {e}")
@@ -88,28 +90,65 @@ async def cdp_send(method: str, params: dict = None, session_id: str = None):
         if not chrome_ws_url:
             raise Exception("Chrome WebSocket URL не получен")
     
-    async with websockets.connect(chrome_ws_url) as websocket:
-        message = {
-            "id": int(time.time() * 1000),
-            "method": method,
-            "params": params or {}
-        }
-        if session_id:
-            message["sessionId"] = session_id
-        
-        await websocket.send(json.dumps(message))
-        response = await websocket.recv()
-        return json.loads(response)
+    try:
+        async with websockets.connect(chrome_ws_url) as websocket:
+            message = {
+                "id": int(time.time() * 1000),
+                "method": method,
+                "params": params or {}
+            }
+            if session_id:
+                message["sessionId"] = session_id
+            
+            logger.info(f"📤 Отправка: {method}")
+            await websocket.send(json.dumps(message))
+            
+            response = await websocket.recv()
+            data = json.loads(response)
+            logger.info(f"📥 Ответ: {json.dumps(data, indent=2)[:500]}")
+            return data
+            
+    except Exception as e:
+        logger.error(f"❌ CDP ошибка: {e}")
+        return {"error": str(e)}
 
 async def create_tab(url: str = "about:blank"):
     """Создаёт новую вкладку"""
     response = await cdp_send("Target.createTarget", {"url": url})
-    return response["result"]["targetId"]
+    
+    if "result" in response:
+        target_id = response["result"].get("targetId")
+        if target_id:
+            logger.info(f"✅ Создана вкладка: {target_id}")
+            return target_id
+    
+    logger.error(f"❌ Не удалось создать вкладку: {response}")
+    return None
 
 async def attach_to_page(page_id: str):
     """Подключается к странице"""
     response = await cdp_send("Target.attachToTarget", {"targetId": page_id})
-    return response["result"]["sessionId"]
+    
+    if "result" in response:
+        session_id = response["result"].get("sessionId")
+        if session_id:
+            logger.info(f"✅ Подключен к странице: {session_id}")
+            return session_id
+    
+    logger.error(f"❌ Не удалось подключиться: {response}")
+    return None
+
+async def navigate_to(page_id: str, session_id: str, url: str):
+    """Переходит по URL"""
+    response = await cdp_send("Page.navigate", {"url": url}, session_id)
+    
+    if "result" in response:
+        frame_id = response["result"].get("frameId")
+        logger.info(f"✅ Навигация на {url}, frameId: {frame_id}")
+        return True
+    
+    logger.error(f"❌ Ошибка навигации: {response}")
+    return False
 
 async def evaluate_js(session_id: str, expression: str):
     """Выполняет JavaScript на странице"""
@@ -121,50 +160,70 @@ async def evaluate_js(session_id: str, expression: str):
     
     if "result" in response:
         result = response["result"].get("result", {})
-        return result.get("value", result.get("description", "undefined"))
-    return f"❌ Ошибка: {response}"
+        value = result.get("value", result.get("description", "undefined"))
+        return value
+    
+    logger.error(f"❌ JS ошибка: {response}")
+    return f"Ошибка: {response}"
 
-# ---------- Прямое выполнение без Agnes (запасной план) ----------
+async def take_screenshot(session_id: str):
+    """Делает скриншот"""
+    response = await cdp_send("Page.captureScreenshot", {"format": "png"}, session_id)
+    
+    if "result" in response:
+        data = response["result"].get("data")
+        if data:
+            return base64.b64decode(data)
+    
+    logger.error(f"❌ Screenshot ошибка: {response}")
+    return None
 
-async def execute_direct_command(command: str, page_id: str, session_id: str) -> str:
-    """Выполняет команду напрямую, если Agnes не отвечает"""
+# ---------- Прямое выполнение команд ----------
+
+async def execute_command(command: str, page_id: str, session_id: str) -> str:
+    """Выполняет команду напрямую"""
+    
+    command_lower = command.lower()
     
     # Открыть Google
-    if "google" in command.lower() or "гугл" in command.lower():
-        await cdp_send("Page.navigate", {"url": "https://google.com"}, session_id)
-        title = await evaluate_js(session_id, "document.title")
-        return f"✅ Открыл Google\n📄 Заголовок: {title}"
+    if "google" in command_lower or "гугл" in command_lower:
+        success = await navigate_to(page_id, session_id, "https://google.com")
+        if success:
+            title = await evaluate_js(session_id, "document.title")
+            return f"✅ Открыл Google\n📄 {title}"
+        return "❌ Не удалось открыть Google"
     
-    # Открыть X/Twitter
-    if "x.com" in command.lower() or "twitter" in command.lower() or "твиттер" in command.lower():
-        await cdp_send("Page.navigate", {"url": "https://x.com"}, session_id)
-        title = await evaluate_js(session_id, "document.title")
-        return f"✅ Открыл X.com\n📄 Заголовок: {title}"
+    # Открыть X
+    if "x.com" in command_lower or "twitter" in command_lower or "твиттер" in command_lower:
+        success = await navigate_to(page_id, session_id, "https://x.com")
+        if success:
+            title = await evaluate_js(session_id, "document.title")
+            return f"✅ Открыл X.com\n📄 {title}"
+        return "❌ Не удалось открыть X.com"
     
     # Скриншот
-    if "скриншот" in command.lower() or "screenshot" in command.lower():
-        response = await cdp_send("Page.captureScreenshot", {"format": "png"}, session_id)
-        if "result" in response:
-            import base64
-            img_data = base64.b64decode(response["result"]["data"])
+    if "скриншот" in command_lower or "screenshot" in command_lower:
+        img_data = await take_screenshot(session_id)
+        if img_data:
             with open("screenshot.png", "wb") as f:
                 f.write(img_data)
             return "✅ Скриншот сделан!"
         return "❌ Не удалось сделать скриншот"
     
-    # Заголовок страницы
-    if "заголовок" in command.lower() or "title" in command.lower():
-        title = await evaluate_js(session_id, "document.title")
-        return f"📄 Заголовок: {title}"
-    
-    # Поиск (прямая навигация)
-    if "найди" in command.lower() or "поиск" in command.lower():
-        # Извлекаем поисковый запрос
+    # Поиск
+    if "найди" in command_lower or "поиск" in command_lower:
         query = command.replace("найди", "").replace("поиск", "").strip()
         if query:
             search_url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
-            await cdp_send("Page.navigate", {"url": search_url}, session_id)
-            return f"✅ Ищу: {query}\n🔍 Открыл страницу поиска"
+            success = await navigate_to(page_id, session_id, search_url)
+            if success:
+                return f"✅ Ищу: {query}\n🔍 Открыл страницу поиска"
+        return "❌ Не удалось выполнить поиск"
+    
+    # Заголовок
+    if "заголовок" in command_lower or "title" in command_lower:
+        title = await evaluate_js(session_id, "document.title")
+        return f"📄 Заголовок: {title}"
     
     # Помощь
     return """
@@ -192,21 +251,13 @@ async def ask_agnes(prompt: str) -> dict:
     }
     
     system_prompt = """
-    Ты AI-агент для управления браузером через CDP.
+    Ты агент для управления браузером.
+    Отвечай ТОЛЬКО JSON с действиями.
     
-    Инструменты:
-    - exec_cdp(domain, command, params) - выполнить CDP команду
-    - eval_js(code) - выполнить JavaScript
-    
-    ОТВЕЧАЙ ТОЛЬКО JSON:
-    {
-        "actions": [
-            {"tool": "exec_cdp", "params": {"domain": "Page", "command": "navigate", "params": {"url": "https://google.com"}}}
-        ]
-    }
-    
-    Для простых команд используй eval_js:
-    {"tool": "eval_js", "params": {"code": "document.title"}}
+    Примеры:
+    {"action": "navigate", "params": {"url": "https://google.com"}}
+    {"action": "screenshot", "params": {}}
+    {"action": "js", "params": {"code": "document.title"}}
     """
     
     data = {
@@ -216,7 +267,7 @@ async def ask_agnes(prompt: str) -> dict:
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.3,
-        "max_tokens": 500
+        "max_tokens": 300
     }
     
     try:
@@ -226,54 +277,48 @@ async def ask_agnes(prompt: str) -> dict:
         
         content = result["choices"][0]["message"]["content"]
         
-        # Пытаемся извлечь JSON
-        try:
-            # Ищем JSON в ответе
-            json_match = re.search(r'\{.*\}', content, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group())
-        except:
-            pass
+        # Пробуем извлечь JSON
+        json_match = re.search(r'\{.*\}', content, re.DOTALL)
+        if json_match:
+            return json.loads(json_match.group())
         
-        # Если не JSON, пробуем распарсить как простой текст
-        return {"actions": [], "message": content}
+        return {"error": "Не JSON ответ", "raw": content}
             
     except Exception as e:
         logger.error(f"Agnes API error: {e}")
         return {"error": str(e)}
 
-async def execute_tool(tool: str, params: dict, page_id: str, session_id: str) -> str:
-    """Выполняет инструмент агента"""
+async def process_agent_response(response: dict, page_id: str, session_id: str) -> str:
+    """Обрабатывает ответ агента"""
     
-    if tool == "exec_cdp":
-        domain = params.get("domain")
-        command = params.get("command")
-        cmd_params = params.get("params", {})
-        
-        method = f"{domain}.{command}"
-        
-        try:
-            response = await cdp_send(method, cmd_params, session_id)
-            
-            if "result" in response:
-                result = json.dumps(response["result"], indent=2, ensure_ascii=False)
-                return f"✅ {domain}.{command} выполнено"
-            else:
-                return f"❌ Ошибка: {response.get('error', {}).get('message', 'Неизвестная ошибка')}"
-                
-        except Exception as e:
-            return f"❌ Ошибка: {str(e)}"
+    if "error" in response:
+        return f"❌ Ошибка агента: {response['error']}"
     
-    elif tool == "eval_js":
+    action = response.get("action")
+    params = response.get("params", {})
+    
+    if action == "navigate":
+        url = params.get("url")
+        success = await navigate_to(page_id, session_id, url)
+        if success:
+            return f"✅ Перешёл на {url}"
+        return "❌ Не удалось перейти"
+    
+    elif action == "screenshot":
+        img_data = await take_screenshot(session_id)
+        if img_data:
+            with open("screenshot.png", "wb") as f:
+                f.write(img_data)
+            return "✅ Скриншот сделан!"
+        return "❌ Не удалось сделать скриншот"
+    
+    elif action == "js":
         code = params.get("code", "")
-        try:
-            result = await evaluate_js(session_id, code)
-            return f"✅ Результат: {result}"
-        except Exception as e:
-            return f"❌ Ошибка JS: {str(e)}"
+        result = await evaluate_js(session_id, code)
+        return f"✅ Результат: {result}"
     
     else:
-        return f"⚠️ Неизвестный инструмент: {tool}"
+        return f"⚠️ Неизвестное действие: {action}"
 
 # ---------- Обработчик сообщений ----------
 
@@ -290,26 +335,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     try:
         # Создаём вкладку
         page_id = await create_tab()
+        if not page_id:
+            await update.message.reply_text("❌ Не удалось создать вкладку")
+            return
+        
         session_id = await attach_to_page(page_id)
+        if not session_id:
+            await update.message.reply_text("❌ Не удалось подключиться к странице")
+            return
         
-        # Сначала пробуем Agnes
-        response = await ask_agnes(user_message)
-        
-        # Если есть actions, выполняем их
-        if "actions" in response and response["actions"]:
-            results = []
-            for action in response["actions"]:
-                tool = action.get("tool")
-                params = action.get("params", {})
-                result = await execute_tool(tool, params, page_id, session_id)
-                results.append(result)
-            
-            if results:
-                await update.message.reply_text("\n\n".join(results))
+        # Пробуем Agnes
+        if AGNES_API_KEY:
+            response = await ask_agnes(user_message)
+            if "action" in response:
+                result = await process_agent_response(response, page_id, session_id)
+                await update.message.reply_text(result)
                 return
         
         # Если Agnes не сработал, используем прямые команды
-        result = await execute_direct_command(user_message, page_id, session_id)
+        result = await execute_command(user_message, page_id, session_id)
         await update.message.reply_text(result)
             
     except Exception as e:
@@ -357,7 +401,7 @@ async def cdp_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 
                 await update.message.reply_text(status_text)
             else:
-                await update.message.reply_text("❌ Не удалось получить статус")
+                await update.message.reply_text(f"❌ Не удалось получить статус: {data}")
                 
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
