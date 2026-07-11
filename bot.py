@@ -60,10 +60,10 @@ class FileLogger:
 
 file_logger = FileLogger()
 
-# ---------- Chrome (Pydoll-style маскировка) ----------
+# ---------- Chrome (Pydoll-style маскировка с headless) ----------
 def start_chrome():
     try:
-        file_logger.log("Запуск Chrome с Pydoll маскировкой...")
+        file_logger.log("Запуск Chrome с Pydoll маскировкой (headless)...")
         result = subprocess.run(["pgrep", "-f", "google-chrome"], capture_output=True, text=True)
         if result.stdout:
             file_logger.log("✅ Chrome уже запущен")
@@ -71,7 +71,7 @@ def start_chrome():
         
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         
-        subprocess.Popen([
+        cmd = [
             CHROME_PATH,
             
             # ✅ КРИТИЧЕСКИ ВАЖНО: без этого порт не открывается!
@@ -80,7 +80,7 @@ def start_chrome():
             "--no-sandbox",
             "--disable-dev-shm-usage",
             
-            # Pydoll stealth-флаги (без headless!)
+            # ✅ Pydoll stealth-флаги
             "--disable-blink-features=AutomationControlled",
             "--no-first-run",
             "--no-default-browser-check",
@@ -102,23 +102,55 @@ def start_chrome():
             "--safebrowsing-disable-auto-update",
             "--force-color-profile=srgb",
             
-            # WebRTC защита
+            # ✅ WebRTC защита
             "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
             
-            # Реалистичный User-Agent
+            # ✅ Реалистичный User-Agent
             f"--user-agent={user_agent}",
             
-            # ⚠️ НЕ ИСПОЛЬЗУЕМ HEADLESS (как в Pydoll)
-            # "--headless=new",  # ❌ УБРАНО!
+            # ✅ Headless нового поколения (лучше маскируется)
+            "--headless=new",
             
-            # Дополнительные флаги для производительности
+            # ✅ Дополнительные флаги для headless
             "--disable-gpu",
-            "--disable-software-rasterizer"
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            "--disable-software-rasterizer",
+            "--window-size=1920,1080",
+            
+            # ✅ Важные флаги для обхода детекции
+            "--disable-features=IsolateOrigins,site-per-process",
+            "--disable-site-isolation-trials",
+            "--disable-features=BlockInsecurePrivateNetworkRequests",
+            "--disable-features=TranslateUI,BlinkGenPropertyTrees",
+            "--disable-features=ChromeWhatsNewUI",
+            "--disable-features=OptimizationGuideModelDownloading",
+            "--disable-features=ImprovedCookieControls",
+            "--disable-features=SameSiteByDefaultCookies",
+            "--disable-features=CookieDeprecationFacilitatedTesting"
+        ]
         
-        time.sleep(5)
-        file_logger.log("✅ Chrome запущен (Pydoll маскировка, без headless, remote-debugging-port=9222)")
-        return True
+        file_logger.log(f"🚀 Запуск Chrome с headless...")
+        
+        subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True
+        )
+        
+        # ✅ Ждем и проверяем порт
+        for attempt in range(15):
+            time.sleep(1)
+            try:
+                response = requests.get("http://localhost:9222/json", timeout=2)
+                if response.status_code == 200:
+                    file_logger.log(f"✅ Chrome запущен (headless, порт открыт, попытка {attempt+1})")
+                    return True
+            except:
+                file_logger.log(f"⏳ Ожидание Chrome... (попытка {attempt+1}/15)")
+        
+        file_logger.log("❌ Chrome не ответил на /json после 15 секунд")
+        return False
+        
     except Exception as e:
         file_logger.log(f"❌ Ошибка: {e}", "ERROR")
         return False
@@ -369,20 +401,7 @@ class CDPSupervisor:
                 timeout=10
             )
             
-            # ✅ 2. Эмуляция геолокации (опционально)
-            try:
-                await asyncio.wait_for(
-                    self._send("Emulation.setGeolocationOverride", {
-                        "latitude": 37.7749,
-                        "longitude": -122.4194,
-                        "accuracy": 100
-                    }),
-                    timeout=5
-                )
-            except:
-                pass
-            
-            # ✅ 3. Эмуляция размера экрана
+            # ✅ 2. Эмуляция размера экрана
             try:
                 await asyncio.wait_for(
                     self._send("Emulation.setDeviceMetricsOverride", {
@@ -396,7 +415,7 @@ class CDPSupervisor:
             except:
                 pass
             
-            # ✅ 4. Включение всех доменов
+            # ✅ 3. Включение всех доменов
             await asyncio.wait_for(self._send("Page.enable", {}), timeout=10)
             await asyncio.wait_for(self._send("Runtime.enable", {}), timeout=10)
             await asyncio.wait_for(self._send("DOM.enable", {}), timeout=10)
@@ -410,7 +429,7 @@ class CDPSupervisor:
                 timeout=10
             )
             
-            # ✅ 5. Настройка Network для маскировки
+            # ✅ 4. Настройка Network для маскировки
             try:
                 await asyncio.wait_for(
                     self._send("Network.setExtraHTTPHeaders", {
@@ -1373,7 +1392,7 @@ async def get_supervisor(user_id: int) -> CDPSupervisor:
 # ---------- ОБНОВЛЕННЫЙ ПРОМТ ДЛЯ AGNES ----------
 
 AGENT_CODE = """
-🤖 АГЕНТ ДЛЯ УПРАВЛЕНИЯ БРАУЗЕРОМ (Pydoll маскировка)
+🤖 АГЕНТ ДЛЯ УПРАВЛЕНИЯ БРАУЗЕРОМ (Pydoll маскировка + headless)
 
 📌 ДОСТУПНЫЕ ДЕЙСТВИЯ И ФОРМАТ:
 
@@ -1776,8 +1795,8 @@ def main():
     signal.signal(signal.SIGALRM, timeout_handler)
     signal.alarm(600)
     
-    print("🚀 Запуск бота с полной маскировкой Pydoll...")
-    file_logger.log("🚀 Запуск бота с полной маскировкой Pydoll...")
+    print("🚀 Запуск бота с полной маскировкой Pydoll (headless)...")
+    file_logger.log("🚀 Запуск бота с полной маскировкой Pydoll (headless)...")
     
     start_chrome()
     
@@ -1792,8 +1811,8 @@ def main():
     app.add_handler(CommandHandler("dialog_policy", dialog_policy_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("🚀 Бот запущен с Pydoll маскировкой!")
-    file_logger.log("🚀 Бот запущен с Pydoll маскировкой!")
+    print("🚀 Бот запущен с Pydoll маскировкой (headless)!")
+    file_logger.log("🚀 Бот запущен с Pydoll маскировкой (headless)!")
     
     try:
         app.run_polling()
