@@ -247,6 +247,22 @@ class CDPClient:
         self.history = []
         self.cookies_set = False
         self.masked = False
+        self.reconnect_attempts = 0
+    
+    async def ensure_connected(self):
+        """Проверяет соединение и переподключает если нужно"""
+        if not self.connected or self.ws is None:
+            file_logger.log("🔄 Переподключение...")
+            return await self.connect()
+        
+        try:
+            # Пинг для проверки соединения
+            await self.ws.ping()
+            return True
+        except:
+            file_logger.log("⚠️ Соединение потеряно, переподключаюсь...")
+            self.connected = False
+            return await self.connect()
     
     async def connect(self):
         if self.connected:
@@ -270,6 +286,7 @@ class CDPClient:
                 close_timeout=10
             )
             self.connected = True
+            self.reconnect_attempts = 0
             file_logger.log("✅ WebSocket подключен")
             
             await self.send("Page.enable", {})
@@ -290,6 +307,7 @@ class CDPClient:
             
         except Exception as e:
             file_logger.log(f"❌ Connect error: {e}", "ERROR")
+            self.connected = False
             return False
     
     async def apply_mask(self):
@@ -353,7 +371,6 @@ class CDPClient:
         try:
             file_logger.log(f"🍪 Установка {len(cookies)} кук...")
             
-            # Форматируем куки для CDP
             cdp_cookies = []
             for cookie in cookies:
                 cdp_cookie = {
@@ -368,7 +385,6 @@ class CDPClient:
                 }
                 cdp_cookies.append(cdp_cookie)
             
-            # Отправляем куки через CDP
             result = await self.send("Network.setCookies", {
                 "cookies": cdp_cookies
             })
@@ -386,8 +402,10 @@ class CDPClient:
             return False
     
     async def send(self, method, params=None):
+        """Отправка CDP команды с переподключением при ошибке"""
         if not self.connected:
-            await self.connect()
+            if not await self.connect():
+                return {"error": "Not connected"}
         
         self.msg_id += 1
         msg_id = self.msg_id
@@ -413,9 +431,19 @@ class CDPClient:
                 if "method" in data:
                     continue
                 
-        except asyncio.TimeoutError:
-            file_logger.log(f"❌ {method} timeout", "ERROR")
-            return {"error": "Timeout"}
+        except (websockets.exceptions.ConnectionClosed, asyncio.TimeoutError) as e:
+            file_logger.log(f"⚠️ {method} ошибка соединения: {e}", "WARNING")
+            self.connected = False
+            
+            # Пробуем переподключиться
+            if self.reconnect_attempts < 3:
+                self.reconnect_attempts += 1
+                file_logger.log(f"🔄 Попытка переподключения {self.reconnect_attempts}/3...")
+                if await self.connect():
+                    # Повторяем запрос
+                    return await self.send(method, params)
+            
+            return {"error": str(e)}
         except Exception as e:
             file_logger.log(f"❌ {method} error: {e}", "ERROR")
             return {"error": str(e)}
@@ -693,8 +721,9 @@ class CDPClient:
     
     async def screenshot(self):
         try:
-            if not self.connected:
-                await self.connect()
+            # Проверяем соединение перед скриншотом
+            if not await self.ensure_connected():
+                return None
             
             title = await self.eval_js("document.title")
             file_logger.log(f"📄 Текущий заголовок: {title}")
@@ -972,6 +1001,30 @@ async def mask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_logger.log(f"❌ Ошибка: {e}", "ERROR")
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
+async def reconnect_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Принудительное переподключение"""
+    user_id = update.message.from_user.id
+    
+    if user_id not in clients:
+        await update.message.reply_text("❌ Браузер не инициализирован")
+        return
+    
+    client = clients[user_id]
+    
+    try:
+        await update.message.reply_text("🔄 Переподключаюсь...")
+        client.connected = False
+        result = await client.connect()
+        
+        if result:
+            await update.message.reply_text("✅ Переподключение успешно!")
+        else:
+            await update.message.reply_text("❌ Не удалось переподключиться")
+            
+    except Exception as e:
+        file_logger.log(f"❌ Ошибка: {e}", "ERROR")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
 # ---------- Обработчик ----------
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -993,6 +1046,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             clients[user_id] = client
         
         client = clients[user_id]
+        
+        # Проверяем соединение
+        if not await client.ensure_connected():
+            await update.message.reply_text("❌ Потеряно соединение с браузером. Попробуйте позже.")
+            return
         
         await client.get_maximum_snapshot()
         
@@ -1031,7 +1089,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/cdp - статус браузера\n"
         "/logs - логи\n"
         "/set_cookies - установить куки\n"
-        "/mask - применить маскировку"
+        "/mask - применить маскировку\n"
+        "/reconnect - переподключиться"
     )
 
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1090,10 +1149,11 @@ def main():
     app.add_handler(CommandHandler("clear_logs", clear_logs_command))
     app.add_handler(CommandHandler("set_cookies", set_cookies_command))
     app.add_handler(CommandHandler("mask", mask_command))
+    app.add_handler(CommandHandler("reconnect", reconnect_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("🚀 Бот запущен с маскировкой!")
-    file_logger.log("🚀 Бот запущен с маскировкой!")
+    print("🚀 Бот запущен с маскировкой и автопереподключением!")
+    file_logger.log("🚀 Бот запущен с маскировкой и автопереподключением!")
     app.run_polling()
 
 if __name__ == "__main__":
