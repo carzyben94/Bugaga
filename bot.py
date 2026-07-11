@@ -647,7 +647,7 @@ class CDPClient:
                 if session_id:
                     prefixed = []
                     for el in result:
-                        el['ref'] = f"if_{session_id[:8]}_{el['ref']}"
+                        el['ref'] = 'if_' + session_id[:8] + '_' + el['ref']
                         prefixed.append(el)
                     return prefixed
                 return result
@@ -711,53 +711,56 @@ class CDPClient:
             file_logger.log(f"❌ fill_by_ref error: {e}", "ERROR")
             return {"error": str(e)}
     
+    # ============================================
+    # ИСПРАВЛЕННЫЕ МЕТОДЫ (без f-строк)
+    # ============================================
     async def click_element(self, selector, session_id=None):
-        js_code = f"""
-        (function() {{
-            const el = document.querySelector("{selector}");
-            if (el) {{
+        js_code = """
+        (function() {
+            const el = document.querySelector(""" + '"' + selector + '"' + """);
+            if (el) {
                 el.click();
-                return {{ success: true, method: 'click' }};
-            }}
-            return {{ success: false }};
-        }})()
+                return { success: true, method: 'click' };
+            }
+            return { success: false };
+        })()
         """
         result = await self.eval_js(js_code, session_id)
         
         if result and result.get("success"):
             return result
         
-        js_code2 = f"""
-        (function() {{
-            const el = document.querySelector("{selector}");
-            if (el) {{
-                const event = new MouseEvent('click', {{
+        js_code2 = """
+        (function() {
+            const el = document.querySelector(""" + '"' + selector + '"' + """);
+            if (el) {
+                const event = new MouseEvent('click', {
                     view: window,
                     bubbles: true,
                     cancelable: true
                 });
                 el.dispatchEvent(event);
-                return {{ success: true, method: 'dispatchEvent' }};
-            }}
-            return {{ success: false }};
-        }})()
+                return { success: true, method: 'dispatchEvent' };
+            }
+            return { success: false };
+        })()
         """
         return await self.eval_js(js_code2, session_id)
     
     async def fill_element(self, selector, value, session_id=None):
         escaped_value = value.replace("'", "\\'").replace('"', '\\"')
         
-        js_code = f"""
-        (function() {{
-            const el = document.querySelector("{selector}");
-            if (el) {{
-                el.value = '{escaped_value}';
-                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                return {{ success: true }};
-            }}
-            return {{ success: false }};
-        }})()
+        js_code = """
+        (function() {
+            const el = document.querySelector(""" + '"' + selector + '"' + """);
+            if (el) {
+                el.value = '""" + escaped_value + """';
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+                return { success: true };
+            }
+            return { success: false };
+        })()
         """
         return await self.eval_js(js_code, session_id)
     
@@ -818,66 +821,67 @@ class CDPClient:
             
             all_refs = ref_elements + iframe_refs
             
-            result = await self.eval_js(f"""
-                (function() {{
-                    const result = [];
-                    const all = document.querySelectorAll('*');
-                    let count = 0;
-                    const maxCount = {max_elements};
+            js_code = """
+            (function() {
+                const result = [];
+                const all = document.querySelectorAll('*');
+                let count = 0;
+                const maxCount = """ + str(max_elements) + """;
+                
+                for (const el of all) {
+                    if (count >= maxCount) break;
                     
-                    for (const el of all) {{
-                        if (count >= maxCount) break;
-                        
-                        const tag = el.tagName.toLowerCase();
-                        const rect = el.getBoundingClientRect();
-                        const style = window.getComputedStyle(el);
-                        
-                        const visible = rect.width > 0 && rect.height > 0 && 
-                                       style.display !== 'none' && 
-                                       style.visibility !== 'hidden';
-                        
-                        const attrs = {{}};
-                        for (const attr of el.attributes) {{
-                            attrs[attr.name] = attr.value;
-                        }}
-                        
-                        const important = ['a', 'button', 'input', 'textarea', 'select', 'form',
-                                          'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'img', 'video',
-                                          'iframe', 'div', 'span', 'section', 'article', 'nav',
-                                          'header', 'footer', 'main', 'aside', 'ul', 'ol', 'li',
-                                          'label', 'option', 'legend', 'fieldset', 'dialog'];
-                        
-                        if (important.includes(tag)) {{
-                            result.push({{
-                                tag: tag,
-                                text: (el.textContent || '').trim().slice(0, 100),
-                                id: el.id || '',
-                                class: el.className || '',
-                                attrs: attrs,
-                                visible: visible,
-                                x: Math.round(rect.x),
-                                y: Math.round(rect.y),
-                                width: Math.round(rect.width),
-                                height: Math.round(rect.height),
-                                style: {{
-                                    display: style.display,
-                                    visibility: style.visibility,
-                                    position: style.position,
-                                    color: style.color,
-                                    fontSize: style.fontSize,
-                                    backgroundColor: style.backgroundColor,
-                                    cursor: style.cursor
-                                }},
-                                parent: el.parentElement ? el.parentElement.tagName.toLowerCase() : null,
-                                children: el.children.length
-                            }});
-                            count++;
-                        }}
-                    }}
+                    const tag = el.tagName.toLowerCase();
+                    const rect = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
                     
-                    return result;
-                }})()
-            """)
+                    const visible = rect.width > 0 && rect.height > 0 && 
+                                   style.display !== 'none' && 
+                                   style.visibility !== 'hidden';
+                    
+                    const attrs = {};
+                    for (const attr of el.attributes) {
+                        attrs[attr.name] = attr.value;
+                    }
+                    
+                    const important = ['a', 'button', 'input', 'textarea', 'select', 'form',
+                                      'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'img', 'video',
+                                      'iframe', 'div', 'span', 'section', 'article', 'nav',
+                                      'header', 'footer', 'main', 'aside', 'ul', 'ol', 'li',
+                                      'label', 'option', 'legend', 'fieldset', 'dialog'];
+                    
+                    if (important.includes(tag)) {
+                        result.push({
+                            tag: tag,
+                            text: (el.textContent || '').trim().slice(0, 100),
+                            id: el.id || '',
+                            class: el.className || '',
+                            attrs: attrs,
+                            visible: visible,
+                            x: Math.round(rect.x),
+                            y: Math.round(rect.y),
+                            width: Math.round(rect.width),
+                            height: Math.round(rect.height),
+                            style: {
+                                display: style.display,
+                                visibility: style.visibility,
+                                position: style.position,
+                                color: style.color,
+                                fontSize: style.fontSize,
+                                backgroundColor: style.backgroundColor,
+                                cursor: style.cursor
+                            },
+                            parent: el.parentElement ? el.parentElement.tagName.toLowerCase() : null,
+                            children: el.children.length
+                        });
+                        count++;
+                    }
+                }
+                
+                return result;
+            })()
+            """
+            result = await self.eval_js(js_code)
             
             if result is None:
                 elements = []
@@ -912,7 +916,7 @@ class CDPClient:
                 """)
                 if isinstance(simple_result, list):
                     elements = simple_result
-                    file_logger.log(f"✅ Упрощённый сбор: {len(elements)} элементов")
+                    file_logger.log(f"✅ Упрощённый сбор: {len(elements)} elementos")
             
             if len(elements) > max_elements:
                 elements = elements[:max_elements]
@@ -1118,7 +1122,7 @@ class CDPClient:
         return False
     
     # ============================================
-    # HERMES: Получение описания страницы
+    # ИСПРАВЛЕННОЕ ОПИСАНИЕ СТРАНИЦЫ (без f-строк)
     # ============================================
     async def get_page_description(self):
         if not self.full_snapshot:
@@ -1131,13 +1135,12 @@ class CDPClient:
         url = info.get('url', 'Нет URL') if isinstance(info, dict) else 'Нет URL'
         total = info.get('total', 0) if isinstance(info, dict) else 0
         
-        desc = f"""
-📄 СТРАНИЦА: {title}
-🔗 URL: {url}
-📊 ВСЕГО ЭЛЕМЕНТОВ: {total}
-
-🆔 ДОСТУПНЫЕ ЭЛЕМЕНТЫ (Ref ID):
-"""
+        desc_lines = []
+        desc_lines.append(f"📄 СТРАНИЦА: {title}")
+        desc_lines.append(f"🔗 URL: {url}")
+        desc_lines.append(f"📊 ВСЕГО ЭЛЕМЕНТОВ: {total}")
+        desc_lines.append("")
+        desc_lines.append("🆔 ДОСТУПНЫЕ ЭЛЕМЕНТЫ (Ref ID):")
         
         if ref_elements:
             for el in ref_elements[:30]:
@@ -1145,18 +1148,19 @@ class CDPClient:
                 text = el.get('text', '')[:30]
                 tag = el.get('tag', '')
                 action = el.get('action', '')
-                desc += f"  {ref}: \"{text}\" ({tag}) → {action}\n"
+                desc_lines.append(f"  {ref}: \"{text}\" ({tag}) → {action}")
         else:
-            desc += "  • (нет данных)\n"
+            desc_lines.append("  • (нет данных)")
         
-        desc += f"\n🔘 КНОПКИ:\n"
+        desc_lines.append("")
+        desc_lines.append("🔘 КНОПКИ:")
         
         buttons = info.get('buttons') if isinstance(info, dict) else None
         if buttons is None:
-            desc += "  • (нет данных)\n"
+            desc_lines.append("  • (нет данных)")
         elif isinstance(buttons, list):
             if len(buttons) == 0:
-                desc += "  • (нет кнопок)\n"
+                desc_lines.append("  • (нет кнопок)")
             else:
                 for el in buttons[:20]:
                     if isinstance(el, dict):
@@ -1168,23 +1172,19 @@ class CDPClient:
                         if not text:
                             text = el.get('attrs', {}).get('title', '')
                         if text:
-                            ref = ''
-                            for re in ref_elements:
-                                if re.get('text') == text or text in re.get('text', ''):
-                                    ref = re.get('ref', '')
-                                    break
-                            desc += f"  • {text[:40]}" + (f" → {ref}" if ref else "") + "\n"
+                            desc_lines.append(f"  • {text[:40]}")
                         else:
-                            desc += f"  • <{el.get('tag', 'unknown')}>\n"
+                            desc_lines.append(f"  • <{el.get('tag', 'unknown')}>")
         
-        desc += f"\n📝 ПОЛЯ ВВОДА:\n"
+        desc_lines.append("")
+        desc_lines.append("📝 ПОЛЯ ВВОДА:")
         
         fields = info.get('fields') if isinstance(info, dict) else None
         if fields is None:
-            desc += "  • (нет данных)\n"
+            desc_lines.append("  • (нет данных)")
         elif isinstance(fields, list):
             if len(fields) == 0:
-                desc += "  • (нет полей)\n"
+                desc_lines.append("  • (нет полей)")
             else:
                 for el in fields[:15]:
                     if isinstance(el, dict):
@@ -1192,38 +1192,33 @@ class CDPClient:
                         field_type = el.get('field_type', 'unknown')
                         name = attrs.get('name', '')
                         placeholder = attrs.get('placeholder', '')
-                        field_name = name or placeholder or f"{field_type}"
-                        ref = ''
-                        for re in ref_elements:
-                            if re.get('text') == field_name or field_name in re.get('text', ''):
-                                ref = re.get('ref', '')
-                                break
-                        desc += f"  • {field_name[:30]} → {ref if ref else 'нет ref'}\n"
+                        field_name = name or placeholder or field_type
+                        desc_lines.append(f"  • {field_name[:30]}")
         
         dialogs = info.get('pending_dialogs') if isinstance(info, dict) else None
         if dialogs and isinstance(dialogs, list) and len(dialogs) > 0:
-            desc += f"\n💬 ОЖИДАЮЩИЕ ДИАЛОГИ ({len(dialogs)}):\n"
+            desc_lines.append("")
+            desc_lines.append(f"💬 ОЖИДАЮЩИЕ ДИАЛОГИ ({len(dialogs)}):")
             for d in dialogs:
-                desc += f"  • {d.get('message', '')} (тип: {d.get('type', 'unknown')})\n"
-            desc += "\n💡 Для обработки диалога используй: handle_dialog(accept=True, prompt_text='')\n"
-            desc += f"📋 Текущая политика: {CURRENT_DIALOG_POLICY}\n"
+                desc_lines.append(f"  • {d.get('message', '')} (тип: {d.get('type', 'unknown')})")
+            desc_lines.append("")
+            desc_lines.append(f"📋 Текущая политика: {CURRENT_DIALOG_POLICY}")
         
         connected_tabs = info.get('connected_tabs') if isinstance(info, dict) else None
         if connected_tabs:
-            desc += f"\n📦 IFRAME/ФРЕЙМЫ:\n"
+            desc_lines.append("")
+            desc_lines.append("📦 IFRAME/ФРЕЙМЫ:")
             for sid, tab_info in connected_tabs.items():
                 tab_url = tab_info.get('url', '')
                 if tab_url:
-                    desc += f"  • {tab_url[:60]}\n"
+                    desc_lines.append(f"  • {tab_url[:60]}")
         
-        desc += f"""
-\n💡 КАК ИСПОЛЬЗОВАТЬ Ref ID:
-• click e5 → кликнуть по элементу e5
-• fill e5 "текст" → заполнить поле e5
-• Агент сам найдёт нужный Ref ID по описанию
-"""
+        desc_lines.append("")
+        desc_lines.append("💡 КАК ИСПОЛЬЗОВАТЬ Ref ID:")
+        desc_lines.append('• click e5 → кликнуть по элементу e5')
+        desc_lines.append('• fill e5 "текст" → заполнить поле e5')
         
-        return desc
+        return "\n".join(desc_lines)
     
     async def reload(self):
         await self.send("Page.reload", {})
