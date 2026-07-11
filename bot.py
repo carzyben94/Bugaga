@@ -9,6 +9,8 @@ import base64
 import asyncio
 import random
 import math
+from collections import deque
+from typing import Optional, Dict, Any, List
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, filters, MessageHandler
 import websockets
@@ -50,9 +52,10 @@ DIALOG_POLICY = {
     "auto_accept": "accept"
 }
 CURRENT_DIALOG_POLICY = "must_respond"
+DIALOG_TIMEOUT_SECONDS = 300  # 5 минут как в Hermes
+MAX_RECENT_DIALOGS = 20  # как в Hermes
 
 # ---------- Логирование ----------
-
 LOG_FILE = "bot_logs.txt"
 
 class FileLogger:
@@ -71,7 +74,6 @@ class FileLogger:
 file_logger = FileLogger()
 
 # ---------- Chrome ----------
-
 def start_chrome():
     try:
         file_logger.log("Запуск Chrome...")
@@ -172,21 +174,23 @@ class CDPSupervisor:
         self.page_loaded = False
         
         # Состояние
-        self.pending_dialogs = []
+        self.pending_dialogs = []  # [{id, type, message, defaultPrompt, timestamp}]
+        self.recent_dialogs = deque(maxlen=MAX_RECENT_DIALOGS)  # [{id, type, message, closed_by, timestamp}]
         self.frame_tree = {}
         self.connected_tabs = {}
         self.ref_elements = {}
         self.full_snapshot = None
         self.oopifs = {}
         
-        # ✅ СИНХРОНИЗАЦИЯ (как в Hermes)
+        # Синхронизация (как в Hermes)
         self._pending_requests = {}  # {msg_id: asyncio.Future}
-        self._recv_lock = asyncio.Lock()  # синхронизация recv
+        self._recv_lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
         self._ready_event = asyncio.Event()
+        self._dialog_counter = 0  # для генерации dialog_id
         
         # Таймауты
-        self.dialog_timeout = 300
+        self.dialog_timeout = DIALOG_TIMEOUT_SECONDS
         self.ping_interval = 60
         self.ping_timeout = 180
         self.connection_timeout = 30
@@ -195,6 +199,7 @@ class CDPSupervisor:
         self.supervisor_task = None
         self.heartbeat_task = None
         self.dialog_timeout_task = None
+        self.event_loop_task = None
     
     # ============================================
     # ЗАПУСК И УПРАВЛЕНИЕ
@@ -208,8 +213,9 @@ class CDPSupervisor:
         file_logger.log(f"🧠 Запуск CDP Supervisor для {self.user_id}")
         self.running = True
         self._stop_event.clear()
+        
+        # Запускаем supervisor в отдельной задаче
         self.supervisor_task = asyncio.create_task(self._run())
-        self.heartbeat_task = asyncio.create_task(self._heartbeat())
         
         try:
             await asyncio.wait_for(self._ready_event.wait(), timeout=30)
@@ -227,6 +233,8 @@ class CDPSupervisor:
             self.supervisor_task.cancel()
         if self.heartbeat_task:
             self.heartbeat_task.cancel()
+        if self.event_loop_task:
+            self.event_loop_task.cancel()
         if self.ws:
             await self.ws.close()
         
@@ -244,10 +252,25 @@ class CDPSupervisor:
                 await self._setup_domains()
                 await self._navigate_to_default()
                 self._ready_event.set()
-                await self._event_loop()  # ✅ ВЫЗЫВАЕМ _event_loop
+                
+                # Запускаем event loop в отдельной задаче
+                self.event_loop_task = asyncio.create_task(self._event_loop())
+                
+                # Запускаем heartbeat
+                self.heartbeat_task = asyncio.create_task(self._heartbeat())
+                
+                # Ждем завершения
+                await asyncio.gather(
+                    self.event_loop_task,
+                    self.heartbeat_task,
+                    return_exceptions=True
+                )
+                
             except websockets.ConnectionClosed:
                 file_logger.log(f"⚠️ WebSocket закрыт, переподключаюсь...")
                 await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                break
             except Exception as e:
                 file_logger.log(f"❌ Supervisor error: {e}", "ERROR")
                 await asyncio.sleep(5)
@@ -317,7 +340,7 @@ class CDPSupervisor:
     # ============================================
     
     async def _send(self, method, params=None, session_id=None):
-        """Отправляет команду в Chrome с синхронизацией (как в Hermes)"""
+        """Отправляет команду в Chrome с синхронизацией"""
         if not self.connected:
             return {"error": "Not connected"}
         
@@ -331,7 +354,7 @@ class CDPSupervisor:
         if session_id:
             msg["sessionId"] = session_id
         
-        # ✅ Создаём Future для ожидания ответа
+        # Создаём Future для ожидания ответа
         future = asyncio.get_event_loop().create_future()
         self._pending_requests[msg_id] = future
         
@@ -349,27 +372,27 @@ class CDPSupervisor:
             return {"error": str(e)}
     
     # ============================================
-    # ✅ ОСНОВНОЙ ЦИКЛ ОБРАБОТКИ СОБЫТИЙ (Hermes)
+    # ОСНОВНОЙ ЦИКЛ ОБРАБОТКИ СОБЫТИЙ
     # ============================================
     
     async def _event_loop(self):
-        """Главный цикл обработки событий (как в Hermes)"""
+        """Главный цикл обработки событий"""
         while self.running and self.connected:
             try:
-                # ✅ Используем Lock для безопасного recv
+                # Используем Lock для безопасного recv
                 async with self._recv_lock:
                     response = await asyncio.wait_for(self.ws.recv(), timeout=30)
                 
                 data = json.loads(response)
                 
-                # ✅ Проверяем, есть ли ожидающий запрос с этим id
+                # Проверяем, есть ли ожидающий запрос с этим id
                 if "id" in data and data["id"] in self._pending_requests:
                     future = self._pending_requests.pop(data["id"])
                     if not future.done():
                         future.set_result(data)
                     continue
                 
-                # ✅ Если это событие (без id) — обрабатываем
+                # Если это событие (без id) — обрабатываем
                 if "method" in data:
                     await self._handle_event(data)
                     
@@ -399,24 +422,51 @@ class CDPSupervisor:
             dialog_message = params.get('message', '')
             dialog_type = params.get('type', '')
             
-            file_logger.log(f"💬 Диалог обнаружен: {dialog_message} (тип: {dialog_type})")
+            # Генерируем уникальный ID для диалога
+            self._dialog_counter += 1
+            dialog_id = f"d-{self._dialog_counter}"
             
-            if CURRENT_DIALOG_POLICY == "auto_dismiss":
-                file_logger.log("🚫 auto_dismiss — закрываю диалог")
-                await self._send("Page.handleJavaScriptDialog", {"accept": False})
-                return
-            elif CURRENT_DIALOG_POLICY == "auto_accept":
-                file_logger.log("✅ auto_accept — принимаю диалог")
-                await self._send("Page.handleJavaScriptDialog", {"accept": True})
-                return
-            
-            self.pending_dialogs.append({
-                "message": dialog_message,
+            dialog_info = {
+                "id": dialog_id,
                 "type": dialog_type,
+                "message": dialog_message,
                 "defaultPrompt": params.get("defaultPrompt", ""),
                 "timestamp": time.time()
-            })
+            }
             
+            file_logger.log(f"💬 Диалог обнаружен [{dialog_id}]: {dialog_message} (тип: {dialog_type})")
+            
+            # Применяем политику
+            if CURRENT_DIALOG_POLICY == "auto_dismiss":
+                file_logger.log(f"🚫 auto_dismiss — закрываю диалог [{dialog_id}]")
+                await self._send("Page.handleJavaScriptDialog", {"accept": False})
+                
+                # Добавляем в recent_dialogs
+                self.recent_dialogs.append({
+                    **dialog_info,
+                    "closed_by": "auto_policy",
+                    "action": "dismiss",
+                    "closed_at": time.time()
+                })
+                return
+            
+            elif CURRENT_DIALOG_POLICY == "auto_accept":
+                file_logger.log(f"✅ auto_accept — принимаю диалог [{dialog_id}]")
+                await self._send("Page.handleJavaScriptDialog", {"accept": True})
+                
+                # Добавляем в recent_dialogs
+                self.recent_dialogs.append({
+                    **dialog_info,
+                    "closed_by": "auto_policy",
+                    "action": "accept",
+                    "closed_at": time.time()
+                })
+                return
+            
+            # Политика must_respond - добавляем в pending
+            self.pending_dialogs.append(dialog_info)
+            
+            # Запускаем watchdog таймаут
             if self.dialog_timeout_task is None or self.dialog_timeout_task.done():
                 self.dialog_timeout_task = asyncio.create_task(self._dialog_timeout_check())
             return
@@ -459,12 +509,29 @@ class CDPSupervisor:
             return
     
     async def _dialog_timeout_check(self):
-        """Проверяет таймаут диалогов"""
+        """Проверяет таймаут диалогов (watchdog)"""
         await asyncio.sleep(self.dialog_timeout)
-        if self.pending_dialogs:
-            file_logger.log(f"⏰ Таймаут диалога ({self.dialog_timeout}с), закрываю")
-            dialog = self.pending_dialogs.pop(0)
-            await self._send("Page.handleJavaScriptDialog", {"accept": False})
+        
+        # Проверяем только диалоги, которые всё ещё в pending
+        for dialog in self.pending_dialogs[:]:
+            if time.time() - dialog.get('timestamp', 0) >= self.dialog_timeout:
+                file_logger.log(f"⏰ Таймаут диалога [{dialog.get('id')}] ({self.dialog_timeout}с), закрываю")
+                
+                try:
+                    await self._send("Page.handleJavaScriptDialog", {"accept": False})
+                    
+                    # Добавляем в recent_dialogs с тегом watchdog
+                    self.recent_dialogs.append({
+                        **dialog,
+                        "closed_by": "watchdog",
+                        "action": "dismiss_timeout",
+                        "closed_at": time.time()
+                    })
+                    
+                    self.pending_dialogs.remove(dialog)
+                    
+                except Exception as e:
+                    file_logger.log(f"❌ Ошибка при закрытии диалога по таймауту: {e}", "ERROR")
     
     # ============================================
     # HEARTBEAT
@@ -531,6 +598,7 @@ class CDPSupervisor:
                 "url": url,
                 "ref_elements": ref_elements,
                 "pending_dialogs": self.pending_dialogs.copy(),
+                "recent_dialogs": list(self.recent_dialogs),
                 "frame_tree": self.frame_tree,
                 "connected_tabs": self.connected_tabs.copy(),
                 "oopifs": self.oopifs.copy()
@@ -621,7 +689,7 @@ class CDPSupervisor:
             return []
     
     # ============================================
-    # 🆕 HERMES: ensure_session
+    # PUBLIC API (как в Hermes)
     # ============================================
     
     async def ensure_session(self):
@@ -633,12 +701,8 @@ class CDPSupervisor:
             await self._wait_for_page_load()
         return self.connected and self.page_loaded
     
-    # ============================================
-    # 🆕 HERMES: browser_snapshot
-    # ============================================
-    
     async def browser_snapshot(self, full=False):
-        """Возвращает snapshot как в Hermes"""
+        """Возвращает snapshot как в Hermes (структурированный JSON)"""
         if not self.full_snapshot:
             await self._update_snapshot()
         
@@ -651,29 +715,30 @@ class CDPSupervisor:
                 "url": snapshot.get("url", "Нет URL"),
                 "ref_elements": snapshot.get("ref_elements", [])[:30],
                 "pending_dialogs": snapshot.get("pending_dialogs", []),
+                "recent_dialogs": snapshot.get("recent_dialogs", []),
                 "frame_tree": snapshot.get("frame_tree", {})
             }
-    
-    # ============================================
-    # 🆕 HERMES: browser_cdp
-    # ============================================
     
     async def browser_cdp(self, method, params=None, frame_id=None):
         """Универсальный CDP-инструмент с поддержкой фреймов"""
         session_id = None
         if frame_id:
+            # Ищем сессию для фрейма
             for sid, info in self.connected_tabs.items():
-                if info.get("target_id") == frame_id:
+                if info.get("target_id") == frame_id or info.get("url") == frame_id:
                     session_id = sid
                     break
+            
+            # Если фрейм не найден, пробуем найти OOPIF
+            if not session_id and frame_id in self.oopifs:
+                for sid, info in self.connected_tabs.items():
+                    if info.get("target_id") == self.oopifs[frame_id].get("targetId"):
+                        session_id = sid
+                        break
         
         if session_id:
             return await self._send(method, params, session_id)
         return await self._send(method, params)
-    
-    # ============================================
-    # 🆕 HERMES: browser_click (humanized)
-    # ============================================
     
     async def browser_click(self, ref_id, humanized=True):
         """Клик с человеческим поведением"""
@@ -739,10 +804,6 @@ class CDPSupervisor:
         
         return await self.click_by_ref(ref_id)
     
-    # ============================================
-    # 🆕 HERMES: browser_type (humanized)
-    # ============================================
-    
     async def browser_type(self, ref_id, text, humanized=True):
         """Ввод текста с человеческим поведением"""
         if ref_id not in self.ref_elements:
@@ -778,10 +839,6 @@ class CDPSupervisor:
         await self._update_snapshot()
         return {"success": True, "method": "humanized"}
     
-    # ============================================
-    # 🆕 HERMES: browser_press
-    # ============================================
-    
     async def browser_press(self, key):
         """Нажатие клавиши"""
         await self._send("Input.dispatchKeyEvent", {
@@ -795,30 +852,45 @@ class CDPSupervisor:
         })
         return {"success": True}
     
-    # ============================================
-    # 🆕 HERMES: browser_dialog
-    # ============================================
-    
-    async def browser_dialog(self, action="accept", prompt_text=""):
-        """Обработка диалога"""
+    async def browser_dialog(self, dialog_id=None, action="accept", prompt_text=""):
+        """Обработка диалога с поддержкой dialog_id"""
         if not self.pending_dialogs:
             return {"error": "Нет ожидающих диалогов"}
         
-        dialog = self.pending_dialogs.pop(0)
+        # Если dialog_id не указан, берем первый
+        if dialog_id is None:
+            dialog = self.pending_dialogs.pop(0)
+        else:
+            # Ищем диалог по ID
+            for i, d in enumerate(self.pending_dialogs):
+                if d.get("id") == dialog_id:
+                    dialog = self.pending_dialogs.pop(i)
+                    break
+            else:
+                return {"error": f"Диалог {dialog_id} не найден в очереди"}
+        
         accept = action == "accept"
         
-        await self._send("Page.handleJavaScriptDialog", {
-            "accept": accept,
-            "promptText": prompt_text
-        })
-        
-        file_logger.log(f"✅ Диалог обработан: {dialog.get('message', '')}")
-        await self._update_snapshot()
-        return {"success": True, "dialog": dialog}
-    
-    # ============================================
-    # БАЗОВЫЕ ДЕЙСТВИЯ
-    # ============================================
+        try:
+            await self._send("Page.handleJavaScriptDialog", {
+                "accept": accept,
+                "promptText": prompt_text
+            })
+            
+            # Добавляем в recent_dialogs
+            self.recent_dialogs.append({
+                **dialog,
+                "closed_by": "agent",
+                "action": action,
+                "closed_at": time.time()
+            })
+            
+            file_logger.log(f"✅ Диалог обработан: {dialog.get('message', '')} (action: {action})")
+            await self._update_snapshot()
+            return {"success": True, "dialog": dialog}
+            
+        except Exception as e:
+            return {"error": str(e)}
     
     async def click_by_ref(self, ref_id):
         """Клик по Ref ID"""
@@ -915,7 +987,7 @@ class CDPSupervisor:
         return None
     
     async def get_description(self):
-        """Возвращает описание страницы для агента"""
+        """Возвращает описание страницы для агента (человекочитаемое)"""
         snapshot = await self.browser_snapshot(full=False)
         if not snapshot:
             return "Страница не загружена"
@@ -923,6 +995,8 @@ class CDPSupervisor:
         ref_elements = snapshot.get('ref_elements', [])
         title = snapshot.get('title', 'Нет заголовка')
         url = snapshot.get('url', 'Нет URL')
+        pending_dialogs = snapshot.get('pending_dialogs', [])
+        recent_dialogs = snapshot.get('recent_dialogs', [])
         
         desc_lines = []
         desc_lines.append(f"📄 СТРАНИЦА: {title}")
@@ -940,14 +1014,25 @@ class CDPSupervisor:
         else:
             desc_lines.append("  • (нет данных)")
         
-        dialogs = snapshot.get('pending_dialogs', [])
-        if dialogs:
+        if pending_dialogs:
             desc_lines.append("")
-            desc_lines.append(f"💬 ОЖИДАЮЩИЕ ДИАЛОГИ ({len(dialogs)}):")
-            for d in dialogs:
-                desc_lines.append(f"  • {d.get('message', '')} (тип: {d.get('type', 'unknown')})")
+            desc_lines.append(f"💬 ОЖИДАЮЩИЕ ДИАЛОГИ ({len(pending_dialogs)}):")
+            for d in pending_dialogs:
+                dialog_id = d.get('id', 'unknown')
+                message = d.get('message', '')
+                dialog_type = d.get('type', 'unknown')
+                desc_lines.append(f"  • [{dialog_id}] {message} (тип: {dialog_type})")
             desc_lines.append("")
-            desc_lines.append("💡 Для обработки диалога используй: handle_dialog(accept=True)")
+            desc_lines.append("💡 Для обработки диалога используй: handle_dialog(dialog_id='d-1', accept=True)")
+        
+        if recent_dialogs:
+            desc_lines.append("")
+            desc_lines.append(f"📋 НЕДАВНИЕ ДИАЛОГИ ({len(recent_dialogs)}):")
+            for d in list(recent_dialogs)[-5:]:  # показываем последние 5
+                dialog_id = d.get('id', 'unknown')
+                message = d.get('message', '')[:30]
+                closed_by = d.get('closed_by', 'unknown')
+                desc_lines.append(f"  • [{dialog_id}] {message} (закрыт: {closed_by})")
         
         frame_tree = snapshot.get('frame_tree', {})
         if frame_tree:
@@ -967,6 +1052,7 @@ class CDPSupervisor:
         desc_lines.append("💡 КАК ИСПОЛЬЗОВАТЬ Ref ID:")
         desc_lines.append('• click e5 → кликнуть по элементу e5')
         desc_lines.append('• fill e5 "текст" → заполнить поле e5')
+        desc_lines.append('• handle_dialog d-1 accept → обработать диалог')
         
         return "\n".join(desc_lines)
 
@@ -1003,18 +1089,19 @@ async def ask_agnes(prompt: str, page_desc: str) -> dict:
     AGENT_CODE = """
 🤖 АГЕНТ ДЛЯ УПРАВЛЕНИЯ БРАУЗЕРОМ
 
-📌 ДОСТУПНЫЕ ДЕЙСТВИЯ (ТОЛЬКО Ref ID):
+📌 ДОСТУПНЫЕ ДЕЙСТВИЯ:
 1. navigate(url) - открыть сайт
-2. click(ref) - кликнуть по элементу
-3. fill(ref, value) - заполнить поле
+2. click(ref) - кликнуть по элементу (используй Ref ID)
+3. fill(ref, value) - заполнить поле (используй Ref ID)
 4. press_enter() - нажать Enter
 5. screenshot() - скриншот
 6. answer(text) - ответить
-7. handle_dialog(accept) - обработать диалог
+7. handle_dialog(dialog_id, accept) - обработать диалог (используй dialog_id)
 
 📌 ПРИМЕРЫ:
 {"action": "click", "params": {"ref": "e8"}}
 {"action": "fill", "params": {"ref": "e5", "value": "Spinoza"}}
+{"action": "handle_dialog", "params": {"dialog_id": "d-1", "accept": true}}
 
 ⚠️ НЕ ИСПОЛЬЗУЙ selector/text — ТОЛЬКО Ref ID!
 ОТВЕЧАЙ ТОЛЬКО JSON!
@@ -1054,6 +1141,8 @@ async def ask_agnes(prompt: str, page_desc: str) -> dict:
                     if isinstance(result, dict):
                         if 'ref' in result and 'params' not in result:
                             result = {"action": result.get('action', 'click'), "params": {"ref": result.get('ref')}}
+                        if 'dialog_id' in result and 'params' not in result:
+                            result = {"action": "handle_dialog", "params": {"dialog_id": result.get('dialog_id'), "accept": result.get('accept', True)}}
                     if isinstance(result, list):
                         for i, item in enumerate(result):
                             if isinstance(item, dict) and 'ref' in item and 'params' not in item:
@@ -1121,10 +1210,19 @@ async def execute_single_action(supervisor: CDPSupervisor, action: dict) -> str:
             return "❌ Не удалось нажать Enter"
         
         elif action_type == "handle_dialog":
+            dialog_id = params.get("dialog_id")
             accept = params.get("accept", True)
-            result = await supervisor.browser_dialog("accept" if accept else "dismiss")
+            prompt_text = params.get("prompt_text", "")
+            
+            result = await supervisor.browser_dialog(
+                dialog_id=dialog_id,
+                action="accept" if accept else "dismiss",
+                prompt_text=prompt_text
+            )
+            
             if result.get("success"):
-                return f"✅ Диалог обработан: {result.get('dialog', {}).get('message', '')}"
+                dialog = result.get("dialog", {})
+                return f"✅ Диалог обработан: {dialog.get('message', '')} (action: {result.get('action', '')})"
             return f"❌ Ошибка: {result.get('error', '')}"
         
         elif action_type == "screenshot":
@@ -1211,12 +1309,14 @@ async def cdp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         snapshot = await supervisor.browser_snapshot(full=False)
         if snapshot:
             ref_count = len(snapshot.get('ref_elements', []))
-            dialogs = len(snapshot.get('pending_dialogs', []))
+            pending_dialogs = len(snapshot.get('pending_dialogs', []))
+            recent_dialogs = len(snapshot.get('recent_dialogs', []))
             frames = len(snapshot.get('connected_tabs', {}))
             await update.message.reply_text(
                 f"✅ **Браузер активен**\n\n"
                 f"🆔 Ref ID элементов: {ref_count}\n"
-                f"💬 Ожидающих диалогов: {dialogs}\n"
+                f"💬 Ожидающих диалогов: {pending_dialogs}\n"
+                f"📋 Недавних диалогов: {recent_dialogs}\n"
                 f"📦 Фреймов: {frames}\n"
                 f"📊 Статус: Готов"
             )
@@ -1241,7 +1341,8 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def dialog_policy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"📋 Текущая политика диалогов: **{CURRENT_DIALOG_POLICY}**\n\n"
+        f"📋 Текущая политика диалогов: **{CURRENT_DIALOG_POLICY}**\n"
+        f"⏰ Таймаут диалогов: {DIALOG_TIMEOUT_SECONDS}с\n\n"
         "Доступные политики:\n"
         "• must_respond - ждать ответа агента\n"
         "• auto_dismiss - автоматически закрывать\n"
