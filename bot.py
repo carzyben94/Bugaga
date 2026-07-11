@@ -1,5 +1,5 @@
 import os
-import logging 
+import logging
 import json
 import subprocess
 import time
@@ -11,14 +11,6 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, filters, MessageHandler
 import websockets
 from io import BytesIO
-
-# Пытаемся импортировать PIL
-try:
-    from PIL import Image
-    PIL_AVAILABLE = True
-except ImportError:
-    PIL_AVAILABLE = False
-    logging.warning("⚠️ PIL не установлен, скриншоты могут не работать")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -179,7 +171,15 @@ class FileLogger:
 
 file_logger = FileLogger()
 
-# ---------- Chrome ----------
+# ---------- Управление Chrome ----------
+
+def is_chrome_alive():
+    """Проверка, жив ли Chrome"""
+    try:
+        response = requests.get("http://localhost:9222/json", timeout=2)
+        return response.status_code == 200
+    except:
+        return False
 
 def start_chrome_with_mask():
     """Запуск Chrome с маскировкой"""
@@ -219,6 +219,27 @@ def start_chrome_with_mask():
         file_logger.log(f"❌ Ошибка: {e}", "ERROR")
         return False
 
+def restart_chrome():
+    """Перезапуск Chrome"""
+    file_logger.log("🔄 Перезапуск Chrome...")
+    
+    # Убиваем старый процесс
+    try:
+        subprocess.run(["pkill", "-f", "google-chrome"], capture_output=True)
+        time.sleep(2)
+    except:
+        pass
+    
+    # Запускаем новый
+    return start_chrome_with_mask()
+
+def ensure_chrome_running():
+    """Гарантирует, что Chrome работает"""
+    if not is_chrome_alive():
+        file_logger.log("⚠️ Chrome не отвечает, перезапускаю...")
+        return restart_chrome()
+    return True
+
 def get_page_ws_url():
     try:
         response = requests.get("http://localhost:9222/json")
@@ -256,6 +277,43 @@ class CDPClient:
         self.history = []
         self.cookies_set = False
         self.masked = False
+        self.reconnect_attempts = 0
+        self.max_reconnect_attempts = 5
+    
+    async def connect_with_retry(self):
+        """Подключение с повторными попытками"""
+        for attempt in range(self.max_reconnect_attempts):
+            try:
+                # Проверяем Chrome
+                if not is_chrome_alive():
+                    file_logger.log("🔄 Chrome не отвечает, перезапускаю...")
+                    restart_chrome()
+                    await asyncio.sleep(3)
+                
+                return await self.connect()
+                
+            except Exception as e:
+                file_logger.log(f"⚠️ Попытка {attempt+1}/{self.max_reconnect_attempts}: {e}")
+                await asyncio.sleep(2 ** attempt)  # Экспоненциальная задержка
+        
+        file_logger.log("❌ Не удалось подключиться после всех попыток", "ERROR")
+        return False
+    
+    async def ensure_connection(self):
+        """Гарантирует активное соединение"""
+        if not self.connected or not self.ws:
+            return await self.connect_with_retry()
+        
+        # Проверяем, живо ли соединение
+        try:
+            await asyncio.wait_for(
+                self.send("Runtime.evaluate", {"expression": "1"}),
+                timeout=5
+            )
+            return True
+        except:
+            file_logger.log("⚠️ Соединение потеряно, переподключаюсь...")
+            return await self.connect_with_retry()
     
     async def connect(self):
         if self.connected:
@@ -310,7 +368,7 @@ class CDPClient:
                 await self.ws.close()
             except:
                 pass
-        return await self.connect()
+        return await self.connect_with_retry()
     
     async def apply_mask(self):
         """Применение маскировки через JS"""
@@ -440,9 +498,40 @@ class CDPClient:
             # Повторяем запрос
             return await self.send(method, params)
     
+    async def send_safe(self, method, params=None, retries=3):
+        """Безопасная отправка с автоматическим восстановлением"""
+        for attempt in range(retries):
+            try:
+                # Проверяем соединение
+                if not await self.ensure_connection():
+                    return {"error": "Connection failed"}
+                
+                return await self.send(method, params)
+                
+            except (websockets.exceptions.ConnectionClosed,
+                    websockets.exceptions.WebSocketException,
+                    BrokenPipeError,
+                    ConnectionResetError) as e:
+                
+                file_logger.log(f"⚠️ Ошибка {method}, попытка {attempt+1}/{retries}: {e}")
+                
+                if attempt < retries - 1:
+                    # Переподключаемся
+                    await self.reconnect()
+                    await asyncio.sleep(1)
+                else:
+                    # Последняя попытка - перезапускаем Chrome
+                    file_logger.log("🔄 Перезапуск Chrome...")
+                    restart_chrome()
+                    await asyncio.sleep(3)
+                    await self.connect_with_retry()
+                    return await self.send(method, params)
+        
+        return {"error": "Max retries exceeded"}
+    
     async def navigate(self, url):
         file_logger.log(f"🌐 Навигация на {url}")
-        result = await self.send("Page.navigate", {"url": url})
+        result = await self.send_safe("Page.navigate", {"url": url})
         
         if result and "error" in result:
             file_logger.log(f"❌ Ошибка навигации: {result['error']}", "ERROR")
@@ -460,7 +549,7 @@ class CDPClient:
     
     async def eval_js(self, code):
         try:
-            resp = await self.send("Runtime.evaluate", {
+            resp = await self.send_safe("Runtime.evaluate", {
                 "expression": code,
                 "returnByValue": True,
                 "awaitPromise": True
@@ -713,14 +802,15 @@ class CDPClient:
         return await self.eval_js(js_code)
     
     async def reload(self):
-        await self.send("Page.reload", {})
+        await self.send_safe("Page.reload", {})
         await asyncio.sleep(2)
         await self.get_maximum_snapshot()
     
     async def screenshot(self):
         try:
-            if not self.connected:
-                await self.connect()
+            # Проверяем соединение
+            if not await self.ensure_connection():
+                return None
             
             title = await self.eval_js("document.title")
             file_logger.log(f"📄 Текущий заголовок: {title}")
@@ -732,11 +822,13 @@ class CDPClient:
             
             file_logger.log("📸 Делаю скриншот...")
             
-            # Пробуем сделать скриншот в PNG
-            resp = await self.send("Page.captureScreenshot", {
-                "format": "png",
-                "captureBeyondViewport": True,
-                "fromSurface": True
+            # Используем JPEG с параметрами сжатия
+            resp = await self.send_safe("Page.captureScreenshot", {
+                "format": "jpeg",
+                "quality": 70,
+                "captureBeyondViewport": False,
+                "fromSurface": True,
+                "optimizeForSpeed": True
             })
             
             if "result" in resp and "data" in resp["result"]:
@@ -748,47 +840,23 @@ class CDPClient:
                 
                 file_logger.log(f"✅ Скриншот сделан ({len(img_data)} байт)")
                 
-                # Если есть PIL - обрабатываем изображение
-                if PIL_AVAILABLE:
+                # Проверяем заголовок JPEG
+                if img_data[:2] == b'\xff\xd8':
+                    return img_data
+                elif img_data[:4] == b'\x89PNG':
+                    # Если PNG - конвертируем в JPEG через BytesIO
                     try:
-                        # Открываем изображение
+                        from PIL import Image
                         img = Image.open(BytesIO(img_data))
-                        width, height = img.size
-                        file_logger.log(f"📐 Размер изображения: {width}x{height}")
-                        
-                        # Если изображение слишком большое - уменьшаем
-                        max_width = 1920
-                        max_height = 1080
-                        
-                        if width > max_width or height > max_height:
-                            # Вычисляем новые размеры
-                            ratio = min(max_width/width, max_height/height)
-                            new_width = int(width * ratio)
-                            new_height = int(height * ratio)
-                            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                            file_logger.log(f"📐 Изменен размер: {new_width}x{new_height}")
-                            
-                            # Сохраняем в JPEG с качеством 85
-                            output = BytesIO()
-                            img.convert('RGB').save(output, format='JPEG', quality=85, optimize=True)
-                            img_data = output.getvalue()
-                            file_logger.log(f"📦 Новый размер: {len(img_data)} байт")
-                        else:
-                            # Если размер нормальный - конвертируем в JPEG
-                            output = BytesIO()
-                            img.convert('RGB').save(output, format='JPEG', quality=90, optimize=True)
-                            img_data = output.getvalue()
-                            file_logger.log(f"📦 Сжат до: {len(img_data)} байт")
-                        
-                        return img_data
-                        
-                    except Exception as e:
-                        file_logger.log(f"⚠️ Ошибка обработки изображения: {e}", "WARNING")
-                        # Если обработка не удалась - возвращаем как есть
+                        output = BytesIO()
+                        img.convert('RGB').save(output, format='JPEG', quality=85, optimize=True)
+                        file_logger.log("✅ Конвертирован в JPEG")
+                        return output.getvalue()
+                    except:
                         return img_data
                 else:
-                    # Если PIL нет - возвращаем как есть
-                    return img_data
+                    file_logger.log("❌ Невалидный формат изображения", "ERROR")
+                    return None
             
             file_logger.log("❌ Не удалось получить скриншот", "ERROR")
             return None
@@ -1059,13 +1127,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.chat.send_action(action="typing")
     
     try:
+        # Проверяем Chrome перед созданием клиента
+        ensure_chrome_running()
+        
         if user_id not in clients:
             client = CDPClient()
             client.user_id = user_id
-            await client.connect()
+            await client.connect_with_retry()
             clients[user_id] = client
         
         client = clients[user_id]
+        
+        # Проверяем соединение перед действием
+        if not await client.ensure_connection():
+            await update.message.reply_text("❌ Не удалось подключиться к браузеру. Попробуйте позже.")
+            return
         
         await client.get_maximum_snapshot()
         
@@ -1105,7 +1181,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🧠 **МАКСИМАЛЬНЫЙ АГЕНТ**\n\n"
         "🕵️ **Маскировка браузера активна!**\n"
-        "🍪 **Куки X.com установлены автоматически**\n\n"
+        "🍪 **Куки X.com установлены автоматически**\n"
+        "🔄 **Автоматическое восстановление при обрывах**\n\n"
         "💡 **Примеры команд:**\n"
         "• Открой Google\n"
         "• Что видишь?\n"
@@ -1143,6 +1220,11 @@ async def clear_logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def cdp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
+        if not is_chrome_alive():
+            await update.message.reply_text("❌ Браузер не активен. Перезапускаю...")
+            restart_chrome()
+            await asyncio.sleep(3)
+        
         response = requests.get("http://localhost:9222/json")
         pages = response.json()
         
@@ -1164,14 +1246,8 @@ def main():
     print("🚀 Запуск бота...")
     file_logger.log("🚀 Запуск бота...")
     
-    if PIL_AVAILABLE:
-        print("✅ PIL доступен для обработки изображений")
-        file_logger.log("✅ PIL доступен для обработки изображений")
-    else:
-        print("⚠️ PIL не установлен! Установите: pip install Pillow")
-        file_logger.log("⚠️ PIL не установлен! Установите: pip install Pillow")
-    
-    start_chrome_with_mask()
+    # Запускаем Chrome
+    ensure_chrome_running()
     
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -1182,8 +1258,8 @@ def main():
     app.add_handler(CommandHandler("mask", mask_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("🚀 Бот запущен с маскировкой и обработкой скриншотов!")
-    file_logger.log("🚀 Бот запущен с маскировкой и обработкой скриншотов!")
+    print("🚀 Бот запущен с маскировкой и автопереподключением!")
+    file_logger.log("🚀 Бот запущен с маскировкой и автопереподключением!")
     app.run_polling()
 
 if __name__ == "__main__":
