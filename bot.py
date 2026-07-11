@@ -194,7 +194,6 @@ class CDPClient:
                 break
     
     async def eval_js(self, code):
-        """Выполняет JavaScript и возвращает результат"""
         try:
             resp = await self.send("Runtime.evaluate", {
                 "expression": code,
@@ -227,11 +226,9 @@ class CDPClient:
             return None
     
     async def get_maximum_snapshot(self):
-        """МАКСИМАЛЬНО полный слепок страницы - находит ЛЮБЫЕ поля"""
         try:
             file_logger.log("📸 Делаю максимальный слепок...")
             
-            # Получаем ВСЕ элементы с полной информацией
             elements = await self.eval_js("""
                 (function() {
                     const result = [];
@@ -251,7 +248,6 @@ class CDPClient:
                             attrs[attr.name] = attr.value;
                         }
                         
-                        // Все важные элементы
                         const important = ['a', 'button', 'input', 'textarea', 'select', 'form',
                                           'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'img', 'video',
                                           'iframe', 'div', 'span', 'section', 'article', 'nav',
@@ -295,10 +291,8 @@ class CDPClient:
             title = await self.eval_js("document.title") or "Нет заголовка"
             url = await self.eval_js("window.location.href") or "Нет URL"
             
-            # УНИВЕРСАЛЬНЫЙ ПОИСК ПОЛЕЙ - ЛЮБЫЕ ПОЛЯ
             all_fields = []
             
-            # 1. input (все типы)
             inputs = [e for e in elements if e.get('tag') == 'input']
             for inp in inputs:
                 attrs = inp.get('attrs', {})
@@ -306,7 +300,6 @@ class CDPClient:
                 inp['field_selector'] = f"input[name='{attrs.get('name', '')}']" if attrs.get('name') else f"input[type='{attrs.get('type', 'text')}']"
                 all_fields.append(inp)
             
-            # 2. textarea
             textareas = [e for e in elements if e.get('tag') == 'textarea']
             for ta in textareas:
                 attrs = ta.get('attrs', {})
@@ -314,7 +307,6 @@ class CDPClient:
                 ta['field_selector'] = f"textarea[name='{attrs.get('name', '')}']" if attrs.get('name') else "textarea"
                 all_fields.append(ta)
             
-            # 3. select (выпадающие списки)
             selects = [e for e in elements if e.get('tag') == 'select']
             for sel in selects:
                 attrs = sel.get('attrs', {})
@@ -322,21 +314,18 @@ class CDPClient:
                 sel['field_selector'] = f"select[name='{attrs.get('name', '')}']" if attrs.get('name') else "select"
                 all_fields.append(sel)
             
-            # 4. div с contenteditable (редактируемые)
             contenteditables = [e for e in elements if e.get('attrs', {}).get('contenteditable') == 'true']
             for ce in contenteditables:
                 ce['field_type'] = 'contenteditable'
                 ce['field_selector'] = ce.get('id') and f"#{ce.get('id')}" or ce.get('class') and f".{ce.get('class').split(' ').join('.')}" or "div[contenteditable='true']"
                 all_fields.append(ce)
             
-            # 5. Любые элементы с role="textbox", "searchbox", "combobox"
             roles = [e for e in elements if e.get('attrs', {}).get('role') in ['textbox', 'searchbox', 'combobox']]
             for role in roles:
                 role['field_type'] = 'role'
                 role['field_selector'] = role.get('id') and f"#{role.get('id')}" or f"[role='{role.get('attrs', {}).get('role')}']"
                 all_fields.append(role)
             
-            # Фильтруем кнопки
             buttons = []
             for el in elements:
                 tag = el.get('tag', '')
@@ -344,16 +333,9 @@ class CDPClient:
                 if tag == 'button' or (tag == 'input' and attrs.get('type') in ['submit', 'button']):
                     buttons.append(el)
             
-            # Ссылки
             links = [e for e in elements if e.get('tag') == 'a' and e.get('attrs', {}).get('href')]
-            
-            # Формы
             forms = [e for e in elements if e.get('tag') == 'form']
-            
-            # Заголовки
             headings = [e for e in elements if e.get('tag') in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']]
-            
-            # Видимые элементы
             visible = [e for e in elements if e.get('visible')]
             
             self.full_snapshot = {
@@ -362,7 +344,7 @@ class CDPClient:
                 "total": len(elements),
                 "all_elements": elements[:500],
                 "buttons": buttons,
-                "fields": all_fields,  # ← ВСЕ ПОЛЯ!
+                "fields": all_fields,
                 "inputs": inputs,
                 "textareas": textareas,
                 "selects": selects,
@@ -382,7 +364,6 @@ class CDPClient:
             return False
     
     async def get_page_description(self):
-        """Возвращает максимальное описание страницы с ВСЕМИ полями"""
         if not self.full_snapshot:
             await self.get_maximum_snapshot()
         
@@ -404,21 +385,16 @@ class CDPClient:
                 desc += f"  • <{el.get('tag', '')}>\n"
         
         desc += f"\n─────────────────────────────────\n"
-        desc += f"📝 **ВСЕ ПОЛЯ ВВОДА ({len(info.get('fields', []))}):**\n"
+        desc += f"📝 **ПОЛЯ ВВОДА ({len(info.get('fields', []))}):**\n"
         for el in info.get('fields', [])[:30]:
             attrs = el.get('attrs', {})
             field_type = el.get('field_type', 'unknown')
-            
-            # Определяем название поля
             name = attrs.get('name', '')
             placeholder = attrs.get('placeholder', '')
             label = attrs.get('aria-label', '')
             title = attrs.get('title', '')
             field_name = name or placeholder or label or title or f"{field_type}"
-            
-            # Показываем селектор
             selector = el.get('field_selector', '')
-            
             desc += f"  • {field_name[:30]} → {field_type} → selector: {selector}\n"
         
         desc += f"\n─────────────────────────────────\n"
@@ -435,14 +411,6 @@ class CDPClient:
             action = el.get('attrs', {}).get('action', '')
             method = el.get('attrs', {}).get('method', '')
             desc += f"  • action: {action[:30]}, method: {method}\n"
-        
-        desc += f"\n─────────────────────────────────\n"
-        desc += f"👁️ **ВИДИМЫЕ ЭЛЕМЕНТЫ ({len(info.get('visible', []))}):**\n"
-        for el in info.get('visible', [])[:15]:
-            tag = el.get('tag', '')
-            text = el.get('text', '')[:30]
-            if text:
-                desc += f"  • <{tag}> {text}\n"
         
         return desc
     
@@ -491,53 +459,6 @@ class CDPClient:
             }
             return { success: false };
         })()
-        """
-        return await self.eval_js(js_code)
-    
-    async def scroll_to(self, selector):
-        js_code = f"""
-        (function() {{
-            const el = document.querySelector('{selector}');
-            if (el) {{
-                el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
-                return {{ success: true }};
-            }}
-            return {{ success: false }};
-        }})()
-        """
-        return await self.eval_js(js_code)
-    
-    async def wait_for_element(self, selector, timeout=10):
-        js_code = f"""
-        (function() {{
-            return new Promise((resolve) => {{
-                const start = Date.now();
-                const check = () => {{
-                    const el = document.querySelector('{selector}');
-                    if (el) {{
-                        resolve({{
-                            found: true,
-                            selector: '{selector}',
-                            text: el.textContent.slice(0, 30)
-                        }});
-                    }} else if (Date.now() - start > {timeout * 1000}) {{
-                        resolve({{ found: false, selector: '{selector}' }});
-                    }} else {{
-                        setTimeout(check, 200);
-                    }}
-                }};
-                check();
-            }});
-        }})()
-        """
-        return await self.eval_js(js_code)
-    
-    async def get_text(self, selector):
-        js_code = f"""
-        (function() {{
-            const el = document.querySelector('{selector}');
-            return el ? el.textContent.trim() : null;
-        }})()
         """
         return await self.eval_js(js_code)
     
@@ -612,18 +533,14 @@ AGENT_CODE = """
 12. get_text(selector) - получить текст
 
 📝 **КАК ВЫБИРАТЬ СЕЛЕКТОРЫ:**
-- По ID: "#search"
-- По классу: ".gLFyf"  
+- По ID: "#APjFqb"
+- По классу: ".gLFyf"
 - По типу: "input[type='text']"
 - По имени: "input[name='q']"
 - По тексту: "button:contains('Войти')"
 
-⚠️ **ПОЛЯ МОГУТ БЫТЬ:**
-- input (все типы)
-- textarea
-- select (выпадающие списки)
-- contenteditable (редактируемые div)
-- role="textbox", role="searchbox"
+⚠️ **ЕСЛИ НУЖНО НЕСКОЛЬКО ДЕЙСТВИЙ - ВОЗВРАЩАЙ МАССИВ:**
+[{"action": "fill", "params": {"selector": "#APjFqb", "value": "текст"}}, {"action": "press_enter", "params": {}}]
 """
 
 # ---------- Агент ----------
@@ -647,11 +564,10 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
 
 📝 **ОТВЕЧАЙ ТОЛЬКО JSON!**
 
-Примеры:
-{{"action": "navigate", "params": {{"url": "https://google.com"}}}}
-{{"action": "click", "params": {{"selector": "button:contains('Войти')"}}}}
-{{"action": "fill", "params": {{"selector": "input[name='q']", "value": "текст"}}}}
-{{"action": "answer", "params": {{"text": "На странице есть поле поиска и кнопка 'Поиск'"}}}}
+Если нужно несколько действий - возвращай МАССИВ:
+[{{"action": "fill", "params": {{"selector": "#APjFqb", "value": "текст"}}}}, {{"action": "press_enter", "params": {{}}}}]
+
+Если одно действие:
 {{"action": "screenshot", "params": {{}}}}
 """
 
@@ -672,9 +588,14 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
         
         file_logger.log(f"Agnes ответ: {content[:200]}...")
         
-        json_match = re.search(r'\{.*\}', content, re.DOTALL)
+        # Пробуем найти JSON
+        json_match = re.search(r'\[.*\]|\{.*\}', content, re.DOTALL)
         if json_match:
-            return json.loads(json_match.group())
+            try:
+                return json.loads(json_match.group())
+            except:
+                pass
+        
         return {"action": "answer", "params": {"text": content}}
     except Exception as e:
         file_logger.log(f"Agnes error: {e}", "ERROR")
@@ -682,7 +603,19 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
 
 # ---------- Выполнение действий ----------
 
-async def execute_action(client: CDPClient, action: dict) -> str:
+async def execute_action(client: CDPClient, action) -> str:
+    # Если пришёл массив действий
+    if isinstance(action, list):
+        results = []
+        for a in action:
+            result = await execute_single_action(client, a)
+            results.append(result)
+        return "\n".join(results)
+    
+    # Если одно действие
+    return await execute_single_action(client, action)
+
+async def execute_single_action(client: CDPClient, action: dict) -> str:
     action_type = action.get("action")
     params = action.get("params", {})
     
@@ -735,15 +668,6 @@ async def execute_action(client: CDPClient, action: dict) -> str:
             amount = params.get("amount", 500)
             await client.eval_js(f"window.scrollBy(0, {amount})")
             return f"✅ Прокрутил на {amount}px"
-        
-        elif action_type == "scroll_to":
-            selector = params.get("selector")
-            if not selector:
-                return "❌ Нет селектора"
-            result = await client.scroll_to(selector)
-            if result and result.get("success"):
-                return f"✅ Прокрутил к: {selector}"
-            return f"❌ Элемент не найден: {selector}"
         
         elif action_type == "back":
             await client.back()
@@ -832,17 +756,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🧠 **МАКСИМАЛЬНЫЙ АГЕНТ**\n\n"
-        "Я вижу ВСЁ на странице, включая ЛЮБЫЕ поля:\n"
-        "• input (все типы)\n"
-        "• textarea\n"
-        "• select (выпадающие списки)\n"
-        "• contenteditable\n"
-        "• role='textbox', role='searchbox'\n\n"
+        "Я вижу ВСЁ на странице!\n\n"
         "💡 **Примеры команд:**\n"
         "• Открой Google\n"
-        "• Какие поля есть на странице?\n"
-        "• Введи в поле поиска текст Привет\n"
-        "• Нажми Enter\n"
+        "• Какие поля есть?\n"
+        "• Введи в поле поиска текст Привет и нажми Enter\n"
         "• Что ты видишь?\n"
         "• Сделай скриншот\n\n"
         "/cdp - статус браузера\n"
