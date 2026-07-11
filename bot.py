@@ -26,6 +26,21 @@ AGNES_API_URL = os.getenv("AGNES_API_URL", "https://apihub.agnes-ai.com/v1/chat/
 
 CHROME_PATH = "/usr/bin/google-chrome"
 
+# ---------- КУКИ ДЛЯ X.COM ----------
+X_COOKIES = [
+    {"name": "__cuid", "value": "55d2d7c5-4888-430a-b024-dd785da46ef4", "domain": ".x.com", "path": "/"},
+    {"name": "lang", "value": "ru", "domain": ".x.com", "path": "/"},
+    {"name": "dnt", "value": "1", "domain": ".x.com", "path": "/"},
+    {"name": "guest_id", "value": "v1%3A178267838599411411", "domain": ".x.com", "path": "/"},
+    {"name": "guest_id_marketing", "value": "v1%3A178267838599411411", "domain": ".x.com", "path": "/"},
+    {"name": "guest_id_ads", "value": "v1%3A178267838599411411", "domain": ".x.com", "path": "/"},
+    {"name": "personalization_id", "value": '"v1_DKrxLZAC902dMFdd1QrVYg=="', "domain": ".x.com", "path": "/"},
+    {"name": "twid", "value": "u%3D2067347503503052800", "domain": ".x.com", "path": "/"},
+    {"name": "auth_token", "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936", "domain": ".x.com", "path": "/"},
+    {"name": "ct0", "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb", "domain": ".x.com", "path": "/"},
+    {"name": "__cf_bm", "value": "j2mG_0c5w5JQUmv58SK5rLYOjV1pvjNGDsoZIMJGYv4-1783776014.9041774-1.0.1.1-adjQms4xp_hAMnqNEjMJP5_YPV7H5SdSeWNpQ_1wPS1zpCM3.mSKXJQLEbTDX6EHcG4P97tYtVLugjDWgXXQD0hSdc1V7Ogii9S6Mksik2X1pxvCyCAAFjUNXBvOPu0s", "domain": ".x.com", "path": "/"}
+]
+
 # ---------- Логирование ----------
 
 LOG_FILE = "bot_logs.txt"
@@ -108,6 +123,7 @@ class CDPClient:
         self.user_id = None
         self.full_snapshot = None
         self.history = []
+        self.cookies_set = False  # Флаг, что куки уже установлены
     
     async def connect(self):
         if self.connected:
@@ -124,13 +140,12 @@ class CDPClient:
             return False
         
         try:
-            # Увеличиваем лимит WebSocket до 10 МБ
             self.ws = await websockets.connect(
                 ws_url,
                 ping_interval=20,
                 ping_timeout=60,
                 close_timeout=10,
-                max_size=10_000_000  # 10 MB
+                max_size=10_000_000
             )
             self.connected = True
             file_logger.log("✅ WebSocket подключен")
@@ -138,14 +153,55 @@ class CDPClient:
             await self.send("Page.enable", {})
             await self.send("Runtime.enable", {})
             await self.send("DOM.enable", {})
-            file_logger.log("✅ Page, Runtime, DOM включены")
+            await self.send("Network.enable", {})  # Включаем Network для кук
+            file_logger.log("✅ Page, Runtime, DOM, Network включены")
             
+            # Устанавливаем куки сразу после подключения
+            await self.set_x_cookies()
+            
+            # Открываем Google
             await self.navigate("https://google.com")
             
             return True
             
         except Exception as e:
             file_logger.log(f"❌ Connect error: {e}", "ERROR")
+            return False
+    
+    async def set_x_cookies(self):
+        """Устанавливает куки для X.com"""
+        try:
+            file_logger.log("🍪 Устанавливаю куки для X.com...")
+            
+            for cookie in X_COOKIES:
+                cdp_cookie = {
+                    "name": cookie["name"],
+                    "value": cookie["value"],
+                    "domain": cookie["domain"],
+                    "path": cookie.get("path", "/"),
+                    "secure": cookie.get("secure", False),
+                    "httpOnly": cookie.get("httpOnly", False),
+                }
+                
+                # sameSite
+                same_site = cookie.get("sameSite", "unspecified")
+                if same_site.lower() == "none":
+                    cdp_cookie["sameSite"] = "None"
+                elif same_site.lower() == "lax":
+                    cdp_cookie["sameSite"] = "Lax"
+                elif same_site.lower() == "strict":
+                    cdp_cookie["sameSite"] = "Strict"
+                else:
+                    cdp_cookie["sameSite"] = "Unspecified"
+                
+                await self.send("Network.setCookie", cdp_cookie)
+                file_logger.log(f"✅ Кука установлена: {cookie['name']}")
+            
+            self.cookies_set = True
+            file_logger.log(f"✅ Установлено {len(X_COOKIES)} кук для X.com")
+            return True
+        except Exception as e:
+            file_logger.log(f"❌ Ошибка установки кук: {e}", "ERROR")
             return False
     
     async def send(self, method, params=None):
@@ -186,6 +242,16 @@ class CDPClient:
     async def navigate(self, url):
         file_logger.log(f"🌐 Навигация на {url}")
         await self.send("Page.navigate", {"url": url})
+        
+        # Если переходим на X.com, проверяем куки
+        if "x.com" in url.lower():
+            file_logger.log("🍪 Проверяю куки для X.com...")
+            if not self.cookies_set:
+                await self.set_x_cookies()
+            
+            # Обновляем страницу после установки кук
+            await asyncio.sleep(1)
+            await self.send("Page.reload", {})
         
         for i in range(10):
             await asyncio.sleep(1)
@@ -290,7 +356,6 @@ class CDPClient:
             if elements is None:
                 elements = []
             
-            # Ограничиваем количество элементов для избежания ошибки 1009
             if len(elements) > 500:
                 elements = elements[:500]
                 file_logger.log(f"⚠️ Ограничил слепок до 500 элементов")
@@ -414,7 +479,6 @@ class CDPClient:
         return await self.eval_js(js_code)
     
     async def fill_element(self, selector, value):
-        # Экранируем кавычки в значении
         escaped_value = value.replace("'", "\\'").replace('"', '\\"')
         
         js_code = f"""
@@ -556,18 +620,15 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
             
             file_logger.log(f"Agnes ответ: {content[:200]}...")
             
-            # Пробуем найти JSON
             json_match = re.search(r'\[.*\]|\{.*\}', content, re.DOTALL)
             if json_match:
                 try:
                     result = json.loads(json_match.group())
-                    # Проверяем, что это массив или объект с action
                     if isinstance(result, list) or (isinstance(result, dict) and 'action' in result):
                         return result
                 except:
                     pass
             
-            # Если не удалось распарсить - отвечаем текстом
             return {"action": "answer", "params": {"text": content}}
         except requests.exceptions.Timeout:
             file_logger.log(f"⚠️ Попытка {attempt + 1} таймаут, повтор...")
