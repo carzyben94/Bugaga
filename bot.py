@@ -3,6 +3,7 @@ import logging
 import json
 import subprocess
 import time
+import requests
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 import websockets
@@ -57,13 +58,26 @@ def start_chrome():
         logger.error(f"❌ Ошибка запуска Chrome: {e}")
         return False
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("👋 Привет! Я бот с CDP на Railway.")
+def get_websocket_url():
+    """Получает правильный WebSocket URL для подключения к Chrome"""
+    try:
+        response = requests.get("http://localhost:9222/json/version")
+        data = response.json()
+        return data.get("webSocketDebuggerUrl")
+    except Exception as e:
+        logger.error(f"Ошибка получения WebSocket URL: {e}")
+        return None
 
 async def cdp_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показывает статус браузера"""
     try:
-        async with websockets.connect("ws://localhost:9222/devtools/browser") as websocket:
+        # Получаем правильный WebSocket URL
+        ws_url = get_websocket_url()
+        if not ws_url:
+            await update.message.reply_text("❌ Не удалось получить WebSocket URL")
+            return
+        
+        async with websockets.connect(ws_url) as websocket:
             await websocket.send(json.dumps({
                 "id": 1,
                 "method": "Browser.getVersion"
@@ -94,8 +108,10 @@ async def cdp_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 💡 Проверьте, запущен ли Chrome на порту 9222""")
         logger.error(f"CDP error: {e}")
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text("👋 Привет! Я бот с CDP на Railway.")
+
 def main() -> None:
-    # Запускаем Chrome перед ботом
     if not start_chrome():
         logger.warning("⚠️ Chrome не запустился")
     
