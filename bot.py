@@ -548,7 +548,6 @@ class CDPClient:
             is_x = "x.com" in url
             max_elements = 2000 if is_x else 500
             
-            # ✅ ПРАВИЛЬНО: получаем frame_tree через CDP
             frame_tree_resp = await self.send("Page.getFrameTree", {})
             frame_tree = None
             if "result" in frame_tree_resp:
@@ -708,7 +707,6 @@ class CDPClient:
             headings = [e for e in elements if e.get('tag') in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']]
             visible = [e for e in elements if e.get('visible')]
             
-            # ✅ ПРАВИЛЬНО: сохраняем frame_tree как словарь
             self.full_snapshot = {
                 "title": title,
                 "url": url_final,
@@ -1017,6 +1015,14 @@ AGENT_CODE = """
 - handle_dialog(accept, prompt_text) - обработать диалог
 - cdp(method, params, frame_id) - выполнить любую CDP-команду
 
+⚠️ ВАЖНО: ВСЕГДА используй формат с "params":
+{"action": "navigate", "params": {"url": "https://x.com"}}
+{"action": "click", "params": {"selector": "button"}}
+{"action": "answer", "params": {"text": "текст"}}
+
+НЕ ИСПОЛЬЗУЙ формат без "params":
+{"action": "navigate", "url": "..."}  ← НЕПРАВИЛЬНО!
+
 ОТВЕЧАЙ ТОЛЬКО JSON! БЕЗ ЛИШНИХ СЛОВ!
 """
 
@@ -1064,9 +1070,46 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
             if json_match:
                 try:
                     result = json.loads(json_match.group())
+                    
+                    # ============================================
+                    # 🔧 ИСПРАВЛЯЕМ НЕПРАВИЛЬНЫЙ ФОРМАТ
+                    # ============================================
+                    if isinstance(result, dict):
+                        # Если есть url но нет params — исправляем
+                        if 'url' in result and 'params' not in result:
+                            file_logger.log("⚠️ Исправляю формат: добавил params")
+                            action = result.get('action', 'navigate')
+                            url = result.get('url')
+                            result = {"action": action, "params": {"url": url}}
+                        # Если есть text но нет params — исправляем
+                        if 'text' in result and 'params' not in result:
+                            file_logger.log("⚠️ Исправляю формат: добавил params")
+                            result = {"action": "answer", "params": {"text": result.get('text')}}
+                        # Если есть selector но нет params — исправляем
+                        if 'selector' in result and 'params' not in result:
+                            file_logger.log("⚠️ Исправляю формат: добавил params")
+                            result = {"action": "click", "params": {"selector": result.get('selector')}}
+                        # Если есть value но нет params — исправляем
+                        if 'value' in result and 'params' not in result:
+                            file_logger.log("⚠️ Исправляю формат: добавил params")
+                            result = {"action": "fill", "params": {"selector": result.get('selector', 'input'), "value": result.get('value')}}
+                    
+                    if isinstance(result, list):
+                        for i, item in enumerate(result):
+                            if isinstance(item, dict):
+                                if 'url' in item and 'params' not in item:
+                                    result[i] = {"action": item.get('action', 'navigate'), "params": {"url": item.get('url')}}
+                                if 'text' in item and 'params' not in item:
+                                    result[i] = {"action": "answer", "params": {"text": item.get('text')}}
+                                if 'selector' in item and 'params' not in item:
+                                    result[i] = {"action": "click", "params": {"selector": item.get('selector')}}
+                                if 'value' in item and 'params' not in item:
+                                    result[i] = {"action": "fill", "params": {"selector": item.get('selector', 'input'), "value": item.get('value')}}
+                    
                     if isinstance(result, list) or (isinstance(result, dict) and 'action' in result):
                         return result
-                except:
+                except Exception as e:
+                    file_logger.log(f"⚠️ Ошибка парсинга JSON: {e}")
                     pass
             
             return {"action": "answer", "params": {"text": content}}
