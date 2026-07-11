@@ -396,7 +396,7 @@ class CDPClient:
     async def click_element(self, selector):
         js_code = f"""
         (function() {{
-            const el = document.querySelector('{selector}');
+            const el = document.querySelector("{selector}");
             if (el) {{
                 el.click();
                 return {{ success: true }};
@@ -407,11 +407,15 @@ class CDPClient:
         return await self.eval_js(js_code)
     
     async def fill_element(self, selector, value):
+        # Экранируем кавычки в значении
+        escaped_value = value.replace("'", "\\'").replace('"', '\\"')
+        
+        # Используем двойные кавычки для селектора, одинарные для значения
         js_code = f"""
         (function() {{
-            const el = document.querySelector('{selector}');
+            const el = document.querySelector("{selector}");
             if (el) {{
-                el.value = '{value}';
+                el.value = '{escaped_value}';
                 el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                 el.dispatchEvent(new Event('change', {{ bubbles: true }}));
                 return {{ success: true }};
@@ -501,7 +505,7 @@ AGENT_CODE = """
 - По роли: [role='combobox']
 
 ЕСЛИ НУЖНО НЕСКОЛЬКО ДЕЙСТВИЙ - ВОЗВРАЩАЙ МАССИВ:
-[{"action": "fill", "params": {"selector": "#APjFqb", "value": "текст"}}, {"action": "press_enter", "params": {}}]
+[{"action": "fill", "params": {"selector": "[role='combobox']", "value": "текст"}}, {"action": "press_enter", "params": {}}]
 
 ОТВЕЧАЙ ТОЛЬКО JSON! БЕЗ ЛИШНИХ СЛОВ!
 """
