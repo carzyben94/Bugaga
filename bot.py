@@ -32,21 +32,6 @@ AGNES_API_URL = os.getenv("AGNES_API_URL", "https://apihub.agnes-ai.com/v1/chat/
 
 CHROME_PATH = "/usr/bin/google-chrome"
 
-# ---------- КУКИ ДЛЯ X.COM ----------
-X_COOKIES = [
-    {"name": "__cuid", "value": "55d2d7c5-4888-430a-b024-dd785da46ef4", "domain": ".x.com", "path": "/"},
-    {"name": "lang", "value": "ru", "domain": ".x.com", "path": "/"},
-    {"name": "dnt", "value": "1", "domain": ".x.com", "path": "/"},
-    {"name": "guest_id", "value": "v1%3A178267838599411411", "domain": ".x.com", "path": "/"},
-    {"name": "guest_id_marketing", "value": "v1%3A178267838599411411", "domain": ".x.com", "path": "/"},
-    {"name": "guest_id_ads", "value": "v1%3A178267838599411411", "domain": ".x.com", "path": "/"},
-    {"name": "personalization_id", "value": '"v1_DKrxLZAC902dMFdd1QrVYg=="', "domain": ".x.com", "path": "/"},
-    {"name": "twid", "value": "u%3D2067347503503052800", "domain": ".x.com", "path": "/"},
-    {"name": "auth_token", "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936", "domain": ".x.com", "path": "/"},
-    {"name": "ct0", "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb", "domain": ".x.com", "path": "/"},
-    {"name": "__cf_bm", "value": "j2mG_0c5w5JQUmv58SK5rLYOjV1pvjNGDsoZIMJGYv4-1783776014.9041774-1.0.1.1-adjQms4xp_hAMnqNEjMJP5_YPV7H5SdSeWNpQ_1wPS1zpCM3.mSKXJQLEbTDX6EHcG4P97tYtVLugjDWgXXQD0hSdc1V7Ogii9S6Mksik2X1pxvCyCAAFjUNXBvOPu0s", "domain": ".x.com", "path": "/"}
-]
-
 # ---------- ДИАЛОГОВАЯ ПОЛИТИКА ----------
 DIALOG_POLICY = {
     "must_respond": "wait",
@@ -191,6 +176,18 @@ class CDPSupervisor:
         self.dialog_timeout_task = None
         self.event_loop_task = None
     
+    def _is_ws_closed(self):
+        """Универсальная проверка закрытия WebSocket"""
+        if not self.ws:
+            return True
+        # Для новых версий websockets (>=11)
+        if hasattr(self.ws, 'state'):
+            return self.ws.state.name in ["CLOSED", "CLOSING"]
+        # Для старых версий (<=10.4)
+        if hasattr(self.ws, 'closed'):
+            return self.ws.closed
+        return False
+    
     async def start(self):
         if self.running:
             return True
@@ -223,52 +220,64 @@ class CDPSupervisor:
         file_logger.log(f"🧠 CDP Supervisor остановлен для {self.user_id}")
     
     async def _run(self):
-        """Основной цикл супервайзера"""
+        """Основной цикл супервайзера - ПРАВИЛЬНЫЙ ПОРЯДОК"""
         file_logger.log("🚀 Запуск CDP Supervisor...")
         
         while self.running and not self._stop_event.is_set():
             try:
+                # 1. Подключение
                 file_logger.log("🔗 Подключение к Chrome...")
                 await self._connect()
                 
-                file_logger.log("⚙️ Настройка доменов...")
-                await self._setup_domains()
-                
+                # 2. ЗАПУСКАЕМ EVENT LOOP ПЕРВЫМ!
                 file_logger.log("🔄 Запуск event loop...")
                 self.event_loop_task = asyncio.create_task(self._event_loop())
                 
-                # Ждем готовности event loop
-                for attempt in range(20):
-                    if self.connected and self.ws and not self.ws.closed:
-                        file_logger.log(f"✅ Event loop готов (попытка {attempt+1})")
-                        break
+                # 3. Даем время на запуск
+                await asyncio.sleep(0.5)
+                
+                # 4. ТЕПЕРЬ настраиваем домены
+                file_logger.log("⚙️ Настройка доменов...")
+                await self._setup_domains()
+                
+                # 5. Проверка готовности
+                ready = False
+                for attempt in range(10):
+                    try:
+                        test_result = await asyncio.wait_for(
+                            self._send("Browser.getVersion", {}),
+                            timeout=2
+                        )
+                        if "error" not in test_result:
+                            file_logger.log(f"✅ Supervisor готов (попытка {attempt+1})")
+                            ready = True
+                            break
+                    except:
+                        pass
                     await asyncio.sleep(0.5)
-                else:
-                    raise Exception("Event loop не готов после 10 секунд")
                 
-                await asyncio.sleep(1)
+                if not ready:
+                    raise Exception("Supervisor не готов")
                 
+                # 6. Навигация
                 file_logger.log("🌐 Открываю google.com...")
                 try:
-                    await asyncio.wait_for(
+                    result = await asyncio.wait_for(
                         self.navigate("https://google.com"),
-                        timeout=20
+                        timeout=25
                     )
-                    file_logger.log("✅ Google.com загружен")
+                    if result.get("success"):
+                        file_logger.log("✅ Google.com загружен")
                 except asyncio.TimeoutError:
-                    file_logger.log("⚠️ Таймаут навигации на google.com")
-                    await asyncio.wait_for(
-                        self.navigate("about:blank"),
-                        timeout=10
-                    )
-                    file_logger.log("✅ about:blank загружен")
+                    file_logger.log("⚠️ Таймаут навигации")
                 
                 file_logger.log("✅ Supervisor готов к работе!")
                 self._ready_event.set()
                 
-                file_logger.log("❤️ Запуск heartbeat...")
+                # 7. Heartbeat
                 self.heartbeat_task = asyncio.create_task(self._heartbeat())
                 
+                # 8. Ждем завершения
                 await asyncio.gather(
                     self.event_loop_task,
                     self.heartbeat_task,
@@ -290,7 +299,7 @@ class CDPSupervisor:
         while time.time() - start < timeout:
             if (self.connected and 
                 self.ws and 
-                not self.ws.closed and 
+                not self._is_ws_closed() and 
                 self.page_loaded and
                 self.full_snapshot is not None):
                 return True
@@ -302,7 +311,7 @@ class CDPSupervisor:
         status_parts = []
         
         # Статус подключения
-        if self.connected and self.ws and not self.ws.closed:
+        if self.connected and self.ws and not self._is_ws_closed():
             status_parts.append("✅ Подключен к Chrome")
         else:
             status_parts.append("❌ Нет подключения к Chrome")
@@ -342,16 +351,43 @@ class CDPSupervisor:
         file_logger.log(f"✅ WebSocket подключен для {self.user_id}")
     
     async def _setup_domains(self):
-        await self._send("Page.enable", {})
-        await self._send("Runtime.enable", {})
-        await self._send("DOM.enable", {})
-        await self._send("Network.enable", {})
-        await self._send("Target.setAutoAttach", {
-            "autoAttach": True,
-            "flatten": True,
-            "waitForDebuggerOnStart": False
-        })
-        file_logger.log("✅ Domains enabled")
+        """Настройка доменов - теперь event loop уже работает"""
+        try:
+            # Все эти запросы теперь будут получать ответы
+            result = await asyncio.wait_for(
+                self._send("Page.enable", {}),
+                timeout=10
+            )
+            if "error" in result:
+                file_logger.log(f"⚠️ Page.enable error: {result.get('error')}")
+            
+            result = await asyncio.wait_for(
+                self._send("Runtime.enable", {}),
+                timeout=10
+            )
+            if "error" in result:
+                file_logger.log(f"⚠️ Runtime.enable error: {result.get('error')}")
+            
+            await asyncio.wait_for(
+                self._send("DOM.enable", {}),
+                timeout=10
+            )
+            await asyncio.wait_for(
+                self._send("Network.enable", {}),
+                timeout=10
+            )
+            await asyncio.wait_for(
+                self._send("Target.setAutoAttach", {
+                    "autoAttach": True,
+                    "flatten": True,
+                    "waitForDebuggerOnStart": False
+                }),
+                timeout=10
+            )
+            file_logger.log("✅ Domains enabled")
+        except asyncio.TimeoutError:
+            file_logger.log("⚠️ Таймаут при настройке доменов")
+            raise
     
     async def _send(self, method, params=None, session_id=None):
         """Отправляет команду в Chrome с проверкой соединения"""
@@ -362,10 +398,11 @@ class CDPSupervisor:
             if not self.connected:
                 return {"error": "Not connected"}
         
-        if not self.ws or self.ws.closed:
+        # Универсальная проверка
+        if not self.ws or self._is_ws_closed():
             file_logger.log(f"⚠️ WebSocket закрыт, пытаюсь переподключиться...")
             await self._reconnect()
-            if not self.ws or self.ws.closed:
+            if not self.ws or self._is_ws_closed():
                 return {"error": "WebSocket closed"}
         
         self.msg_id += 1
@@ -382,10 +419,6 @@ class CDPSupervisor:
         self._pending_requests[msg_id] = future
         
         try:
-            # Проверяем, что WebSocket открыт перед отправкой
-            if self.ws.closed:
-                return {"error": "WebSocket closed"}
-            
             await self.ws.send(json.dumps(msg))
             response = await asyncio.wait_for(future, timeout=30)
             return response
@@ -708,12 +741,12 @@ class CDPSupervisor:
             try:
                 file_logger.log(f"🌐 Навигация на {url}")
                 
-                # Сначала проверяем, что соединение живо
-                if not self.connected or not self.ws or self.ws.closed:
+                # Проверяем соединение
+                if not self.connected or not self.ws or self._is_ws_closed():
                     file_logger.log("⚠️ Соединение потеряно, переподключаюсь...")
                     await self._reconnect()
                 
-                # Отправляем команду навигации с таймаутом
+                # Отправляем команду навигации
                 result = await asyncio.wait_for(
                     self._send("Page.navigate", {"url": url}),
                     timeout=15
@@ -723,7 +756,7 @@ class CDPSupervisor:
                     file_logger.log(f"❌ Ошибка навигации: {result.get('error')}")
                     return {"success": False, "error": result.get("error")}
                 
-                # Ждем загрузки с таймаутом
+                # Ждем загрузки
                 loaded = await asyncio.wait_for(
                     self._wait_for_page_load(),
                     timeout=15
