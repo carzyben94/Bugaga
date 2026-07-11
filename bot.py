@@ -26,7 +26,7 @@ AGNES_API_URL = os.getenv("AGNES_API_URL", "https://apihub.agnes-ai.com/v1/chat/
 
 CHROME_PATH = "/usr/bin/google-chrome"
 
-# ---------- Логирование в файл ----------
+# ---------- Логирование ----------
 
 LOG_FILE = "bot_logs.txt"
 
@@ -42,17 +42,6 @@ class FileLogger:
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         with open(self.filename, 'a', encoding='utf-8') as f:
             f.write(f"[{timestamp}] [{level}] {message}\n")
-    
-    def get_logs(self, lines=100):
-        try:
-            with open(self.filename, 'r', encoding='utf-8') as f:
-                content = f.read()
-                lines_list = content.split('\n')
-                if len(lines_list) > lines:
-                    return '\n'.join(lines_list[-lines:])
-                return content
-        except Exception as e:
-            return f"❌ Ошибка чтения логов: {e}"
 
 file_logger = FileLogger()
 
@@ -85,28 +74,20 @@ def start_chrome():
         return False
 
 def get_page_ws_url():
-    """Получает WebSocket URL для ПЕРВОЙ вкладки"""
     try:
         response = requests.get("http://localhost:9222/json")
         pages = response.json()
-        
-        file_logger.log(f"📄 Доступные страницы: {len(pages)}")
-        
         for page in pages:
             if page.get("type") == "page":
                 ws_url = page.get("webSocketDebuggerUrl")
-                file_logger.log(f"✅ WebSocket страницы: {ws_url}")
+                file_logger.log(f"✅ WebSocket: {ws_url}")
                 return ws_url
-        
-        file_logger.log("⚠️ Нет страниц, создаю новую...")
         return None
-        
     except Exception as e:
         file_logger.log(f"❌ Ошибка: {e}", "ERROR")
         return None
 
 def create_page():
-    """Создаёт новую страницу"""
     try:
         response = requests.get("http://localhost:9222/json/new?about:blank")
         data = response.json()
@@ -114,7 +95,7 @@ def create_page():
         file_logger.log(f"✅ Создана страница: {ws_url}")
         return ws_url
     except Exception as e:
-        file_logger.log(f"❌ Ошибка создания страницы: {e}", "ERROR")
+        file_logger.log(f"❌ Ошибка: {e}", "ERROR")
         return None
 
 # ---------- CDP Client ----------
@@ -143,12 +124,11 @@ class CDPClient:
         try:
             self.ws = await websockets.connect(ws_url)
             self.connected = True
-            file_logger.log("✅ WebSocket подключен к странице")
+            file_logger.log("✅ WebSocket подключен")
             
             await self._send("Page.enable", {})
             await self._send("Runtime.enable", {})
             file_logger.log("✅ Page.enable и Runtime.enable")
-            
             return True
             
         except Exception as e:
@@ -183,17 +163,7 @@ class CDPClient:
     
     async def navigate(self, url):
         file_logger.log(f"Навигация на {url}")
-        resp = await self._send("Page.navigate", {"url": url})
-        
-        # Ждём загрузки с проверкой
-        for i in range(5):
-            await asyncio.sleep(1)
-            title = await self.eval_js("document.title")
-            if title and title != "":
-                file_logger.log(f"📄 Страница загружена: {title}")
-                break
-        
-        return resp
+        return await self._send("Page.navigate", {"url": url})
     
     async def eval_js(self, code):
         resp = await self._send("Runtime.evaluate", {"expression": code})
@@ -201,71 +171,68 @@ class CDPClient:
             return resp["result"].get("result", {}).get("value", "")
         return None
     
-    async def screenshot_browser(self):
-        """Скриншот ВСЕГО браузера через Browser.captureScreenshot"""
+    async def screenshot(self):
+        """Делает скриншот страницы (даже пустой)"""
         try:
-            file_logger.log("📸 Делаю скриншот всего браузера...")
+            file_logger.log("📸 Делаю скриншот...")
             
-            # Используем Browser.captureScreenshot для скриншота всего браузера
-            resp = await self._send("Browser.captureScreenshot", {
-                "format": "png"
-            })
+            # Пробуем 3 разных способа
             
-            file_logger.log(f"📸 Ответ: {json.dumps(resp, indent=2)[:300]}")
-            
-            if "result" in resp and "data" in resp["result"]:
-                file_logger.log("✅ Скриншот браузера сделан")
-                return base64.b64decode(resp["result"]["data"])
-            
-            # Если Browser.captureScreenshot не сработал, пробуем через Page
-            file_logger.log("⚠️ Browser.captureScreenshot не сработал, пробую Page.captureScreenshot...")
-            return await self.screenshot_page()
-                
-        except Exception as e:
-            file_logger.log(f"❌ Screenshot error: {e}", "ERROR")
-            return None
-    
-    async def screenshot_page(self):
-        """Скриншот страницы через Page.captureScreenshot"""
-        try:
-            # Проверяем страницу
-            title = await self.eval_js("document.title")
-            file_logger.log(f"📄 Заголовок: {title}")
-            
-            if not title or title == "":
-                file_logger.log("🌐 Открываю Google для скриншота...")
-                await self.navigate("https://google.com")
-            
-            resp = await self._send("Page.captureScreenshot", {
+            # Способ 1: с captureBeyondViewport
+            resp1 = await self._send("Page.captureScreenshot", {
                 "format": "png",
                 "captureBeyondViewport": True,
                 "fromSurface": True
             })
             
-            if "result" in resp and "data" in resp["result"]:
-                file_logger.log("✅ Скриншот страницы сделан")
-                return base64.b64decode(resp["result"]["data"])
+            if "result" in resp1 and "data" in resp1["result"]:
+                file_logger.log("✅ Скриншот (способ 1)")
+                return base64.b64decode(resp1["result"]["data"])
             
-            # Пробуем без параметров
+            # Способ 2: без параметров
+            file_logger.log("⚠️ Пробую способ 2...")
             resp2 = await self._send("Page.captureScreenshot", {
                 "format": "png"
             })
             
             if "result" in resp2 and "data" in resp2["result"]:
-                file_logger.log("✅ Скриншот страницы сделан (2 попытка)")
+                file_logger.log("✅ Скриншот (способ 2)")
                 return base64.b64decode(resp2["result"]["data"])
             
-            file_logger.log(f"❌ Ошибка скриншота: {resp}", "ERROR")
+            # Способ 3: через Browser.captureScreenshot
+            file_logger.log("⚠️ Пробую способ 3 (Browser)...")
+            resp3 = await self._send("Browser.captureScreenshot", {
+                "format": "png"
+            })
+            
+            if "result" in resp3 and "data" in resp3["result"]:
+                file_logger.log("✅ Скриншот (способ 3)")
+                return base64.b64decode(resp3["result"]["data"])
+            
+            # Способ 4: с clip
+            file_logger.log("⚠️ Пробую способ 4 (clip)...")
+            resp4 = await self._send("Page.captureScreenshot", {
+                "format": "png",
+                "clip": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 1920,
+                    "height": 1080,
+                    "scale": 1
+                }
+            })
+            
+            if "result" in resp4 and "data" in resp4["result"]:
+                file_logger.log("✅ Скриншот (способ 4)")
+                return base64.b64decode(resp4["result"]["data"])
+            
+            # Если ничего не сработало
+            file_logger.log(f"❌ Все способы не удались", "ERROR")
             return None
                 
         except Exception as e:
             file_logger.log(f"❌ Screenshot error: {e}", "ERROR")
             return None
-    
-    async def close(self):
-        if self.ws:
-            await self.ws.close()
-            self.connected = False
 
 # ---------- Хранилище ----------
 
@@ -285,18 +252,9 @@ async def ask_agnes(prompt: str) -> dict:
     }
     
     system_prompt = """
-    Ты AI-агент для управления браузером через CDP.
-    
-    Доступные действия (возвращай ТОЛЬКО JSON):
-    {
-        "action": "navigate|screenshot|js|click|fill",
-        "params": {...}
-    }
-    
-    Примеры:
-    {"action": "navigate", "params": {"url": "https://youtube.com"}}
-    {"action": "screenshot", "params": {}}
-    {"action": "js", "params": {"code": "document.title"}}
+    Ты AI-агент для управления браузером.
+    Отвечай ТОЛЬКО JSON:
+    {"action": "navigate|screenshot|js", "params": {...}}
     """
     
     data = {
@@ -328,16 +286,17 @@ async def execute_action(client: CDPClient, action: dict) -> str:
     action_type = action.get("action")
     params = action.get("params", {})
     
-    file_logger.log(f"Выполнение действия: {action_type}")
+    file_logger.log(f"Выполнение: {action_type}")
     
     if action_type == "navigate":
         url = params.get("url", "https://google.com")
         await client.navigate(url)
+        await asyncio.sleep(2)
         title = await client.eval_js("document.title")
         return f"✅ Открыл: {url}\n📄 {title}"
     
     elif action_type == "screenshot":
-        img_data = await client.screenshot_browser()
+        img_data = await client.screenshot()
         if img_data:
             with open("screenshot.png", "wb") as f:
                 f.write(img_data)
@@ -350,7 +309,7 @@ async def execute_action(client: CDPClient, action: dict) -> str:
         return f"✅ Результат: {result}"
     
     else:
-        return f"⚠️ Неизвестное действие: {action_type}"
+        return f"⚠️ Неизвестно: {action_type}"
 
 # ---------- Прямые команды ----------
 
@@ -360,16 +319,18 @@ async def execute_command(client: CDPClient, command: str) -> str:
     
     if "google" in cmd or "гугл" in cmd:
         await client.navigate("https://google.com")
+        await asyncio.sleep(2)
         title = await client.eval_js("document.title")
         return f"✅ Открыл Google\n📄 {title}"
     
     if "ютуб" in cmd or "youtube" in cmd:
         await client.navigate("https://youtube.com")
+        await asyncio.sleep(2)
         title = await client.eval_js("document.title")
         return f"✅ Открыл YouTube\n📄 {title}"
     
     if "скриншот" in cmd or "скрин" in cmd or "screenshot" in cmd:
-        img_data = await client.screenshot_browser()
+        img_data = await client.screenshot()
         if img_data:
             with open("screenshot.png", "wb") as f:
                 f.write(img_data)
@@ -378,16 +339,13 @@ async def execute_command(client: CDPClient, command: str) -> str:
     
     if cmd.startswith("http"):
         await client.navigate(cmd)
+        await asyncio.sleep(2)
         title = await client.eval_js("document.title")
         return f"✅ Открыл\n📄 {title}"
     
     if "заголовок" in cmd or "title" in cmd:
         title = await client.eval_js("document.title")
         return f"📄 Заголовок: {title}"
-    
-    if "текст" in cmd or "читай" in cmd:
-        text = await client.eval_js("document.body.innerText.slice(0, 500)")
-        return f"📄 Текст:\n{text}..."
     
     return """
 🤖 **Управление браузером**
@@ -398,7 +356,6 @@ async def execute_command(client: CDPClient, command: str) -> str:
 • Сделай скриншот
 • https://example.com
 • Заголовок
-• Текст
 """
 
 # ---------- Команды ----------
@@ -412,8 +369,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Зайди в ютуб\n"
         "• Сделай скриншот\n"
         "• https://youtube.com\n"
-        "• Заголовок\n"
-        "• Текст\n\n"
+        "• Заголовок\n\n"
         "Команды:\n"
         "/cdp - статус браузера\n"
         "/logs - получить логи\n"
