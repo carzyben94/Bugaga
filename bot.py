@@ -106,7 +106,15 @@ class CDPClient:
         self.connected = False
         self.msg_id = 0
         self.user_id = None
-        self.page_info = None
+        self.page_info = {
+            "title": "Нет данных",
+            "url": "Нет данных",
+            "buttons": [],
+            "inputs": [],
+            "links": [],
+            "forms": [],
+            "headings": []
+        }
         self.history = []
     
     async def connect(self):
@@ -194,87 +202,109 @@ class CDPClient:
                 break
     
     async def eval_js(self, code):
-        resp = await self.send("Runtime.evaluate", {"expression": code})
-        if "result" in resp:
-            result_obj = resp["result"]
-            if isinstance(result_obj, dict):
-                if "result" in result_obj:
-                    return result_obj["result"].get("value", "")
-                elif "value" in result_obj:
-                    return result_obj["value"]
-        return None
+        try:
+            resp = await self.send("Runtime.evaluate", {"expression": code})
+            if "result" in resp:
+                result_obj = resp["result"]
+                if isinstance(result_obj, dict):
+                    if "result" in result_obj:
+                        return result_obj["result"].get("value", "")
+                    elif "value" in result_obj:
+                        return result_obj["value"]
+            return None
+        except Exception as e:
+            file_logger.log(f"❌ eval_js error: {e}", "ERROR")
+            return None
     
     async def update_page_info(self):
         """Получает информацию о странице"""
         try:
-            elements = await self.eval_js("""
+            # Получаем элементы со страницы
+            buttons = await self.eval_js("""
                 (function() {
-                    const result = {
-                        buttons: [],
-                        inputs: [],
-                        links: [],
-                        forms: [],
-                        headings: []
-                    };
-                    
-                    document.querySelectorAll('button').forEach(el => {
-                        const text = el.textContent.trim();
-                        if (text) result.buttons.push(text.slice(0, 30));
+                    const result = [];
+                    document.querySelectorAll('button, input[type="submit"], input[type="button"]').forEach(el => {
+                        const text = el.textContent || el.value || '';
+                        if (text.trim()) result.push(text.trim().slice(0, 30));
                     });
-                    
-                    document.querySelectorAll('input[type="submit"], input[type="button"]').forEach(el => {
-                        const text = el.value || el.placeholder || '';
-                        if (text) result.buttons.push(text.slice(0, 30));
-                    });
-                    
-                    document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"])').forEach(el => {
-                        const text = el.placeholder || el.name || el.type || '';
-                        if (text) result.inputs.push(text.slice(0, 30));
-                    });
-                    
-                    document.querySelectorAll('textarea').forEach(el => {
-                        const text = el.placeholder || el.name || '';
-                        if (text) result.inputs.push(text.slice(0, 30));
-                    });
-                    
-                    document.querySelectorAll('a[href]').forEach(el => {
-                        const text = el.textContent.trim();
-                        if (text) result.links.push(text.slice(0, 30));
-                    });
-                    
-                    document.querySelectorAll('form').forEach(el => {
-                        result.forms.push(el.action || el.method || 'form');
-                    });
-                    
-                    document.querySelectorAll('h1, h2, h3').forEach(el => {
-                        const text = el.textContent.trim();
-                        if (text) result.headings.push(text.slice(0, 30));
-                    });
-                    
                     return result;
                 })()
-            """)
+            """) or []
+            
+            inputs = await self.eval_js("""
+                (function() {
+                    const result = [];
+                    document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]), textarea').forEach(el => {
+                        const text = el.placeholder || el.name || el.type || '';
+                        if (text) result.push(text.slice(0, 30));
+                    });
+                    return result;
+                })()
+            """) or []
+            
+            links = await self.eval_js("""
+                (function() {
+                    const result = [];
+                    document.querySelectorAll('a[href]').forEach(el => {
+                        const text = el.textContent.trim();
+                        if (text) result.push(text.slice(0, 30));
+                    });
+                    return result;
+                })()
+            """) or []
+            
+            forms = await self.eval_js("""
+                (function() {
+                    const result = [];
+                    document.querySelectorAll('form').forEach(el => {
+                        result.push(el.action || el.method || 'form');
+                    });
+                    return result;
+                })()
+            """) or []
+            
+            headings = await self.eval_js("""
+                (function() {
+                    const result = [];
+                    document.querySelectorAll('h1, h2, h3').forEach(el => {
+                        const text = el.textContent.trim();
+                        if (text) result.push(text.slice(0, 30));
+                    });
+                    return result;
+                })()
+            """) or []
+            
+            title = await self.eval_js("document.title") or "Нет заголовка"
+            url = await self.eval_js("window.location.href") or "Нет URL"
             
             self.page_info = {
-                "title": await self.eval_js("document.title"),
-                "url": await self.eval_js("window.location.href"),
-                "buttons": elements.get("buttons", []),
-                "inputs": elements.get("inputs", []),
-                "links": elements.get("links", []),
-                "forms": elements.get("forms", []),
-                "headings": elements.get("headings", [])
+                "title": title,
+                "url": url,
+                "buttons": buttons,
+                "inputs": inputs,
+                "links": links,
+                "forms": forms,
+                "headings": headings
             }
             
+            file_logger.log(f"✅ Страница обновлена: {len(buttons)} кнопок, {len(inputs)} полей")
             return True
             
         except Exception as e:
             file_logger.log(f"❌ Update info error: {e}", "ERROR")
+            self.page_info = {
+                "title": "Ошибка загрузки",
+                "url": "Ошибка",
+                "buttons": [],
+                "inputs": [],
+                "links": [],
+                "forms": [],
+                "headings": []
+            }
             return False
     
     async def get_page_description(self):
-        if not self.page_info:
-            await self.update_page_info()
-        
+        """Возвращает описание страницы"""
         info = self.page_info or {}
         
         desc = f"""
@@ -323,6 +353,36 @@ class CDPClient:
         """
         return await self.eval_js(js_code)
     
+    async def wait_for_element(self, selector, timeout=10):
+        js_code = f"""
+        (function() {{
+            return new Promise((resolve) => {{
+                const start = Date.now();
+                const check = () => {{
+                    const el = document.querySelector('{selector}');
+                    if (el) {{
+                        resolve({{ found: true, selector: '{selector}' }});
+                    }} else if (Date.now() - start > {timeout * 1000}) {{
+                        resolve({{ found: false, selector: '{selector}' }});
+                    }} else {{
+                        setTimeout(check, 200);
+                    }}
+                }};
+                check();
+            }});
+        }})()
+        """
+        return await self.eval_js(js_code)
+    
+    async def get_text(self, selector):
+        js_code = f"""
+        (function() {{
+            const el = document.querySelector('{selector}');
+            return el ? el.textContent.trim() : null;
+        }})()
+        """
+        return await self.eval_js(js_code)
+    
     async def screenshot(self):
         try:
             if not self.connected:
@@ -358,135 +418,73 @@ class CDPClient:
 
 clients = {}
 
-# ---------- КОД, КОТОРЫЙ ВИДИТ АГЕНТ (БЕЗ ФИГУРНЫХ СКОБОК) ----------
+# ---------- КОД АГЕНТА ----------
 
 AGENT_CODE = """
 🤖 МОЙ КОД - что я могу делать:
 
 📌 ДОСТУПНЫЕ ФУНКЦИИ:
 
-1. navigate(url)
-   - Описание: Открыть сайт
-   - Пример: navigate("https://google.com")
+1. navigate(url) - открыть сайт
+   Пример: navigate("https://google.com")
 
-2. click(selector)
-   - Описание: Кликнуть по элементу
-   - Пример: click("button:contains('Войти')")
-   - Как найти selector: 
-     - По тексту: button:contains('Текст')
-     - По ID: #login-btn
-     - По классу: .btn-primary
-     - По типу: input[type='text']
+2. click(selector) - кликнуть по элементу
+   Пример: click("button:contains('Войти')")
 
-3. fill(selector, value)
-   - Описание: Заполнить поле
-   - Пример: fill("input[placeholder='Поиск']", "Привет")
+3. fill(selector, value) - заполнить поле
+   Пример: fill("input[placeholder='Поиск']", "Привет")
 
-4. screenshot()
-   - Описание: Сделать скриншот
-   - Пример: screenshot()
+4. screenshot() - сделать скриншот
 
-5. answer(text)
-   - Описание: Ответить пользователю
-   - Пример: answer("На странице есть кнопка Войти")
+5. answer(text) - ответить пользователю
 
-6. scroll(amount)
-   - Описание: Прокрутить страницу
-   - Пример: scroll(500)
+6. scroll(amount) - прокрутить страницу
 
-7. back()
-   - Описание: Назад по истории
-   - Пример: back()
+7. back() - назад по истории
 
-8. forward()
-   - Описание: Вперёд по истории
-   - Пример: forward()
+8. forward() - вперёд по истории
 
-9. reload()
-   - Описание: Обновить страницу
-   - Пример: reload()
+9. reload() - обновить страницу
 
-10. wait_for(selector, timeout)
-    - Описание: Ждать появления элемента
-    - Пример: wait_for("button", 10)
+10. wait_for(selector, timeout) - ждать появления элемента
 
-11. get_text(selector)
-    - Описание: Получить текст элемента
-    - Пример: get_text("h1")
-
-📝 ПРИМЕРЫ РАБОТЫ:
-- Пользователь: Открой Google
-  → Я: navigate("https://google.com")
-
-- Пользователь: Нажми на кнопку Войти
-  → Я: click("button:contains('Войти')")
-
-- Пользователь: Что видишь?
-  → Я: answer("На странице Google есть поле поиска и кнопка Поиск в Google")
-
-- Пользователь: Введи в поле текст Привет
-  → Я: fill("input[placeholder='Поиск']", "Привет")
-
-- Пользователь: Сделай скриншот
-  → Я: screenshot()
+11. get_text(selector) - получить текст элемента
 """
 
-# ---------- Агент с видимостью кода ----------
+# ---------- Агент ----------
 
-async def ask_agnes_with_code(prompt: str, client: CDPClient) -> dict:
-    """Агент видит свой код"""
-    
+async def ask_agnes(prompt: str, client: CDPClient) -> dict:
     if not AGNES_API_KEY:
         return {"error": "AGNES_API_KEY не установлен"}
     
-    # Получаем информацию о странице
-    page_desc = "Страница не загружена"
-    if client and client.page_info:
-        page_desc = await client.get_page_description()
-    
-    system_prompt = f"""
-Ты — ИИ-агент, который управляет браузером через CDP.
-
-ВОТ ТВОЙ КОД (что ты умеешь делать):
-{AGENT_CODE}
-
-📄 ТЕКУЩАЯ СТРАНИЦА:
-{page_desc}
-
-📝 ЗАДАНИЕ:
-1. Посмотри на страницу
-2. Пойми, что хочет пользователь
-3. Выбери правильную функцию из списка выше
-4. Выполни её
-
-⚠️ ОТВЕЧАЙ ТОЛЬКО JSON!
-
-Формат ответа:
-{{"action": "название_функции", "params": {{"параметр": "значение"}}}}
-
-Примеры правильных ответов:
-{{"action": "navigate", "params": {{"url": "https://google.com"}}}}
-{{"action": "click", "params": {{"selector": "button:contains('Войти')"}}}}
-{{"action": "fill", "params": {{"selector": "input[placeholder='Поиск']", "value": "Привет"}}}}
-{{"action": "answer", "params": {{"text": "На странице Google есть поле поиска и кнопка Поиск в Google"}}}}
-{{"action": "screenshot", "params": {{}}}}
-
-❌ НЕПРАВИЛЬНЫЕ ОТВЕТЫ:
-- Любой текст без JSON
-- {{"action": "click"}} - нет params
-- {{"action": "navigate"}} - нет url
-
-🎯 ВОТ ЧТО НА СТРАНИЦЕ ПРЯМО СЕЙЧАС:
-{page_desc}
-
-Используй ЭТИ данные для выбора селекторов!
-"""
-
     headers = {
         "Authorization": f"Bearer {AGNES_API_KEY}",
         "Content-Type": "application/json"
     }
     
+    # Получаем описание страницы
+    page_desc = "Страница не загружена"
+    if client and client.page_info:
+        page_desc = await client.get_page_description()
+    
+    system_prompt = f"""
+Ты — ИИ-агент для управления браузером.
+
+{AGENT_CODE}
+
+📄 ТЕКУЩАЯ СТРАНИЦА:
+{page_desc}
+
+📝 ОТВЕЧАЙ ТОЛЬКО JSON!
+
+Примеры:
+{{"action": "navigate", "params": {{"url": "https://google.com"}}}}
+{{"action": "click", "params": {{"selector": "button:contains('Войти')"}}}}
+{{"action": "fill", "params": {{"selector": "input[placeholder='Поиск']", "value": "Привет"}}}}
+{{"action": "answer", "params": {{"text": "На странице есть кнопка Войти"}}}}
+{{"action": "screenshot", "params": {{}}}}
+"""
+
     data = {
         "model": "agnes-2.0-flash",
         "messages": [
@@ -510,7 +508,7 @@ async def ask_agnes_with_code(prompt: str, client: CDPClient) -> dict:
         return {"action": "answer", "params": {"text": content}}
     except Exception as e:
         file_logger.log(f"Agnes error: {e}", "ERROR")
-        return {"error": str(e)}
+        return {"action": "answer", "params": {"text": f"Ошибка: {str(e)}"}}
 
 # ---------- Выполнение действий ----------
 
@@ -628,9 +626,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         client = clients[user_id]
         
-        # Агент с видимостью кода
+        # Обновляем информацию о странице
+        await client.update_page_info()
+        
+        # Спрашиваем агента
         if AGNES_API_KEY:
-            response = await ask_agnes_with_code(prompt, client)
+            response = await ask_agnes(prompt, client)
             if "error" not in response:
                 result = await execute_action(client, response)
                 if result == "screenshot":
@@ -650,24 +651,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 **АГЕНТ С ВИДИМЫМ КОДОМ**\n\n"
-        "Я вижу свой код и знаю, что могу:\n"
-        "• navigate() - открывать сайты\n"
-        "• click() - кликать по кнопкам\n"
-        "• fill() - заполнять поля\n"
-        "• screenshot() - делать скриншоты\n"
-        "• answer() - отвечать на вопросы\n"
-        "• scroll() - прокручивать\n"
-        "• wait_for() - ждать элементы\n"
-        "• get_text() - читать текст\n\n"
+        "🤖 **АГЕНТ ДЛЯ УПРАВЛЕНИЯ БРАУЗЕРОМ**\n\n"
+        "Я вижу страницу и могу:\n"
+        "• Открывать сайты\n"
+        "• Кликать по кнопкам\n"
+        "• Заполнять поля\n"
+        "• Делать скриншоты\n"
+        "• Отвечать на вопросы\n\n"
         "💡 Примеры команд:\n"
         "• Открой Google\n"
         "• Нажми на кнопку Войти\n"
         "• Введи в поле текст Привет\n"
         "• Что ты видишь?\n"
         "• Сделай скриншот\n\n"
-        "/cdp - статус браузера\n"
-        "/logs - логи"
+        "/cdp - статус браузера"
     )
 
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
