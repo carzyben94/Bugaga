@@ -42,13 +42,13 @@ X_COOKIES = [
     {"name": "__cf_bm", "value": "j2mG_0c5w5JQUmv58SK5rLYOjV1pvjNGDsoZIMJGYv4-1783776014.9041774-1.0.1.1-adjQms4xp_hAMnqNEjMJP5_YPV7H5SdSeWNpQ_1wPS1zpCM3.mSKXJQLEbTDX6EHcG4P97tYtVLugjDWgXXQD0hSdc1V7Ogii9S6Mksik2X1pxvCyCAAFjUNXBvOPu0s", "domain": ".x.com", "path": "/"}
 ]
 
-# ---------- ДИАЛОГОВАЯ ПОЛИТИКА (из Hermes) ----------
+# ---------- ДИАЛОГОВАЯ ПОЛИТИКА ----------
 DIALOG_POLICY = {
-    "must_respond": "wait",      # Ждать ответа агента
-    "auto_dismiss": "dismiss",   # Автоматически закрывать
-    "auto_accept": "accept"      # Автоматически принимать
+    "must_respond": "wait",
+    "auto_dismiss": "dismiss",
+    "auto_accept": "accept"
 }
-CURRENT_DIALOG_POLICY = "must_respond"  # По умолчанию
+CURRENT_DIALOG_POLICY = "must_respond"
 
 # ---------- Логирование ----------
 
@@ -167,7 +167,7 @@ class CDPClient:
         self.cookies_set = False
         self.pending_dialogs = []
         self.connected_tabs = {}
-        self.dialog_timeout = 300  # 5 минут таймаут для диалогов
+        self.dialog_timeout = 300
     
     async def connect(self):
         if self.connected:
@@ -458,9 +458,6 @@ class CDPClient:
                 response = await asyncio.wait_for(self.ws.recv(), timeout=30)
                 data = json.loads(response)
                 
-                # ============================================
-                # 🆕 HERMES: Обработка диалогов с политикой
-                # ============================================
                 if "method" in data and data["method"] == "Page.javascriptDialogOpening":
                     dialog_params = data.get("params", {})
                     dialog_message = dialog_params.get('message', '')
@@ -468,7 +465,6 @@ class CDPClient:
                     
                     file_logger.log(f"💬 Диалог обнаружен: {dialog_message} (тип: {dialog_type})")
                     
-                    # Применяем политику
                     if CURRENT_DIALOG_POLICY == "auto_dismiss":
                         file_logger.log("🚫 Политика: auto_dismiss — закрываю диалог")
                         await self.send("Page.handleJavaScriptDialog", {"accept": False})
@@ -477,14 +473,13 @@ class CDPClient:
                         file_logger.log("✅ Политика: auto_accept — принимаю диалог")
                         await self.send("Page.handleJavaScriptDialog", {"accept": True})
                         continue
-                    else:  # must_respond
+                    else:
                         self.pending_dialogs.append({
                             "message": dialog_message,
                             "type": dialog_type,
                             "defaultPrompt": dialog_params.get("defaultPrompt", ""),
                             "timestamp": time.time()
                         })
-                        # Добавляем таймаут для диалога
                         if len(self.pending_dialogs) > 0:
                             asyncio.create_task(self._dialog_timeout_check())
                     continue
@@ -514,7 +509,6 @@ class CDPClient:
             return {"error": str(e)}
     
     async def _dialog_timeout_check(self):
-        """Проверка таймаута диалогов (Hermes)"""
         await asyncio.sleep(self.dialog_timeout)
         if self.pending_dialogs:
             file_logger.log(f"⏰ Таймаут диалога ({self.dialog_timeout}с), закрываю")
@@ -735,9 +729,6 @@ class CDPClient:
                 role['field_selector'] = role.get('id') and f"#{role.get('id')}" or f"[role='{role.get('attrs', {}).get('role')}']"
                 all_fields.append(role)
             
-            # ============================================
-            # ✅ УЛУЧШЕННЫЙ СБОР КНОПОК
-            # ============================================
             buttons = []
             button_texts = set()
             
@@ -877,7 +868,6 @@ class CDPClient:
             return {"error": str(e)}
     
     async def set_dialog_policy(self, policy):
-        """Устанавливает политику для диалогов (Hermes)"""
         global CURRENT_DIALOG_POLICY
         if policy in DIALOG_POLICY:
             CURRENT_DIALOG_POLICY = policy
@@ -971,9 +961,6 @@ class CDPClient:
         else:
             desc += f"  • (неизвестный формат: {type(links).__name__})\n"
         
-        # ============================================
-        # 🆕 HERMES: Информация о диалогах
-        # ============================================
         dialogs = info.get('pending_dialogs') if isinstance(info, dict) else None
         if dialogs and isinstance(dialogs, list) and len(dialogs) > 0:
             desc += f"\n💬 ОЖИДАЮЩИЕ ДИАЛОГИ ({len(dialogs)}):\n"
@@ -982,9 +969,6 @@ class CDPClient:
             desc += "\n💡 Для обработки диалога используй: handle_dialog(accept=True, prompt_text='')\n"
             desc += f"📋 Текущая политика: {CURRENT_DIALOG_POLICY}\n"
         
-        # ============================================
-        # 🆕 HERMES: Информация о iframe
-        # ============================================
         frame_tree = info.get('frame_tree') if isinstance(info, dict) else None
         if frame_tree:
             desc += f"\n📦 IFRAME/ФРЕЙМЫ:\n"
@@ -1114,16 +1098,24 @@ clients = {}
 AGENT_CODE = """
 Ты агент для управления браузером.
 
+⚠️ ВАЖНО ДЛЯ X.COM:
+- Поиск работает ТОЛЬКО через клик по кнопке поиска!
+- Enter НЕ РАБОТАЕТ на X.com для поиска!
+- Всегда используй МАССИВ действий: [fill, click]
+
+Пример для поиска:
+[{"action": "fill", "params": {"selector": "[role='combobox']", "value": "текст"}}, {"action": "click", "params": {"selector": "button[aria-label='Search']"}}]
+
 ДОСТУПНЫЕ ДЕЙСТВИЯ (возвращай ТОЛЬКО JSON):
 - navigate(url) - открыть сайт
 - click(selector) - кликнуть по элементу
 - fill(selector, value) - заполнить поле
-- press_enter() - нажать Enter
+- press_enter() - нажать Enter (НЕ РАБОТАЕТ НА X.COM ДЛЯ ПОИСКА!)
 - screenshot() - сделать скриншот
 - answer(text) - ответить пользователю
 - handle_dialog(accept, prompt_text) - обработать диалог
 - cdp(method, params, frame_id) - выполнить любую CDP-команду
-- set_dialog_policy(policy) - установить политику диалогов (must_respond, auto_dismiss, auto_accept)
+- set_dialog_policy(policy) - установить политику диалогов
 
 ⚠️ ВАЖНО: ВСЕГДА используй формат с "params":
 {"action": "navigate", "params": {"url": "https://x.com"}}
@@ -1213,6 +1205,27 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
                                     result[i] = {"action": "fill", "params": {"selector": item.get('selector', 'input'), "value": item.get('value')}}
                                 if 'policy' in item and 'params' not in item:
                                     result[i] = {"action": "set_dialog_policy", "params": {"policy": item.get('policy')}}
+                    
+                    # 🔧 ФИКС: если запрос про поиск и только fill — добавляем click
+                    if isinstance(result, dict):
+                        if result.get('action') == 'fill' and ('поиск' in prompt or 'search' in prompt.lower() or 'ищи' in prompt):
+                            file_logger.log("⚠️ Добавляю click для поиска")
+                            result = [
+                                result,
+                                {"action": "click", "params": {"selector": "button[aria-label='Search']"}}
+                            ]
+                    
+                    if isinstance(result, list):
+                        # Проверяем каждый элемент массива
+                        for i, item in enumerate(result):
+                            if isinstance(item, dict) and item.get('action') == 'fill':
+                                # Если есть fill и где-то есть упоминание поиска
+                                if ('поиск' in prompt or 'search' in prompt.lower() or 'ищи' in prompt):
+                                    # Проверяем, есть ли уже click в массиве
+                                    has_click = any(a.get('action') == 'click' for a in result if isinstance(a, dict))
+                                    if not has_click:
+                                        file_logger.log("⚠️ Добавляю click для поиска в массив")
+                                        result.append({"action": "click", "params": {"selector": "button[aria-label='Search']"}})
                     
                     if isinstance(result, list) or (isinstance(result, dict) and 'action' in result):
                         return result
@@ -1425,20 +1438,18 @@ async def cdp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 async def dialog_policy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает текущую политику диалогов"""
     user_id = update.message.from_user.id
     if user_id not in clients:
         await update.message.reply_text("❌ Сначала откройте браузер")
         return
     
-    client = clients[user_id]
-    policy = getattr(client, 'dialog_policy', 'must_respond')
     await update.message.reply_text(
-        f"📋 Текущая политика диалогов: **{policy}**\n\n"
+        f"📋 Текущая политика диалогов: **{CURRENT_DIALOG_POLICY}**\n\n"
         "Доступные политики:\n"
         "• must_respond - ждать ответа агента\n"
         "• auto_dismiss - автоматически закрывать\n"
-        "• auto_accept - автоматически принимать"
+        "• auto_accept - автоматически принимать\n\n"
+        "Изменить: 'Установи политику диалогов auto_dismiss'"
     )
 
 # ---------- Main ----------
