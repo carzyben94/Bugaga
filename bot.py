@@ -201,6 +201,7 @@ class CDPClient:
             await self.send("DOM.enable", {})
             await self.send("Network.enable", {})
             
+            # Target.setAutoAttach для OOPIF (как в Hermes)
             await self.send("Target.setAutoAttach", {
                 "autoAttach": True,
                 "flatten": True,
@@ -440,6 +441,9 @@ class CDPClient:
                     raise
         return {"error": f"Max retries exceeded: {last_error}"}
     
+    # ============================================
+    # HERMES: send — ТОЛЬКО ЯВНЫЙ session_id
+    # ============================================
     async def send(self, method, params=None, session_id=None):
         if not self.connected:
             await self.connect()
@@ -453,14 +457,13 @@ class CDPClient:
             "params": params or {}
         }
         
+        # ✅ Только явный session_id (как в Hermes)
         if session_id:
             msg["sessionId"] = session_id
-        elif method.startswith("Page.") or method.startswith("Runtime.") or method.startswith("DOM."):
-            if self.connected_tabs:
-                for sid, info in self.connected_tabs.items():
-                    if info.get("type") == "iframe" or "frame" in info.get("type", ""):
-                        msg["sessionId"] = sid
-                        break
+        
+        # ❌ НЕ подставляем автоматически
+        # НЕТ: elif method.startswith("Page.") or method.startswith("Runtime."):
+        #     if self.connected_tabs: ...
         
         try:
             await self.ws.send(json.dumps(msg))
@@ -579,9 +582,9 @@ class CDPClient:
             return None
     
     # ============================================
-    # HERMES: Получение Ref ID элементов
+    # HERMES: Получение Ref ID (ТОЛЬКО главная страница)
     # ============================================
-    async def get_accessibility_tree(self, session_id=None):
+    async def get_accessibility_tree(self):
         try:
             js_code = """
             (function() {
@@ -641,15 +644,9 @@ class CDPClient:
                 return result;
             })()
             """
-            result = await self.eval_js(js_code, session_id)
+            result = await self.eval_js(js_code)
             
             if result and isinstance(result, list):
-                if session_id:
-                    prefixed = []
-                    for el in result:
-                        el['ref'] = 'if_' + session_id[:8] + '_' + el['ref']
-                        prefixed.append(el)
-                    return prefixed
                 return result
             return []
         except Exception as e:
@@ -667,20 +664,10 @@ class CDPClient:
             el_info = self.ref_elements[ref_id]
             selector = el_info.get('selector')
             
-            session_id = None
-            if ref_id.startswith('if_'):
-                parts = ref_id.split('_')
-                if len(parts) >= 3:
-                    session_prefix = parts[1]
-                    for sid in self.connected_tabs:
-                        if sid.startswith(session_prefix):
-                            session_id = sid
-                            break
-            
             if not selector:
                 return {"error": f"Нет селектора для {ref_id}"}
             
-            return await self.click_element(selector, session_id)
+            return await self.click_element(selector)
         except Exception as e:
             file_logger.log(f"❌ click_by_ref error: {e}", "ERROR")
             return {"error": str(e)}
@@ -693,28 +680,18 @@ class CDPClient:
             el_info = self.ref_elements[ref_id]
             selector = el_info.get('selector')
             
-            session_id = None
-            if ref_id.startswith('if_'):
-                parts = ref_id.split('_')
-                if len(parts) >= 3:
-                    session_prefix = parts[1]
-                    for sid in self.connected_tabs:
-                        if sid.startswith(session_prefix):
-                            session_id = sid
-                            break
-            
             if not selector:
                 return {"error": f"Нет селектора для {ref_id}"}
             
-            return await self.fill_element(selector, value, session_id)
+            return await self.fill_element(selector, value)
         except Exception as e:
             file_logger.log(f"❌ fill_by_ref error: {e}", "ERROR")
             return {"error": str(e)}
     
     # ============================================
-    # ИСПРАВЛЕННЫЕ МЕТОДЫ (без f-строк)
+    # HERMES: Базовые методы (без iframe)
     # ============================================
-    async def click_element(self, selector, session_id=None):
+    async def click_element(self, selector):
         js_code = """
         (function() {
             const el = document.querySelector(""" + '"' + selector + '"' + """);
@@ -725,7 +702,7 @@ class CDPClient:
             return { success: false };
         })()
         """
-        result = await self.eval_js(js_code, session_id)
+        result = await self.eval_js(js_code)
         
         if result and result.get("success"):
             return result
@@ -745,9 +722,9 @@ class CDPClient:
             return { success: false };
         })()
         """
-        return await self.eval_js(js_code2, session_id)
+        return await self.eval_js(js_code2)
     
-    async def fill_element(self, selector, value, session_id=None):
+    async def fill_element(self, selector, value):
         escaped_value = value.replace("'", "\\'").replace('"', '\\"')
         
         js_code = """
@@ -762,9 +739,9 @@ class CDPClient:
             return { success: false };
         })()
         """
-        return await self.eval_js(js_code, session_id)
+        return await self.eval_js(js_code)
     
-    async def press_enter(self, session_id=None):
+    async def press_enter(self):
         js_code = """
         (function() {
             const active = document.activeElement;
@@ -789,10 +766,10 @@ class CDPClient:
             return { success: false };
         })()
         """
-        return await self.eval_js(js_code, session_id)
+        return await self.eval_js(js_code)
     
     # ============================================
-    # HERMES: Получение snapshot
+    # HERMES: Получение snapshot (только главная страница)
     # ============================================
     async def get_maximum_snapshot(self):
         try:
@@ -802,24 +779,25 @@ class CDPClient:
             is_x = "x.com" in url
             max_elements = 2000 if is_x else 500
             
+            # ✅ Только frame_tree для информации (как в Hermes)
             frame_tree_resp = await self.send("Page.getFrameTree", {})
             self.frame_tree = None
             if "result" in frame_tree_resp:
                 self.frame_tree = frame_tree_resp["result"].get("frameTree", {})
                 file_logger.log(f"📦 FrameTree получен")
             
+            # ✅ ТОЛЬКО главная страница (как в Hermes)
             ref_elements = await self.get_accessibility_tree()
             
-            iframe_refs = []
-            for session_id, info in self.connected_tabs.items():
-                if info.get("type") in ["iframe", "frame"]:
-                    file_logger.log(f"📦 Обрабатываю iframe: {info.get('url', '')[:50]}")
-                    iframe_els = await self.get_accessibility_tree(session_id)
-                    if iframe_els:
-                        iframe_refs.extend(iframe_els)
-                        file_logger.log(f"✅ Получено {len(iframe_els)} элементов из iframe")
+            # ❌ НЕ собираем iframe (как в Hermes)
+            # iframe_refs = []
+            # for session_id, info in self.connected_tabs.items():
+            #     if info.get("type") in ["iframe", "frame"]:
+            #         iframe_els = await self.get_accessibility_tree(session_id)
+            #         if iframe_els:
+            #             iframe_refs.extend(iframe_els)
             
-            all_refs = ref_elements + iframe_refs
+            all_refs = ref_elements
             
             js_code = """
             (function() {
@@ -916,7 +894,7 @@ class CDPClient:
                 """)
                 if isinstance(simple_result, list):
                     elements = simple_result
-                    file_logger.log(f"✅ Упрощённый сбор: {len(elements)} elementos")
+                    file_logger.log(f"✅ Упрощённый сбор: {len(elements)} элементов")
             
             if len(elements) > max_elements:
                 elements = elements[:max_elements]
@@ -1122,7 +1100,7 @@ class CDPClient:
         return False
     
     # ============================================
-    # ИСПРАВЛЕННОЕ ОПИСАНИЕ СТРАНИЦЫ (без f-строк)
+    # HERMES: get_page_description (только Ref ID)
     # ============================================
     async def get_page_description(self):
         if not self.full_snapshot:
