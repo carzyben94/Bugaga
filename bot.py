@@ -1,14 +1,14 @@
 import os
 import json
-import logging
 import asyncio
+import logging
+import base64
+import subprocess
+import websockets
+import aiohttp
 from typing import Dict, Any, List, Optional
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from pydoll.browser import Chrome
-from pydoll.browser.options import ChromiumOptions
-from pydoll.exceptions import ElementNotFound, WaitElementTimeout
-import openai  # или ваш клиент для AGNES AI
 
 # ============= НАСТРОЙКИ =============
 logging.basicConfig(
@@ -21,452 +21,606 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен!")
 
-AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
-if not AGNES_API_KEY:
-    raise ValueError("AGNES_API_KEY не установлен!")
-
-# Настройка клиента AGNES (OpenAI-совместимый)
-agnes_client = openai.OpenAI(
-    api_key=AGNES_API_KEY,
-    base_url="https://apihub.agnes-ai.com/v1"  # URL для AGNES API
-)
-
-# ============= SYSTEM PROMPT ДЛЯ AGNES =============
-AGNES_SYSTEM_PROMPT = """
-Ты - AGNES, AI-агент для управления браузером через библиотеку Pydoll.
-
-Твоя задача - преобразовывать команды пользователя в JSON-массив действий, 
-которые можно выполнить через API Pydoll.
-
-ДОСТУПНЫЕ МЕТОДЫ PYDOLL (из документации):
-1. go_to(url: str) - переход по URL
-2. find(selector: str) - поиск элемента по CSS-селектору
-3. click(humanize: bool = False) - клик по элементу
-4. type_text(text: str, humanize: bool = False) - ввод текста в элемент
-5. text() - получить текст элемента
-6. take_screenshot(as_base64: bool = False) - скриншот страницы
-7. execute_script(script: str) - выполнить JavaScript
-8. scroll_to_bottom() - прокрутить вниз
-9. scroll_to_top() - прокрутить вверх
-10. go_back() - назад
-11. go_forward() - вперед
-12. reload() - перезагрузить страницу
-13. title - получить заголовок страницы
-14. url - получить текущий URL
-15. wait_for(selector: str, timeout: int = 10) - ожидать элемент
-16. get_html() - получить HTML код страницы
-17. get_cookies() - получить cookies
-
-Формат ответа (ТОЛЬКО JSON, без лишнего текста):
-{"actions": [
-    {"method": "go_to", "args": {"url": "https://..."}},
-    {"method": "find", "args": {"selector": "#id"}},
-    {"method": "click", "args": {"humanize": true}},
-    {"method": "type_text", "args": {"text": "текст", "humanize": true}}
-]}
-
-Примеры:
-Пользователь: "Открой Google и найди кнопку Войти"
-Ответ: {"actions": [
-    {"method": "go_to", "args": {"url": "https://www.google.com"}},
-    {"method": "find", "args": {"selector": "a[href*='accounts']"}},
-    {"method": "click", "args": {"humanize": true}}
-]}
-
-Пользователь: "Сделай скриншот страницы"
-Ответ: {"actions": [
-    {"method": "take_screenshot", "args": {"as_base64": true}}
-]}
-
-Пользователь: "Найди заголовок и текст кнопки"
-Ответ: {"actions": [
-    {"method": "find", "args": {"selector": "h1"}},
-    {"method": "text", "args": {}},
-    {"method": "find", "args": {"selector": "button"}},
-    {"method": "text", "args": {}}
-]}
-
-Пользователь: "Прокрути вниз"
-Ответ: {"actions": [
-    {"method": "scroll_to_bottom", "args": {}}
-]}
-
-Пользователь: "Вернись назад"
-Ответ: {"actions": [
-    {"method": "go_back", "args": {}}
-]}
-
-Пользователь: "Обнови страницу"
-Ответ: {"actions": [
-    {"method": "reload", "args": {}}
-]}
-
-Пользователь: "Дождись появления кнопки с id submit"
-Ответ: {"actions": [
-    {"method": "wait_for", "args": {"selector": "#submit", "timeout": 10}}
-]}
-
-Отвечай ТОЛЬКО JSON без лишнего текста!
-"""
-
-# ============= КЛАСС AGNES BROWSER AGENT =============
-class AgnesBrowserAgent:
-    """AI-агент для управления браузером через Pydoll"""
+# ============= КЛАСС AGNES CDP АГЕНТ =============
+class AgnesCDPAgent:
+    """AGNES AI агент, работающий напрямую с Chrome DevTools Protocol"""
     
     def __init__(self):
-        self.browser: Optional[Chrome] = None
-        self.tab = None
-        self._last_element = None
-        self.memory: List[Dict] = []
-    
-    async def init_browser(self):
-        """Инициализация браузера с настройками для Docker/Railway"""
-        options = ChromiumOptions()
-        options.binary_location = "/usr/bin/google-chrome"
-        options.add_argument('--headless=new')
-        options.add_argument('--no-sandbox')
-        options.add_argument('--disable-dev-shm-usage')
-        options.add_argument('--disable-gpu')
-        options.start_timeout = 30
+        self.chrome_process = None
+        self.websocket = None
+        self.tab_id = None
+        self.message_id = 0
+        self.pending_commands = {}
+        self.memory = []
+        self.is_running = False
         
-        self.browser = Chrome(options=options)
-        self.tab = await self.browser.start()
-        logger.info("✅ Браузер успешно запущен")
-        return self.tab
+    async def start_chrome(self):
+        """Запускает Chrome с открытым CDP портом"""
+        chrome_path = "/usr/bin/google-chrome"
+        
+        # Проверяем, существует ли Chrome
+        if not os.path.exists(chrome_path):
+            chrome_path = "/usr/bin/google-chrome-stable"
+        
+        cmd = [
+            chrome_path,
+            "--headless=new",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--remote-debugging-port=9222",
+            "--disable-blink-features=AutomationControlled",
+            "--window-size=1920,1080"
+        ]
+        
+        self.chrome_process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        # Ждём запуска
+        await asyncio.sleep(3)
+        
+        # Подключаемся к CDP
+        await self.connect_to_cdp()
+        
+        self.is_running = True
+        logger.info("✅ Chrome запущен с CDP портом 9222")
+        return True
     
-    async def parse_command(self, user_input: str) -> Dict:
-        """Отправляет команду в AGNES для парсинга"""
+    async def connect_to_cdp(self):
+        """Подключается к CDP через WebSocket"""
         try:
-            response = agnes_client.chat.completions.create(
-                model="agnes-2.0-flash",
-                messages=[
-                    {"role": "system", "content": AGNES_SYSTEM_PROMPT},
-                    {"role": "user", "content": user_input}
-                ],
-                temperature=0.1,
-                max_tokens=1000
-            )
+            async with aiohttp.ClientSession() as session:
+                async with session.get("http://localhost:9222/json") as resp:
+                    data = await resp.json()
+                    if not data:
+                        raise Exception("Chrome не ответил на /json")
+                    ws_url = data[0]["webSocketDebuggerUrl"]
+                    self.tab_id = data[0]["id"]
             
-            content = response.choices[0].message.content
-            logger.info(f"AGNES ответила: {content}")
+            # Подключаемся по WebSocket
+            self.websocket = await websockets.connect(ws_url)
+            logger.info(f"✅ Подключен к CDP: {ws_url}")
             
-            # Парсим JSON
-            return json.loads(content)
+            # Включаем необходимые домены
+            await self.send_cdp_command("Page.enable")
+            await self.send_cdp_command("Runtime.enable")
+            await self.send_cdp_command("Network.enable")
+            await self.send_cdp_command("DOM.enable")
             
-        except json.JSONDecodeError as e:
-            logger.error(f"Ошибка парсинга JSON от AGNES: {e}")
-            # Если AGNES выдала не JSON, пробуем извлечь JSON из текста
-            import re
-            json_match = re.search(r'\{.*\}', content, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group())
-            raise ValueError("AGNES вернула некорректный JSON")
-    
-    async def execute_actions(self, actions_data: Dict) -> List[str]:
-        """Выполняет список действий от AGNES"""
-        actions = actions_data.get("actions", [])
-        results = []
-        
-        for action in actions:
-            method = action.get("method")
-            args = action.get("args", {})
+            return True
             
-            result = await self._call_pydoll_method(method, args)
-            results.append(result)
-            
-            # Сохраняем в память
-            self.memory.append({
-                "method": method,
-                "args": args,
-                "result": result[:100]  # Обрезаем для памяти
-            })
-        
-        return results
-    
-    async def _call_pydoll_method(self, method: str, args: Dict[str, Any]) -> str:
-        """Вызывает метод Pydoll по имени с аргументами"""
-        try:
-            if method == "go_to":
-                url = args.get("url")
-                if not url:
-                    return "❌ Не указан URL"
-                await self.tab.go_to(url, timeout=30)
-                return f"✅ Перешёл на {url}"
-            
-            elif method == "find":
-                selector = args.get("selector")
-                if not selector:
-                    return "❌ Не указан селектор"
-                self._last_element = await self.tab.find(selector)
-                return f"✅ Нашёл элемент: {selector}"
-            
-            elif method == "click":
-                element = args.get("element") or self._last_element
-                if not element:
-                    return "❌ Нет элемента для клика"
-                await element.click(humanize=args.get("humanize", True))
-                return "✅ Кликнул по элементу"
-            
-            elif method == "type_text":
-                element = args.get("element") or self._last_element
-                if not element:
-                    return "❌ Нет элемента для ввода"
-                text = args.get("text", "")
-                if not text:
-                    return "❌ Нет текста для ввода"
-                await element.type_text(text, humanize=args.get("humanize", True))
-                return f"✅ Ввёл текст: {text}"
-            
-            elif method == "text":
-                element = args.get("element") or self._last_element
-                if not element:
-                    return "❌ Нет элемента для получения текста"
-                text = await element.text()
-                return f"📝 Текст: {text[:200]}..."
-            
-            elif method == "take_screenshot":
-                screenshot = await self.tab.take_screenshot(
-                    as_base64=args.get("as_base64", True)
-                )
-                # Здесь можно сохранить или вернуть
-                return "📸 Скриншот сделан"
-            
-            elif method == "execute_script":
-                script = args.get("script")
-                if not script:
-                    return "❌ Не указан скрипт"
-                result = await self.tab.execute_script(script)
-                return f"✅ JS выполнен: {result}"
-            
-            elif method == "scroll_to_bottom":
-                await self.tab.scroll_to_bottom()
-                return "⬇️ Прокрутил вниз"
-            
-            elif method == "scroll_to_top":
-                await self.tab.scroll_to_top()
-                return "⬆️ Прокрутил вверх"
-            
-            elif method == "go_back":
-                await self.tab.go_back()
-                return "⬅️ Назад"
-            
-            elif method == "go_forward":
-                await self.tab.go_forward()
-                return "➡️ Вперед"
-            
-            elif method == "reload":
-                await self.tab.reload()
-                return "🔄 Обновил страницу"
-            
-            elif method == "title":
-                title = await self.tab.title
-                return f"📌 Заголовок: {title}"
-            
-            elif method == "url":
-                url = await self.tab.url
-                return f"🔗 URL: {url}"
-            
-            elif method == "wait_for":
-                selector = args.get("selector")
-                timeout = args.get("timeout", 10)
-                if not selector:
-                    return "❌ Не указан селектор"
-                await self.tab.wait_for(selector, timeout=timeout)
-                return f"⏳ Дождался элемента: {selector}"
-            
-            elif method == "get_html":
-                html = await self.tab.get_html()
-                return f"📄 HTML получен ({len(html)} символов)"
-            
-            elif method == "get_cookies":
-                cookies = await self.tab.get_cookies()
-                return f"🍪 Cookies: {cookies}"
-            
-            else:
-                return f"❌ Неизвестный метод: {method}"
-                
-        except ElementNotFound as e:
-            return f"❌ Элемент не найден: {str(e)}"
-        except WaitElementTimeout as e:
-            return f"❌ Таймаут ожидания элемента: {str(e)}"
         except Exception as e:
-            logger.error(f"Ошибка в методе {method}: {e}")
-            return f"❌ Ошибка: {str(e)}"
+            logger.error(f"Ошибка подключения к CDP: {e}")
+            raise
+    
+    async def send_cdp_command(self, method: str, params: Dict = None) -> Dict:
+        """Отправляет прямую CDP команду"""
+        self.message_id += 1
+        message = {
+            "id": self.message_id,
+            "method": method,
+            "params": params or {}
+        }
+        
+        # Отправляем
+        await self.websocket.send(json.dumps(message))
+        
+        # Ждём ответ
+        while True:
+            response = await self.websocket.recv()
+            data = json.loads(response)
+            
+            # Проверяем, что это ответ на наш запрос
+            if data.get("id") == self.message_id:
+                if "error" in data:
+                    raise Exception(f"CDP Error: {data['error']}")
+                return data
+    
+    # ============ ОСНОВНЫЕ ДЕЙСТВИЯ ============
+    
+    async def navigate(self, url: str) -> Dict:
+        """Переход по URL"""
+        return await self.send_cdp_command("Page.navigate", {"url": url})
+    
+    async def get_document(self) -> Dict:
+        """Получить DOM дерево"""
+        return await self.send_cdp_command("DOM.getDocument")
+    
+    async def query_selector(self, selector: str) -> Optional[int]:
+        """Поиск элемента по CSS селектору"""
+        try:
+            doc = await self.get_document()
+            root_id = doc["result"]["root"]["nodeId"]
+            
+            result = await self.send_cdp_command("DOM.querySelector", {
+                "nodeId": root_id,
+                "selector": selector
+            })
+            
+            node_id = result["result"].get("nodeId")
+            if node_id and node_id != 0:
+                return node_id
+            return None
+            
+        except Exception as e:
+            logger.error(f"Ошибка поиска элемента: {e}")
+            return None
+    
+    async def query_selector_all(self, selector: str) -> List[int]:
+        """Поиск всех элементов по CSS селектору"""
+        doc = await self.get_document()
+        root_id = doc["result"]["root"]["nodeId"]
+        
+        result = await self.send_cdp_command("DOM.querySelectorAll", {
+            "nodeId": root_id,
+            "selector": selector
+        })
+        
+        return result["result"].get("nodeIds", [])
+    
+    async def get_element_text(self, node_id: int) -> str:
+        """Получить текст элемента"""
+        result = await self.send_cdp_command("DOM.getOuterHTML", {"nodeId": node_id})
+        return result["result"].get("outerHTML", "")
+    
+    async def click_element(self, node_id: int) -> Dict:
+        """Клик по элементу"""
+        try:
+            # Получаем координаты элемента
+            rect = await self.send_cdp_command("DOM.getBoxModel", {"nodeId": node_id})
+            box = rect["result"]["model"]
+            
+            # Вычисляем центр
+            content = box["content"]
+            x = (content[0] + content[4]) / 2
+            y = (content[1] + content[5]) / 2
+            
+            # Отправляем события мыши
+            await self.send_cdp_command("Input.dispatchMouseEvent", {
+                "type": "mousePressed",
+                "x": x,
+                "y": y,
+                "button": "left",
+                "clickCount": 1
+            })
+            
+            await self.send_cdp_command("Input.dispatchMouseEvent", {
+                "type": "mouseReleased",
+                "x": x,
+                "y": y,
+                "button": "left",
+                "clickCount": 1
+            })
+            
+            return {"success": True}
+            
+        except Exception as e:
+            logger.error(f"Ошибка клика: {e}")
+            return {"success": False, "error": str(e)}
+    
+    async def type_text(self, text: str, selector: str = None) -> Dict:
+        """Ввод текста"""
+        if selector:
+            node_id = await self.query_selector(selector)
+            if node_id:
+                # Фокусируемся на элементе
+                await self.send_cdp_command("DOM.focus", {"nodeId": node_id})
+        
+        # Вводим текст
+        return await self.send_cdp_command("Input.insertText", {"text": text})
+    
+    async def take_screenshot(self, full_page: bool = False) -> Dict:
+        """Скриншот страницы"""
+        params = {"format": "png"}
+        if full_page:
+            params["captureBeyondViewport"] = True
+        
+        return await self.send_cdp_command("Page.captureScreenshot", params)
+    
+    async def execute_js(self, script: str, return_by_value: bool = True) -> Dict:
+        """Выполнить JavaScript"""
+        return await self.send_cdp_command("Runtime.evaluate", {
+            "expression": script,
+            "returnByValue": return_by_value
+        })
+    
+    async def scroll_to_bottom(self) -> Dict:
+        """Прокрутка вниз"""
+        return await self.execute_js("window.scrollTo(0, document.body.scrollHeight)")
+    
+    async def scroll_to_top(self) -> Dict:
+        """Прокрутка вверх"""
+        return await self.execute_js("window.scrollTo(0, 0)")
+    
+    async def go_back(self) -> Dict:
+        """Назад"""
+        return await self.execute_js("window.history.back()")
+    
+    async def go_forward(self) -> Dict:
+        """Вперед"""
+        return await self.execute_js("window.history.forward()")
+    
+    async def reload_page(self) -> Dict:
+        """Обновить страницу"""
+        return await self.send_cdp_command("Page.reload")
+    
+    async def get_title(self) -> str:
+        """Получить заголовок страницы"""
+        result = await self.execute_js("document.title")
+        return result["result"].get("value", "")
+    
+    async def get_url(self) -> str:
+        """Получить текущий URL"""
+        result = await self.execute_js("window.location.href")
+        return result["result"].get("value", "")
+    
+    async def get_cookies(self) -> Dict:
+        """Получить cookies"""
+        return await self.send_cdp_command("Network.getCookies")
+    
+    async def set_cookie(self, name: str, value: str, url: str = None) -> Dict:
+        """Установить cookie"""
+        return await self.send_cdp_command("Network.setCookie", {
+            "name": name,
+            "value": value,
+            "url": url
+        })
+    
+    async def get_page_html(self) -> str:
+        """Получить HTML страницы"""
+        result = await self.execute_js("document.documentElement.outerHTML")
+        return result["result"].get("value", "")
+    
+    async def find_element_by_text(self, text: str) -> Optional[int]:
+        """Найти элемент по тексту через XPath"""
+        script = f"""
+        function findElementByText(text) {{
+            const xpath = `//*[contains(text(), '{text}')]`;
+            const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+            return result.singleNodeValue;
+        }}
+        return findElementByText('{text}');
+        """
+        result = await self.execute_js(script, return_by_value=False)
+        # Здесь нужна дополнительная обработка для получения nodeId
+        return result
+    
+    async def emulate_device(self, width: int, height: int, mobile: bool = False) -> Dict:
+        """Эмуляция устройства"""
+        return await self.send_cdp_command("Emulation.setDeviceMetricsOverride", {
+            "width": width,
+            "height": height,
+            "deviceScaleFactor": 1,
+            "mobile": mobile,
+            "screenOrientation": {"type": "portraitPrimary", "angle": 0}
+        })
+    
+    async def emulate_geolocation(self, latitude: float, longitude: float) -> Dict:
+        """Эмуляция геолокации"""
+        return await self.send_cdp_command("Emulation.setGeolocationOverride", {
+            "latitude": latitude,
+            "longitude": longitude,
+            "accuracy": 100
+        })
+    
+    async def network_offline(self, offline: bool = True) -> Dict:
+        """Эмуляция оффлайн режима"""
+        return await self.send_cdp_command("Network.emulateNetworkConditions", {
+            "offline": offline,
+            "latency": 0,
+            "downloadThroughput": 0,
+            "uploadThroughput": 0
+        })
     
     async def close(self):
         """Закрывает браузер"""
-        if self.browser:
-            await self.browser.close()
-            logger.info("Браузер закрыт")
+        self.is_running = False
+        if self.websocket:
+            try:
+                await self.websocket.close()
+            except:
+                pass
+        if self.chrome_process:
+            try:
+                self.chrome_process.terminate()
+                await asyncio.sleep(1)
+                if self.chrome_process.returncode is None:
+                    self.chrome_process.kill()
+            except:
+                pass
+        logger.info("Браузер закрыт")
 
-# ============= КЛАСС ДЛЯ КОНТЕКСТА TELEGRAM =============
-class ContextData:
-    def __init__(self):
-        self.agent: Optional[AgnesBrowserAgent] = None
+# ============= ТЕЛЕГРАМ БОТ =============
+agent = None
 
-# ============= ОБРАБОТЧИКИ TELEGRAM =============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /start"""
-    # Создаём агента и сохраняем в контекст
-    if not hasattr(context.chat_data, 'agent'):
-        context.chat_data['agent'] = AgnesBrowserAgent()
+    """Запуск бота"""
+    global agent
     
     await update.message.reply_text(
-        "🧠 **AGNES AI Browser Agent** активирована!\n\n"
-        "Я управляю браузером через Pydoll.\n"
-        "Просто напиши, что нужно сделать:\n\n"
-        "📌 _Примеры:_\n"
-        "• Открой Google\n"
-        "• Найди кнопку 'Войти' и нажми\n"
-        "• Сделай скриншот страницы\n"
-        "• Прокрути вниз\n"
-        "• Найди заголовок страницы",
+        "🧠 **AGNES CDP Агент**\n\n"
+        "Запускаю браузер с Chrome DevTools Protocol...\n"
+        "Это даст полный контроль над браузером!",
         parse_mode='Markdown'
     )
     
-    # Инициализируем браузер
-    agent = context.chat_data['agent']
-    await agent.init_browser()
-    await update.message.reply_text("✅ Браузер готов к работе!")
+    try:
+        agent = AgnesCDPAgent()
+        await agent.start_chrome()
+        
+        await update.message.reply_text(
+            "✅ **Браузер готов!**\n\n"
+            "Что умею:\n"
+            "• 🌐 Открывать сайты\n"
+            "• 🖱️ Кликать, вводить текст\n"
+            "• 📸 Делать скриншоты\n"
+            "• 🔍 Искать элементы\n"
+            "• 📜 Парсить данные\n"
+            "• 📱 Эмулировать устройства\n"
+            "• 🌍 Менять геолокацию\n"
+            "• 📶 Работать оффлайн\n"
+            "• и многое другое!\n\n"
+            "Просто напиши, что нужно сделать!",
+            parse_mode='Markdown'
+        )
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка запуска: {str(e)}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик текстовых сообщений"""
-    user_input = update.message.text
-    logger.info(f"Получена команда: {user_input}")
+    """Обработка сообщений"""
+    global agent
     
-    # Проверяем наличие агента
-    if 'agent' not in context.chat_data:
-        await update.message.reply_text(
-            "⚠️ Сначала запусти бота командой /start"
-        )
+    if not agent or not agent.is_running:
+        await update.message.reply_text("⚠️ Браузер не запущен. Используй /start")
         return
     
-    await update.message.reply_text("⏳ AGNES анализирует команду...")
-    
-    agent = context.chat_data['agent']
+    user_input = update.message.text.lower()
+    await update.message.reply_text("⏳ AGNES выполняет команду...")
     
     try:
-        # 1. AGNES парсит команду
-        actions_data = await agent.parse_command(user_input)
+        # ============ ОСНОВНЫЕ КОМАНДЫ ============
         
-        # 2. Выполняем действия
-        results = await agent.execute_actions(actions_data)
+        # Открыть сайт
+        if user_input.startswith("открой "):
+            url = user_input[7:].strip()
+            if not url.startswith("http"):
+                url = "https://" + url
+            await agent.navigate(url)
+            title = await agent.get_title()
+            await update.message.reply_text(f"✅ Открыл: {url}\n📌 Заголовок: {title}")
         
-        # 3. Отправляем результаты
-        for result in results:
-            await update.message.reply_text(result)
+        # Скриншот
+        elif "скриншот" in user_input:
+            full = "всей" in user_input or "вся" in user_input
+            result = await agent.take_screenshot(full_page=full)
+            
+            if "data" in result.get("result", {}):
+                image_data = base64.b64decode(result["result"]["data"])
+                await update.message.reply_photo(image_data, caption=f"📸 Скриншот {'всей страницы' if full else 'страницы'}")
+            else:
+                await update.message.reply_text("❌ Не удалось сделать скриншот")
         
-        # 4. Если был скриншот, отправляем его
-        # (здесь нужно обработать скриншот отдельно)
+        # Нажми на элемент
+        elif "нажми" in user_input and "на " in user_input:
+            selector = user_input.split("на ")[1].strip()
+            node_id = await agent.query_selector(selector)
+            if node_id:
+                await agent.click_element(node_id)
+                await update.message.reply_text(f"✅ Кликнул по: {selector}")
+            else:
+                await update.message.reply_text(f"❌ Элемент не найден: {selector}")
         
-    except json.JSONDecodeError as e:
-        await update.message.reply_text(
-            f"❌ Ошибка парсинга команды AGNES: {str(e)}"
-        )
-    except Exception as e:
-        logger.error(f"Ошибка выполнения команды: {e}")
-        await update.message.reply_text(
-            f"❌ Произошла ошибка: {str(e)}"
-        )
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /help"""
-    help_text = """
+        # Найти элемент
+        elif "найди" in user_input:
+            selector = user_input.split("найди ")[1].strip()
+            node_id = await agent.query_selector(selector)
+            if node_id:
+                text = await agent.get_element_text(node_id)
+                await update.message.reply_text(f"✅ Нашёл элемент:\n📄 {text[:500]}...")
+            else:
+                await update.message.reply_text(f"❌ Элемент не найден: {selector}")
+        
+        # Ввести текст
+        elif "введи" in user_input:
+            if "в " in user_input:
+                parts = user_input.split("в ")
+                text = parts[0].replace("введи", "").strip()
+                selector = parts[1].strip()
+            else:
+                text = user_input.replace("введи", "").strip()
+                selector = None
+            
+            await agent.type_text(text, selector)
+            await update.message.reply_text(f"✅ Ввёл текст: {text}")
+        
+        # Прокрутка
+        elif "вниз" in user_input or "вниз" in user_input:
+            await agent.scroll_to_bottom()
+            await update.message.reply_text("⬇️ Прокрутил вниз")
+        
+        elif "вверх" in user_input:
+            await agent.scroll_to_top()
+            await update.message.reply_text("⬆️ Прокрутил вверх")
+        
+        # Назад/Вперед
+        elif "назад" in user_input:
+            await agent.go_back()
+            await update.message.reply_text("⬅️ Назад")
+        
+        elif "вперед" in user_input or "вперёд" in user_input:
+            await agent.go_forward()
+            await update.message.reply_text("➡️ Вперед")
+        
+        # Обновить
+        elif "обнов" in user_input or "refresh" in user_input:
+            await agent.reload_page()
+            await update.message.reply_text("🔄 Обновил страницу")
+        
+        # Заголовок
+        elif "заголовок" in user_input or "title" in user_input:
+            title = await agent.get_title()
+            await update.message.reply_text(f"📌 Заголовок: {title}")
+        
+        # URL
+        elif "url" in user_input or "адрес" in user_input:
+            url = await agent.get_url()
+            await update.message.reply_text(f"🔗 URL: {url}")
+        
+        # HTML
+        elif "html" in user_input or "код" in user_input:
+            html = await agent.get_page_html()
+            await update.message.reply_text(f"📄 HTML получен ({len(html)} символов)\n\n{html[:500]}...")
+        
+        # Куки
+        elif "куки" in user_input or "cookies" in user_input:
+            cookies = await agent.get_cookies()
+            if cookies.get("result", {}).get("cookies"):
+                text = "🍪 Cookies:\n"
+                for c in cookies["result"]["cookies"][:5]:
+                    text += f"• {c['name']} = {c['value']}\n"
+                await update.message.reply_text(text)
+            else:
+                await update.message.reply_text("🍪 Куки не найдены")
+        
+        # Эмуляция устройства
+        elif "эмулируй" in user_input or "эмуляция" in user_input:
+            if "iphone" in user_input or "телефон" in user_input:
+                await agent.emulate_device(375, 812, True)
+                await update.message.reply_text("📱 Эмулирую iPhone 15")
+            elif "ipad" in user_input or "планшет" in user_input:
+                await agent.emulate_device(1024, 1366, True)
+                await update.message.reply_text("📱 Эмулирую iPad Pro")
+            else:
+                await agent.emulate_device(1920, 1080, False)
+                await update.message.reply_text("🖥️ Эмулирую Desktop")
+        
+        # JavaScript
+        elif "js" in user_input or "javascript" in user_input:
+            script = user_input.split("js ")[1] if "js " in user_input else user_input.split("javascript ")[1]
+            result = await agent.execute_js(script)
+            value = result.get("result", {}).get("value")
+            await update.message.reply_text(f"✅ Результат:\n{value}")
+        
+        # Помощь
+        elif "помощь" in user_input or "help" in user_input:
+            help_text = """
 🤖 **Доступные команды:**
 
-/start - Запустить агента и браузер
-/help - Показать эту справку
-/status - Статус агента и браузера
-/clear - Очистить память агента
-/stop - Остановить браузер
+🌐 **Навигация:**
+• `открой google.com`
+• `назад` / `вперед`
+• `обнови`
 
-💬 **Примеры команд на естественном языке:**
-- "Открой Google"
-- "Найди кнопку Войти и нажми"
-- "Сделай скриншот"
-- "Найди заголовок страницы"
-- "Прокрути вниз"
-- "Вернись назад"
-- "Обнови страницу"
-- "Найди текст в элементе #content"
+🖱️ **Взаимодействие:**
+• `найди #id` - найти элемент
+• `нажми на #button` - кликнуть
+• `введи текст в #input`
 
-🧠 **AGNES AI** преобразует твою команду в действия браузера!
+📸 **Скриншоты:**
+• `скриншот` - обычный
+• `скриншот всей страницы`
+
+🔍 **Парсинг:**
+• `заголовок`
+• `url`
+• `html`
+• `куки`
+
+📱 **Эмуляция:**
+• `эмулируй iphone`
+• `эмулируй ipad`
+• `эмулируй desktop`
+
+⚡ **Продвинутые:**
+• `js document.title` - выполнить JS
+• `вниз` / `вверх` - скролл
+
+💡 **Примеры:**
+• открой github.com
+• найди header
+• нажми на button.login
+• скриншот всей страницы
+• js alert('Hello')
 """
-    await update.message.reply_text(help_text, parse_mode='Markdown')
+            await update.message.reply_text(help_text, parse_mode='Markdown')
+        
+        else:
+            await update.message.reply_text(
+                "🤔 Не понял команду.\n"
+                "Напиши /help для списка команд\n"
+                "Или просто 'открой google.com'"
+            )
+            
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает статус агента"""
-    if 'agent' not in context.chat_data:
-        await update.message.reply_text("❌ Агент не инициализирован. Используй /start")
-        return
+async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Остановка бота"""
+    global agent
     
-    agent = context.chat_data['agent']
-    status = f"""
-📊 **Статус AGNES Browser Agent**
+    if agent:
+        await agent.close()
+        agent = None
+    
+    await update.message.reply_text("🛑 Браузер остановлен. Агент отключен.")
 
-Браузер: {'✅ Активен' if agent.browser else '❌ Не активен'}
-Вкладка: {'✅ Открыта' if agent.tab else '❌ Закрыта'}
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Статус агента"""
+    global agent
+    
+    if agent and agent.is_running:
+        url = await agent.get_url() if agent.websocket else "Неизвестно"
+        status_text = f"""
+📊 **Статус AGNES CDP Агента**
+
+Браузер: ✅ Активен
+CDP: ✅ Подключен
+Текущий URL: {url}
 Память: {len(agent.memory)} действий
-Последнее действие: {agent.memory[-1]['result'] if agent.memory else 'Нет'}
-"""
-    await update.message.reply_text(status, parse_mode='Markdown')
-
-async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Очищает память агента"""
-    if 'agent' in context.chat_data:
-        context.chat_data['agent'].memory = []
-        await update.message.reply_text("🧹 Память агента очищена!")
+        """
     else:
-        await update.message.reply_text("❌ Агент не инициализирован")
-
-async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Останавливает браузер"""
-    if 'agent' in context.chat_data:
-        await context.chat_data['agent'].close()
-        del context.chat_data['agent']
-        await update.message.reply_text("🛑 Браузер остановлен. Агент отключен.")
-    else:
-        await update.message.reply_text("❌ Агент не инициализирован")
+        status_text = "❌ Агент не активен. Используй /start"
+    
+    await update.message.reply_text(status_text, parse_mode='Markdown')
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Глобальный обработчик ошибок"""
     logger.error(f"Ошибка: {context.error}")
     if update and update.message:
-        await update.message.reply_text(
-            "❌ Произошла внутренняя ошибка. Попробуйте позже."
-        )
+        await update.message.reply_text("❌ Произошла внутренняя ошибка")
 
-# ============= ЗАПУСК БОТА =============
+# ============= ЗАПУСК =============
 def main():
-    """Главная функция запуска бота"""
+    """Главная функция"""
     try:
-        # Создаём приложение
-        application = Application.builder().token(TOKEN).build()
+        app = Application.builder().token(TOKEN).build()
         
-        # Регистрируем команды
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("help", help_command))
-        application.add_handler(CommandHandler("status", status_command))
-        application.add_handler(CommandHandler("clear", clear_command))
-        application.add_handler(CommandHandler("stop", stop_command))
+        # Команды
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(CommandHandler("stop", stop))
+        app.add_handler(CommandHandler("status", status))
+        app.add_handler(CommandHandler("help", handle_message))
         
-        # Регистрируем обработчик сообщений
-        application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND, 
+        # Обработчик сообщений
+        app.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
             handle_message
         ))
         
-        # Регистрируем обработчик ошибок
-        application.add_error_handler(error_handler)
+        app.add_error_handler(error_handler)
         
-        logger.info("🚀 Бот AGNES Browser Agent запущен!")
-        logger.info("ℹ️ Ожидаю команды...")
+        logger.info("🚀 AGNES CDP Агент запущен!")
+        logger.info("💡 Используй /start для запуска браузера")
         
-        # Запускаем бота
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        app.run_polling(allowed_updates=Update.ALL_TYPES)
         
     except Exception as e:
-        logger.error(f"Критическая ошибка при запуске бота: {e}")
+        logger.error(f"Критическая ошибка: {e}")
         raise
 
 if __name__ == "__main__":
