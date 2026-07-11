@@ -578,15 +578,17 @@ class CDPClient:
                             attrs[attr.name] = attr.value;
                         }
                         
-                        // Ищем все интерактивные элементы
+                        // Ищем все интерактивные элементы (русские И английские названия)
                         const isInteractive = (
                             tag === 'button' ||
                             tag === 'a' ||
                             attrs.role === 'button' ||
                             (attrs['data-testid'] && attrs['data-testid'].toLowerCase().includes('obst')) ||
-                            (attrs['aria-label'] && attrs['aria-label'].toLowerCase().includes('обзор')) ||
-                            (attrs['aria-label'] && attrs['aria-label'].toLowerCase().includes('explore')) ||
-                            (attrs['aria-label'] && attrs['aria-label'].toLowerCase().includes('review'))
+                            (attrs['aria-label'] && (
+                                attrs['aria-label'].toLowerCase().includes('обзор') ||
+                                attrs['aria-label'].toLowerCase().includes('explore') ||
+                                attrs['aria-label'].toLowerCase().includes('review')
+                            ))
                         );
                         
                         const important = ['button', 'a', 'input', 'textarea', 'select', 'form',
@@ -681,7 +683,7 @@ class CDPClient:
                 role['field_selector'] = role.get('id') and f"#{role.get('id')}" or f"[role='{role.get('attrs', {}).get('role')}']"
                 all_fields.append(role)
             
-            # Ищем ВСЕ кнопки и интерактивные элементы
+            # Ищем ВСЕ кнопки (русские И английские названия)
             buttons = []
             for el in elements:
                 tag = el.get('tag', '')
@@ -695,9 +697,11 @@ class CDPClient:
                     is_interactive or
                     attrs.get('data-testid') == 'obst' or
                     'button' in (attrs.get('class', '') or '').lower() or
-                    (attrs.get('aria-label') and 'обзор' in attrs.get('aria-label', '').lower()) or
-                    (attrs.get('aria-label') and 'explore' in attrs.get('aria-label', '').lower()) or
-                    (attrs.get('aria-label') and 'review' in attrs.get('aria-label', '').lower())):
+                    (attrs.get('aria-label') and (
+                        'обзор' in attrs.get('aria-label', '').lower() or
+                        'explore' in attrs.get('aria-label', '').lower() or
+                        'review' in attrs.get('aria-label', '').lower()
+                    ))):
                     buttons.append(el)
             
             links = [e for e in elements if e.get('tag') == 'a' and e.get('attrs', {}).get('href')]
@@ -847,26 +851,87 @@ class CDPClient:
         return desc
     
     async def click_element(self, selector):
+        """Клик по элементу с поддержкой разных селекторов и языков"""
+        # Экранируем кавычки
+        selector_escaped = selector.replace("'", "\\'").replace('"', '\\"')
+        
         js_code = f"""
         (function() {{
-            let el = document.querySelector('{selector}');
+            let el = null;
             
-            // Если не нашли по селектору - пробуем найти по aria-label
+            // 1. Пробуем найти по селектору
+            try {{
+                el = document.querySelector("{selector_escaped}");
+            }} catch(e) {{
+                // Если селектор невалидный - игнорируем
+            }}
+            
+            // 2. Если не нашли - ищем по aria-label (русский И английский)
             if (!el) {{
-                const label = '{selector}'.replace(/[aria-label="]/g, '');
-                if (label) {{
-                    el = document.querySelector(`[aria-label*="${{label}}"]`);
+                const allElements = document.querySelectorAll('[aria-label]');
+                for (const elem of allElements) {{
+                    const label = elem.getAttribute('aria-label') || '';
+                    const lowerLabel = label.toLowerCase();
+                    if (lowerLabel.includes('обзор') || 
+                        lowerLabel.includes('explore') ||
+                        lowerLabel.includes('review')) {{
+                        el = elem;
+                        break;
+                    }}
+                }}
+            }}
+            
+            // 3. Если не нашли - ищем по тексту (русский И английский)
+            if (!el) {{
+                const allButtons = document.querySelectorAll('button, a, [role="button"], [data-testid="obst"]');
+                for (const btn of allButtons) {{
+                    const text = btn.textContent?.trim() || btn.getAttribute('aria-label') || btn.getAttribute('title') || '';
+                    const lowerText = text.toLowerCase();
+                    if (lowerText.includes('обзор') || 
+                        lowerText.includes('explore') ||
+                        lowerText.includes('review')) {{
+                        el = btn;
+                        break;
+                    }}
+                }}
+            }}
+            
+            // 4. Поиск по data-testid="obst" (X.com)
+            if (!el) {{
+                el = document.querySelector('[data-testid="obst"]');
+            }}
+            
+            // 5. Поиск по SVG иконке (ищем родителя)
+            if (!el) {{
+                const svgs = document.querySelectorAll('svg');
+                for (const svg of svgs) {{
+                    const parent = svg.closest('button, a, [role="button"], div[class*="explore"]');
+                    if (parent) {{
+                        el = parent;
+                        break;
+                    }}
                 }}
             }}
             
             if (el) {{
-                el.click();
+                el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+                setTimeout(function() {{
+                    el.click();
+                    el.dispatchEvent(new Event('click', {{ bubbles: true }}));
+                }}, 300);
                 return {{ success: true }};
             }}
             return {{ success: false, error: 'Element not found' }};
         }})()
         """
-        return await self.eval_js(js_code)
+        result = await self.eval_js(js_code)
+        
+        # Если клик успешен - обновляем слепок
+        if result and result.get('success'):
+            await asyncio.sleep(1)
+            await self.get_maximum_snapshot()
+        
+        return result
     
     async def fill_element(self, selector, value):
         js_code = f"""
@@ -970,12 +1035,21 @@ AGENT_CODE = """
 5. screenshot() - скриншот
 6. answer(text) - ответить
 
-📝 СЕЛЕКТОРЫ:
+📝 СЕЛЕКТОРЫ - ИСПОЛЬЗУЙ ТОЛЬКО АНГЛИЙСКИЕ НАЗВАНИЯ!
 - По ID: #APjFqb
 - По классу: .gLFyf
 - По имени: input[name='q']
-- По aria-label: [aria-label="текст"]
+- По aria-label: [aria-label="Explore"]  ← ТОЛЬКО АНГЛИЙСКИЙ!
 - По data-testid: [data-testid="obst"]
+
+⚠️ ВАЖНО: ВСЕ селекторы должны быть на АНГЛИЙСКОМ языке!
+Перевод названий кнопок X.com:
+- "Обзор" → "Explore"
+- "Главная" → "Home"  
+- "Уведомления" → "Notifications"
+- "Сообщения" → "Messages"
+- "Закладки" → "Bookmarks"
+- "Профиль" → "Profile"
 
 ⚠️ ЕСЛИ НУЖНО НЕСКОЛЬКО ДЕЙСТВИЙ - ВОЗВРАЩАЙ МАССИВ:
 [{"action": "fill", "params": {"selector": "#APjFqb", "value": "текст"}}, {"action": "press_enter", "params": {}}]
@@ -983,10 +1057,10 @@ AGENT_CODE = """
 ⚠️ ЕСЛИ ПРОСТО ОТВЕТИТЬ - ИСПОЛЬЗУЙ ФОРМАТ:
 {"action": "answer", "params": {"text": "твой ответ"}}
 
-🔍 ДЛЯ ПОИСКА КНОПКИ ИСПОЛЬЗУЙ:
-- Сначала проверь все кнопки в описании
-- Если кнопка не найдена - попробуй поискать по aria-label
-- На X.com кнопки часто имеют data-testid="obst"
+🔍 КАК НАЙТИ КНОПКУ:
+1. Сначала проверь все кнопки в описании страницы
+2. Используй английские названия в селекторах
+3. На X.com кнопка "Обзор" → "Explore" с data-testid="obst"
 """
 
 # ---------- Агент ----------
@@ -1009,6 +1083,16 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
 {page_desc}
 
 📝 ОТВЕЧАЙ ТОЛЬКО JSON!
+
+⚠️ ВАЖНО:
+- Пользователь может писать по-русски, но ты должен использовать АНГЛИЙСКИЕ названия в селекторах
+- "Обзор" → "Explore"
+- "Главная" → "Home"
+- "Уведомления" → "Notifications"
+- "Сообщения" → "Messages"
+- "Закладки" → "Bookmarks"
+- "Профиль" → "Profile"
+- Все атрибуты в селекторах пиши на английском!
 """
 
     data = {
@@ -1129,7 +1213,6 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
                 return "❌ Нет селектора"
             result = await client.click_element(selector)
             if result and result.get("success"):
-                await client.get_maximum_snapshot()
                 return f"✅ Кликнул: {selector}"
             return f"❌ Элемент не найден: {selector}"
         
@@ -1193,12 +1276,14 @@ async def find_button_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             data_testid = attrs.get('data-testid', '').lower()
             title_attr = attrs.get('title', '').lower()
             
-            # Ищем совпадения
+            # Ищем совпадения (русские И английские)
             search_term = button_name.lower()
             if (search_term in text or 
                 search_term in aria_label or 
                 search_term in data_testid or
-                search_term in title_attr):
+                search_term in title_attr or
+                ('обзор' in text and 'explore' in search_term) or
+                ('explore' in text and 'обзор' in search_term)):
                 found.append(el)
         
         if found:
@@ -1224,7 +1309,14 @@ async def find_button_command(update: Update, context: ContextTypes.DEFAULT_TYPE
                 
             await update.message.reply_text(msg)
         else:
-            await update.message.reply_text(f"❌ Кнопка '{button_name}' не найдена\n\n💡 Попробуйте:\n• Проверить написание (Обзор, обзор, explore)\n• Использовать /find_button [название]\n• Сделать скриншот и посмотреть визуально")
+            await update.message.reply_text(
+                f"❌ Кнопка '{button_name}' не найдена\n\n"
+                f"💡 Попробуйте:\n"
+                f"• Проверить написание (Обзор, обзор, explore)\n"
+                f"• Использовать /find_button [название]\n"
+                f"• Сделать скриншот и посмотреть визуально\n"
+                f"• На X.com кнопка 'Обзор' → 'Explore'"
+            )
             
     except Exception as e:
         file_logger.log(f"❌ Ошибка: {e}", "ERROR")
@@ -1349,7 +1441,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Нажми на кнопку Обзор\n\n"
         "🔍 **Поиск кнопок:**\n"
         "/find_button Обзор - найти кнопку\n"
-        "/find_button explore - найти кнопку\n\n"
+        "/find_button Explore - найти кнопку (англ)\n\n"
         "/cdp - статус браузера\n"
         "/logs - логи\n"
         "/set_cookies - установить куки\n"
@@ -1417,7 +1509,7 @@ def main():
     app.add_handler(CommandHandler("clear_logs", clear_logs_command))
     app.add_handler(CommandHandler("set_cookies", set_cookies_command))
     app.add_handler(CommandHandler("mask", mask_command))
-    app.add_handler(CommandHandler("find_button", find_button_command))  # Новая команда
+    app.add_handler(CommandHandler("find_button", find_button_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print("🚀 Бот запущен!")
