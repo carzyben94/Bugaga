@@ -1,16 +1,14 @@
-import os
-import json
 import asyncio
+import json
+import os
 import logging
 import base64
-import subprocess
-import websockets
 import aiohttp
-from typing import Dict, Any, List, Optional
+import websockets
+from typing import Dict, Optional
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# ============= НАСТРОЙКИ =============
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -18,13 +16,14 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен!")
 
-# ============= AGNES CDP АГЕНТ =============
 class AgnesCDPAgent:
     def __init__(self):
         self.chrome_process = None
         self.websocket = None
         self.message_id = 0
         self.is_running = False
+        self.response_queue = {}  # Очередь для ответов
+        self.listener_task = None
         
     async def start_chrome(self):
         """Запускает Chrome с CDP портом"""
@@ -32,6 +31,10 @@ class AgnesCDPAgent:
         
         if not os.path.exists(chrome_path):
             chrome_path = "/usr/bin/google-chrome-stable"
+        
+        # Проверяем, что Chrome существует
+        if not os.path.exists(chrome_path):
+            raise Exception(f"Chrome не найден: {chrome_path}")
         
         cmd = [
             chrome_path,
@@ -44,19 +47,36 @@ class AgnesCDPAgent:
             "--window-size=1920,1080"
         ]
         
+        logger.info(f"Запускаю Chrome: {' '.join(cmd)}")
+        
         self.chrome_process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
         
-        await asyncio.sleep(3)
+        # Ждём запуска Chrome
+        for i in range(10):
+            await asyncio.sleep(1)
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get("http://localhost:9222/json") as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            if data:
+                                break
+            except:
+                continue
+        else:
+            raise Exception("Chrome не запустился")
+        
         await self.connect_to_cdp()
         self.is_running = True
         
-        # Запускаем слушатель событий
-        asyncio.create_task(self.listen_events())
+        # Запускаем слушатель событий в фоне
+        self.listener_task = asyncio.create_task(self.listen_events())
         
+        logger.info("✅ Браузер готов")
         return True
     
     async def connect_to_cdp(self):
@@ -73,65 +93,90 @@ class AgnesCDPAgent:
         await self.send_cdp_command("Runtime.enable")
         await self.send_cdp_command("Network.enable")
         await self.send_cdp_command("DOM.enable")
+        
+        logger.info("✅ Подключен к CDP")
+    
+    async def listen_events(self):
+        """Слушает события CDP (не блокирует recv)"""
+        try:
+            while self.is_running:
+                try:
+                    response = await asyncio.wait_for(
+                        self.websocket.recv(), 
+                        timeout=0.1
+                    )
+                    data = json.loads(response)
+                    
+                    # Если это ответ на команду
+                    if "id" in data:
+                        msg_id = data["id"]
+                        if msg_id in self.response_queue:
+                            self.response_queue[msg_id] = data
+                            continue
+                    
+                    # Если это событие
+                    if "method" in data:
+                        if data["method"] == "Page.loadEventFired":
+                            logger.info("✅ Страница загружена")
+                        elif data["method"] == "Runtime.consoleAPICalled":
+                            args = data["params"].get("args", [])
+                            for arg in args:
+                                logger.info(f"🖥️ Консоль: {arg.get('value')}")
+                        elif data["method"] == "Network.requestWillBeSent":
+                            logger.info(f"🌐 Запрос: {data['params'].get('request', {}).get('url')}")
+                        
+                except asyncio.TimeoutError:
+                    continue
+                except websockets.exceptions.ConnectionClosed:
+                    logger.warning("WebSocket закрыт")
+                    break
+                except Exception as e:
+                    logger.error(f"Ошибка listener: {e}")
+                    
+        except Exception as e:
+            logger.error(f"Listener остановлен: {e}")
     
     async def send_cdp_command(self, method: str, params: Dict = None) -> Dict:
-        """Отправляет CDP команду"""
+        """Отправляет CDP команду и ждёт ответа"""
         self.message_id += 1
+        msg_id = self.message_id
+        
         message = {
-            "id": self.message_id,
+            "id": msg_id,
             "method": method,
             "params": params or {}
         }
         
+        # Отправляем команду
         await self.websocket.send(json.dumps(message))
         
-        while True:
-            response = await self.websocket.recv()
-            data = json.loads(response)
-            if data.get("id") == self.message_id:
-                if "error" in data:
-                    raise Exception(f"CDP Error: {data['error']}")
-                return data
+        # Ждём ответа с этим ID
+        for _ in range(50):  # Максимум 5 секунд
+            if msg_id in self.response_queue:
+                response = self.response_queue.pop(msg_id)
+                if "error" in response:
+                    raise Exception(f"CDP Error: {response['error']}")
+                return response
+            await asyncio.sleep(0.1)
+        
+        raise TimeoutError(f"Нет ответа на команду {method} (id: {msg_id})")
     
-    async def listen_events(self):
-        """Слушает события CDP"""
-        try:
-            while self.is_running:
-                response = await self.websocket.recv()
-                data = json.loads(response)
-                if "method" in data:
-                    if data["method"] == "Page.loadEventFired":
-                        logger.info("✅ Страница загружена")
-        except Exception as e:
-            logger.error(f"Ошибка listener: {e}")
-    
-    # ============ ИСПРАВЛЕННЫЕ МЕТОДЫ ============
+    # ============ МЕТОДЫ ДЛЯ РАБОТЫ ============
     
     async def navigate(self, url: str) -> Dict:
         """Переход по URL"""
-        # Проверяем URL
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
         return await self.send_cdp_command("Page.navigate", {"url": url})
     
-    async def take_screenshot(self, full_page: bool = False, format: str = "png", quality: int = 80):
-        """Скриншот по документации"""
-        params = {
-            "format": format,
-            "captureBeyondViewport": full_page,
-            "fromSurface": True
-        }
-        if format == "jpeg":
-            params["quality"] = quality
-        
-        # Убираем None значения
-        params = {k: v for k, v in params.items() if v is not None}
-        return await self.send_cdp_command("Page.captureScreenshot", params)
+    async def get_document(self) -> Dict:
+        """Получить DOM дерево"""
+        return await self.send_cdp_command("DOM.getDocument")
     
     async def query_selector(self, selector: str) -> Optional[int]:
         """Поиск элемента по CSS"""
         try:
-            doc = await self.send_cdp_command("DOM.getDocument")
+            doc = await self.get_document()
             root_id = doc["result"]["root"]["nodeId"]
             
             result = await self.send_cdp_command("DOM.querySelector", {
@@ -156,7 +201,7 @@ class AgnesCDPAgent:
             x = (content[0] + content[4]) / 2
             y = (content[1] + content[5]) / 2
             
-            # Эмуляция мыши
+            # Клик
             await self.send_cdp_command("Input.dispatchMouseEvent", {
                 "type": "mousePressed",
                 "x": x,
@@ -179,7 +224,7 @@ class AgnesCDPAgent:
             return {"success": False, "error": str(e)}
     
     async def type_text(self, text: str, selector: str = None) -> Dict:
-        """Ввод текста с фокусом"""
+        """Ввод текста"""
         if selector:
             node_id = await self.query_selector(selector)
             if node_id:
@@ -188,8 +233,40 @@ class AgnesCDPAgent:
         
         return await self.send_cdp_command("Input.insertText", {"text": text})
     
+    async def take_screenshot(self, full_page: bool = False) -> Dict:
+        """Скриншот"""
+        params = {
+            "format": "png",
+            "captureBeyondViewport": full_page,
+            "fromSurface": True
+        }
+        return await self.send_cdp_command("Page.captureScreenshot", params)
+    
+    async def get_page_html(self) -> str:
+        """Получить HTML"""
+        result = await self.send_cdp_command("Runtime.evaluate", {
+            "expression": "document.documentElement.outerHTML",
+            "returnByValue": True
+        })
+        return result["result"].get("value", "")
+    
+    async def get_title(self) -> str:
+        """Получить заголовок"""
+        result = await self.send_cdp_command("Runtime.evaluate", {
+            "expression": "document.title",
+            "returnByValue": True
+        })
+        return result["result"].get("value", "")
+    
+    async def execute_js(self, script: str) -> Dict:
+        """Выполнить JavaScript"""
+        return await self.send_cdp_command("Runtime.evaluate", {
+            "expression": script,
+            "returnByValue": True
+        })
+    
     async def emulate_device(self, width: int, height: int, mobile: bool = False, scale: float = 1):
-        """Эмуляция устройства по документации"""
+        """Эмуляция устройства"""
         return await self.send_cdp_command("Emulation.setDeviceMetricsOverride", {
             "width": width,
             "height": height,
@@ -198,38 +275,16 @@ class AgnesCDPAgent:
             "screenOrientation": {"type": "portraitPrimary", "angle": 0}
         })
     
-    async def emulate_geolocation(self, latitude: float, longitude: float, accuracy: int = 100):
-        """Эмуляция геолокации"""
-        return await self.send_cdp_command("Emulation.setGeolocationOverride", {
-            "latitude": latitude,
-            "longitude": longitude,
-            "accuracy": accuracy
-        })
-    
-    async def get_page_html(self) -> str:
-        """Получение HTML с проверкой загрузки"""
-        try:
-            # Проверяем статус загрузки
-            ready = await self.send_cdp_command("Runtime.evaluate", {
-                "expression": "document.readyState",
-                "returnByValue": True
-            })
-            
-            if ready.get("result", {}).get("value") != "complete":
-                await asyncio.sleep(1)
-            
-            result = await self.send_cdp_command("Runtime.evaluate", {
-                "expression": "document.documentElement.outerHTML",
-                "returnByValue": True
-            })
-            return result["result"].get("value", "")
-        except Exception as e:
-            logger.error(f"Ошибка получения HTML: {e}")
-            return ""
-    
     async def close(self):
-        """Корректное закрытие"""
+        """Закрытие"""
         self.is_running = False
+        
+        if self.listener_task:
+            self.listener_task.cancel()
+            try:
+                await self.listener_task
+            except:
+                pass
         
         if self.websocket:
             try:
@@ -262,7 +317,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         agent = AgnesCDPAgent()
         await agent.start_chrome()
-        await update.message.reply_text("✅ Браузер готов!")
+        await update.message.reply_text("✅ Браузер готов!\n\n📋 Команды:\n• открой google.com\n• скриншот\n• нажми на #id\n• введи текст в #input")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
@@ -280,7 +335,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "открой" in user_input:
             url = user_input.replace("открой", "").strip()
             await agent.navigate(url)
-            await update.message.reply_text(f"✅ Открыл: {url}")
+            await asyncio.sleep(1)
+            title = await agent.get_title()
+            await update.message.reply_text(f"✅ Открыл: {url}\n📌 Заголовок: {title}")
         
         elif "скрин" in user_input or "сфоткай" in user_input:
             full = "всей" in user_input or "вся" in user_input
@@ -289,6 +346,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if "data" in result.get("result", {}):
                 image_data = base64.b64decode(result["result"]["data"])
                 await update.message.reply_photo(image_data, caption="📸 Скриншот")
+            else:
+                await update.message.reply_text("❌ Не удалось сделать скриншот")
         
         elif "нажми" in user_input and "на " in user_input:
             selector = user_input.split("на ")[1].strip()
@@ -315,30 +374,55 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             selector = user_input.split("найди ")[1].strip()
             node_id = await agent.query_selector(selector)
             if node_id:
-                html = await agent.get_page_html()
-                await update.message.reply_text(f"✅ Нашёл элемент")
+                await update.message.reply_text(f"✅ Нашёл элемент: {selector}")
             else:
-                await update.message.reply_text(f"❌ Элемент не найден")
+                await update.message.reply_text(f"❌ Элемент не найден: {selector}")
+        
+        elif "html" in user_input:
+            html = await agent.get_page_html()
+            await update.message.reply_text(f"📄 HTML ({len(html)} символов):\n\n{html[:500]}...")
+        
+        elif "помощь" in user_input or "help" in user_input:
+            await update.message.reply_text(
+                "📋 **Команды:**\n\n"
+                "🌐 **Навигация:**\n"
+                "• открой google.com\n"
+                "• назад / вперед\n"
+                "• обнови\n\n"
+                "🖱️ **Взаимодействие:**\n"
+                "• нажми на #id\n"
+                "• введи текст в #input\n"
+                "• найди #id\n\n"
+                "📸 **Скриншоты:**\n"
+                "• скриншот\n"
+                "• скриншот всей страницы\n\n"
+                "📄 **Данные:**\n"
+                "• html\n"
+                "• заголовок\n"
+                "• url"
+            )
+        
+        elif "заголовок" in user_input:
+            title = await agent.get_title()
+            await update.message.reply_text(f"📌 {title}")
+        
+        elif "url" in user_input:
+            result = await agent.execute_js("window.location.href")
+            url = result["result"].get("value", "")
+            await update.message.reply_text(f"🔗 {url}")
         
         elif "эмулируй iphone" in user_input:
             await agent.emulate_device(375, 812, True, 3)
             await update.message.reply_text("📱 Эмулирую iPhone")
         
-        elif "помощь" in user_input:
-            await update.message.reply_text(
-                "📋 **Команды:**\n"
-                "• открой google.com\n"
-                "• скриншот\n"
-                "• нажми на #id\n"
-                "• введи текст в #input\n"
-                "• найди #id\n"
-                "• эмулируй iphone"
-            )
-        
         else:
-            await update.message.reply_text("🤔 Не понял. Напиши 'помощь'")
+            await update.message.reply_text(
+                "🤔 Не понял. Напиши 'помощь'\n"
+                "Или попробуй: 'открой google.com'"
+            )
             
     except Exception as e:
+        logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 def main():
