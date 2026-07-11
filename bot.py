@@ -6,6 +6,7 @@ import time
 import requests
 import re
 import base64
+import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, filters, MessageHandler
 import websockets
@@ -72,7 +73,8 @@ def start_chrome():
             "--no-sandbox",
             "--disable-dev-shm-usage",
             "--disable-gpu",
-            "--user-data-dir=/tmp/chrome-profile"
+            "--user-data-dir=/tmp/chrome-profile",
+            "--window-size=1920,1080"
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         
         time.sleep(5)
@@ -182,7 +184,15 @@ class CDPClient:
     async def navigate(self, url):
         file_logger.log(f"Навигация на {url}")
         resp = await self._send("Page.navigate", {"url": url})
-        time.sleep(3)
+        
+        # Ждём загрузки с проверкой
+        for i in range(5):
+            await asyncio.sleep(1)
+            title = await self.eval_js("document.title")
+            if title and title != "":
+                file_logger.log(f"📄 Страница загружена: {title}")
+                break
+        
         return resp
     
     async def eval_js(self, code):
@@ -191,8 +201,32 @@ class CDPClient:
             return resp["result"].get("result", {}).get("value", "")
         return None
     
-    async def screenshot(self):
-        """Скриншот страницы"""
+    async def screenshot_browser(self):
+        """Скриншот ВСЕГО браузера через Browser.captureScreenshot"""
+        try:
+            file_logger.log("📸 Делаю скриншот всего браузера...")
+            
+            # Используем Browser.captureScreenshot для скриншота всего браузера
+            resp = await self._send("Browser.captureScreenshot", {
+                "format": "png"
+            })
+            
+            file_logger.log(f"📸 Ответ: {json.dumps(resp, indent=2)[:300]}")
+            
+            if "result" in resp and "data" in resp["result"]:
+                file_logger.log("✅ Скриншот браузера сделан")
+                return base64.b64decode(resp["result"]["data"])
+            
+            # Если Browser.captureScreenshot не сработал, пробуем через Page
+            file_logger.log("⚠️ Browser.captureScreenshot не сработал, пробую Page.captureScreenshot...")
+            return await self.screenshot_page()
+                
+        except Exception as e:
+            file_logger.log(f"❌ Screenshot error: {e}", "ERROR")
+            return None
+    
+    async def screenshot_page(self):
+        """Скриншот страницы через Page.captureScreenshot"""
         try:
             # Проверяем страницу
             title = await self.eval_js("document.title")
@@ -201,10 +235,6 @@ class CDPClient:
             if not title or title == "":
                 file_logger.log("🌐 Открываю Google для скриншота...")
                 await self.navigate("https://google.com")
-                time.sleep(2)
-            
-            # Делаем скриншот с полным логированием
-            file_logger.log("📸 Делаю скриншот...")
             
             resp = await self._send("Page.captureScreenshot", {
                 "format": "png",
@@ -212,28 +242,21 @@ class CDPClient:
                 "fromSurface": True
             })
             
-            # Логируем полный ответ
-            file_logger.log(f"📸 Ответ CDP: {json.dumps(resp, indent=2)}")
-            
-            # Проверяем результат
             if "result" in resp and "data" in resp["result"]:
-                file_logger.log("✅ Скриншот сделан")
+                file_logger.log("✅ Скриншот страницы сделан")
                 return base64.b64decode(resp["result"]["data"])
-            else:
-                # Пробуем без captureBeyondViewport
-                file_logger.log("⚠️ Повторная попытка без captureBeyondViewport")
-                resp2 = await self._send("Page.captureScreenshot", {
-                    "format": "png"
-                })
-                
-                file_logger.log(f"📸 Ответ CDP (2): {json.dumps(resp2, indent=2)}")
-                
-                if "result" in resp2 and "data" in resp2["result"]:
-                    file_logger.log("✅ Скриншот сделан (повторная попытка)")
-                    return base64.b64decode(resp2["result"]["data"])
-                
-                file_logger.log(f"❌ Ошибка скриншота: {resp}", "ERROR")
-                return None
+            
+            # Пробуем без параметров
+            resp2 = await self._send("Page.captureScreenshot", {
+                "format": "png"
+            })
+            
+            if "result" in resp2 and "data" in resp2["result"]:
+                file_logger.log("✅ Скриншот страницы сделан (2 попытка)")
+                return base64.b64decode(resp2["result"]["data"])
+            
+            file_logger.log(f"❌ Ошибка скриншота: {resp}", "ERROR")
+            return None
                 
         except Exception as e:
             file_logger.log(f"❌ Screenshot error: {e}", "ERROR")
@@ -314,7 +337,7 @@ async def execute_action(client: CDPClient, action: dict) -> str:
         return f"✅ Открыл: {url}\n📄 {title}"
     
     elif action_type == "screenshot":
-        img_data = await client.screenshot()
+        img_data = await client.screenshot_browser()
         if img_data:
             with open("screenshot.png", "wb") as f:
                 f.write(img_data)
@@ -325,38 +348,6 @@ async def execute_action(client: CDPClient, action: dict) -> str:
         code = params.get("code", "document.title")
         result = await client.eval_js(code)
         return f"✅ Результат: {result}"
-    
-    elif action_type == "click":
-        selector = params.get("selector")
-        code = f"""
-        (function() {{
-            const el = document.querySelector('{selector}');
-            if (el) {{
-                el.click();
-                return '✅ Кликнул: {selector}';
-            }}
-            return '❌ Элемент не найден: {selector}';
-        }})()
-        """
-        result = await client.eval_js(code)
-        return result
-    
-    elif action_type == "fill":
-        selector = params.get("selector")
-        value = params.get("value", "")
-        code = f"""
-        (function() {{
-            const el = document.querySelector('{selector}');
-            if (el) {{
-                el.value = '{value}';
-                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                return '✅ Заполнил: {selector} = {value}';
-            }}
-            return '❌ Элемент не найден: {selector}';
-        }})()
-        """
-        result = await client.eval_js(code)
-        return result
     
     else:
         return f"⚠️ Неизвестное действие: {action_type}"
@@ -378,7 +369,7 @@ async def execute_command(client: CDPClient, command: str) -> str:
         return f"✅ Открыл YouTube\n📄 {title}"
     
     if "скриншот" in cmd or "скрин" in cmd or "screenshot" in cmd:
-        img_data = await client.screenshot()
+        img_data = await client.screenshot_browser()
         if img_data:
             with open("screenshot.png", "wb") as f:
                 f.write(img_data)
@@ -390,6 +381,14 @@ async def execute_command(client: CDPClient, command: str) -> str:
         title = await client.eval_js("document.title")
         return f"✅ Открыл\n📄 {title}"
     
+    if "заголовок" in cmd or "title" in cmd:
+        title = await client.eval_js("document.title")
+        return f"📄 Заголовок: {title}"
+    
+    if "текст" in cmd or "читай" in cmd:
+        text = await client.eval_js("document.body.innerText.slice(0, 500)")
+        return f"📄 Текст:\n{text}..."
+    
     return """
 🤖 **Управление браузером**
 
@@ -398,6 +397,8 @@ async def execute_command(client: CDPClient, command: str) -> str:
 • Зайди в ютуб
 • Сделай скриншот
 • https://example.com
+• Заголовок
+• Текст
 """
 
 # ---------- Команды ----------
@@ -410,7 +411,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Открой Google\n"
         "• Зайди в ютуб\n"
         "• Сделай скриншот\n"
-        "• https://youtube.com\n\n"
+        "• https://youtube.com\n"
+        "• Заголовок\n"
+        "• Текст\n\n"
         "Команды:\n"
         "/cdp - статус браузера\n"
         "/logs - получить логи\n"
@@ -488,6 +491,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if result == "screenshot":
                     with open("screenshot.png", "rb") as photo:
                         await update.message.reply_photo(photo=photo)
+                        file_logger.log("✅ Скриншот отправлен")
                 else:
                     await update.message.reply_text(result)
                 return
@@ -497,6 +501,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if result == "screenshot":
             with open("screenshot.png", "rb") as photo:
                 await update.message.reply_photo(photo=photo)
+                file_logger.log("✅ Скриншот отправлен")
         else:
             await update.message.reply_text(result)
             
