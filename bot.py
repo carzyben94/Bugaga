@@ -498,11 +498,12 @@ AGENT_CODE = """
 - По ID: #APjFqb
 - По имени: input[name='q']
 - По классу: .gLFyf
+- По роли: [role='combobox']
 
 ЕСЛИ НУЖНО НЕСКОЛЬКО ДЕЙСТВИЙ - ВОЗВРАЩАЙ МАССИВ:
 [{"action": "fill", "params": {"selector": "#APjFqb", "value": "текст"}}, {"action": "press_enter", "params": {}}]
 
-ОТВЕЧАЙ ТОЛЬКО JSON! БЕЗ КАВЫЧЕК ВНУТРИ!
+ОТВЕЧАЙ ТОЛЬКО JSON! БЕЗ ЛИШНИХ СЛОВ!
 """
 
 # ---------- Агент ----------
@@ -569,7 +570,7 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
     
     return {"action": "answer", "params": {"text": "❌ Не удалось получить ответ"}}
 
-# ---------- Выполнение действий ----------
+# ---------- Выполнение действий с пояснениями ----------
 
 async def execute_action(client: CDPClient, action) -> str:
     if isinstance(action, list):
@@ -577,7 +578,7 @@ async def execute_action(client: CDPClient, action) -> str:
         for a in action:
             result = await execute_single_action(client, a)
             results.append(result)
-        return "\n".join(results)
+        return "\n\n".join(results)
     return await execute_single_action(client, action)
 
 async def execute_single_action(client: CDPClient, action: dict) -> str:
@@ -591,7 +592,12 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
             url = params.get("url", "https://google.com")
             await client.navigate(url)
             title = await client.eval_js("document.title")
-            return f"✅ Открыл: {url}\n📄 {title}"
+            return f"""✅ Открыл: {url}
+
+📄 Заголовок: {title}
+🔗 URL: {url}
+
+💡 Теперь ты можешь искать информацию или вводить текст в поля."""
         
         elif action_type == "screenshot":
             img_data = await client.screenshot()
@@ -608,7 +614,10 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
             result = await client.click_element(selector)
             if result and result.get("success"):
                 await client.get_maximum_snapshot()
-                return f"✅ Кликнул: {selector}"
+                return f"""✅ Кликнул: {selector}
+
+📝 Клик выполнен по элементу.
+💡 Страница обновилась, я могу показать новые элементы."""
             return f"❌ Элемент не найден: {selector}"
         
         elif action_type == "fill":
@@ -619,14 +628,20 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
             result = await client.fill_element(selector, value)
             if result and result.get("success"):
                 await client.get_maximum_snapshot()
-                return f"✅ Заполнил: {selector} = {value}"
+                return f"""✅ Заполнил: {selector} = {value}
+
+📝 В поле введён текст "{value}".
+💡 Теперь нажми Enter или кнопку поиска."""
             return f"❌ Элемент не найден: {selector}"
         
         elif action_type == "press_enter":
             result = await client.press_enter()
             if result and result.get("success"):
                 await client.get_maximum_snapshot()
-                return "✅ Нажал Enter"
+                return """✅ Нажал Enter
+
+📝 Команда выполнена.
+💡 Страница загружается, я могу показать результат."""
             return "❌ Не удалось нажать Enter"
         
         elif action_type == "answer":
