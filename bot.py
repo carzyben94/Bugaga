@@ -42,6 +42,14 @@ X_COOKIES = [
     {"name": "__cf_bm", "value": "j2mG_0c5w5JQUmv58SK5rLYOjV1pvjNGDsoZIMJGYv4-1783776014.9041774-1.0.1.1-adjQms4xp_hAMnqNEjMJP5_YPV7H5SdSeWNpQ_1wPS1zpCM3.mSKXJQLEbTDX6EHcG4P97tYtVLugjDWgXXQD0hSdc1V7Ogii9S6Mksik2X1pxvCyCAAFjUNXBvOPu0s", "domain": ".x.com", "path": "/"}
 ]
 
+# ---------- ДИАЛОГОВАЯ ПОЛИТИКА (из Hermes) ----------
+DIALOG_POLICY = {
+    "must_respond": "wait",      # Ждать ответа агента
+    "auto_dismiss": "dismiss",   # Автоматически закрывать
+    "auto_accept": "accept"      # Автоматически принимать
+}
+CURRENT_DIALOG_POLICY = "must_respond"  # По умолчанию
+
 # ---------- Логирование ----------
 
 LOG_FILE = "bot_logs.txt"
@@ -159,6 +167,7 @@ class CDPClient:
         self.cookies_set = False
         self.pending_dialogs = []
         self.connected_tabs = {}
+        self.dialog_timeout = 300  # 5 минут таймаут для диалогов
     
     async def connect(self):
         if self.connected:
@@ -177,10 +186,10 @@ class CDPClient:
         try:
             self.ws = await websockets.connect(
                 ws_url,
-                ping_interval=30,
-                ping_timeout=90,
-                close_timeout=20,
-                max_size=10_000_000
+                ping_interval=60,
+                ping_timeout=180,
+                close_timeout=30,
+                max_size=20_000_000
             )
             self.connected = True
             file_logger.log("✅ WebSocket подключен")
@@ -449,14 +458,35 @@ class CDPClient:
                 response = await asyncio.wait_for(self.ws.recv(), timeout=30)
                 data = json.loads(response)
                 
+                # ============================================
+                # 🆕 HERMES: Обработка диалогов с политикой
+                # ============================================
                 if "method" in data and data["method"] == "Page.javascriptDialogOpening":
                     dialog_params = data.get("params", {})
-                    file_logger.log(f"💬 Диалог обнаружен: {dialog_params.get('message', '')}")
-                    self.pending_dialogs.append({
-                        "message": dialog_params.get("message", ""),
-                        "type": dialog_params.get("type", ""),
-                        "defaultPrompt": dialog_params.get("defaultPrompt", "")
-                    })
+                    dialog_message = dialog_params.get('message', '')
+                    dialog_type = dialog_params.get('type', '')
+                    
+                    file_logger.log(f"💬 Диалог обнаружен: {dialog_message} (тип: {dialog_type})")
+                    
+                    # Применяем политику
+                    if CURRENT_DIALOG_POLICY == "auto_dismiss":
+                        file_logger.log("🚫 Политика: auto_dismiss — закрываю диалог")
+                        await self.send("Page.handleJavaScriptDialog", {"accept": False})
+                        continue
+                    elif CURRENT_DIALOG_POLICY == "auto_accept":
+                        file_logger.log("✅ Политика: auto_accept — принимаю диалог")
+                        await self.send("Page.handleJavaScriptDialog", {"accept": True})
+                        continue
+                    else:  # must_respond
+                        self.pending_dialogs.append({
+                            "message": dialog_message,
+                            "type": dialog_type,
+                            "defaultPrompt": dialog_params.get("defaultPrompt", ""),
+                            "timestamp": time.time()
+                        })
+                        # Добавляем таймаут для диалога
+                        if len(self.pending_dialogs) > 0:
+                            asyncio.create_task(self._dialog_timeout_check())
                     continue
                 
                 if "method" in data and data["method"] == "Target.attachedToTarget":
@@ -482,6 +512,14 @@ class CDPClient:
         except Exception as e:
             file_logger.log(f"❌ {method} error: {e}", "ERROR")
             return {"error": str(e)}
+    
+    async def _dialog_timeout_check(self):
+        """Проверка таймаута диалогов (Hermes)"""
+        await asyncio.sleep(self.dialog_timeout)
+        if self.pending_dialogs:
+            file_logger.log(f"⏰ Таймаут диалога ({self.dialog_timeout}с), закрываю")
+            dialog = self.pending_dialogs.pop(0)
+            await self.send("Page.handleJavaScriptDialog", {"accept": False})
     
     async def navigate(self, url):
         file_logger.log(f"🌐 Навигация на {url}")
@@ -698,10 +736,10 @@ class CDPClient:
                 all_fields.append(role)
             
             # ============================================
-            # ✅ УЛУЧШЕННЫЙ СБОР КНОПОК — ВСЕ ВОЗМОЖНЫЕ ВАРИАНТЫ
+            # ✅ УЛУЧШЕННЫЙ СБОР КНОПОК
             # ============================================
             buttons = []
-            button_texts = set()  # Для избежания дубликатов
+            button_texts = set()
             
             for el in elements:
                 tag = el.get('tag', '')
@@ -713,51 +751,38 @@ class CDPClient:
                 class_name_lower = class_name.lower() if isinstance(class_name, str) else ''
                 text = el.get('text', '') or attrs.get('value', '') or attrs.get('aria-label', '') or attrs.get('title', '')
                 
-                # Проверка, является ли элемент кнопкой
                 is_button = False
                 
-                # 1. Тег button
                 if tag == 'button':
                     is_button = True
-                # 2. input с type submit/button
                 elif tag == 'input' and attrs.get('type') in ['submit', 'button', 'image']:
                     is_button = True
-                # 3. role="button"
                 elif role == 'button':
                     is_button = True
-                # 4. a с role="button" или классом button
                 elif tag == 'a' and (role == 'button' or 'button' in class_name_lower):
                     is_button = True
-                # 5. div/span с role="button"
                 elif tag in ['div', 'span'] and role == 'button':
                     is_button = True
-                # 6. Любой элемент с классом, содержащим "btn" или "button"
                 elif 'btn' in class_name_lower or 'button' in class_name_lower:
                     is_button = True
-                # 7. Элемент с атрибутами клика
                 elif attrs.get('onclick') or attrs.get('data-action') or attrs.get('data-testid', '').endswith('btn'):
                     is_button = True
-                # 8. Элемент с tabindex и ролью (кликабельный)
                 elif attrs.get('tabindex') and attrs.get('role') in ['link', 'menuitem', 'option']:
                     is_button = True
-                # 9. Элемент с aria-label, содержащим "button" или "btn"
                 elif 'button' in attrs.get('aria-label', '').lower() or 'btn' in attrs.get('aria-label', '').lower():
                     is_button = True
                 
                 if is_button:
-                    # Проверяем на дубликаты по тексту
                     if text:
                         if text not in button_texts:
                             button_texts.add(text)
                             buttons.append(el)
                     else:
-                        # Если нет текста, добавляем с тегом
                         unique_key = f"{tag}_{attrs.get('data-testid', '')}"
                         if unique_key not in button_texts:
                             button_texts.add(unique_key)
                             buttons.append(el)
             
-            # Добавляем все элементы с role='button' (дополнительная проверка)
             for el in elements:
                 attrs = el.get('attrs', {})
                 role = attrs.get('role', '')
@@ -851,6 +876,15 @@ class CDPClient:
             file_logger.log(f"❌ CDP command error: {e}", "ERROR")
             return {"error": str(e)}
     
+    async def set_dialog_policy(self, policy):
+        """Устанавливает политику для диалогов (Hermes)"""
+        global CURRENT_DIALOG_POLICY
+        if policy in DIALOG_POLICY:
+            CURRENT_DIALOG_POLICY = policy
+            file_logger.log(f"📋 Политика диалогов: {policy}")
+            return True
+        return False
+    
     async def get_page_description(self):
         if not self.full_snapshot:
             await self.get_maximum_snapshot()
@@ -937,13 +971,20 @@ class CDPClient:
         else:
             desc += f"  • (неизвестный формат: {type(links).__name__})\n"
         
+        # ============================================
+        # 🆕 HERMES: Информация о диалогах
+        # ============================================
         dialogs = info.get('pending_dialogs') if isinstance(info, dict) else None
         if dialogs and isinstance(dialogs, list) and len(dialogs) > 0:
             desc += f"\n💬 ОЖИДАЮЩИЕ ДИАЛОГИ ({len(dialogs)}):\n"
             for d in dialogs:
                 desc += f"  • {d.get('message', '')} (тип: {d.get('type', 'unknown')})\n"
             desc += "\n💡 Для обработки диалога используй: handle_dialog(accept=True, prompt_text='')\n"
+            desc += f"📋 Текущая политика: {CURRENT_DIALOG_POLICY}\n"
         
+        # ============================================
+        # 🆕 HERMES: Информация о iframe
+        # ============================================
         frame_tree = info.get('frame_tree') if isinstance(info, dict) else None
         if frame_tree:
             desc += f"\n📦 IFRAME/ФРЕЙМЫ:\n"
@@ -1082,6 +1123,7 @@ AGENT_CODE = """
 - answer(text) - ответить пользователю
 - handle_dialog(accept, prompt_text) - обработать диалог
 - cdp(method, params, frame_id) - выполнить любую CDP-команду
+- set_dialog_policy(policy) - установить политику диалогов (must_respond, auto_dismiss, auto_accept)
 
 ⚠️ ВАЖНО: ВСЕГДА используй формат с "params":
 {"action": "navigate", "params": {"url": "https://x.com"}}
@@ -1154,6 +1196,9 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
                         if 'value' in result and 'params' not in result:
                             file_logger.log("⚠️ Исправляю формат: добавил params")
                             result = {"action": "fill", "params": {"selector": result.get('selector', 'input'), "value": result.get('value')}}
+                        if 'policy' in result and 'params' not in result:
+                            file_logger.log("⚠️ Исправляю формат: добавил params")
+                            result = {"action": "set_dialog_policy", "params": {"policy": result.get('policy')}}
                     
                     if isinstance(result, list):
                         for i, item in enumerate(result):
@@ -1166,6 +1211,8 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
                                     result[i] = {"action": "click", "params": {"selector": item.get('selector')}}
                                 if 'value' in item and 'params' not in item:
                                     result[i] = {"action": "fill", "params": {"selector": item.get('selector', 'input'), "value": item.get('value')}}
+                                if 'policy' in item and 'params' not in item:
+                                    result[i] = {"action": "set_dialog_policy", "params": {"policy": item.get('policy')}}
                     
                     if isinstance(result, list) or (isinstance(result, dict) and 'action' in result):
                         return result
@@ -1258,6 +1305,13 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
                 return f"✅ Диалог обработан: {result.get('dialog', {}).get('message', '')}"
             return f"❌ Ошибка обработки диалога: {result.get('error', '')}"
         
+        elif action_type == "set_dialog_policy":
+            policy = params.get("policy", "must_respond")
+            result = await client.set_dialog_policy(policy)
+            if result:
+                return f"📋 Политика диалогов изменена на: {policy}"
+            return f"❌ Неверная политика: {policy}. Доступные: must_respond, auto_dismiss, auto_accept"
+        
         elif action_type == "cdp":
             method = params.get("method")
             cdp_params = params.get("params", {})
@@ -1325,7 +1379,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "/cdp - статус браузера\n"
-        "/logs - логи"
+        "/logs - логи\n"
+        "/dialog_policy - политика диалогов"
     )
 
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1369,6 +1424,23 @@ async def cdp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
+async def dialog_policy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает текущую политику диалогов"""
+    user_id = update.message.from_user.id
+    if user_id not in clients:
+        await update.message.reply_text("❌ Сначала откройте браузер")
+        return
+    
+    client = clients[user_id]
+    policy = getattr(client, 'dialog_policy', 'must_respond')
+    await update.message.reply_text(
+        f"📋 Текущая политика диалогов: **{policy}**\n\n"
+        "Доступные политики:\n"
+        "• must_respond - ждать ответа агента\n"
+        "• auto_dismiss - автоматически закрывать\n"
+        "• auto_accept - автоматически принимать"
+    )
+
 # ---------- Main ----------
 
 def main():
@@ -1382,6 +1454,7 @@ def main():
     app.add_handler(CommandHandler("cdp", cdp))
     app.add_handler(CommandHandler("logs", logs_command))
     app.add_handler(CommandHandler("clear_logs", clear_logs_command))
+    app.add_handler(CommandHandler("dialog_policy", dialog_policy_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print("🚀 Бот запущен!")
