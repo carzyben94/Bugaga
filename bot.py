@@ -77,7 +77,7 @@ class CDPClient:
             self.connected = True
             logger.info("✅ WebSocket подключен")
             
-            # Создаём новую вкладку
+            # 1. Создаём новую вкладку
             resp = await self._send_raw("Target.createTarget", {"url": "about:blank"})
             if "result" in resp:
                 self.target_id = resp["result"]["targetId"]
@@ -86,15 +86,24 @@ class CDPClient:
                 logger.error(f"❌ Не удалось создать вкладку: {resp}")
                 return False
             
-            # Подключаемся к вкладке
+            # 2. Подключаемся к вкладке
             resp = await self._send_raw("Target.attachToTarget", {"targetId": self.target_id})
             if "result" in resp:
                 self.session_id = resp["result"]["sessionId"]
                 logger.info(f"✅ Подключен к вкладке, sessionId: {self.session_id}")
-                return True
             else:
                 logger.error(f"❌ Не удалось подключиться: {resp}")
                 return False
+            
+            # 3. Включаем Page домен
+            await self._send_raw("Page.enable", {}, self.session_id)
+            logger.info("✅ Page.enable отправлен")
+            
+            # 4. Включаем Runtime домен
+            await self._send_raw("Runtime.enable", {}, self.session_id)
+            logger.info("✅ Runtime.enable отправлен")
+            
+            return True
         
         return True
     
