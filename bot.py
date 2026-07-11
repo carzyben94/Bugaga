@@ -278,24 +278,22 @@ class CDPClient:
         info = self.page_info or {}
         
         desc = f"""
-📄 **СТРАНИЦА:** {info.get('title', 'Нет заголовка')}
-🔗 **URL:** {info.get('url', 'Нет URL')}
+📄 СТРАНИЦА: {info.get('title', 'Нет заголовка')}
+🔗 URL: {info.get('url', 'Нет URL')}
 
-🔘 **КНОПКИ:**
-{chr(10).join(f'  • {btn}' for btn in info.get('buttons', [])[:10])}
-
-📝 **ПОЛЯ ВВОДА:**
-{chr(10).join(f'  • {inp}' for inp in info.get('inputs', [])[:10])}
-
-🔗 **ССЫЛКИ:**
-{chr(10).join(f'  • {link}' for link in info.get('links', [])[:10])}
-
-📋 **ФОРМЫ:**
-{chr(10).join(f'  • {form}' for form in info.get('forms', [])[:5])}
-
-📑 **ЗАГОЛОВКИ:**
-{chr(10).join(f'  • {h}' for h in info.get('headings', [])[:5])}
+🔘 КНОПКИ:
 """
+        for btn in info.get('buttons', [])[:10]:
+            desc += f"  • {btn}\n"
+        
+        desc += f"\n📝 ПОЛЯ ВВОДА:\n"
+        for inp in info.get('inputs', [])[:10]:
+            desc += f"  • {inp}\n"
+        
+        desc += f"\n🔗 ССЫЛКИ:\n"
+        for link in info.get('links', [])[:10]:
+            desc += f"  • {link}\n"
+        
         return desc
     
     async def click_element(self, selector):
@@ -321,53 +319,6 @@ class CDPClient:
                 return {{ success: true }};
             }}
             return {{ success: false }};
-        }})()
-        """
-        return await self.eval_js(js_code)
-    
-    async def scroll_to(self, selector):
-        js_code = f"""
-        (function() {{
-            const el = document.querySelector('{selector}');
-            if (el) {{
-                el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
-                return {{ success: true }};
-            }}
-            return {{ success: false }};
-        }})()
-        """
-        return await self.eval_js(js_code)
-    
-    async def wait_for_element(self, selector, timeout=10):
-        js_code = f"""
-        (function() {{
-            return new Promise((resolve) => {{
-                const start = Date.now();
-                const check = () => {{
-                    const el = document.querySelector('{selector}');
-                    if (el) {{
-                        resolve({{
-                            found: true,
-                            selector: '{selector}',
-                            text: el.textContent.slice(0, 30)
-                        }});
-                    }} else if (Date.now() - start > {timeout * 1000}) {{
-                        resolve({{ found: false, selector: '{selector}' }});
-                    }} else {{
-                        setTimeout(check, 200);
-                    }}
-                }};
-                check();
-            }});
-        }})()
-        """
-        return await self.eval_js(js_code)
-    
-    async def get_text(self, selector):
-        js_code = f"""
-        (function() {{
-            const el = document.querySelector('{selector}');
-            return el ? el.textContent.trim() : null;
         }})()
         """
         return await self.eval_js(js_code)
@@ -402,117 +353,82 @@ class CDPClient:
         except Exception as e:
             file_logger.log(f"❌ Screenshot error: {e}", "ERROR")
             return None
-    
-    async def back(self):
-        return await self.send("Page.goBack", {})
-    
-    async def forward(self):
-        return await self.send("Page.goForward", {})
-    
-    async def reload(self):
-        return await self.send("Page.reload", {})
 
 # ---------- Хранилище ----------
 
 clients = {}
 
-# ---------- КОД, КОТОРЫЙ ВИДИТ АГЕНТ ----------
+# ---------- КОД, КОТОРЫЙ ВИДИТ АГЕНТ (БЕЗ ФИГУРНЫХ СКОБОК) ----------
 
 AGENT_CODE = """
-🤖 **МОЙ КОД - что я могу делать:**
+🤖 МОЙ КОД - что я могу делать:
 
-📌 **ДОСТУПНЫЕ ФУНКЦИИ:**
+📌 ДОСТУПНЫЕ ФУНКЦИИ:
 
 1. navigate(url)
    - Описание: Открыть сайт
    - Пример: navigate("https://google.com")
-   - Где взять URL: из команды пользователя
 
 2. click(selector)
    - Описание: Кликнуть по элементу
    - Пример: click("button:contains('Войти')")
    - Как найти selector: 
-     - По тексту: "button:contains('Текст')"
-     - По ID: "#login-btn"
-     - По классу: ".btn-primary"
-     - По типу: "input[type='text']"
-     - По placeholder: "input[placeholder='Поиск']"
+     - По тексту: button:contains('Текст')
+     - По ID: #login-btn
+     - По классу: .btn-primary
+     - По типу: input[type='text']
 
 3. fill(selector, value)
    - Описание: Заполнить поле
    - Пример: fill("input[placeholder='Поиск']", "Привет")
-   - Как найти selector: смотри выше
 
 4. screenshot()
    - Описание: Сделать скриншот
    - Пример: screenshot()
 
-5. get_text(selector)
-   - Описание: Получить текст элемента
-   - Пример: get_text("h1")
-   - Возвращает: текст элемента
-
-6. answer(text)
+5. answer(text)
    - Описание: Ответить пользователю
-   - Пример: answer("На странице есть кнопка 'Войти'")
+   - Пример: answer("На странице есть кнопка Войти")
 
-7. scroll(amount)
+6. scroll(amount)
    - Описание: Прокрутить страницу
    - Пример: scroll(500)
 
-8. scroll_to(selector)
-   - Описание: Прокрутить к элементу
-   - Пример: scroll_to("#form")
-
-9. back()
+7. back()
    - Описание: Назад по истории
    - Пример: back()
 
-10. forward()
-    - Описание: Вперёд по истории
-    - Пример: forward()
+8. forward()
+   - Описание: Вперёд по истории
+   - Пример: forward()
 
-11. reload()
-    - Описание: Обновить страницу
-    - Пример: reload()
+9. reload()
+   - Описание: Обновить страницу
+   - Пример: reload()
 
-12. wait_for(selector, timeout=10)
+10. wait_for(selector, timeout)
     - Описание: Ждать появления элемента
     - Пример: wait_for("button", 10)
 
-📊 **ЧТО СЕЙЧАС НА СТРАНИЦЕ:**
-🔘 Кнопки: {buttons}
-📝 Поля: {inputs}
-🔗 Ссылки: {links}
-📋 Формы: {forms}
-📑 Заголовки: {headings}
+11. get_text(selector)
+    - Описание: Получить текст элемента
+    - Пример: get_text("h1")
 
-⚠️ **КАК ИСПОЛЬЗОВАТЬ:**
-1. Посмотри на страницу
-2. Выбери нужную функцию
-3. Подставь правильные параметры
-4. Выполни
-
-📝 **ПРИМЕРЫ РАБОТЫ:**
-- Пользователь: "Открой Google"
+📝 ПРИМЕРЫ РАБОТЫ:
+- Пользователь: Открой Google
   → Я: navigate("https://google.com")
 
-- Пользователь: "Нажми на кнопку Войти"
+- Пользователь: Нажми на кнопку Войти
   → Я: click("button:contains('Войти')")
 
-- Пользователь: "Что видишь?"
-  → Я: answer("На странице Google есть поле поиска и кнопка 'Поиск в Google'")
+- Пользователь: Что видишь?
+  → Я: answer("На странице Google есть поле поиска и кнопка Поиск в Google")
 
-- Пользователь: "Введи в поле текст Привет"
+- Пользователь: Введи в поле текст Привет
   → Я: fill("input[placeholder='Поиск']", "Привет")
 
-- Пользователь: "Сделай скриншот"
+- Пользователь: Сделай скриншот
   → Я: screenshot()
-
-- Пользователь: "Прокрути вниз"
-  → Я: scroll(500)
-
-🚀 **ГОТОВ К РАБОТЕ!**
 """
 
 # ---------- Агент с видимостью кода ----------
@@ -524,40 +440,26 @@ async def ask_agnes_with_code(prompt: str, client: CDPClient) -> dict:
         return {"error": "AGNES_API_KEY не установлен"}
     
     # Получаем информацию о странице
+    page_desc = "Страница не загружена"
     if client and client.page_info:
-        info = client.page_info
-        buttons = info.get('buttons', [])
-        inputs = info.get('inputs', [])
-        links = info.get('links', [])
-        forms = info.get('forms', [])
-        headings = info.get('headings', [])
-    else:
-        buttons = inputs = links = forms = headings = []
+        page_desc = await client.get_page_description()
     
-    # Формируем полный промпт с кодом
     system_prompt = f"""
 Ты — ИИ-агент, который управляет браузером через CDP.
 
 ВОТ ТВОЙ КОД (что ты умеешь делать):
-{AGENT_CODE.format(
-    buttons=buttons[:10] if buttons else 'Нет данных',
-    inputs=inputs[:10] if inputs else 'Нет данных',
-    links=links[:10] if links else 'Нет данных',
-    forms=forms[:5] if forms else 'Нет данных',
-    headings=headings[:5] if headings else 'Нет данных'
-)}
+{AGENT_CODE}
 
-📄 **ТЕКУЩАЯ СТРАНИЦА:**
-- Заголовок: {client.page_info.get('title', 'Нет') if client and client.page_info else 'Нет'}
-- URL: {client.page_info.get('url', 'Нет') if client and client.page_info else 'Нет'}
+📄 ТЕКУЩАЯ СТРАНИЦА:
+{page_desc}
 
-📝 **ЗАДАНИЕ:**
+📝 ЗАДАНИЕ:
 1. Посмотри на страницу
 2. Пойми, что хочет пользователь
 3. Выбери правильную функцию из списка выше
 4. Выполни её
 
-⚠️ **ОТВЕЧАЙ ТОЛЬКО JSON!**
+⚠️ ОТВЕЧАЙ ТОЛЬКО JSON!
 
 Формат ответа:
 {{"action": "название_функции", "params": {{"параметр": "значение"}}}}
@@ -566,22 +468,16 @@ async def ask_agnes_with_code(prompt: str, client: CDPClient) -> dict:
 {{"action": "navigate", "params": {{"url": "https://google.com"}}}}
 {{"action": "click", "params": {{"selector": "button:contains('Войти')"}}}}
 {{"action": "fill", "params": {{"selector": "input[placeholder='Поиск']", "value": "Привет"}}}}
-{{"action": "answer", "params": {{"text": "На странице Google есть поле поиска и кнопка 'Поиск в Google'"}}}}
+{{"action": "answer", "params": {{"text": "На странице Google есть поле поиска и кнопка Поиск в Google"}}}}
 {{"action": "screenshot", "params": {{}}}}
-{{"action": "scroll", "params": {{"amount": 500}}}}
-{{"action": "back", "params": {{}}}}
-{{"action": "wait_for", "params": {{"selector": "button", "timeout": 10}}}}
-{{"action": "get_text", "params": {{"selector": "h1"}}}}
 
 ❌ НЕПРАВИЛЬНЫЕ ОТВЕТЫ:
 - Любой текст без JSON
-- {"action": "click"} — нет params
-- {"action": "navigate"} — нет url
+- {{"action": "click"}} - нет params
+- {{"action": "navigate"}} - нет url
 
-🎯 **ВОТ ЧТО НА СТРАНИЦЕ ПРЯМО СЕЙЧАС:**
-- Кнопки: {buttons[:5] if buttons else 'Нет данных'}
-- Поля: {inputs[:5] if inputs else 'Нет данных'}
-- Ссылки: {links[:5] if links else 'Нет данных'}
+🎯 ВОТ ЧТО НА СТРАНИЦЕ ПРЯМО СЕЙЧАС:
+{page_desc}
 
 Используй ЭТИ данные для выбора селекторов!
 """
@@ -666,27 +562,18 @@ async def execute_action(client: CDPClient, action: dict) -> str:
             await client.eval_js(f"window.scrollBy(0, {amount})")
             return f"✅ Прокрутил на {amount}px"
         
-        elif action_type == "scroll_to":
-            selector = params.get("selector")
-            if not selector:
-                return "❌ Нет селектора"
-            result = await client.scroll_to(selector)
-            if result and result.get("success"):
-                return f"✅ Прокрутил к: {selector}"
-            return f"❌ Элемент не найден: {selector}"
-        
         elif action_type == "back":
-            await client.back()
+            await client.send("Page.goBack", {})
             await client.update_page_info()
             return "✅ Назад"
         
         elif action_type == "forward":
-            await client.forward()
+            await client.send("Page.goForward", {})
             await client.update_page_info()
             return "✅ Вперёд"
         
         elif action_type == "reload":
-            await client.reload()
+            await client.send("Page.reload", {})
             await client.update_page_info()
             return "✅ Обновлено"
         
@@ -765,15 +652,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 **АГЕНТ С ВИДИМЫМ КОДОМ**\n\n"
         "Я вижу свой код и знаю, что могу:\n"
-        "• navigate() — открывать сайты\n"
-        "• click() — кликать по кнопкам\n"
-        "• fill() — заполнять поля\n"
-        "• screenshot() — делать скриншоты\n"
-        "• answer() — отвечать на вопросы\n"
-        "• scroll() — прокручивать\n"
-        "• wait_for() — ждать элементы\n"
-        "• get_text() — читать текст\n\n"
-        "💡 **Примеры команд:**\n"
+        "• navigate() - открывать сайты\n"
+        "• click() - кликать по кнопкам\n"
+        "• fill() - заполнять поля\n"
+        "• screenshot() - делать скриншоты\n"
+        "• answer() - отвечать на вопросы\n"
+        "• scroll() - прокручивать\n"
+        "• wait_for() - ждать элементы\n"
+        "• get_text() - читать текст\n\n"
+        "💡 Примеры команд:\n"
         "• Открой Google\n"
         "• Нажми на кнопку Войти\n"
         "• Введи в поле текст Привет\n"
