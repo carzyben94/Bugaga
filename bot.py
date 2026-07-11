@@ -247,22 +247,6 @@ class CDPClient:
         self.history = []
         self.cookies_set = False
         self.masked = False
-        self.reconnect_attempts = 0
-    
-    async def ensure_connected(self):
-        """Проверяет соединение и переподключает если нужно"""
-        if not self.connected or self.ws is None:
-            file_logger.log("🔄 Переподключение...")
-            return await self.connect()
-        
-        try:
-            # Пинг для проверки соединения
-            await self.ws.ping()
-            return True
-        except:
-            file_logger.log("⚠️ Соединение потеряно, переподключаюсь...")
-            self.connected = False
-            return await self.connect()
     
     async def connect(self):
         if self.connected:
@@ -286,7 +270,6 @@ class CDPClient:
                 close_timeout=10
             )
             self.connected = True
-            self.reconnect_attempts = 0
             file_logger.log("✅ WebSocket подключен")
             
             await self.send("Page.enable", {})
@@ -307,8 +290,18 @@ class CDPClient:
             
         except Exception as e:
             file_logger.log(f"❌ Connect error: {e}", "ERROR")
-            self.connected = False
             return False
+    
+    async def reconnect(self):
+        """Переподключение при разрыве"""
+        file_logger.log("🔄 Переподключение...")
+        self.connected = False
+        if self.ws:
+            try:
+                await self.ws.close()
+            except:
+                pass
+        return await self.connect()
     
     async def apply_mask(self):
         """Применение маскировки через JS"""
@@ -371,6 +364,7 @@ class CDPClient:
         try:
             file_logger.log(f"🍪 Установка {len(cookies)} кук...")
             
+            # Форматируем куки для CDP
             cdp_cookies = []
             for cookie in cookies:
                 cdp_cookie = {
@@ -385,6 +379,7 @@ class CDPClient:
                 }
                 cdp_cookies.append(cdp_cookie)
             
+            # Отправляем куки через CDP
             result = await self.send("Network.setCookies", {
                 "cookies": cdp_cookies
             })
@@ -402,10 +397,8 @@ class CDPClient:
             return False
     
     async def send(self, method, params=None):
-        """Отправка CDP команды с переподключением при ошибке"""
         if not self.connected:
-            if not await self.connect():
-                return {"error": "Not connected"}
+            await self.connect()
         
         self.msg_id += 1
         msg_id = self.msg_id
@@ -431,26 +424,20 @@ class CDPClient:
                 if "method" in data:
                     continue
                 
-        except (websockets.exceptions.ConnectionClosed, asyncio.TimeoutError) as e:
-            file_logger.log(f"⚠️ {method} ошибка соединения: {e}", "WARNING")
-            self.connected = False
-            
+        except (websockets.exceptions.ConnectionClosed, asyncio.TimeoutError, Exception) as e:
+            file_logger.log(f"❌ {method} ошибка: {e}", "ERROR")
             # Пробуем переподключиться
-            if self.reconnect_attempts < 3:
-                self.reconnect_attempts += 1
-                file_logger.log(f"🔄 Попытка переподключения {self.reconnect_attempts}/3...")
-                if await self.connect():
-                    # Повторяем запрос
-                    return await self.send(method, params)
-            
-            return {"error": str(e)}
-        except Exception as e:
-            file_logger.log(f"❌ {method} error: {e}", "ERROR")
-            return {"error": str(e)}
+            await self.reconnect()
+            # Повторяем запрос
+            return await self.send(method, params)
     
     async def navigate(self, url):
         file_logger.log(f"🌐 Навигация на {url}")
-        await self.send("Page.navigate", {"url": url})
+        result = await self.send("Page.navigate", {"url": url})
+        
+        if result and "error" in result:
+            file_logger.log(f"❌ Ошибка навигации: {result['error']}", "ERROR")
+            return False
         
         for i in range(10):
             await asyncio.sleep(1)
@@ -458,7 +445,9 @@ class CDPClient:
             if title and title != "":
                 file_logger.log(f"📄 Страница загружена: {title}")
                 await self.get_maximum_snapshot()
-                break
+                return True
+        
+        return False
     
     async def eval_js(self, code):
         try:
@@ -721,9 +710,8 @@ class CDPClient:
     
     async def screenshot(self):
         try:
-            # Проверяем соединение перед скриншотом
-            if not await self.ensure_connected():
-                return None
+            if not self.connected:
+                await self.connect()
             
             title = await self.eval_js("document.title")
             file_logger.log(f"📄 Текущий заголовок: {title}")
@@ -735,16 +723,31 @@ class CDPClient:
             
             file_logger.log("📸 Делаю скриншот...")
             
+            # Используем JPEG с качеством 80 для меньшего размера
             resp = await self.send("Page.captureScreenshot", {
-                "format": "png",
+                "format": "jpeg",
+                "quality": 80,
                 "captureBeyondViewport": True,
-                "fromSurface": True
+                "fromSurface": True,
+                "optimizeForSpeed": True
             })
             
             if "result" in resp and "data" in resp["result"]:
                 img_data = base64.b64decode(resp["result"]["data"])
+                
+                # Проверяем, что изображение не слишком маленькое
+                if len(img_data) < 100:
+                    file_logger.log("❌ Скриншот слишком маленький", "ERROR")
+                    return None
+                
                 file_logger.log(f"✅ Скриншот сделан ({len(img_data)} байт)")
-                return img_data
+                
+                # Проверяем заголовок JPEG (FF D8) или PNG (89 50 4E 47)
+                if img_data[:2] == b'\xff\xd8' or img_data[:4] == b'\x89PNG':
+                    return img_data
+                else:
+                    file_logger.log("❌ Невалидный формат изображения", "ERROR")
+                    return None
             
             file_logger.log("❌ Не удалось получить скриншот", "ERROR")
             return None
@@ -1001,30 +1004,6 @@ async def mask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_logger.log(f"❌ Ошибка: {e}", "ERROR")
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
-async def reconnect_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Принудительное переподключение"""
-    user_id = update.message.from_user.id
-    
-    if user_id not in clients:
-        await update.message.reply_text("❌ Браузер не инициализирован")
-        return
-    
-    client = clients[user_id]
-    
-    try:
-        await update.message.reply_text("🔄 Переподключаюсь...")
-        client.connected = False
-        result = await client.connect()
-        
-        if result:
-            await update.message.reply_text("✅ Переподключение успешно!")
-        else:
-            await update.message.reply_text("❌ Не удалось переподключиться")
-            
-    except Exception as e:
-        file_logger.log(f"❌ Ошибка: {e}", "ERROR")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-
 # ---------- Обработчик ----------
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1046,11 +1025,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             clients[user_id] = client
         
         client = clients[user_id]
-        
-        # Проверяем соединение
-        if not await client.ensure_connected():
-            await update.message.reply_text("❌ Потеряно соединение с браузером. Попробуйте позже.")
-            return
         
         await client.get_maximum_snapshot()
         
@@ -1089,8 +1063,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/cdp - статус браузера\n"
         "/logs - логи\n"
         "/set_cookies - установить куки\n"
-        "/mask - применить маскировку\n"
-        "/reconnect - переподключиться"
+        "/mask - применить маскировку"
     )
 
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1149,7 +1122,6 @@ def main():
     app.add_handler(CommandHandler("clear_logs", clear_logs_command))
     app.add_handler(CommandHandler("set_cookies", set_cookies_command))
     app.add_handler(CommandHandler("mask", mask_command))
-    app.add_handler(CommandHandler("reconnect", reconnect_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print("🚀 Бот запущен с маскировкой и автопереподключением!")
