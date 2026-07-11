@@ -9,6 +9,8 @@ import base64
 import asyncio
 import random
 import math
+import signal
+import sys
 from collections import deque
 from typing import Optional, Dict, Any, List
 from telegram import Update
@@ -221,21 +223,50 @@ class CDPSupervisor:
         file_logger.log(f"🧠 CDP Supervisor остановлен для {self.user_id}")
     
     async def _run(self):
+        """Основной цикл супервайзера"""
+        file_logger.log("🚀 Запуск CDP Supervisor...")
+        
         while self.running and not self._stop_event.is_set():
             try:
+                file_logger.log("🔗 Подключение к Chrome...")
                 await self._connect()
+                
+                file_logger.log("⚙️ Настройка доменов...")
                 await self._setup_domains()
                 
-                # ✅ ЗАПУСКАЕМ EVENT LOOP ПЕРВЫМ
+                file_logger.log("🔄 Запуск event loop...")
                 self.event_loop_task = asyncio.create_task(self._event_loop())
                 
-                # ✅ Даем время на подключение
-                await asyncio.sleep(0.5)
+                # Ждем готовности event loop
+                for attempt in range(20):
+                    if self.connected and self.ws and not self.ws.closed:
+                        file_logger.log(f"✅ Event loop готов (попытка {attempt+1})")
+                        break
+                    await asyncio.sleep(0.5)
+                else:
+                    raise Exception("Event loop не готов после 10 секунд")
                 
-                # ✅ Теперь навигация работает
-                await self.navigate("https://google.com")
+                await asyncio.sleep(1)
                 
+                file_logger.log("🌐 Открываю google.com...")
+                try:
+                    await asyncio.wait_for(
+                        self.navigate("https://google.com"),
+                        timeout=20
+                    )
+                    file_logger.log("✅ Google.com загружен")
+                except asyncio.TimeoutError:
+                    file_logger.log("⚠️ Таймаут навигации на google.com")
+                    await asyncio.wait_for(
+                        self.navigate("about:blank"),
+                        timeout=10
+                    )
+                    file_logger.log("✅ about:blank загружен")
+                
+                file_logger.log("✅ Supervisor готов к работе!")
                 self._ready_event.set()
+                
+                file_logger.log("❤️ Запуск heartbeat...")
                 self.heartbeat_task = asyncio.create_task(self._heartbeat())
                 
                 await asyncio.gather(
@@ -252,6 +283,51 @@ class CDPSupervisor:
             except Exception as e:
                 file_logger.log(f"❌ Supervisor error: {e}", "ERROR")
                 await asyncio.sleep(5)
+    
+    async def wait_for_ready(self, timeout=30):
+        """Ждет полной готовности супервайзера"""
+        start = time.time()
+        while time.time() - start < timeout:
+            if (self.connected and 
+                self.ws and 
+                not self.ws.closed and 
+                self.page_loaded and
+                self.full_snapshot is not None):
+                return True
+            await asyncio.sleep(0.5)
+        return False
+    
+    async def get_status(self) -> str:
+        """Возвращает статус супервайзера"""
+        status_parts = []
+        
+        # Статус подключения
+        if self.connected and self.ws and not self.ws.closed:
+            status_parts.append("✅ Подключен к Chrome")
+        else:
+            status_parts.append("❌ Нет подключения к Chrome")
+        
+        # Статус страницы
+        if self.page_loaded:
+            status_parts.append("✅ Страница загружена")
+            if self.full_snapshot:
+                title = self.full_snapshot.get('title', 'Без заголовка')
+                url = self.full_snapshot.get('url', 'Без URL')
+                status_parts.append(f"📄 {title} ({url[:50]}...)")
+        else:
+            status_parts.append("⏳ Страница загружается...")
+        
+        # Диалоги
+        if self.pending_dialogs:
+            status_parts.append(f"💬 Ожидающих диалогов: {len(self.pending_dialogs)}")
+        else:
+            status_parts.append("✅ Нет ожидающих диалогов")
+        
+        # Ref ID
+        if self.ref_elements:
+            status_parts.append(f"🆔 Доступно элементов: {len(self.ref_elements)}")
+        
+        return "\n".join(status_parts)
     
     async def _connect(self):
         file_logger.log(f"🔗 Подключение к Chrome для {self.user_id}")
@@ -278,8 +354,19 @@ class CDPSupervisor:
         file_logger.log("✅ Domains enabled")
     
     async def _send(self, method, params=None, session_id=None):
+        """Отправляет команду в Chrome с проверкой соединения"""
+        # Проверка соединения
         if not self.connected:
-            return {"error": "Not connected"}
+            file_logger.log(f"⚠️ Не подключен к Chrome, пытаюсь переподключиться...")
+            await self._reconnect()
+            if not self.connected:
+                return {"error": "Not connected"}
+        
+        if not self.ws or self.ws.closed:
+            file_logger.log(f"⚠️ WebSocket закрыт, пытаюсь переподключиться...")
+            await self._reconnect()
+            if not self.ws or self.ws.closed:
+                return {"error": "WebSocket closed"}
         
         self.msg_id += 1
         msg_id = self.msg_id
@@ -295,13 +382,22 @@ class CDPSupervisor:
         self._pending_requests[msg_id] = future
         
         try:
+            # Проверяем, что WebSocket открыт перед отправкой
+            if self.ws.closed:
+                return {"error": "WebSocket closed"}
+            
             await self.ws.send(json.dumps(msg))
             response = await asyncio.wait_for(future, timeout=30)
             return response
             
         except asyncio.TimeoutError:
             self._pending_requests.pop(msg_id, None)
+            file_logger.log(f"⚠️ Таймаут запроса: {method}")
             return {"error": "Timeout"}
+        except websockets.ConnectionClosed:
+            self.connected = False
+            file_logger.log(f"⚠️ WebSocket закрыт при отправке: {method}")
+            return {"error": "Connection closed"}
         except Exception as e:
             self._pending_requests.pop(msg_id, None)
             file_logger.log(f"❌ Send error: {e}", "ERROR")
@@ -607,22 +703,40 @@ class CDPSupervisor:
         return False
     
     async def navigate(self, url):
-        """Безопасная навигация без дедлоков"""
+        """Безопасная навигация с таймаутами и повторными попытками"""
         async with self._navigation_lock:
             try:
                 file_logger.log(f"🌐 Навигация на {url}")
                 
-                # Отправляем команду навигации
+                # Сначала проверяем, что соединение живо
+                if not self.connected or not self.ws or self.ws.closed:
+                    file_logger.log("⚠️ Соединение потеряно, переподключаюсь...")
+                    await self._reconnect()
+                
+                # Отправляем команду навигации с таймаутом
                 result = await asyncio.wait_for(
                     self._send("Page.navigate", {"url": url}),
                     timeout=15
                 )
                 
                 if "error" in result:
+                    file_logger.log(f"❌ Ошибка навигации: {result.get('error')}")
                     return {"success": False, "error": result.get("error")}
                 
-                # Ждем загрузки
-                await asyncio.wait_for(self._wait_for_page_load(), timeout=15)
+                # Ждем загрузки с таймаутом
+                loaded = await asyncio.wait_for(
+                    self._wait_for_page_load(),
+                    timeout=15
+                )
+                
+                if not loaded:
+                    file_logger.log(f"⚠️ Страница не загрузилась: {url}")
+                    try:
+                        await self._send("Page.stopLoading", {})
+                    except:
+                        pass
+                    return {"success": False, "error": "Page load timeout"}
+                
                 await self._update_snapshot()
                 return {"success": True}
                 
@@ -971,6 +1085,7 @@ class CDPSupervisor:
 # ---------- Хранилище супервайзеров ----------
 
 supervisors = {}
+cancel_requests = {}
 
 async def get_supervisor(user_id: int) -> CDPSupervisor:
     if user_id not in supervisors:
@@ -1189,73 +1304,49 @@ async def execute_single_action(supervisor: CDPSupervisor, action: dict) -> str:
         else:
             return f"⚠️ Неизвестное действие: {action_type}"
             
+    except asyncio.CancelledError:
+        return "⏹️ Операция отменена"
     except Exception as e:
         file_logger.log(f"Execute error: {e}", "ERROR")
         return f"❌ Ошибка: {str(e)}"
 
-# ---------- Обработчик Telegram ----------
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
-        return
-    
-    user_id = update.message.from_user.id
-    prompt = update.message.text
-    
-    file_logger.log(f"Сообщение от {user_id}: {prompt[:100]}...")
-    
-    await update.message.chat.send_action(action="typing")
-    
-    try:
-        supervisor = await get_supervisor(user_id)
-        if not supervisor:
-            await update.message.reply_text("❌ Не удалось подключиться к браузеру")
-            return
-        
-        if not await supervisor.ensure_session():
-            await update.message.reply_text("❌ Браузер не готов")
-            return
-        
-        page_desc = await supervisor.get_description()
-        
-        if AGNES_API_KEY:
-            response = await ask_agnes(prompt, page_desc)
-            if "error" not in response:
-                result = await execute_action(supervisor, response)
-                if result == "screenshot":
-                    img_data = await supervisor.screenshot()
-                    if img_data:
-                        with open("screenshot.png", "wb") as f:
-                            f.write(img_data)
-                        with open("screenshot.png", "rb") as photo:
-                            await update.message.reply_photo(photo=photo)
-                    else:
-                        await update.message.reply_text("❌ Не удалось сделать скриншот")
-                else:
-                    await update.message.reply_text(result)
-                return
-        
-        await update.message.reply_text("❌ Не понял команду. Попробуйте переформулировать.")
-            
-    except Exception as e:
-        file_logger.log(f"❌ Ошибка: {e}", "ERROR")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-
-# ---------- Команды ----------
+# ---------- Команды Telegram ----------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🧠 **CDP Supervisor (Hermes)**\n\n"
-        "Я вижу ВСЁ на странице:\n"
-        "• Все кнопки, поля, ссылки\n"
-        "• Диалоги (alert/confirm/prompt)\n"
-        "• iframe и фреймы\n"
-        "• Структуру страницы\n\n"
-        "💡 Просто напиши что нужно сделать!\n\n"
-        "/cdp - статус браузера\n"
-        "/logs - логи\n"
-        "/dialog_policy - политика диалогов"
+        "🤖 Бот готов к работе!\n\n"
+        "📊 **Возможности:**\n"
+        "• Управление браузером через AI\n"
+        "• Обработка диалогов (alert/confirm/prompt)\n"
+        "• Работа с iframe и фреймами\n"
+        "• Скриншоты страниц\n\n"
+        "📝 **Команды:**\n"
+        "/status - статус браузера\n"
+        "/cdp - детальная информация\n"
+        "/cancel - отменить операцию\n"
+        "/restart - перезапустить браузер\n"
+        "/logs - скачать логи\n"
+        "/dialog_policy - политика диалогов\n\n"
+        "💡 **Как использовать:**\n"
+        "Просто напиши что нужно сделать, например:\n"
+        "• 'зайди в google.com'\n"
+        "• 'нажми на кнопку Войти'\n"
+        "• 'сделай скриншот'\n"
+        "• 'заполни поле поиска текстом'\n\n"
+        "⏳ Бот показывает статус обработки каждого шага!"
     )
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает статус браузера"""
+    user_id = update.message.from_user.id
+    
+    if user_id in supervisors:
+        supervisor = supervisors[user_id]
+        status = await supervisor.get_status()
+        await update.message.reply_text(f"📊 **Статус браузера:**\n\n{status}")
+    else:
+        await update.message.reply_text("❌ Браузер не запущен. Отправь любое сообщение для запуска.")
 
 async def cdp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -1279,6 +1370,64 @@ async def cdp(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Нет данных")
     else:
         await update.message.reply_text("❌ Браузер не запущен")
+
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отменяет текущую операцию"""
+    user_id = update.message.from_user.id
+    
+    if user_id in supervisors:
+        supervisor = supervisors[user_id]
+        
+        # Останавливаем все ожидающие запросы
+        for msg_id, future in supervisor._pending_requests.items():
+            if not future.done():
+                future.set_exception(asyncio.CancelledError("Отменено пользователем"))
+        
+        # Очищаем очередь
+        supervisor._pending_requests.clear()
+        
+        # Если есть диалог - закрываем его
+        if supervisor.pending_dialogs:
+            try:
+                await supervisor._send("Page.handleJavaScriptDialog", {"accept": False})
+                supervisor.pending_dialogs.clear()
+                await update.message.reply_text("✅ Диалог закрыт")
+            except:
+                pass
+        
+        await update.message.reply_text("✅ Операция отменена! Бот снова готов к работе.")
+    else:
+        await update.message.reply_text("❌ Браузер не запущен")
+
+async def restart_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Перезапускает браузер"""
+    user_id = update.message.from_user.id
+    await update.message.reply_text("🔄 Перезапускаю браузер...")
+    
+    # Останавливаем текущий supervisor
+    if user_id in supervisors:
+        await supervisors[user_id].stop()
+        del supervisors[user_id]
+    
+    # Убиваем Chrome
+    subprocess.run(["pkill", "-f", "google-chrome"], capture_output=True)
+    time.sleep(2)
+    
+    # Запускаем заново
+    start_chrome()
+    
+    # Создаем новый supervisor
+    ws_url = get_page_ws_url()
+    if not ws_url:
+        ws_url = create_page()
+    
+    if ws_url:
+        supervisor = CDPSupervisor(user_id, ws_url)
+        await supervisor.start()
+        supervisors[user_id] = supervisor
+        await update.message.reply_text("🔄 Браузер перезапущен! ✅")
+    else:
+        await update.message.reply_text("❌ Не удалось перезапустить браузер")
 
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -1305,9 +1454,99 @@ async def dialog_policy_command(update: Update, context: ContextTypes.DEFAULT_TY
         "Изменить: 'Установи политику диалогов auto_dismiss'"
     )
 
+# ---------- Обработчик сообщений ----------
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
+    
+    user_id = update.message.from_user.id
+    prompt = update.message.text
+    
+    file_logger.log(f"Сообщение от {user_id}: {prompt[:100]}...")
+    
+    await update.message.chat.send_action(action="typing")
+    
+    try:
+        # Отправляем сообщение о начале обработки
+        status_msg = await update.message.reply_text("⏳ Обрабатываю запрос...")
+        
+        supervisor = await get_supervisor(user_id)
+        if not supervisor:
+            await status_msg.edit_text("❌ Не удалось подключиться к браузеру")
+            return
+        
+        # Обновляем статус
+        await status_msg.edit_text("🌐 Подключаюсь к браузеру...")
+        
+        if not await supervisor.wait_for_ready(timeout=30):
+            await status_msg.edit_text("❌ Браузер не готов (таймаут)")
+            return
+        
+        # Обновляем статус
+        await status_msg.edit_text("📄 Получаю состояние страницы...")
+        
+        page_desc = await supervisor.get_description()
+        
+        if AGNES_API_KEY:
+            # Обновляем статус
+            await status_msg.edit_text("🧠 Спрашиваю AI...")
+            
+            response = await ask_agnes(prompt, page_desc)
+            if "error" not in response:
+                # Обновляем статус
+                await status_msg.edit_text("⚡ Выполняю действие...")
+                
+                try:
+                    result = await execute_action(supervisor, response)
+                    
+                    if result == "screenshot":
+                        img_data = await supervisor.screenshot()
+                        if img_data:
+                            await status_msg.delete()
+                            with open("screenshot.png", "wb") as f:
+                                f.write(img_data)
+                            with open("screenshot.png", "rb") as photo:
+                                await update.message.reply_photo(
+                                    photo=photo,
+                                    caption="📸 Скриншот страницы"
+                                )
+                        else:
+                            await status_msg.edit_text("❌ Не удалось сделать скриншот")
+                    else:
+                        await status_msg.edit_text(f"✅ {result}")
+                    
+                except asyncio.CancelledError:
+                    await status_msg.edit_text("⏹️ Операция отменена")
+                    return
+                except asyncio.TimeoutError:
+                    await status_msg.edit_text("⏰ Операция заняла слишком много времени. Используй /restart")
+                    return
+                
+                return
+        
+        await status_msg.edit_text("❌ Не понял команду. Попробуйте переформулировать.")
+            
+    except asyncio.CancelledError:
+        await update.message.reply_text("⏹️ Операция отменена")
+    except asyncio.TimeoutError:
+        await update.message.reply_text("⏰ Операция заняла слишком много времени. Используй /restart")
+    except Exception as e:
+        file_logger.log(f"❌ Ошибка: {e}", "ERROR")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
 # ---------- Main ----------
 
+def timeout_handler(signum, frame):
+    """Обработчик таймаута всей программы"""
+    file_logger.log("⚠️ Таймаут всей программы, перезапуск...")
+    sys.exit(1)
+
 def main():
+    # Устанавливаем таймаут для всей программы (10 минут)
+    signal.signal(signal.SIGALRM, timeout_handler)
+    signal.alarm(600)  # 10 минут
+    
     print("🚀 Запуск бота с CDP Supervisor...")
     file_logger.log("🚀 Запуск бота с CDP Supervisor...")
     
@@ -1315,14 +1554,24 @@ def main():
     
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("cdp", cdp))
+    app.add_handler(CommandHandler("cancel", cancel_command))
+    app.add_handler(CommandHandler("restart", restart_browser))
+    app.add_handler(CommandHandler("reset", restart_browser))
     app.add_handler(CommandHandler("logs", logs_command))
     app.add_handler(CommandHandler("dialog_policy", dialog_policy_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print("🚀 Бот запущен!")
     file_logger.log("🚀 Бот запущен!")
-    app.run_polling()
+    
+    try:
+        app.run_polling()
+    except KeyboardInterrupt:
+        print("\n🛑 Бот остановлен пользователем")
+        file_logger.log("🛑 Бот остановлен пользователем")
+        sys.exit(0)
 
 if __name__ == "__main__":
     main()
