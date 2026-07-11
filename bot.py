@@ -163,8 +163,8 @@ class CDPClient:
         self.full_snapshot = None
         self.history = []
         self.cookies_set = False
-        self.pending_dialogs = []  # Хранилище для диалогов
-        self.connected_tabs = {}   # Хранилище для iframe
+        self.pending_dialogs = []
+        self.connected_tabs = {}
     
     async def connect(self):
         if self.connected:
@@ -196,9 +196,6 @@ class CDPClient:
             await self.send("DOM.enable", {})
             await self.send("Network.enable", {})
             
-            # ============================================
-            # 🆕 HERMES: Автоматическое подключение к iframe
-            # ============================================
             await self.send("Target.setAutoAttach", {
                 "autoAttach": True,
                 "flatten": True,
@@ -206,23 +203,13 @@ class CDPClient:
             })
             file_logger.log("✅ Target.setAutoAttach включён")
             
-            # ============================================
-            # 🆕 HERMES: Получение дерева фреймов
-            # ============================================
-            frame_tree = await self.send("Page.getFrameTree", {})
-            if "result" in frame_tree:
-                file_logger.log(f"✅ FrameTree получен")
-            
             file_logger.log("✅ Page, Runtime, DOM, Network включены")
             
-            # 🎭 МАСКИРУЕМ БРАУЗЕР
             await self.mask_browser()
             file_logger.log("✅ Браузер замаскирован")
             
-            # 🍪 Устанавливаем куки
             await self.set_x_cookies()
             
-            # Открываем Google
             await self.navigate("https://google.com")
             
             return True
@@ -232,21 +219,14 @@ class CDPClient:
             return False
     
     async def mask_browser(self):
-        """Полная маскировка браузера"""
         try:
             js_code = """
             (function() {
-                // ============================================
-                // 1. МАСКИРОВКА navigator.webdriver
-                // ============================================
                 Object.defineProperty(navigator, 'webdriver', {
                     get: () => undefined,
                     configurable: true
                 });
                 
-                // ============================================
-                // 2. МАСКИРОВКА navigator.plugins
-                // ============================================
                 Object.defineProperty(navigator, 'plugins', {
                     get: () => {
                         const plugins = [
@@ -267,17 +247,11 @@ class CDPClient:
                     configurable: true
                 });
                 
-                // ============================================
-                // 3. МАСКИРОВКА navigator.languages
-                // ============================================
                 Object.defineProperty(navigator, 'languages', {
                     get: () => ['ru-RU', 'ru', 'en-US', 'en'],
                     configurable: true
                 });
                 
-                // ============================================
-                // 4. МАСКИРОВКА window.chrome
-                // ============================================
                 window.chrome = {
                     runtime: {
                         connect: function() {},
@@ -316,9 +290,6 @@ class CDPClient:
                     }
                 };
                 
-                // ============================================
-                // 5. МАСКИРОВКА WebGL
-                // ============================================
                 const getParameter = WebGLRenderingContext.prototype.getParameter;
                 WebGLRenderingContext.prototype.getParameter = function(parameter) {
                     if (parameter === 37445) {
@@ -333,9 +304,6 @@ class CDPClient:
                     return getParameter(parameter);
                 };
                 
-                // ============================================
-                // 6. МАСКИРОВКА navigator.connection
-                // ============================================
                 Object.defineProperty(navigator, 'connection', {
                     get: () => ({
                         effectiveType: '4g',
@@ -347,9 +315,6 @@ class CDPClient:
                     configurable: true
                 });
                 
-                // ============================================
-                // 7. МАСКИРОВКА performance.memory
-                // ============================================
                 Object.defineProperty(performance, 'memory', {
                     get: () => ({
                         totalJSHeapSize: 100000000,
@@ -359,25 +324,16 @@ class CDPClient:
                     configurable: true
                 });
                 
-                // ============================================
-                // 8. МАСКИРОВКА navigator.hardwareConcurrency
-                // ============================================
                 Object.defineProperty(navigator, 'hardwareConcurrency', {
                     get: () => 8,
                     configurable: true
                 });
                 
-                // ============================================
-                // 9. МАСКИРОВКА navigator.platform
-                // ============================================
                 Object.defineProperty(navigator, 'platform', {
                     get: () => 'Win32',
                     configurable: true
                 });
                 
-                // ============================================
-                // 10. УДАЛЕНИЕ CDP СЛЕДОВ
-                // ============================================
                 delete window.__cdp__;
                 delete window.__CDP__;
                 delete window.__playwright__;
@@ -390,9 +346,6 @@ class CDPClient:
                 delete window.__webdriver_script_evaluate__;
                 delete window.__webdriver_script_function__;
                 
-                // ============================================
-                // 11. МАСКИРОВКА navigator.mediaDevices
-                // ============================================
                 if (navigator.mediaDevices) {
                     Object.defineProperty(navigator.mediaDevices, 'enumerateDevices', {
                         value: async function() {
@@ -404,9 +357,6 @@ class CDPClient:
                     });
                 }
                 
-                // ============================================
-                // 12. МАСКИРОВКА timezone
-                // ============================================
                 Object.defineProperty(Intl.DateTimeFormat.prototype, 'resolvedOptions', {
                     value: function() {
                         const result = Object.getOwnPropertyDescriptor(
@@ -418,15 +368,9 @@ class CDPClient:
                     }
                 });
                 
-                // ============================================
-                // 13. МАСКИРОВКА screen
-                // ============================================
                 Object.defineProperty(screen, 'availWidth', { value: 1920 });
                 Object.defineProperty(screen, 'availHeight', { value: 1040 });
                 
-                // ============================================
-                // 14. МАСКИРОВКА navigator.doNotTrack
-                // ============================================
                 Object.defineProperty(navigator, 'doNotTrack', {
                     get: () => '1',
                     configurable: true
@@ -441,7 +385,6 @@ class CDPClient:
             return False
     
     async def set_x_cookies(self):
-        """Устанавливает куки для X.com"""
         try:
             file_logger.log("🍪 Устанавливаю куки для X.com...")
             
@@ -476,7 +419,6 @@ class CDPClient:
             return False
     
     async def safe_send(self, method, params=None, retry=3):
-        """Отправка с автоматическим переподключением"""
         last_error = None
         for attempt in range(retry):
             try:
@@ -513,9 +455,6 @@ class CDPClient:
                 response = await asyncio.wait_for(self.ws.recv(), timeout=30)
                 data = json.loads(response)
                 
-                # ============================================
-                # 🆕 HERMES: Обработка диалогов
-                # ============================================
                 if "method" in data and data["method"] == "Page.javascriptDialogOpening":
                     dialog_params = data.get("params", {})
                     file_logger.log(f"💬 Диалог обнаружен: {dialog_params.get('message', '')}")
@@ -526,9 +465,6 @@ class CDPClient:
                     })
                     continue
                 
-                # ============================================
-                # 🆕 HERMES: Обработка новых фреймов (iframe)
-                # ============================================
                 if "method" in data and data["method"] == "Target.attachedToTarget":
                     target_info = data.get("params", {}).get("targetInfo", {})
                     session_id = data.get("params", {}).get("sessionId")
@@ -608,20 +544,16 @@ class CDPClient:
         try:
             file_logger.log("📸 Делаю максимальный слепок...")
             
-            # Проверяем URL для X.com
             url = await self.eval_js("window.location.href") or ""
             is_x = "x.com" in url
-            
-            # Для X.com увеличиваем лимит
             max_elements = 2000 if is_x else 500
             
-            # ============================================
-            # 🆕 HERMES: Получение дерева фреймов
-            # ============================================
-            frame_tree = await self.send("Page.getFrameTree", {})
-            if "result" in frame_tree:
+            # ✅ ПРАВИЛЬНО: получаем frame_tree через CDP
+            frame_tree_resp = await self.send("Page.getFrameTree", {})
+            frame_tree = None
+            if "result" in frame_tree_resp:
+                frame_tree = frame_tree_resp["result"].get("frameTree", {})
                 file_logger.log(f"📦 FrameTree получен")
-                self.frame_tree = frame_tree["result"].get("frameTree", {})
             
             result = await self.eval_js(f"""
                 (function() {{
@@ -684,7 +616,6 @@ class CDPClient:
                 }})()
             """)
             
-            # ✅ ПРАВИЛЬНАЯ ОБРАБОТКА ТИПА ДАННЫХ (из Hermes)
             if result is None:
                 elements = []
             elif isinstance(result, list):
@@ -701,7 +632,6 @@ class CDPClient:
             else:
                 elements = []
             
-            # Если пусто — пробуем упрощённый сбор
             if not elements:
                 simple_result = await self.eval_js("""
                     (function() {
@@ -728,7 +658,6 @@ class CDPClient:
             title = await self.eval_js("document.title") or "Нет заголовка"
             url_final = await self.eval_js("window.location.href") or "Нет URL"
             
-            # Проверяем диалоги
             if self.pending_dialogs:
                 file_logger.log(f"💬 Есть ожидающие диалоги: {len(self.pending_dialogs)}")
             
@@ -779,6 +708,7 @@ class CDPClient:
             headings = [e for e in elements if e.get('tag') in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']]
             visible = [e for e in elements if e.get('visible')]
             
+            # ✅ ПРАВИЛЬНО: сохраняем frame_tree как словарь
             self.full_snapshot = {
                 "title": title,
                 "url": url_final,
@@ -795,9 +725,9 @@ class CDPClient:
                 "forms": forms,
                 "headings": headings,
                 "visible": visible,
-                "pending_dialogs": self.pending_dialogs,  # ✅ Диалоги в слепок
-                "frame_tree": getattr(self, 'frame_tree', None),  # ✅ Дерево фреймов в слепок
-                "connected_tabs": self.connected_tabs  # ✅ Подключенные iframe
+                "pending_dialogs": self.pending_dialogs.copy() if self.pending_dialogs else [],
+                "frame_tree": frame_tree if frame_tree else None,
+                "connected_tabs": self.connected_tabs.copy() if self.connected_tabs else {}
             }
             
             file_logger.log(f"✅ Максимальный слепок: {len(elements)} элементов, {len(buttons)} кнопок, {len(all_fields)} полей")
@@ -805,6 +735,8 @@ class CDPClient:
             
         except Exception as e:
             file_logger.log(f"❌ Maximum snapshot error: {e}", "ERROR")
+            import traceback
+            file_logger.log(traceback.format_exc(), "ERROR")
             self.full_snapshot = {
                 "title": "Ошибка загрузки",
                 "url": "",
@@ -821,14 +753,13 @@ class CDPClient:
                 "forms": [],
                 "headings": [],
                 "visible": [],
-                "pending_dialogs": self.pending_dialogs,
+                "pending_dialogs": self.pending_dialogs.copy() if self.pending_dialogs else [],
                 "frame_tree": None,
-                "connected_tabs": {}
+                "connected_tabs": self.connected_tabs.copy() if self.connected_tabs else {}
             }
             return False
     
     async def handle_dialog(self, accept=True, prompt_text=""):
-        """Обрабатывает диалог (alert/confirm/prompt)"""
         try:
             if not self.pending_dialogs:
                 return {"error": "Нет ожидающих диалогов"}
@@ -844,15 +775,9 @@ class CDPClient:
             file_logger.log(f"❌ Dialog error: {e}", "ERROR")
             return {"error": str(e)}
     
-    # ============================================
-    # 🆕 HERMES: Универсальный CDP-инструмент
-    # ============================================
     async def cdp_command(self, method, params=None, frame_id=None):
-        """Выполняет любую CDP-команду"""
         try:
-            # Если указан frame_id, используем его
             if frame_id:
-                # Находим session_id для frame
                 session_id = None
                 for sid, info in self.connected_tabs.items():
                     if info.get("target_id") == frame_id:
@@ -867,13 +792,11 @@ class CDPClient:
             return {"error": str(e)}
     
     async def get_page_description(self):
-        """Возвращает описание страницы с безопасной обработкой типов"""
         if not self.full_snapshot:
             await self.get_maximum_snapshot()
         
         info = self.full_snapshot or {}
         
-        # Безопасно получаем значения
         title = info.get('title', 'Нет заголовка') if isinstance(info, dict) else 'Нет заголовка'
         url = info.get('url', 'Нет URL') if isinstance(info, dict) else 'Нет URL'
         total = info.get('total', 0) if isinstance(info, dict) else 0
@@ -886,7 +809,6 @@ class CDPClient:
 🔘 КНОПКИ:
 """
         
-        # Безопасно обрабатываем кнопки
         buttons = info.get('buttons') if isinstance(info, dict) else None
         if buttons is None:
             desc += "  • (нет данных)\n"
@@ -908,7 +830,6 @@ class CDPClient:
         
         desc += f"\n📝 ПОЛЯ ВВОДА:\n"
         
-        # Безопасно обрабатываем поля
         fields = info.get('fields') if isinstance(info, dict) else None
         if fields is None:
             desc += "  • (нет данных)\n"
@@ -932,7 +853,6 @@ class CDPClient:
         
         desc += f"\n🔗 ССЫЛКИ:\n"
         
-        # Безопасно обрабатываем ссылки
         links = info.get('links') if isinstance(info, dict) else None
         if links is None:
             desc += "  • (нет данных)\n"
@@ -951,9 +871,6 @@ class CDPClient:
         else:
             desc += f"  • (неизвестный формат: {type(links).__name__})\n"
         
-        # ============================================
-        # 🆕 HERMES: Информация о диалогах
-        # ============================================
         dialogs = info.get('pending_dialogs') if isinstance(info, dict) else None
         if dialogs and isinstance(dialogs, list) and len(dialogs) > 0:
             desc += f"\n💬 ОЖИДАЮЩИЕ ДИАЛОГИ ({len(dialogs)}):\n"
@@ -961,20 +878,19 @@ class CDPClient:
                 desc += f"  • {d.get('message', '')} (тип: {d.get('type', 'unknown')})\n"
             desc += "\n💡 Для обработки диалога используй: handle_dialog(accept=True, prompt_text='')\n"
         
-        # ============================================
-        # 🆕 HERMES: Информация о iframe
-        # ============================================
         frame_tree = info.get('frame_tree') if isinstance(info, dict) else None
         if frame_tree:
             desc += f"\n📦 IFRAME/ФРЕЙМЫ:\n"
-            desc += f"  • Главный фрейм: {frame_tree.get('frame', {}).get('url', '')[:50]}\n"
+            main_frame = frame_tree.get('frame', {})
+            if main_frame:
+                desc += f"  • Главный фрейм: {main_frame.get('url', '')[:60]}\n"
             
             children = frame_tree.get('childFrames', [])
             if children:
                 for child in children[:5]:
                     child_url = child.get('frame', {}).get('url', '')
                     if child_url:
-                        desc += f"  • Дочерний фрейм: {child_url[:50]}\n"
+                        desc += f"  • Дочерний фрейм: {child_url[:60]}\n"
         
         return desc
     
@@ -1098,17 +1014,8 @@ AGENT_CODE = """
 - press_enter() - нажать Enter
 - screenshot() - сделать скриншот
 - answer(text) - ответить пользователю
-- handle_dialog(accept, prompt_text) - обработать диалог (alert/confirm/prompt)
+- handle_dialog(accept, prompt_text) - обработать диалог
 - cdp(method, params, frame_id) - выполнить любую CDP-команду
-
-СЕЛЕКТОРЫ:
-- По ID: #APjFqb
-- По имени: input[name='q']
-- По классу: .gLFyf
-- По роли: [role='combobox']
-
-ЕСЛИ НУЖНО НЕСКОЛЬКО ДЕЙСТВИЙ - ВОЗВРАЩАЙ МАССИВ:
-[{"action": "fill", "params": {"selector": "[role='combobox']", "value": "текст"}}, {"action": "press_enter", "params": {}}]
 
 ОТВЕЧАЙ ТОЛЬКО JSON! БЕЗ ЛИШНИХ СЛОВ!
 """
@@ -1218,10 +1125,7 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
             result = await client.click_element(selector)
             if result and result.get("success"):
                 await client.get_maximum_snapshot()
-                return f"""✅ Кликнул: {selector}
-
-📝 Клик выполнен по элементу.
-💡 Страница обновилась, я могу показать новые элементы."""
+                return f"✅ Кликнул: {selector}"
             return f"❌ Элемент не найден: {selector}"
         
         elif action_type == "fill":
@@ -1232,25 +1136,16 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
             result = await client.fill_element(selector, value)
             if result and result.get("success"):
                 await client.get_maximum_snapshot()
-                return f"""✅ Заполнил: {selector} = {value}
-
-📝 В поле введён текст "{value}".
-💡 Теперь нажми Enter или кнопку поиска."""
+                return f"✅ Заполнил: {selector} = {value}"
             return f"❌ Элемент не найден: {selector}"
         
         elif action_type == "press_enter":
             result = await client.press_enter()
             if result and result.get("success"):
                 await client.get_maximum_snapshot()
-                return """✅ Нажал Enter
-
-📝 Команда выполнена.
-💡 Страница загружается, я могу показать результат."""
+                return "✅ Нажал Enter"
             return "❌ Не удалось нажать Enter"
         
-        # ============================================
-        # 🆕 HERMES: Обработка диалогов
-        # ============================================
         elif action_type == "handle_dialog":
             accept = params.get("accept", True)
             prompt_text = params.get("prompt_text", "")
@@ -1259,9 +1154,6 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
                 return f"✅ Диалог обработан: {result.get('dialog', {}).get('message', '')}"
             return f"❌ Ошибка обработки диалога: {result.get('error', '')}"
         
-        # ============================================
-        # 🆕 HERMES: Универсальная CDP-команда
-        # ============================================
         elif action_type == "cdp":
             method = params.get("method")
             cdp_params = params.get("params", {})
