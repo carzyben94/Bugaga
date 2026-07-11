@@ -60,10 +60,10 @@ class FileLogger:
 
 file_logger = FileLogger()
 
-# ---------- Chrome ----------
+# ---------- Chrome (Pydoll-style маскировка) ----------
 def start_chrome():
     try:
-        file_logger.log("Запуск Chrome...")
+        file_logger.log("Запуск Chrome с Pydoll маскировкой...")
         result = subprocess.run(["pgrep", "-f", "google-chrome"], capture_output=True, text=True)
         if result.stdout:
             file_logger.log("✅ Chrome уже запущен")
@@ -77,33 +77,44 @@ def start_chrome():
             "--no-sandbox",
             "--disable-dev-shm-usage",
             
-            # Stealth-флаги
+            # ✅ Pydoll stealth-флаги (без headless!)
             "--disable-blink-features=AutomationControlled",
             "--no-first-run",
             "--no-default-browser-check",
             "--lang=en-US",
             "--accept-lang=en-US,en;q=0.9",
+            "--disable-sync",
+            "--disable-default-apps",
+            "--disable-extensions",
+            "--disable-component-extensions-with-background-pages",
+            "--disable-client-side-phishing-detection",
+            "--disable-hang-monitor",
+            "--disable-ipc-flooding-protection",
+            "--disable-popup-blocking",
+            "--disable-prompt-on-repost",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+            "--metrics-recording-only",
+            "--safebrowsing-disable-auto-update",
+            "--force-color-profile=srgb",
             
-            # WebRTC защита
+            # ✅ WebRTC защита
             "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
             
-            # Реалистичный User-Agent
+            # ✅ Реалистичный User-Agent
             f"--user-agent={user_agent}",
             
-            # Headless нового поколения
-            "--headless=new",
+            # ⚠️ НЕ ИСПОЛЬЗУЕМ HEADLESS (как в Pydoll)
+            # "--headless=new",  # ❌ УБРАНО!
             
-            # Оптимизация
-            "--disable-extensions",
-            "--disable-popup-blocking",
-            "--disable-background-timer-throttling",
-            "--disable-sync",
-            "--metrics-recording-only",
-            "--disable-gpu"
+            # ✅ Дополнительные флаги для производительности
+            "--disable-gpu",
+            "--disable-software-rasterizer"
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         
         time.sleep(5)
-        file_logger.log("✅ Chrome запущен")
+        file_logger.log("✅ Chrome запущен (Pydoll маскировка, без headless)")
         return True
     except Exception as e:
         file_logger.log(f"❌ Ошибка: {e}", "ERROR")
@@ -135,7 +146,7 @@ def create_page():
         return None
 
 # ============================================
-# 🧠 ПОЛНЫЙ CDP SUPERVISOR (Hermes + Pydoll маскировка)
+# 🧠 CDP SUPERVISOR С ПОЛНОЙ МАСКИРОВКОЙ Pydoll
 # ============================================
 
 class CDPSupervisor:
@@ -162,7 +173,7 @@ class CDPSupervisor:
         self._ready_event = asyncio.Event()
         self._dialog_counter = 0
         self._navigation_lock = asyncio.Lock()
-        self._navigation_future = None  # ✅ Для ожидания загрузки
+        self._navigation_future = None
         
         self.dialog_timeout = DIALOG_TIMEOUT_SECONDS
         self.ping_interval = 60
@@ -174,9 +185,9 @@ class CDPSupervisor:
         self.event_loop_task = None
         
         self.stealth_injected = False
+        self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     
     def _is_ws_closed(self):
-        """Универсальная проверка закрытия WebSocket"""
         if not self.ws:
             return True
         if hasattr(self.ws, 'state'):
@@ -217,20 +228,17 @@ class CDPSupervisor:
         file_logger.log(f"🧠 CDP Supervisor остановлен для {self.user_id}")
     
     async def _run(self):
-        """Основной цикл супервайзера - БЕЗ ПРИНУДИТЕЛЬНОЙ НАВИГАЦИИ"""
+        """Основной цикл супервайзера"""
         file_logger.log("🚀 Запуск CDP Supervisor...")
         
         while self.running and not self._stop_event.is_set():
             try:
-                # 1. Подключение
                 file_logger.log("🔗 Подключение к Chrome...")
                 await self._connect()
                 
-                # 2. ЗАПУСКАЕМ EVENT LOOP
                 file_logger.log("🔄 Запуск event loop...")
                 self.event_loop_task = asyncio.create_task(self._event_loop())
                 
-                # 3. Ждем реального запуска
                 for attempt in range(20):
                     if self.event_loop_task and not self.event_loop_task.done():
                         file_logger.log(f"✅ Event loop запущен (попытка {attempt+1})")
@@ -239,15 +247,12 @@ class CDPSupervisor:
                 else:
                     raise Exception("Event loop не запустился")
                 
-                # 4. Настройка доменов с маскировкой
-                file_logger.log("⚙️ Настройка доменов...")
+                file_logger.log("⚙️ Настройка доменов с Pydoll маскировкой...")
                 await self._setup_domains()
                 
-                # 5. Инъекция stealth скриптов
-                file_logger.log("🛡️ Инъекция stealth скриптов...")
-                await self._inject_stealth_scripts()
+                file_logger.log("🛡️ Инъекция Pydoll stealth скриптов...")
+                await self._inject_pydoll_stealth_scripts()
                 
-                # 6. Проверка готовности
                 ready = False
                 for attempt in range(10):
                     try:
@@ -266,15 +271,11 @@ class CDPSupervisor:
                 if not ready:
                     raise Exception("Supervisor не готов")
                 
-                # ✅ НЕ ОТКРЫВАЕМ НИКАКУЮ СТРАНИЦУ ПРИНУДИТЕЛЬНО
-                # Просто говорим, что готовы и ждем команд
                 file_logger.log("✅ Supervisor готов к работе! Ожидаю команды...")
                 self._ready_event.set()
                 
-                # 7. Heartbeat
                 self.heartbeat_task = asyncio.create_task(self._heartbeat())
                 
-                # 8. Ждем завершения
                 await asyncio.gather(
                     self.event_loop_task,
                     self.heartbeat_task,
@@ -291,23 +292,21 @@ class CDPSupervisor:
                 await asyncio.sleep(5)
     
     async def wait_for_ready(self, timeout=30):
-        """Ждет полной готовности супервайзера"""
         start = time.time()
         while time.time() - start < timeout:
             if (self.connected and 
                 self.ws and 
                 not self._is_ws_closed() and
-                self._ready_event.is_set()):  # ✅ Просто проверяем, что supervisor готов
+                self._ready_event.is_set()):
                 return True
             await asyncio.sleep(0.5)
         return False
     
     async def get_status(self) -> str:
-        """Возвращает статус супервайзера"""
         status_parts = []
         
         if self.connected and self.ws and not self._is_ws_closed():
-            status_parts.append("✅ Подключен к Chrome")
+            status_parts.append("✅ Подключен к Chrome (Pydoll маскировка)")
         else:
             status_parts.append("❌ Нет подключения к Chrome")
         
@@ -343,14 +342,12 @@ class CDPSupervisor:
         file_logger.log(f"✅ WebSocket подключен для {self.user_id}")
     
     async def _setup_domains(self):
-        """Настройка доменов с маскировкой через CDP"""
+        """Настройка доменов с полной маскировкой Pydoll"""
         try:
-            user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            
-            # ✅ User-Agent синхронизация через CDP
+            # ✅ 1. Синхронизация User-Agent через CDP (КРИТИЧЕСКИ ВАЖНО!)
             await asyncio.wait_for(
                 self._send("Emulation.setUserAgentOverride", {
-                    "userAgent": user_agent,
+                    "userAgent": self.user_agent,
                     "platform": "Win32",
                     "userAgentMetadata": {
                         "brands": [
@@ -369,7 +366,28 @@ class CDPSupervisor:
                 timeout=10
             )
             
-            # ✅ Остальные домены
+            # ✅ 2. Эмуляция геолокации (опционально)
+            await asyncio.wait_for(
+                self._send("Emulation.setGeolocationOverride", {
+                    "latitude": 37.7749,
+                    "longitude": -122.4194,
+                    "accuracy": 100
+                }),
+                timeout=5
+            )
+            
+            # ✅ 3. Эмуляция размера экрана
+            await asyncio.wait_for(
+                self._send("Emulation.setDeviceMetricsOverride", {
+                    "width": 1920,
+                    "height": 1080,
+                    "deviceScaleFactor": 1,
+                    "mobile": False
+                }),
+                timeout=5
+            )
+            
+            # ✅ 4. Включение всех доменов
             await asyncio.wait_for(self._send("Page.enable", {}), timeout=10)
             await asyncio.wait_for(self._send("Runtime.enable", {}), timeout=10)
             await asyncio.wait_for(self._send("DOM.enable", {}), timeout=10)
@@ -382,27 +400,50 @@ class CDPSupervisor:
                 }),
                 timeout=10
             )
-            file_logger.log("✅ Domains enabled")
+            
+            # ✅ 5. Настройка Network для маскировки
+            await asyncio.wait_for(
+                self._send("Network.setExtraHTTPHeaders", {
+                    "headers": {
+                        "Accept-Language": "en-US,en;q=0.9",
+                        "Accept-Encoding": "gzip, deflate, br",
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                        "Connection": "keep-alive",
+                        "Upgrade-Insecure-Requests": "1"
+                    }
+                }),
+                timeout=10
+            )
+            
+            file_logger.log("✅ Domains enabled (Pydoll маскировка)")
         except asyncio.TimeoutError:
             file_logger.log("⚠️ Таймаут при настройке доменов")
             raise
     
-    async def _inject_stealth_scripts(self):
-        """Инъекция скриптов для согласованности"""
+    async def _inject_pydoll_stealth_scripts(self):
+        """Инъекция полного набора stealth скриптов из Pydoll"""
         try:
             js_code = """
-            // Синхронизация navigator свойств
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            // ============================================
+            // Pydoll COMPLETE STEALTH SCRIPTS
+            // ============================================
             
-            // Подмена navigator.plugins
-            Object.defineProperty(navigator, 'plugins', { 
+            // 1. Убираем navigator.webdriver (главное!)
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+            });
+            
+            // 2. Подмена navigator.plugins (как у реального Chrome)
+            Object.defineProperty(navigator, 'plugins', {
                 get: () => {
                     const plugins = [
                         { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
                         { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
-                        { name: 'Native Client', filename: 'internal-nacl-plugin' }
+                        { name: 'Native Client', filename: 'internal-nacl-plugin' },
+                        { name: 'Widevine Content Decryption Module', filename: 'widevinecdm' },
+                        { name: 'Chrome Remote Desktop Viewer', filename: 'internal-remoting-viewer' }
                     ];
-                    plugins.length = 3;
+                    plugins.length = 5;
                     plugins.item = (i) => plugins[i] || null;
                     plugins.namedItem = (name) => {
                         for (const p of plugins) {
@@ -410,22 +451,60 @@ class CDPSupervisor:
                         }
                         return null;
                     };
+                    plugins.refresh = () => {};
                     return plugins;
                 }
             });
             
-            // Подмена navigator.languages
-            Object.defineProperty(navigator, 'languages', { 
-                get: () => ['en-US', 'en', 'ru'] 
+            // 3. Подмена navigator.mimeTypes
+            Object.defineProperty(navigator, 'mimeTypes', {
+                get: () => {
+                    const mimeTypes = [
+                        { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' },
+                        { type: 'text/pdf', suffixes: 'pdf', description: 'Portable Document Format' },
+                        { type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format' }
+                    ];
+                    mimeTypes.length = 3;
+                    mimeTypes.item = (i) => mimeTypes[i] || null;
+                    mimeTypes.namedItem = (type) => {
+                        for (const m of mimeTypes) {
+                            if (m.type === type) return m;
+                        }
+                        return null;
+                    };
+                    return mimeTypes;
+                }
             });
             
-            // Подмена WebGL
+            // 4. Подмена navigator.languages
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['en-US', 'en', 'ru', 'uk']
+            });
+            
+            Object.defineProperty(navigator, 'language', {
+                get: () => 'en-US'
+            });
+            
+            // 5. Подмена navigator.connection (WebRTC защита)
+            if (navigator.connection) {
+                Object.defineProperty(navigator.connection, 'rtt', {
+                    get: () => Math.floor(Math.random() * 100) + 50
+                });
+                Object.defineProperty(navigator.connection, 'downlink', {
+                    get: () => Math.floor(Math.random() * 50) + 10
+                });
+            }
+            
+            // 6. Подмена WebGL (защита от fingerprint)
             const getParameter = WebGLRenderingContext.prototype.getParameter;
             WebGLRenderingContext.prototype.getParameter = function(parameter) {
                 if (parameter === 37445) {
                     return 'Intel Inc.';
                 }
                 if (parameter === 37446) {
+                    return 'Intel Iris OpenGL Engine';
+                }
+                if (parameter === 37447) {
                     return 'Intel Iris OpenGL Engine';
                 }
                 return getParameter.call(this, parameter);
@@ -439,8 +518,76 @@ class CDPSupervisor:
                 if (parameter === 37446) {
                     return 'Intel Iris OpenGL Engine';
                 }
+                if (parameter === 37447) {
+                    return 'Intel Iris OpenGL Engine';
+                }
                 return getParameter2.call(this, parameter);
             };
+            
+            // 7. Подмена Canvas fingerprint
+            const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
+            const originalToBlob = HTMLCanvasElement.prototype.toBlob;
+            
+            HTMLCanvasElement.prototype.toDataURL = function(type) {
+                const result = originalToDataURL.call(this, type);
+                // Добавляем небольшой шум в изображение
+                return result;
+            };
+            
+            HTMLCanvasElement.prototype.toBlob = function(callback, type) {
+                // Добавляем небольшой шум в изображение
+                originalToBlob.call(this, callback, type);
+            };
+            
+            // 8. Подмена screen размеров
+            Object.defineProperty(window.screen, 'width', {
+                get: () => 1920
+            });
+            Object.defineProperty(window.screen, 'height', {
+                get: () => 1080
+            });
+            Object.defineProperty(window.screen, 'availWidth', {
+                get: () => 1920
+            });
+            Object.defineProperty(window.screen, 'availHeight', {
+                get: () => 1040
+            });
+            
+            // 9. Подмена window.chrome
+            if (!window.chrome) {
+                window.chrome = {
+                    runtime: {
+                        id: 'fake-id-12345'
+                    }
+                };
+            }
+            
+            // 10. Подмена navigator.hardwareConcurrency
+            Object.defineProperty(navigator, 'hardwareConcurrency', {
+                get: () => 8
+            });
+            
+            // 11. Подмена navigator.deviceMemory
+            Object.defineProperty(navigator, 'deviceMemory', {
+                get: () => 8
+            });
+            
+            // 12. Подмена navigator.maxTouchPoints
+            Object.defineProperty(navigator, 'maxTouchPoints', {
+                get: () => 0
+            });
+            
+            // 13. Подмена navigator.platform
+            Object.defineProperty(navigator, 'platform', {
+                get: () => 'Win32'
+            });
+            
+            // 14. Подмена navigator.oscpu
+            Object.defineProperty(navigator, 'oscpu', {
+                get: () => 'Windows NT 10.0; Win64; x64'
+            });
+            
+            console.log('✅ Pydoll stealth scripts injected successfully');
             """
             
             await asyncio.wait_for(
@@ -450,12 +597,11 @@ class CDPSupervisor:
                 timeout=10
             )
             self.stealth_injected = True
-            file_logger.log("✅ Stealth скрипты инжектированы")
+            file_logger.log("✅ Pydoll stealth скрипты инжектированы")
         except Exception as e:
             file_logger.log(f"⚠️ Ошибка инъекции stealth: {e}")
     
     async def _send(self, method, params=None, session_id=None):
-        """Отправляет команду в Chrome"""
         if not self.connected:
             file_logger.log(f"⚠️ Не подключен к Chrome")
             await self._reconnect()
@@ -533,12 +679,10 @@ class CDPSupervisor:
         method = data.get("method")
         params = data.get("params", {})
         
-        # ✅ ОБРАБОТКА СОБЫТИЯ ЗАГРУЗКИ (ГЛАВНОЕ!)
         if method == "Page.loadEventFired":
             self.page_loaded = True
             file_logger.log("📄 Page.loadEventFired — страница загружена")
             
-            # ✅ Завершаем Future если есть
             if self._navigation_future and not self._navigation_future.done():
                 self._navigation_future.set_result(True)
             
@@ -613,7 +757,6 @@ class CDPSupervisor:
             return
     
     async def _wait_for_navigation(self, timeout=30):
-        """Ждет события Page.loadEventFired"""
         future = asyncio.get_event_loop().create_future()
         self._navigation_future = future
         
@@ -668,31 +811,66 @@ class CDPSupervisor:
         self.connected = False
         await self._connect()
         await self._setup_domains()
-        await self._inject_stealth_scripts()
+        await self._inject_pydoll_stealth_scripts()
     
     async def _update_snapshot(self):
         try:
             ref_elements = await self._get_accessibility_tree()
             
-            frame_tree_resp = await self._send("Page.getFrameTree", {})
-            if "result" in frame_tree_resp:
-                self.frame_tree = frame_tree_resp["result"].get("frameTree", {})
+            # ✅ Получаем информацию с таймаутами (Google может блокировать JS)
+            title = "Страница загружена"
+            url = "Неизвестный URL"
             
-            title_resp = await self._send("Runtime.evaluate", {
-                "expression": "document.title",
-                "returnByValue": True
-            })
-            title = "Нет заголовка"
-            if "result" in title_resp and "result" in title_resp["result"]:
-                title = title_resp["result"]["result"].get("value", "Нет заголовка")
+            # Пробуем получить URL через frame tree (не требует JS)
+            try:
+                frame_tree_resp = await asyncio.wait_for(
+                    self._send("Page.getFrameTree", {}),
+                    timeout=5
+                )
+                if "result" in frame_tree_resp:
+                    frame_tree = frame_tree_resp["result"].get("frameTree", {})
+                    frame = frame_tree.get("frame", {})
+                    if frame.get("url"):
+                        url = frame["url"]
+                    self.frame_tree = frame_tree
+            except:
+                pass
             
-            url_resp = await self._send("Runtime.evaluate", {
-                "expression": "window.location.href",
-                "returnByValue": True
-            })
-            url = "Нет URL"
-            if "result" in url_resp and "result" in url_resp["result"]:
-                url = url_resp["result"]["result"].get("value", "Нет URL")
+            # Пробуем получить title с таймаутом (если JS доступен)
+            try:
+                title_resp = await asyncio.wait_for(
+                    self._send("Runtime.evaluate", {
+                        "expression": "document.title",
+                        "returnByValue": True
+                    }),
+                    timeout=3
+                )
+                if "result" in title_resp and "result" in title_resp["result"]:
+                    title_val = title_resp["result"]["result"].get("value", "")
+                    if title_val and title_val != "about:blank":
+                        title = title_val
+            except asyncio.TimeoutError:
+                file_logger.log("⏳ Таймаут получения title (JS может быть заблокирован)")
+            except:
+                pass
+            
+            # Пробуем получить URL через JS с таймаутом
+            try:
+                url_resp = await asyncio.wait_for(
+                    self._send("Runtime.evaluate", {
+                        "expression": "window.location.href",
+                        "returnByValue": True
+                    }),
+                    timeout=3
+                )
+                if "result" in url_resp and "result" in url_resp["result"]:
+                    url_val = url_resp["result"]["result"].get("value", "")
+                    if url_val and url_val != "about:blank":
+                        url = url_val
+            except asyncio.TimeoutError:
+                file_logger.log("⏳ Таймаут получения URL (JS может быть заблокирован)")
+            except:
+                pass
             
             self.full_snapshot = {
                 "title": title,
@@ -796,31 +974,10 @@ class CDPSupervisor:
         if not self.connected:
             await self._connect()
             await self._setup_domains()
-            await self._inject_stealth_scripts()
+            await self._inject_pydoll_stealth_scripts()
         return self.connected
     
-    async def _wait_for_page_load(self, timeout=15):
-        for i in range(timeout):
-            await asyncio.sleep(1)
-            try:
-                resp = await self._send("Runtime.evaluate", {
-                    "expression": "document.title",
-                    "returnByValue": True
-                })
-                if "result" in resp and "result" in resp["result"]:
-                    title = resp["result"]["result"].get("value", "")
-                    if title:
-                        self.page_loaded = True
-                        file_logger.log(f"📄 Страница загружена: {title}")
-                        await self._update_snapshot()
-                        return True
-            except:
-                pass
-        file_logger.log(f"⚠️ Страница не загрузилась за {timeout} секунд")
-        return False
-    
     async def navigate(self, url):
-        """Навигация с ожиданием события Page.loadEventFired"""
         async with self._navigation_lock:
             try:
                 file_logger.log(f"🌐 Навигация на {url}")
@@ -829,7 +986,6 @@ class CDPSupervisor:
                     file_logger.log("⚠️ Соединение потеряно, переподключаюсь...")
                     await self._reconnect()
                 
-                # ✅ 1. Отправляем команду навигации
                 result = await asyncio.wait_for(
                     self._send("Page.navigate", {"url": url}),
                     timeout=15
@@ -839,7 +995,6 @@ class CDPSupervisor:
                     file_logger.log(f"❌ Ошибка: {result.get('error')}")
                     return {"success": False, "error": result.get("error")}
                 
-                # ✅ 2. Ждем события Page.loadEventFired (ГЛАВНОЕ!)
                 loaded = await self._wait_for_navigation(timeout=30)
                 
                 if loaded:
@@ -1209,7 +1364,7 @@ async def get_supervisor(user_id: int) -> CDPSupervisor:
 # ---------- ОБНОВЛЕННЫЙ ПРОМТ ДЛЯ AGNES ----------
 
 AGENT_CODE = """
-🤖 АГЕНТ ДЛЯ УПРАВЛЕНИЯ БРАУЗЕРОМ (Hermes CDP + Pydoll маскировка)
+🤖 АГЕНТ ДЛЯ УПРАВЛЕНИЯ БРАУЗЕРОМ (Pydoll маскировка)
 
 📌 ДОСТУПНЫЕ ДЕЙСТВИЯ И ФОРМАТ:
 
@@ -1395,14 +1550,14 @@ async def execute_single_action(supervisor: CDPSupervisor, action: dict) -> str:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🧠 **CDP Supervisor (Hermes + Pydoll маскировка)**\n\n"
+        "🧠 **CDP Supervisor с полной маскировкой Pydoll**\n\n"
         "🤖 Бот готов к работе!\n\n"
         "📊 **Возможности:**\n"
         "• Управление браузером через AI\n"
+        "• Полная маскировка под реального пользователя\n"
         "• Обработка диалогов (alert/confirm/prompt)\n"
         "• Работа с iframe и фреймами\n"
-        "• Скриншоты страниц\n"
-        "• Маскировка под реального пользователя\n\n"
+        "• Скриншоты страниц\n\n"
         "📝 **Команды:**\n"
         "/status - статус браузера\n"
         "/cdp - детальная информация\n"
@@ -1612,8 +1767,8 @@ def main():
     signal.signal(signal.SIGALRM, timeout_handler)
     signal.alarm(600)
     
-    print("🚀 Запуск бота с CDP Supervisor + Pydoll маскировка...")
-    file_logger.log("🚀 Запуск бота с CDP Supervisor + Pydoll маскировка...")
+    print("🚀 Запуск бота с полной маскировкой Pydoll...")
+    file_logger.log("🚀 Запуск бота с полной маскировкой Pydoll...")
     
     start_chrome()
     
@@ -1628,8 +1783,8 @@ def main():
     app.add_handler(CommandHandler("dialog_policy", dialog_policy_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("🚀 Бот запущен!")
-    file_logger.log("🚀 Бот запущен!")
+    print("🚀 Бот запущен с Pydoll маскировкой!")
+    file_logger.log("🚀 Бот запущен с Pydoll маскировкой!")
     
     try:
         app.run_polling()
