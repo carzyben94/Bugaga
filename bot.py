@@ -181,7 +181,7 @@ def create_page():
         return None
 
 # ============================================
-# 🧠 CDP SUPERVISOR С ПОЛНОЙ МАСКИРОВКОЙ Pydoll
+# 🧠 CDP SUPERVISOR С ПОЛНОЙ МАСКИРОВКОЙ Pydoll + Hermes стиль
 # ============================================
 
 class CDPSupervisor:
@@ -415,11 +415,18 @@ class CDPSupervisor:
             except:
                 pass
             
-            # ✅ 3. Включение всех доменов
+            # ✅ 3. Включение доменов
             await asyncio.wait_for(self._send("Page.enable", {}), timeout=10)
             await asyncio.wait_for(self._send("Runtime.enable", {}), timeout=10)
             await asyncio.wait_for(self._send("DOM.enable", {}), timeout=10)
             await asyncio.wait_for(self._send("Network.enable", {}), timeout=10)
+            
+            # ✅ 4. Включаем Accessibility (как в Hermes!)
+            await asyncio.wait_for(
+                self._send("Accessibility.enable", {}),
+                timeout=10
+            )
+            
             await asyncio.wait_for(
                 self._send("Target.setAutoAttach", {
                     "autoAttach": True,
@@ -429,7 +436,7 @@ class CDPSupervisor:
                 timeout=10
             )
             
-            # ✅ 4. Настройка Network для маскировки
+            # ✅ 5. Настройка Network для маскировки
             try:
                 await asyncio.wait_for(
                     self._send("Network.setExtraHTTPHeaders", {
@@ -446,7 +453,7 @@ class CDPSupervisor:
             except:
                 pass
             
-            file_logger.log("✅ Domains enabled (Pydoll маскировка)")
+            file_logger.log("✅ Domains enabled (Pydoll маскировка + Accessibility)")
         except asyncio.TimeoutError:
             file_logger.log("⚠️ Таймаут при настройке доменов")
             raise
@@ -842,14 +849,124 @@ class CDPSupervisor:
         await self._setup_domains()
         await self._inject_pydoll_stealth_scripts()
     
-    async def _update_snapshot(self):
+    # ============================================
+    # 🔍 HERMES-STYLE: Поиск элементов через Accessibility Tree
+    # ============================================
+    
+    async def _get_accessibility_tree(self):
+        """Получает дерево доступности (Hermes стиль) - НЕ ТРЕБУЕТ JS!"""
         try:
+            # ✅ Используем Accessibility.getFullAXTree (как в Hermes)
+            resp = await self._send("Accessibility.getFullAXTree", {})
+            
+            if "error" in resp:
+                file_logger.log(f"⚠️ Accessibility.getFullAXTree error: {resp.get('error')}")
+                return []
+            
+            nodes = resp.get("result", {}).get("nodes", [])
+            if not nodes:
+                return []
+            
+            # Парсим AXNodeId и получаем интерактивные элементы
+            result = []
+            ref_counter = 0
+            
+            for node in nodes:
+                # Проверяем, что элемент интерактивный
+                role = node.get("role", {}).get("value", "")
+                name = node.get("name", {}).get("value", "")
+                node_id = node.get("nodeId", "")
+                
+                # Интерактивные роли (как в Hermes)
+                interactive_roles = [
+                    "button", "link", "textbox", "searchbox", "combobox",
+                    "menuitem", "checkbox", "radio", "tab", "listitem"
+                ]
+                
+                if role not in interactive_roles:
+                    continue
+                
+                # Получаем координаты через DOM.getBoxModel
+                try:
+                    box_resp = await self._send("DOM.getBoxModel", {
+                        "nodeId": node_id
+                    })
+                    
+                    if "error" in box_resp:
+                        continue
+                    
+                    box_model = box_resp.get("result", {}).get("model", {})
+                    content = box_model.get("content", [])
+                    
+                    if not content or len(content) < 4:
+                        continue
+                    
+                    # Координаты: [x1, y1, x2, y2, x3, y3, x4, y4]
+                    x = content[0]
+                    y = content[1]
+                    width = content[4] - content[0]
+                    height = content[5] - content[1]
+                    
+                    if width < 5 or height < 5:
+                        continue
+                    
+                    ref_counter += 1
+                    
+                    # Определяем action
+                    action = ""
+                    if role in ["button", "link", "menuitem", "tab"]:
+                        action = "click"
+                    elif role in ["textbox", "searchbox", "combobox"]:
+                        action = "type"
+                    
+                    # Определяем selector (через DOM.getNodeForLocation)
+                    try:
+                        selector_resp = await self._send("DOM.getNodeForLocation", {
+                            "x": x + width/2,
+                            "y": y + height/2
+                        })
+                        node_info = selector_resp.get("result", {})
+                        selector = f"nodeId:{node_info.get('nodeId', '')}"
+                    except:
+                        selector = f"nodeId:{node_id}"
+                    
+                    result.append({
+                        "ref": f"e{ref_counter}",
+                        "tag": "node",
+                        "role": role,
+                        "type": role,
+                        "text": name[:50],
+                        "action": action,
+                        "visible": True,
+                        "selector": selector,
+                        "x": round(x),
+                        "y": round(y),
+                        "width": round(width),
+                        "height": round(height),
+                        "nodeId": node_id
+                    })
+                    
+                except Exception as e:
+                    file_logger.log(f"⚠️ Ошибка получения box для {role}: {e}")
+                    continue
+            
+            file_logger.log(f"✅ Найдено {len(result)} элементов через Accessibility Tree")
+            return result
+            
+        except Exception as e:
+            file_logger.log(f"❌ Accessibility tree error: {e}", "ERROR")
+            return []
+    
+    async def _update_snapshot(self):
+        """Обновляет snapshot (Hermes стиль - без JS)"""
+        try:
+            # ✅ Получаем элементы через Accessibility Tree (без JS!)
             ref_elements = await self._get_accessibility_tree()
             
+            # ✅ Получаем информацию о странице через Page.getFrameTree (без JS!)
             title = "Страница загружена"
             url = "Неизвестный URL"
             
-            # Пробуем получить URL через frame tree (не требует JS)
             try:
                 frame_tree_resp = await asyncio.wait_for(
                     self._send("Page.getFrameTree", {}),
@@ -858,48 +975,16 @@ class CDPSupervisor:
                 if "result" in frame_tree_resp:
                     frame_tree = frame_tree_resp["result"].get("frameTree", {})
                     frame = frame_tree.get("frame", {})
-                    if frame.get("url"):
-                        url = frame["url"]
+                    url = frame.get("url", url)
                     self.frame_tree = frame_tree
+                    
+                    # Пробуем получить title из frame
+                    if frame.get("name"):
+                        title = frame["name"]
             except:
                 pass
             
-            # Пробуем получить title с таймаутом (если JS доступен)
-            try:
-                title_resp = await asyncio.wait_for(
-                    self._send("Runtime.evaluate", {
-                        "expression": "document.title",
-                        "returnByValue": True
-                    }),
-                    timeout=3
-                )
-                if "result" in title_resp and "result" in title_resp["result"]:
-                    title_val = title_resp["result"]["result"].get("value", "")
-                    if title_val and title_val != "about:blank":
-                        title = title_val
-            except asyncio.TimeoutError:
-                file_logger.log("⏳ Таймаут получения title (JS может быть заблокирован)")
-            except:
-                pass
-            
-            # Пробуем получить URL через JS с таймаутом
-            try:
-                url_resp = await asyncio.wait_for(
-                    self._send("Runtime.evaluate", {
-                        "expression": "window.location.href",
-                        "returnByValue": True
-                    }),
-                    timeout=3
-                )
-                if "result" in url_resp and "result" in url_resp["result"]:
-                    url_val = url_resp["result"]["result"].get("value", "")
-                    if url_val and url_val != "about:blank":
-                        url = url_val
-            except asyncio.TimeoutError:
-                file_logger.log("⏳ Таймаут получения URL (JS может быть заблокирован)")
-            except:
-                pass
-            
+            # ✅ Если есть элементы - строим snapshot
             self.full_snapshot = {
                 "title": title,
                 "url": url,
@@ -913,89 +998,112 @@ class CDPSupervisor:
             
             self.ref_elements = {el['ref']: el for el in ref_elements}
             
-            file_logger.log(f"✅ Snapshot обновлён: {len(ref_elements)} Ref ID элементов")
+            file_logger.log(f"✅ Snapshot обновлён (Hermes стиль): {len(ref_elements)} Ref ID элементов")
             return True
         except Exception as e:
             file_logger.log(f"❌ Snapshot error: {e}", "ERROR")
             return False
     
-    async def _get_accessibility_tree(self):
+    # ============================================
+    # 🖱️ HERMES-STYLE: Клики и ввод через координаты
+    # ============================================
+    
+    async def click_by_ref(self, ref_id):
+        """Клик по Ref ID через координаты (Hermes стиль)"""
+        if ref_id not in self.ref_elements:
+            return {"error": f"Элемент {ref_id} не найден"}
+        
+        el_info = self.ref_elements[ref_id]
+        x = el_info.get('x', 0) + el_info.get('width', 10) / 2
+        y = el_info.get('y', 0) + el_info.get('height', 10) / 2
+        
         try:
-            js_code = """
-            (function() {
-                const result = [];
-                let ref_counter = 0;
-                const important = ['button', 'a', 'input', 'textarea', 'select', 
-                                  '[role="button"]', '[role="link"]', '[role="searchbox"]',
-                                  '[role="combobox"]', '[role="textbox"]', '[role="menuitem"]'];
-                
-                const elements = document.querySelectorAll(important.join(','));
-                
-                for (const el of elements) {
-                    const rect = el.getBoundingClientRect();
-                    const visible = rect.width > 0 && rect.height > 0 && 
-                                   el.offsetParent !== null;
-                    
-                    if (visible) {
-                        ref_counter++;
-                        const tag = el.tagName.toLowerCase();
-                        const role = el.getAttribute('role') || '';
-                        const text = (el.textContent || el.value || el.placeholder || el.getAttribute('aria-label') || '').trim().slice(0, 50);
-                        const href = el.getAttribute('href') || '';
-                        const data_testid = el.getAttribute('data-testid') || '';
-                        
-                        let element_type = tag;
-                        if (role) element_type = role;
-                        if (tag === 'input' && el.getAttribute('type') === 'submit') element_type = 'button';
-                        if (tag === 'input' && el.getAttribute('type') === 'text') element_type = 'textbox';
-                        if (tag === 'input' && el.getAttribute('role') === 'combobox') element_type = 'combobox';
-                        if (tag === 'input' && el.getAttribute('type') === 'search') element_type = 'searchbox';
-                        
-                        let action = '';
-                        if (element_type === 'button' || element_type === 'link') action = 'click';
-                        else if (element_type === 'textbox' || element_type === 'combobox' || element_type === 'searchbox' || tag === 'input' || tag === 'textarea') action = 'type';
-                        
-                        result.push({
-                            ref: 'e' + ref_counter,
-                            tag: tag,
-                            role: role,
-                            type: element_type,
-                            text: text,
-                            href: href,
-                            data_testid: data_testid,
-                            action: action,
-                            visible: visible,
-                            selector: el.id ? '#' + el.id : 
-                                      el.className ? '.' + el.className.split(' ').join('.') : 
-                                      tag + (href ? '[href="' + href + '"]' : ''),
-                            x: Math.round(rect.x),
-                            y: Math.round(rect.y),
-                            width: Math.round(rect.width),
-                            height: Math.round(rect.height)
-                        });
-                    }
-                }
-                
-                return result;
-            })()
-            """
-            resp = await self._send("Runtime.evaluate", {
-                "expression": js_code,
-                "returnByValue": True,
-                "awaitPromise": True
+            # ✅ Клик через координаты (не требует JS!)
+            await self._send("Input.dispatchMouseEvent", {
+                "type": "mousePressed",
+                "x": x,
+                "y": y,
+                "button": "left",
+                "clickCount": 1
+            })
+            await asyncio.sleep(random.uniform(0.05, 0.1))
+            await self._send("Input.dispatchMouseEvent", {
+                "type": "mouseReleased",
+                "x": x,
+                "y": y,
+                "button": "left",
+                "clickCount": 1
             })
             
-            if "result" in resp and "result" in resp["result"]:
-                result = resp["result"]["result"].get("value", [])
-                if isinstance(result, list):
-                    return result
-            return []
+            await self._update_snapshot()
+            return {"success": True}
+            
         except Exception as e:
-            file_logger.log(f"❌ Accessibility tree error: {e}", "ERROR")
-            return []
+            file_logger.log(f"❌ Click error: {e}", "ERROR")
+            return {"success": False}
+    
+    async def fill_by_ref(self, ref_id, value):
+        """Заполнение поля через посимвольный ввод (Hermes стиль)"""
+        if ref_id not in self.ref_elements:
+            return {"error": f"Элемент {ref_id} не найден"}
+        
+        # Сначала кликаем по полю
+        click_result = await self.click_by_ref(ref_id)
+        if not click_result.get("success"):
+            return click_result
+        
+        await asyncio.sleep(random.uniform(0.1, 0.3))
+        
+        # Очищаем поле (Ctrl+A + Delete)
+        await self._send("Input.dispatchKeyEvent", {
+            "type": "keyDown",
+            "key": "Control",
+            "modifiers": 2
+        })
+        await self._send("Input.dispatchKeyEvent", {
+            "type": "keyDown",
+            "key": "a",
+            "modifiers": 2
+        })
+        await self._send("Input.dispatchKeyEvent", {
+            "type": "keyUp",
+            "key": "a",
+            "modifiers": 2
+        })
+        await self._send("Input.dispatchKeyEvent", {
+            "type": "keyUp",
+            "key": "Control",
+            "modifiers": 0
+        })
+        await self._send("Input.dispatchKeyEvent", {
+            "type": "keyDown",
+            "key": "Delete"
+        })
+        await self._send("Input.dispatchKeyEvent", {
+            "type": "keyUp",
+            "key": "Delete"
+        })
+        
+        await asyncio.sleep(random.uniform(0.1, 0.2))
+        
+        # ✅ Посимвольный ввод (не требует JS!)
+        for char in value:
+            await self._send("Input.dispatchKeyEvent", {
+                "type": "keyDown",
+                "text": char
+            })
+            await asyncio.sleep(random.uniform(0.05, 0.15))
+            await self._send("Input.dispatchKeyEvent", {
+                "type": "keyUp",
+                "text": char
+            })
+            await asyncio.sleep(random.uniform(0.02, 0.08))
+        
+        await self._update_snapshot()
+        return {"success": True}
     
     # ============================================
-    # PUBLIC API
+    # PUBLIC API (Hermes совместимый)
     # ============================================
     
     async def ensure_session(self):
@@ -1057,24 +1165,6 @@ class CDPSupervisor:
                 "frame_tree": snapshot.get("frame_tree", {})
             }
     
-    async def browser_cdp(self, method, params=None, frame_id=None):
-        session_id = None
-        if frame_id:
-            for sid, info in self.connected_tabs.items():
-                if info.get("target_id") == frame_id or info.get("url") == frame_id:
-                    session_id = sid
-                    break
-            
-            if not session_id and frame_id in self.oopifs:
-                for sid, info in self.connected_tabs.items():
-                    if info.get("target_id") == self.oopifs[frame_id].get("targetId"):
-                        session_id = sid
-                        break
-        
-        if session_id:
-            return await self._send(method, params, session_id)
-        return await self._send(method, params)
-    
     async def browser_click(self, ref_id, humanized=True):
         if ref_id not in self.ref_elements:
             return {"error": f"Элемент {ref_id} не найден"}
@@ -1085,57 +1175,50 @@ class CDPSupervisor:
             return await self.click_by_ref(ref_id)
     
     async def _humanized_click(self, ref_id):
+        """Человеческий клик (Hermes стиль)"""
         el_info = self.ref_elements[ref_id]
-        selector = el_info.get('selector')
-        if not selector:
-            return {"error": "Нет селектора"}
+        x = el_info.get('x', 0) + el_info.get('width', 10) / 2
+        y = el_info.get('y', 0) + el_info.get('height', 10) / 2
         
-        js_code = f"""
-        (function() {{
-            const el = document.querySelector("{selector}");
-            if (!el) return null;
-            const rect = el.getBoundingClientRect();
-            return {{
-                x: rect.x + rect.width / 2,
-                y: rect.y + rect.height / 2,
-                width: rect.width,
-                height: rect.height
-            }};
-        }})()
-        """
-        resp = await self._send("Runtime.evaluate", {
-            "expression": js_code,
-            "returnByValue": True
+        # ✅ Добавляем случайное смещение (human-like)
+        x += random.randint(-3, 3)
+        y += random.randint(-3, 3)
+        
+        await asyncio.sleep(random.uniform(0.05, 0.15))
+        
+        # ✅ Human-like: mouseMoved → mousePressed → mouseReleased
+        await self._send("Input.dispatchMouseEvent", {
+            "type": "mouseMoved",
+            "x": x - random.randint(20, 50),
+            "y": y - random.randint(20, 50)
+        })
+        await asyncio.sleep(random.uniform(0.02, 0.05))
+        
+        await self._send("Input.dispatchMouseEvent", {
+            "type": "mouseMoved",
+            "x": x - random.randint(5, 15),
+            "y": y - random.randint(5, 15)
+        })
+        await asyncio.sleep(random.uniform(0.01, 0.03))
+        
+        await self._send("Input.dispatchMouseEvent", {
+            "type": "mousePressed",
+            "x": x,
+            "y": y,
+            "button": "left",
+            "clickCount": 1
+        })
+        await asyncio.sleep(random.uniform(0.05, 0.1))
+        await self._send("Input.dispatchMouseEvent", {
+            "type": "mouseReleased",
+            "x": x,
+            "y": y,
+            "button": "left",
+            "clickCount": 1
         })
         
-        if "result" in resp and "result" in resp["result"]:
-            pos = resp["result"]["result"].get("value")
-            if pos:
-                x = pos["x"] + random.randint(-3, 3)
-                y = pos["y"] + random.randint(-3, 3)
-                
-                await asyncio.sleep(random.uniform(0.05, 0.15))
-                
-                await self._send("Input.dispatchMouseEvent", {
-                    "type": "mousePressed",
-                    "x": x,
-                    "y": y,
-                    "button": "left",
-                    "clickCount": 1
-                })
-                await asyncio.sleep(random.uniform(0.05, 0.1))
-                await self._send("Input.dispatchMouseEvent", {
-                    "type": "mouseReleased",
-                    "x": x,
-                    "y": y,
-                    "button": "left",
-                    "clickCount": 1
-                })
-                
-                await self._update_snapshot()
-                return {"success": True, "method": "humanized"}
-        
-        return await self.click_by_ref(ref_id)
+        await self._update_snapshot()
+        return {"success": True, "method": "humanized"}
     
     async def browser_type(self, ref_id, text, humanized=True):
         if ref_id not in self.ref_elements:
@@ -1147,14 +1230,44 @@ class CDPSupervisor:
             return await self.fill_by_ref(ref_id, text)
     
     async def _humanized_type(self, ref_id, text):
-        el_info = self.ref_elements[ref_id]
-        selector = el_info.get('selector')
-        if not selector:
-            return {"error": "Нет селектора"}
-        
+        """Человеческий ввод (Hermes стиль)"""
+        # Кликаем по полю
         await self._humanized_click(ref_id)
         await asyncio.sleep(random.uniform(0.1, 0.3))
         
+        # Очищаем поле
+        await self._send("Input.dispatchKeyEvent", {
+            "type": "keyDown",
+            "key": "Control",
+            "modifiers": 2
+        })
+        await self._send("Input.dispatchKeyEvent", {
+            "type": "keyDown",
+            "key": "a",
+            "modifiers": 2
+        })
+        await self._send("Input.dispatchKeyEvent", {
+            "type": "keyUp",
+            "key": "a",
+            "modifiers": 2
+        })
+        await self._send("Input.dispatchKeyEvent", {
+            "type": "keyUp",
+            "key": "Control",
+            "modifiers": 0
+        })
+        await self._send("Input.dispatchKeyEvent", {
+            "type": "keyDown",
+            "key": "Delete"
+        })
+        await self._send("Input.dispatchKeyEvent", {
+            "type": "keyUp",
+            "key": "Delete"
+        })
+        
+        await asyncio.sleep(random.uniform(0.1, 0.2))
+        
+        # ✅ Посимвольный ввод с задержками (human-like)
         for char in text:
             await self._send("Input.dispatchKeyEvent", {
                 "type": "keyDown",
@@ -1218,75 +1331,23 @@ class CDPSupervisor:
         except Exception as e:
             return {"error": str(e)}
     
-    async def click_by_ref(self, ref_id):
-        if ref_id not in self.ref_elements:
-            return {"error": f"Элемент {ref_id} не найден"}
+    async def browser_cdp(self, method, params=None, frame_id=None):
+        session_id = None
+        if frame_id:
+            for sid, info in self.connected_tabs.items():
+                if info.get("target_id") == frame_id or info.get("url") == frame_id:
+                    session_id = sid
+                    break
+            
+            if not session_id and frame_id in self.oopifs:
+                for sid, info in self.connected_tabs.items():
+                    if info.get("target_id") == self.oopifs[frame_id].get("targetId"):
+                        session_id = sid
+                        break
         
-        el_info = self.ref_elements[ref_id]
-        selector = el_info.get('selector')
-        if not selector:
-            return {"error": f"Нет селектора для {ref_id}"}
-        
-        js_code = f"""
-        (function() {{
-            const el = document.querySelector("{selector}");
-            if (el) {{
-                el.click();
-                return {{ success: true }};
-            }}
-            return {{ success: false }};
-        }})()
-        """
-        resp = await self._send("Runtime.evaluate", {
-            "expression": js_code,
-            "returnByValue": True,
-            "awaitPromise": True
-        })
-        
-        if "result" in resp and "result" in resp["result"]:
-            result = resp["result"]["result"].get("value", {})
-            if result and result.get("success"):
-                await self._update_snapshot()
-                return {"success": True}
-        
-        return {"success": False}
-    
-    async def fill_by_ref(self, ref_id, value):
-        if ref_id not in self.ref_elements:
-            return {"error": f"Элемент {ref_id} не найден"}
-        
-        el_info = self.ref_elements[ref_id]
-        selector = el_info.get('selector')
-        if not selector:
-            return {"error": f"Нет селектора для {ref_id}"}
-        
-        escaped_value = value.replace("'", "\\'").replace('"', '\\"')
-        
-        js_code = f"""
-        (function() {{
-            const el = document.querySelector("{selector}");
-            if (el) {{
-                el.value = '{escaped_value}';
-                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                return {{ success: true }};
-            }}
-            return {{ success: false }};
-        }})()
-        """
-        resp = await self._send("Runtime.evaluate", {
-            "expression": js_code,
-            "returnByValue": True,
-            "awaitPromise": True
-        })
-        
-        if "result" in resp and "result" in resp["result"]:
-            result = resp["result"]["result"].get("value", {})
-            if result and result.get("success"):
-                await self._update_snapshot()
-                return {"success": True}
-        
-        return {"success": False}
+        if session_id:
+            return await self._send(method, params, session_id)
+        return await self._send(method, params)
     
     async def screenshot(self):
         resp = await self._send("Page.captureScreenshot", {
@@ -1303,6 +1364,7 @@ class CDPSupervisor:
         return None
     
     async def get_description(self):
+        """Описание страницы для агента (Hermes стиль)"""
         snapshot = await self.browser_snapshot(full=False)
         if not snapshot:
             return "Страница не загружена"
@@ -1323,9 +1385,9 @@ class CDPSupervisor:
             for el in ref_elements[:30]:
                 ref = el.get('ref', '')
                 text = el.get('text', '')[:30]
-                tag = el.get('tag', '')
+                role = el.get('role', '')
                 action = el.get('action', '')
-                desc_lines.append(f"  {ref}: \"{text}\" ({tag}) → {action}")
+                desc_lines.append(f"  {ref}: \"{text}\" ({role}) → {action}")
         else:
             desc_lines.append("  • (нет данных)")
         
@@ -1392,7 +1454,7 @@ async def get_supervisor(user_id: int) -> CDPSupervisor:
 # ---------- ОБНОВЛЕННЫЙ ПРОМТ ДЛЯ AGNES ----------
 
 AGENT_CODE = """
-🤖 АГЕНТ ДЛЯ УПРАВЛЕНИЯ БРАУЗЕРОМ (Pydoll маскировка + headless)
+🤖 АГЕНТ ДЛЯ УПРАВЛЕНИЯ БРАУЗЕРОМ (Hermes + Pydoll маскировка)
 
 📌 ДОСТУПНЫЕ ДЕЙСТВИЯ И ФОРМАТ:
 
@@ -1578,11 +1640,12 @@ async def execute_single_action(supervisor: CDPSupervisor, action: dict) -> str:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🧠 **CDP Supervisor с полной маскировкой Pydoll**\n\n"
+        "🧠 **CDP Supervisor (Hermes + Pydoll маскировка)**\n\n"
         "🤖 Бот готов к работе!\n\n"
         "📊 **Возможности:**\n"
         "• Управление браузером через AI\n"
         "• Полная маскировка под реального пользователя\n"
+        "• Поиск элементов через Accessibility Tree (без JS)\n"
         "• Обработка диалогов (alert/confirm/prompt)\n"
         "• Работа с iframe и фреймами\n"
         "• Скриншоты страниц\n\n"
@@ -1795,8 +1858,8 @@ def main():
     signal.signal(signal.SIGALRM, timeout_handler)
     signal.alarm(600)
     
-    print("🚀 Запуск бота с полной маскировкой Pydoll (headless)...")
-    file_logger.log("🚀 Запуск бота с полной маскировкой Pydoll (headless)...")
+    print("🚀 Запуск бота с Hermes + Pydoll маскировка...")
+    file_logger.log("🚀 Запуск бота с Hermes + Pydoll маскировка...")
     
     start_chrome()
     
@@ -1811,8 +1874,8 @@ def main():
     app.add_handler(CommandHandler("dialog_policy", dialog_policy_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("🚀 Бот запущен с Pydoll маскировкой (headless)!")
-    file_logger.log("🚀 Бот запущен с Pydoll маскировкой (headless)!")
+    print("🚀 Бот запущен с Hermes + Pydoll маскировкой!")
+    file_logger.log("🚀 Бот запущен с Hermes + Pydoll маскировкой!")
     
     try:
         app.run_polling()
