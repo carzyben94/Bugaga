@@ -1,15 +1,16 @@
-import asyncio
-import json
 import os
+import json
+import asyncio
 import logging
 import base64
+import subprocess
 import aiohttp
 import websockets
 from typing import Dict, Optional
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)  # Включаем детальное логирование
 logger = logging.getLogger(__name__)
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -22,19 +23,28 @@ class AgnesCDPAgent:
         self.websocket = None
         self.message_id = 0
         self.is_running = False
-        self.response_queue = {}  # Очередь для ответов
+        self.response_queue = {}
         self.listener_task = None
         
     async def start_chrome(self):
         """Запускает Chrome с CDP портом"""
-        chrome_path = "/usr/bin/google-chrome"
+        chrome_paths = [
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/chromium-browser",
+            "/usr/bin/chromium"
+        ]
         
-        if not os.path.exists(chrome_path):
-            chrome_path = "/usr/bin/google-chrome-stable"
+        chrome_path = None
+        for path in chrome_paths:
+            if os.path.exists(path):
+                chrome_path = path
+                break
         
-        # Проверяем, что Chrome существует
-        if not os.path.exists(chrome_path):
-            raise Exception(f"Chrome не найден: {chrome_path}")
+        if not chrome_path:
+            raise Exception("Chrome не найден! Установите: apt-get install -y google-chrome-stable")
+        
+        logger.info(f"🔍 Использую Chrome: {chrome_path}")
         
         cmd = [
             chrome_path,
@@ -44,10 +54,11 @@ class AgnesCDPAgent:
             "--disable-gpu",
             "--remote-debugging-port=9222",
             "--disable-blink-features=AutomationControlled",
-            "--window-size=1920,1080"
+            "--window-size=1920,1080",
+            "--user-data-dir=/tmp/chrome-profile"
         ]
         
-        logger.info(f"Запускаю Chrome: {' '.join(cmd)}")
+        logger.info(f"🚀 Запускаю Chrome: {' '.join(cmd)}")
         
         self.chrome_process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -55,89 +66,71 @@ class AgnesCDPAgent:
             stderr=asyncio.subprocess.PIPE
         )
         
-        # Ждём запуска Chrome
-        for i in range(10):
+        # Ждём запуска Chrome с проверкой
+        for i in range(20):  # 20 секунд
             await asyncio.sleep(1)
             try:
                 async with aiohttp.ClientSession() as session:
-                    async with session.get("http://localhost:9222/json") as resp:
+                    async with session.get("http://localhost:9222/json/version") as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            if data:
-                                break
-            except:
-                continue
+                            logger.info(f"✅ Chrome запущен: {data.get('Browser', 'Unknown')}")
+                            break
+            except Exception as e:
+                logger.debug(f"Ожидание Chrome... {i+1}/20")
         else:
-            raise Exception("Chrome не запустился")
+            # Проверяем вывод ошибок
+            stderr = await self.chrome_process.stderr.read()
+            stdout = await self.chrome_process.stdout.read()
+            logger.error(f"Chrome stderr: {stderr.decode() if stderr else 'Нет'}")
+            logger.error(f"Chrome stdout: {stdout.decode() if stdout else 'Нет'}")
+            raise Exception("Chrome не запустился за 20 секунд")
         
         await self.connect_to_cdp()
         self.is_running = True
         
-        # Запускаем слушатель событий в фоне
+        # Запускаем слушатель
         self.listener_task = asyncio.create_task(self.listen_events())
         
-        logger.info("✅ Браузер готов")
+        logger.info("✅ Агент готов")
         return True
     
     async def connect_to_cdp(self):
         """Подключается к CDP"""
-        async with aiohttp.ClientSession() as session:
-            async with session.get("http://localhost:9222/json") as resp:
-                data = await resp.json()
-                ws_url = data[0]["webSocketDebuggerUrl"]
-        
-        self.websocket = await websockets.connect(ws_url)
-        
-        # Включаем домены
-        await self.send_cdp_command("Page.enable")
-        await self.send_cdp_command("Runtime.enable")
-        await self.send_cdp_command("Network.enable")
-        await self.send_cdp_command("DOM.enable")
-        
-        logger.info("✅ Подключен к CDP")
-    
-    async def listen_events(self):
-        """Слушает события CDP (не блокирует recv)"""
         try:
-            while self.is_running:
-                try:
-                    response = await asyncio.wait_for(
-                        self.websocket.recv(), 
-                        timeout=0.1
-                    )
-                    data = json.loads(response)
+            async with aiohttp.ClientSession() as session:
+                async with session.get("http://localhost:9222/json") as resp:
+                    if resp.status != 200:
+                        raise Exception(f"CDP не отвечает: {resp.status}")
+                    data = await resp.json()
+                    if not data:
+                        raise Exception("Нет активных страниц")
                     
-                    # Если это ответ на команду
-                    if "id" in data:
-                        msg_id = data["id"]
-                        if msg_id in self.response_queue:
-                            self.response_queue[msg_id] = data
-                            continue
-                    
-                    # Если это событие
-                    if "method" in data:
-                        if data["method"] == "Page.loadEventFired":
-                            logger.info("✅ Страница загружена")
-                        elif data["method"] == "Runtime.consoleAPICalled":
-                            args = data["params"].get("args", [])
-                            for arg in args:
-                                logger.info(f"🖥️ Консоль: {arg.get('value')}")
-                        elif data["method"] == "Network.requestWillBeSent":
-                            logger.info(f"🌐 Запрос: {data['params'].get('request', {}).get('url')}")
-                        
-                except asyncio.TimeoutError:
-                    continue
-                except websockets.exceptions.ConnectionClosed:
-                    logger.warning("WebSocket закрыт")
-                    break
-                except Exception as e:
-                    logger.error(f"Ошибка listener: {e}")
-                    
+                    ws_url = data[0]["webSocketDebuggerUrl"]
+                    logger.info(f"🔗 WebSocket URL: {ws_url}")
+            
+            self.websocket = await websockets.connect(
+                ws_url,
+                max_size=10**7,
+                ping_interval=20,
+                ping_timeout=60
+            )
+            logger.info("✅ WebSocket подключен")
+            
+            # Включаем домены с таймаутом
+            await self.send_cdp_command("Page.enable", timeout=10)
+            await self.send_cdp_command("Runtime.enable", timeout=10)
+            await self.send_cdp_command("Network.enable", timeout=10)
+            await self.send_cdp_command("DOM.enable", timeout=10)
+            
+            logger.info("✅ Домены включены")
+            
         except Exception as e:
-            logger.error(f"Listener остановлен: {e}")
+            logger.error(f"❌ Ошибка подключения к CDP: {e}")
+            raise
     
-    async def send_cdp_command(self, method: str, params: Dict = None) -> Dict:
-        """Отправляет CDP команду и ждёт ответа"""
+    async def send_cdp_command(self, method: str, params: Dict = None, timeout: int = 5) -> Dict:
+        """Отправляет CDP команду с таймаутом"""
         self.message_id += 1
         msg_id = self.message_id
         
@@ -147,19 +140,66 @@ class AgnesCDPAgent:
             "params": params or {}
         }
         
-        # Отправляем команду
-        await self.websocket.send(json.dumps(message))
+        logger.debug(f"📤 Отправка: {method} (id: {msg_id})")
         
-        # Ждём ответа с этим ID
-        for _ in range(50):  # Максимум 5 секунд
+        try:
+            await self.websocket.send(json.dumps(message))
+        except Exception as e:
+            raise Exception(f"Ошибка отправки: {e}")
+        
+        # Ждём ответа
+        for _ in range(timeout * 10):  # timeout * 0.1 секунды
             if msg_id in self.response_queue:
                 response = self.response_queue.pop(msg_id)
+                logger.debug(f"📥 Ответ: {method} (id: {msg_id})")
                 if "error" in response:
                     raise Exception(f"CDP Error: {response['error']}")
                 return response
             await asyncio.sleep(0.1)
         
-        raise TimeoutError(f"Нет ответа на команду {method} (id: {msg_id})")
+        raise TimeoutError(f"Нет ответа на команду {method} (id: {msg_id}) за {timeout}с")
+    
+    async def listen_events(self):
+        """Слушает события CDP"""
+        try:
+            while self.is_running and self.websocket:
+                try:
+                    response = await asyncio.wait_for(
+                        self.websocket.recv(), 
+                        timeout=1.0
+                    )
+                    data = json.loads(response)
+                    
+                    # Ответ на команду
+                    if "id" in data:
+                        msg_id = data["id"]
+                        self.response_queue[msg_id] = data
+                        continue
+                    
+                    # Событие
+                    if "method" in data:
+                        method = data["method"]
+                        if method == "Page.loadEventFired":
+                            logger.info("✅ Страница загружена")
+                        elif method == "Runtime.consoleAPICalled":
+                            args = data["params"].get("args", [])
+                            for arg in args:
+                                logger.info(f"🖥️ Консоль: {arg.get('value')}")
+                        elif method == "Network.requestWillBeSent":
+                            url = data["params"].get("request", {}).get("url", "")
+                            if url:
+                                logger.info(f"🌐 Запрос: {url[:100]}")
+                                
+                except asyncio.TimeoutError:
+                    continue
+                except websockets.exceptions.ConnectionClosed:
+                    logger.warning("⚠️ WebSocket закрыт")
+                    break
+                except Exception as e:
+                    logger.error(f"❌ Ошибка listener: {e}")
+                    
+        except Exception as e:
+            logger.error(f"❌ Listener остановлен: {e}")
     
     # ============ МЕТОДЫ ДЛЯ РАБОТЫ ============
     
@@ -167,7 +207,13 @@ class AgnesCDPAgent:
         """Переход по URL"""
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
-        return await self.send_cdp_command("Page.navigate", {"url": url})
+        
+        result = await self.send_cdp_command("Page.navigate", {"url": url})
+        
+        # Ждём загрузки
+        await asyncio.sleep(2)
+        
+        return result
     
     async def get_document(self) -> Dict:
         """Получить DOM дерево"""
@@ -242,14 +288,6 @@ class AgnesCDPAgent:
         }
         return await self.send_cdp_command("Page.captureScreenshot", params)
     
-    async def get_page_html(self) -> str:
-        """Получить HTML"""
-        result = await self.send_cdp_command("Runtime.evaluate", {
-            "expression": "document.documentElement.outerHTML",
-            "returnByValue": True
-        })
-        return result["result"].get("value", "")
-    
     async def get_title(self) -> str:
         """Получить заголовок"""
         result = await self.send_cdp_command("Runtime.evaluate", {
@@ -257,23 +295,6 @@ class AgnesCDPAgent:
             "returnByValue": True
         })
         return result["result"].get("value", "")
-    
-    async def execute_js(self, script: str) -> Dict:
-        """Выполнить JavaScript"""
-        return await self.send_cdp_command("Runtime.evaluate", {
-            "expression": script,
-            "returnByValue": True
-        })
-    
-    async def emulate_device(self, width: int, height: int, mobile: bool = False, scale: float = 1):
-        """Эмуляция устройства"""
-        return await self.send_cdp_command("Emulation.setDeviceMetricsOverride", {
-            "width": width,
-            "height": height,
-            "deviceScaleFactor": scale,
-            "mobile": mobile,
-            "screenOrientation": {"type": "portraitPrimary", "angle": 0}
-        })
     
     async def close(self):
         """Закрытие"""
@@ -292,34 +313,55 @@ class AgnesCDPAgent:
             except:
                 pass
         
-        try:
-            await self.send_cdp_command("Browser.close")
-        except:
-            pass
-        
         if self.chrome_process:
             try:
                 self.chrome_process.terminate()
-                try:
-                    await asyncio.wait_for(self.chrome_process.wait(), timeout=5)
-                except asyncio.TimeoutError:
+                await asyncio.sleep(2)
+                if self.chrome_process.returncode is None:
                     self.chrome_process.kill()
             except:
                 pass
+        
+        logger.info("🛑 Агент остановлен")
 
 # ============ ТЕЛЕГРАМ БОТ ============
 agent = None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global agent
-    await update.message.reply_text("🧠 Запускаю AGNES CDP Агент...")
+    await update.message.reply_text("🧠 Запускаю AGNES CDP Агент...\n⏳ Это может занять 5-10 секунд...")
     
     try:
         agent = AgnesCDPAgent()
         await agent.start_chrome()
-        await update.message.reply_text("✅ Браузер готов!\n\n📋 Команды:\n• открой google.com\n• скриншот\n• нажми на #id\n• введи текст в #input")
+        
+        await update.message.reply_text(
+            "✅ **Браузер готов!**\n\n"
+            "📋 **Команды:**\n"
+            "• открой google.com\n"
+            "• скриншот\n"
+            "• нажми на #id\n"
+            "• введи текст в #input\n"
+            "• найди #id\n"
+            "• заголовок\n"
+            "• url\n\n"
+            "💡 Напиши 'помощь' для полного списка",
+            parse_mode='Markdown'
+        )
+        
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+        error_msg = str(e)
+        if "Chrome" in error_msg:
+            await update.message.reply_text(
+                "❌ **Chrome не установлен!**\n\n"
+                "На Railway добавьте в настройки:\n"
+                "```\n"
+                "apt-get update && apt-get install -y google-chrome-stable\n"
+                "```",
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(f"❌ Ошибка: {error_msg}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global agent
@@ -334,6 +376,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if "открой" in user_input:
             url = user_input.replace("открой", "").strip()
+            if not url:
+                await update.message.reply_text("❌ Укажи URL: открой google.com")
+                return
+            
             await agent.navigate(url)
             await asyncio.sleep(1)
             title = await agent.get_title()
@@ -345,12 +391,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             if "data" in result.get("result", {}):
                 image_data = base64.b64decode(result["result"]["data"])
-                await update.message.reply_photo(image_data, caption="📸 Скриншот")
+                await update.message.reply_photo(
+                    image_data, 
+                    caption=f"📸 Скриншот {'всей страницы' if full else 'страницы'}"
+                )
             else:
                 await update.message.reply_text("❌ Не удалось сделать скриншот")
         
         elif "нажми" in user_input and "на " in user_input:
             selector = user_input.split("на ")[1].strip()
+            if not selector:
+                await update.message.reply_text("❌ Укажи селектор: нажми на #button")
+                return
+            
             node_id = await agent.query_selector(selector)
             if node_id:
                 await agent.click_element(node_id)
@@ -367,20 +420,71 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text = user_input.replace("введи", "").strip()
                 selector = None
             
+            if not text:
+                await update.message.reply_text("❌ Укажи текст: введи привет")
+                return
+            
             await agent.type_text(text, selector)
             await update.message.reply_text(f"✅ Ввёл: {text}")
         
         elif "найди" in user_input:
             selector = user_input.split("найди ")[1].strip()
+            if not selector:
+                await update.message.reply_text("❌ Укажи селектор: найди #id")
+                return
+            
             node_id = await agent.query_selector(selector)
             if node_id:
                 await update.message.reply_text(f"✅ Нашёл элемент: {selector}")
             else:
                 await update.message.reply_text(f"❌ Элемент не найден: {selector}")
         
-        elif "html" in user_input:
-            html = await agent.get_page_html()
+        elif "заголовок" in user_input or "title" in user_input:
+            title = await agent.get_title()
+            await update.message.reply_text(f"📌 {title}")
+        
+        elif "url" in user_input or "адрес" in user_input:
+            result = await agent.send_cdp_command("Runtime.evaluate", {
+                "expression": "window.location.href",
+                "returnByValue": True
+            })
+            url = result["result"].get("value", "")
+            await update.message.reply_text(f"🔗 {url}")
+        
+        elif "html" in user_input or "код" in user_input:
+            result = await agent.send_cdp_command("Runtime.evaluate", {
+                "expression": "document.documentElement.outerHTML",
+                "returnByValue": True
+            })
+            html = result["result"].get("value", "")
             await update.message.reply_text(f"📄 HTML ({len(html)} символов):\n\n{html[:500]}...")
+        
+        elif "назад" in user_input:
+            await agent.send_cdp_command("Runtime.evaluate", {
+                "expression": "window.history.back()"
+            })
+            await update.message.reply_text("⬅️ Назад")
+        
+        elif "вперед" in user_input or "вперёд" in user_input:
+            await agent.send_cdp_command("Runtime.evaluate", {
+                "expression": "window.history.forward()"
+            })
+            await update.message.reply_text("➡️ Вперед")
+        
+        elif "обнови" in user_input or "refresh" in user_input:
+            await agent.send_cdp_command("Page.reload")
+            await update.message.reply_text("🔄 Обновил страницу")
+        
+        elif "куки" in user_input or "cookies" in user_input:
+            result = await agent.send_cdp_command("Network.getCookies")
+            cookies = result.get("result", {}).get("cookies", [])
+            if cookies:
+                text = "🍪 **Cookies:**\n\n"
+                for c in cookies[:10]:
+                    text += f"• {c.get('name')} = {c.get('value')}\n"
+                await update.message.reply_text(text, parse_mode='Markdown')
+            else:
+                await update.message.reply_text("🍪 Куки не найдены")
         
         elif "помощь" in user_input or "help" in user_input:
             await update.message.reply_text(
@@ -399,37 +503,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "📄 **Данные:**\n"
                 "• html\n"
                 "• заголовок\n"
-                "• url"
+                "• url\n"
+                "• куки\n\n"
+                "💡 **Примеры:**\n"
+                "• открой google.com\n"
+                "• найди button\n"
+                "• нажми на a[href*='login']\n"
+                "• введи привет в #search",
+                parse_mode='Markdown'
             )
-        
-        elif "заголовок" in user_input:
-            title = await agent.get_title()
-            await update.message.reply_text(f"📌 {title}")
-        
-        elif "url" in user_input:
-            result = await agent.execute_js("window.location.href")
-            url = result["result"].get("value", "")
-            await update.message.reply_text(f"🔗 {url}")
-        
-        elif "эмулируй iphone" in user_input:
-            await agent.emulate_device(375, 812, True, 3)
-            await update.message.reply_text("📱 Эмулирую iPhone")
         
         else:
             await update.message.reply_text(
-                "🤔 Не понял. Напиши 'помощь'\n"
-                "Или попробуй: 'открой google.com'"
+                "🤔 Не понял. Напиши 'помощь' для списка команд\n\n"
+                "💡 Попробуй: 'открой google.com'"
             )
             
     except Exception as e:
-        logger.error(f"Ошибка: {e}")
+        logger.error(f"❌ Ошибка: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.run_polling()
+    
+    logger.info("🚀 Бот запущен!")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
