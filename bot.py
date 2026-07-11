@@ -168,6 +168,7 @@ class CDPClient:
         self.pending_dialogs = []
         self.connected_tabs = {}
         self.dialog_timeout = 300
+        self.ref_elements = {}  # Хранилище элементов с Ref ID
     
     async def connect(self):
         if self.connected:
@@ -566,6 +567,202 @@ class CDPClient:
             file_logger.log(f"❌ eval_js error: {e}", "ERROR")
             return None
     
+    # ============================================
+    # 🆕 HERMES: Получение Ref ID элементов
+    # ============================================
+    async def get_accessibility_tree(self):
+        """Получает дерево доступности с Ref ID"""
+        try:
+            js_code = """
+            (function() {
+                const result = [];
+                let ref_counter = 0;
+                const important = ['button', 'a', 'input', 'textarea', 'select', 
+                                  '[role="button"]', '[role="link"]', '[role="searchbox"]',
+                                  '[role="combobox"]', '[role="textbox"]', '[role="menuitem"]'];
+                
+                const elements = document.querySelectorAll(important.join(','));
+                
+                for (const el of elements) {
+                    const rect = el.getBoundingClientRect();
+                    const visible = rect.width > 0 && rect.height > 0 && 
+                                   el.offsetParent !== null;
+                    
+                    if (visible) {
+                        ref_counter++;
+                        const tag = el.tagName.toLowerCase();
+                        const role = el.getAttribute('role') || '';
+                        const text = (el.textContent || el.value || el.placeholder || el.getAttribute('aria-label') || '').trim().slice(0, 50);
+                        const href = el.getAttribute('href') || '';
+                        const data_testid = el.getAttribute('data-testid') || '';
+                        
+                        let element_type = tag;
+                        if (role) element_type = role;
+                        if (tag === 'input' && el.getAttribute('type') === 'submit') element_type = 'button';
+                        if (tag === 'input' && el.getAttribute('type') === 'text') element_type = 'textbox';
+                        if (tag === 'input' && el.getAttribute('role') === 'combobox') element_type = 'combobox';
+                        if (tag === 'input' && el.getAttribute('type') === 'search') element_type = 'searchbox';
+                        
+                        let action = '';
+                        if (element_type === 'button' || element_type === 'link') action = 'click';
+                        else if (element_type === 'textbox' || element_type === 'combobox' || element_type === 'searchbox' || tag === 'input' || tag === 'textarea') action = 'type';
+                        
+                        result.push({
+                            ref: 'e' + ref_counter,
+                            tag: tag,
+                            role: role,
+                            type: element_type,
+                            text: text,
+                            href: href,
+                            data_testid: data_testid,
+                            action: action,
+                            visible: visible,
+                            selector: el.id ? '#' + el.id : 
+                                      el.className ? '.' + el.className.split(' ').join('.') : 
+                                      tag + (href ? '[href="' + href + '"]' : ''),
+                            x: Math.round(rect.x),
+                            y: Math.round(rect.y),
+                            width: Math.round(rect.width),
+                            height: Math.round(rect.height)
+                        });
+                    }
+                }
+                
+                return result;
+            })()
+            """
+            result = await self.eval_js(js_code)
+            
+            if result and isinstance(result, list):
+                self.ref_elements = {el['ref']: el for el in result}
+                return result
+            return []
+        except Exception as e:
+            file_logger.log(f"❌ Accessibility tree error: {e}", "ERROR")
+            return []
+    
+    # ============================================
+    # 🆕 HERMES: Поиск Ref ID по тексту
+    # ============================================
+    async def find_ref_by_text(self, text):
+        """Находит Ref ID по тексту (Hermes)"""
+        if not text:
+            return None
+        
+        text_lower = text.lower().strip()
+        
+        # Точное совпадение
+        for ref, el in self.ref_elements.items():
+            el_text = el.get('text', '').lower().strip()
+            if el_text == text_lower:
+                file_logger.log(f"🔍 Точное совпадение: {text} → {ref}")
+                return ref
+        
+        # Частичное совпадение
+        for ref, el in self.ref_elements.items():
+            el_text = el.get('text', '').lower()
+            if text_lower in el_text or el_text in text_lower:
+                file_logger.log(f"🔍 Частичное совпадение: {text} → {ref}")
+                return ref
+        
+        # Поиск по data-testid
+        for ref, el in self.ref_elements.items():
+            testid = el.get('data_testid', '').lower()
+            if text_lower in testid or testid in text_lower:
+                file_logger.log(f"🔍 Совпадение по data-testid: {text} → {ref}")
+                return ref
+        
+        # Поиск по href
+        for ref, el in self.ref_elements.items():
+            href = el.get('href', '').lower()
+            if text_lower in href or href in text_lower:
+                file_logger.log(f"🔍 Совпадение по href: {text} → {ref}")
+                return ref
+        
+        file_logger.log(f"⚠️ Элемент не найден: {text}")
+        return None
+    
+    # ============================================
+    # 🆕 HERMES: Действия по тексту
+    # ============================================
+    async def click_by_text(self, text):
+        """Кликает по элементу по тексту (Hermes)"""
+        ref = await self.find_ref_by_text(text)
+        if ref:
+            return await self.click_by_ref(ref)
+        return {"error": f"Элемент '{text}' не найден"}
+    
+    async def fill_by_text(self, text, value):
+        """Заполняет поле по тексту (Hermes)"""
+        ref = await self.find_ref_by_text(text)
+        if ref:
+            return await self.fill_by_ref(ref, value)
+        return {"error": f"Элемент '{text}' не найден"}
+    
+    # ============================================
+    # 🆕 HERMES: Действия по Ref ID
+    # ============================================
+    async def click_by_ref(self, ref_id):
+        """Клик по элементу по Ref ID (Hermes)"""
+        try:
+            if ref_id not in self.ref_elements:
+                return {"error": f"Элемент {ref_id} не найден"}
+            
+            el_info = self.ref_elements[ref_id]
+            selector = el_info.get('selector')
+            
+            if not selector:
+                return {"error": f"Нет селектора для {ref_id}"}
+            
+            return await self.click_element(selector)
+        except Exception as e:
+            file_logger.log(f"❌ click_by_ref error: {e}", "ERROR")
+            return {"error": str(e)}
+    
+    async def fill_by_ref(self, ref_id, value):
+        """Заполнение поля по Ref ID (Hermes)"""
+        try:
+            if ref_id not in self.ref_elements:
+                return {"error": f"Элемент {ref_id} не найден"}
+            
+            el_info = self.ref_elements[ref_id]
+            selector = el_info.get('selector')
+            
+            if not selector:
+                return {"error": f"Нет селектора для {ref_id}"}
+            
+            return await self.fill_element(selector, value)
+        except Exception as e:
+            file_logger.log(f"❌ fill_by_ref error: {e}", "ERROR")
+            return {"error": str(e)}
+    
+    async def press_enter(self):
+        js_code = """
+        (function() {
+            const active = document.activeElement;
+            if (active) {
+                const event = new KeyboardEvent('keydown', {
+                    key: 'Enter',
+                    code: 'Enter',
+                    keyCode: 13,
+                    which: 13,
+                    bubbles: true,
+                    cancelable: true
+                });
+                active.dispatchEvent(event);
+                
+                const form = active.closest('form');
+                if (form) {
+                    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+                }
+                
+                return { success: true, element: active.tagName };
+            }
+            return { success: false };
+        })()
+        """
+        return await self.eval_js(js_code)
+    
     async def get_maximum_snapshot(self):
         try:
             file_logger.log("📸 Делаю максимальный слепок...")
@@ -579,6 +776,8 @@ class CDPClient:
             if "result" in frame_tree_resp:
                 frame_tree = frame_tree_resp["result"].get("frameTree", {})
                 file_logger.log(f"📦 FrameTree получен")
+            
+            ref_elements = await self.get_accessibility_tree()
             
             result = await self.eval_js(f"""
                 (function() {{
@@ -803,10 +1002,14 @@ class CDPClient:
                 "visible": visible,
                 "pending_dialogs": self.pending_dialogs.copy() if self.pending_dialogs else [],
                 "frame_tree": frame_tree if frame_tree else None,
-                "connected_tabs": self.connected_tabs.copy() if self.connected_tabs else {}
+                "connected_tabs": self.connected_tabs.copy() if self.connected_tabs else {},
+                "ref_elements": ref_elements
             }
             
-            file_logger.log(f"✅ Максимальный слепок: {len(elements)} элементов, {len(buttons)} кнопок, {len(all_fields)} полей")
+            if ref_elements:
+                self.ref_elements = {el['ref']: el for el in ref_elements}
+            
+            file_logger.log(f"✅ Максимальный слепок: {len(elements)} элементов, {len(buttons)} кнопок, {len(all_fields)} полей, {len(ref_elements)} Ref ID")
             return True
             
         except Exception as e:
@@ -831,7 +1034,8 @@ class CDPClient:
                 "visible": [],
                 "pending_dialogs": self.pending_dialogs.copy() if self.pending_dialogs else [],
                 "frame_tree": None,
-                "connected_tabs": self.connected_tabs.copy() if self.connected_tabs else {}
+                "connected_tabs": self.connected_tabs.copy() if self.connected_tabs else {},
+                "ref_elements": []
             }
             return False
     
@@ -880,6 +1084,7 @@ class CDPClient:
             await self.get_maximum_snapshot()
         
         info = self.full_snapshot or {}
+        ref_elements = info.get('ref_elements', [])
         
         title = info.get('title', 'Нет заголовка') if isinstance(info, dict) else 'Нет заголовка'
         url = info.get('url', 'Нет URL') if isinstance(info, dict) else 'Нет URL'
@@ -890,8 +1095,20 @@ class CDPClient:
 🔗 URL: {url}
 📊 ВСЕГО ЭЛЕМЕНТОВ: {total}
 
-🔘 КНОПКИ ({len(info.get('buttons', [])) if isinstance(info.get('buttons', []), list) else 0}):
+🆔 ДОСТУПНЫЕ ЭЛЕМЕНТЫ:
 """
+        
+        if ref_elements:
+            for el in ref_elements[:30]:
+                ref = el.get('ref', '')
+                text = el.get('text', '')[:30]
+                tag = el.get('tag', '')
+                action = el.get('action', '')
+                desc += f"  {ref}: \"{text}\" ({tag}) → {action}\n"
+        else:
+            desc += "  • (нет данных)\n"
+        
+        desc += f"\n🔘 КНОПКИ:\n"
         
         buttons = info.get('buttons') if isinstance(info, dict) else None
         if buttons is None:
@@ -900,7 +1117,7 @@ class CDPClient:
             if len(buttons) == 0:
                 desc += "  • (нет кнопок)\n"
             else:
-                for el in buttons[:30]:
+                for el in buttons[:20]:
                     if isinstance(el, dict):
                         text = el.get('text', '')
                         if not text:
@@ -910,13 +1127,14 @@ class CDPClient:
                         if not text:
                             text = el.get('attrs', {}).get('title', '')
                         if text:
-                            desc += f"  • {text[:40]}\n"
+                            ref = ''
+                            for re in ref_elements:
+                                if re.get('text') == text or text in re.get('text', ''):
+                                    ref = re.get('ref', '')
+                                    break
+                            desc += f"  • {text[:40]}" + (f" → {ref}" if ref else "") + "\n"
                         else:
                             desc += f"  • <{el.get('tag', 'unknown')}>\n"
-                    elif isinstance(el, str):
-                        desc += f"  • {el[:40]}\n"
-        else:
-            desc += f"  • (неизвестный формат: {type(buttons).__name__})\n"
         
         desc += f"\n📝 ПОЛЯ ВВОДА:\n"
         
@@ -927,39 +1145,19 @@ class CDPClient:
             if len(fields) == 0:
                 desc += "  • (нет полей)\n"
             else:
-                for el in fields[:20]:
+                for el in fields[:15]:
                     if isinstance(el, dict):
                         attrs = el.get('attrs', {})
                         field_type = el.get('field_type', 'unknown')
                         name = attrs.get('name', '')
                         placeholder = attrs.get('placeholder', '')
                         field_name = name or placeholder or f"{field_type}"
-                        selector = el.get('field_selector', '')
-                        desc += f"  • {field_name[:30]} → {selector}\n"
-                    elif isinstance(el, str):
-                        desc += f"  • {el[:30]}\n"
-        else:
-            desc += f"  • (неизвестный формат: {type(fields).__name__})\n"
-        
-        desc += f"\n🔗 ССЫЛКИ:\n"
-        
-        links = info.get('links') if isinstance(info, dict) else None
-        if links is None:
-            desc += "  • (нет данных)\n"
-        elif isinstance(links, list):
-            if len(links) == 0:
-                desc += "  • (нет ссылок)\n"
-            else:
-                for el in links[:15]:
-                    if isinstance(el, dict):
-                        text = el.get('text', '')[:30]
-                        href = el.get('attrs', {}).get('href', '')[:50]
-                        if text:
-                            desc += f"  • {text} → {href}\n"
-                    elif isinstance(el, str):
-                        desc += f"  • {el[:30]}\n"
-        else:
-            desc += f"  • (неизвестный формат: {type(links).__name__})\n"
+                        ref = ''
+                        for re in ref_elements:
+                            if re.get('text') == field_name or field_name in re.get('text', ''):
+                                ref = re.get('ref', '')
+                                break
+                        desc += f"  • {field_name[:30]} → {ref if ref else 'нет ref'}\n"
         
         dialogs = info.get('pending_dialogs') if isinstance(info, dict) else None
         if dialogs and isinstance(dialogs, list) and len(dialogs) > 0:
@@ -969,22 +1167,18 @@ class CDPClient:
             desc += "\n💡 Для обработки диалога используй: handle_dialog(accept=True, prompt_text='')\n"
             desc += f"📋 Текущая политика: {CURRENT_DIALOG_POLICY}\n"
         
-        frame_tree = info.get('frame_tree') if isinstance(info, dict) else None
-        if frame_tree:
-            desc += f"\n📦 IFRAME/ФРЕЙМЫ:\n"
-            main_frame = frame_tree.get('frame', {})
-            if main_frame:
-                desc += f"  • Главный фрейм: {main_frame.get('url', '')[:60]}\n"
-            
-            children = frame_tree.get('childFrames', [])
-            if children:
-                for child in children[:5]:
-                    child_url = child.get('frame', {}).get('url', '')
-                    if child_url:
-                        desc += f"  • Дочерний фрейм: {child_url[:60]}\n"
+        desc += f"""
+\n💡 КАК ИСПОЛЬЗОВАТЬ:
+• "Нажми на кнопку Обзор" → бот сам найдёт элемент
+• "Введи в поиск Spinoza" → бот сам найдёт поле
+• Не нужно знать Ref ID — бот всё сделает сам!
+"""
         
         return desc
     
+    # ============================================
+    # ❌ СТАРЫЕ МЕТОДЫ (для совместимости)
+    # ============================================
     async def click_element(self, selector):
         js_code = f"""
         (function() {{
@@ -1012,26 +1206,6 @@ class CDPClient:
             }}
             return {{ success: false }};
         }})()
-        """
-        return await self.eval_js(js_code)
-    
-    async def press_enter(self):
-        js_code = """
-        (function() {
-            const active = document.activeElement;
-            if (active) {
-                const event = new KeyboardEvent('keydown', {
-                    key: 'Enter',
-                    code: 'Enter',
-                    keyCode: 13,
-                    which: 13,
-                    bubbles: true
-                });
-                active.dispatchEvent(event);
-                return { success: true };
-            }
-            return { success: false };
-        })()
         """
         return await self.eval_js(js_code)
     
@@ -1098,33 +1272,23 @@ clients = {}
 AGENT_CODE = """
 Ты агент для управления браузером.
 
-⚠️ ВАЖНО ДЛЯ X.COM:
-- Поиск работает ТОЛЬКО через клик по кнопке поиска!
-- Enter НЕ РАБОТАЕТ на X.com для поиска!
-- Всегда используй МАССИВ действий: [fill, click]
+⚠️ ВАЖНО: Ты можешь использовать ТЕКСТ для поиска элементов!
+Агент сам найдёт нужный Ref ID. Пользователь НЕ знает про Ref ID!
 
-Пример для поиска:
-[{"action": "fill", "params": {"selector": "[role='combobox']", "value": "текст"}}, {"action": "click", "params": {"selector": "button[aria-label='Search']"}}]
-
-ДОСТУПНЫЕ ДЕЙСТВИЯ (возвращай ТОЛЬКО JSON):
+ДОСТУПНЫЕ ДЕЙСТВИЯ:
 - navigate(url) - открыть сайт
-- click(selector) - кликнуть по элементу
-- fill(selector, value) - заполнить поле
-- press_enter() - нажать Enter (НЕ РАБОТАЕТ НА X.COM ДЛЯ ПОИСКА!)
+- click(text) - кликнуть по элементу (по тексту!)
+- fill(text, value) - заполнить поле (по тексту!)
+- press_enter() - нажать Enter
 - screenshot() - сделать скриншот
 - answer(text) - ответить пользователю
-- handle_dialog(accept, prompt_text) - обработать диалог
-- cdp(method, params, frame_id) - выполнить любую CDP-команду
-- set_dialog_policy(policy) - установить политику диалогов
 
-⚠️ ВАЖНО: ВСЕГДА используй формат с "params":
-{"action": "navigate", "params": {"url": "https://x.com"}}
-{"action": "click", "params": {"selector": "button"}}
-{"action": "answer", "params": {"text": "текст"}}
+📌 ПРИМЕРЫ:
+{"action": "click", "params": {"text": "Обзор"}}
+{"action": "fill", "params": {"text": "Поиск", "value": "Spinoza"}}
+{"action": "click", "params": {"text": "Главная"}}
 
-НЕ ИСПОЛЬЗУЙ формат без "params":
-{"action": "navigate", "url": "..."}  ← НЕПРАВИЛЬНО!
-
+⚠️ НЕ ИСПОЛЬЗУЙ селекторы! ИСПОЛЬЗУЙ ТЕКСТ!
 ОТВЕЧАЙ ТОЛЬКО JSON! БЕЗ ЛИШНИХ СЛОВ!
 """
 
@@ -1173,59 +1337,27 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
                 try:
                     result = json.loads(json_match.group())
                     
+                    # Исправляем формат если нужно
                     if isinstance(result, dict):
-                        if 'url' in result and 'params' not in result:
-                            file_logger.log("⚠️ Исправляю формат: добавил params")
-                            action = result.get('action', 'navigate')
-                            url = result.get('url')
-                            result = {"action": action, "params": {"url": url}}
                         if 'text' in result and 'params' not in result:
                             file_logger.log("⚠️ Исправляю формат: добавил params")
-                            result = {"action": "answer", "params": {"text": result.get('text')}}
-                        if 'selector' in result and 'params' not in result:
-                            file_logger.log("⚠️ Исправляю формат: добавил params")
-                            result = {"action": "click", "params": {"selector": result.get('selector')}}
+                            action = result.get('action', 'click')
+                            text = result.get('text')
+                            result = {"action": action, "params": {"text": text}}
                         if 'value' in result and 'params' not in result:
                             file_logger.log("⚠️ Исправляю формат: добавил params")
-                            result = {"action": "fill", "params": {"selector": result.get('selector', 'input'), "value": result.get('value')}}
-                        if 'policy' in result and 'params' not in result:
-                            file_logger.log("⚠️ Исправляю формат: добавил params")
-                            result = {"action": "set_dialog_policy", "params": {"policy": result.get('policy')}}
+                            action = result.get('action', 'fill')
+                            text = result.get('text', '')
+                            value = result.get('value')
+                            result = {"action": action, "params": {"text": text, "value": value}}
                     
                     if isinstance(result, list):
                         for i, item in enumerate(result):
                             if isinstance(item, dict):
-                                if 'url' in item and 'params' not in item:
-                                    result[i] = {"action": item.get('action', 'navigate'), "params": {"url": item.get('url')}}
                                 if 'text' in item and 'params' not in item:
-                                    result[i] = {"action": "answer", "params": {"text": item.get('text')}}
-                                if 'selector' in item and 'params' not in item:
-                                    result[i] = {"action": "click", "params": {"selector": item.get('selector')}}
+                                    result[i] = {"action": item.get('action', 'click'), "params": {"text": item.get('text')}}
                                 if 'value' in item and 'params' not in item:
-                                    result[i] = {"action": "fill", "params": {"selector": item.get('selector', 'input'), "value": item.get('value')}}
-                                if 'policy' in item and 'params' not in item:
-                                    result[i] = {"action": "set_dialog_policy", "params": {"policy": item.get('policy')}}
-                    
-                    # 🔧 ФИКС: если запрос про поиск и только fill — добавляем click
-                    if isinstance(result, dict):
-                        if result.get('action') == 'fill' and ('поиск' in prompt or 'search' in prompt.lower() or 'ищи' in prompt):
-                            file_logger.log("⚠️ Добавляю click для поиска")
-                            result = [
-                                result,
-                                {"action": "click", "params": {"selector": "button[aria-label='Search']"}}
-                            ]
-                    
-                    if isinstance(result, list):
-                        # Проверяем каждый элемент массива
-                        for i, item in enumerate(result):
-                            if isinstance(item, dict) and item.get('action') == 'fill':
-                                # Если есть fill и где-то есть упоминание поиска
-                                if ('поиск' in prompt or 'search' in prompt.lower() or 'ищи' in prompt):
-                                    # Проверяем, есть ли уже click в массиве
-                                    has_click = any(a.get('action') == 'click' for a in result if isinstance(a, dict))
-                                    if not has_click:
-                                        file_logger.log("⚠️ Добавляю click для поиска в массив")
-                                        result.append({"action": "click", "params": {"selector": "button[aria-label='Search']"}})
+                                    result[i] = {"action": item.get('action', 'fill'), "params": {"text": item.get('text', ''), "value": item.get('value')}}
                     
                     if isinstance(result, list) or (isinstance(result, dict) and 'action' in result):
                         return result
@@ -1283,25 +1415,57 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
             return "❌ Не удалось сделать скриншот"
         
         elif action_type == "click":
+            text = params.get("text")
+            ref = params.get("ref")
             selector = params.get("selector")
-            if not selector:
-                return "❌ Нет селектора"
-            result = await client.click_element(selector)
-            if result and result.get("success"):
-                await client.get_maximum_snapshot()
-                return f"✅ Кликнул: {selector}"
-            return f"❌ Элемент не найден: {selector}"
+            
+            if text:
+                # 🔧 АВТОМАТИЧЕСКИЙ ПОИСК Ref ID ПО ТЕКСТУ!
+                result = await client.click_by_text(text)
+                if result and result.get("success"):
+                    await client.get_maximum_snapshot()
+                    return f"✅ Нажал на кнопку: {text}"
+                return f"❌ Не удалось найти кнопку: {text}"
+            elif ref:
+                result = await client.click_by_ref(ref)
+                if result and result.get("success"):
+                    await client.get_maximum_snapshot()
+                    return f"✅ Кликнул: {ref}"
+                return f"❌ Не удалось кликнуть {ref}"
+            elif selector:
+                result = await client.click_element(selector)
+                if result and result.get("success"):
+                    await client.get_maximum_snapshot()
+                    return f"✅ Кликнул: {selector}"
+                return f"❌ Элемент не найден: {selector}"
+            return "❌ Нет text, ref или selector"
         
         elif action_type == "fill":
+            text = params.get("text")
+            ref = params.get("ref")
             selector = params.get("selector")
             value = params.get("value", "")
-            if not selector:
-                return "❌ Нет селектора"
-            result = await client.fill_element(selector, value)
-            if result and result.get("success"):
-                await client.get_maximum_snapshot()
-                return f"✅ Заполнил: {selector} = {value}"
-            return f"❌ Элемент не найден: {selector}"
+            
+            if text:
+                # 🔧 АВТОМАТИЧЕСКИЙ ПОИСК Ref ID ПО ТЕКСТУ!
+                result = await client.fill_by_text(text, value)
+                if result and result.get("success"):
+                    await client.get_maximum_snapshot()
+                    return f"✅ Заполнил поле: {text} = {value}"
+                return f"❌ Не удалось найти поле: {text}"
+            elif ref:
+                result = await client.fill_by_ref(ref, value)
+                if result and result.get("success"):
+                    await client.get_maximum_snapshot()
+                    return f"✅ Заполнил: {ref} = {value}"
+                return f"❌ Не удалось заполнить {ref}"
+            elif selector:
+                result = await client.fill_element(selector, value)
+                if result and result.get("success"):
+                    await client.get_maximum_snapshot()
+                    return f"✅ Заполнил: {selector} = {value}"
+                return f"❌ Элемент не найден: {selector}"
+            return "❌ Нет text, ref или selector"
         
         elif action_type == "press_enter":
             result = await client.press_enter()
