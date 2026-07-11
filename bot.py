@@ -186,13 +186,11 @@ def start_chrome_with_mask():
     try:
         file_logger.log("Запуск Chrome с маскировкой...")
         
-        # Проверяем, запущен ли уже Chrome
         result = subprocess.run(["pgrep", "-f", "google-chrome"], capture_output=True, text=True)
         if result.stdout:
             file_logger.log("✅ Chrome уже запущен")
             return True
         
-        # Запускаем Chrome с маскировкой
         subprocess.Popen([
             CHROME_PATH,
             "--headless=new",
@@ -223,14 +221,12 @@ def restart_chrome():
     """Перезапуск Chrome"""
     file_logger.log("🔄 Перезапуск Chrome...")
     
-    # Убиваем старый процесс
     try:
         subprocess.run(["pkill", "-f", "google-chrome"], capture_output=True)
         time.sleep(2)
     except:
         pass
     
-    # Запускаем новый
     return start_chrome_with_mask()
 
 def ensure_chrome_running():
@@ -284,7 +280,6 @@ class CDPClient:
         """Подключение с повторными попытками"""
         for attempt in range(self.max_reconnect_attempts):
             try:
-                # Проверяем Chrome
                 if not is_chrome_alive():
                     file_logger.log("🔄 Chrome не отвечает, перезапускаю...")
                     restart_chrome()
@@ -294,7 +289,7 @@ class CDPClient:
                 
             except Exception as e:
                 file_logger.log(f"⚠️ Попытка {attempt+1}/{self.max_reconnect_attempts}: {e}")
-                await asyncio.sleep(2 ** attempt)  # Экспоненциальная задержка
+                await asyncio.sleep(2 ** attempt)
         
         file_logger.log("❌ Не удалось подключиться после всех попыток", "ERROR")
         return False
@@ -304,7 +299,6 @@ class CDPClient:
         if not self.connected or not self.ws:
             return await self.connect_with_retry()
         
-        # Проверяем, живо ли соединение
         try:
             await asyncio.wait_for(
                 self.send("Runtime.evaluate", {"expression": "1"}),
@@ -345,12 +339,8 @@ class CDPClient:
             await self.send("Network.enable", {})
             file_logger.log("✅ Page, Runtime, DOM, Network включены")
             
-            # Применяем маскировку
             await self.apply_mask()
-            
-            # Устанавливаем куки
             await self.set_cookies(X_COOKIES)
-            
             await self.navigate("https://google.com")
             
             return True
@@ -377,29 +367,22 @@ class CDPClient:
             
             mask_js = """
             (function() {
-                // Маскировка navigator.webdriver
                 Object.defineProperty(navigator, 'webdriver', {
                     get: () => undefined
                 });
                 
-                // Маскировка chrome
                 if (!window.chrome) {
-                    window.chrome = {
-                        runtime: {}
-                    };
+                    window.chrome = { runtime: {} };
                 }
                 
-                // Маскировка plugins
                 Object.defineProperty(navigator, 'plugins', {
                     get: () => [1, 2, 3, 4, 5]
                 });
                 
-                // Маскировка languages
                 Object.defineProperty(navigator, 'languages', {
                     get: () => ['ru-RU', 'ru', 'en-US', 'en']
                 });
                 
-                // Маскировка permissions
                 if (window.navigator.permissions) {
                     const originalQuery = window.navigator.permissions.query;
                     window.navigator.permissions.query = (parameters) => (
@@ -431,7 +414,6 @@ class CDPClient:
         try:
             file_logger.log(f"🍪 Установка {len(cookies)} кук...")
             
-            # Форматируем куки для CDP
             cdp_cookies = []
             for cookie in cookies:
                 cdp_cookie = {
@@ -446,7 +428,6 @@ class CDPClient:
                 }
                 cdp_cookies.append(cdp_cookie)
             
-            # Отправляем куки через CDP
             result = await self.send("Network.setCookies", {
                 "cookies": cdp_cookies
             })
@@ -493,16 +474,13 @@ class CDPClient:
                 
         except (websockets.exceptions.ConnectionClosed, asyncio.TimeoutError, Exception) as e:
             file_logger.log(f"❌ {method} ошибка: {e}", "ERROR")
-            # Пробуем переподключиться
             await self.reconnect()
-            # Повторяем запрос
             return await self.send(method, params)
     
     async def send_safe(self, method, params=None, retries=3):
         """Безопасная отправка с автоматическим восстановлением"""
         for attempt in range(retries):
             try:
-                # Проверяем соединение
                 if not await self.ensure_connection():
                     return {"error": "Connection failed"}
                 
@@ -516,11 +494,9 @@ class CDPClient:
                 file_logger.log(f"⚠️ Ошибка {method}, попытка {attempt+1}/{retries}: {e}")
                 
                 if attempt < retries - 1:
-                    # Переподключаемся
                     await self.reconnect()
                     await asyncio.sleep(1)
                 else:
-                    # Последняя попытка - перезапускаем Chrome
                     file_logger.log("🔄 Перезапуск Chrome...")
                     restart_chrome()
                     await asyncio.sleep(3)
@@ -606,12 +582,16 @@ class CDPClient:
                                           'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'img', 'video',
                                           'iframe', 'div', 'span', 'section', 'article', 'nav',
                                           'header', 'footer', 'main', 'aside', 'ul', 'ol', 'li',
-                                          'label', 'option', 'legend', 'fieldset', 'dialog'];
+                                          'label', 'option', 'legend', 'fieldset', 'dialog',
+                                          'svg', 'path', 'g'];
                         
-                        if (important.includes(tag)) {
+                        const hasText = (el.textContent || '').trim().length > 0;
+                        const hasRole = attrs.role || attrs['aria-label'] || attrs['aria-labelledby'];
+                        
+                        if (important.includes(tag) || hasRole || (hasText && tag === 'span')) {
                             result.push({
                                 tag: tag,
-                                text: (el.textContent || '').trim().slice(0, 100),
+                                text: (el.textContent || '').trim().slice(0, 200),
                                 id: el.id || '',
                                 class: el.className || '',
                                 attrs: attrs,
@@ -722,11 +702,54 @@ class CDPClient:
             return False
     
     async def get_page_description(self):
+        """Полное описание страницы со всеми кнопками"""
         if not self.full_snapshot:
             await self.get_maximum_snapshot()
         
         info = self.full_snapshot or {}
         
+        # Формируем список всех кнопок
+        buttons_text = ""
+        buttons = info.get('buttons', [])
+        
+        if buttons:
+            # Сортируем по видимости (видимые сначала)
+            buttons_sorted = sorted(buttons, key=lambda x: x.get('visible', False), reverse=True)
+            
+            # Показываем ВСЕ кнопки без ограничений
+            for el in buttons_sorted:
+                # Пробуем получить текст из разных источников
+                text = el.get('text', '')
+                if not text:
+                    attrs = el.get('attrs', {})
+                    text = attrs.get('aria-label', '') or attrs.get('value', '') or attrs.get('title', '')
+                
+                # Если текст есть - показываем
+                if text and text.strip():
+                    visible_mark = "👁️" if el.get('visible') else "👻"
+                    selector = el.get('id') and f"#{el.get('id')}" or el.get('class') and f".{el.get('class', '').split()[0] if el.get('class') else ''}" or el.get('tag', '')
+                    buttons_text += f"  {visible_mark} {text[:50]}\n"
+                else:
+                    # Если нет текста - показываем тег и атрибуты
+                    tag = el.get('tag', '')
+                    attrs = el.get('attrs', {})
+                    aria_label = attrs.get('aria-label', '')
+                    if aria_label:
+                        buttons_text += f"  🏷️ {tag} [aria-label={aria_label[:30]}]\n"
+        
+        # Формируем поля ввода
+        fields_text = ""
+        for el in info.get('fields', []):
+            attrs = el.get('attrs', {})
+            field_type = el.get('field_type', 'unknown')
+            name = attrs.get('name', '')
+            placeholder = attrs.get('placeholder', '')
+            aria_label = attrs.get('aria-label', '')
+            field_name = name or placeholder or aria_label or field_type
+            selector = el.get('field_selector', '')
+            fields_text += f"  • {field_name[:30]} → {selector}\n"
+        
+        # Собираем полное описание
         desc = f"""
 📄 **СТРАНИЦА:** {info.get('title', 'Нет заголовка')}
 🔗 **URL:** {info.get('url', 'Нет URL')}
@@ -734,22 +757,12 @@ class CDPClient:
 🍪 **КУКИ УСТАНОВЛЕНЫ:** {'✅ Да' if self.cookies_set else '❌ Нет'}
 🕵️ **МАСКИРОВКА:** {'✅ Активна' if self.masked else '❌ Не активна'}
 
-🔘 **КНОПКИ ({len(info.get('buttons', []))}):**
+🔘 **ВСЕ КНОПКИ ({len(buttons)}):**
+{buttons_text}
+
+📝 **ПОЛЯ ВВОДА ({len(info.get('fields', []))}):**
+{fields_text}
 """
-        for el in info.get('buttons', [])[:10]:
-            text = el.get('text', '') or el.get('attrs', {}).get('value', '')
-            if text:
-                desc += f"  • {text[:30]}\n"
-        
-        desc += f"\n📝 **ПОЛЯ ВВОДА ({len(info.get('fields', []))}):**\n"
-        for el in info.get('fields', [])[:15]:
-            attrs = el.get('attrs', {})
-            field_type = el.get('field_type', 'unknown')
-            name = attrs.get('name', '')
-            placeholder = attrs.get('placeholder', '')
-            field_name = name or placeholder or f"{field_type}"
-            selector = el.get('field_selector', '')
-            desc += f"  • {field_name[:30]} → {selector}\n"
         
         return desc
     
@@ -808,7 +821,6 @@ class CDPClient:
     
     async def screenshot(self):
         try:
-            # Проверяем соединение
             if not await self.ensure_connection():
                 return None
             
@@ -822,7 +834,6 @@ class CDPClient:
             
             file_logger.log("📸 Делаю скриншот...")
             
-            # Используем JPEG с параметрами сжатия
             resp = await self.send_safe("Page.captureScreenshot", {
                 "format": "jpeg",
                 "quality": 70,
@@ -840,20 +851,8 @@ class CDPClient:
                 
                 file_logger.log(f"✅ Скриншот сделан ({len(img_data)} байт)")
                 
-                # Проверяем заголовок JPEG
                 if img_data[:2] == b'\xff\xd8':
                     return img_data
-                elif img_data[:4] == b'\x89PNG':
-                    # Если PNG - конвертируем в JPEG через BytesIO
-                    try:
-                        from PIL import Image
-                        img = Image.open(BytesIO(img_data))
-                        output = BytesIO()
-                        img.convert('RGB').save(output, format='JPEG', quality=85, optimize=True)
-                        file_logger.log("✅ Конвертирован в JPEG")
-                        return output.getvalue()
-                    except:
-                        return img_data
                 else:
                     file_logger.log("❌ Невалидный формат изображения", "ERROR")
                     return None
@@ -886,6 +885,7 @@ AGENT_CODE = """
 - По ID: #APjFqb
 - По классу: .gLFyf
 - По имени: input[name='q']
+- По aria-label: [aria-label="текст"]
 
 ⚠️ ЕСЛИ НУЖНО НЕСКОЛЬКО ДЕЙСТВИЙ - ВОЗВРАЩАЙ МАССИВ:
 [{"action": "fill", "params": {"selector": "#APjFqb", "value": "текст"}}, {"action": "press_enter", "params": {}}]
@@ -923,7 +923,7 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.3,
-        "max_tokens": 300
+        "max_tokens": 1500
     }
     
     for attempt in range(3):
@@ -1127,7 +1127,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.chat.send_action(action="typing")
     
     try:
-        # Проверяем Chrome перед созданием клиента
         ensure_chrome_running()
         
         if user_id not in clients:
@@ -1138,7 +1137,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         client = clients[user_id]
         
-        # Проверяем соединение перед действием
         if not await client.ensure_connection():
             await update.message.reply_text("❌ Не удалось подключиться к браузеру. Попробуйте позже.")
             return
@@ -1150,7 +1148,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if "error" not in response:
                 result = await execute_action(client, response)
                 if result == "screenshot":
-                    # Проверяем наличие файла
                     screenshot_files = ["screenshot.jpg", "screenshot.png"]
                     sent = False
                     for file in screenshot_files:
@@ -1187,7 +1184,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Открой Google\n"
         "• Что видишь?\n"
         "• Сделай скриншот\n"
-        "• Зайди на x.com\n\n"
+        "• Зайди на x.com\n"
+        "• Нажми на кнопку Обзор\n\n"
         "/cdp - статус браузера\n"
         "/logs - логи\n"
         "/set_cookies - установить куки\n"
@@ -1246,7 +1244,6 @@ def main():
     print("🚀 Запуск бота...")
     file_logger.log("🚀 Запуск бота...")
     
-    # Запускаем Chrome
     ensure_chrome_running()
     
     app = Application.builder().token(TOKEN).build()
@@ -1258,8 +1255,8 @@ def main():
     app.add_handler(CommandHandler("mask", mask_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("🚀 Бот запущен с маскировкой и автопереподключением!")
-    file_logger.log("🚀 Бот запущен с маскировкой и автопереподключением!")
+    print("🚀 Бот запущен!")
+    file_logger.log("🚀 Бот запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
