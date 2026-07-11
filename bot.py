@@ -124,11 +124,13 @@ class CDPClient:
             return False
         
         try:
+            # Увеличиваем лимит WebSocket до 10 МБ
             self.ws = await websockets.connect(
                 ws_url,
                 ping_interval=20,
                 ping_timeout=60,
-                close_timeout=10
+                close_timeout=10,
+                max_size=10_000_000  # 10 MB
             )
             self.connected = True
             file_logger.log("✅ WebSocket подключен")
@@ -288,6 +290,11 @@ class CDPClient:
             if elements is None:
                 elements = []
             
+            # Ограничиваем количество элементов для избежания ошибки 1009
+            if len(elements) > 500:
+                elements = elements[:500]
+                file_logger.log(f"⚠️ Ограничил слепок до 500 элементов")
+            
             title = await self.eval_js("document.title") or "Нет заголовка"
             url = await self.eval_js("window.location.href") or "Нет URL"
             
@@ -410,7 +417,6 @@ class CDPClient:
         # Экранируем кавычки в значении
         escaped_value = value.replace("'", "\\'").replace('"', '\\"')
         
-        # Используем двойные кавычки для селектора, одинарные для значения
         js_code = f"""
         (function() {{
             const el = document.querySelector("{selector}");
