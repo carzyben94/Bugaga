@@ -78,7 +78,38 @@ def start_chrome():
             "--disable-dev-shm-usage",
             "--disable-gpu",
             "--user-data-dir=/tmp/chrome-profile",
-            "--window-size=1920,1080"
+            "--window-size=1920,1080",
+            
+            # === МАСКИРОВКА HEADLESS ===
+            "--disable-blink-features=AutomationControlled",
+            "--disable-features=IsolateOrigins,site-per-process",
+            "--disable-web-security",
+            "--disable-site-isolation-trials",
+            "--disable-features=BlockInsecurePrivateNetworkRequests",
+            
+            # === МАСКИРОВКА USER-AGENT ===
+            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            
+            # === ДОПОЛНИТЕЛЬНЫЕ ФЛАГИ ===
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-breakpad",
+            "--disable-client-side-phishing-detection",
+            "--disable-component-extensions-with-background-pages",
+            "--disable-default-apps",
+            "--disable-extensions",
+            "--disable-features=TranslateUI,BlinkGenPropertyTrees",
+            "--disable-hang-monitor",
+            "--disable-ipc-flooding-protection",
+            "--disable-popup-blocking",
+            "--disable-prompt-on-repost",
+            "--disable-renderer-backgrounding",
+            "--disable-sync",
+            "--force-color-profile=srgb",
+            "--metrics-recording-only",
+            "--no-first-run",
+            "--safebrowsing-disable-auto-update",
+            "--enable-automation"
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         
         time.sleep(5)
@@ -123,7 +154,7 @@ class CDPClient:
         self.user_id = None
         self.full_snapshot = None
         self.history = []
-        self.cookies_set = False  # Флаг, что куки уже установлены
+        self.cookies_set = False
     
     async def connect(self):
         if self.connected:
@@ -153,10 +184,14 @@ class CDPClient:
             await self.send("Page.enable", {})
             await self.send("Runtime.enable", {})
             await self.send("DOM.enable", {})
-            await self.send("Network.enable", {})  # Включаем Network для кук
+            await self.send("Network.enable", {})
             file_logger.log("✅ Page, Runtime, DOM, Network включены")
             
-            # Устанавливаем куки сразу после подключения
+            # 🎭 МАСКИРУЕМ БРАУЗЕР
+            await self.mask_browser()
+            file_logger.log("✅ Браузер замаскирован")
+            
+            # 🍪 Устанавливаем куки
             await self.set_x_cookies()
             
             # Открываем Google
@@ -166,6 +201,79 @@ class CDPClient:
             
         except Exception as e:
             file_logger.log(f"❌ Connect error: {e}", "ERROR")
+            return False
+    
+    async def mask_browser(self):
+        """Маскирует браузер (убирает следы headless)"""
+        try:
+            js_code = """
+            (function() {
+                // 1. Убираем webdriver
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+                
+                // 2. Добавляем плагины
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [1, 2, 3, 4, 5]
+                });
+                
+                // 3. Добавляем languages
+                Object.defineProperty(navigator, 'languages', {
+                    get: () => ['ru-RU', 'ru', 'en-US', 'en']
+                });
+                
+                // 4. Добавляем chrome
+                window.chrome = {
+                    runtime: {},
+                    loadTimes: function() {},
+                    csi: function() {},
+                    app: {}
+                };
+                
+                // 5. Добавляем WebGL
+                const getParameter = WebGLRenderingContext.prototype.getParameter;
+                WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                    if (parameter === 37445) {
+                        return 'Intel Inc.';
+                    }
+                    if (parameter === 37446) {
+                        return 'Intel Iris OpenGL Engine';
+                    }
+                    return getParameter(parameter);
+                };
+                
+                // 6. Убираем CDP следы
+                delete window.__cdp__;
+                delete window.__CDP__;
+                delete window.__playwright__;
+                delete window.__pw_manual__;
+                
+                // 7. Добавляем navigator.connection
+                Object.defineProperty(navigator, 'connection', {
+                    get: () => ({
+                        effectiveType: '4g',
+                        rtt: 50,
+                        downlink: 10,
+                        saveData: false
+                    })
+                });
+                
+                // 8. Добавляем performance.memory
+                Object.defineProperty(performance, 'memory', {
+                    get: () => ({
+                        totalJSHeapSize: 100000000,
+                        usedJSHeapSize: 50000000,
+                        jsHeapSizeLimit: 200000000
+                    })
+                });
+                
+                return { success: true };
+            })()
+            """
+            return await self.eval_js(js_code)
+        except Exception as e:
+            file_logger.log(f"❌ Mask error: {e}", "ERROR")
             return False
     
     async def set_x_cookies(self):
@@ -183,7 +291,6 @@ class CDPClient:
                     "httpOnly": cookie.get("httpOnly", False),
                 }
                 
-                # sameSite
                 same_site = cookie.get("sameSite", "unspecified")
                 if same_site.lower() == "none":
                     cdp_cookie["sameSite"] = "None"
@@ -243,13 +350,10 @@ class CDPClient:
         file_logger.log(f"🌐 Навигация на {url}")
         await self.send("Page.navigate", {"url": url})
         
-        # Если переходим на X.com, проверяем куки
         if "x.com" in url.lower():
             file_logger.log("🍪 Проверяю куки для X.com...")
             if not self.cookies_set:
                 await self.set_x_cookies()
-            
-            # Обновляем страницу после установки кук
             await asyncio.sleep(1)
             await self.send("Page.reload", {})
         
@@ -442,26 +546,36 @@ class CDPClient:
         info = self.full_snapshot or {}
         
         desc = f"""
-📄 **СТРАНИЦА:** {info.get('title', 'Нет заголовка')}
-🔗 **URL:** {info.get('url', 'Нет URL')}
-📊 **ВСЕГО ЭЛЕМЕНТОВ:** {info.get('total', 0)}
+📄 СТРАНИЦА: {info.get('title', 'Нет заголовка')}
+🔗 URL: {info.get('url', 'Нет URL')}
+📊 ВСЕГО ЭЛЕМЕНТОВ: {info.get('total', 0)}
 
-🔘 **КНОПКИ ({len(info.get('buttons', []))}):**
+🔘 КНОПКИ ({len(info.get('buttons', []))}):
 """
-        for el in info.get('buttons', [])[:10]:
-            text = el.get('text', '') or el.get('attrs', {}).get('value', '')
-            if text:
-                desc += f"  • {text[:30]}\n"
+        buttons = info.get('buttons', [])
+        if isinstance(buttons, list):
+            for el in buttons[:10]:
+                if isinstance(el, dict):
+                    text = el.get('text', '') or el.get('attrs', {}).get('value', '')
+                    if text:
+                        desc += f"  • {text[:30]}\n"
+        else:
+            desc += "  • (нет данных)\n"
         
-        desc += f"\n📝 **ПОЛЯ ВВОДА ({len(info.get('fields', []))}):**\n"
-        for el in info.get('fields', [])[:15]:
-            attrs = el.get('attrs', {})
-            field_type = el.get('field_type', 'unknown')
-            name = attrs.get('name', '')
-            placeholder = attrs.get('placeholder', '')
-            field_name = name or placeholder or f"{field_type}"
-            selector = el.get('field_selector', '')
-            desc += f"  • {field_name[:30]} → {selector}\n"
+        desc += f"\n📝 ПОЛЯ ВВОДА ({len(info.get('fields', []))}):\n"
+        fields = info.get('fields', [])
+        if isinstance(fields, list):
+            for el in fields[:15]:
+                if isinstance(el, dict):
+                    attrs = el.get('attrs', {})
+                    field_type = el.get('field_type', 'unknown')
+                    name = attrs.get('name', '')
+                    placeholder = attrs.get('placeholder', '')
+                    field_name = name or placeholder or f"{field_type}"
+                    selector = el.get('field_selector', '')
+                    desc += f"  • {field_name[:30]} → {selector}\n"
+        else:
+            desc += "  • (нет данных)\n"
         
         return desc
     
@@ -525,16 +639,35 @@ class CDPClient:
             if not self.connected:
                 await self.connect()
             
+            await asyncio.sleep(2)
+            
             title = await self.eval_js("document.title")
             file_logger.log(f"📄 Текущий заголовок: {title}")
             
             if not title or title == "":
                 file_logger.log("🌐 Открываю Google...")
                 await self.navigate("https://google.com")
-                await asyncio.sleep(2)
+                await asyncio.sleep(3)
+            
+            body = await self.eval_js("document.body.innerText.slice(0, 50)")
+            if not body or body == "":
+                file_logger.log("⚠️ Страница пустая, жду...")
+                await asyncio.sleep(4)
             
             file_logger.log("📸 Делаю скриншот...")
             
+            # Пробуем через Browser
+            try:
+                resp = await self.send("Browser.captureScreenshot", {
+                    "format": "png"
+                })
+                if "result" in resp and "data" in resp["result"]:
+                    file_logger.log("✅ Скриншот через Browser")
+                    return base64.b64decode(resp["result"]["data"])
+            except:
+                pass
+            
+            # Пробуем через Page
             resp = await self.send("Page.captureScreenshot", {
                 "format": "png",
                 "captureBeyondViewport": True,
