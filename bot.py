@@ -481,7 +481,7 @@ class CDPClient:
 
 clients = {}
 
-# ---------- КОД АГЕНТА (упрощённый) ----------
+# ---------- КОД АГЕНТА ----------
 
 AGENT_CODE = """
 🤖 ТЫ — АГЕНТ ДЛЯ УПРАВЛЕНИЯ БРАУЗЕРОМ
@@ -543,7 +543,6 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
             
             file_logger.log(f"Agnes ответ: {content[:200]}...")
             
-            # Пробуем найти JSON
             json_match = re.search(r'\[.*\]|\{.*\}', content, re.DOTALL)
             if json_match:
                 try:
@@ -678,14 +677,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🧠 **МАКСИМАЛЬНЫЙ АГЕНТ**\n\n"
-        "Я вижу ВСЁ на странице!\n\n"
-        "💡 **Примеры команд:**\n"
-        "• Открой Google\n"
-        "• Какие поля есть?\n"
-        "• Введи в поле поиска текст Привет и нажми Enter\n"
-        "• Что ты видишь?\n"
-        "• Сделай скриншот\n\n"
         "/cdp - статус браузера\n"
         "/logs - логи"
     )
