@@ -1,4 +1,4 @@
-Бымтрый cdp слепококо
+#Бымтрый cdp слепококо
 
 import os
 import logging
