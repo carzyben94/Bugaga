@@ -180,9 +180,9 @@ class CDPClient:
         try:
             self.ws = await websockets.connect(
                 ws_url,
-                ping_interval=20,
-                ping_timeout=60,
-                close_timeout=10,
+                ping_interval=30,
+                ping_timeout=90,
+                close_timeout=20,
                 max_size=10_000_000
             )
             self.connected = True
@@ -211,7 +211,7 @@ class CDPClient:
             return False
     
     async def mask_browser(self):
-        """Полная маскировка браузера (как в Pydoll)"""
+        """Полная маскировка браузера"""
         try:
             js_code = """
             (function() {
@@ -454,6 +454,24 @@ class CDPClient:
             file_logger.log(f"❌ Ошибка установки кук: {e}", "ERROR")
             return False
     
+    async def safe_send(self, method, params=None, retry=3):
+        """Отправка с автоматическим переподключением"""
+        last_error = None
+        for attempt in range(retry):
+            try:
+                return await self.send(method, params)
+            except Exception as e:
+                last_error = e
+                error_str = str(e)
+                if "keepalive ping timeout" in error_str or "1011" in error_str:
+                    file_logger.log(f"⚠️ Потеря соединения, переподключаюсь... (попытка {attempt+1}/{retry})")
+                    self.connected = False
+                    await self.connect()
+                    await asyncio.sleep(2)
+                else:
+                    raise
+        return {"error": f"Max retries exceeded: {last_error}"}
+    
     async def send(self, method, params=None):
         if not self.connected:
             await self.connect()
@@ -510,7 +528,7 @@ class CDPClient:
     
     async def eval_js(self, code):
         try:
-            resp = await self.send("Runtime.evaluate", {
+            resp = await self.safe_send("Runtime.evaluate", {
                 "expression": code,
                 "returnByValue": True,
                 "awaitPromise": True
@@ -544,12 +562,23 @@ class CDPClient:
         try:
             file_logger.log("📸 Делаю максимальный слепок...")
             
-            elements = await self.eval_js("""
-                (function() {
+            # Проверяем URL для X.com
+            url = await self.eval_js("window.location.href") or ""
+            is_x = "x.com" in url
+            
+            # Для X.com увеличиваем лимит
+            max_elements = 2000 if is_x else 500
+            
+            elements = await self.eval_js(f"""
+                (function() {{
                     const result = [];
                     const all = document.querySelectorAll('*');
+                    let count = 0;
+                    const maxCount = {max_elements};
                     
-                    all.forEach(el => {
+                    for (const el of all) {{
+                        if (count >= maxCount) break;
+                        
                         const tag = el.tagName.toLowerCase();
                         const rect = el.getBoundingClientRect();
                         const style = window.getComputedStyle(el);
@@ -558,10 +587,10 @@ class CDPClient:
                                        style.display !== 'none' && 
                                        style.visibility !== 'hidden';
                         
-                        const attrs = {};
-                        for (const attr of el.attributes) {
+                        const attrs = {{}};
+                        for (const attr of el.attributes) {{
                             attrs[attr.name] = attr.value;
-                        }
+                        }}
                         
                         const important = ['a', 'button', 'input', 'textarea', 'select', 'form',
                                           'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'img', 'video',
@@ -569,8 +598,8 @@ class CDPClient:
                                           'header', 'footer', 'main', 'aside', 'ul', 'ol', 'li',
                                           'label', 'option', 'legend', 'fieldset', 'dialog'];
                         
-                        if (important.includes(tag)) {
-                            result.push({
+                        if (important.includes(tag)) {{
+                            result.push({{
                                 tag: tag,
                                 text: (el.textContent || '').trim().slice(0, 100),
                                 id: el.id || '',
@@ -581,7 +610,7 @@ class CDPClient:
                                 y: Math.round(rect.y),
                                 width: Math.round(rect.width),
                                 height: Math.round(rect.height),
-                                style: {
+                                style: {{
                                     display: style.display,
                                     visibility: style.visibility,
                                     position: style.position,
@@ -589,26 +618,27 @@ class CDPClient:
                                     fontSize: style.fontSize,
                                     backgroundColor: style.backgroundColor,
                                     cursor: style.cursor
-                                },
+                                }},
                                 parent: el.parentElement ? el.parentElement.tagName.toLowerCase() : null,
                                 children: el.children.length
-                            });
-                        }
-                    });
+                            }});
+                            count++;
+                        }}
+                    }}
                     
                     return result;
-                })()
+                }})()
             """)
             
             if elements is None:
                 elements = []
             
-            if len(elements) > 500:
-                elements = elements[:500]
-                file_logger.log(f"⚠️ Ограничил слепок до 500 элементов")
+            if len(elements) > max_elements:
+                elements = elements[:max_elements]
+                file_logger.log(f"⚠️ Ограничил слепок до {max_elements} элементов")
             
             title = await self.eval_js("document.title") or "Нет заголовка"
-            url = await self.eval_js("window.location.href") or "Нет URL"
+            url_final = await self.eval_js("window.location.href") or "Нет URL"
             
             all_fields = []
             
@@ -659,9 +689,9 @@ class CDPClient:
             
             self.full_snapshot = {
                 "title": title,
-                "url": url,
+                "url": url_final,
                 "total": len(elements),
-                "all_elements": elements[:500],
+                "all_elements": elements,
                 "buttons": buttons,
                 "fields": all_fields,
                 "inputs": inputs,
@@ -683,7 +713,6 @@ class CDPClient:
             return False
     
     async def get_page_description(self):
-        """Возвращает описание страницы с безопасной обработкой типов"""
         if not self.full_snapshot:
             await self.get_maximum_snapshot()
         
@@ -698,7 +727,7 @@ class CDPClient:
 """
         buttons = info.get('buttons', [])
         if isinstance(buttons, list):
-            for el in buttons[:10]:
+            for el in buttons[:20]:
                 if isinstance(el, dict):
                     text = el.get('text', '') or el.get('attrs', {}).get('value', '')
                     if text:
@@ -709,7 +738,7 @@ class CDPClient:
         desc += f"\n📝 ПОЛЯ ВВОДА ({len(info.get('fields', [])) if isinstance(info.get('fields', []), list) else 0}):\n"
         fields = info.get('fields', [])
         if isinstance(fields, list):
-            for el in fields[:15]:
+            for el in fields[:20]:
                 if isinstance(el, dict):
                     attrs = el.get('attrs', {})
                     field_type = el.get('field_type', 'unknown')
