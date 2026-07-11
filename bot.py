@@ -171,6 +171,7 @@ class CDPClient:
         self.ref_elements = {}
         self.frame_tree = None
         self.accessibility_tree = []
+        self.page_loaded = False
     
     async def connect(self):
         if self.connected:
@@ -202,7 +203,6 @@ class CDPClient:
             await self.send("DOM.enable", {})
             await self.send("Network.enable", {})
             
-            # Target.setAutoAttach для OOPIF
             await self.send("Target.setAutoAttach", {
                 "autoAttach": True,
                 "flatten": True,
@@ -212,11 +212,9 @@ class CDPClient:
             
             file_logger.log("✅ Page, Runtime, DOM, Network включены")
             
-            await self.mask_browser()
-            file_logger.log("✅ Браузер замаскирован")
-            
             await self.set_x_cookies()
             
+            # Открываем Google и ждём загрузки
             await self.navigate("https://google.com")
             
             return True
@@ -226,7 +224,13 @@ class CDPClient:
             return False
     
     async def mask_browser(self):
+        """Маскировка браузера только после загрузки страницы"""
         try:
+            # Ждём загрузки страницы
+            if not self.page_loaded:
+                file_logger.log("⚠️ Страница ещё не загружена, пропускаю маскировку")
+                return True
+            
             js_code = """
             (function() {
                 Object.defineProperty(navigator, 'webdriver', {
@@ -386,7 +390,10 @@ class CDPClient:
                 return { success: true };
             })()
             """
-            return await self.eval_js(js_code)
+            result = await self.eval_js(js_code)
+            if result and result.get("success"):
+                file_logger.log("✅ Браузер замаскирован")
+            return True
         except Exception as e:
             file_logger.log(f"❌ Mask error: {e}", "ERROR")
             return False
@@ -523,24 +530,33 @@ class CDPClient:
             dialog = self.pending_dialogs.pop(0)
             await self.send("Page.handleJavaScriptDialog", {"accept": False})
     
+    async def wait_for_page_load(self, timeout=15):
+        """Ждёт загрузки страницы (как в Hermes)"""
+        for i in range(timeout):
+            await asyncio.sleep(1)
+            try:
+                title = await self.eval_js("document.title")
+                if title and title != "":
+                    self.page_loaded = True
+                    file_logger.log(f"📄 Страница загружена: {title}")
+                    return True
+            except:
+                pass
+        file_logger.log(f"⚠️ Страница не загрузилась за {timeout} секунд")
+        return False
+    
     async def navigate(self, url):
         file_logger.log(f"🌐 Навигация на {url}")
         await self.send("Page.navigate", {"url": url})
         
-        if "x.com" in url.lower():
-            file_logger.log("🍪 Проверяю куки для X.com...")
-            if not self.cookies_set:
-                await self.set_x_cookies()
-            await asyncio.sleep(1)
-            await self.send("Page.reload", {})
+        # Ждём загрузки страницы
+        await self.wait_for_page_load()
         
-        for i in range(10):
-            await asyncio.sleep(1)
-            title = await self.eval_js("document.title")
-            if title and title != "":
-                file_logger.log(f"📄 Страница загружена: {title}")
-                await self.get_maximum_snapshot()
-                break
+        # Маскируем браузер после загрузки
+        await self.mask_browser()
+        
+        # Получаем snapshot
+        await self.get_maximum_snapshot()
     
     async def eval_js(self, code, session_id=None):
         try:
@@ -575,11 +591,16 @@ class CDPClient:
             return None
     
     # ============================================
-    # HERMES: Accessibility Tree (полный переход)
+    # HERMES: Accessibility Tree
     # ============================================
     async def get_accessibility_tree(self):
-        """Возвращает accessibility tree как в Hermes"""
+        """Возвращает accessibility tree (только после загрузки страницы)"""
         try:
+            # Проверяем, что страница загружена
+            if not self.page_loaded:
+                file_logger.log("⚠️ Страница не загружена, пропускаю сбор элементов")
+                return []
+            
             js_code = """
             (function() {
                 const result = [];
@@ -645,7 +666,6 @@ class CDPClient:
             if not isinstance(result, list):
                 return []
             
-            # Сохраняем в ref_elements
             self.accessibility_tree = result
             self.ref_elements = {el['ref']: el for el in result}
             return result
@@ -766,26 +786,29 @@ class CDPClient:
         return await self.eval_js(js_code)
     
     # ============================================
-    # HERMES: Получение snapshot (только accessibility tree)
+    # HERMES: Получение snapshot
     # ============================================
     async def get_maximum_snapshot(self):
         try:
             file_logger.log("📸 Делаю максимальный слепок...")
             
-            url = await self.eval_js("window.location.href") or ""
-            is_x = "x.com" in url
+            # Проверяем загрузку страницы
+            if not self.page_loaded:
+                file_logger.log("⚠️ Страница не загружена, пропускаю слепок")
+                return False
             
-            # Получаем accessibility tree (вместо полного DOM)
+            url = await self.eval_js("window.location.href") or ""
+            
+            # Получаем accessibility tree
             ref_elements = await self.get_accessibility_tree()
             
-            # Только frame_tree для информации (не для действий)
+            # FrameTree для информации
             frame_tree_resp = await self.send("Page.getFrameTree", {})
             self.frame_tree = None
             if "result" in frame_tree_resp:
                 self.frame_tree = frame_tree_resp["result"].get("frameTree", {})
                 file_logger.log(f"📦 FrameTree получен")
             
-            # Получаем базовую информацию о странице
             title = await self.eval_js("document.title") or "Нет заголовка"
             url_final = await self.eval_js("window.location.href") or "Нет URL"
             
@@ -859,7 +882,7 @@ class CDPClient:
         return False
     
     # ============================================
-    # HERMES: get_page_description (только Ref ID)
+    # HERMES: get_page_description
     # ============================================
     async def get_page_description(self):
         if not self.full_snapshot:
@@ -930,6 +953,7 @@ class CDPClient:
     async def reload(self):
         await self.send("Page.reload", {})
         await asyncio.sleep(2)
+        await self.wait_for_page_load()
         await self.get_maximum_snapshot()
     
     async def screenshot(self):
@@ -937,7 +961,11 @@ class CDPClient:
             if not self.connected:
                 await self.connect()
             
-            await asyncio.sleep(3)
+            # Ждём загрузки страницы
+            if not self.page_loaded:
+                await self.wait_for_page_load()
+            
+            await asyncio.sleep(2)
             
             title = await self.eval_js("document.title")
             file_logger.log(f"📄 Текущий заголовок: {title}")
