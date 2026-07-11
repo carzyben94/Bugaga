@@ -52,8 +52,8 @@ DIALOG_POLICY = {
     "auto_accept": "accept"
 }
 CURRENT_DIALOG_POLICY = "must_respond"
-DIALOG_TIMEOUT_SECONDS = 300  # 5 минут как в Hermes
-MAX_RECENT_DIALOGS = 20  # как в Hermes
+DIALOG_TIMEOUT_SECONDS = 300
+MAX_RECENT_DIALOGS = 20
 
 # ---------- Логирование ----------
 LOG_FILE = "bot_logs.txt"
@@ -91,16 +91,13 @@ def start_chrome():
             "--disable-gpu",
             "--user-data-dir=/tmp/chrome-profile",
             "--window-size=1920,1080",
-            
             "--disable-blink-features=AutomationControlled",
             "--disable-features=IsolateOrigins,site-per-process",
             "--disable-web-security",
             "--disable-site-isolation-trials",
             "--disable-features=BlockInsecurePrivateNetworkRequests",
             "--disable-features=TranslateUI,BlinkGenPropertyTrees",
-            
             "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            
             "--disable-default-apps",
             "--disable-extensions",
             "--disable-component-extensions-with-background-pages",
@@ -114,14 +111,11 @@ def start_chrome():
             "--disable-renderer-backgrounding",
             "--disable-sync",
             "--disable-breakpad",
-            
             "--metrics-recording-only",
             "--no-first-run",
             "--safebrowsing-disable-auto-update",
             "--force-color-profile=srgb",
-            
             "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-            
             "--enable-automation"
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         
@@ -162,8 +156,6 @@ def create_page():
 # ============================================
 
 class CDPSupervisor:
-    """Полноценный CDP Supervisor как в Hermes"""
-    
     def __init__(self, user_id: int, ws_url: str):
         self.user_id = user_id
         self.ws_url = ws_url
@@ -173,48 +165,37 @@ class CDPSupervisor:
         self.running = False
         self.page_loaded = False
         
-        # Состояние
-        self.pending_dialogs = []  # [{id, type, message, defaultPrompt, timestamp}]
-        self.recent_dialogs = deque(maxlen=MAX_RECENT_DIALOGS)  # [{id, type, message, closed_by, timestamp}]
+        self.pending_dialogs = []
+        self.recent_dialogs = deque(maxlen=MAX_RECENT_DIALOGS)
         self.frame_tree = {}
         self.connected_tabs = {}
         self.ref_elements = {}
         self.full_snapshot = None
         self.oopifs = {}
         
-        # Синхронизация (как в Hermes)
-        self._pending_requests = {}  # {msg_id: asyncio.Future}
+        self._pending_requests = {}
         self._recv_lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
         self._ready_event = asyncio.Event()
-        self._dialog_counter = 0  # для генерации dialog_id
+        self._dialog_counter = 0
+        self._navigation_lock = asyncio.Lock()
         
-        # Таймауты
         self.dialog_timeout = DIALOG_TIMEOUT_SECONDS
         self.ping_interval = 60
         self.ping_timeout = 180
-        self.connection_timeout = 30
         
-        # Задачи
         self.supervisor_task = None
         self.heartbeat_task = None
         self.dialog_timeout_task = None
         self.event_loop_task = None
     
-    # ============================================
-    # ЗАПУСК И УПРАВЛЕНИЕ
-    # ============================================
-    
     async def start(self):
-        """Запускает супервайзера в фоне"""
         if self.running:
             return True
         
         file_logger.log(f"🧠 Запуск CDP Supervisor для {self.user_id}")
         self.running = True
         self._stop_event.clear()
-        
-        # Запускаем supervisor в отдельной задаче
         self.supervisor_task = asyncio.create_task(self._run())
         
         try:
@@ -225,7 +206,6 @@ class CDPSupervisor:
             return False
     
     async def stop(self):
-        """Останавливает супервайзера"""
         self.running = False
         self._stop_event.set()
         
@@ -240,26 +220,24 @@ class CDPSupervisor:
         
         file_logger.log(f"🧠 CDP Supervisor остановлен для {self.user_id}")
     
-    # ============================================
-    # ОСНОВНОЙ ЦИКЛ
-    # ============================================
-    
     async def _run(self):
-        """Основной цикл супервайзера"""
         while self.running and not self._stop_event.is_set():
             try:
                 await self._connect()
                 await self._setup_domains()
-                await self._navigate_to_default()
-                self._ready_event.set()
                 
-                # Запускаем event loop в отдельной задаче
+                # ✅ ЗАПУСКАЕМ EVENT LOOP ПЕРВЫМ
                 self.event_loop_task = asyncio.create_task(self._event_loop())
                 
-                # Запускаем heartbeat
+                # ✅ Даем время на подключение
+                await asyncio.sleep(0.5)
+                
+                # ✅ Теперь навигация работает
+                await self.navigate("https://google.com")
+                
+                self._ready_event.set()
                 self.heartbeat_task = asyncio.create_task(self._heartbeat())
                 
-                # Ждем завершения
                 await asyncio.gather(
                     self.event_loop_task,
                     self.heartbeat_task,
@@ -275,12 +253,7 @@ class CDPSupervisor:
                 file_logger.log(f"❌ Supervisor error: {e}", "ERROR")
                 await asyncio.sleep(5)
     
-    # ============================================
-    # ПОДКЛЮЧЕНИЕ
-    # ============================================
-    
     async def _connect(self):
-        """Подключается к Chrome"""
         file_logger.log(f"🔗 Подключение к Chrome для {self.user_id}")
         self.ws = await websockets.connect(
             self.ws_url,
@@ -293,7 +266,6 @@ class CDPSupervisor:
         file_logger.log(f"✅ WebSocket подключен для {self.user_id}")
     
     async def _setup_domains(self):
-        """Включает все нужные домены"""
         await self._send("Page.enable", {})
         await self._send("Runtime.enable", {})
         await self._send("DOM.enable", {})
@@ -305,42 +277,7 @@ class CDPSupervisor:
         })
         file_logger.log("✅ Domains enabled")
     
-    async def _navigate_to_default(self):
-        """Открывает страницу по умолчанию"""
-        await self._send("Page.navigate", {"url": "https://google.com"})
-        await self._wait_for_page_load()
-    
-    # ============================================
-    # ОЖИДАНИЕ ЗАГРУЗКИ
-    # ============================================
-    
-    async def _wait_for_page_load(self, timeout=15):
-        """Ждёт загрузки страницы"""
-        for i in range(timeout):
-            await asyncio.sleep(1)
-            try:
-                resp = await self._send("Runtime.evaluate", {
-                    "expression": "document.title",
-                    "returnByValue": True
-                })
-                if "result" in resp and "result" in resp["result"]:
-                    title = resp["result"]["result"].get("value", "")
-                    if title:
-                        self.page_loaded = True
-                        file_logger.log(f"📄 Страница загружена: {title}")
-                        await self._update_snapshot()
-                        return True
-            except:
-                pass
-        file_logger.log(f"⚠️ Страница не загрузилась за {timeout} секунд")
-        return False
-    
-    # ============================================
-    # ОТПРАВКА КОМАНД (С СИНХРОНИЗАЦИЕЙ)
-    # ============================================
-    
     async def _send(self, method, params=None, session_id=None):
-        """Отправляет команду в Chrome с синхронизацией"""
         if not self.connected:
             return {"error": "Not connected"}
         
@@ -354,7 +291,6 @@ class CDPSupervisor:
         if session_id:
             msg["sessionId"] = session_id
         
-        # Создаём Future для ожидания ответа
         future = asyncio.get_event_loop().create_future()
         self._pending_requests[msg_id] = future
         
@@ -371,28 +307,20 @@ class CDPSupervisor:
             file_logger.log(f"❌ Send error: {e}", "ERROR")
             return {"error": str(e)}
     
-    # ============================================
-    # ОСНОВНОЙ ЦИКЛ ОБРАБОТКИ СОБЫТИЙ
-    # ============================================
-    
     async def _event_loop(self):
-        """Главный цикл обработки событий"""
         while self.running and self.connected:
             try:
-                # Используем Lock для безопасного recv
                 async with self._recv_lock:
                     response = await asyncio.wait_for(self.ws.recv(), timeout=30)
                 
                 data = json.loads(response)
                 
-                # Проверяем, есть ли ожидающий запрос с этим id
                 if "id" in data and data["id"] in self._pending_requests:
                     future = self._pending_requests.pop(data["id"])
                     if not future.done():
                         future.set_result(data)
                     continue
                 
-                # Если это событие (без id) — обрабатываем
                 if "method" in data:
                     await self._handle_event(data)
                     
@@ -406,23 +334,14 @@ class CDPSupervisor:
                 file_logger.log(f"❌ Event loop error: {e}", "ERROR")
                 await asyncio.sleep(1)
     
-    # ============================================
-    # ОБРАБОТКА СОБЫТИЙ
-    # ============================================
-    
     async def _handle_event(self, data):
-        """Обрабатывает событие от Chrome"""
         method = data.get("method")
         params = data.get("params", {})
         
-        # ============================================
-        # ДИАЛОГИ
-        # ============================================
         if method == "Page.javascriptDialogOpening":
             dialog_message = params.get('message', '')
             dialog_type = params.get('type', '')
             
-            # Генерируем уникальный ID для диалога
             self._dialog_counter += 1
             dialog_id = f"d-{self._dialog_counter}"
             
@@ -434,14 +353,11 @@ class CDPSupervisor:
                 "timestamp": time.time()
             }
             
-            file_logger.log(f"💬 Диалог обнаружен [{dialog_id}]: {dialog_message} (тип: {dialog_type})")
+            file_logger.log(f"💬 Диалог обнаружен [{dialog_id}]: {dialog_message}")
             
-            # Применяем политику
             if CURRENT_DIALOG_POLICY == "auto_dismiss":
                 file_logger.log(f"🚫 auto_dismiss — закрываю диалог [{dialog_id}]")
                 await self._send("Page.handleJavaScriptDialog", {"accept": False})
-                
-                # Добавляем в recent_dialogs
                 self.recent_dialogs.append({
                     **dialog_info,
                     "closed_by": "auto_policy",
@@ -453,8 +369,6 @@ class CDPSupervisor:
             elif CURRENT_DIALOG_POLICY == "auto_accept":
                 file_logger.log(f"✅ auto_accept — принимаю диалог [{dialog_id}]")
                 await self._send("Page.handleJavaScriptDialog", {"accept": True})
-                
-                # Добавляем в recent_dialogs
                 self.recent_dialogs.append({
                     **dialog_info,
                     "closed_by": "auto_policy",
@@ -463,17 +377,12 @@ class CDPSupervisor:
                 })
                 return
             
-            # Политика must_respond - добавляем в pending
             self.pending_dialogs.append(dialog_info)
             
-            # Запускаем watchdog таймаут
             if self.dialog_timeout_task is None or self.dialog_timeout_task.done():
                 self.dialog_timeout_task = asyncio.create_task(self._dialog_timeout_check())
             return
         
-        # ============================================
-        # IFRAME (OOPIF)
-        # ============================================
         if method == "Target.attachedToTarget":
             target_info = params.get("targetInfo", {})
             session_id = params.get("sessionId")
@@ -489,13 +398,8 @@ class CDPSupervisor:
                 if is_oopif:
                     self.oopifs[session_id] = target_info
                     file_logger.log(f"🔗 OOPIF обнаружен: {target_info.get('url', '')[:50]}")
-                else:
-                    file_logger.log(f"🔗 Прикреплён фрейм: {target_info.get('url', '')[:50]}")
             return
         
-        # ============================================
-        # ЗАГРУЗКА СТРАНИЦЫ
-        # ============================================
         if method == "Page.loadEventFired":
             self.page_loaded = True
             file_logger.log("📄 Page.loadEventFired — страница загружена")
@@ -509,36 +413,25 @@ class CDPSupervisor:
             return
     
     async def _dialog_timeout_check(self):
-        """Проверяет таймаут диалогов (watchdog)"""
         await asyncio.sleep(self.dialog_timeout)
         
-        # Проверяем только диалоги, которые всё ещё в pending
         for dialog in self.pending_dialogs[:]:
             if time.time() - dialog.get('timestamp', 0) >= self.dialog_timeout:
-                file_logger.log(f"⏰ Таймаут диалога [{dialog.get('id')}] ({self.dialog_timeout}с), закрываю")
+                file_logger.log(f"⏰ Таймаут диалога [{dialog.get('id')}]")
                 
                 try:
                     await self._send("Page.handleJavaScriptDialog", {"accept": False})
-                    
-                    # Добавляем в recent_dialogs с тегом watchdog
                     self.recent_dialogs.append({
                         **dialog,
                         "closed_by": "watchdog",
                         "action": "dismiss_timeout",
                         "closed_at": time.time()
                     })
-                    
                     self.pending_dialogs.remove(dialog)
-                    
                 except Exception as e:
-                    file_logger.log(f"❌ Ошибка при закрытии диалога по таймауту: {e}", "ERROR")
-    
-    # ============================================
-    # HEARTBEAT
-    # ============================================
+                    file_logger.log(f"❌ Ошибка: {e}", "ERROR")
     
     async def _heartbeat(self):
-        """Проверка живучести соединения"""
         while self.running and not self._stop_event.is_set():
             await asyncio.sleep(30)
             try:
@@ -548,12 +441,11 @@ class CDPSupervisor:
                     self.connected = False
                     await self._reconnect()
             except:
-                file_logger.log("⚠️ Heartbeat exception, переподключаюсь")
+                file_logger.log("⚠️ Heartbeat exception")
                 self.connected = False
                 await self._reconnect()
     
     async def _reconnect(self):
-        """Переподключается к Chrome"""
         await asyncio.sleep(2)
         if self.ws:
             try:
@@ -564,12 +456,7 @@ class CDPSupervisor:
         await self._connect()
         await self._setup_domains()
     
-    # ============================================
-    # ОБНОВЛЕНИЕ SNAPSHOT
-    # ============================================
-    
     async def _update_snapshot(self):
-        """Обновляет snapshot страницы"""
         try:
             ref_elements = await self._get_accessibility_tree()
             
@@ -613,7 +500,6 @@ class CDPSupervisor:
             return False
     
     async def _get_accessibility_tree(self):
-        """Получает accessibility tree"""
         try:
             js_code = """
             (function() {
@@ -689,11 +575,10 @@ class CDPSupervisor:
             return []
     
     # ============================================
-    # PUBLIC API (как в Hermes)
+    # PUBLIC API
     # ============================================
     
     async def ensure_session(self):
-        """Проверяет и пересоздаёт сессию если нужно"""
         if not self.connected:
             await self._connect()
             await self._setup_domains()
@@ -701,8 +586,58 @@ class CDPSupervisor:
             await self._wait_for_page_load()
         return self.connected and self.page_loaded
     
+    async def _wait_for_page_load(self, timeout=15):
+        for i in range(timeout):
+            await asyncio.sleep(1)
+            try:
+                resp = await self._send("Runtime.evaluate", {
+                    "expression": "document.title",
+                    "returnByValue": True
+                })
+                if "result" in resp and "result" in resp["result"]:
+                    title = resp["result"]["result"].get("value", "")
+                    if title:
+                        self.page_loaded = True
+                        file_logger.log(f"📄 Страница загружена: {title}")
+                        await self._update_snapshot()
+                        return True
+            except:
+                pass
+        file_logger.log(f"⚠️ Страница не загрузилась за {timeout} секунд")
+        return False
+    
+    async def navigate(self, url):
+        """Безопасная навигация без дедлоков"""
+        async with self._navigation_lock:
+            try:
+                file_logger.log(f"🌐 Навигация на {url}")
+                
+                # Отправляем команду навигации
+                result = await asyncio.wait_for(
+                    self._send("Page.navigate", {"url": url}),
+                    timeout=15
+                )
+                
+                if "error" in result:
+                    return {"success": False, "error": result.get("error")}
+                
+                # Ждем загрузки
+                await asyncio.wait_for(self._wait_for_page_load(), timeout=15)
+                await self._update_snapshot()
+                return {"success": True}
+                
+            except asyncio.TimeoutError:
+                file_logger.log(f"⚠️ Таймаут навигации на {url}")
+                try:
+                    await self._send("Page.stopLoading", {})
+                except:
+                    pass
+                return {"success": False, "error": "Timeout"}
+            except Exception as e:
+                file_logger.log(f"❌ Navigate error: {e}", "ERROR")
+                return {"success": False, "error": str(e)}
+    
     async def browser_snapshot(self, full=False):
-        """Возвращает snapshot как в Hermes (структурированный JSON)"""
         if not self.full_snapshot:
             await self._update_snapshot()
         
@@ -720,16 +655,13 @@ class CDPSupervisor:
             }
     
     async def browser_cdp(self, method, params=None, frame_id=None):
-        """Универсальный CDP-инструмент с поддержкой фреймов"""
         session_id = None
         if frame_id:
-            # Ищем сессию для фрейма
             for sid, info in self.connected_tabs.items():
                 if info.get("target_id") == frame_id or info.get("url") == frame_id:
                     session_id = sid
                     break
             
-            # Если фрейм не найден, пробуем найти OOPIF
             if not session_id and frame_id in self.oopifs:
                 for sid, info in self.connected_tabs.items():
                     if info.get("target_id") == self.oopifs[frame_id].get("targetId"):
@@ -741,7 +673,6 @@ class CDPSupervisor:
         return await self._send(method, params)
     
     async def browser_click(self, ref_id, humanized=True):
-        """Клик с человеческим поведением"""
         if ref_id not in self.ref_elements:
             return {"error": f"Элемент {ref_id} не найден"}
         
@@ -751,7 +682,6 @@ class CDPSupervisor:
             return await self.click_by_ref(ref_id)
     
     async def _humanized_click(self, ref_id):
-        """Человеческий клик с Bezier кривой"""
         el_info = self.ref_elements[ref_id]
         selector = el_info.get('selector')
         if not selector:
@@ -805,7 +735,6 @@ class CDPSupervisor:
         return await self.click_by_ref(ref_id)
     
     async def browser_type(self, ref_id, text, humanized=True):
-        """Ввод текста с человеческим поведением"""
         if ref_id not in self.ref_elements:
             return {"error": f"Элемент {ref_id} не найден"}
         
@@ -815,7 +744,6 @@ class CDPSupervisor:
             return await self.fill_by_ref(ref_id, text)
     
     async def _humanized_type(self, ref_id, text):
-        """Человеческий ввод с задержками"""
         el_info = self.ref_elements[ref_id]
         selector = el_info.get('selector')
         if not selector:
@@ -840,7 +768,6 @@ class CDPSupervisor:
         return {"success": True, "method": "humanized"}
     
     async def browser_press(self, key):
-        """Нажатие клавиши"""
         await self._send("Input.dispatchKeyEvent", {
             "type": "keyDown",
             "key": key
@@ -853,15 +780,12 @@ class CDPSupervisor:
         return {"success": True}
     
     async def browser_dialog(self, dialog_id=None, action="accept", prompt_text=""):
-        """Обработка диалога с поддержкой dialog_id"""
         if not self.pending_dialogs:
             return {"error": "Нет ожидающих диалогов"}
         
-        # Если dialog_id не указан, берем первый
         if dialog_id is None:
             dialog = self.pending_dialogs.pop(0)
         else:
-            # Ищем диалог по ID
             for i, d in enumerate(self.pending_dialogs):
                 if d.get("id") == dialog_id:
                     dialog = self.pending_dialogs.pop(i)
@@ -877,7 +801,6 @@ class CDPSupervisor:
                 "promptText": prompt_text
             })
             
-            # Добавляем в recent_dialogs
             self.recent_dialogs.append({
                 **dialog,
                 "closed_by": "agent",
@@ -885,7 +808,7 @@ class CDPSupervisor:
                 "closed_at": time.time()
             })
             
-            file_logger.log(f"✅ Диалог обработан: {dialog.get('message', '')} (action: {action})")
+            file_logger.log(f"✅ Диалог обработан: {dialog.get('message', '')}")
             await self._update_snapshot()
             return {"success": True, "dialog": dialog}
             
@@ -893,7 +816,6 @@ class CDPSupervisor:
             return {"error": str(e)}
     
     async def click_by_ref(self, ref_id):
-        """Клик по Ref ID"""
         if ref_id not in self.ref_elements:
             return {"error": f"Элемент {ref_id} не найден"}
         
@@ -927,7 +849,6 @@ class CDPSupervisor:
         return {"success": False}
     
     async def fill_by_ref(self, ref_id, value):
-        """Заполнение поля по Ref ID"""
         if ref_id not in self.ref_elements:
             return {"error": f"Элемент {ref_id} не найден"}
         
@@ -964,15 +885,7 @@ class CDPSupervisor:
         
         return {"success": False}
     
-    async def navigate(self, url):
-        """Переход на URL"""
-        await self._send("Page.navigate", {"url": url})
-        await self._wait_for_page_load()
-        await self._update_snapshot()
-        return {"success": True}
-    
     async def screenshot(self):
-        """Делает скриншот"""
         resp = await self._send("Page.captureScreenshot", {
             "format": "png",
             "captureBeyondViewport": True,
@@ -987,7 +900,6 @@ class CDPSupervisor:
         return None
     
     async def get_description(self):
-        """Возвращает описание страницы для агента (человекочитаемое)"""
         snapshot = await self.browser_snapshot(full=False)
         if not snapshot:
             return "Страница не загружена"
@@ -1023,12 +935,12 @@ class CDPSupervisor:
                 dialog_type = d.get('type', 'unknown')
                 desc_lines.append(f"  • [{dialog_id}] {message} (тип: {dialog_type})")
             desc_lines.append("")
-            desc_lines.append("💡 Для обработки диалога используй: handle_dialog(dialog_id='d-1', accept=True)")
+            desc_lines.append("💡 Для обработки диалога используй: handle_dialog с dialog_id")
         
         if recent_dialogs:
             desc_lines.append("")
             desc_lines.append(f"📋 НЕДАВНИЕ ДИАЛОГИ ({len(recent_dialogs)}):")
-            for d in list(recent_dialogs)[-5:]:  # показываем последние 5
+            for d in list(recent_dialogs)[-5:]:
                 dialog_id = d.get('id', 'unknown')
                 message = d.get('message', '')[:30]
                 closed_by = d.get('closed_by', 'unknown')
@@ -1049,7 +961,7 @@ class CDPSupervisor:
                         desc_lines.append(f"  • Дочерний: {child_url[:60]}")
         
         desc_lines.append("")
-        desc_lines.append("💡 КАК ИСПОЛЬЗОВАТЬ Ref ID:")
+        desc_lines.append("💡 КАК ИСПОЛЬЗОВАТЬ:")
         desc_lines.append('• click e5 → кликнуть по элементу e5')
         desc_lines.append('• fill e5 "текст" → заполнить поле e5')
         desc_lines.append('• handle_dialog d-1 accept → обработать диалог')
@@ -1061,7 +973,6 @@ class CDPSupervisor:
 supervisors = {}
 
 async def get_supervisor(user_id: int) -> CDPSupervisor:
-    """Получает или создает супервайзера для пользователя"""
     if user_id not in supervisors:
         ws_url = get_page_ws_url()
         if not ws_url:
@@ -1075,6 +986,69 @@ async def get_supervisor(user_id: int) -> CDPSupervisor:
     
     return supervisors[user_id]
 
+# ---------- ОБНОВЛЕННЫЙ ПРОМТ ДЛЯ AGNES ----------
+
+AGENT_CODE = """
+🤖 АГЕНТ ДЛЯ УПРАВЛЕНИЯ БРАУЗЕРОМ (Hermes CDP)
+
+📌 ДОСТУПНЫЕ ДЕЙСТВИЯ И ФОРМАТ:
+
+1️⃣ НАВИГАЦИЯ
+{"action": "navigate", "params": {"url": "https://example.com"}}
+
+2️⃣ КЛИК (используй Ref ID из описания страницы)
+{"action": "click", "params": {"ref": "e5"}}
+
+3️⃣ ЗАПОЛНЕНИЕ ПОЛЯ (используй Ref ID)
+{"action": "fill", "params": {"ref": "e5", "value": "текст"}}
+
+4️⃣ НАЖАТИЕ КЛАВИШИ
+{"action": "press_enter", "params": {}}
+
+5️⃣ ОБРАБОТКА ДИАЛОГА (используй dialog_id из описания)
+{"action": "handle_dialog", "params": {"dialog_id": "d-1", "accept": true}}
+{"action": "handle_dialog", "params": {"dialog_id": "d-1", "accept": false}}
+
+6️⃣ СКРИНШОТ
+{"action": "screenshot", "params": {}}
+
+7️⃣ ОТВЕТ ПОЛЬЗОВАТЕЛЮ
+{"action": "answer", "params": {"text": "ваш ответ"}}
+
+📌 ВАЖНЫЕ ПРАВИЛА:
+• Используй ТОЛЬКО Ref ID (e1, e2, e3...) для кликов и заполнения
+• НЕ используй CSS селекторы или XPath
+• Для диалогов используй dialog_id (d-1, d-2, d-3...)
+• Отвечай ТОЛЬКО JSON, без пояснений
+• Если нужно несколько действий - используй массив JSON
+
+📌 ПРИМЕРЫ ПРАВИЛЬНЫХ ОТВЕТОВ:
+1. Кликнуть по кнопке "Войти":
+{"action": "click", "params": {"ref": "e8"}}
+
+2. Заполнить поле поиска и нажать Enter:
+[{"action": "fill", "params": {"ref": "e5", "value": "Spinoza"}},
+ {"action": "press_enter", "params": {}}]
+
+3. Обработать диалог:
+{"action": "handle_dialog", "params": {"dialog_id": "d-1", "accept": true}}
+
+4. Открыть сайт:
+{"action": "navigate", "params": {"url": "https://google.com"}}
+
+📌 ЧТО ДЕЛАТЬ ПРИ ДИАЛОГАХ:
+• Если видишь 💬 ОЖИДАЮЩИЕ ДИАЛОГИ в описании страницы
+• Используй dialog_id (например, d-1) из описания
+• Реши: принять (accept: true) или отклонить (accept: false)
+
+🚫 НЕПРАВИЛЬНО:
+• {"action": "click", "selector": ".button"}  ❌ нет Ref ID
+• {"action": "fill", "field": "search"}       ❌ нет Ref ID
+• {"action": "dialog", "accept": true}        ❌ нет dialog_id
+
+⚠️ ОТВЕЧАЙ ТОЛЬКО JSON! БЕЗ ЛИШНИХ СЛОВ!
+"""
+
 # ---------- Agnes AI ----------
 
 async def ask_agnes(prompt: str, page_desc: str) -> dict:
@@ -1086,36 +1060,17 @@ async def ask_agnes(prompt: str, page_desc: str) -> dict:
         "Content-Type": "application/json"
     }
     
-    AGENT_CODE = """
-🤖 АГЕНТ ДЛЯ УПРАВЛЕНИЯ БРАУЗЕРОМ
-
-📌 ДОСТУПНЫЕ ДЕЙСТВИЯ:
-1. navigate(url) - открыть сайт
-2. click(ref) - кликнуть по элементу (используй Ref ID)
-3. fill(ref, value) - заполнить поле (используй Ref ID)
-4. press_enter() - нажать Enter
-5. screenshot() - скриншот
-6. answer(text) - ответить
-7. handle_dialog(dialog_id, accept) - обработать диалог (используй dialog_id)
-
-📌 ПРИМЕРЫ:
-{"action": "click", "params": {"ref": "e8"}}
-{"action": "fill", "params": {"ref": "e5", "value": "Spinoza"}}
-{"action": "handle_dialog", "params": {"dialog_id": "d-1", "accept": true}}
-
-⚠️ НЕ ИСПОЛЬЗУЙ selector/text — ТОЛЬКО Ref ID!
-ОТВЕЧАЙ ТОЛЬКО JSON!
-"""
-    
     system_prompt = f"""
 {AGENT_CODE}
 
-📄 СТРАНИЦА:
+📄 ТЕКУЩЕЕ СОСТОЯНИЕ СТРАНИЦЫ:
 {page_desc}
 
-📝 ОТВЕЧАЙ ТОЛЬКО JSON!
+📝 ВАЖНО: ОТВЕЧАЙ ТОЛЬКО JSON! 
+Если видишь диалоги - обработай их с помощью handle_dialog и dialog_id.
+Если нужно несколько действий - используй массив JSON.
 """
-
+    
     data = {
         "model": "agnes-2.0-flash",
         "messages": [
@@ -1123,7 +1078,7 @@ async def ask_agnes(prompt: str, page_desc: str) -> dict:
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.3,
-        "max_tokens": 300
+        "max_tokens": 500
     }
     
     for attempt in range(3):
@@ -1222,7 +1177,7 @@ async def execute_single_action(supervisor: CDPSupervisor, action: dict) -> str:
             
             if result.get("success"):
                 dialog = result.get("dialog", {})
-                return f"✅ Диалог обработан: {dialog.get('message', '')} (action: {result.get('action', '')})"
+                return f"✅ Диалог обработан: {dialog.get('message', '')}"
             return f"❌ Ошибка: {result.get('error', '')}"
         
         elif action_type == "screenshot":
