@@ -1,6 +1,6 @@
 import os
 import logging
-import json 
+import json
 import subprocess
 import time
 import requests
@@ -21,7 +21,8 @@ if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен!")
 
 AGNES_API_KEY = os.getenv("AGNES_API_KEY")
-AGNES_API_URL = os.getenv("AGNES_API_URL", "https://api.agnes.ai/v1/chat/completions")
+# ✅ ПРАВИЛЬНЫЙ URL из документации
+AGNES_API_URL = os.getenv("AGNES_API_URL", "https://apihub.agnes-ai.com/v1/chat/completions")
 
 CHROME_PATH = "/usr/bin/google-chrome"
 
@@ -71,29 +72,25 @@ class CDPClient:
         self.msg_id = 0
     
     async def connect(self):
-        """Одно подключение для всех команд"""
         if not self.connected:
             self.ws = await websockets.connect(self.ws_url)
             self.connected = True
             logger.info("✅ WebSocket подключен")
             
-            # Создаём вкладку
             resp = await self.send("Target.createTarget", {"url": "about:blank"})
             if "result" in resp:
                 self.target_id = resp["result"]["targetId"]
-                logger.info(f"✅ Вкладка создана: {self.target_id}")
+                logger.info(f"✅ Вкладка: {self.target_id}")
             
-            # Подключаемся к вкладке
             if self.target_id:
                 resp = await self.send("Target.attachToTarget", {"targetId": self.target_id})
                 if "result" in resp:
                     self.session_id = resp["result"]["sessionId"]
-                    logger.info(f"✅ Подключен к вкладке: {self.session_id}")
+                    logger.info(f"✅ Подключен")
         
         return self.ws
     
-    async def send(self, method, params=None, session_id=None):
-        """Отправка команды через WebSocket"""
+    async def send(self, method, params=None):
         if not self.connected:
             await self.connect()
         
@@ -104,39 +101,25 @@ class CDPClient:
             "params": params or {}
         }
         
-        # sessionId нужен только для Page.* и Runtime.*
-        if session_id:
-            msg["sessionId"] = session_id
-        elif method.startswith("Page.") or method.startswith("Runtime.") or method.startswith("Network."):
+        if method.startswith("Page.") or method.startswith("Runtime.") or method.startswith("Network."):
             if self.session_id:
                 msg["sessionId"] = self.session_id
-        # Для Target.* НЕ добавляем sessionId
         
         logger.info(f"📤 {method}")
         await self.ws.send(json.dumps(msg))
         response = await self.ws.recv()
-        data = json.loads(response)
-        
-        if "error" in data:
-            logger.error(f"❌ Ошибка {method}: {data['error']}")
-        else:
-            logger.info(f"✅ {method} успешно")
-        
-        return data
+        return json.loads(response)
     
     async def navigate(self, url):
-        """Переход по URL"""
         return await self.send("Page.navigate", {"url": url})
     
     async def eval_js(self, code):
-        """Выполнение JavaScript"""
         resp = await self.send("Runtime.evaluate", {"expression": code})
         if "result" in resp:
             return resp["result"].get("result", {}).get("value", "")
         return None
     
     async def screenshot(self):
-        """Скриншот"""
         resp = await self.send("Page.captureScreenshot", {"format": "png"})
         if "result" in resp:
             return base64.b64decode(resp["result"]["data"])
@@ -182,12 +165,10 @@ async def ask_agnes(prompt: str) -> dict:
     3. Кликнуть на кнопку: {"action": "click", "params": {"selector": "button"}}
     4. Сделать скриншот: {"action": "screenshot", "params": {}}
     5. Заполнить поле: {"action": "fill", "params": {"selector": "#email", "value": "test@mail.com"}}
-    6. Получить текст: {"action": "get_text", "params": {"selector": ".title"}}
-    7. Прокрутить вниз: {"action": "scroll", "params": {"amount": 500}}
     """
     
     data = {
-        "model": "agnes-v1",
+        "model": "agnes-2.0-flash",  # ✅ Правильная модель по документации
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt}
@@ -224,7 +205,7 @@ async def execute_action(client: CDPClient, action: dict) -> str:
         if action_type == "navigate":
             url = params.get("url", "https://google.com")
             await client.navigate(url)
-            time.sleep(2)  # Ждём загрузки
+            time.sleep(2)
             title = await client.eval_js("document.title")
             return f"✅ Открыл: {url}\n📄 {title}"
         
@@ -297,7 +278,7 @@ async def execute_action(client: CDPClient, action: dict) -> str:
         logger.error(f"Execute error: {e}")
         return f"❌ Ошибка выполнения: {str(e)}"
 
-# ---------- Обработчик сообщений ----------
+# ---------- Обработчик ----------
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -309,7 +290,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.chat.send_action(action="typing")
     
     try:
-        # Создаём клиента с ОДНИМ WebSocket
         if user_id not in clients:
             ws_url = get_ws_url()
             if not ws_url:
@@ -322,14 +302,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         client = clients[user_id]
         
-        # Спрашиваем Agnes
         response = await ask_agnes(prompt)
         
         if "error" in response:
             await update.message.reply_text(f"❌ {response['error']}")
             return
         
-        # Выполняем действие
         result = await execute_action(client, response)
         
         if result == "screenshot":
@@ -351,7 +329,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Примеры:\n"
         "• Открой Google\n"
         "• Сделай скриншот\n"
-        "• Найди заголовок страницы\n"
         "• Кликни на кнопку\n"
         "• Заполни форму\n\n"
         "/cdp - статус браузера"
@@ -377,7 +354,7 @@ async def cdp(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"📊 Статус: Готов"
                 )
             else:
-                await update.message.reply_text("❌ Ошибка получения статуса")
+                await update.message.reply_text("❌ Ошибка")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
