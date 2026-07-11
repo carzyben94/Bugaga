@@ -223,49 +223,6 @@ def create_page():
         file_logger.log(f"❌ Ошибка: {e}", "ERROR")
         return None
 
-# ---------- Глобальная установка кук ----------
-
-def set_cookies_global():
-    """Установка кук в глобальном контексте через HTTP запрос"""
-    try:
-        file_logger.log("🍪 Глобальная установка кук X.com...")
-        
-        # Получаем страницу
-        response = requests.get("http://localhost:9222/json")
-        pages = response.json()
-        
-        if not pages:
-            file_logger.log("❌ Нет доступных страниц", "ERROR")
-            return False
-        
-        # Берем первую страницу
-        page = pages[0]
-        page_id = page.get("id")
-        
-        # Формируем URL для установки кук через DevTools
-        for cookie in X_COOKIES:
-            cookie_str = f"{cookie['name']}={cookie['value']}; domain={cookie['domain']}; path={cookie['path']}"
-            # Используем HTTP запрос для установки кук
-            requests.get(f"http://localhost:9222/json", params={
-                "method": "Network.setCookie",
-                "params": json.dumps({
-                    "name": cookie['name'],
-                    "value": cookie['value'],
-                    "domain": cookie['domain'],
-                    "path": cookie['path'],
-                    "secure": cookie['secure'],
-                    "httpOnly": cookie['httpOnly'],
-                    "sameSite": cookie['sameSite']
-                })
-            })
-        
-        file_logger.log(f"✅ Глобально установлено {len(X_COOKIES)} кук")
-        return True
-        
-    except Exception as e:
-        file_logger.log(f"❌ Ошибка глобальной установки кук: {e}", "ERROR")
-        return False
-
 # ---------- CDP Client ----------
 
 class CDPClient:
@@ -989,7 +946,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Введи в поле поиска текст Привет и нажми Enter\n"
         "• Что ты видишь?\n"
         "• Сделай скриншот\n\n"
-        "🍪 **Куки X.com установлены автоматически при старте**\n\n"
+        "🍪 **Куки X.com установлены автоматически при подключении**\n\n"
         "/cdp - статус браузера\n"
         "/logs - логи\n"
         "/set_cookies - принудительно установить куки X.com"
@@ -1044,63 +1001,6 @@ def main():
     
     # Запускаем Chrome
     start_chrome()
-    
-    # Устанавливаем куки глобально
-    file_logger.log("🍪 Глобальная установка кук X.com...")
-    
-    # Пробуем установить куки через CDP
-    try:
-        # Создаем временный клиент для установки кук
-        import asyncio
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        async def setup_cookies_global():
-            ws_url = get_page_ws_url()
-            if not ws_url:
-                ws_url = create_page()
-            
-            if ws_url:
-                ws = await websockets.connect(ws_url)
-                try:
-                    # Отправляем команды для включения Network
-                    await ws.send(json.dumps({"id": 1, "method": "Network.enable", "params": {}}))
-                    await ws.recv()
-                    
-                    # Форматируем куки для CDP
-                    cdp_cookies = []
-                    for cookie in X_COOKIES:
-                        cdp_cookie = {
-                            "name": cookie.get("name"),
-                            "value": cookie.get("value"),
-                            "domain": cookie.get("domain"),
-                            "path": cookie.get("path", "/"),
-                            "secure": cookie.get("secure", False),
-                            "httpOnly": cookie.get("httpOnly", False),
-                            "sameSite": cookie.get("sameSite", "unspecified"),
-                            "session": cookie.get("session", True)
-                        }
-                        cdp_cookies.append(cdp_cookie)
-                    
-                    # Отправляем куки
-                    await ws.send(json.dumps({
-                        "id": 2,
-                        "method": "Network.setCookies",
-                        "params": {"cookies": cdp_cookies}
-                    }))
-                    result = await ws.recv()
-                    file_logger.log(f"✅ Глобально установлено {len(X_COOKIES)} кук")
-                    
-                finally:
-                    await ws.close()
-            else:
-                file_logger.log("❌ Не удалось получить WebSocket для глобальной установки кук", "ERROR")
-        
-        loop.run_until_complete(setup_cookies_global())
-        loop.close()
-        
-    except Exception as e:
-        file_logger.log(f"❌ Ошибка глобальной установки кук: {e}", "ERROR")
     
     # Запускаем бота
     app = Application.builder().token(TOKEN).build()
