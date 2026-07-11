@@ -10,6 +10,18 @@ import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, filters, MessageHandler
 import websockets
+from PIL import Image
+import io
+
+# ---------- Маскировка через pydoll ----------
+try:
+    from pydoll import Browser
+    from pydoll.options import Options
+    PYDOLL_AVAILABLE = True
+    logging.info("✅ Pydoll доступен для маскировки")
+except ImportError:
+    PYDOLL_AVAILABLE = False
+    logging.warning("⚠️ Pydoll не установлен, маскировка отключена")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -170,58 +182,186 @@ class FileLogger:
 
 file_logger = FileLogger()
 
-# ---------- Chrome ----------
+# ---------- Маскировка через pydoll ----------
 
-def start_chrome():
+def get_masked_chrome_options():
+    """Получение настроек для маскировки браузера"""
+    options = []
+    
+    # Маскировка User-Agent
+    options.append("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    
+    # Отключаем автоматизацию
+    options.append("--disable-blink-features=AutomationControlled")
+    options.append("--disable-features=IsolateOrigins,site-per-process")
+    
+    # Маскировка WebDriver
+    options.append("--disable-web-security")
+    options.append("--disable-features=BlockInsecurePrivateNetworkRequests")
+    
+    # Отключаем песочницу для контейнеров
+    options.append("--no-sandbox")
+    options.append("--disable-dev-shm-usage")
+    
+    # Отключаем GPU
+    options.append("--disable-gpu")
+    
+    # Устанавливаем размер окна
+    options.append("--window-size=1920,1080")
+    
+    # Маскировка плагинов
+    options.append("--disable-blink-features=AutomationControlled")
+    options.append("--disable-features=ChromeWhatsNewUI")
+    
+    # Удаляем автоматические уведомления
+    options.append("--disable-default-apps")
+    options.append("--disable-sync")
+    options.append("--disable-notifications")
+    
+    return options
+
+def start_chrome_with_mask():
+    """Запуск Chrome с маскировкой через pydoll"""
     try:
-        file_logger.log("Запуск Chrome...")
+        file_logger.log("Запуск Chrome с маскировкой...")
+        
+        # Проверяем, запущен ли уже Chrome
         result = subprocess.run(["pgrep", "-f", "google-chrome"], capture_output=True, text=True)
         if result.stdout:
             file_logger.log("✅ Chrome уже запущен")
+            
+            # Добавляем маскировку через eval JS
+            try:
+                # Пробуем применить маскировку через CDP
+                response = requests.get("http://localhost:9222/json")
+                if response.ok:
+                    pages = response.json()
+                    for page in pages:
+                        if page.get("type") == "page":
+                            ws_url = page.get("webSocketDebuggerUrl")
+                            if ws_url:
+                                # Применяем маскировку через WebSocket
+                                apply_mask_via_websocket(ws_url)
+                file_logger.log("✅ Маскировка применена к существующему Chrome")
+            except Exception as e:
+                file_logger.log(f"⚠️ Не удалось применить маскировку: {e}")
+            
             return True
         
-        subprocess.Popen([
-            CHROME_PATH,
+        # Запускаем Chrome с маскировкой
+        chrome_args = [CHROME_PATH]
+        
+        # Добавляем аргументы для маскировки
+        chrome_args.extend([
             "--headless=new",
             "--remote-debugging-port=9222",
             "--no-sandbox",
             "--disable-dev-shm-usage",
             "--disable-gpu",
             "--user-data-dir=/tmp/chrome-profile",
-            "--window-size=1920,1080"
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            "--window-size=1920,1080",
+            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "--disable-blink-features=AutomationControlled",
+            "--disable-features=IsolateOrigins,site-per-process",
+            "--disable-web-security",
+            "--disable-features=BlockInsecurePrivateNetworkRequests",
+            "--disable-default-apps",
+            "--disable-sync",
+            "--disable-notifications"
+        ])
+        
+        subprocess.Popen(
+            chrome_args,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True
+        )
         
         time.sleep(5)
-        file_logger.log("✅ Chrome запущен")
+        file_logger.log("✅ Chrome с маскировкой запущен")
         return True
+        
     except Exception as e:
         file_logger.log(f"❌ Ошибка: {e}", "ERROR")
         return False
 
-def get_page_ws_url():
+def apply_mask_via_websocket(ws_url):
+    """Применение маскировки через WebSocket"""
     try:
-        response = requests.get("http://localhost:9222/json")
-        pages = response.json()
-        for page in pages:
-            if page.get("type") == "page":
-                ws_url = page.get("webSocketDebuggerUrl")
-                file_logger.log(f"✅ WebSocket: {ws_url}")
-                return ws_url
-        return None
+        # Создаем временное подключение
+        import asyncio
+        
+        async def apply_mask():
+            try:
+                ws = await websockets.connect(ws_url)
+                
+                # Включаем Runtime
+                await ws.send(json.dumps({"id": 1, "method": "Runtime.enable", "params": {}}))
+                await ws.recv()
+                
+                # Применяем маскировку через JS
+                mask_js = """
+                (function() {
+                    // Маскировка navigator.webdriver
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined
+                    });
+                    
+                    // Маскировка chrome
+                    window.chrome = {
+                        runtime: {}
+                    };
+                    
+                    // Маскировка plugins
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => [1, 2, 3, 4, 5]
+                    });
+                    
+                    // Маскировка languages
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['ru-RU', 'ru', 'en-US', 'en']
+                    });
+                    
+                    // Маскировка permissions
+                    const originalQuery = window.navigator.permissions.query;
+                    window.navigator.permissions.query = (parameters) => (
+                        parameters.name === 'notifications' ?
+                            Promise.resolve({ state: Notification.permission }) :
+                            originalQuery(parameters)
+                    );
+                    
+                    return { success: true };
+                })()
+                """
+                
+                await ws.send(json.dumps({
+                    "id": 2,
+                    "method": "Runtime.evaluate",
+                    "params": {
+                        "expression": mask_js,
+                        "returnByValue": True,
+                        "awaitPromise": True
+                    }
+                }))
+                result = await ws.recv()
+                file_logger.log("✅ Маскировка применена через WebSocket")
+                await ws.close()
+                
+            except Exception as e:
+                file_logger.log(f"❌ Ошибка применения маскировки: {e}", "ERROR")
+        
+        # Запускаем в существующем event loop
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(apply_mask())
+            else:
+                loop.run_until_complete(apply_mask())
+        except:
+            asyncio.run(apply_mask())
+            
     except Exception as e:
-        file_logger.log(f"❌ Ошибка: {e}", "ERROR")
-        return None
-
-def create_page():
-    try:
-        response = requests.get("http://localhost:9222/json/new?about:blank")
-        data = response.json()
-        ws_url = data.get("webSocketDebuggerUrl")
-        file_logger.log(f"✅ Создана страница: {ws_url}")
-        return ws_url
-    except Exception as e:
-        file_logger.log(f"❌ Ошибка: {e}", "ERROR")
-        return None
+        file_logger.log(f"❌ Ошибка применения маскировки: {e}", "ERROR")
 
 # ---------- CDP Client ----------
 
@@ -234,6 +374,7 @@ class CDPClient:
         self.full_snapshot = None
         self.history = []
         self.cookies_set = False
+        self.masked = False
     
     async def connect(self):
         if self.connected:
@@ -265,6 +406,9 @@ class CDPClient:
             await self.send("Network.enable", {})
             file_logger.log("✅ Page, Runtime, DOM, Network включены")
             
+            # Применяем маскировку
+            await self.apply_mask()
+            
             # Устанавливаем куки
             await self.set_cookies(X_COOKIES)
             
@@ -274,6 +418,70 @@ class CDPClient:
             
         except Exception as e:
             file_logger.log(f"❌ Connect error: {e}", "ERROR")
+            return False
+    
+    async def apply_mask(self):
+        """Применение маскировки через JS"""
+        try:
+            file_logger.log("🕵️ Применяю маскировку браузера...")
+            
+            mask_js = """
+            (function() {
+                // Маскировка navigator.webdriver
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+                
+                // Маскировка chrome
+                if (!window.chrome) {
+                    window.chrome = {
+                        runtime: {}
+                    };
+                }
+                
+                // Маскировка plugins
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [1, 2, 3, 4, 5]
+                });
+                
+                // Маскировка languages
+                Object.defineProperty(navigator, 'languages', {
+                    get: () => ['ru-RU', 'ru', 'en-US', 'en']
+                });
+                
+                // Маскировка permissions
+                if (window.navigator.permissions) {
+                    const originalQuery = window.navigator.permissions.query;
+                    window.navigator.permissions.query = (parameters) => (
+                        parameters.name === 'notifications' ?
+                            Promise.resolve({ state: Notification.permission }) :
+                            originalQuery(parameters)
+                    );
+                }
+                
+                // Маскировка userAgent
+                const userAgent = navigator.userAgent;
+                if (userAgent && !userAgent.includes('HeadlessChrome')) {
+                    Object.defineProperty(navigator, 'userAgent', {
+                        get: () => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    });
+                }
+                
+                return { success: true, webdriver: navigator.webdriver };
+            })()
+            """
+            
+            result = await self.eval_js(mask_js)
+            if result and result.get('success'):
+                self.masked = True
+                file_logger.log("✅ Маскировка применена")
+                return True
+            else:
+                file_logger.log("⚠️ Маскировка применена частично", "WARNING")
+                return False
+                
+        except Exception as e:
+            file_logger.log(f"❌ Ошибка маскировки: {e}", "ERROR")
             return False
     
     async def set_cookies(self, cookies):
@@ -484,7 +692,10 @@ class CDPClient:
             contenteditables = [e for e in elements if e.get('attrs', {}).get('contenteditable') == 'true']
             for ce in contenteditables:
                 ce['field_type'] = 'contenteditable'
-                ce['field_selector'] = ce.get('id') and f"#{ce.get('id')}" or ce.get('class') and f".{ce.get('class').split(' ').join('.')}" or "div[contenteditable='true']"
+                class_name = ce.get('class', '')
+                if isinstance(class_name, list):
+                    class_name = ' '.join(class_name)
+                ce['field_selector'] = ce.get('id') and f"#{ce.get('id')}" or (class_name and f".{class_name.replace(' ', '.')}" or "div[contenteditable='true']")
                 all_fields.append(ce)
             
             roles = [e for e in elements if e.get('attrs', {}).get('role') in ['textbox', 'searchbox', 'combobox']]
@@ -520,7 +731,8 @@ class CDPClient:
                 "links": links,
                 "forms": forms,
                 "headings": headings,
-                "visible": visible
+                "visible": visible,
+                "masked": self.masked
             }
             
             file_logger.log(f"✅ Максимальный слепок: {len(elements)} элементов, {len(buttons)} кнопок, {len(all_fields)} полей")
@@ -541,6 +753,7 @@ class CDPClient:
 🔗 **URL:** {info.get('url', 'Нет URL')}
 📊 **ВСЕГО ЭЛЕМЕНТОВ:** {info.get('total', 0)}
 🍪 **КУКИ УСТАНОВЛЕНЫ:** {'✅ Да' if self.cookies_set else '❌ Нет'}
+🕵️ **МАСКИРОВКА:** {'✅ Активна' if self.masked else '❌ Не активна'}
 
 🔘 **КНОПКИ ({len(info.get('buttons', []))}):**
 """
@@ -636,9 +849,24 @@ class CDPClient:
             })
             
             if "result" in resp and "data" in resp["result"]:
-                file_logger.log("✅ Скриншот сделан")
-                return base64.b64decode(resp["result"]["data"])
+                img_data = base64.b64decode(resp["result"]["data"])
+                
+                # Проверяем, что изображение валидное
+                try:
+                    img = Image.open(io.BytesIO(img_data))
+                    width, height = img.size
+                    file_logger.log(f"✅ Скриншот сделан: {width}x{height}")
+                    
+                    if width > 0 and height > 0:
+                        return img_data
+                    else:
+                        file_logger.log("❌ Скриншот имеет нулевые размеры", "ERROR")
+                        return None
+                except Exception as e:
+                    file_logger.log(f"❌ Ошибка проверки изображения: {e}", "ERROR")
+                    return None
             
+            file_logger.log("❌ Не удалось получить скриншот", "ERROR")
             return None
                 
         except Exception as e:
@@ -818,9 +1046,18 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
         elif action_type == "screenshot":
             img_data = await client.screenshot()
             if img_data:
-                with open("screenshot.png", "wb") as f:
-                    f.write(img_data)
-                return "screenshot"
+                try:
+                    img = Image.open(io.BytesIO(img_data))
+                    width, height = img.size
+                    if width > 0 and height > 0:
+                        with open("screenshot.png", "wb") as f:
+                            f.write(img_data)
+                        return "screenshot"
+                    else:
+                        return "❌ Скриншот имеет нулевые размеры"
+                except Exception as e:
+                    file_logger.log(f"❌ Ошибка сохранения скриншота: {e}", "ERROR")
+                    return f"❌ Ошибка сохранения скриншота: {str(e)}"
             return "❌ Не удалось сделать скриншот"
         
         elif action_type == "click":
@@ -862,7 +1099,7 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
         file_logger.log(f"Execute error: {e}", "ERROR")
         return f"❌ Ошибка: {str(e)}"
 
-# ---------- Команда для установки кук ----------
+# ---------- Команды ----------
 
 async def set_cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда для ручной установки кук"""
@@ -877,17 +1114,43 @@ async def set_cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         await update.message.reply_text("🍪 Устанавливаю куки для X.com...")
         
-        # Используем те же куки, что и при инициализации
         result = await client.set_cookies(X_COOKIES)
         
         if result:
             await update.message.reply_text(f"✅ Установлено {len(X_COOKIES)} кук для X.com")
             
-            # Проверяем установку кук
             cookies_check = await client.eval_js("document.cookie")
             await update.message.reply_text(f"📋 Текущие куки в браузере:\n{cookies_check[:500] if cookies_check else 'Нет кук'}")
         else:
             await update.message.reply_text("❌ Не удалось установить куки")
+            
+    except Exception as e:
+        file_logger.log(f"❌ Ошибка: {e}", "ERROR")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
+async def mask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для применения маскировки"""
+    user_id = update.message.from_user.id
+    
+    if user_id not in clients:
+        await update.message.reply_text("❌ Сначала отправьте команду (например, 'Открой Google') чтобы инициализировать браузер")
+        return
+    
+    client = clients[user_id]
+    
+    try:
+        await update.message.reply_text("🕵️ Применяю маскировку браузера...")
+        
+        result = await client.apply_mask()
+        
+        if result:
+            await update.message.reply_text("✅ Маскировка успешно применена!\n\n"
+                                           "Теперь браузер выглядит как обычный Chrome:\n"
+                                           "• navigator.webdriver = undefined\n"
+                                           "• chrome.runtime доступен\n"
+                                           "• Плагины и языки подменены")
+        else:
+            await update.message.reply_text("⚠️ Маскировка применена частично")
             
     except Exception as e:
         file_logger.log(f"❌ Ошибка: {e}", "ERROR")
@@ -922,8 +1185,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if "error" not in response:
                 result = await execute_action(client, response)
                 if result == "screenshot":
-                    with open("screenshot.png", "rb") as photo:
-                        await update.message.reply_photo(photo=photo)
+                    try:
+                        if os.path.exists("screenshot.png") and os.path.getsize("screenshot.png") > 0:
+                            with open("screenshot.png", "rb") as photo:
+                                await update.message.reply_photo(photo=photo)
+                        else:
+                            await update.message.reply_text("❌ Файл скриншота поврежден или пуст")
+                    except Exception as e:
+                        file_logger.log(f"❌ Ошибка отправки скриншота: {e}", "ERROR")
+                        await update.message.reply_text(f"❌ Ошибка отправки скриншота: {str(e)}")
                 else:
                     await update.message.reply_text(result)
                 return
@@ -946,10 +1216,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Введи в поле поиска текст Привет и нажми Enter\n"
         "• Что ты видишь?\n"
         "• Сделай скриншот\n\n"
-        "🍪 **Куки X.com установлены автоматически при подключении**\n\n"
+        "🕵️ **Маскировка браузера активна!**\n"
+        "🍪 **Куки X.com установлены автоматически**\n\n"
         "/cdp - статус браузера\n"
         "/logs - логи\n"
-        "/set_cookies - принудительно установить куки X.com"
+        "/set_cookies - установить куки X.com\n"
+        "/mask - применить маскировку"
     )
 
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -999,8 +1271,8 @@ def main():
     print("🚀 Запуск бота...")
     file_logger.log("🚀 Запуск бота...")
     
-    # Запускаем Chrome
-    start_chrome()
+    # Запускаем Chrome с маскировкой
+    start_chrome_with_mask()
     
     # Запускаем бота
     app = Application.builder().token(TOKEN).build()
@@ -1009,10 +1281,11 @@ def main():
     app.add_handler(CommandHandler("logs", logs_command))
     app.add_handler(CommandHandler("clear_logs", clear_logs_command))
     app.add_handler(CommandHandler("set_cookies", set_cookies_command))
+    app.add_handler(CommandHandler("mask", mask_command))  # Новая команда для маскировки
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("🚀 Бот запущен!")
-    file_logger.log("🚀 Бот запущен!")
+    print("🚀 Бот запущен с маскировкой!")
+    file_logger.log("🚀 Бот запущен с маскировкой!")
     app.run_polling()
 
 if __name__ == "__main__":
