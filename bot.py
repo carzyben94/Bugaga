@@ -1,5 +1,3 @@
-#Бымтрый cdp слепококо
-
 import os
 import logging
 import json
@@ -549,10 +547,20 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
             json_match = re.search(r'\[.*\]|\{.*\}', content, re.DOTALL)
             if json_match:
                 try:
-                    return json.loads(json_match.group())
+                    data = json.loads(json_match.group())
+                    # Если это массив с одним элементом
+                    if isinstance(data, list) and len(data) == 1:
+                        data = data[0]
+                    # Если это объект с action и text
+                    if isinstance(data, dict) and data.get("action") == "answer":
+                        # Приводим к единому формату
+                        if "text" in data and "params" not in data:
+                            data["params"] = {"text": data.pop("text")}
+                    return data
                 except:
                     pass
             
+            # Если не удалось распарсить JSON
             return {"action": "answer", "params": {"text": content}}
         except requests.exceptions.Timeout:
             file_logger.log(f"⚠️ Попытка {attempt + 1} таймаут, повтор...")
@@ -577,6 +585,10 @@ async def execute_action(client: CDPClient, action) -> str:
     return await execute_single_action(client, action)
 
 async def execute_single_action(client: CDPClient, action: dict) -> str:
+    # НОРМАЛИЗАЦИЯ: если text есть в корне, переносим в params
+    if "text" in action and "params" not in action:
+        action["params"] = {"text": action.pop("text")}
+    
     action_type = action.get("action")
     params = action.get("params", {})
     
@@ -626,7 +638,8 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
             return "❌ Не удалось нажать Enter"
         
         elif action_type == "answer":
-            return f"📝 {params.get('text', 'Нет ответа')}"
+            text = params.get('text', 'Нет ответа')
+            return f"📝 {text}"
         
         else:
             return f"⚠️ Неизвестное действие: {action_type}"
