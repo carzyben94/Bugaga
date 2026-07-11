@@ -57,7 +57,7 @@ def start_chrome():
         
         subprocess.Popen([
             CHROME_PATH,
-            "--headless=new",  # Новый headless режим
+            "--headless=new",
             "--remote-debugging-port=9222",
             "--no-sandbox",
             "--disable-dev-shm-usage",
@@ -106,6 +106,7 @@ class CDPClient:
         self.connected = False
         self.msg_id = 0
         self.user_id = None
+        self.page_loaded = False
     
     async def connect(self):
         if self.connected:
@@ -134,6 +135,9 @@ class CDPClient:
             await self._send("Page.enable", {})
             await self._send("Runtime.enable", {})
             file_logger.log("✅ Page.enable и Runtime.enable")
+            
+            # Открываем Google
+            await self.navigate("https://google.com")
             
             return True
             
@@ -172,20 +176,21 @@ class CDPClient:
         file_logger.log(f"🌐 Навигация на {url}")
         resp = await self._send("Page.navigate", {"url": url})
         
-        # Ждём загрузки страницы
+        # Ждём загрузки
         for i in range(10):
             await asyncio.sleep(1)
             title = await self.eval_js("document.title")
             if title and title != "":
                 file_logger.log(f"📄 Страница загружена: {title}")
+                self.page_loaded = True
                 break
         
         return resp
     
     async def eval_js(self, code):
         resp = await self._send("Runtime.evaluate", {"expression": code})
-        if "result" in resp:
-            return resp["result"].get("result", {}).get("value", "")
+        if "result" in resp and "result" in resp["result"]:
+            return resp["result"]["result"].get("value", "")
         return None
     
     async def screenshot(self):
@@ -204,7 +209,7 @@ class CDPClient:
                 await self.navigate("https://google.com")
                 await asyncio.sleep(2)
             
-            # Делаем скриншот
+            # ДЕЛАЕМ СКРИНШОТ - ПРАВИЛЬНАЯ КОМАНДА!
             file_logger.log("📸 Делаю скриншот...")
             
             resp = await self._send("Page.captureScreenshot", {
@@ -213,9 +218,9 @@ class CDPClient:
                 "fromSurface": True
             })
             
-            # Логируем ответ
-            file_logger.log(f"📸 Ответ: {json.dumps(resp, indent=2)[:300]}")
+            file_logger.log(f"📸 Ответ Page.captureScreenshot: {json.dumps(resp, indent=2)[:300]}")
             
+            # Проверяем результат скриншота
             if "result" in resp and "data" in resp["result"]:
                 file_logger.log("✅ Скриншот сделан")
                 return base64.b64decode(resp["result"]["data"])
@@ -228,7 +233,7 @@ class CDPClient:
                 file_logger.log("✅ Скриншот сделан (2)")
                 return base64.b64decode(resp2["result"]["data"])
             
-            file_logger.log(f"❌ Ошибка: {resp}", "ERROR")
+            file_logger.log(f"❌ Ошибка скриншота: {resp}", "ERROR")
             return None
                 
         except Exception as e:
