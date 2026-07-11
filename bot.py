@@ -484,23 +484,25 @@ clients = {}
 # ---------- КОД АГЕНТА ----------
 
 AGENT_CODE = """
-🤖 ТЫ — АГЕНТ ДЛЯ УПРАВЛЕНИЯ БРАУЗЕРОМ
+Ты агент для управления браузером.
 
-📌 ДОСТУПНЫЕ ДЕЙСТВИЯ:
-1. navigate(url) - открыть сайт
-2. click(selector) - кликнуть
-3. fill(selector, value) - заполнить поле
-4. press_enter() - нажать Enter
-5. screenshot() - скриншот
-6. answer(text) - ответить
+ДОСТУПНЫЕ ДЕЙСТВИЯ (возвращай ТОЛЬКО JSON):
+- navigate(url) - открыть сайт
+- click(selector) - кликнуть по элементу
+- fill(selector, value) - заполнить поле
+- press_enter() - нажать Enter
+- screenshot() - сделать скриншот
+- answer(text) - ответить пользователю
 
-📝 СЕЛЕКТОРЫ:
+СЕЛЕКТОРЫ:
 - По ID: #APjFqb
-- По классу: .gLFyf
 - По имени: input[name='q']
+- По классу: .gLFyf
 
-⚠️ ЕСЛИ НУЖНО НЕСКОЛЬКО ДЕЙСТВИЙ - ВОЗВРАЩАЙ МАССИВ:
+ЕСЛИ НУЖНО НЕСКОЛЬКО ДЕЙСТВИЙ - ВОЗВРАЩАЙ МАССИВ:
 [{"action": "fill", "params": {"selector": "#APjFqb", "value": "текст"}}, {"action": "press_enter", "params": {}}]
+
+ОТВЕЧАЙ ТОЛЬКО JSON! БЕЗ КАВЫЧЕК ВНУТРИ!
 """
 
 # ---------- Агент ----------
@@ -543,24 +545,29 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
             
             file_logger.log(f"Agnes ответ: {content[:200]}...")
             
+            # Пробуем найти JSON
             json_match = re.search(r'\[.*\]|\{.*\}', content, re.DOTALL)
             if json_match:
                 try:
-                    return json.loads(json_match.group())
+                    result = json.loads(json_match.group())
+                    # Проверяем, что это массив или объект с action
+                    if isinstance(result, list) or (isinstance(result, dict) and 'action' in result):
+                        return result
                 except:
                     pass
             
+            # Если не удалось распарсить - отвечаем текстом
             return {"action": "answer", "params": {"text": content}}
         except requests.exceptions.Timeout:
             file_logger.log(f"⚠️ Попытка {attempt + 1} таймаут, повтор...")
             if attempt == 2:
-                return {"action": "answer", "params": {"text": "⏳ Превышено время ожидания ответа от AI. Попробуйте ещё раз."}}
+                return {"action": "answer", "params": {"text": "⏳ Превышено время ожидания. Попробуйте ещё раз."}}
             await asyncio.sleep(2)
         except Exception as e:
             file_logger.log(f"Agnes error: {e}", "ERROR")
             return {"action": "answer", "params": {"text": f"❌ Ошибка: {str(e)}"}}
     
-    return {"action": "answer", "params": {"text": "❌ Не удалось получить ответ от AI"}}
+    return {"action": "answer", "params": {"text": "❌ Не удалось получить ответ"}}
 
 # ---------- Выполнение действий ----------
 
