@@ -106,6 +106,14 @@ class CDPClient:
         self.connected = False
         self.msg_id = 0
         self.user_id = None
+        self.page_structure = None
+        self.tabs = {}
+        self.active_tab = None
+        self.network_enabled = False
+        self.console_messages = []
+        self.cookies = []
+        self.websocket_messages = []
+        self.dialog_messages = []
         self.history = []
     
     async def connect(self):
@@ -132,12 +140,19 @@ class CDPClient:
             self.connected = True
             file_logger.log("✅ WebSocket подключен")
             
+            # Включаем все домены для полного контроля
             await self.send("Page.enable", {})
             await self.send("Runtime.enable", {})
             await self.send("DOM.enable", {})
-            file_logger.log("✅ Page, Runtime, DOM включены")
+            await self.send("Network.enable", {})
+            await self.send("Emulation.enable", {})
+            await self.send("Input.enable", {})
+            await self.send("Browser.enable", {})
+            await self.send("Target.enable", {})
+            file_logger.log("✅ Все домены включены")
             
             await self.navigate("https://google.com")
+            await self.update_page_structure()
             
             return True
             
@@ -170,7 +185,9 @@ class CDPClient:
                         file_logger.log(f"❌ {method}: {data['error']}", "ERROR")
                     return data
                 
+                # Обрабатываем события
                 if "method" in data:
+                    await self._handle_event(data)
                     continue
                 
         except asyncio.TimeoutError:
@@ -179,6 +196,22 @@ class CDPClient:
         except Exception as e:
             file_logger.log(f"❌ {method} error: {e}", "ERROR")
             return {"error": str(e)}
+    
+    async def _handle_event(self, event):
+        """Обрабатывает события от браузера"""
+        method = event.get("method")
+        params = event.get("params", {})
+        
+        if method == "Runtime.consoleAPICalled":
+            self.console_messages.append(params)
+            file_logger.log(f"📝 Консоль: {params}")
+        
+        elif method == "Network.requestWillBeSent":
+            file_logger.log(f"🌐 Запрос: {params.get('request', {}).get('url')}")
+        
+        elif method == "Page.javascriptDialogOpening":
+            self.dialog_messages.append(params)
+            file_logger.log(f"💬 Диалог: {params}")
     
     async def navigate(self, url):
         file_logger.log(f"🌐 Навигация на {url}")
@@ -189,6 +222,7 @@ class CDPClient:
             title = await self.eval_js("document.title")
             if title and title != "":
                 file_logger.log(f"📄 Страница загружена: {title}")
+                await self.update_page_structure()
                 break
     
     async def eval_js(self, code):
@@ -202,219 +236,189 @@ class CDPClient:
                     return result_obj["value"]
         return None
     
-    # ---------- DOM методы ----------
-    
-    async def get_dom_snapshot(self):
-        """Получает полный снимок DOM страницы"""
+    async def update_page_structure(self):
+        """Обновляет полную структуру страницы с проникновением в iframe и shadow DOM"""
         try:
-            snapshot = await self.send("DOMSnapshot.captureSnapshot", {
-                "computedStyles": ["display", "visibility", "font-size", "color"],
-                "includePaintOrder": False,
-                "includeDOMRects": False
-            })
+            file_logger.log("🔄 Обновляю структуру страницы...")
             
-            if "error" in snapshot:
-                return None
+            # Получаем ВСЕ элементы с проникновением в iframe и shadow DOM
+            elements = await self.eval_js("""
+                (function() {
+                    const all = document.querySelectorAll('*');
+                    const result = [];
+                    
+                    all.forEach(el => {
+                        const tag = el.tagName.toLowerCase();
+                        const rect = el.getBoundingClientRect();
+                        const style = window.getComputedStyle(el);
+                        
+                        // Собираем все атрибуты
+                        const attrs = {};
+                        for (const attr of el.attributes) {
+                            attrs[attr.name] = attr.value;
+                        }
+                        
+                        // Проверяем видимость
+                        const visible = rect.width > 0 && rect.height > 0 && 
+                                       style.display !== 'none' && 
+                                       style.visibility !== 'hidden';
+                        
+                        // Все значимые элементы
+                        const important = ['a', 'button', 'input', 'textarea', 'select', 'form',
+                                          'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'img', 'video',
+                                          'iframe', 'div', 'span', 'section', 'article', 'nav',
+                                          'header', 'footer', 'main', 'aside', 'ul', 'ol', 'li',
+                                          'table', 'tr', 'td', 'th', 'label', 'option', 'legend',
+                                          'fieldset', 'dialog', 'details', 'summary', 'figure',
+                                          'figcaption', 'time', 'mark', 'ruby', 'rt', 'rp'];
+                        
+                        if (important.includes(tag)) {
+                            result.push({
+                                tag: tag,
+                                text: (el.textContent || '').trim().slice(0, 100),
+                                id: el.id || '',
+                                class: el.className || '',
+                                attrs: attrs,
+                                visible: visible,
+                                x: Math.round(rect.x),
+                                y: Math.round(rect.y),
+                                width: Math.round(rect.width),
+                                height: Math.round(rect.height)
+                            });
+                        }
+                    });
+                    
+                    return result;
+                })()
+            """)
             
-            dom_doc = await self.send("DOM.getDocument", {
-                "depth": -1,
-                "pierce": True
-            })
-            
-            if "error" in dom_doc:
-                return None
-            
-            page_info = self._parse_snapshot(snapshot)
-            page_info["root_node_id"] = dom_doc.get("root", {}).get("nodeId")
-            
-            return page_info
-            
-        except Exception as e:
-            file_logger.log(f"❌ DOM snapshot error: {e}", "ERROR")
-            return None
-    
-    def _parse_snapshot(self, snapshot):
-        """Парсит DOMSnapshot в читаемый формат"""
-        try:
-            result = {
-                "elements": [],
-                "buttons": [],
-                "inputs": [],
-                "links": [],
-                "forms": [],
-                "headings": [],
-                "text_content": ""
+            # Сохраняем структуру
+            self.page_structure = {
+                "title": await self.eval_js("document.title"),
+                "url": await self.eval_js("window.location.href"),
+                "total": len(elements) if elements else 0,
+                "elements": elements[:100] if elements else [],
+                "buttons": [e for e in elements if e.get('tag') in ['button'] or (e.get('tag') == 'input' and e.get('attrs', {}).get('type') in ['submit', 'button'])],
+                "inputs": [e for e in elements if e.get('tag') == 'input' and e.get('attrs', {}).get('type') not in ['hidden', 'submit', 'button']],
+                "links": [e for e in elements if e.get('tag') == 'a' and e.get('attrs', {}).get('href')],
+                "forms": [e for e in elements if e.get('tag') == 'form'],
+                "headings": [e for e in elements if e.get('tag') in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']],
+                "visible": [e for e in elements if e.get('visible')],
+                "images": [e for e in elements if e.get('tag') == 'img'],
+                "videos": [e for e in elements if e.get('tag') == 'video'],
+                "iframes": [e for e in elements if e.get('tag') == 'iframe']
             }
             
-            if "documents" not in snapshot or not snapshot["documents"]:
-                return result
-            
-            doc = snapshot["documents"][0]
-            nodes = doc.get("nodes", {})
-            
-            node_names = nodes.get("nodeName", [])
-            node_types = nodes.get("nodeType", [])
-            node_values = nodes.get("nodeValue", [])
-            
-            attributes_data = doc.get("attributes", {})
-            attr_names = attributes_data.get("name", [])
-            attr_values = attributes_data.get("value", [])
-            
-            for i in range(len(node_names)):
-                node_type = node_types[i] if i < len(node_types) else None
-                node_name = node_names[i] if i < len(node_names) else ""
-                
-                if node_type == 3:
-                    text = node_values[i] if i < len(node_values) else ""
-                    if text and text.strip():
-                        result["text_content"] += text + " "
-                    continue
-                
-                if node_type == 1 and node_name:
-                    tag = node_name.lower()
-                    
-                    attrs = {}
-                    attr_start = attributes_data.get("startIndex", [])[i] if i < len(attributes_data.get("startIndex", [])) else 0
-                    attr_count = attributes_data.get("count", [])[i] if i < len(attributes_data.get("count", [])) else 0
-                    
-                    for j in range(attr_start, attr_start + attr_count):
-                        if j < len(attr_names) and j < len(attr_values):
-                            attrs[attr_names[j]] = attr_values[j]
-                    
-                    element_info = {
-                        "tag": tag,
-                        "attributes": attrs,
-                        "text": attrs.get("text", "") or attrs.get("value", "") or attrs.get("placeholder", "")
-                    }
-                    
-                    result["elements"].append(element_info)
-                    
-                    if tag in ["button", "input[type='submit']"]:
-                        result["buttons"].append(element_info)
-                    elif tag == "input":
-                        result["inputs"].append(element_info)
-                    elif tag == "a":
-                        result["links"].append(element_info)
-                    elif tag == "form":
-                        result["forms"].append(element_info)
-                    elif tag in ["h1", "h2", "h3", "h4", "h5", "h6"]:
-                        result["headings"].append(element_info)
-            
-            return result
+            file_logger.log(f"✅ Структура обновлена: {len(elements)} элементов")
+            return True
             
         except Exception as e:
-            file_logger.log(f"❌ Parse snapshot error: {e}", "ERROR")
-            return {"error": str(e)}
+            file_logger.log(f"❌ Структура ошибка: {e}", "ERROR")
+            self.page_structure = {"error": str(e)}
+            return False
     
-    # ---------- Расширенные методы ----------
+    async def get_page_description(self):
+        """Возвращает текстовое описание страницы"""
+        if not self.page_structure:
+            await self.update_page_structure()
+        
+        structure = self.page_structure or {}
+        
+        description = f"""
+📄 **СТРАНИЦА:** {structure.get('title', 'Нет заголовка')}
+🔗 **URL:** {structure.get('url', 'Нет URL')}
+📊 **ВСЕГО ЭЛЕМЕНТОВ:** {structure.get('total', 0)}
+
+🔘 **КНОПКИ ({len(structure.get('buttons', []))}):**
+"""
+        for b in structure.get('buttons', [])[:10]:
+            text = b.get('text', '') or b.get('attrs', {}).get('value', '')
+            if text:
+                description += f"  • {text[:30]}\n"
+        
+        description += f"\n📝 **ПОЛЯ ВВОДА ({len(structure.get('inputs', []))}):\n"
+        for inp in structure.get('inputs', [])[:10]:
+            placeholder = inp.get('attrs', {}).get('placeholder', '')
+            if placeholder:
+                description += f"  • {placeholder}\n"
+        
+        description += f"\n🔗 **ССЫЛКИ ({len(structure.get('links', []))}):\n"
+        for link in structure.get('links', [])[:10]:
+            text = link.get('text', '')[:30]
+            if text:
+                description += f"  • {text}\n"
+        
+        description += f"\n👁️ **ВИДИМЫЕ ЭЛЕМЕНТЫ ({len(structure.get('visible', []))}):\n"
+        for el in structure.get('visible', [])[:10]:
+            tag = el.get('tag', '')
+            text = el.get('text', '')[:30]
+            if text:
+                description += f"  • <{tag}> {text}\n"
+        
+        return description
     
-    async def get_interactive_elements(self):
-        """Находит все интерактивные элементы"""
-        js_code = """
-        (function() {
-            const interactive = [];
-            const selectors = [
-                'button',
-                'a[href]',
-                'input[type="submit"]',
-                'input[type="button"]',
-                '[role="button"]',
-                '[onclick]',
-                '[tabindex]:not([tabindex="-1"])',
-                '[contenteditable="true"]'
-            ];
-            
-            document.querySelectorAll(selectors.join(',')).forEach(el => {
-                const rect = el.getBoundingClientRect();
-                const visible = rect.width > 0 && rect.height > 0 && 
-                               el.offsetParent !== null;
-                
-                if (visible) {
-                    interactive.push({
-                        tag: el.tagName,
-                        text: (el.textContent || el.value || '').slice(0, 30),
-                        id: el.id || '',
-                        class: el.className || '',
-                        type: el.type || '',
-                        href: el.href || '',
-                        selector: el.id ? '#' + el.id : 
-                                  el.className ? '.' + el.className.split(' ').join('.') : 
-                                  el.tagName
-                    });
-                }
-            });
-            
-            return interactive.slice(0, 20);
-        })()
-        """
-        return await self.eval_js(js_code)
+    # ---------- ВЗАИМОДЕЙСТВИЕ С ЭЛЕМЕНТАМИ ----------
     
-    async def get_visible_elements(self):
-        """Получает все видимые элементы"""
-        js_code = """
-        (function() {
-            const visible = [];
-            const all = document.querySelectorAll('*');
-            
-            all.forEach(el => {
-                const rect = el.getBoundingClientRect();
-                const style = window.getComputedStyle(el);
-                
-                if (rect.width > 0 && rect.height > 0 && 
-                    style.display !== 'none' && 
-                    style.visibility !== 'hidden' &&
-                    el.offsetParent !== null) {
-                    
-                    const tag = el.tagName.toLowerCase();
-                    const text = (el.textContent || '').trim().slice(0, 30);
-                    
-                    if (['button', 'a', 'input', 'textarea', 'select', 'h1', 'h2', 'h3', 'p', 'div'].includes(tag)) {
-                        visible.push({
-                            tag: tag,
-                            text: text,
-                            id: el.id || '',
-                            class: el.className || '',
-                            selector: el.id ? '#' + el.id : 
-                                      el.className ? '.' + el.className.split(' ').join('.') : 
-                                      tag
-                        });
-                    }
-                }
-            });
-            
-            return visible.slice(0, 30);
-        })()
-        """
-        return await self.eval_js(js_code)
-    
-    async def get_element_visibility(self, selector):
-        """Проверяет, виден ли элемент"""
+    async def click_element(self, selector):
         js_code = f"""
         (function() {{
             const el = document.querySelector('{selector}');
-            if (!el) return null;
-            
-            const rect = el.getBoundingClientRect();
-            const style = window.getComputedStyle(el);
-            
-            return {{
-                visible: el.offsetParent !== null && 
-                         style.display !== 'none' && 
-                         style.visibility !== 'hidden' &&
-                         rect.width > 0 && rect.height > 0,
-                inViewport: rect.top < window.innerHeight && 
-                            rect.bottom > 0,
-                x: rect.x,
-                y: rect.y,
-                width: rect.width,
-                height: rect.height
-            }};
+            if (el) {{
+                el.click();
+                return {{ success: true }};
+            }}
+            return {{ success: false }};
+        }})()
+        """
+        return await self.eval_js(js_code)
+    
+    async def double_click(self, selector):
+        js_code = f"""
+        (function() {{
+            const el = document.querySelector('{selector}');
+            if (el) {{
+                const event = new MouseEvent('dblclick', {{
+                    view: window,
+                    bubbles: true,
+                    cancelable: true
+                }});
+                el.dispatchEvent(event);
+                return {{ success: true }};
+            }}
+            return {{ success: false }};
+        }})()
+        """
+        return await self.eval_js(js_code)
+    
+    async def fill_element(self, selector, value):
+        js_code = f"""
+        (function() {{
+            const el = document.querySelector('{selector}');
+            if (el) {{
+                el.value = '{value}';
+                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                return {{ success: true }};
+            }}
+            return {{ success: false }};
+        }})()
+        """
+        return await self.eval_js(js_code)
+    
+    async def scroll_to(self, selector):
+        js_code = f"""
+        (function() {{
+            const el = document.querySelector('{selector}');
+            if (el) {{
+                el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+                return {{ success: true }};
+            }}
+            return {{ success: false }};
         }})()
         """
         return await self.eval_js(js_code)
     
     async def wait_for_element(self, selector, timeout=10):
-        """Ждёт появления элемента"""
         js_code = f"""
         (function() {{
             return new Promise((resolve) => {{
@@ -439,84 +443,143 @@ class CDPClient:
         """
         return await self.eval_js(js_code)
     
-    async def scroll_to_element(self, selector):
-        """Скроллит к элементу"""
+    async def get_text(self, selector):
         js_code = f"""
         (function() {{
             const el = document.querySelector('{selector}');
-            if (el) {{
-                el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
-                return {{ success: true, selector: '{selector}' }};
-            }}
-            return {{ success: false, selector: '{selector}' }};
+            return el ? el.textContent.trim() : null;
         }})()
         """
         return await self.eval_js(js_code)
     
-    async def get_text_content(self, selector):
-        """Получает текст элемента"""
-        js_code = f"""
-        (function() {{
-            const el = document.querySelector('{selector}');
-            if (!el) return null;
-            
-            return {{
-                text: el.textContent.trim(),
-                innerHTML: el.innerHTML.slice(0, 500),
-                outerHTML: el.outerHTML.slice(0, 500)
-            }};
-        }})()
-        """
-        return await self.eval_js(js_code)
-    
-    async def get_page_state(self):
-        """Полное состояние страницы"""
-        return {
-            "url": await self.eval_js("window.location.href"),
-            "title": await self.eval_js("document.title"),
-            "scrollY": await self.eval_js("window.scrollY"),
-            "scrollHeight": await self.eval_js("document.body.scrollHeight"),
-            "viewportHeight": await self.eval_js("window.innerHeight"),
-            "interactive": await self.get_interactive_elements(),
-            "visible": await self.get_visible_elements()
-        }
-    
-    async def click_element(self, selector):
-        """Кликает по элементу"""
-        js_code = f"""
-        (function() {{
-            const el = document.querySelector('{selector}');
-            if (el) {{
-                el.click();
-                return {{ success: true, selector: '{selector}' }};
-            }}
-            return {{ success: false, selector: '{selector}' }};
-        }})()
-        """
-        return await self.eval_js(js_code)
-    
-    async def fill_element(self, selector, value):
-        """Заполняет поле ввода"""
+    async def select_option(self, selector, value):
         js_code = f"""
         (function() {{
             const el = document.querySelector('{selector}');
             if (el) {{
                 el.value = '{value}';
-                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                 el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                return {{ success: true, selector: '{selector}', value: '{value}' }};
+                return {{ success: true }};
             }}
-            return {{ success: false, selector: '{selector}' }};
+            return {{ success: false }};
         }})()
         """
         return await self.eval_js(js_code)
     
-    async def wait_for_and_click(self, selector, timeout=10):
-        """Ждёт элемент и кликает по нему"""
-        wait_result = await self.wait_for_element(selector, timeout)
-        if wait_result.get("found"):
-            return await self.click_element(selector)
-        return {"error": "Element not found", "selector": selector}
+    async def set_checkbox(self, selector, checked=True):
+        js_code = f"""
+        (function() {{
+            const el = document.querySelector('{selector}');
+            if (el) {{
+                el.checked = {str(checked).lower()};
+                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                return {{ success: true }};
+            }}
+            return {{ success: false }};
+        }})()
+        """
+        return await self.eval_js(js_code)
+    
+    # ---------- РАБОТА С СЕТЬЮ ----------
+    
+    async def enable_network_monitoring(self):
+        """Включает мониторинг сети"""
+        await self.send("Network.enable", {})
+        self.network_enabled = True
+        file_logger.log("✅ Мониторинг сети включен")
+    
+    async def get_cookies(self):
+        resp = await self.send("Network.getAllCookies", {})
+        return resp.get("result", {}).get("cookies", [])
+    
+    async def set_cookie(self, name, value, domain=None, path="/"):
+        params = {"name": name, "value": value, "path": path}
+        if domain:
+            params["domain"] = domain
+        return await self.send("Network.setCookie", params)
+    
+    async def block_images(self):
+        await self.send("Network.setBlockedURLs", {
+            "urls": ["*.jpg", "*.jpeg", "*.png", "*.gif", "*.webp"]
+        })
+        file_logger.log("✅ Картинки заблокированы")
+    
+    # ---------- ЭМУЛЯЦИЯ ----------
+    
+    async def emulate_device(self, device="mobile"):
+        devices = {
+            "mobile": {"width": 375, "height": 812, "deviceScaleFactor": 2, "mobile": True},
+            "tablet": {"width": 768, "height": 1024, "deviceScaleFactor": 1.5, "mobile": True},
+            "desktop": {"width": 1920, "height": 1080, "deviceScaleFactor": 1, "mobile": False}
+        }
+        
+        if device in devices:
+            params = devices[device]
+            await self.send("Emulation.setDeviceMetricsOverride", params)
+            file_logger.log(f"✅ Эмулирую устройство: {device}")
+            return True
+        return False
+    
+    async def emulate_geolocation(self, lat, lon, accuracy=100):
+        await self.send("Emulation.setGeolocationOverride", {
+            "latitude": lat,
+            "longitude": lon,
+            "accuracy": accuracy
+        })
+        file_logger.log(f"✅ Геолокация: {lat}, {lon}")
+    
+    # ---------- РАБОТА С КОНСОЛЬЮ ----------
+    
+    async def get_console_logs(self):
+        return self.console_messages
+    
+    async def clear_console(self):
+        self.console_messages = []
+        file_logger.log("✅ Консоль очищена")
+    
+    # ---------- ДИАЛОГИ ----------
+    
+    async def handle_dialog(self, accept=True, prompt_text=""):
+        return await self.send("Page.handleJavaScriptDialog", {
+            "accept": accept,
+            "promptText": prompt_text
+        })
+    
+    # ---------- ВКЛАДКИ ----------
+    
+    async def create_tab(self, url="about:blank"):
+        resp = await self.send("Target.createTarget", {"url": url})
+        if "result" in resp:
+            target_id = resp["result"]["targetId"]
+            self.tabs[target_id] = {"id": target_id}
+            self.active_tab = target_id
+            
+            resp = await self.send("Target.attachToTarget", {"targetId": target_id})
+            if "result" in resp:
+                session_id = resp["result"]["sessionId"]
+                self.tabs[target_id]["session_id"] = session_id
+                file_logger.log(f"✅ Новая вкладка: {target_id}")
+                return target_id
+        return None
+    
+    async def switch_tab(self, target_id):
+        if target_id in self.tabs:
+            self.active_tab = target_id
+            file_logger.log(f"✅ Переключил на вкладку: {target_id}")
+            return True
+        return False
+    
+    async def close_tab(self, target_id):
+        await self.send("Target.closeTarget", {"targetId": target_id})
+        if target_id in self.tabs:
+            del self.tabs[target_id]
+            if self.active_tab == target_id:
+                self.active_tab = list(self.tabs.keys())[0] if self.tabs else None
+            file_logger.log(f"✅ Вкладка закрыта: {target_id}")
+            return True
+        return False
+    
+    # ---------- СКРИНШОТ ----------
     
     async def screenshot(self):
         try:
@@ -553,7 +616,7 @@ class CDPClient:
 
 clients = {}
 
-# ---------- Agnes AI с полным DOM доступом ----------
+# ---------- Agnes AI с полным доступом ----------
 
 async def ask_agnes(prompt: str, client: CDPClient = None) -> dict:
     if not AGNES_API_KEY:
@@ -564,66 +627,52 @@ async def ask_agnes(prompt: str, client: CDPClient = None) -> dict:
         "Content-Type": "application/json"
     }
     
-    dom_info = "Страница не загружена"
-    if client:
-        try:
-            snapshot = await client.get_dom_snapshot()
-            interactive = await client.get_interactive_elements()
-            visible = await client.get_visible_elements()
-            
-            if snapshot and not snapshot.get("error"):
-                dom_info = f"""
-📄 **ПОЛНАЯ СТРУКТУРА СТРАНИЦЫ:**
-
-🔘 **КНОПКИ ({len(snapshot.get('buttons', []))}):**
-{json.dumps(snapshot.get('buttons', [])[:10], indent=2, ensure_ascii=False)}
-
-📝 **ПОЛЯ ВВОДА ({len(snapshot.get('inputs', []))}):**
-{json.dumps(snapshot.get('inputs', [])[:10], indent=2, ensure_ascii=False)}
-
-🔗 **ССЫЛКИ ({len(snapshot.get('links', []))}):**
-{json.dumps(snapshot.get('links', [])[:10], indent=2, ensure_ascii=False)}
-
-🖱️ **ИНТЕРАКТИВНЫЕ ЭЛЕМЕНТЫ ({len(interactive)}):**
-{json.dumps(interactive[:10], indent=2, ensure_ascii=False)}
-
-👁️ **ВИДИМЫЕ ЭЛЕМЕНТЫ ({len(visible)}):**
-{json.dumps(visible[:10], indent=2, ensure_ascii=False)}
-
-📊 **ВСЕГО ЭЛЕМЕНТОВ: {len(snapshot.get('elements', []))}**
-
-💡 **Что видно на странице:**
-- Кнопки: {[b.get('text') for b in snapshot.get('buttons', [])[:5]]}
-- Поля: {[i.get('text') for i in snapshot.get('inputs', [])[:5]]}
-- Ссылки: {[l.get('text') for l in snapshot.get('links', [])[:5]]}
-- Интерактивные: {[i.get('text') for i in interactive[:5]]}
-"""
-        except Exception as e:
-            dom_info = f"Ошибка получения DOM: {e}"
+    # Получаем описание страницы
+    page_desc = "Страница не загружена"
+    if client and client.page_structure:
+        page_desc = await client.get_page_description()
     
     system_prompt = f"""
-Ты AI-агент для управления браузером через CDP.
+Ты AI-агент для управления браузером. Отвечай ТОЛЬКО JSON.
 
-{dom_info}
+{page_desc}
 
-📌 **Доступные действия (отвечай ТОЛЬКО JSON):**
-1. navigate — перейти на URL
-2. screenshot — сделать скриншот
-3. click — кликнуть по элементу
-4. fill — заполнить поле
-5. scroll — прокрутить
-6. wait — ждать элемент
-7. js — выполнить код
-8. get_text — получить текст
+📌 **ДОСТУПНЫЕ ДЕЙСТВИЯ:**
+1. navigate - перейти на URL
+2. screenshot - скриншот
+3. click - кликнуть
+4. fill - заполнить поле
+5. scroll - прокрутить
+6. wait - ждать элемент
+7. get_text - получить текст
+8. back - назад
+9. forward - вперёд
+10. reload - обновить
+11. new_tab - новая вкладка
+12. close_tab - закрыть вкладку
+13. get_cookies - получить куки
+14. set_cookie - установить куки
+15. block_images - блокировать картинки
+16. emulate_device - эмулировать устройство
+17. get_console - получить логи консоли
 
-🎯 **Как выбирать селекторы:**
-- По ID: "button#submit"
-- По классу: ".btn-primary"
-- По типу: "input[type='email']"
-- По тексту: "button:contains('Войти')"
+🎯 **СЕЛЕКТОРЫ (из того что видно на странице):**
+"""
+    if client and client.page_structure:
+        for el in client.page_structure.get('visible', [])[:10]:
+            tag = el.get('tag', '')
+            text = el.get('text', '')[:30]
+            if text:
+                system_prompt += f"- {tag}: '{text}' → selector: {el.get('id', '') or el.get('class', '') or tag}\n"
+    
+    system_prompt += """
+📝 **ПРИМЕРЫ ОТВЕТОВ:**
+- {"action": "click", "params": {"selector": "button"}}
+- {"action": "fill", "params": {"selector": "input", "value": "текст"}}
+- {"action": "screenshot", "params": {}}
+- {"action": "answer", "params": {"text": "На странице Google есть поле поиска"}}
 
 📝 **Отвечай ТОЛЬКО JSON!**
-Пример: {{"action": "click", "params": {{"selector": "button"}}}}
 """
     
     data = {
@@ -640,6 +689,8 @@ async def ask_agnes(prompt: str, client: CDPClient = None) -> dict:
         response = requests.post(AGNES_API_URL, headers=headers, json=data, timeout=30)
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
+        
+        file_logger.log(f"Agnes: {content[:200]}...")
         
         json_match = re.search(r'\{.*\}', content, re.DOTALL)
         if json_match:
@@ -661,6 +712,7 @@ async def execute_action(client: CDPClient, action: dict) -> str:
         if action_type == "navigate":
             url = params.get("url", "https://google.com")
             await client.navigate(url)
+            await client.update_page_structure()
             title = await client.eval_js("document.title")
             return f"✅ Открыл: {url}\n📄 {title}"
         
@@ -674,24 +726,30 @@ async def execute_action(client: CDPClient, action: dict) -> str:
         
         elif action_type == "click":
             selector = params.get("selector")
+            if not selector:
+                return "❌ Нет селектора"
             result = await client.click_element(selector)
-            if result.get("success"):
+            if result and result.get("success"):
+                await client.update_page_structure()
                 return f"✅ Кликнул: {selector}"
             return f"❌ Элемент не найден: {selector}"
         
         elif action_type == "fill":
             selector = params.get("selector")
             value = params.get("value", "")
+            if not selector:
+                return "❌ Нет селектора"
             result = await client.fill_element(selector, value)
-            if result.get("success"):
+            if result and result.get("success"):
+                await client.update_page_structure()
                 return f"✅ Заполнил: {selector} = {value}"
             return f"❌ Элемент не найден: {selector}"
         
         elif action_type == "scroll":
             selector = params.get("selector")
             if selector:
-                result = await client.scroll_to_element(selector)
-                if result.get("success"):
+                result = await client.scroll_to(selector)
+                if result and result.get("success"):
                     return f"✅ Прокрутил к: {selector}"
                 return f"❌ Элемент не найден: {selector}"
             amount = params.get("amount", 500)
@@ -708,10 +766,66 @@ async def execute_action(client: CDPClient, action: dict) -> str:
         
         elif action_type == "get_text":
             selector = params.get("selector")
-            result = await client.get_text_content(selector)
+            result = await client.get_text(selector)
             if result:
-                return f"📄 Текст:\n{result.get('text', 'Нет текста')}"
+                return f"📄 Текст:\n{result}"
             return f"❌ Элемент не найден: {selector}"
+        
+        elif action_type == "back":
+            await client.send("Page.goBack", {})
+            await client.update_page_structure()
+            return "✅ Назад"
+        
+        elif action_type == "forward":
+            await client.send("Page.goForward", {})
+            await client.update_page_structure()
+            return "✅ Вперёд"
+        
+        elif action_type == "reload":
+            await client.send("Page.reload", {})
+            await client.update_page_structure()
+            return "✅ Обновлено"
+        
+        elif action_type == "new_tab":
+            url = params.get("url", "about:blank")
+            tab_id = await client.create_tab(url)
+            if tab_id:
+                return f"✅ Новая вкладка: {tab_id[:8]}"
+            return "❌ Не удалось создать вкладку"
+        
+        elif action_type == "close_tab":
+            tab_id = params.get("tab_id")
+            if tab_id:
+                result = await client.close_tab(tab_id)
+                if result:
+                    return f"✅ Вкладка закрыта"
+            return "❌ Не удалось закрыть вкладку"
+        
+        elif action_type == "block_images":
+            await client.block_images()
+            return "✅ Картинки заблокированы"
+        
+        elif action_type == "emulate_device":
+            device = params.get("device", "mobile")
+            result = await client.emulate_device(device)
+            if result:
+                return f"✅ Эмулирую: {device}"
+            return "❌ Неизвестное устройство"
+        
+        elif action_type == "get_cookies":
+            cookies = await client.get_cookies()
+            return f"🍪 Куки:\n{json.dumps(cookies, indent=2, ensure_ascii=False)[:500]}"
+        
+        elif action_type == "set_cookie":
+            name = params.get("name")
+            value = params.get("value")
+            if name and value:
+                await client.set_cookie(name, value)
+                return f"✅ Кука установлена: {name}={value}"
+            return "❌ Нет имени или значения"
+        
+        elif action_type == "answer":
+            return f"📝 {params.get('text', 'Нет ответа')}"
         
         elif action_type == "js":
             code = params.get("code", "document.title")
@@ -719,61 +833,73 @@ async def execute_action(client: CDPClient, action: dict) -> str:
             return f"✅ Результат: {result}"
         
         else:
-            return f"⚠️ Неизвестное действие: {action_type}"
+            return f"⚠️ Неизвестно: {action_type}"
             
     except Exception as e:
         file_logger.log(f"Execute error: {e}", "ERROR")
         return f"❌ Ошибка: {str(e)}"
 
-# ---------- Прямые команды ----------
+# ---------- Обработчик ----------
 
-async def execute_command(client: CDPClient, command: str) -> str:
-    cmd = command.lower()
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
     
-    if any(x in cmd for x in ["google", "гугл"]):
-        await client.navigate("https://google.com")
-        title = await client.eval_js("document.title")
-        return f"✅ Открыл Google\n📄 {title}"
+    user_id = update.message.from_user.id
+    prompt = update.message.text
     
-    if any(x in cmd for x in ["ютуб", "youtube"]):
-        await client.navigate("https://youtube.com")
-        title = await client.eval_js("document.title")
-        return f"✅ Открыл YouTube\n📄 {title}"
+    file_logger.log(f"Сообщение от {user_id}: {prompt[:100]}...")
     
-    if any(x in cmd for x in ["скриншот", "скрин", "screenshot"]):
-        img_data = await client.screenshot()
-        if img_data:
-            with open("screenshot.png", "wb") as f:
-                f.write(img_data)
-            return "screenshot"
-        return "❌ Не удалось сделать скриншот"
+    await update.message.chat.send_action(action="typing")
     
-    if command.startswith("http"):
-        await client.navigate(command)
-        title = await client.eval_js("document.title")
-        return f"✅ Открыл\n📄 {title}"
-    
-    return None
+    try:
+        if user_id not in clients:
+            client = CDPClient()
+            client.user_id = user_id
+            await client.connect()
+            clients[user_id] = client
+        
+        client = clients[user_id]
+        
+        # Спрашиваем Agnes
+        if AGNES_API_KEY:
+            response = await ask_agnes(prompt, client)
+            if "error" not in response:
+                result = await execute_action(client, response)
+                if result == "screenshot":
+                    with open("screenshot.png", "rb") as photo:
+                        await update.message.reply_photo(photo=photo)
+                else:
+                    await update.message.reply_text(result)
+                return
+        
+        await update.message.reply_text("❌ Не понял команду. Попробуйте переформулировать.")
+            
+    except Exception as e:
+        file_logger.log(f"❌ Ошибка: {e}", "ERROR")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 # ---------- Команды ----------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 **Супер-агент для управления браузером**\n\n"
-        "Я вижу ВСЁ на странице! Просто скажи что сделать.\n\n"
+        "🤖 **СУПЕР-АГЕНТ для управления браузером**\n\n"
+        "Я вижу ВСЁ на странице и могу ВСЕМ управлять!\n\n"
         "📌 **Что я умею:**\n"
-        "• Открывать сайты\n"
-        "• Кликать по кнопкам\n"
-        "• Заполнять формы\n"
-        "• Делать скриншоты\n"
-        "• Прокручивать страницу\n"
-        "• Ждать загрузки элементов\n"
-        "• Читать текст\n\n"
-        "💡 **Примеры:**\n"
+        "• Вижу все кнопки, поля, ссылки\n"
+        "• Кликаю, заполняю, прокручиваю\n"
+        "• Открываю новые вкладки\n"
+        "• Эмулирую мобильные устройства\n"
+        "• Работаю с куками и консолью\n"
+        "• Блокирую картинки\n"
+        "• Делаю скриншоты\n\n"
+        "💡 **Примеры команд:**\n"
+        "• Что ты видишь?\n"
         "• Открой Google\n"
         "• Нажми на кнопку Войти\n"
-        "• Заполни поле email\n"
-        "• Сделай скриншот\n\n"
+        "• Заполни поле поиска\n"
+        "• Сделай скриншот\n"
+        "• Эмулируй мобильное устройство\n\n"
         "/cdp - статус браузера\n"
         "/logs - логи"
     )
@@ -817,56 +943,6 @@ async def cdp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(status_text)
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-
-# ---------- Обработчик ----------
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
-        return
-    
-    user_id = update.message.from_user.id
-    prompt = update.message.text
-    
-    file_logger.log(f"Сообщение от {user_id}: {prompt[:100]}...")
-    
-    await update.message.chat.send_action(action="typing")
-    
-    try:
-        if user_id not in clients:
-            client = CDPClient()
-            client.user_id = user_id
-            await client.connect()
-            clients[user_id] = client
-        
-        client = clients[user_id]
-        
-        # Сначала пробуем прямые команды
-        result = await execute_command(client, prompt)
-        if result:
-            if result == "screenshot":
-                with open("screenshot.png", "rb") as photo:
-                    await update.message.reply_photo(photo=photo)
-            else:
-                await update.message.reply_text(result)
-            return
-        
-        # Если не распознали - спрашиваем Agnes
-        if AGNES_API_KEY:
-            response = await ask_agnes(prompt, client)
-            if "error" not in response:
-                result = await execute_action(client, response)
-                if result == "screenshot":
-                    with open("screenshot.png", "rb") as photo:
-                        await update.message.reply_photo(photo=photo)
-                else:
-                    await update.message.reply_text(result)
-                return
-        
-        await update.message.reply_text("❌ Не понял команду. Попробуйте переформулировать.")
-            
-    except Exception as e:
-        file_logger.log(f"❌ Ошибка: {e}", "ERROR")
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 # ---------- Main ----------
