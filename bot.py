@@ -106,6 +106,7 @@ class CDPClient:
         self.connected = False
         self.msg_id = 0
         self.user_id = None
+        self.pending_responses = {}  # Ожидаемые ответы
     
     async def connect(self):
         if self.connected:
@@ -131,9 +132,9 @@ class CDPClient:
             self.connected = True
             file_logger.log("✅ WebSocket подключен")
             
-            # Включаем домены (по документации)
-            await self._send("Page.enable", {})
-            await self._send("Runtime.enable", {})
+            # Включаем домены
+            await self.send("Page.enable", {})
+            await self.send("Runtime.enable", {})
             file_logger.log("✅ Page.enable и Runtime.enable")
             
             # Открываем страницу
@@ -145,38 +146,48 @@ class CDPClient:
             file_logger.log(f"❌ Connect error: {e}", "ERROR")
             return False
     
-    async def _send(self, method, params=None):
-        """Отправка команды (по документации CDP)"""
+    async def send(self, method, params=None):
+        """Отправка команды с ожиданием ответа"""
         if not self.connected:
             await self.connect()
         
         self.msg_id += 1
+        msg_id = self.msg_id
+        
         msg = {
-            "id": self.msg_id,
+            "id": msg_id,
             "method": method,
             "params": params or {}
         }
         
         try:
+            # Отправляем запрос
             await self.ws.send(json.dumps(msg))
-            file_logger.log(f"📤 {method} (id: {self.msg_id})")
+            file_logger.log(f"📤 {method} (id: {msg_id})")
             
-            # Ждём ответ
-            response = await asyncio.wait_for(self.ws.recv(), timeout=30)
-            data = json.loads(response)
-            
-            # Проверяем id
-            if data.get("id") == self.msg_id:
-                file_logger.log(f"📥 {method} (id: {self.msg_id}) - OK")
-            else:
-                file_logger.log(f"⚠️ Ответ с другим id: {data.get('id')} != {self.msg_id}")
-            
-            if "error" in data:
-                file_logger.log(f"❌ {method} error: {data['error']}", "ERROR")
-            else:
-                file_logger.log(f"✅ {method}")
-            
-            return data
+            # Ждём ответ с правильным id
+            while True:
+                response = await asyncio.wait_for(self.ws.recv(), timeout=30)
+                data = json.loads(response)
+                
+                # Проверяем, что это ответ на наш запрос (есть id)
+                if data.get("id") == msg_id:
+                    if "error" in data:
+                        file_logger.log(f"❌ {method} error: {data['error']}", "ERROR")
+                    else:
+                        file_logger.log(f"📥 {method} (id: {msg_id}) - OK")
+                    return data
+                
+                # Если это событие без id - игнорируем
+                if "method" in data:
+                    file_logger.log(f"📡 Событие: {data.get('method')}")
+                    continue
+                
+                # Если id не совпадает - игнорируем
+                if data.get("id") is not None:
+                    file_logger.log(f"⚠️ Игнорируем ответ с id {data.get('id')}, ждём {msg_id}")
+                    continue
+                
         except asyncio.TimeoutError:
             file_logger.log(f"❌ {method} timeout", "ERROR")
             return {"error": "Timeout"}
@@ -184,14 +195,9 @@ class CDPClient:
             file_logger.log(f"❌ {method} error: {e}", "ERROR")
             return {"error": str(e)}
     
-    async def send(self, method, params=None):
-        """Алиас для _send"""
-        return await self._send(method, params)
-    
     async def navigate(self, url):
-        """Page.navigate - переход по URL"""
         file_logger.log(f"🌐 Навигация на {url}")
-        resp = await self._send("Page.navigate", {"url": url})
+        resp = await self.send("Page.navigate", {"url": url})
         
         # Ждём загрузки
         for i in range(10):
@@ -204,29 +210,25 @@ class CDPClient:
         return resp
     
     async def eval_js(self, code):
-        """Runtime.evaluate - выполнение JavaScript"""
-        resp = await self._send("Runtime.evaluate", {"expression": code})
+        """Выполняет JavaScript"""
+        resp = await self.send("Runtime.evaluate", {"expression": code})
         
-        # Парсим ответ Runtime.evaluate (по документации)
         if "result" in resp:
             result_obj = resp["result"]
             if isinstance(result_obj, dict):
-                # Формат: {"result": {"type": "string", "value": "..."}}
                 if "result" in result_obj:
                     return result_obj["result"].get("value", "")
-                # Формат: {"result": {"value": "..."}}
                 elif "value" in result_obj:
                     return result_obj["value"]
         return None
     
     async def screenshot(self):
-        """Page.captureScreenshot - скриншот страницы"""
+        """Делает скриншот страницы"""
         try:
-            # Проверяем соединение
             if not self.connected:
                 await self.connect()
             
-            # Проверяем, что страница загружена
+            # Проверяем страницу
             title = await self.eval_js("document.title")
             file_logger.log(f"📄 Текущий заголовок: {title}")
             
@@ -235,10 +237,10 @@ class CDPClient:
                 await self.navigate("https://google.com")
                 await asyncio.sleep(2)
             
-            # Делаем скриншот (по документации)
+            # Делаем скриншот
             file_logger.log("📸 Делаю скриншот...")
             
-            resp = await self._send("Page.captureScreenshot", {
+            resp = await self.send("Page.captureScreenshot", {
                 "format": "png",
                 "captureBeyondViewport": True,
                 "fromSurface": True
@@ -246,23 +248,19 @@ class CDPClient:
             
             file_logger.log(f"📸 Ответ: {json.dumps(resp, indent=2)[:300]}")
             
-            # Проверяем результат (по документации)
-            # Ожидаемый формат: {"result": {"data": "base64..."}}
-            if "result" in resp:
-                result_obj = resp["result"]
-                if "data" in result_obj:
-                    file_logger.log("✅ Скриншот сделан")
-                    return base64.b64decode(result_obj["data"])
+            if "result" in resp and "data" in resp["result"]:
+                file_logger.log("✅ Скриншот сделан")
+                return base64.b64decode(resp["result"]["data"])
             
             # Пробуем без параметров
             file_logger.log("⚠️ Пробую без параметров...")
-            resp2 = await self._send("Page.captureScreenshot", {})
+            resp2 = await self.send("Page.captureScreenshot", {})
             
             if "result" in resp2 and "data" in resp2["result"]:
                 file_logger.log("✅ Скриншот сделан (2)")
                 return base64.b64decode(resp2["result"]["data"])
             
-            file_logger.log(f"❌ Ошибка скриншота: нет data в ответе", "ERROR")
+            file_logger.log(f"❌ Ошибка скриншота: нет data", "ERROR")
             return None
                 
         except Exception as e:
