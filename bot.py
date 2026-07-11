@@ -69,41 +69,37 @@ def start_chrome():
             file_logger.log("✅ Chrome уже запущен")
             return True
         
+        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        
         subprocess.Popen([
             CHROME_PATH,
-            "--headless=new",
             "--remote-debugging-port=9222",
             "--no-sandbox",
             "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--user-data-dir=/tmp/chrome-profile",
-            "--window-size=1920,1080",
-            "--disable-blink-features=AutomationControlled",
-            "--disable-features=IsolateOrigins,site-per-process",
-            "--disable-web-security",
-            "--disable-site-isolation-trials",
-            "--disable-features=BlockInsecurePrivateNetworkRequests",
-            "--disable-features=TranslateUI,BlinkGenPropertyTrees",
-            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "--disable-default-apps",
-            "--disable-extensions",
-            "--disable-component-extensions-with-background-pages",
-            "--disable-client-side-phishing-detection",
-            "--disable-hang-monitor",
-            "--disable-ipc-flooding-protection",
-            "--disable-popup-blocking",
-            "--disable-prompt-on-repost",
-            "--disable-background-timer-throttling",
-            "--disable-backgrounding-occluded-windows",
-            "--disable-renderer-backgrounding",
-            "--disable-sync",
-            "--disable-breakpad",
-            "--metrics-recording-only",
+            
+            # ✅ Из Pydoll: базовые stealth-флаги
+            "--disable-blink-features=AutomationControlled",  # убирает navigator.webdriver
             "--no-first-run",
-            "--safebrowsing-disable-auto-update",
-            "--force-color-profile=srgb",
+            "--no-default-browser-check",
+            "--lang=en-US",
+            "--accept-lang=en-US,en;q=0.9",
+            
+            # ✅ WebRTC защита
             "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-            "--enable-automation"
+            
+            # ✅ Реалистичный User-Agent
+            f"--user-agent={user_agent}",
+            
+            # ✅ Headless нового поколения
+            "--headless=new",
+            
+            # ✅ Оптимизация
+            "--disable-extensions",
+            "--disable-popup-blocking",
+            "--disable-background-timer-throttling",
+            "--disable-sync",
+            "--metrics-recording-only",
+            "--disable-gpu"
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         
         time.sleep(5)
@@ -139,7 +135,7 @@ def create_page():
         return None
 
 # ============================================
-# 🧠 ПОЛНЫЙ CDP SUPERVISOR (Hermes)
+# 🧠 ПОЛНЫЙ CDP SUPERVISOR (Hermes + Pydoll маскировка)
 # ============================================
 
 class CDPSupervisor:
@@ -175,15 +171,15 @@ class CDPSupervisor:
         self.heartbeat_task = None
         self.dialog_timeout_task = None
         self.event_loop_task = None
+        
+        self.stealth_injected = False
     
     def _is_ws_closed(self):
         """Универсальная проверка закрытия WebSocket"""
         if not self.ws:
             return True
-        # Для новых версий websockets (>=11)
         if hasattr(self.ws, 'state'):
             return self.ws.state.name in ["CLOSED", "CLOSING"]
-        # Для старых версий (<=10.4)
         if hasattr(self.ws, 'closed'):
             return self.ws.closed
         return False
@@ -220,7 +216,7 @@ class CDPSupervisor:
         file_logger.log(f"🧠 CDP Supervisor остановлен для {self.user_id}")
     
     async def _run(self):
-        """Основной цикл супервайзера - ПРАВИЛЬНЫЙ ПОРЯДОК"""
+        """Основной цикл супервайзера"""
         file_logger.log("🚀 Запуск CDP Supervisor...")
         
         while self.running and not self._stop_event.is_set():
@@ -229,18 +225,28 @@ class CDPSupervisor:
                 file_logger.log("🔗 Подключение к Chrome...")
                 await self._connect()
                 
-                # 2. ЗАПУСКАЕМ EVENT LOOP ПЕРВЫМ!
+                # 2. ЗАПУСКАЕМ EVENT LOOP
                 file_logger.log("🔄 Запуск event loop...")
                 self.event_loop_task = asyncio.create_task(self._event_loop())
                 
-                # 3. Даем время на запуск
-                await asyncio.sleep(0.5)
+                # 3. Ждем реального запуска
+                for attempt in range(20):
+                    if self.event_loop_task and not self.event_loop_task.done():
+                        file_logger.log(f"✅ Event loop запущен (попытка {attempt+1})")
+                        break
+                    await asyncio.sleep(0.5)
+                else:
+                    raise Exception("Event loop не запустился")
                 
-                # 4. ТЕПЕРЬ настраиваем домены
+                # 4. Настройка доменов с маскировкой
                 file_logger.log("⚙️ Настройка доменов...")
                 await self._setup_domains()
                 
-                # 5. Проверка готовности
+                # 5. Инъекция stealth скриптов
+                file_logger.log("🛡️ Инъекция stealth скриптов...")
+                await self._inject_stealth_scripts()
+                
+                # 6. Проверка готовности
                 ready = False
                 for attempt in range(10):
                     try:
@@ -259,25 +265,27 @@ class CDPSupervisor:
                 if not ready:
                     raise Exception("Supervisor не готов")
                 
-                # 6. Навигация
-                file_logger.log("🌐 Открываю google.com...")
+                # 7. Навигация на about:blank (обход Google)
+                file_logger.log("🌐 Открываю about:blank...")
                 try:
                     result = await asyncio.wait_for(
-                        self.navigate("https://google.com"),
-                        timeout=25
+                        self.navigate("about:blank"),
+                        timeout=15
                     )
                     if result.get("success"):
-                        file_logger.log("✅ Google.com загружен")
+                        file_logger.log("✅ about:blank загружен")
+                    else:
+                        file_logger.log(f"⚠️ Ошибка: {result.get('error')}")
                 except asyncio.TimeoutError:
                     file_logger.log("⚠️ Таймаут навигации")
                 
                 file_logger.log("✅ Supervisor готов к работе!")
                 self._ready_event.set()
                 
-                # 7. Heartbeat
+                # 8. Heartbeat
                 self.heartbeat_task = asyncio.create_task(self._heartbeat())
                 
-                # 8. Ждем завершения
+                # 9. Ждем завершения
                 await asyncio.gather(
                     self.event_loop_task,
                     self.heartbeat_task,
@@ -310,13 +318,11 @@ class CDPSupervisor:
         """Возвращает статус супервайзера"""
         status_parts = []
         
-        # Статус подключения
         if self.connected and self.ws and not self._is_ws_closed():
             status_parts.append("✅ Подключен к Chrome")
         else:
             status_parts.append("❌ Нет подключения к Chrome")
         
-        # Статус страницы
         if self.page_loaded:
             status_parts.append("✅ Страница загружена")
             if self.full_snapshot:
@@ -326,13 +332,11 @@ class CDPSupervisor:
         else:
             status_parts.append("⏳ Страница загружается...")
         
-        # Диалоги
         if self.pending_dialogs:
             status_parts.append(f"💬 Ожидающих диалогов: {len(self.pending_dialogs)}")
         else:
             status_parts.append("✅ Нет ожидающих диалогов")
         
-        # Ref ID
         if self.ref_elements:
             status_parts.append(f"🆔 Доступно элементов: {len(self.ref_elements)}")
         
@@ -351,31 +355,37 @@ class CDPSupervisor:
         file_logger.log(f"✅ WebSocket подключен для {self.user_id}")
     
     async def _setup_domains(self):
-        """Настройка доменов - теперь event loop уже работает"""
+        """Настройка доменов с маскировкой через CDP (как в Pydoll)"""
         try:
-            # Все эти запросы теперь будут получать ответы
-            result = await asyncio.wait_for(
-                self._send("Page.enable", {}),
-                timeout=10
-            )
-            if "error" in result:
-                file_logger.log(f"⚠️ Page.enable error: {result.get('error')}")
+            user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             
-            result = await asyncio.wait_for(
-                self._send("Runtime.enable", {}),
+            # ✅ СНАЧАЛА: User-Agent синхронизация через CDP (КРИТИЧЕСКИ ВАЖНО!)
+            await asyncio.wait_for(
+                self._send("Emulation.setUserAgentOverride", {
+                    "userAgent": user_agent,
+                    "platform": "Win32",
+                    "userAgentMetadata": {
+                        "brands": [
+                            {"brand": "Not_A Brand", "version": "8"},
+                            {"brand": "Chromium", "version": "120"},
+                            {"brand": "Google Chrome", "version": "120"}
+                        ],
+                        "fullVersion": "120.0.6099.109",
+                        "platform": "Windows",
+                        "platformVersion": "10.0.0",
+                        "architecture": "x86_64",
+                        "model": "",
+                        "mobile": False
+                    }
+                }),
                 timeout=10
             )
-            if "error" in result:
-                file_logger.log(f"⚠️ Runtime.enable error: {result.get('error')}")
             
-            await asyncio.wait_for(
-                self._send("DOM.enable", {}),
-                timeout=10
-            )
-            await asyncio.wait_for(
-                self._send("Network.enable", {}),
-                timeout=10
-            )
+            # ✅ ПОТОМ остальные домены
+            await asyncio.wait_for(self._send("Page.enable", {}), timeout=10)
+            await asyncio.wait_for(self._send("Runtime.enable", {}), timeout=10)
+            await asyncio.wait_for(self._send("DOM.enable", {}), timeout=10)
+            await asyncio.wait_for(self._send("Network.enable", {}), timeout=10)
             await asyncio.wait_for(
                 self._send("Target.setAutoAttach", {
                     "autoAttach": True,
@@ -389,18 +399,84 @@ class CDPSupervisor:
             file_logger.log("⚠️ Таймаут при настройке доменов")
             raise
     
+    async def _inject_stealth_scripts(self):
+        """Инъекция скриптов для согласованности (как в Pydoll)"""
+        try:
+            js_code = """
+            // Синхронизация navigator свойств (Pydoll стиль)
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            
+            // Подмена navigator.plugins
+            Object.defineProperty(navigator, 'plugins', { 
+                get: () => {
+                    const plugins = [
+                        { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+                        { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+                        { name: 'Native Client', filename: 'internal-nacl-plugin' }
+                    ];
+                    plugins.length = 3;
+                    plugins.item = (i) => plugins[i] || null;
+                    plugins.namedItem = (name) => {
+                        for (const p of plugins) {
+                            if (p.name === name) return p;
+                        }
+                        return null;
+                    };
+                    return plugins;
+                }
+            });
+            
+            // Подмена navigator.languages
+            Object.defineProperty(navigator, 'languages', { 
+                get: () => ['en-US', 'en', 'ru'] 
+            });
+            
+            // Подмена WebGL (защита от fingerprint)
+            const getParameter = WebGLRenderingContext.prototype.getParameter;
+            WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                if (parameter === 37445) { // UNMASKED_VENDOR_WEBGL
+                    return 'Intel Inc.';
+                }
+                if (parameter === 37446) { // UNMASKED_RENDERER_WEBGL
+                    return 'Intel Iris OpenGL Engine';
+                }
+                return getParameter.call(this, parameter);
+            };
+            
+            // Подмена WebGL2
+            const getParameter2 = WebGL2RenderingContext.prototype.getParameter;
+            WebGL2RenderingContext.prototype.getParameter = function(parameter) {
+                if (parameter === 37445) { // UNMASKED_VENDOR_WEBGL
+                    return 'Intel Inc.';
+                }
+                if (parameter === 37446) { // UNMASKED_RENDERER_WEBGL
+                    return 'Intel Iris OpenGL Engine';
+                }
+                return getParameter2.call(this, parameter);
+            };
+            """
+            
+            await asyncio.wait_for(
+                self._send("Page.addScriptToEvaluateOnNewDocument", {
+                    "source": js_code
+                }),
+                timeout=10
+            )
+            self.stealth_injected = True
+            file_logger.log("✅ Stealth скрипты инжектированы")
+        except Exception as e:
+            file_logger.log(f"⚠️ Ошибка инъекции stealth: {e}")
+    
     async def _send(self, method, params=None, session_id=None):
-        """Отправляет команду в Chrome с проверкой соединения"""
-        # Проверка соединения
+        """Отправляет команду в Chrome"""
         if not self.connected:
-            file_logger.log(f"⚠️ Не подключен к Chrome, пытаюсь переподключиться...")
+            file_logger.log(f"⚠️ Не подключен к Chrome")
             await self._reconnect()
             if not self.connected:
                 return {"error": "Not connected"}
         
-        # Универсальная проверка
         if not self.ws or self._is_ws_closed():
-            file_logger.log(f"⚠️ WebSocket закрыт, пытаюсь переподключиться...")
+            file_logger.log(f"⚠️ WebSocket закрыт")
             await self._reconnect()
             if not self.ws or self._is_ws_closed():
                 return {"error": "WebSocket closed"}
@@ -441,6 +517,9 @@ class CDPSupervisor:
             try:
                 async with self._recv_lock:
                     response = await asyncio.wait_for(self.ws.recv(), timeout=30)
+                
+                if not response:
+                    continue
                 
                 data = json.loads(response)
                 
@@ -566,7 +645,7 @@ class CDPSupervisor:
             try:
                 resp = await self._send("Browser.getVersion", {})
                 if "error" in resp:
-                    file_logger.log("⚠️ Heartbeat failed, переподключаюсь")
+                    file_logger.log("⚠️ Heartbeat failed")
                     self.connected = False
                     await self._reconnect()
             except:
@@ -584,6 +663,7 @@ class CDPSupervisor:
         self.connected = False
         await self._connect()
         await self._setup_domains()
+        await self._inject_stealth_scripts()
     
     async def _update_snapshot(self):
         try:
@@ -711,6 +791,7 @@ class CDPSupervisor:
         if not self.connected:
             await self._connect()
             await self._setup_domains()
+            await self._inject_stealth_scripts()
         if not self.page_loaded:
             await self._wait_for_page_load()
         return self.connected and self.page_loaded
@@ -736,12 +817,11 @@ class CDPSupervisor:
         return False
     
     async def navigate(self, url):
-        """Безопасная навигация с таймаутами и повторными попытками"""
+        """Безопасная навигация с таймаутами"""
         async with self._navigation_lock:
             try:
                 file_logger.log(f"🌐 Навигация на {url}")
                 
-                # Проверяем соединение
                 if not self.connected or not self.ws or self._is_ws_closed():
                     file_logger.log("⚠️ Соединение потеряно, переподключаюсь...")
                     await self._reconnect()
@@ -753,7 +833,7 @@ class CDPSupervisor:
                 )
                 
                 if "error" in result:
-                    file_logger.log(f"❌ Ошибка навигации: {result.get('error')}")
+                    file_logger.log(f"❌ Ошибка: {result.get('error')}")
                     return {"success": False, "error": result.get("error")}
                 
                 # Ждем загрузки
@@ -775,10 +855,6 @@ class CDPSupervisor:
                 
             except asyncio.TimeoutError:
                 file_logger.log(f"⚠️ Таймаут навигации на {url}")
-                try:
-                    await self._send("Page.stopLoading", {})
-                except:
-                    pass
                 return {"success": False, "error": "Timeout"}
             except Exception as e:
                 file_logger.log(f"❌ Navigate error: {e}", "ERROR")
@@ -1118,7 +1194,6 @@ class CDPSupervisor:
 # ---------- Хранилище супервайзеров ----------
 
 supervisors = {}
-cancel_requests = {}
 
 async def get_supervisor(user_id: int) -> CDPSupervisor:
     if user_id not in supervisors:
@@ -1137,7 +1212,7 @@ async def get_supervisor(user_id: int) -> CDPSupervisor:
 # ---------- ОБНОВЛЕННЫЙ ПРОМТ ДЛЯ AGNES ----------
 
 AGENT_CODE = """
-🤖 АГЕНТ ДЛЯ УПРАВЛЕНИЯ БРАУЗЕРОМ (Hermes CDP)
+🤖 АГЕНТ ДЛЯ УПРАВЛЕНИЯ БРАУЗЕРОМ (Hermes CDP + Pydoll маскировка)
 
 📌 ДОСТУПНЫЕ ДЕЙСТВИЯ И ФОРМАТ:
 
@@ -1169,30 +1244,6 @@ AGENT_CODE = """
 • Для диалогов используй dialog_id (d-1, d-2, d-3...)
 • Отвечай ТОЛЬКО JSON, без пояснений
 • Если нужно несколько действий - используй массив JSON
-
-📌 ПРИМЕРЫ ПРАВИЛЬНЫХ ОТВЕТОВ:
-1. Кликнуть по кнопке "Войти":
-{"action": "click", "params": {"ref": "e8"}}
-
-2. Заполнить поле поиска и нажать Enter:
-[{"action": "fill", "params": {"ref": "e5", "value": "Spinoza"}},
- {"action": "press_enter", "params": {}}]
-
-3. Обработать диалог:
-{"action": "handle_dialog", "params": {"dialog_id": "d-1", "accept": true}}
-
-4. Открыть сайт:
-{"action": "navigate", "params": {"url": "https://google.com"}}
-
-📌 ЧТО ДЕЛАТЬ ПРИ ДИАЛОГАХ:
-• Если видишь 💬 ОЖИДАЮЩИЕ ДИАЛОГИ в описании страницы
-• Используй dialog_id (например, d-1) из описания
-• Реши: принять (accept: true) или отклонить (accept: false)
-
-🚫 НЕПРАВИЛЬНО:
-• {"action": "click", "selector": ".button"}  ❌ нет Ref ID
-• {"action": "fill", "field": "search"}       ❌ нет Ref ID
-• {"action": "dialog", "accept": true}        ❌ нет dialog_id
 
 ⚠️ ОТВЕЧАЙ ТОЛЬКО JSON! БЕЗ ЛИШНИХ СЛОВ!
 """
@@ -1347,13 +1398,14 @@ async def execute_single_action(supervisor: CDPSupervisor, action: dict) -> str:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🧠 **CDP Supervisor (Hermes)**\n\n"
+        "🧠 **CDP Supervisor (Hermes + Pydoll маскировка)**\n\n"
         "🤖 Бот готов к работе!\n\n"
         "📊 **Возможности:**\n"
         "• Управление браузером через AI\n"
         "• Обработка диалогов (alert/confirm/prompt)\n"
         "• Работа с iframe и фреймами\n"
-        "• Скриншоты страниц\n\n"
+        "• Скриншоты страниц\n"
+        "• Маскировка под реального пользователя\n\n"
         "📝 **Команды:**\n"
         "/status - статус браузера\n"
         "/cdp - детальная информация\n"
@@ -1371,7 +1423,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает статус браузера"""
     user_id = update.message.from_user.id
     
     if user_id in supervisors:
@@ -1405,21 +1456,17 @@ async def cdp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Браузер не запущен")
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отменяет текущую операцию"""
     user_id = update.message.from_user.id
     
     if user_id in supervisors:
         supervisor = supervisors[user_id]
         
-        # Останавливаем все ожидающие запросы
         for msg_id, future in supervisor._pending_requests.items():
             if not future.done():
                 future.set_exception(asyncio.CancelledError("Отменено пользователем"))
         
-        # Очищаем очередь
         supervisor._pending_requests.clear()
         
-        # Если есть диалог - закрываем его
         if supervisor.pending_dialogs:
             try:
                 await supervisor._send("Page.handleJavaScriptDialog", {"accept": False})
@@ -1433,23 +1480,18 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Браузер не запущен")
 
 async def restart_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Перезапускает браузер"""
     user_id = update.message.from_user.id
     await update.message.reply_text("🔄 Перезапускаю браузер...")
     
-    # Останавливаем текущий supervisor
     if user_id in supervisors:
         await supervisors[user_id].stop()
         del supervisors[user_id]
     
-    # Убиваем Chrome
     subprocess.run(["pkill", "-f", "google-chrome"], capture_output=True)
     time.sleep(2)
     
-    # Запускаем заново
     start_chrome()
     
-    # Создаем новый supervisor
     ws_url = get_page_ws_url()
     if not ws_url:
         ws_url = create_page()
@@ -1501,7 +1543,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.chat.send_action(action="typing")
     
     try:
-        # Отправляем сообщение о начале обработки
         status_msg = await update.message.reply_text("⏳ Обрабатываю запрос...")
         
         supervisor = await get_supervisor(user_id)
@@ -1509,25 +1550,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text("❌ Не удалось подключиться к браузеру")
             return
         
-        # Обновляем статус
         await status_msg.edit_text("🌐 Подключаюсь к браузеру...")
         
         if not await supervisor.wait_for_ready(timeout=30):
             await status_msg.edit_text("❌ Браузер не готов (таймаут)")
             return
         
-        # Обновляем статус
         await status_msg.edit_text("📄 Получаю состояние страницы...")
         
         page_desc = await supervisor.get_description()
         
         if AGNES_API_KEY:
-            # Обновляем статус
             await status_msg.edit_text("🧠 Спрашиваю AI...")
             
             response = await ask_agnes(prompt, page_desc)
             if "error" not in response:
-                # Обновляем статус
                 await status_msg.edit_text("⚡ Выполняю действие...")
                 
                 try:
@@ -1571,17 +1608,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- Main ----------
 
 def timeout_handler(signum, frame):
-    """Обработчик таймаута всей программы"""
     file_logger.log("⚠️ Таймаут всей программы, перезапуск...")
     sys.exit(1)
 
 def main():
-    # Устанавливаем таймаут для всей программы (10 минут)
     signal.signal(signal.SIGALRM, timeout_handler)
-    signal.alarm(600)  # 10 минут
+    signal.alarm(600)
     
-    print("🚀 Запуск бота с CDP Supervisor...")
-    file_logger.log("🚀 Запуск бота с CDP Supervisor...")
+    print("🚀 Запуск бота с CDP Supervisor + Pydoll маскировка...")
+    file_logger.log("🚀 Запуск бота с CDP Supervisor + Pydoll маскировка...")
     
     start_chrome()
     
