@@ -168,7 +168,8 @@ class CDPClient:
         self.pending_dialogs = []
         self.connected_tabs = {}
         self.dialog_timeout = 300
-        self.ref_elements = {}  # Хранилище элементов с Ref ID
+        self.ref_elements = {}
+        self.frame_tree = None
     
     async def connect(self):
         if self.connected:
@@ -439,7 +440,7 @@ class CDPClient:
                     raise
         return {"error": f"Max retries exceeded: {last_error}"}
     
-    async def send(self, method, params=None):
+    async def send(self, method, params=None, session_id=None):
         if not self.connected:
             await self.connect()
         
@@ -451,6 +452,17 @@ class CDPClient:
             "method": method,
             "params": params or {}
         }
+        
+        if session_id:
+            msg["sessionId"] = session_id
+        elif method.startswith("Page.") or method.startswith("Runtime.") or method.startswith("DOM."):
+            # Для iframe используем session_id из connected_tabs
+            if self.connected_tabs:
+                # Если есть активный iframe, используем его session_id
+                for sid, info in self.connected_tabs.items():
+                    if info.get("type") == "iframe" or "frame" in info.get("type", ""):
+                        msg["sessionId"] = sid
+                        break
         
         try:
             await self.ws.send(json.dumps(msg))
@@ -487,14 +499,15 @@ class CDPClient:
                 
                 if "method" in data and data["method"] == "Target.attachedToTarget":
                     target_info = data.get("params", {}).get("targetInfo", {})
-                    session_id = data.get("params", {}).get("sessionId")
-                    if session_id:
-                        self.connected_tabs[session_id] = {
+                    session_id_new = data.get("params", {}).get("sessionId")
+                    if session_id_new:
+                        self.connected_tabs[session_id_new] = {
                             "target_id": target_info.get("targetId"),
                             "url": target_info.get("url"),
-                            "type": target_info.get("type")
+                            "type": target_info.get("type"),
+                            "session_id": session_id_new
                         }
-                        file_logger.log(f"🔗 Прикреплён фрейм: {target_info.get('url', '')[:50]}")
+                        file_logger.log(f"🔗 Прикреплён фрейм: {target_info.get('url', '')[:50]} (session: {session_id_new[:8]})")
                     continue
                 
                 if data.get("id") == msg_id:
@@ -535,13 +548,13 @@ class CDPClient:
                 await self.get_maximum_snapshot()
                 break
     
-    async def eval_js(self, code):
+    async def eval_js(self, code, session_id=None):
         try:
             resp = await self.safe_send("Runtime.evaluate", {
                 "expression": code,
                 "returnByValue": True,
                 "awaitPromise": True
-            })
+            }, session_id)
             
             if "result" in resp:
                 result_obj = resp["result"]
@@ -568,10 +581,9 @@ class CDPClient:
             return None
     
     # ============================================
-    # 🆕 HERMES: Получение Ref ID элементов
+    # HERMES: Получение Ref ID элементов
     # ============================================
-    async def get_accessibility_tree(self):
-        """Получает дерево доступности с Ref ID"""
+    async def get_accessibility_tree(self, session_id=None):
         try:
             js_code = """
             (function() {
@@ -631,10 +643,16 @@ class CDPClient:
                 return result;
             })()
             """
-            result = await self.eval_js(js_code)
+            result = await self.eval_js(js_code, session_id)
             
             if result and isinstance(result, list):
-                self.ref_elements = {el['ref']: el for el in result}
+                if session_id:
+                    # Для iframe добавляем префикс
+                    prefixed = []
+                    for el in result:
+                        el['ref'] = f"if_{session_id[:8]}_{el['ref']}"
+                        prefixed.append(el)
+                    return prefixed
                 return result
             return []
         except Exception as e:
@@ -642,68 +660,9 @@ class CDPClient:
             return []
     
     # ============================================
-    # 🆕 HERMES: Поиск Ref ID по тексту
-    # ============================================
-    async def find_ref_by_text(self, text):
-        """Находит Ref ID по тексту (Hermes)"""
-        if not text:
-            return None
-        
-        text_lower = text.lower().strip()
-        
-        # Точное совпадение
-        for ref, el in self.ref_elements.items():
-            el_text = el.get('text', '').lower().strip()
-            if el_text == text_lower:
-                file_logger.log(f"🔍 Точное совпадение: {text} → {ref}")
-                return ref
-        
-        # Частичное совпадение
-        for ref, el in self.ref_elements.items():
-            el_text = el.get('text', '').lower()
-            if text_lower in el_text or el_text in text_lower:
-                file_logger.log(f"🔍 Частичное совпадение: {text} → {ref}")
-                return ref
-        
-        # Поиск по data-testid
-        for ref, el in self.ref_elements.items():
-            testid = el.get('data_testid', '').lower()
-            if text_lower in testid or testid in text_lower:
-                file_logger.log(f"🔍 Совпадение по data-testid: {text} → {ref}")
-                return ref
-        
-        # Поиск по href
-        for ref, el in self.ref_elements.items():
-            href = el.get('href', '').lower()
-            if text_lower in href or href in text_lower:
-                file_logger.log(f"🔍 Совпадение по href: {text} → {ref}")
-                return ref
-        
-        file_logger.log(f"⚠️ Элемент не найден: {text}")
-        return None
-    
-    # ============================================
-    # 🆕 HERMES: Действия по тексту
-    # ============================================
-    async def click_by_text(self, text):
-        """Кликает по элементу по тексту (Hermes)"""
-        ref = await self.find_ref_by_text(text)
-        if ref:
-            return await self.click_by_ref(ref)
-        return {"error": f"Элемент '{text}' не найден"}
-    
-    async def fill_by_text(self, text, value):
-        """Заполняет поле по тексту (Hermes)"""
-        ref = await self.find_ref_by_text(text)
-        if ref:
-            return await self.fill_by_ref(ref, value)
-        return {"error": f"Элемент '{text}' не найден"}
-    
-    # ============================================
-    # 🆕 HERMES: Действия по Ref ID
+    # HERMES: Действия по Ref ID
     # ============================================
     async def click_by_ref(self, ref_id):
-        """Клик по элементу по Ref ID (Hermes)"""
         try:
             if ref_id not in self.ref_elements:
                 return {"error": f"Элемент {ref_id} не найден"}
@@ -711,16 +670,27 @@ class CDPClient:
             el_info = self.ref_elements[ref_id]
             selector = el_info.get('selector')
             
+            # Пробуем найти сессию для iframe
+            session_id = None
+            if ref_id.startswith('if_'):
+                # Извлекаем session_id из ref
+                parts = ref_id.split('_')
+                if len(parts) >= 3:
+                    session_prefix = parts[1]
+                    for sid in self.connected_tabs:
+                        if sid.startswith(session_prefix):
+                            session_id = sid
+                            break
+            
             if not selector:
                 return {"error": f"Нет селектора для {ref_id}"}
             
-            return await self.click_element(selector)
+            return await self.click_element(selector, session_id)
         except Exception as e:
             file_logger.log(f"❌ click_by_ref error: {e}", "ERROR")
             return {"error": str(e)}
     
     async def fill_by_ref(self, ref_id, value):
-        """Заполнение поля по Ref ID (Hermes)"""
         try:
             if ref_id not in self.ref_elements:
                 return {"error": f"Элемент {ref_id} не найден"}
@@ -728,15 +698,77 @@ class CDPClient:
             el_info = self.ref_elements[ref_id]
             selector = el_info.get('selector')
             
+            session_id = None
+            if ref_id.startswith('if_'):
+                parts = ref_id.split('_')
+                if len(parts) >= 3:
+                    session_prefix = parts[1]
+                    for sid in self.connected_tabs:
+                        if sid.startswith(session_prefix):
+                            session_id = sid
+                            break
+            
             if not selector:
                 return {"error": f"Нет селектора для {ref_id}"}
             
-            return await self.fill_element(selector, value)
+            return await self.fill_element(selector, value, session_id)
         except Exception as e:
             file_logger.log(f"❌ fill_by_ref error: {e}", "ERROR")
             return {"error": str(e)}
     
-    async def press_enter(self):
+    async def click_element(self, selector, session_id=None):
+        # Пробуем обычный клик
+        js_code = f"""
+        (function() {{
+            const el = document.querySelector("{selector}");
+            if (el) {{
+                el.click();
+                return {{ success: true, method: 'click' }};
+            }}
+            return {{ success: false }};
+        }})()
+        """
+        result = await self.eval_js(js_code, session_id)
+        
+        if result and result.get("success"):
+            return result
+        
+        # Пробуем через dispatchEvent
+        js_code2 = f"""
+        (function() {{
+            const el = document.querySelector("{selector}");
+            if (el) {{
+                const event = new MouseEvent('click', {{
+                    view: window,
+                    bubbles: true,
+                    cancelable: true
+                });
+                el.dispatchEvent(event);
+                return {{ success: true, method: 'dispatchEvent' }};
+            }}
+            return {{ success: false }};
+        }})()
+        """
+        return await self.eval_js(js_code2, session_id)
+    
+    async def fill_element(self, selector, value, session_id=None):
+        escaped_value = value.replace("'", "\\'").replace('"', '\\"')
+        
+        js_code = f"""
+        (function() {{
+            const el = document.querySelector("{selector}");
+            if (el) {{
+                el.value = '{escaped_value}';
+                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                return {{ success: true }};
+            }}
+            return {{ success: false }};
+        }})()
+        """
+        return await self.eval_js(js_code, session_id)
+    
+    async def press_enter(self, session_id=None):
         js_code = """
         (function() {
             const active = document.activeElement;
@@ -761,8 +793,11 @@ class CDPClient:
             return { success: false };
         })()
         """
-        return await self.eval_js(js_code)
+        return await self.eval_js(js_code, session_id)
     
+    # ============================================
+    # HERMES: Получение snapshot
+    # ============================================
     async def get_maximum_snapshot(self):
         try:
             file_logger.log("📸 Делаю максимальный слепок...")
@@ -771,14 +806,30 @@ class CDPClient:
             is_x = "x.com" in url
             max_elements = 2000 if is_x else 500
             
+            # Получаем frame tree
             frame_tree_resp = await self.send("Page.getFrameTree", {})
-            frame_tree = None
+            self.frame_tree = None
             if "result" in frame_tree_resp:
-                frame_tree = frame_tree_resp["result"].get("frameTree", {})
+                self.frame_tree = frame_tree_resp["result"].get("frameTree", {})
                 file_logger.log(f"📦 FrameTree получен")
             
+            # Получаем Ref ID для основной страницы
             ref_elements = await self.get_accessibility_tree()
             
+            # Получаем Ref ID для каждого iframe
+            iframe_refs = []
+            for session_id, info in self.connected_tabs.items():
+                if info.get("type") in ["iframe", "frame"]:
+                    file_logger.log(f"📦 Обрабатываю iframe: {info.get('url', '')[:50]}")
+                    iframe_els = await self.get_accessibility_tree(session_id)
+                    if iframe_els:
+                        iframe_refs.extend(iframe_els)
+                        file_logger.log(f"✅ Получено {len(iframe_els)} элементов из iframe")
+            
+            # Объединяем все Ref ID
+            all_refs = ref_elements + iframe_refs
+            
+            # Основной сбор элементов
             result = await self.eval_js(f"""
                 (function() {{
                     const result = [];
@@ -984,6 +1035,9 @@ class CDPClient:
             headings = [e for e in elements if e.get('tag') in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']]
             visible = [e for e in elements if e.get('visible')]
             
+            # Обновляем ref_elements
+            self.ref_elements = {el['ref']: el for el in all_refs}
+            
             self.full_snapshot = {
                 "title": title,
                 "url": url_final,
@@ -1001,15 +1055,12 @@ class CDPClient:
                 "headings": headings,
                 "visible": visible,
                 "pending_dialogs": self.pending_dialogs.copy() if self.pending_dialogs else [],
-                "frame_tree": frame_tree if frame_tree else None,
+                "frame_tree": self.frame_tree if self.frame_tree else None,
                 "connected_tabs": self.connected_tabs.copy() if self.connected_tabs else {},
-                "ref_elements": ref_elements
+                "ref_elements": all_refs
             }
             
-            if ref_elements:
-                self.ref_elements = {el['ref']: el for el in ref_elements}
-            
-            file_logger.log(f"✅ Максимальный слепок: {len(elements)} элементов, {len(buttons)} кнопок, {len(all_fields)} полей, {len(ref_elements)} Ref ID")
+            file_logger.log(f"✅ Максимальный слепок: {len(elements)} элементов, {len(buttons)} кнопок, {len(all_fields)} полей, {len(all_refs)} Ref ID")
             return True
             
         except Exception as e:
@@ -1079,6 +1130,9 @@ class CDPClient:
             return True
         return False
     
+    # ============================================
+    # HERMES: Получение описания страницы
+    # ============================================
     async def get_page_description(self):
         if not self.full_snapshot:
             await self.get_maximum_snapshot()
@@ -1095,7 +1149,7 @@ class CDPClient:
 🔗 URL: {url}
 📊 ВСЕГО ЭЛЕМЕНТОВ: {total}
 
-🆔 ДОСТУПНЫЕ ЭЛЕМЕНТЫ:
+🆔 ДОСТУПНЫЕ ЭЛЕМЕНТЫ (Ref ID):
 """
         
         if ref_elements:
@@ -1167,47 +1221,23 @@ class CDPClient:
             desc += "\n💡 Для обработки диалога используй: handle_dialog(accept=True, prompt_text='')\n"
             desc += f"📋 Текущая политика: {CURRENT_DIALOG_POLICY}\n"
         
+        # Информация об iframe
+        connected_tabs = info.get('connected_tabs') if isinstance(info, dict) else None
+        if connected_tabs:
+            desc += f"\n📦 IFRAME/ФРЕЙМЫ:\n"
+            for sid, tab_info in connected_tabs.items():
+                tab_url = tab_info.get('url', '')
+                if tab_url:
+                    desc += f"  • {tab_url[:60]}\n"
+        
         desc += f"""
-\n💡 КАК ИСПОЛЬЗОВАТЬ:
-• "Нажми на кнопку Обзор" → бот сам найдёт элемент
-• "Введи в поиск Spinoza" → бот сам найдёт поле
-• Не нужно знать Ref ID — бот всё сделает сам!
+\n💡 КАК ИСПОЛЬЗОВАТЬ Ref ID:
+• click e5 → кликнуть по элементу e5
+• fill e5 "текст" → заполнить поле e5
+• Агент сам найдёт нужный Ref ID по описанию
 """
         
         return desc
-    
-    # ============================================
-    # ❌ СТАРЫЕ МЕТОДЫ (для совместимости)
-    # ============================================
-    async def click_element(self, selector):
-        js_code = f"""
-        (function() {{
-            const el = document.querySelector("{selector}");
-            if (el) {{
-                el.click();
-                return {{ success: true }};
-            }}
-            return {{ success: false }};
-        }})()
-        """
-        return await self.eval_js(js_code)
-    
-    async def fill_element(self, selector, value):
-        escaped_value = value.replace("'", "\\'").replace('"', '\\"')
-        
-        js_code = f"""
-        (function() {{
-            const el = document.querySelector("{selector}");
-            if (el) {{
-                el.value = '{escaped_value}';
-                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                return {{ success: true }};
-            }}
-            return {{ success: false }};
-        }})()
-        """
-        return await self.eval_js(js_code)
     
     async def reload(self):
         await self.send("Page.reload", {})
@@ -1272,24 +1302,23 @@ clients = {}
 AGENT_CODE = """
 Ты агент для управления браузером.
 
-⚠️ ВАЖНО: Ты можешь использовать ТЕКСТ для поиска элементов!
-Агент сам найдёт нужный Ref ID. Пользователь НЕ знает про Ref ID!
+⚠️ ВАЖНО: Используй ТОЛЬКО Ref ID из snapshot!
 
 ДОСТУПНЫЕ ДЕЙСТВИЯ:
 - navigate(url) - открыть сайт
-- click(text) - кликнуть по элементу (по тексту!)
-- fill(text, value) - заполнить поле (по тексту!)
+- click(ref) - кликнуть по элементу (ref = "e8")
+- fill(ref, value) - заполнить поле (ref = "e5", value = "текст")
 - press_enter() - нажать Enter
 - screenshot() - сделать скриншот
 - answer(text) - ответить пользователю
+- handle_dialog(accept, prompt_text) - обработать диалог
 
-📌 ПРИМЕРЫ:
-{"action": "click", "params": {"text": "Обзор"}}
-{"action": "fill", "params": {"text": "Поиск", "value": "Spinoza"}}
-{"action": "click", "params": {"text": "Главная"}}
+📌 ФОРМАТ ОТВЕТА (ТОЛЬКО Ref ID):
+{"action": "click", "params": {"ref": "e8"}}
+{"action": "fill", "params": {"ref": "e5", "value": "Spinoza"}}
 
-⚠️ НЕ ИСПОЛЬЗУЙ селекторы! ИСПОЛЬЗУЙ ТЕКСТ!
-ОТВЕЧАЙ ТОЛЬКО JSON! БЕЗ ЛИШНИХ СЛОВ!
+⚠️ НЕ ИСПОЛЬЗУЙ ТЕКСТ! ТОЛЬКО REF ID!
+ОТВЕЧАЙ ТОЛЬКО JSON!
 """
 
 # ---------- Агент ----------
@@ -1337,27 +1366,14 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
                 try:
                     result = json.loads(json_match.group())
                     
-                    # Исправляем формат если нужно
                     if isinstance(result, dict):
-                        if 'text' in result and 'params' not in result:
-                            file_logger.log("⚠️ Исправляю формат: добавил params")
-                            action = result.get('action', 'click')
-                            text = result.get('text')
-                            result = {"action": action, "params": {"text": text}}
-                        if 'value' in result and 'params' not in result:
-                            file_logger.log("⚠️ Исправляю формат: добавил params")
-                            action = result.get('action', 'fill')
-                            text = result.get('text', '')
-                            value = result.get('value')
-                            result = {"action": action, "params": {"text": text, "value": value}}
+                        if 'ref' in result and 'params' not in result:
+                            result = {"action": result.get('action', 'click'), "params": {"ref": result.get('ref')}}
                     
                     if isinstance(result, list):
                         for i, item in enumerate(result):
-                            if isinstance(item, dict):
-                                if 'text' in item and 'params' not in item:
-                                    result[i] = {"action": item.get('action', 'click'), "params": {"text": item.get('text')}}
-                                if 'value' in item and 'params' not in item:
-                                    result[i] = {"action": item.get('action', 'fill'), "params": {"text": item.get('text', ''), "value": item.get('value')}}
+                            if isinstance(item, dict) and 'ref' in item and 'params' not in item:
+                                result[i] = {"action": item.get('action', 'click'), "params": {"ref": item.get('ref')}}
                     
                     if isinstance(result, list) or (isinstance(result, dict) and 'action' in result):
                         return result
@@ -1404,7 +1420,7 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
 📄 Заголовок: {title}
 🔗 URL: {url}
 
-💡 Теперь ты можешь искать информацию или вводить текст в поля."""
+💡 Используй Ref ID для действий: click e5, fill e5 "текст\""""
         
         elif action_type == "screenshot":
             img_data = await client.screenshot()
@@ -1415,57 +1431,25 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
             return "❌ Не удалось сделать скриншот"
         
         elif action_type == "click":
-            text = params.get("text")
             ref = params.get("ref")
-            selector = params.get("selector")
-            
-            if text:
-                # 🔧 АВТОМАТИЧЕСКИЙ ПОИСК Ref ID ПО ТЕКСТУ!
-                result = await client.click_by_text(text)
-                if result and result.get("success"):
-                    await client.get_maximum_snapshot()
-                    return f"✅ Нажал на кнопку: {text}"
-                return f"❌ Не удалось найти кнопку: {text}"
-            elif ref:
+            if ref:
                 result = await client.click_by_ref(ref)
                 if result and result.get("success"):
                     await client.get_maximum_snapshot()
                     return f"✅ Кликнул: {ref}"
                 return f"❌ Не удалось кликнуть {ref}"
-            elif selector:
-                result = await client.click_element(selector)
-                if result and result.get("success"):
-                    await client.get_maximum_snapshot()
-                    return f"✅ Кликнул: {selector}"
-                return f"❌ Элемент не найден: {selector}"
-            return "❌ Нет text, ref или selector"
+            return "❌ Нет ref"
         
         elif action_type == "fill":
-            text = params.get("text")
             ref = params.get("ref")
-            selector = params.get("selector")
             value = params.get("value", "")
-            
-            if text:
-                # 🔧 АВТОМАТИЧЕСКИЙ ПОИСК Ref ID ПО ТЕКСТУ!
-                result = await client.fill_by_text(text, value)
-                if result and result.get("success"):
-                    await client.get_maximum_snapshot()
-                    return f"✅ Заполнил поле: {text} = {value}"
-                return f"❌ Не удалось найти поле: {text}"
-            elif ref:
+            if ref:
                 result = await client.fill_by_ref(ref, value)
                 if result and result.get("success"):
                     await client.get_maximum_snapshot()
                     return f"✅ Заполнил: {ref} = {value}"
                 return f"❌ Не удалось заполнить {ref}"
-            elif selector:
-                result = await client.fill_element(selector, value)
-                if result and result.get("success"):
-                    await client.get_maximum_snapshot()
-                    return f"✅ Заполнил: {selector} = {value}"
-                return f"❌ Элемент не найден: {selector}"
-            return "❌ Нет text, ref или selector"
+            return "❌ Нет ref"
         
         elif action_type == "press_enter":
             result = await client.press_enter()
@@ -1487,7 +1471,7 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
             result = await client.set_dialog_policy(policy)
             if result:
                 return f"📋 Политика диалогов изменена на: {policy}"
-            return f"❌ Неверная политика: {policy}. Доступные: must_respond, auto_dismiss, auto_accept"
+            return f"❌ Неверная политика: {policy}"
         
         elif action_type == "cdp":
             method = params.get("method")
