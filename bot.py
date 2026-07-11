@@ -374,43 +374,22 @@ class CDPClient:
 🔗 **URL:** {info.get('url', 'Нет URL')}
 📊 **ВСЕГО ЭЛЕМЕНТОВ:** {info.get('total', 0)}
 
-─────────────────────────────────
 🔘 **КНОПКИ ({len(info.get('buttons', []))}):**
 """
-        for el in info.get('buttons', [])[:20]:
+        for el in info.get('buttons', [])[:10]:
             text = el.get('text', '') or el.get('attrs', {}).get('value', '')
             if text:
                 desc += f"  • {text[:30]}\n"
-            else:
-                desc += f"  • <{el.get('tag', '')}>\n"
         
-        desc += f"\n─────────────────────────────────\n"
-        desc += f"📝 **ПОЛЯ ВВОДА ({len(info.get('fields', []))}):**\n"
-        for el in info.get('fields', [])[:30]:
+        desc += f"\n📝 **ПОЛЯ ВВОДА ({len(info.get('fields', []))}):**\n"
+        for el in info.get('fields', [])[:15]:
             attrs = el.get('attrs', {})
             field_type = el.get('field_type', 'unknown')
             name = attrs.get('name', '')
             placeholder = attrs.get('placeholder', '')
-            label = attrs.get('aria-label', '')
-            title = attrs.get('title', '')
-            field_name = name or placeholder or label or title or f"{field_type}"
+            field_name = name or placeholder or f"{field_type}"
             selector = el.get('field_selector', '')
-            desc += f"  • {field_name[:30]} → {field_type} → selector: {selector}\n"
-        
-        desc += f"\n─────────────────────────────────\n"
-        desc += f"🔗 **ССЫЛКИ ({len(info.get('links', []))}):**\n"
-        for el in info.get('links', [])[:15]:
-            text = el.get('text', '')[:30]
-            href = el.get('attrs', {}).get('href', '')[:50]
-            if text:
-                desc += f"  • {text} → {href}\n"
-        
-        desc += f"\n─────────────────────────────────\n"
-        desc += f"📋 **ФОРМЫ ({len(info.get('forms', []))}):**\n"
-        for el in info.get('forms', [])[:5]:
-            action = el.get('attrs', {}).get('action', '')
-            method = el.get('attrs', {}).get('method', '')
-            desc += f"  • action: {action[:30]}, method: {method}\n"
+            desc += f"  • {field_name[:30]} → {selector}\n"
         
         return desc
     
@@ -467,16 +446,6 @@ class CDPClient:
         await asyncio.sleep(2)
         await self.get_maximum_snapshot()
     
-    async def back(self):
-        await self.send("Page.goBack", {})
-        await asyncio.sleep(2)
-        await self.get_maximum_snapshot()
-    
-    async def forward(self):
-        await self.send("Page.goForward", {})
-        await asyncio.sleep(2)
-        await self.get_maximum_snapshot()
-    
     async def screenshot(self):
         try:
             if not self.connected:
@@ -512,34 +481,25 @@ class CDPClient:
 
 clients = {}
 
-# ---------- КОД АГЕНТА ----------
+# ---------- КОД АГЕНТА (упрощённый) ----------
 
 AGENT_CODE = """
-🤖 **ТЫ — АГЕНТ ДЛЯ УПРАВЛЕНИЯ БРАУЗЕРОМ**
+🤖 ТЫ — АГЕНТ ДЛЯ УПРАВЛЕНИЯ БРАУЗЕРОМ
 
-📌 **ТВОЙ КОД (что ты умеешь делать):**
-
+📌 ДОСТУПНЫЕ ДЕЙСТВИЯ:
 1. navigate(url) - открыть сайт
-2. click(selector) - кликнуть по элементу
+2. click(selector) - кликнуть
 3. fill(selector, value) - заполнить поле
 4. press_enter() - нажать Enter
-5. screenshot() - сделать скриншот
-6. answer(text) - ответить пользователю
-7. scroll(amount) - прокрутить
-8. back() - назад
-9. forward() - вперёд
-10. reload() - обновить
-11. wait_for(selector, timeout) - ждать элемент
-12. get_text(selector) - получить текст
+5. screenshot() - скриншот
+6. answer(text) - ответить
 
-📝 **КАК ВЫБИРАТЬ СЕЛЕКТОРЫ:**
-- По ID: "#APjFqb"
-- По классу: ".gLFyf"
-- По типу: "input[type='text']"
-- По имени: "input[name='q']"
-- По тексту: "button:contains('Войти')"
+📝 СЕЛЕКТОРЫ:
+- По ID: #APjFqb
+- По классу: .gLFyf
+- По имени: input[name='q']
 
-⚠️ **ЕСЛИ НУЖНО НЕСКОЛЬКО ДЕЙСТВИЙ - ВОЗВРАЩАЙ МАССИВ:**
+⚠️ ЕСЛИ НУЖНО НЕСКОЛЬКО ДЕЙСТВИЙ - ВОЗВРАЩАЙ МАССИВ:
 [{"action": "fill", "params": {"selector": "#APjFqb", "value": "текст"}}, {"action": "press_enter", "params": {}}]
 """
 
@@ -559,16 +519,10 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
     system_prompt = f"""
 {AGENT_CODE}
 
-📄 **МАКСИМАЛЬНЫЙ СЛЕПОК СТРАНИЦЫ:**
+📄 СТРАНИЦА:
 {page_desc}
 
-📝 **ОТВЕЧАЙ ТОЛЬКО JSON!**
-
-Если нужно несколько действий - возвращай МАССИВ:
-[{{"action": "fill", "params": {{"selector": "#APjFqb", "value": "текст"}}}}, {{"action": "press_enter", "params": {{}}}}]
-
-Если одно действие:
-{{"action": "screenshot", "params": {{}}}}
+📝 ОТВЕЧАЙ ТОЛЬКО JSON!
 """
 
     data = {
@@ -578,41 +532,46 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.3,
-        "max_tokens": 500
+        "max_tokens": 300
     }
     
-    try:
-        response = requests.post(AGNES_API_URL, headers=headers, json=data, timeout=30)
-        response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
-        
-        file_logger.log(f"Agnes ответ: {content[:200]}...")
-        
-        # Пробуем найти JSON
-        json_match = re.search(r'\[.*\]|\{.*\}', content, re.DOTALL)
-        if json_match:
-            try:
-                return json.loads(json_match.group())
-            except:
-                pass
-        
-        return {"action": "answer", "params": {"text": content}}
-    except Exception as e:
-        file_logger.log(f"Agnes error: {e}", "ERROR")
-        return {"action": "answer", "params": {"text": f"Ошибка: {str(e)}"}}
+    for attempt in range(3):
+        try:
+            response = requests.post(AGNES_API_URL, headers=headers, json=data, timeout=60)
+            response.raise_for_status()
+            content = response.json()["choices"][0]["message"]["content"]
+            
+            file_logger.log(f"Agnes ответ: {content[:200]}...")
+            
+            # Пробуем найти JSON
+            json_match = re.search(r'\[.*\]|\{.*\}', content, re.DOTALL)
+            if json_match:
+                try:
+                    return json.loads(json_match.group())
+                except:
+                    pass
+            
+            return {"action": "answer", "params": {"text": content}}
+        except requests.exceptions.Timeout:
+            file_logger.log(f"⚠️ Попытка {attempt + 1} таймаут, повтор...")
+            if attempt == 2:
+                return {"action": "answer", "params": {"text": "⏳ Превышено время ожидания ответа от AI. Попробуйте ещё раз."}}
+            await asyncio.sleep(2)
+        except Exception as e:
+            file_logger.log(f"Agnes error: {e}", "ERROR")
+            return {"action": "answer", "params": {"text": f"❌ Ошибка: {str(e)}"}}
+    
+    return {"action": "answer", "params": {"text": "❌ Не удалось получить ответ от AI"}}
 
 # ---------- Выполнение действий ----------
 
 async def execute_action(client: CDPClient, action) -> str:
-    # Если пришёл массив действий
     if isinstance(action, list):
         results = []
         for a in action:
             result = await execute_single_action(client, a)
             results.append(result)
         return "\n".join(results)
-    
-    # Если одно действие
     return await execute_single_action(client, action)
 
 async def execute_single_action(client: CDPClient, action: dict) -> str:
@@ -663,42 +622,6 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
                 await client.get_maximum_snapshot()
                 return "✅ Нажал Enter"
             return "❌ Не удалось нажать Enter"
-        
-        elif action_type == "scroll":
-            amount = params.get("amount", 500)
-            await client.eval_js(f"window.scrollBy(0, {amount})")
-            return f"✅ Прокрутил на {amount}px"
-        
-        elif action_type == "back":
-            await client.back()
-            return "✅ Назад"
-        
-        elif action_type == "forward":
-            await client.forward()
-            return "✅ Вперёд"
-        
-        elif action_type == "reload":
-            await client.reload()
-            return "✅ Обновлено"
-        
-        elif action_type == "wait_for":
-            selector = params.get("selector")
-            timeout = params.get("timeout", 10)
-            if not selector:
-                return "❌ Нет селектора"
-            result = await client.wait_for_element(selector, timeout)
-            if result and result.get("found"):
-                return f"✅ Элемент появился: {selector}"
-            return f"❌ Элемент не появился: {selector}"
-        
-        elif action_type == "get_text":
-            selector = params.get("selector")
-            if not selector:
-                return "❌ Нет селектора"
-            result = await client.get_text(selector)
-            if result:
-                return f"📄 Текст:\n{result}"
-            return f"❌ Элемент не найден: {selector}"
         
         elif action_type == "answer":
             return f"📝 {params.get('text', 'Нет ответа')}"
