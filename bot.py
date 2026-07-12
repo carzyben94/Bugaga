@@ -262,7 +262,7 @@ class CDPClient:
         self._pending_requests = {}
         self.user_id = None
         self.full_snapshot = None
-        self.tweets_snapshot = []  # Хранит только твиты
+        self.tweets_snapshot = []
     
     async def _receiver(self):
         file_logger.log("📡 Запущен приёмник сообщений")
@@ -541,7 +541,7 @@ class CDPClient:
             if role in ['textbox', 'searchbox', 'combobox'] and name:
                 fields.append(name)
         
-        # Твиты из DOM слепка (чистые, без мусора)
+        # Твиты из DOM слепка
         tweets = self.tweets_snapshot or await self.take_tweets_snapshot(self.session_id)
         
         desc = f"""
@@ -572,6 +572,9 @@ class CDPClient:
         try:
             file_logger.log("📸 Делаю максимальный слепок...")
             
+            # Сначала собираем твиты со скроллом
+            self.tweets_snapshot = await self.take_tweets_snapshot(self.session_id)
+            
             nodes = await self.get_accessibility_tree(self.session_id)
             
             title = await self.eval_js("document.title") or "Нет заголовка"
@@ -596,9 +599,6 @@ class CDPClient:
                 "elements": elements
             }
             
-            # Также обновляем твиты
-            self.tweets_snapshot = await self.take_tweets_snapshot(self.session_id)
-            
             file_logger.log(f"✅ Слепок: {len(elements)} элементов, {len(self.tweets_snapshot)} твитов")
             return True
             
@@ -607,8 +607,34 @@ class CDPClient:
             return False
     
     async def take_tweets_snapshot(self, session_id):
-        """Делает слепок только твитов (чисто, без мусора)"""
+        """Делает слепок только твитов со скроллом и ожиданием"""
         try:
+            file_logger.log("📋 Начинаю сбор твитов...")
+            
+            # 1. Скроллим страницу для загрузки твитов
+            for i in range(5):
+                await self.send("Runtime.evaluate", {
+                    "expression": "window.scrollTo(0, document.body.scrollHeight)"
+                }, session_id=session_id)
+                await asyncio.sleep(1.5)
+                file_logger.log(f"📜 Скролл {i+1}/5")
+            
+            # 2. Ждём появления твитов
+            for i in range(15):
+                check = await self.send("Runtime.evaluate", {
+                    "expression": "document.querySelectorAll('article').length"
+                }, session_id=session_id)
+                count = check.get("result", {}).get("result", {}).get("value", 0)
+                if count > 0:
+                    file_logger.log(f"✅ Найдено {count} твитов")
+                    break
+                file_logger.log(f"⏳ Жду твиты... {i+1}/15")
+                await asyncio.sleep(1)
+            else:
+                file_logger.log("⚠️ Твиты не появились", "WARNING")
+                return []
+            
+            # 3. Парсим твиты
             result = await self.send("Runtime.evaluate", {
                 "expression": """
                     (function() {
@@ -628,10 +654,12 @@ class CDPClient:
                 """
             }, session_id=session_id)
             
-            return result.get("result", {}).get("result", {}).get("value", [])
+            tweets = result.get("result", {}).get("result", {}).get("value", [])
+            file_logger.log(f"✅ Собрано {len(tweets)} твитов")
+            return tweets
             
         except Exception as e:
-            file_logger.log(f"❌ Ошибка создания слепка твитов: {e}", "ERROR")
+            file_logger.log(f"❌ Ошибка сбора твитов: {e}", "ERROR")
             return []
     
     async def get_tweets(self, session_id, limit=5) -> List[Tweet]:
@@ -739,7 +767,6 @@ class CDPClient:
         if result and result.get('success'):
             file_logger.log(f"✅ Клик выполнен: {result.get('tag')} '{result.get('text')}'")
             await asyncio.sleep(1)
-            # Обновляем слепок после клика
             await self.get_maximum_snapshot()
             return result
         
@@ -840,7 +867,6 @@ class CDPClient:
         file_logger.log(f"✅ Проверка: значение = '{actual_value}'")
         
         file_logger.log("✅ Поле заполнено")
-        # Обновляем слепок после заполнения
         await self.get_maximum_snapshot()
         return True
     
@@ -860,7 +886,6 @@ class CDPClient:
             "text": "\r"
         }, session_id=session_id)
         file_logger.log("⌨️ Нажал Enter")
-        # Обновляем слепок после Enter
         await self.get_maximum_snapshot()
     
     async def screenshot(self, session_id):
@@ -1152,6 +1177,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/click <название> - Кликнуть\n"
         f"/screenshot - Скриншот\n"
         f"/tweets [количество] - Показать твиты\n"
+        f"/snapshot - Полный слепок страницы (JSON файл)\n"
         f"/logs - Логи\n"
         f"/clear - Очистить сессию"
     )
@@ -1222,6 +1248,133 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ==================== КОМАНДЫ ====================
+async def snapshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправляет полный слепок страницы в виде JSON файла"""
+    user_id = update.message.from_user.id
+    
+    if user_id not in clients:
+        await update.message.reply_text("❌ Сначала отправь сообщение")
+        return
+    
+    client = clients[user_id]
+    if not client.session_id:
+        await update.message.reply_text("❌ Нет активной вкладки")
+        return
+    
+    await update.message.reply_text("📸 Делаю полный слепок страницы...")
+    
+    try:
+        # Делаем полный слепок через JS
+        result = await client.send("Runtime.evaluate", {
+            "expression": """
+                (function() {
+                    const snapshot = {
+                        url: window.location.href,
+                        title: document.title,
+                        timestamp: new Date().toISOString(),
+                        articles: [],
+                        buttons: [],
+                        inputs: [],
+                        links: [],
+                        all_text: document.body ? document.body.innerText : '',
+                        all_elements: []
+                    };
+                    
+                    // Все article (твиты) с полной информацией
+                    document.querySelectorAll('article').forEach((article, i) => {
+                        const textEl = article.querySelector('[data-testid="tweetText"]');
+                        const nameEl = article.querySelector('[data-testid="User-Name"]');
+                        const dateEl = article.querySelector('time');
+                        const likesEl = article.querySelector('[data-testid="like"]');
+                        const retweetsEl = article.querySelector('[data-testid="retweet"]');
+                        const repliesEl = article.querySelector('[data-testid="reply"]');
+                        
+                        snapshot.articles.push({
+                            index: i + 1,
+                            text: textEl ? textEl.innerText : 'нет текста',
+                            author: nameEl ? nameEl.innerText : 'нет автора',
+                            date: dateEl ? dateEl.getAttribute('datetime') : '',
+                            likes: likesEl ? parseInt(likesEl.innerText) || 0 : 0,
+                            retweets: retweetsEl ? parseInt(retweetsEl.innerText) || 0 : 0,
+                            replies: repliesEl ? parseInt(repliesEl.innerText) || 0 : 0,
+                            html: article.outerHTML
+                        });
+                    });
+                    
+                    // Все кнопки
+                    document.querySelectorAll('button, [role="button"]').forEach(btn => {
+                        const text = btn.textContent?.trim() || btn.getAttribute('aria-label') || '';
+                        if (text) {
+                            snapshot.buttons.push({
+                                text: text,
+                                id: btn.id || '',
+                                class: btn.className || '',
+                                aria_label: btn.getAttribute('aria-label') || ''
+                            });
+                        }
+                    });
+                    
+                    // Все поля ввода
+                    document.querySelectorAll('input, textarea, [role="searchbox"]').forEach(input => {
+                        const name = input.getAttribute('name') || 
+                                    input.getAttribute('placeholder') || 
+                                    input.getAttribute('aria-label') || '';
+                        if (name) {
+                            snapshot.inputs.push({
+                                name: name,
+                                type: input.getAttribute('type') || 'text',
+                                id: input.id || '',
+                                placeholder: input.getAttribute('placeholder') || ''
+                            });
+                        }
+                    });
+                    
+                    // Все ссылки
+                    document.querySelectorAll('a[href]').forEach(link => {
+                        const text = link.textContent?.trim() || link.getAttribute('aria-label') || '';
+                        if (text) {
+                            snapshot.links.push({
+                                text: text.slice(0, 100),
+                                href: link.getAttribute('href') || ''
+                            });
+                        }
+                    });
+                    
+                    return snapshot;
+                })()
+            """
+        }, session_id=client.session_id)
+        
+        snapshot = result.get("result", {}).get("result", {}).get("value", {})
+        
+        # Сохраняем в JSON файл
+        filename = f"snapshot_{user_id}_{int(time.time())}.json"
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(snapshot, f, ensure_ascii=False, indent=2)
+        
+        # Отправляем файл
+        with open(filename, 'rb') as f:
+            await update.message.reply_document(
+                document=f,
+                filename=filename,
+                caption=f"📸 Слепок страницы\n\n"
+                        f"🔗 URL: {snapshot.get('url', 'нет')}\n"
+                        f"📄 Заголовок: {snapshot.get('title', 'нет')}\n"
+                        f"📋 Твитов: {len(snapshot.get('articles', []))}\n"
+                        f"🔘 Кнопок: {len(snapshot.get('buttons', []))}\n"
+                        f"📝 Полей: {len(snapshot.get('inputs', []))}\n"
+                        f"🔗 Ссылок: {len(snapshot.get('links', []))}"
+            )
+        
+        # Удаляем временный файл
+        os.remove(filename)
+        
+        file_logger.log(f"✅ Слепок отправлен пользователю {user_id}")
+        
+    except Exception as e:
+        file_logger.log(f"❌ Ошибка snapshot: {e}", "ERROR")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
 async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     
@@ -1337,6 +1490,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/click <название> - Кликнуть\n"
         "/screenshot - Скриншот\n"
         "/tweets [количество] - Показать твиты\n"
+        "/snapshot - Полный слепок (JSON файл)\n"
         "/logs - Логи\n"
         "/clear - Очистить сессию\n\n"
         "💡 На X.com доступны:\n"
@@ -1395,6 +1549,7 @@ async def main_async():
     app.add_handler(CommandHandler("click", click_command))
     app.add_handler(CommandHandler("screenshot", screenshot_command))
     app.add_handler(CommandHandler("tweets", tweets_command))
+    app.add_handler(CommandHandler("snapshot", snapshot_command))
     app.add_handler(CommandHandler("logs", logs_command))
     app.add_handler(CommandHandler("clear", clear_command))
     
