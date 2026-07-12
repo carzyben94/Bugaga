@@ -81,7 +81,7 @@ AGENT_CODE = """
 📌 ДОСТУПНЫЕ ДЕЙСТВИЯ:
 1. navigate(url) - открыть сайт
 2. click(text) - кликнуть по кнопке (из списка 🔘)
-3. fill(selector, value) - заполнить поле (из списка 📝)
+3. fill(selector, value) - заполнить поле (из списка 📝) и нажать Enter
 4. screenshot() - скриншот
 5. reload() - перезагрузить
 6. answer(text) - ответить
@@ -90,15 +90,12 @@ AGENT_CODE = """
 - Для fill используй ТОЛЬКО названия из списка 📝
 - На X.com поле: "Поисковый запрос"
 - Для click используй ТОЛЬКО названия из списка 🔘
+- После fill автоматически нажимается Enter для поиска
 
 📌 ПРИМЕРЫ:
 {"action": "fill", "params": {"selector": "Поисковый запрос", "value": "Путин"}}
 {"action": "click", "params": {"text": "Чат"}}
 {"action": "answer", "params": {"text": "📋 Готово!"}}
-
-⚠️ ВАЖНО:
-- fill → "Поисковый запрос" (из полей)
-- click → "Чат", "Главная" (из кнопок)
 """
 
 # ==================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ====================
@@ -505,7 +502,6 @@ class CDPClient:
         info = self.full_snapshot or {}
         nodes = info.get('elements', [])
         
-        # Кнопки и ссылки
         buttons = []
         for el in nodes:
             role = el.get('role', '')
@@ -513,7 +509,6 @@ class CDPClient:
             if role in ['button', 'link'] and name:
                 buttons.append(name)
         
-        # ПОЛЯ ВВОДА (отдельно!)
         fields = []
         for el in nodes:
             role = el.get('role', '')
@@ -658,12 +653,13 @@ class CDPClient:
         raise Exception(f"Элемент не найден: {selector}")
     
     async def fill_input(self, session_id, selector, text):
-        """Заполняет поле с поиском по названию, placeholder, aria-label"""
+        """Заполняет поле через CDP Input.dispatchKeyEvent (работает с React)"""
         file_logger.log(f"✍️ Заполняю '{selector}' = '{text[:20]}...'")
         
         selector_escaped = selector.replace("'", "\\'").replace('"', '\\"')
         text_escaped = text.replace("'", "\\'").replace('"', '\\"')
         
+        # 1. Находим поле и ставим фокус
         result = await self.send("Runtime.evaluate", {
             "expression": f"""
                 (function() {{
@@ -671,13 +667,10 @@ class CDPClient:
                     const search = '{selector_escaped}';
                     const searchLower = search.toLowerCase();
                     
-                    // 1. Пробуем как CSS-селектор
                     try {{
                         el = document.querySelector(search);
-                        if (el) console.log('Найден по CSS');
                     }} catch(e) {{}}
                     
-                    // 2. Ищем по placeholder, aria-label, name, data-testid
                     if (!el) {{
                         const all = document.querySelectorAll('input, textarea, [role="searchbox"], [role="textbox"]');
                         for (const elem of all) {{
@@ -685,37 +678,10 @@ class CDPClient:
                             const aria = (elem.getAttribute('aria-label') || '').toLowerCase();
                             const name = (elem.getAttribute('name') || '').toLowerCase();
                             const testid = (elem.getAttribute('data-testid') || '').toLowerCase();
-                            const title = (elem.getAttribute('title') || '').toLowerCase();
-                            
-                            if (placeholder.includes(searchLower) || 
-                                aria.includes(searchLower) || 
-                                name.includes(searchLower) || 
-                                testid.includes(searchLower) ||
-                                title.includes(searchLower)) {{
+                            if (placeholder.includes(searchLower) || aria.includes(searchLower) || 
+                                name.includes(searchLower) || testid.includes(searchLower)) {{
                                 el = elem;
-                                console.log('Найден по атрибуту');
                                 break;
-                            }}
-                        }}
-                    }}
-                    
-                    // 3. Ищем по тексту label
-                    if (!el) {{
-                        const labels = document.querySelectorAll('label');
-                        for (const label of labels) {{
-                            const text = (label.textContent || '').toLowerCase();
-                            if (text.includes(searchLower)) {{
-                                const forAttr = label.getAttribute('for');
-                                if (forAttr) {{
-                                    el = document.getElementById(forAttr);
-                                }}
-                                if (!el) {{
-                                    el = label.querySelector('input, textarea');
-                                }}
-                                if (el) {{
-                                    console.log('Найден по label');
-                                    break;
-                                }}
                             }}
                         }}
                     }}
@@ -723,15 +689,7 @@ class CDPClient:
                     if (el) {{
                         el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
                         el.focus();
-                        el.value = '';
-                        const text = '{text_escaped}';
-                        for (const char of text) {{
-                            el.value += char;
-                            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                            el.dispatchEvent(new Event('keydown', {{ bubbles: true }}));
-                            el.dispatchEvent(new Event('keyup', {{ bubbles: true }}));
-                        }}
-                        el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        el.click();
                         return true;
                     }}
                     return false;
@@ -739,18 +697,85 @@ class CDPClient:
             """
         }, session_id=session_id)
         
-        if "error" in result:
-            file_logger.log(f"❌ Ошибка заполнения: {result['error']}", "ERROR")
+        if not result.get("result", {}).get("result", {}).get("value", False):
+            file_logger.log("❌ Поле не найдено", "ERROR")
             return False
         
-        success = result.get("result", {}).get("result", {}).get("value", False)
-        if success:
-            file_logger.log("✅ Поле заполнено")
-            await self.get_maximum_snapshot()
-            return True
+        await asyncio.sleep(0.3)
         
-        file_logger.log("❌ Поле не найдено", "ERROR")
-        return False
+        # Очищаем поле
+        await self.send("Runtime.evaluate", {
+            "expression": f"""
+                (function() {{
+                    const el = document.querySelector('{selector_escaped}');
+                    if (el) {{
+                        el.value = '';
+                        el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        return true;
+                    }}
+                    return false;
+                }})()
+            """
+        }, session_id=session_id)
+        
+        await asyncio.sleep(0.1)
+        
+        # 2. Вводим текст через CDP (эмуляция клавиш)
+        for char in text:
+            # keyDown
+            await self.send("Input.dispatchKeyEvent", {
+                "type": "keyDown",
+                "text": char
+            }, session_id=session_id)
+            await asyncio.sleep(0.01)
+            
+            # keyUp
+            await self.send("Input.dispatchKeyEvent", {
+                "type": "keyUp",
+                "text": char
+            }, session_id=session_id)
+            await asyncio.sleep(0.01)
+        
+        await asyncio.sleep(0.2)
+        
+        # Проверяем, что текст появился
+        check = await self.send("Runtime.evaluate", {
+            "expression": f"""
+                (function() {{
+                    const el = document.querySelector('{selector_escaped}');
+                    if (el) return el.value;
+                    return '';
+                }})()
+            """
+        }, session_id=session_id)
+        
+        actual_value = check.get("result", {}).get("result", {}).get("value", "")
+        file_logger.log(f"✅ Проверка: значение = '{actual_value}'")
+        
+        file_logger.log("✅ Поле заполнено")
+        await self.get_maximum_snapshot()
+        return True
+    
+    async def press_enter(self, session_id):
+        """Настоящий Enter через CDP"""
+        await self.send("Input.dispatchKeyEvent", {
+            "type": "keyDown",
+            "key": "Enter",
+            "code": "Enter",
+            "text": "\r"
+        }, session_id=session_id)
+        
+        await asyncio.sleep(0.05)
+        
+        await self.send("Input.dispatchKeyEvent", {
+            "type": "keyUp",
+            "key": "Enter",
+            "code": "Enter",
+            "text": "\r"
+        }, session_id=session_id)
+        
+        file_logger.log("⌨️ Нажал Enter")
+        await self.get_maximum_snapshot()
     
     async def screenshot(self, session_id):
         try:
@@ -830,7 +855,6 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
         "Content-Type": "application/json"
     }
     
-    # Получаем описание страницы
     page_desc = await client.get_page_description()
     
     system_prompt = f"""
@@ -840,9 +864,10 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
 {page_desc}
 
 ⚠️ ВАЖНО:
-- Используй ТОЛЬКО названия из списка кнопок (🔘) для click
-- Используй ТОЛЬКО названия из списка полей (📝) для fill
+- Для fill используй ТОЛЬКО названия из списка 📝
 - На X.com поле: "Поисковый запрос"
+- Для click используй ТОЛЬКО названия из списка 🔘
+- После fill автоматически нажимается Enter для поиска
 - Отвечай ТОЛЬКО JSON!
 """
 
@@ -866,7 +891,6 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
         if not content or not content.strip():
             return {"action": "answer", "params": {"text": "⚠️ Получен пустой ответ от AI"}}
         
-        # Парсим JSON
         json_match = re.search(r'\[.*\]|\{.*\}', content, re.DOTALL)
         if json_match:
             try:
@@ -970,9 +994,13 @@ async def execute_single_action(client: CDPClient, action: dict, user_id) -> str
             value = params.get("value", "")
             if not selector:
                 return "❌ Нет селектора"
+            
+            # Заполняем поле
             result = await client.fill_input(session_id, selector, value)
             if result:
-                return f"✅ Заполнил: {selector} = {value}"
+                # Автоматически нажимаем Enter для поиска
+                await client.press_enter(session_id)
+                return f"✅ Поиск по '{value}' выполнен"
             return f"❌ Элемент не найден: {selector}"
         
         elif action_type == "screenshot":
