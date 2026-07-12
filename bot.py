@@ -1100,12 +1100,13 @@ class CDPClient:
                     }
                 }
                 
-                // 2. Ищем по aria-label
+                // 2. Ищем по aria-label (только search, не explore!)
                 const btns = document.querySelectorAll('button, a, [role="button"]');
                 for (const btn of btns) {
                     const ariaLabel = btn.getAttribute('aria-label') || '';
-                    if (ariaLabel.toLowerCase().includes('search') ||
-                        ariaLabel.toLowerCase().includes('поиск')) {
+                    if (ariaLabel.toLowerCase().includes('search') &&
+                        !ariaLabel.toLowerCase().includes('explore') &&
+                        !ariaLabel.toLowerCase().includes('обзор')) {
                         if (btn.id) return '#' + btn.id;
                         if (btn.getAttribute('data-testid')) {
                             return '[data-testid="' + btn.getAttribute('data-testid') + '"]';
@@ -1114,22 +1115,15 @@ class CDPClient:
                     }
                 }
                 
-                // 3. Ищем SVG с лупой
-                const svgs = document.querySelectorAll('svg');
-                for (const svg of svgs) {
-                    const parent = svg.closest('button, a, [role="button"]');
-                    if (parent) {
-                        const paths = svg.querySelectorAll('path');
-                        for (const path of paths) {
-                            const d = path.getAttribute('d') || '';
-                            if (d.includes('circle') && d.includes('M')) {
-                                if (parent.id) return '#' + parent.id;
-                                if (parent.getAttribute('data-testid')) {
-                                    return '[data-testid="' + parent.getAttribute('data-testid') + '"]';
-                                }
-                                return parent.tagName.toLowerCase();
-                            }
+                // 3. Ищем по тексту (только search, не explore!)
+                for (const btn of btns) {
+                    const text = btn.textContent?.toLowerCase() || '';
+                    if (text.includes('search') && !text.includes('explore') && !text.includes('обзор')) {
+                        if (btn.id) return '#' + btn.id;
+                        if (btn.getAttribute('data-testid')) {
+                            return '[data-testid="' + btn.getAttribute('data-testid') + '"]';
                         }
+                        return btn.tagName.toLowerCase();
                     }
                 }
                 
@@ -1232,56 +1226,37 @@ class CDPClient:
             return {"success": False, "error": str(e)}
     
     async def smart_search_cdp(self, text, selector=None):
-        """УМНЫЙ ПОИСК через CDP - пробует Enter, потом клик по кнопке"""
+        """УМНЫЙ ПОИСК через CDP - активирует поле, вводит текст, кликает по кнопке"""
         
         file_logger.log(f"🔍 Умный поиск CDP: {text[:20]}...")
         
-        # 1. Если есть селектор - пробуем
+        # 1. Находим поле
+        if not selector:
+            selector = await self.find_search_field_selector()
+        
         if selector:
+            # 2. АКТИВИРУЕМ ПОЛЕ (кликаем в него)
+            file_logger.log(f"🖱️ Активирую поле: {selector}")
+            await self.click_element(selector)
+            await asyncio.sleep(0.5)  # Ждем появления кнопки
+            
+            # 3. Вводим текст через CDP
             result = await self.set_value_cdp(selector, text)
             if result.get('success'):
                 await asyncio.sleep(0.5)
+                
+                # 4. Пробуем Enter
                 enter_result = await self.press_enter_cdp()
                 if enter_result.get('success'):
                     await asyncio.sleep(1)
                     url = await self.eval_js("window.location.href")
                     if "search" in url or "query" in url or url != self.last_url:
-                        return {"success": True, "method": "cdp_native_enter"}
+                        return {"success": True, "method": "cdp_enter"}
                     else:
                         file_logger.log("🔍 Enter не сработал, ищу кнопку поиска...")
         
-        # 2. Находим селектор автоматически
-        field_selector = await self.find_search_field_selector()
-        if field_selector:
-            file_logger.log(f"🔍 Найден селектор поля: {field_selector}")
-            result = await self.set_value_cdp(field_selector, text)
-            if result.get('success'):
-                await asyncio.sleep(0.5)
-                enter_result = await self.press_enter_cdp()
-                if enter_result.get('success'):
-                    await asyncio.sleep(1)
-                    url = await self.eval_js("window.location.href")
-                    if "search" in url or "query" in url or url != self.last_url:
-                        return {"success": True, "method": "cdp_found_selector"}
-                    else:
-                        file_logger.log("🔍 Enter не сработал, ищу кнопку поиска...")
-        
-        # 3. Пробуем через fill
-        fill_result = await self.fill_element("", text)
-        if fill_result.get('success'):
-            await asyncio.sleep(0.5)
-            enter_result = await self.press_enter_cdp()
-            if enter_result.get('success'):
-                await asyncio.sleep(1)
-                url = await self.eval_js("window.location.href")
-                if "search" in url or "query" in url or url != self.last_url:
-                    return {"success": True, "method": "fill_cdp_enter"}
-                else:
-                    file_logger.log("🔍 Enter не сработал, ищу кнопку поиска...")
-        
-        # 4. ИЩЕМ И КЛИКАЕМ НА ЛУПУ
+        # 5. Ищем кнопку поиска (лупу)
         file_logger.log("🔍 Ищу кнопку поиска (лупу)...")
-        
         btn_selector = await self.find_search_button()
         
         if btn_selector:
@@ -1289,6 +1264,8 @@ class CDPClient:
             result = await self.click_element(btn_selector)
             if result.get('success'):
                 return {"success": True, "method": "click_search_button"}
+        else:
+            file_logger.log("⚠️ Кнопка поиска не найдена")
         
         return {"success": False, "error": "Все методы не сработали"}
     
@@ -1389,8 +1366,8 @@ AGENT_CODE = """
 
 🔹 X.com (Twitter):
    - Поле поиска: [aria-label="Search Twitter"] или [data-testid="SearchBox_Search_Input"]
-   - Кнопка "Обзор": [data-testid="obst"]
-   - Кнопка "Главная": [data-testid="AppTabBar_Home_Link"]
+   - Кнопка поиска (ЛУПА): [data-testid="SearchBox_Search_Button"]  ← ЭТО ВАЖНО!
+   - Кнопка "Обзор": [data-testid="obst"] или [data-testid="AppTabBar_Explore_Link"]
 
 🔹 YouTube:
    - Поле поиска: input[name='search_query'] или [aria-label="Поиск"]
@@ -1490,6 +1467,7 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
 - Все атрибуты в селекторах пиши на английском!
 - ВСЕГДА используй aria-label или data-testid если они есть в описании!
 - ДЛЯ ПОИСКА ВСЕГДА ИСПОЛЬЗУЙ search_cdp!
+- Кнопка поиска на X.com: [data-testid="SearchBox_Search_Button"]
 """
 
     data = {
