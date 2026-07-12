@@ -292,7 +292,7 @@ class UniversalElement:
 
 @dataclass
 class UniversalModel:
-    """Универсальная модель страницы на основе Accessibility Tree"""
+    """Универсальная модель страницы на основе Accessibility Tree с точной нумерацией"""
     
     title: str = ""
     url: str = ""
@@ -307,9 +307,23 @@ class UniversalModel:
     articles: List[UniversalElement] = field(default_factory=list)
     interactive: List[UniversalElement] = field(default_factory=list)
     
+    # Словарь для поиска по русскому/английскому
+    TRANSLATIONS = {
+        'обзор': ['explore', 'обзор', 'review'],
+        'главная': ['home', 'главная', 'main'],
+        'закладки': ['bookmarks', 'закладки'],
+        'уведомления': ['notifications', 'уведомления'],
+        'сообщения': ['messages', 'сообщения', 'direct'],
+        'профиль': ['profile', 'профиль', 'account'],
+        'поиск': ['search', 'поиск', 'find'],
+        'чат': ['chat', 'чат', 'messages'],
+        'лента': ['feed', 'лента', 'timeline'],
+        'настройки': ['settings', 'настройки'],
+    }
+    
     @classmethod
     def from_ax_tree(cls, ax_tree: Dict) -> 'UniversalModel':
-        """Создание модели из Accessibility Tree"""
+        """Создание модели из Accessibility Tree с точной нумерацией"""
         model = cls()
         
         model.title = ax_tree.get('title', '')
@@ -318,13 +332,14 @@ class UniversalModel:
         elements = ax_tree.get('all_elements', [])
         model.total_elements = len(elements)
         
-        for el in elements:
+        # Точная нумерация — каждый элемент получает номер
+        for idx, el in enumerate(elements):
             element = UniversalElement(
                 role=el.get('role', 'unknown'),
                 name=el.get('name', ''),
                 description=el.get('description', ''),
                 states=el.get('states', {}),
-                ref=el.get('ref', ''),
+                ref=f"@e{idx}",  # Точный номер по индексу
                 node_id=el.get('node_id', '')
             )
             
@@ -349,14 +364,36 @@ class UniversalModel:
         
         return model
     
-    def search(self, query: str) -> List[UniversalElement]:
-        """Поиск элементов по тексту"""
+    def find_by_text(self, query: str) -> List[UniversalElement]:
+        """Поиск по тексту (русский + английский)"""
         query_lower = query.lower()
         results = []
+        
+        # Получаем все возможные варианты перевода
+        search_terms = [query_lower]
+        for ru, en_list in self.TRANSLATIONS.items():
+            if query_lower in ru or query_lower in ' '.join(en_list):
+                search_terms.extend(en_list)
+                search_terms.append(ru)
+        
+        search_terms = list(set(search_terms))  # Убираем дубли
+        
         for el in self.all_elements:
-            if query_lower in el.name.lower() or query_lower in el.description.lower():
-                results.append(el)
+            name_lower = el.name.lower()
+            desc_lower = el.description.lower()
+            
+            for term in search_terms:
+                if term in name_lower or term in desc_lower:
+                    results.append(el)
+                    break
+        
         return results
+    
+    def find_button_by_text(self, query: str) -> Optional[UniversalElement]:
+        """Поиск кнопки по тексту (русский + английский)"""
+        results = self.find_by_text(query)
+        buttons = [el for el in results if el.role == 'button']
+        return buttons[0] if buttons else None
     
     def find_posts(self) -> List[UniversalElement]:
         """Найти все посты/статьи"""
@@ -366,6 +403,18 @@ class UniversalModel:
         """Найти посты по тексту"""
         query_lower = query.lower()
         return [el for el in self.articles if query_lower in el.name.lower()]
+    
+    def get_by_number(self, number: int) -> Optional[UniversalElement]:
+        """Получить элемент по номеру (0-based)"""
+        if 0 <= number < len(self.all_elements):
+            return self.all_elements[number]
+        return None
+    
+    def get_button_by_number(self, number: int) -> Optional[UniversalElement]:
+        """Получить кнопку по номеру (0-based)"""
+        if 0 <= number < len(self.buttons):
+            return self.buttons[number]
+        return None
     
     def format_posts(self, posts: List[UniversalElement], limit: int = 5) -> str:
         """Форматирование списка постов"""
@@ -386,7 +435,7 @@ class UniversalModel:
         return result
     
     def to_text(self, max_items: int = 20) -> str:
-        """Форматированное текстовое представление модели"""
+        """Форматированное текстовое представление с точными номерами"""
         result = []
         
         result.append(f"📄 СТРАНИЦА: {self.title}")
@@ -396,29 +445,42 @@ class UniversalModel:
         
         if self.buttons:
             result.append(f"🔘 КНОПКИ ({len(self.buttons)}):")
-            for btn in self.buttons[:max_items]:
+            for i, btn in enumerate(self.buttons[:max_items], 1):
                 state = "✅" if btn.states.get('enabled', True) else "🔒"
-                result.append(f"  {state} [{btn.ref}] {btn.name}")
+                result.append(f"  {i}. {state} [{btn.ref}] {btn.name}")
             if len(self.buttons) > max_items:
                 result.append(f"  ... и ещё {len(self.buttons) - max_items} кнопок")
         result.append("")
         
         if self.text_inputs:
             result.append(f"📝 ПОЛЯ ВВОДА ({len(self.text_inputs)}):")
-            for inp in self.text_inputs[:max_items]:
-                result.append(f"  • [{inp.ref}] {inp.name}")
+            for i, inp in enumerate(self.text_inputs[:max_items], 1):
+                result.append(f"  {i}. [{inp.ref}] {inp.name}")
             if len(self.text_inputs) > max_items:
                 result.append(f"  ... и ещё {len(self.text_inputs) - max_items} полей")
         result.append("")
         
         if self.articles:
             result.append(f"📰 ПОСТЫ ({len(self.articles)}):")
-            for article in self.articles[:max_items]:
-                result.append(f"  • [{article.ref}] {article.name[:80]}...")
+            for i, article in enumerate(self.articles[:max_items], 1):
+                result.append(f"  {i}. [{article.ref}] {article.name[:80]}...")
             if len(self.articles) > max_items:
                 result.append(f"  ... и ещё {len(self.articles) - max_items} постов")
         
         return "\n".join(result)
+    
+    def to_json(self) -> Dict:
+        """JSON представление модели"""
+        return {
+            "title": self.title,
+            "url": self.url,
+            "total_elements": self.total_elements,
+            "buttons": [{"ref": el.ref, "name": el.name, "states": el.states} for el in self.buttons],
+            "links": [{"ref": el.ref, "name": el.name} for el in self.links],
+            "text_inputs": [{"ref": el.ref, "name": el.name} for el in self.text_inputs],
+            "headings": [{"ref": el.ref, "name": el.name} for el in self.headings],
+            "articles": [{"ref": el.ref, "name": el.name} for el in self.articles]
+        }
 
 
 # ---------- CDP Client ----------
@@ -717,7 +779,7 @@ class CDPClient:
             return None
     
     async def get_maximum_snapshot(self):
-        """Сбор Accessibility Tree вместо DOM"""
+        """Сбор Accessibility Tree с точной нумерацией"""
         try:
             file_logger.log("📸 Делаю accessibility слепок...")
             
@@ -739,7 +801,8 @@ class CDPClient:
             buttons = []
             fields = []
             
-            for node in nodes:
+            # ТОЧНАЯ НУМЕРАЦИЯ — каждый элемент получает свой номер
+            for idx, node in enumerate(nodes):
                 role_obj = node.get("role", {})
                 role = role_obj.get("value", "unknown") if isinstance(role_obj, dict) else "unknown"
                 
@@ -765,6 +828,7 @@ class CDPClient:
                 is_interactive = role in interactive_roles
                 is_button = role == 'button' or (role == 'link' and is_interactive)
                 
+                # ТОЧНЫЙ НОМЕР — используем индекс в массиве
                 element = {
                     "role": role,
                     "name": name,
@@ -772,7 +836,8 @@ class CDPClient:
                     "states": states,
                     "node_id": node_id,
                     "is_interactive": is_interactive,
-                    "ref": f"@e{len(elements)}"
+                    "ref": f"@e{idx}",  # Точный номер
+                    "number": idx  # Сохраняем номер отдельно
                 }
                 
                 elements.append(element)
@@ -809,12 +874,37 @@ class CDPClient:
         return UniversalModel.from_ax_tree(self.full_snapshot)
     
     async def click_element(self, selector):
-        """Клик по элементу"""
+        """Клик по ref ID, номеру или названию"""
+        
+        # Если это номер (цифра)
+        if selector.isdigit():
+            number = int(selector)
+            if self.full_snapshot:
+                elements = self.full_snapshot.get('all_elements', [])
+                if 0 <= number < len(elements):
+                    name = elements[number].get('name', '')
+                    if name:
+                        js_code = f"""
+                        (function() {{
+                            const all = document.querySelectorAll('[role="button"], button, a, [role="link"]');
+                            for (const el of all) {{
+                                const text = el.textContent?.trim() || el.getAttribute('aria-label') || '';
+                                if (text === '{name}' || text.includes('{name}')) {{
+                                    el.click();
+                                    return {{ success: true }};
+                                }}
+                            }}
+                            return {{ success: false }};
+                        }})()
+                        """
+                        return await self.eval_js(js_code)
+        
+        # Если это ref ID (например @e18)
         if selector.startswith('@e') and self.full_snapshot:
             try:
                 ref_num = int(selector[2:])
                 elements = self.full_snapshot.get('all_elements', [])
-                if ref_num < len(elements):
+                if 0 <= ref_num < len(elements):
                     name = elements[ref_num].get('name', '')
                     if name:
                         js_code = f"""
@@ -834,29 +924,50 @@ class CDPClient:
             except Exception as e:
                 file_logger.log(f"⚠️ Ошибка ref ID: {e}", "WARNING")
         
-        selector_escaped = selector.replace("'", "\\'").replace('"', '\\"')
+        # Поиск по тексту (русский + английский)
         js_code = f"""
         (function() {{
-            let el = document.querySelector("{selector_escaped}");
-            if (!el) {{
-                const all = document.querySelectorAll('[role="button"], button, a');
-                for (const elem of all) {{
-                    const text = elem.textContent?.trim() || elem.getAttribute('aria-label') || '';
-                    if (text.toLowerCase().includes('обзор') || 
-                        text.toLowerCase().includes('explore') ||
-                        text.toLowerCase().includes('review')) {{
-                        el = elem;
-                        break;
-                    }}
+            const all = document.querySelectorAll('[role="button"], button, a, [role="link"]');
+            const searchText = '{selector}'.toLowerCase();
+            
+            // Список для поиска (русский + английский)
+            const searchTerms = [searchText];
+            const translations = {{
+                'обзор': ['explore', 'обзор', 'review'],
+                'главная': ['home', 'главная', 'main'],
+                'закладки': ['bookmarks', 'закладки'],
+                'уведомления': ['notifications', 'уведомления'],
+                'сообщения': ['messages', 'сообщения', 'direct'],
+                'профиль': ['profile', 'профиль', 'account'],
+                'поиск': ['search', 'поиск', 'find'],
+                'чат': ['chat', 'чат', 'messages'],
+                'лента': ['feed', 'лента', 'timeline'],
+                'настройки': ['settings', 'настройки']
+            }};
+            
+            // Добавляем переводы
+            for (const [ru, enList] of Object.entries(translations)) {{
+                if (searchText === ru || enList.some(en => searchText === en)) {{
+                    searchTerms.push(ru, ...enList);
                 }}
             }}
-            if (el) {{
-                el.click();
-                return {{ success: true }};
+            
+            for (const el of all) {{
+                const text = el.textContent?.trim()?.toLowerCase() || 
+                            el.getAttribute('aria-label')?.toLowerCase() || 
+                            el.getAttribute('title')?.toLowerCase() || '';
+                
+                for (const term of searchTerms) {{
+                    if (text.includes(term)) {{
+                        el.click();
+                        return {{ success: true }};
+                    }}
+                }}
             }}
             return {{ success: false }};
         }})()
         """
+        
         result = await self.eval_js(js_code)
         if result and result.get('success'):
             await asyncio.sleep(1)
@@ -962,9 +1073,9 @@ AGENT_CODE = """
 1. ОТКРЫТЬ САЙТ:
 {"action": "navigate", "params": {"url": "https://x.com"}}
 
-2. КЛИКНУТЬ:
-{"action": "click", "params": {"selector": "@e2"}}
-{"action": "click", "params": {"selector": "[aria-label='Explore']"}}
+2. КЛИКНУТЬ (по ref ID или номеру):
+{"action": "click", "params": {"selector": "@e18"}}
+{"action": "click", "params": {"selector": "18"}}  # по номеру
 
 3. ЗАПОЛНИТЬ ПОЛЕ:
 {"action": "fill", "params": {"selector": "@e10", "value": "текст"}}
@@ -975,24 +1086,24 @@ AGENT_CODE = """
 5. СКРИНШОТ:
 {"action": "screenshot", "params": {}}
 
-6. ОТВЕТИТЬ (ТОЛЬКО ЕСЛИ НЕЛЬЗЯ СДЕЛАТЬ ДЕЙСТВИЕ):
+6. ОТВЕТИТЬ:
 {"action": "answer", "params": {"text": "твой ответ"}}
 
+📝 ПЕРЕВОД НАЗВАНИЙ X.COM (русский → английский):
+- "Обзор" → "Explore"
+- "Главная" → "Home"
+- "Закладки" → "Bookmarks"
+- "Уведомления" → "Notifications"
+- "Сообщения" → "Messages"
+- "Профиль" → "Profile"
+- "Поиск" → "Search"
+- "Чат" → "Chat"
+- "Лента" → "Feed"
+
 ⚠️ ВАЖНО:
-- Всегда возвращай JSON с action!
-- Для навигации используй navigate
-- Для кликов используй ref ID (@e1, @e2)
-- НЕ ВОЗВРАЩАЙ ТЕКСТ ВМЕСТО JSON!
-
-📝 ПРИМЕРЫ:
-Пользователь: "зайди в x.com"
-Твой ответ: {"action": "navigate", "params": {"url": "https://x.com"}}
-
-Пользователь: "скрин"
-Твой ответ: {"action": "screenshot", "params": {}}
-
-Пользователь: "нажми на обзор"
-Твой ответ: {"action": "click", "params": {"selector": "@e2"}}
+- Всегда используй ref ID (@e18) для кликов
+- Если кнопка не найдена — поищи по английскому названию
+- Номера кнопок можно использовать как "18" вместо "@e18"
 """
 
 # ---------- Агент ----------
@@ -1183,14 +1294,60 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
         file_logger.log(f"Execute error: {e}", "ERROR")
         return f"❌ Ошибка: {str(e)}"
 
-# ---------- Команды для постов ----------
+# ---------- Команды ----------
+
+async def find_button_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Поиск кнопки по тексту (русский + английский)"""
+    user_id = update.message.from_user.id
+    query = ' '.join(context.args) if context.args else ''
+    
+    if not query:
+        await update.message.reply_text("❌ Укажите что искать: /find обзор")
+        return
+    
+    if user_id not in clients:
+        await update.message.reply_text("❌ Сначала откройте страницу")
+        return
+    
+    client = clients[user_id]
+    
+    try:
+        await update.message.reply_text(f"🔍 Ищу '{query}'...")
+        
+        model = await client.get_universal_model()
+        
+        # Ищем по русскому и английскому
+        results = model.find_by_text(query)
+        
+        # Фильтруем только кнопки
+        buttons = [el for el in results if el.role == 'button']
+        
+        if buttons:
+            msg = f"🔍 Найдено {len(buttons)} кнопок:\n\n"
+            for i, btn in enumerate(buttons[:10], 1):
+                state = "✅" if btn.states.get('enabled', True) else "🔒"
+                msg += f"  {i}. {state} [{btn.ref}] {btn.name}\n"
+            
+            if len(buttons) > 10:
+                msg += f"\n... и ещё {len(buttons) - 10} кнопок"
+            
+            # Подсказка для клика
+            msg += f"\n💡 Для клика: нажми на {buttons[0].ref}"
+            
+            await update.message.reply_text(msg)
+        else:
+            await update.message.reply_text(f"❌ Кнопка '{query}' не найдена")
+            
+    except Exception as e:
+        file_logger.log(f"❌ Ошибка: {e}", "ERROR")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 async def find_posts_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Поиск всех постов на странице"""
     user_id = update.message.from_user.id
     
     if user_id not in clients:
-        await update.message.reply_text("❌ Сначала откройте страницу (например, 'зайди в x.com')")
+        await update.message.reply_text("❌ Сначала откройте страницу")
         return
     
     client = clients[user_id]
@@ -1341,16 +1498,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "/cdp - статус браузера\n"
-        "/logs - логи\n\n"
-        "📰 **Поиск постов:**\n"
-        "/posts - найти все посты\n"
-        "/search_post текст - найти пост по тексту\n"
-        "/analyze - анализ страницы\n\n"
-        "💬 **Или просто напиши:**\n"
-        "• зайди в x.com\n"
-        "• скрин\n"
-        "• найди пост\n"
-        "• найди пост про космос"
+        "/logs - логи\n"
+        "/analyze - анализ страницы"
     )
 
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1401,8 +1550,6 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("cdp", cdp))
     app.add_handler(CommandHandler("logs", logs_command))
-    app.add_handler(CommandHandler("posts", find_posts_command))
-    app.add_handler(CommandHandler("search_post", search_post_command))
     app.add_handler(CommandHandler("analyze", analyze_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
