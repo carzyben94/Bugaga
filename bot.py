@@ -337,7 +337,7 @@ class CDPClient:
             await self.send("Runtime.enable", {})
             await self.send("DOM.enable", {})
             await self.send("Network.enable", {})
-            await self.send("Accessibility.enable", {})  # <-- Включаем Accessibility
+            await self.send("Accessibility.enable", {})
             file_logger.log("✅ Page, Runtime, DOM, Network, Accessibility включены")
             
             await self.apply_mask()
@@ -1076,109 +1076,6 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
         file_logger.log(f"Execute error: {e}", "ERROR")
         return f"❌ Ошибка: {str(e)}"
 
-# ---------- Команды ----------
-
-async def find_button_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Поиск кнопки на странице"""
-    user_id = update.message.from_user.id
-    button_name = ' '.join(context.args) if context.args else 'Обзор'
-    
-    if user_id not in clients:
-        await update.message.reply_text("❌ Сначала откройте страницу (например, 'Зайди на x.com')")
-        return
-    
-    client = clients[user_id]
-    
-    try:
-        await update.message.reply_text(f"🔍 Ищу кнопку '{button_name}'...")
-        
-        # Получаем все кнопки из Accessibility Tree
-        buttons = await client.find_clickable_elements()
-        
-        if not buttons:
-            await update.message.reply_text("❌ Не удалось найти кнопки на странице")
-            return
-        
-        found = []
-        for el in buttons:
-            name = el.get('name', '') or el.get('description', '')
-            ref = el.get('ref', '')
-            states = el.get('states', {})
-            enabled = states.get('enabled', True)
-            
-            if button_name.lower() in name.lower():
-                found.append({
-                    'name': name,
-                    'ref': ref,
-                    'enabled': enabled
-                })
-        
-        if found:
-            msg = f"✅ Найдено {len(found)} кнопок с '{button_name}':\n\n"
-            for el in found[:20]:
-                status = "✅" if el['enabled'] else "🔒"
-                msg += f"  {status} [{el['ref']}] {el['name'][:50]}\n"
-            
-            if len(found) > 20:
-                msg += f"\n... и еще {len(found) - 20} кнопок"
-            
-            await update.message.reply_text(msg)
-        else:
-            await update.message.reply_text(
-                f"❌ Кнопка '{button_name}' не найдена\n\n"
-                f"💡 Попробуйте:\n"
-                f"• /find_button Explore (английское название)\n"
-                f"• Посмотреть список всех кнопок через 'Что видишь?'"
-            )
-            
-    except Exception as e:
-        file_logger.log(f"❌ Ошибка: {e}", "ERROR")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-
-async def set_cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    
-    if user_id not in clients:
-        await update.message.reply_text("❌ Сначала отправьте команду чтобы инициализировать браузер")
-        return
-    
-    client = clients[user_id]
-    
-    try:
-        await update.message.reply_text("🍪 Устанавливаю куки для X.com...")
-        result = await client.set_cookies(X_COOKIES)
-        
-        if result:
-            await update.message.reply_text(f"✅ Установлено {len(X_COOKIES)} кук для X.com")
-        else:
-            await update.message.reply_text("❌ Не удалось установить куки")
-            
-    except Exception as e:
-        file_logger.log(f"❌ Ошибка: {e}", "ERROR")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-
-async def mask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    
-    if user_id not in clients:
-        await update.message.reply_text("❌ Сначала отправьте команду чтобы инициализировать браузер")
-        return
-    
-    client = clients[user_id]
-    
-    try:
-        await update.message.reply_text("🕵️ Применяю маскировку...")
-        result = await client.apply_mask()
-        
-        if result:
-            await update.message.reply_text("✅ Маскировка успешно применена!")
-        else:
-            await update.message.reply_text("⚠️ Маскировка применена частично")
-            
-    except Exception as e:
-        file_logger.log(f"❌ Ошибка: {e}", "ERROR")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-
 # ---------- Обработчик ----------
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1242,24 +1139,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🧠 **МАКСИМАЛЬНЫЙ АГЕНТ**\n\n"
-        "🕵️ **Маскировка браузера активна!**\n"
-        "🍪 **Куки X.com установлены автоматически**\n"
-        "🔄 **Автоматическое восстановление при обрывах**\n"
-        "♿ **Использует Accessibility Tree для экономии токенов**\n\n"
-        "💡 **Примеры команд:**\n"
-        "• Открой Google\n"
-        "• Что видишь?\n"
-        "• Сделай скриншот\n"
-        "• Зайди на x.com\n"
-        "• Нажми на @e1 (клик по ref ID)\n\n"
-        "🔍 **Поиск кнопок:**\n"
-        "/find_button Обзор - найти кнопку\n"
-        "/find_button Explore - найти кнопку (англ)\n\n"
         "/cdp - статус браузера\n"
-        "/logs - логи\n"
-        "/set_cookies - установить куки\n"
-        "/mask - применить маскировку"
+        "/logs - логи"
     )
 
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1273,16 +1154,6 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
         else:
             await update.message.reply_text("❌ Файл логов не найден")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-
-async def clear_logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        with open(LOG_FILE, 'w', encoding='utf-8') as f:
-            f.write(f"=== Логи очищены ===\n")
-            f.write(f"Время очистки: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write("=" * 50 + "\n\n")
-        await update.message.reply_text("✅ Логи очищены")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
@@ -1320,10 +1191,6 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("cdp", cdp))
     app.add_handler(CommandHandler("logs", logs_command))
-    app.add_handler(CommandHandler("clear_logs", clear_logs_command))
-    app.add_handler(CommandHandler("set_cookies", set_cookies_command))
-    app.add_handler(CommandHandler("mask", mask_command))
-    app.add_handler(CommandHandler("find_button", find_button_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print("🚀 Бот запущен с Accessibility Tree!")
