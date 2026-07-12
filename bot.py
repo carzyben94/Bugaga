@@ -276,6 +276,9 @@ class CDPClient:
         self.reconnect_attempts = 0
         self.max_reconnect_attempts = 5
         self.last_url = ""
+        self.snapshot_time = 0
+        self.snapshot_cache = None
+        self.ping_task = None
     
     async def connect_with_retry(self):
         """Подключение с повторными попытками"""
@@ -298,16 +301,23 @@ class CDPClient:
     async def ensure_connection(self):
         """Гарантирует активное соединение"""
         if not self.connected or not self.ws:
+            file_logger.log("🔄 Соединение отсутствует, подключаюсь...")
             return await self.connect_with_retry()
         
         try:
             await asyncio.wait_for(
                 self.send("Runtime.evaluate", {"expression": "1"}),
-                timeout=5
+                timeout=3
             )
             return True
         except:
             file_logger.log("⚠️ Соединение потеряно, переподключаюсь...")
+            self.connected = False
+            if self.ws:
+                try:
+                    await self.ws.close()
+                except:
+                    pass
             return await self.connect_with_retry()
     
     async def connect(self):
@@ -327,8 +337,8 @@ class CDPClient:
         try:
             self.ws = await websockets.connect(
                 ws_url,
-                ping_interval=20,
-                ping_timeout=60,
+                ping_interval=10,  # Чаще пингуем
+                ping_timeout=30,
                 close_timeout=10,
                 max_size=50 * 1024 * 1024
             )
@@ -345,11 +355,38 @@ class CDPClient:
             await self.set_cookies(X_COOKIES)
             await self.navigate("https://google.com")
             
+            # Запускаем пинг
+            if self.ping_task is None or self.ping_task.done():
+                self.ping_task = asyncio.create_task(self.keep_alive())
+            
             return True
             
         except Exception as e:
             file_logger.log(f"❌ Connect error: {e}", "ERROR")
             return False
+    
+    async def keep_alive(self):
+        """Фоновый пинг для поддержания соединения"""
+        file_logger.log("💓 Запущен пинг для поддержания соединения")
+        while self.connected:
+            try:
+                await asyncio.sleep(25)  # Каждые 25 секунд
+                if self.ws:
+                    await asyncio.wait_for(
+                        self.send("Runtime.evaluate", {"expression": "1"}),
+                        timeout=5
+                    )
+                    file_logger.log("💓 Пинг успешен")
+            except asyncio.CancelledError:
+                file_logger.log("💓 Пинг остановлен")
+                break
+            except asyncio.TimeoutError:
+                file_logger.log("⏳ Пинг таймаут")
+            except Exception as e:
+                file_logger.log(f"❌ Пинг ошибка: {e}")
+                self.connected = False
+                await self.reconnect()
+                break
     
     async def reconnect(self):
         """Переподключение при разрыве"""
@@ -558,8 +595,15 @@ class CDPClient:
             file_logger.log(f"❌ eval_js error: {e}", "ERROR")
             return None
     
-    async def get_maximum_snapshot(self):
-        """Оптимизированный сбор информации о странице (только полезные элементы)"""
+    async def get_maximum_snapshot(self, force=False):
+        """Оптимизированный сбор информации о странице с кешированием"""
+        
+        # Кеширование: если прошло меньше 10 секунд и не force — возвращаем кеш
+        if not force and self.snapshot_cache and time.time() - self.snapshot_time < 10:
+            file_logger.log("📸 Использую кешированный слепок")
+            self.full_snapshot = self.snapshot_cache
+            return True
+        
         try:
             file_logger.log("📸 Делаю максимальный слепок...")
             
@@ -637,8 +681,8 @@ class CDPClient:
                             i: isInteractive           // интерактивность
                         });
                         
-                        // Ограничиваем количество элементов
-                        if (result.length >= 300) break;
+                        // Ограничиваем количество элементов (уменьшили до 150)
+                        if (result.length >= 150) break;
                     }
                     
                     return result;
@@ -666,6 +710,10 @@ class CDPClient:
                 "fields": fields,
                 "masked": self.masked
             }
+            
+            # Сохраняем в кеш
+            self.snapshot_cache = self.full_snapshot
+            self.snapshot_time = time.time()
             
             file_logger.log(f"✅ Слепок: {len(elements)} элементов, {len(buttons)} кнопок, {len(fields)} полей")
             return True
@@ -1181,7 +1229,7 @@ class CDPClient:
             return {"success": False, "error": str(e)}
     
     async def smart_search_cdp(self, text, selector=None):
-        """УМНЫЙ ПОИСК — только по точному селектору лупы!"""
+        """УМНЫЙ ПОИСК — клик в поле → ввод → ожидание лупы → клик по лупе"""
         
         file_logger.log(f"🔍 Умный поиск CDP: {text[:20]}...")
         
@@ -1193,30 +1241,36 @@ class CDPClient:
             # 2. Активируем поле (кликаем в него)
             file_logger.log(f"🖱️ Активирую поле: {selector}")
             await self.click_element(selector)
-            await asyncio.sleep(0.5)  # Ждем появления лупы
+            await asyncio.sleep(0.5)
             
             # 3. Вводим текст
             result = await self.set_value_cdp(selector, text)
             if result.get('success'):
                 await asyncio.sleep(0.5)
                 
-                # 4. Ищем ТОЛЬКО по точному селектору!
-                file_logger.log("🔍 Ищу лупу...")
+                # 4. ЖДЁМ ПОЯВЛЕНИЯ ЛУПЫ (до 5 секунд)
+                file_logger.log("🔍 Жду появления лупы...")
                 
-                btn_selector = await self.eval_js("""
-                    (function() {
-                        const btn = document.querySelector('[data-testid="SearchBox_Search_Button"]');
-                        if (btn) return '[data-testid="SearchBox_Search_Button"]';
-                        return null;
-                    })()
-                """)
+                btn_selector = None
+                for i in range(5):
+                    btn_selector = await self.eval_js("""
+                        (function() {
+                            const btn = document.querySelector('[data-testid="SearchBox_Search_Button"]');
+                            if (btn) return '[data-testid="SearchBox_Search_Button"]';
+                            return null;
+                        })()
+                    """)
+                    if btn_selector:
+                        file_logger.log(f"✅ Лупа появилась через {i+1} сек")
+                        break
+                    await asyncio.sleep(1)
                 
                 if btn_selector:
                     file_logger.log(f"🔍 Найдена лупа: {btn_selector}")
                     await self.click_element(btn_selector)
                     return {"success": True, "method": "click_search_button"}
                 else:
-                    file_logger.log("⚠️ Лупа не найдена")
+                    file_logger.log("⚠️ Лупа не появилась за 5 секунд")
         
         return {"success": False, "error": "Лупа не найдена"}
     
@@ -1657,7 +1711,7 @@ async def get_snapshot_command(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         await update.message.reply_text("📸 Делаю полный слепок страницы...")
         
-        await client.get_maximum_snapshot()
+        await client.get_maximum_snapshot(force=True)
         
         if not client.full_snapshot:
             await update.message.reply_text("❌ Не удалось получить слепок страницы")
@@ -1714,11 +1768,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         client = clients[user_id]
         
+        # ПРОВЕРЯЕМ СОЕДИНЕНИЕ ПЕРЕД КАЖДЫМ ДЕЙСТВИЕМ!
         if not await client.ensure_connection():
-            await update.message.reply_text("❌ Не удалось подключиться к браузеру. Попробуйте позже.")
-            return
+            await update.message.reply_text("🔄 Переподключаю браузер...")
+            if not await client.connect_with_retry():
+                await update.message.reply_text("❌ Не удалось подключиться к браузеру")
+                return
         
-        await client.get_maximum_snapshot()
+        # Делаем слепок ТОЛЬКО если это информационный запрос
+        if any(keyword in prompt.lower() for keyword in ['какие', 'что видишь', 'кнопки', 'поля', 'описание']):
+            await client.get_maximum_snapshot()
+        else:
+            # Используем кеш если есть
+            if not client.full_snapshot:
+                await client.get_maximum_snapshot()
         
         if AGNES_API_KEY:
             response = await ask_agnes(prompt, client)
