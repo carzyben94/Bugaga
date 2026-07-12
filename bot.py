@@ -2,71 +2,60 @@ import os
 import sys
 import logging
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, ContextTypes
 
-# Добавляем текущую папку в путь (чтобы найти accessibility.py)
+# Добавляем текущую папку в путь
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Импортируем модуль с Accessibility Tree
-try:
-    from accessibility import UniversalModel, UniversalElement, get_accessibility_snapshot
-    print("✅ Модуль accessibility.py найден и импортирован!")
-except ImportError as e:
-    print(f"❌ Ошибка импорта: {e}")
-    print(f"   Файл accessibility.py должен лежать в {os.path.dirname(os.path.abspath(__file__))}")
-    UniversalModel = None
-    get_accessibility_snapshot = None
-
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен!")
 
+# ---------- Команда для проверки файлов ----------
 
-# ---------- Тестовая команда ----------
+async def files_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать файлы в директории и проверить accessibility.py"""
+    try:
+        files = os.listdir('.')
+        msg = "📁 **Файлы на сервере:**\n"
+        for f in sorted(files):
+            msg += f"  • {f}\n"
+        
+        # Проверяем, есть ли accessibility.py
+        if 'accessibility.py' in files:
+            msg += "\n✅ **accessibility.py НАЙДЕН!**"
+        else:
+            msg += "\n❌ **accessibility.py НЕ НАЙДЕН!**"
+        
+        # Проверяем, есть ли bot.py
+        if 'bot.py' in files:
+            msg += "\n✅ **bot.py НАЙДЕН!**"
+        
+        await update.message.reply_text(msg)
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+# ---------- Тест импорта ----------
+
+async def test_import(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Проверить, импортируется ли модуль"""
+    try:
+        from accessibility import UniversalModel
+        await update.message.reply_text("✅ **Модуль accessibility.py успешно импортирован!**")
+    except ImportError as e:
+        await update.message.reply_text(f"❌ **Ошибка импорта:**\n{str(e)}")
+
+# ---------- Старт ----------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "✅ Бот работает!\n\n"
-        "Проверь /test - покажет, найден ли модуль"
+        "🚀 **Бот работает!**\n\n"
+        "/files - показать файлы на сервере\n"
+        "/test_import - проверить импорт accessibility.py"
     )
-
-
-async def test_ax(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Тестовая команда для проверки модуля"""
-    try:
-        if UniversalModel is None:
-            await update.message.reply_text("❌ Модуль accessibility.py НЕ НАЙДЕН!\n\nФайл должен лежать в одной папке с bot.py")
-            return
-        
-        # Создаём тестовую модель
-        test_model = UniversalModel()
-        test_model.title = "Тестовая страница"
-        test_model.url = "https://test.com"
-        
-        # Добавляем тестовую кнопку
-        test_button = UniversalElement(
-            role="button",
-            name="Тестовая кнопка",
-            ref="@e0",
-            states={"enabled": True}
-        )
-        test_model.buttons.append(test_button)
-        
-        result = "✅ Модуль accessibility.py работает!\n\n"
-        result += f"📄 Страница: {test_model.title}\n"
-        result += f"🔘 Кнопок: {len(test_model.buttons)}\n"
-        result += f"  • {test_model.buttons[0].name} [{test_model.buttons[0].ref}]"
-        
-        await update.message.reply_text(result)
-        
-    except ImportError as e:
-        await update.message.reply_text(f"❌ Ошибка импорта: {e}")
-
 
 # ---------- Main ----------
 
@@ -76,11 +65,11 @@ def main():
     app = Application.builder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("test", test_ax))
+    app.add_handler(CommandHandler("files", files_command))
+    app.add_handler(CommandHandler("test_import", test_import))
     
-    print("🚀 Бот запущен! Проверь /test")
+    print("🚀 Бот запущен! Команды: /files, /test_import")
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
