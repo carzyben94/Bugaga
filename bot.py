@@ -1,4 +1,3 @@
-
 import os
 import asyncio
 import json
@@ -7,6 +6,8 @@ import requests
 import subprocess
 import time
 import base64
+import tempfile
+import shutil
 from io import BytesIO
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -16,6 +17,21 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHROME_PATH = "/usr/bin/google-chrome"
 CHROME_PORT = 9222
 
+# ==================== КУКИ ДЛЯ X/TWITTER ====================
+COOKIES = [
+    {"domain": ".x.com", "name": "__cuid", "value": "55d2d7c5-4888-430a-b024-dd785da46ef4", "path": "/"},
+    {"domain": ".x.com", "name": "lang", "value": "ru", "path": "/"},
+    {"domain": ".x.com", "name": "dnt", "value": "1", "path": "/"},
+    {"domain": ".x.com", "name": "guest_id", "value": "v1%3A178267838599411411", "path": "/"},
+    {"domain": ".x.com", "name": "guest_id_marketing", "value": "v1%3A178267838599411411", "path": "/"},
+    {"domain": ".x.com", "name": "guest_id_ads", "value": "v1%3A178267838599411411", "path": "/"},
+    {"domain": ".x.com", "name": "personalization_id", "value": "\"v1_DKrxLZAC902dMFdd1QrVYg==\"", "path": "/"},
+    {"domain": ".x.com", "name": "twid", "value": "u%3D2067347503503052800", "path": "/"},
+    {"domain": ".x.com", "name": "auth_token", "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936", "path": "/"},
+    {"domain": ".x.com", "name": "ct0", "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb", "path": "/"},
+    {"domain": ".x.com", "name": "__cf_bm", "value": "Ipt0If1rT4S3kI3tVsr58Sup_Fm8GPuT370v3cw5dW4-1783875796.4839864-1.0.1.1-RSmrxzVUAp2qPLNWwlQOxmNTWhPuyAZTQWafhPHEMyS47WRvhV9dkM6b2ltAOWrIC6zrzNH9ezPI0iZyG82bLPSJ7OFV1aYc1a5rwQJdlrUqp3gxHe_JjkpeqdMoEZ9O", "path": "/"}
+]
+
 # ==================== УПРАВЛЕНИЕ БРАУЗЕРОМ ====================
 class ChromeManager:
     def __init__(self, chrome_path=CHROME_PATH, port=CHROME_PORT):
@@ -23,15 +39,34 @@ class ChromeManager:
         self.port = port
         self.process = None
         self.ws_endpoint = None
+        self.user_data_dir = None
+    
+    def _prepare_cookies_file(self):
+        """Создаёт файл с куками в формате Chrome"""
+        # Создаём временную директорию для профиля
+        self.user_data_dir = tempfile.mkdtemp(prefix="chrome_profile_")
+        print(f"📁 Профиль Chrome: {self.user_data_dir}")
+        
+        # Формируем куки в формате для Chrome
+        cookies_file = os.path.join(self.user_data_dir, "Cookies")
+        
+        # Chrome использует SQLite для хранения кук
+        # Но проще установить куки через CDP после запуска
+        # или использовать готовый профиль
+        
+        return self.user_data_dir
     
     def start(self):
-        """Запускает Chrome с CDP"""
+        """Запускает Chrome с CDP и устанавливает куки"""
         if self.is_running():
             print("✅ Chrome уже запущен")
             self.ws_endpoint = self.get_ws_endpoint()
             return True
         
         print("🚀 Запускаю Chrome...")
+        
+        # Создаём профиль с куками
+        self._prepare_cookies_file()
         
         cmd = [
             self.chrome_path,
@@ -42,6 +77,7 @@ class ChromeManager:
             "--disable-software-rasterizer",
             "--disable-extensions",
             f"--remote-debugging-port={self.port}",
+            f"--user-data-dir={self.user_data_dir}",  # <-- ПРОФИЛЬ С КУКАМИ
             "--window-size=1920,1080"
         ]
         
@@ -58,6 +94,10 @@ class ChromeManager:
             self.ws_endpoint = self.get_ws_endpoint()
             if self.ws_endpoint:
                 print(f"✅ Chrome запущен: {self.ws_endpoint}")
+                
+                # Устанавливаем куки через CDP после запуска
+                asyncio.create_task(self._set_cookies_after_start())
+                
                 return True
             else:
                 print("❌ Не удалось получить WebSocket endpoint")
@@ -67,8 +107,41 @@ class ChromeManager:
             print(f"❌ Ошибка запуска Chrome: {e}")
             return False
     
+    async def _set_cookies_after_start(self):
+        """Устанавливает куки после запуска браузера"""
+        try:
+            # Подключаемся к Chrome
+            cdp = CDPClient(self.ws_endpoint)
+            await cdp.connect()
+            
+            # Создаём временную вкладку для установки кук
+            session_id, _ = await cdp.create_tab()
+            
+            # Устанавливаем куки
+            for cookie in COOKIES:
+                try:
+                    await cdp.send("Network.setCookie", {
+                        "name": cookie["name"],
+                        "value": cookie["value"],
+                        "domain": cookie["domain"],
+                        "path": cookie.get("path", "/"),
+                        "secure": False,
+                        "httpOnly": False,
+                        "sameSite": "None"
+                    }, session_id=session_id)
+                    print(f"🍪 Кука установлена: {cookie['name']}")
+                except Exception as e:
+                    print(f"⚠️ Ошибка установки куки {cookie['name']}: {e}")
+            
+            # Закрываем вкладку
+            await cdp.close_tab(session_id)
+            await cdp.close()
+            
+            print("✅ Все куки установлены в профиле")
+        except Exception as e:
+            print(f"⚠️ Ошибка установки кук: {e}")
+    
     def is_running(self):
-        """Проверяет, запущен ли Chrome"""
         try:
             response = requests.get(f"http://localhost:{self.port}/json/version", timeout=2)
             return response.status_code == 200
@@ -76,7 +149,6 @@ class ChromeManager:
             return False
     
     def get_ws_endpoint(self):
-        """Получает WebSocket endpoint от Chrome"""
         try:
             response = requests.get(f"http://localhost:{self.port}/json/version", timeout=2)
             return response.json()["webSocketDebuggerUrl"]
@@ -84,12 +156,16 @@ class ChromeManager:
             return None
     
     def stop(self):
-        """Останавливает Chrome"""
         if self.process:
             self.process.terminate()
             self.process.wait(timeout=5)
             self.process = None
             print("🛑 Chrome остановлен")
+        
+        # Удаляем временный профиль
+        if self.user_data_dir and os.path.exists(self.user_data_dir):
+            shutil.rmtree(self.user_data_dir, ignore_errors=True)
+            print(f"🗑️ Профиль удалён: {self.user_data_dir}")
 
 # ==================== CDP КЛИЕНТ ====================
 class CDPClient:
@@ -139,6 +215,7 @@ class CDPClient:
         await self.send("Page.enable", session_id=session_id)
         await self.send("Runtime.enable", session_id=session_id)
         await self.send("DOM.enable", session_id=session_id)
+        await self.send("Network.enable", session_id=session_id)
         
         self.targets[session_id] = target_id
         self.session_id = session_id
@@ -160,6 +237,29 @@ class CDPClient:
                     return False
             except asyncio.TimeoutError:
                 continue
+        return False
+    
+    async def wait_for_content(self, session_id, timeout=30):
+        """Ожидает появления контента на странице"""
+        for _ in range(timeout):
+            result = await self.send("Runtime.evaluate", {
+                "expression": """
+                    (function() {
+                        const body = document.body;
+                        if (!body) return false;
+                        const text = body.innerText || '';
+                        const hasText = text.length > 200;
+                        const hasElements = document.querySelectorAll('article, div, p').length > 10;
+                        return hasText || hasElements;
+                    })()
+                """
+            }, session_id=session_id)
+            
+            if result.get("result", {}).get("result", {}).get("value"):
+                return True
+            
+            await asyncio.sleep(1)
+        
         return False
     
     async def get_accessibility_tree(self, session_id):
@@ -304,6 +404,11 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⏳ Ожидаю загрузку страницы...")
         await cdp.wait_for_load(session_id)
         
+        # Для Twitter ждём контент
+        if "x.com" in url or "twitter.com" in url:
+            await update.message.reply_text("⏳ Жду загрузки контента...")
+            await cdp.wait_for_content(session_id, timeout=30)
+        
         nodes = await cdp.get_accessibility_tree(session_id)
         
         interactive = []
@@ -331,7 +436,11 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             await update.message.reply_text(msg)
         else:
-            await update.message.reply_text("❌ Интерактивных элементов не найдено")
+            await update.message.reply_text(
+                "❌ Интерактивных элементов не найдено.\n\n"
+                "💡 Попробуйте:\n"
+                "• /screenshot - посмотреть страницу"
+            )
             
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
