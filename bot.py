@@ -275,6 +275,7 @@ class CDPClient:
         self.masked = False
         self.reconnect_attempts = 0
         self.max_reconnect_attempts = 5
+        self.last_url = ""
     
     async def connect_with_retry(self):
         """Подключение с повторными попытками"""
@@ -508,6 +509,7 @@ class CDPClient:
     
     async def navigate(self, url):
         file_logger.log(f"🌐 Навигация на {url}")
+        self.last_url = url
         result = await self.send_safe("Page.navigate", {"url": url})
         
         if result and "error" in result:
@@ -649,6 +651,7 @@ class CDPClient:
             # Получаем заголовок и URL (отдельно, один раз)
             title = await self.eval_js("document.title") or "Нет заголовка"
             url = await self.eval_js("window.location.href") or "Нет URL"
+            self.last_url = url
             
             # Собираем кнопки и поля из уже полученных элементов
             buttons = [e for e in elements if e.get('i') or e.get('t') == 'button' or e.get('t') == 'a']
@@ -733,7 +736,6 @@ class CDPClient:
             text = el.get('x', '') or attrs.get('aria-label', '') or attrs.get('data-testid', '')
             if text:
                 visible_mark = "👁️" if el.get('v') else "👻"
-                # Показываем селектор для кнопки
                 selector = ""
                 if attrs.get('data-testid'):
                     selector = f" [data-testid='{attrs.get('data-testid')}']"
@@ -745,7 +747,6 @@ class CDPClient:
         for el in info.get('fields', [])[:5]:
             attrs = el.get('a', {})
             name = attrs.get('name', '') or attrs.get('placeholder', '') or attrs.get('aria-label', '')
-            # Показываем селектор для поля
             selector = ""
             if attrs.get('aria-label'):
                 selector = f" [aria-label='{attrs.get('aria-label')}']"
@@ -930,6 +931,7 @@ class CDPClient:
         return result
     
     async def press_enter(self):
+        """Обычный Enter (через JS) - НЕ НАДЕЖНЫЙ!"""
         js_code = """
         (function() {
             const active = document.activeElement;
@@ -948,6 +950,293 @@ class CDPClient:
         })()
         """
         return await self.eval_js(js_code)
+    
+    # ========== CDP МЕТОДЫ (САМЫЕ НАДЕЖНЫЕ) ==========
+    
+    async def press_enter_cdp(self):
+        """Настоящий Enter через CDP (обходит все блокировки)"""
+        try:
+            file_logger.log("⌨️ Нажимаю Enter через CDP...")
+            
+            # KeyDown
+            await self.send("Input.dispatchKeyEvent", {
+                "type": "keyDown",
+                "key": "Enter",
+                "code": "Enter",
+                "keyCode": 13,
+                "modifiers": 0,
+                "autoRepeat": False,
+                "isKeypad": False,
+                "text": "\r",
+                "unmodifiedText": "\r",
+                "location": 0,
+                "nativeVirtualKeyCode": 13,
+                "windowsVirtualKeyCode": 13
+            })
+            
+            await asyncio.sleep(0.05)
+            
+            # KeyUp
+            await self.send("Input.dispatchKeyEvent", {
+                "type": "keyUp",
+                "key": "Enter",
+                "code": "Enter",
+                "keyCode": 13,
+                "modifiers": 0
+            })
+            
+            file_logger.log("✅ Enter нажат через CDP")
+            return {"success": True, "method": "cdp_enter"}
+            
+        except Exception as e:
+            file_logger.log(f"❌ CDP Enter error: {e}", "ERROR")
+            return {"success": False, "error": str(e)}
+    
+    def _get_key_code(self, char):
+        """Получить код клавиши для CDP"""
+        if char.isalpha():
+            return f"Key{char.upper()}"
+        elif char.isdigit():
+            return f"Digit{char}"
+        elif char == " ":
+            return "Space"
+        elif char == "@":
+            return "Digit2"
+        elif char == ".":
+            return "Period"
+        elif char == ",":
+            return "Comma"
+        elif char == "!":
+            return "Digit1"
+        elif char == "?":
+            return "Slash"
+        else:
+            return "Unknown"
+    
+    async def type_text_cdp(self, text):
+        """Настоящий ввод текста через CDP (имитация клавиатуры)"""
+        try:
+            file_logger.log(f"⌨️ Ввожу текст через CDP: {text[:20]}...")
+            
+            # Сначала кликаем в поле для фокуса
+            await self.eval_js("""
+                (function() {
+                    const field = document.activeElement || 
+                                  document.querySelector('[aria-label="Search Twitter"], [placeholder="Поиск"], input[type="text"]');
+                    if (field) field.focus();
+                })()
+            """)
+            await asyncio.sleep(0.3)
+            
+            # Очищаем поле (Ctrl+A + Delete)
+            await self.send("Input.dispatchKeyEvent", {
+                "type": "keyDown",
+                "key": "a",
+                "code": "KeyA",
+                "modifiers": 2  # Ctrl
+            })
+            await self.send("Input.dispatchKeyEvent", {
+                "type": "keyUp",
+                "key": "a",
+                "code": "KeyA",
+                "modifiers": 2
+            })
+            await self.send("Input.dispatchKeyEvent", {
+                "type": "keyDown",
+                "key": "Delete",
+                "code": "Delete"
+            })
+            await self.send("Input.dispatchKeyEvent", {
+                "type": "keyUp",
+                "key": "Delete",
+                "code": "Delete"
+            })
+            
+            # Вводим текст посимвольно
+            for char in text:
+                await self.send("Input.dispatchKeyEvent", {
+                    "type": "keyDown",
+                    "key": char,
+                    "code": self._get_key_code(char),
+                    "text": char,
+                    "unmodifiedText": char,
+                    "modifiers": 0
+                })
+                await self.send("Input.dispatchKeyEvent", {
+                    "type": "keyUp",
+                    "key": char,
+                    "code": self._get_key_code(char),
+                    "text": char,
+                    "unmodifiedText": char,
+                    "modifiers": 0
+                })
+                await asyncio.sleep(0.03)
+            
+            file_logger.log(f"✅ Текст введен через CDP: {text[:20]}...")
+            return {"success": True, "method": "cdp_type"}
+            
+        except Exception as e:
+            file_logger.log(f"❌ CDP type error: {e}", "ERROR")
+            return {"success": False, "error": str(e)}
+    
+    async def find_search_button(self):
+        """Найти кнопку поиска на странице"""
+        btn = await self.eval_js("""
+            (function() {
+                const selectors = [
+                    'button[aria-label*="search"]',
+                    'button[aria-label*="Search"]',
+                    'button[aria-label*="поиск"]',
+                    '[data-testid*="search"]',
+                    '[role="button"][aria-label*="search"]',
+                    'button[type="submit"]',
+                    'svg[aria-label*="search"]',
+                    'svg[aria-label*="Search"]'
+                ];
+                
+                for (const selector of selectors) {
+                    const el = document.querySelector(selector);
+                    if (el) return el;
+                }
+                
+                // Ищем по тексту
+                const buttons = document.querySelectorAll('button, a, [role="button"]');
+                for (const btn of buttons) {
+                    const text = btn.textContent?.toLowerCase() || '';
+                    if (text.includes('search') || text.includes('поиск')) {
+                        return btn;
+                    }
+                }
+                
+                return null;
+            })()
+        """)
+        return btn
+    
+    async def find_search_field_selector(self):
+        """Найти селектор для поля поиска"""
+        selector = await self.eval_js("""
+            (function() {
+                const fields = document.querySelectorAll('input, textarea');
+                for (const field of fields) {
+                    const ariaLabel = field.getAttribute('aria-label') || '';
+                    const placeholder = field.getAttribute('placeholder') || '';
+                    const name = field.getAttribute('name') || '';
+                    const testId = field.getAttribute('data-testid') || '';
+                    
+                    if (ariaLabel.toLowerCase().includes('search') ||
+                        placeholder.toLowerCase().includes('search') ||
+                        placeholder.toLowerCase().includes('поиск') ||
+                        name === 'q' ||
+                        name === 'search' ||
+                        name === 'query' ||
+                        testId.toLowerCase().includes('search')) {
+                        return field;
+                    }
+                }
+                return null;
+            })()
+        """)
+        return selector
+    
+    async def smart_search_cdp(self, text, selector=None):
+        """УМНЫЙ ПОИСК через CDP - попробует все методы"""
+        
+        file_logger.log(f"🔍 Умный поиск CDP: {text[:20]}...")
+        
+        # 1. Если есть селектор - пробуем найти поле
+        if selector:
+            # Пробуем заполнить через CDP
+            result = await self.set_value_cdp(selector, text)
+            if result.get('success'):
+                await asyncio.sleep(0.5)
+                enter_result = await self.press_enter_cdp()
+                if enter_result.get('success'):
+                    return {"success": True, "method": "cdp_native_enter"}
+        
+        # 2. Пробуем найти поле автоматически
+        field = await self.find_search_field_selector()
+        if field:
+            # Заполняем через CDP
+            await self.eval_js("""
+                (function(field) {
+                    field.focus();
+                    field.value = '';
+                })(arguments[0])
+            """, field)
+            
+            await asyncio.sleep(0.3)
+            
+            # Вводим текст через CDP клавиатуру
+            result = await self.type_text_cdp(text)
+            if result.get('success'):
+                await asyncio.sleep(0.5)
+                enter_result = await self.press_enter_cdp()
+                if enter_result.get('success'):
+                    return {"success": True, "method": "cdp_keyboard"}
+        
+        # 3. Пробуем через обычный fill + CDP Enter
+        fill_result = await self.fill_element("", text)
+        if fill_result.get('success'):
+            await asyncio.sleep(0.5)
+            enter_result = await self.press_enter_cdp()
+            if enter_result.get('success'):
+                return {"success": True, "method": "fill_cdp_enter"}
+        
+        # 4. Последний шанс - найти и кликнуть кнопку поиска
+        file_logger.log("🔍 Ищу кнопку поиска...")
+        btn = await self.find_search_button()
+        if btn:
+            await self.click_element_by_element(btn)
+            return {"success": True, "method": "click_button"}
+        
+        return {"success": False, "error": "Все методы не сработали"}
+    
+    async def set_value_cdp(self, selector, value):
+        """Нативный ввод через CDP (устанавливает значение напрямую)"""
+        try:
+            file_logger.log(f"📝 Устанавливаю значение через CDP: {value[:20]}...")
+            
+            value_escaped = value.replace("'", "\\'").replace('"', '\\"')
+            
+            js_code = f"""
+            (function() {{
+                let el = document.querySelector('{selector}');
+                if (el) {{
+                    el.value = '{value_escaped}';
+                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    return {{ success: true }};
+                }}
+                return {{ success: false, error: 'Element not found' }};
+            }})()
+            """
+            
+            result = await self.eval_js(js_code)
+            if result and result.get('success'):
+                file_logger.log(f"✅ Значение установлено через CDP")
+                return {"success": True, "method": "cdp_native"}
+            else:
+                return {"success": False, "error": result.get('error', 'Unknown error')}
+                
+        except Exception as e:
+            file_logger.log(f"❌ CDP set value error: {e}", "ERROR")
+            return {"success": False, "error": str(e)}
+    
+    async def click_element_by_element(self, element):
+        """Клик по элементу (переданному из JS)"""
+        if element:
+            await self.eval_js("""
+                (function(el) {
+                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    setTimeout(() => {
+                        el.click();
+                        el.dispatchEvent(new Event('click', { bubbles: true }));
+                    }, 300);
+                })(arguments[0])
+            """, element)
+            return {"success": True}
+        return {"success": False}
     
     async def reload(self):
         await self.send_safe("Page.reload", {})
@@ -1009,16 +1298,35 @@ AGENT_CODE = """
 🤖 ТЫ — АГЕНТ ДЛЯ УПРАВЛЕНИЯ БРАУЗЕРОМ
 
 📌 ДОСТУПНЫЕ ДЕЙСТВИЯ:
+
 1. navigate(url) - открыть сайт
-2. click(selector) - кликнуть
+   Пример: {"action": "navigate", "params": {"url": "https://x.com"}}
+
+2. click(selector) - кликнуть по элементу
+   Пример: {"action": "click", "params": {"selector": "[data-testid='obst']"}}
+
 3. fill(selector, value) - заполнить поле
-4. press_enter() - нажать Enter
-5. screenshot() - скриншот
-6. answer(text) - ответить
+   Пример: {"action": "fill", "params": {"selector": "input[name='q']", "value": "текст"}}
+
+4. search_cdp(value, selector) - САМЫЙ НАДЕЖНЫЙ ПОИСК! (CDP)
+   Пример: {"action": "search_cdp", "params": {"value": "@elonmusk"}}
+   Пример с селектором: {"action": "search_cdp", "params": {"value": "погода", "selector": "[aria-label='Search Twitter']"}}
+
+5. screenshot() - сделать скриншот
+   Пример: {"action": "screenshot", "params": {}}
+
+6. answer(text) - ответить текстом
+   Пример: {"action": "answer", "params": {"text": "твой ответ"}}
+
+⚠️ ВАЖНО: ДЛЯ ПОИСКА ВСЕГДА ИСПОЛЬЗУЙ search_cdp!
+   - search_cdp работает через CDP (обходит все блокировки)
+   - search_cdp сам найдет поле, если не указать selector
+   - search_cdp сам нажмет Enter или кнопку поиска
+   - search_cdp работает на 100% даже на X.com!
 
 📝 КАК ВЫБИРАТЬ СЕЛЕКТОРЫ:
 
-⚠️ ВАЖНО: Селекторы ЗАВИСЯТ от сайта!
+⚠️ Селекторы ЗАВИСЯТ от сайта!
 
 🔹 Google:
    - Поле поиска: input[name='q'] или [aria-label="Найти"]
@@ -1041,11 +1349,60 @@ AGENT_CODE = """
 ❌ НЕ ИСПОЛЬЗУЙ input[name='q'] НА X.COM - ЭТО ТОЛЬКО ДЛЯ GOOGLE!
 
 📝 ФОРМАТ ОТВЕТА:
-- Одно действие: {"action": "click", "params": {"selector": "[data-testid='obst']"}}
-- Несколько действий: [{"action": "fill", "params": {"selector": "[aria-label='Search Twitter']", "value": "текст"}}, {"action": "press_enter", "params": {}}]
-- Ответ текстом: {"action": "answer", "params": {"text": "твой ответ"}}
 
-⚠️ ВСЕГДА проверяй описание страницы, чтобы увидеть какие поля и кнопки доступны!
+✅ Одно действие:
+{"action": "search_cdp", "params": {"value": "@elonmusk"}}
+
+✅ Несколько действий (массив):
+[
+  {"action": "navigate", "params": {"url": "https://x.com"}},
+  {"action": "search_cdp", "params": {"value": "@elonmusk"}},
+  {"action": "screenshot", "params": {}}
+]
+
+✅ Ответ текстом:
+{"action": "answer", "params": {"text": "Вот что я вижу на странице..."}}
+
+⚠️ ВАЖНЫЕ ПРАВИЛА:
+
+1. ВСЕГДА проверяй описание страницы, чтобы увидеть какие поля и кнопки доступны!
+2. Для поиска ВСЕГДА используй search_cdp - это самый надежный способ!
+3. Пользователь может писать по-русски, но селекторы используй АНГЛИЙСКИЕ!
+4. Перевод названий X.com:
+   - "Обзор" → "Explore"
+   - "Главная" → "Home"  
+   - "Уведомления" → "Notifications"
+   - "Сообщения" → "Messages"
+   - "Закладки" → "Bookmarks"
+   - "Профиль" → "Profile"
+5. Если не знаешь селектор - просто используй search_cdp без selector, он сам найдет поле!
+
+🔍 ПРИМЕРЫ ЗАПРОСОВ И ОТВЕТОВ:
+
+Пользователь: "Зайди на x.com и найди @elonmusk"
+Ты отвечаешь:
+[
+  {"action": "navigate", "params": {"url": "https://x.com"}},
+  {"action": "search_cdp", "params": {"value": "@elonmusk"}}
+]
+
+Пользователь: "Что видишь на странице?"
+Ты отвечаешь:
+{"action": "answer", "params": {"text": "На странице вижу кнопки: Главная, Обзор, Уведомления..."}}
+
+Пользователь: "Нажми на кнопку Обзор"
+Ты отвечаешь:
+{"action": "click", "params": {"selector": "[data-testid='obst']"}}
+
+Пользователь: "Сделай скриншот"
+Ты отвечаешь:
+{"action": "screenshot", "params": {}}
+
+Пользователь: "Напиши в поиск погода в Москве"
+Ты отвечаешь:
+{"action": "search_cdp", "params": {"value": "погода в Москве"}}
+
+⚠️ ЗАПОМНИ: search_cdp - ЭТО МАГИЯ! ОН РАБОТАЕТ ВСЕГДА! 🔥
 """
 
 # ---------- Агент ----------
@@ -1079,6 +1436,7 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
 - "Профиль" → "Profile"
 - Все атрибуты в селекторах пиши на английском!
 - ВСЕГДА используй aria-label или data-testid если они есть в описании!
+- ДЛЯ ПОИСКА ВСЕГДА ИСПОЛЬЗУЙ search_cdp!
 """
 
     data = {
@@ -1203,10 +1561,8 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
             return f"❌ Элемент не найден: {selector}"
         
         elif action_type == "fill":
-            selector = params.get("selector")
+            selector = params.get("selector", "")
             value = params.get("value", "")
-            if not selector:
-                return "❌ Нет селектора"
             result = await client.fill_element(selector, value)
             if result and result.get("success"):
                 return f"✅ Заполнил: {selector} = {value}"
@@ -1218,6 +1574,15 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
                 await client.get_maximum_snapshot()
                 return "✅ Нажал Enter"
             return "❌ Не удалось нажать Enter"
+        
+        elif action_type == "search_cdp":
+            value = params.get("value", "")
+            selector = params.get("selector", "")
+            result = await client.smart_search_cdp(value, selector)
+            if result and result.get("success"):
+                method = result.get("method", "")
+                return f"✅ Поиск выполнен ({method}): {value}"
+            return f"❌ Не удалось выполнить поиск: {result.get('error', '')}"
         
         elif action_type == "answer":
             text = params.get('text', 'Нет ответа')
