@@ -337,7 +337,8 @@ class CDPClient:
             await self.send("Runtime.enable", {})
             await self.send("DOM.enable", {})
             await self.send("Network.enable", {})
-            file_logger.log("✅ Page, Runtime, DOM, Network включены")
+            await self.send("Accessibility.enable", {})  # <-- Включаем Accessibility
+            file_logger.log("✅ Page, Runtime, DOM, Network, Accessibility включены")
             
             await self.apply_mask()
             await self.set_cookies(X_COOKIES)
@@ -556,236 +557,111 @@ class CDPClient:
             return None
     
     async def get_maximum_snapshot(self):
+        """Сбор Accessibility Tree вместо DOM"""
         try:
-            file_logger.log("📸 Делаю максимальный слепок...")
+            file_logger.log("📸 Делаю accessibility слепок...")
             
-            elements = await self.eval_js("""
-                (function() {
-                    const result = [];
-                    const all = document.querySelectorAll('*');
-                    
-                    all.forEach(el => {
-                        const tag = el.tagName.toLowerCase();
-                        const rect = el.getBoundingClientRect();
-                        const style = window.getComputedStyle(el);
-                        
-                        const visible = rect.width > 0 && rect.height > 0 && 
-                                       style.display !== 'none' && 
-                                       style.visibility !== 'hidden';
-                        
-                        const attrs = {};
-                        for (const attr of el.attributes) {
-                            attrs[attr.name] = attr.value;
-                        }
-                        
-                        // Ищем все интерактивные элементы (русские И английские названия)
-                        const isInteractive = (
-                            tag === 'button' ||
-                            tag === 'a' ||
-                            attrs.role === 'button' ||
-                            (attrs['data-testid'] && attrs['data-testid'].toLowerCase().includes('obst')) ||
-                            (attrs['aria-label'] && (
-                                attrs['aria-label'].toLowerCase().includes('обзор') ||
-                                attrs['aria-label'].toLowerCase().includes('explore') ||
-                                attrs['aria-label'].toLowerCase().includes('review')
-                            ))
-                        );
-                        
-                        const important = ['button', 'a', 'input', 'textarea', 'select', 'form',
-                                          'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'img', 'video',
-                                          'iframe', 'div', 'span', 'section', 'article', 'nav',
-                                          'header', 'footer', 'main', 'aside', 'ul', 'ol', 'li',
-                                          'label', 'option', 'legend', 'fieldset', 'dialog',
-                                          'svg', 'path', 'g'];
-                        
-                        const hasText = (el.textContent || '').trim().length > 0;
-                        const hasRole = attrs.role || attrs['aria-label'] || attrs['aria-labelledby'];
-                        
-                        if (important.includes(tag) || hasRole || isInteractive || (hasText && tag === 'span')) {
-                            // Получаем текст из разных источников
-                            let text = (el.textContent || '').trim().slice(0, 200);
-                            if (!text && attrs['aria-label']) {
-                                text = attrs['aria-label'];
-                            }
-                            
-                            result.push({
-                                tag: tag,
-                                text: text,
-                                id: el.id || '',
-                                class: el.className || '',
-                                attrs: attrs,
-                                visible: visible,
-                                x: Math.round(rect.x),
-                                y: Math.round(rect.y),
-                                width: Math.round(rect.width),
-                                height: Math.round(rect.height),
-                                style: {
-                                    display: style.display,
-                                    visibility: style.visibility,
-                                    position: style.position,
-                                    color: style.color,
-                                    fontSize: style.fontSize,
-                                    backgroundColor: style.backgroundColor,
-                                    cursor: style.cursor
-                                },
-                                parent: el.parentElement ? el.parentElement.tagName.toLowerCase() : null,
-                                children: el.children.length,
-                                isInteractive: isInteractive
-                            });
-                        }
-                    });
-                    
-                    return result;
-                })()
-            """)
+            # Получаем полное дерево доступности
+            resp = await self.send_safe("Accessibility.getFullAXTree", {
+                "depth": -1  # Всё дерево
+            })
             
-            if elements is None:
-                elements = []
+            if "error" in resp:
+                file_logger.log(f"❌ Ошибка AX: {resp.get('error')}", "ERROR")
+                return False
+            
+            # Парсим ответ
+            nodes = resp.get("result", {}).get("nodes", [])
+            
+            if not nodes:
+                file_logger.log("⚠️ Пустое дерево доступности", "WARNING")
+                return False
+            
+            # Конвертируем в удобный формат
+            elements = []
+            buttons = []
+            fields = []
+            
+            for node in nodes:
+                # Извлекаем данные
+                role_obj = node.get("role", {})
+                role = role_obj.get("value", "unknown") if isinstance(role_obj, dict) else "unknown"
+                
+                name_obj = node.get("name", {})
+                name = name_obj.get("value", "") if isinstance(name_obj, dict) else ""
+                
+                desc_obj = node.get("description", {})
+                description = desc_obj.get("value", "") if isinstance(desc_obj, dict) else ""
+                
+                node_id = node.get("nodeId")
+                
+                # Состояния
+                states = {}
+                for prop in node.get("properties", []):
+                    prop_name = prop.get("name", "")
+                    prop_value_obj = prop.get("value", {})
+                    prop_value = prop_value_obj.get("value", "") if isinstance(prop_value_obj, dict) else ""
+                    states[prop_name] = prop_value
+                
+                # Определяем интерактивность
+                interactive_roles = ['button', 'link', 'textbox', 'combobox', 
+                                     'checkbox', 'radio', 'menuitem', 'tab', 
+                                     'searchbox', 'slider', 'spinbutton']
+                
+                is_interactive = role in interactive_roles
+                
+                # Определяем, является ли кнопкой
+                is_button = role == 'button' or (role == 'link' and is_interactive)
+                
+                # Собираем элемент
+                element = {
+                    "role": role,
+                    "name": name,
+                    "description": description,
+                    "states": states,
+                    "node_id": node_id,
+                    "is_interactive": is_interactive,
+                    "ref": f"@e{len(elements)}"
+                }
+                
+                elements.append(element)
+                
+                # Сортируем по типам
+                if is_button:
+                    buttons.append(element)
+                elif role in ['textbox', 'combobox', 'searchbox']:
+                    fields.append(element)
             
             title = await self.eval_js("document.title") or "Нет заголовка"
             url = await self.eval_js("window.location.href") or "Нет URL"
             
-            all_fields = []
-            
-            inputs = [e for e in elements if e.get('tag') == 'input']
-            for inp in inputs:
-                attrs = inp.get('attrs', {})
-                inp['field_type'] = 'input'
-                inp['field_selector'] = f"input[name='{attrs.get('name', '')}']" if attrs.get('name') else f"input[type='{attrs.get('type', 'text')}']"
-                all_fields.append(inp)
-            
-            textareas = [e for e in elements if e.get('tag') == 'textarea']
-            for ta in textareas:
-                attrs = ta.get('attrs', {})
-                ta['field_type'] = 'textarea'
-                ta['field_selector'] = f"textarea[name='{attrs.get('name', '')}']" if attrs.get('name') else "textarea"
-                all_fields.append(ta)
-            
-            selects = [e for e in elements if e.get('tag') == 'select']
-            for sel in selects:
-                attrs = sel.get('attrs', {})
-                sel['field_type'] = 'select'
-                sel['field_selector'] = f"select[name='{attrs.get('name', '')}']" if attrs.get('name') else "select"
-                all_fields.append(sel)
-            
-            contenteditables = [e for e in elements if e.get('attrs', {}).get('contenteditable') == 'true']
-            for ce in contenteditables:
-                ce['field_type'] = 'contenteditable'
-                class_name = ce.get('class', '')
-                if isinstance(class_name, list):
-                    class_name = ' '.join(class_name)
-                ce['field_selector'] = ce.get('id') and f"#{ce.get('id')}" or (class_name and f".{class_name.replace(' ', '.')}" or "div[contenteditable='true']")
-                all_fields.append(ce)
-            
-            roles = [e for e in elements if e.get('attrs', {}).get('role') in ['textbox', 'searchbox', 'combobox']]
-            for role in roles:
-                role['field_type'] = 'role'
-                role['field_selector'] = role.get('id') and f"#{role.get('id')}" or f"[role='{role.get('attrs', {}).get('role')}']"
-                all_fields.append(role)
-            
-            # Ищем ВСЕ кнопки (русские И английские названия)
-            buttons = []
-            for el in elements:
-                tag = el.get('tag', '')
-                attrs = el.get('attrs', {})
-                is_interactive = el.get('isInteractive', False)
-                
-                # Проверяем все возможные варианты кнопок
-                if (tag == 'button' or 
-                    (tag == 'input' and attrs.get('type') in ['submit', 'button']) or
-                    attrs.get('role') == 'button' or
-                    is_interactive or
-                    attrs.get('data-testid') == 'obst' or
-                    'button' in (attrs.get('class', '') or '').lower() or
-                    (attrs.get('aria-label') and (
-                        'обзор' in attrs.get('aria-label', '').lower() or
-                        'explore' in attrs.get('aria-label', '').lower() or
-                        'review' in attrs.get('aria-label', '').lower()
-                    ))):
-                    buttons.append(el)
-            
-            links = [e for e in elements if e.get('tag') == 'a' and e.get('attrs', {}).get('href')]
-            forms = [e for e in elements if e.get('tag') == 'form']
-            headings = [e for e in elements if e.get('tag') in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']]
-            visible = [e for e in elements if e.get('visible')]
-            
+            # Сохраняем
             self.full_snapshot = {
                 "title": title,
                 "url": url,
                 "total": len(elements),
-                "all_elements": elements[:500],
+                "all_elements": elements,
                 "buttons": buttons,
-                "fields": all_fields,
-                "inputs": inputs,
-                "textareas": textareas,
-                "selects": selects,
-                "contenteditables": contenteditables,
-                "roles": roles,
-                "links": links,
-                "forms": forms,
-                "headings": headings,
-                "visible": visible,
+                "fields": fields,
                 "masked": self.masked
             }
             
-            file_logger.log(f"✅ Максимальный слепок: {len(elements)} элементов, {len(buttons)} кнопок, {len(all_fields)} полей")
+            file_logger.log(f"✅ AX слепок: {len(elements)} элементов, {len(buttons)} кнопок, {len(fields)} полей")
             return True
             
         except Exception as e:
-            file_logger.log(f"❌ Maximum snapshot error: {e}", "ERROR")
+            file_logger.log(f"❌ AX snapshot error: {e}", "ERROR")
             return False
     
     async def find_clickable_elements(self):
-        """Поиск всех кликабельных элементов на странице"""
-        try:
-            result = await self.eval_js("""
-                (function() {
-                    const result = [];
-                    const all = document.querySelectorAll('*');
-                    
-                    all.forEach(el => {
-                        const style = window.getComputedStyle(el);
-                        const cursor = style.cursor;
-                        const isClickable = (
-                            el.tagName === 'BUTTON' ||
-                            el.tagName === 'A' ||
-                            el.getAttribute('role') === 'button' ||
-                            cursor === 'pointer' ||
-                            el.onclick !== null ||
-                            el.getAttribute('data-testid') === 'obst' ||
-                            (el.getAttribute('aria-label') && 
-                             (el.getAttribute('aria-label').toLowerCase().includes('обзор') ||
-                              el.getAttribute('aria-label').toLowerCase().includes('explore') ||
-                              el.getAttribute('aria-label').toLowerCase().includes('review')))
-                        );
-                        
-                        if (isClickable) {
-                            const item = {
-                                tag: el.tagName.toLowerCase(),
-                                text: el.textContent?.trim() || el.getAttribute('aria-label') || el.getAttribute('title') || '',
-                                id: el.id || '',
-                                class: el.className || '',
-                                attrs: {}
-                            };
-                            for (const attr of el.attributes) {
-                                item.attrs[attr.name] = attr.value;
-                            }
-                            result.push(item);
-                        }
-                    });
-                    
-                    return result;
-                })()
-            """)
-            
-            return result if result else []
-            
-        except Exception as e:
-            file_logger.log(f"❌ find_clickable_elements error: {e}", "ERROR")
-            return []
+        """Поиск всех кликабельных элементов из Accessibility Tree"""
+        if not self.full_snapshot:
+            await self.get_maximum_snapshot()
+        
+        return self.full_snapshot.get('buttons', [])
     
     async def get_page_description(self):
-        """Полное описание страницы со всеми кнопками"""
+        """Полное описание страницы из Accessibility Tree"""
         if not self.full_snapshot:
             await self.get_maximum_snapshot()
         
@@ -796,42 +672,25 @@ class CDPClient:
         buttons = info.get('buttons', [])
         
         if buttons:
-            # Сортируем по видимости (видимые сначала)
-            buttons_sorted = sorted(buttons, key=lambda x: x.get('visible', False), reverse=True)
-            
-            # Показываем ВСЕ кнопки без ограничений
-            for el in buttons_sorted:
-                # Пробуем получить текст из разных источников
-                text = el.get('text', '')
-                if not text:
-                    attrs = el.get('attrs', {})
-                    text = attrs.get('aria-label', '') or attrs.get('value', '') or attrs.get('title', '') or attrs.get('data-testid', '')
+            for el in buttons:
+                name = el.get('name', '') or el.get('description', '')
+                ref = el.get('ref', '')
+                states = el.get('states', {})
+                enabled = states.get('enabled', True)
+                state_icon = "✅" if enabled else "🔒"
                 
-                # Если текст есть - показываем
-                if text and text.strip():
-                    visible_mark = "👁️" if el.get('visible') else "👻"
-                    selector = el.get('id') and f"#{el.get('id')}" or el.get('class') and f".{el.get('class', '').split()[0] if el.get('class') else ''}" or el.get('tag', '')
-                    buttons_text += f"  {visible_mark} {text[:50]}\n"
+                if name:
+                    buttons_text += f"  {state_icon} [{ref}] {name[:50]}\n"
                 else:
-                    # Если нет текста - показываем тег и атрибуты
-                    tag = el.get('tag', '')
-                    attrs = el.get('attrs', {})
-                    aria_label = attrs.get('aria-label', '')
-                    data_testid = attrs.get('data-testid', '')
-                    if aria_label or data_testid:
-                        buttons_text += f"  🏷️ {tag} [aria-label={aria_label[:30]}] [data-testid={data_testid[:30]}]\n"
+                    buttons_text += f"  {state_icon} [{ref}] {el.get('role', 'unknown')}\n"
         
         # Формируем поля ввода
         fields_text = ""
         for el in info.get('fields', []):
-            attrs = el.get('attrs', {})
-            field_type = el.get('field_type', 'unknown')
-            name = attrs.get('name', '')
-            placeholder = attrs.get('placeholder', '')
-            aria_label = attrs.get('aria-label', '')
-            field_name = name or placeholder or aria_label or field_type
-            selector = el.get('field_selector', '')
-            fields_text += f"  • {field_name[:30]} → {selector}\n"
+            name = el.get('name', '') or el.get('description', '')
+            ref = el.get('ref', '')
+            if name:
+                fields_text += f"  • [{ref}] {name[:30]}\n"
         
         # Собираем полное описание
         desc = f"""
@@ -841,7 +700,7 @@ class CDPClient:
 🍪 **КУКИ УСТАНОВЛЕНЫ:** {'✅ Да' if self.cookies_set else '❌ Нет'}
 🕵️ **МАСКИРОВКА:** {'✅ Активна' if self.masked else '❌ Не активна'}
 
-🔘 **ВСЕ КНОПКИ ({len(buttons)}):**
+🔘 **КНОПКИ ({len(buttons)}):**
 {buttons_text}
 
 📝 **ПОЛЯ ВВОДА ({len(info.get('fields', []))}):**
@@ -851,82 +710,73 @@ class CDPClient:
         return desc
     
     async def click_element(self, selector):
-        """Клик по элементу с поддержкой разных селекторов и языков"""
-        # Экранируем кавычки
+        """Клик по ref ID или селектору"""
+        
+        # Если это ref ID (например @e1)
+        if selector.startswith('@e') and self.full_snapshot:
+            try:
+                ref_num = int(selector[2:])
+                elements = self.full_snapshot.get('all_elements', [])
+                if ref_num < len(elements):
+                    element = elements[ref_num]
+                    node_id = element.get('node_id')
+                    
+                    if node_id:
+                        # Получаем координаты элемента через DOM
+                        try:
+                            # Сначала получаем узел DOM
+                            node_resp = await self.send_safe("DOM.getNodeForLocation", {
+                                "x": 0, "y": 0
+                            })
+                            # Простой способ: ищем по селектору через JS
+                            name = element.get('name', '')
+                            if name:
+                                js_code = f"""
+                                (function() {{
+                                    const all = document.querySelectorAll('[role="button"], button, a, [role="link"]');
+                                    for (const el of all) {{
+                                        const text = el.textContent?.trim() || el.getAttribute('aria-label') || '';
+                                        if (text === '{name}' || text.includes('{name}')) {{
+                                            el.click();
+                                            return {{ success: true }};
+                                        }}
+                                    }}
+                                    return {{ success: false }};
+                                }})()
+                                """
+                                return await self.eval_js(js_code)
+                        except Exception as e:
+                            file_logger.log(f"⚠️ Клик по ref ID: {e}", "WARNING")
+            except Exception as e:
+                file_logger.log(f"⚠️ Ошибка ref ID: {e}", "WARNING")
+        
+        # Старый способ (для обратной совместимости)
         selector_escaped = selector.replace("'", "\\'").replace('"', '\\"')
         
         js_code = f"""
         (function() {{
-            let el = null;
-            
-            // 1. Пробуем найти по селектору
-            try {{
-                el = document.querySelector("{selector_escaped}");
-            }} catch(e) {{
-                // Если селектор невалидный - игнорируем
-            }}
-            
-            // 2. Если не нашли - ищем по aria-label (русский И английский)
+            let el = document.querySelector("{selector_escaped}");
             if (!el) {{
-                const allElements = document.querySelectorAll('[aria-label]');
-                for (const elem of allElements) {{
-                    const label = elem.getAttribute('aria-label') || '';
-                    const lowerLabel = label.toLowerCase();
-                    if (lowerLabel.includes('обзор') || 
-                        lowerLabel.includes('explore') ||
-                        lowerLabel.includes('review')) {{
+                const all = document.querySelectorAll('[role="button"], button, a');
+                for (const elem of all) {{
+                    const text = elem.textContent?.trim() || elem.getAttribute('aria-label') || '';
+                    if (text.toLowerCase().includes('обзор') || 
+                        text.toLowerCase().includes('explore') ||
+                        text.toLowerCase().includes('review')) {{
                         el = elem;
                         break;
                     }}
                 }}
             }}
-            
-            // 3. Если не нашли - ищем по тексту (русский И английский)
-            if (!el) {{
-                const allButtons = document.querySelectorAll('button, a, [role="button"], [data-testid="obst"]');
-                for (const btn of allButtons) {{
-                    const text = btn.textContent?.trim() || btn.getAttribute('aria-label') || btn.getAttribute('title') || '';
-                    const lowerText = text.toLowerCase();
-                    if (lowerText.includes('обзор') || 
-                        lowerText.includes('explore') ||
-                        lowerText.includes('review')) {{
-                        el = btn;
-                        break;
-                    }}
-                }}
-            }}
-            
-            // 4. Поиск по data-testid="obst" (X.com)
-            if (!el) {{
-                el = document.querySelector('[data-testid="obst"]');
-            }}
-            
-            // 5. Поиск по SVG иконке (ищем родителя)
-            if (!el) {{
-                const svgs = document.querySelectorAll('svg');
-                for (const svg of svgs) {{
-                    const parent = svg.closest('button, a, [role="button"], div[class*="explore"]');
-                    if (parent) {{
-                        el = parent;
-                        break;
-                    }}
-                }}
-            }}
-            
             if (el) {{
-                el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
-                setTimeout(function() {{
-                    el.click();
-                    el.dispatchEvent(new Event('click', {{ bubbles: true }}));
-                }}, 300);
+                el.click();
                 return {{ success: true }};
             }}
-            return {{ success: false, error: 'Element not found' }};
+            return {{ success: false }};
         }})()
         """
         result = await self.eval_js(js_code)
         
-        # Если клик успешен - обновляем слепок
         if result and result.get('success'):
             await asyncio.sleep(1)
             await self.get_maximum_snapshot()
@@ -1029,38 +879,25 @@ AGENT_CODE = """
 
 📌 ДОСТУПНЫЕ ДЕЙСТВИЯ:
 1. navigate(url) - открыть сайт
-2. click(selector) - кликнуть
+2. click(selector) - кликнуть (можно по ref ID: @e1, @e2)
 3. fill(selector, value) - заполнить поле
 4. press_enter() - нажать Enter
 5. screenshot() - скриншот
 6. answer(text) - ответить
 
-📝 СЕЛЕКТОРЫ - ИСПОЛЬЗУЙ ТОЛЬКО АНГЛИЙСКИЕ НАЗВАНИЯ!
+📝 СЕЛЕКТОРЫ:
+- По ref ID: @e1, @e2, @e3 (из описания страницы)
 - По ID: #APjFqb
 - По классу: .gLFyf
-- По имени: input[name='q']
-- По aria-label: [aria-label="Explore"]  ← ТОЛЬКО АНГЛИЙСКИЙ!
-- По data-testid: [data-testid="obst"]
+- По aria-label: [aria-label="Explore"]
 
-⚠️ ВАЖНО: ВСЕ селекторы должны быть на АНГЛИЙСКОМ языке!
-Перевод названий кнопок X.com:
-- "Обзор" → "Explore"
-- "Главная" → "Home"  
-- "Уведомления" → "Notifications"
-- "Сообщения" → "Messages"
-- "Закладки" → "Bookmarks"
-- "Профиль" → "Profile"
+⚠️ ВАЖНО: Используй ref ID (@e1, @e2) для кликов — это проще и надёжнее!
 
 ⚠️ ЕСЛИ НУЖНО НЕСКОЛЬКО ДЕЙСТВИЙ - ВОЗВРАЩАЙ МАССИВ:
-[{"action": "fill", "params": {"selector": "#APjFqb", "value": "текст"}}, {"action": "press_enter", "params": {}}]
+[{"action": "fill", "params": {"selector": "@e10", "value": "текст"}}, {"action": "press_enter", "params": {}}]
 
 ⚠️ ЕСЛИ ПРОСТО ОТВЕТИТЬ - ИСПОЛЬЗУЙ ФОРМАТ:
 {"action": "answer", "params": {"text": "твой ответ"}}
-
-🔍 КАК НАЙТИ КНОПКУ:
-1. Сначала проверь все кнопки в описании страницы
-2. Используй английские названия в селекторах
-3. На X.com кнопка "Обзор" → "Explore" с data-testid="obst"
 """
 
 # ---------- Агент ----------
@@ -1085,14 +922,8 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
 📝 ОТВЕЧАЙ ТОЛЬКО JSON!
 
 ⚠️ ВАЖНО:
-- Пользователь может писать по-русски, но ты должен использовать АНГЛИЙСКИЕ названия в селекторах
-- "Обзор" → "Explore"
-- "Главная" → "Home"
-- "Уведомления" → "Notifications"
-- "Сообщения" → "Messages"
-- "Закладки" → "Bookmarks"
-- "Профиль" → "Profile"
-- Все атрибуты в селекторах пиши на английском!
+- Используй ref ID (@e1, @e2) для кликов
+- Пользователь может писать по-русски, но ты используй ref ID
 """
 
     data = {
@@ -1261,61 +1092,43 @@ async def find_button_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         await update.message.reply_text(f"🔍 Ищу кнопку '{button_name}'...")
         
-        # Ищем все кликабельные элементы
-        elements = await client.find_clickable_elements()
+        # Получаем все кнопки из Accessibility Tree
+        buttons = await client.find_clickable_elements()
         
-        if not elements:
-            await update.message.reply_text("❌ Не удалось найти элементы на странице")
+        if not buttons:
+            await update.message.reply_text("❌ Не удалось найти кнопки на странице")
             return
         
         found = []
-        for el in elements:
-            text = el.get('text', '').lower()
-            attrs = el.get('attrs', {})
-            aria_label = attrs.get('aria-label', '').lower()
-            data_testid = attrs.get('data-testid', '').lower()
-            title_attr = attrs.get('title', '').lower()
+        for el in buttons:
+            name = el.get('name', '') or el.get('description', '')
+            ref = el.get('ref', '')
+            states = el.get('states', {})
+            enabled = states.get('enabled', True)
             
-            # Ищем совпадения (русские И английские)
-            search_term = button_name.lower()
-            if (search_term in text or 
-                search_term in aria_label or 
-                search_term in data_testid or
-                search_term in title_attr or
-                ('обзор' in text and 'explore' in search_term) or
-                ('explore' in text and 'обзор' in search_term)):
-                found.append(el)
+            if button_name.lower() in name.lower():
+                found.append({
+                    'name': name,
+                    'ref': ref,
+                    'enabled': enabled
+                })
         
         if found:
-            msg = f"✅ Найдено {len(found)} элементов с '{button_name}':\n\n"
+            msg = f"✅ Найдено {len(found)} кнопок с '{button_name}':\n\n"
             for el in found[:20]:
-                attrs = el.get('attrs', {})
-                text = el.get('text', '') or attrs.get('aria-label', '') or attrs.get('title', '') or el.get('tag', '')
-                selector = el.get('id') and f"#{el.get('id')}" or (el.get('class') and f".{el.get('class', '').split()[0] if el.get('class') else ''}")
-                data_testid = attrs.get('data-testid', '')
-                aria_label = attrs.get('aria-label', '')
-                
-                msg += f"  • {text[:50]}\n"
-                if selector:
-                    msg += f"    Селектор: {selector}\n"
-                if data_testid:
-                    msg += f"    data-testid: {data_testid}\n"
-                if aria_label:
-                    msg += f"    aria-label: {aria_label}\n"
-                msg += "\n"
+                status = "✅" if el['enabled'] else "🔒"
+                msg += f"  {status} [{el['ref']}] {el['name'][:50]}\n"
             
             if len(found) > 20:
-                msg += f"... и еще {len(found) - 20} элементов"
-                
+                msg += f"\n... и еще {len(found) - 20} кнопок"
+            
             await update.message.reply_text(msg)
         else:
             await update.message.reply_text(
                 f"❌ Кнопка '{button_name}' не найдена\n\n"
                 f"💡 Попробуйте:\n"
-                f"• Проверить написание (Обзор, обзор, explore)\n"
-                f"• Использовать /find_button [название]\n"
-                f"• Сделать скриншот и посмотреть визуально\n"
-                f"• На X.com кнопка 'Обзор' → 'Explore'"
+                f"• /find_button Explore (английское название)\n"
+                f"• Посмотреть список всех кнопок через 'Что видишь?'"
             )
             
     except Exception as e:
@@ -1432,13 +1245,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🧠 **МАКСИМАЛЬНЫЙ АГЕНТ**\n\n"
         "🕵️ **Маскировка браузера активна!**\n"
         "🍪 **Куки X.com установлены автоматически**\n"
-        "🔄 **Автоматическое восстановление при обрывах**\n\n"
+        "🔄 **Автоматическое восстановление при обрывах**\n"
+        "♿ **Использует Accessibility Tree для экономии токенов**\n\n"
         "💡 **Примеры команд:**\n"
         "• Открой Google\n"
         "• Что видишь?\n"
         "• Сделай скриншот\n"
         "• Зайди на x.com\n"
-        "• Нажми на кнопку Обзор\n\n"
+        "• Нажми на @e1 (клик по ref ID)\n\n"
         "🔍 **Поиск кнопок:**\n"
         "/find_button Обзор - найти кнопку\n"
         "/find_button Explore - найти кнопку (англ)\n\n"
@@ -1512,8 +1326,8 @@ def main():
     app.add_handler(CommandHandler("find_button", find_button_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("🚀 Бот запущен!")
-    file_logger.log("🚀 Бот запущен!")
+    print("🚀 Бот запущен с Accessibility Tree!")
+    file_logger.log("🚀 Бот запущен с Accessibility Tree!")
     app.run_polling()
 
 if __name__ == "__main__":
