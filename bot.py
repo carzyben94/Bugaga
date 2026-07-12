@@ -957,21 +957,42 @@ clients = {}
 AGENT_CODE = """
 🤖 ТЫ — АГЕНТ ДЛЯ УПРАВЛЕНИЯ БРАУЗЕРОМ
 
-📌 ДОСТУПНЫЕ ДЕЙСТВИЯ:
-1. navigate(url) - открыть сайт
-2. click(selector) - кликнуть (можно по ref ID: @e1, @e2)
-3. fill(selector, value) - заполнить поле
-4. press_enter() - нажать Enter
-5. screenshot() - скриншот
-6. answer(text) - ответить
+📌 ДОСТУПНЫЕ ДЕЙСТВИЯ (ВОЗВРАЩАЙ ТОЛЬКО JSON!):
 
-📝 СЕЛЕКТОРЫ:
-- По ref ID: @e1, @e2, @e3 (из описания страницы)
-- По ID: #APjFqb
-- По классу: .gLFyf
-- По aria-label: [aria-label="Explore"]
+1. ОТКРЫТЬ САЙТ:
+{"action": "navigate", "params": {"url": "https://x.com"}}
 
-⚠️ ВАЖНО: Используй ref ID (@e1, @e2) для кликов — это проще и надёжнее!
+2. КЛИКНУТЬ:
+{"action": "click", "params": {"selector": "@e2"}}
+{"action": "click", "params": {"selector": "[aria-label='Explore']"}}
+
+3. ЗАПОЛНИТЬ ПОЛЕ:
+{"action": "fill", "params": {"selector": "@e10", "value": "текст"}}
+
+4. НАЖАТЬ ENTER:
+{"action": "press_enter", "params": {}}
+
+5. СКРИНШОТ:
+{"action": "screenshot", "params": {}}
+
+6. ОТВЕТИТЬ (ТОЛЬКО ЕСЛИ НЕЛЬЗЯ СДЕЛАТЬ ДЕЙСТВИЕ):
+{"action": "answer", "params": {"text": "твой ответ"}}
+
+⚠️ ВАЖНО:
+- Всегда возвращай JSON с action!
+- Для навигации используй navigate
+- Для кликов используй ref ID (@e1, @e2)
+- НЕ ВОЗВРАЩАЙ ТЕКСТ ВМЕСТО JSON!
+
+📝 ПРИМЕРЫ:
+Пользователь: "зайди в x.com"
+Твой ответ: {"action": "navigate", "params": {"url": "https://x.com"}}
+
+Пользователь: "скрин"
+Твой ответ: {"action": "screenshot", "params": {}}
+
+Пользователь: "нажми на обзор"
+Твой ответ: {"action": "click", "params": {"selector": "@e2"}}
 """
 
 # ---------- Агент ----------
@@ -985,7 +1006,6 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
         "Content-Type": "application/json"
     }
     
-    # Используем UniversalModel для описания
     model = await client.get_universal_model()
     page_desc = model.to_text(max_items=10)
     
@@ -995,11 +1015,7 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
 📄 СТРАНИЦА:
 {page_desc}
 
-📝 ОТВЕЧАЙ ТОЛЬКО JSON!
-
-⚠️ ВАЖНО:
-- Используй ref ID (@e1, @e2) для кликов
-- Пользователь может писать по-русски
+📝 ОТВЕЧАЙ ТОЛЬКО JSON! НИКАКОГО ТЕКСТА!
 """
 
     data = {
@@ -1008,8 +1024,8 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt}
         ],
-        "temperature": 0.3,
-        "max_tokens": 2000
+        "temperature": 0.1,
+        "max_tokens": 500
     }
     
     for attempt in range(3):
@@ -1023,6 +1039,7 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
             if not content or not content.strip():
                 return {"action": "answer", "params": {"text": "⚠️ Получен пустой ответ от AI"}}
             
+            # Парсим JSON
             json_match = re.search(r'\[.*\]|\{.*\}', content, re.DOTALL)
             if json_match:
                 try:
@@ -1037,28 +1054,42 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
                             return parsed
                     
                     if isinstance(parsed, dict):
-                        if "answer" in parsed and "action" not in parsed:
-                            return {"action": "answer", "params": {"text": parsed["answer"]}}
-                        
-                        if "action" in parsed and "text" in parsed and "params" not in parsed:
-                            parsed["params"] = {"text": parsed.pop("text")}
+                        if "action" in parsed:
+                            if "text" in parsed and "params" not in parsed:
+                                parsed["params"] = {"text": parsed.pop("text")}
                             return parsed
                         
-                        if "action" in parsed and "answer" in parsed and "params" not in parsed:
-                            parsed["params"] = {"text": parsed.pop("answer")}
-                            return parsed
-                        
-                        if "text" in parsed and "action" not in parsed:
+                        if "text" in parsed:
                             return {"action": "answer", "params": {"text": parsed["text"]}}
                         
-                        if "action" not in parsed:
-                            return {"action": "answer", "params": {"text": json.dumps(parsed, ensure_ascii=False)}}
+                        if "answer" in parsed:
+                            return {"action": "answer", "params": {"text": parsed["answer"]}}
                         
-                        return parsed
+                        return {"action": "answer", "params": {"text": json.dumps(parsed, ensure_ascii=False)}}
                     
                 except json.JSONDecodeError:
+                    # Если не JSON, пытаемся извлечь команду
+                    if "navigate" in content.lower() or "открой" in content.lower():
+                        url_match = re.search(r'https?://[^\s"\']+', content)
+                        if url_match:
+                            return {"action": "navigate", "params": {"url": url_match.group()}}
+                        return {"action": "navigate", "params": {"url": "https://x.com"}}
+                    
+                    if "screenshot" in content.lower() or "скрин" in content.lower():
+                        return {"action": "screenshot", "params": {}}
+                    
                     if content.strip():
                         return {"action": "answer", "params": {"text": content}}
+            
+            # Если не нашли JSON
+            if "navigate" in content.lower() or "открой" in content.lower():
+                url_match = re.search(r'https?://[^\s"\']+', content)
+                if url_match:
+                    return {"action": "navigate", "params": {"url": url_match.group()}}
+                return {"action": "navigate", "params": {"url": "https://x.com"}}
+            
+            if "screenshot" in content.lower() or "скрин" in content.lower():
+                return {"action": "screenshot", "params": {}}
             
             if content.strip():
                 return {"action": "answer", "params": {"text": content}}
@@ -1152,14 +1183,14 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
         file_logger.log(f"Execute error: {e}", "ERROR")
         return f"❌ Ошибка: {str(e)}"
 
-# ---------- НОВЫЕ КОМАНДЫ ДЛЯ ПОИСКА ПОСТОВ ----------
+# ---------- Команды для постов ----------
 
 async def find_posts_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Поиск всех постов на странице"""
     user_id = update.message.from_user.id
     
     if user_id not in clients:
-        await update.message.reply_text("❌ Сначала откройте страницу (например, 'Зайди на x.com')")
+        await update.message.reply_text("❌ Сначала откройте страницу (например, 'зайди в x.com')")
         return
     
     client = clients[user_id]
@@ -1250,7 +1281,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if "ищу" in prompt or "найти" in prompt and "пост" in prompt:
-        # Извлекаем текст для поиска
         import re
         match = re.search(r'(?:ищу|найти)\s+["\']?(.+?)["\']?', prompt)
         if match:
@@ -1317,8 +1347,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/search_post текст - найти пост по тексту\n"
         "/analyze - анализ страницы\n\n"
         "💬 **Или просто напиши:**\n"
-        "• Найди пост\n"
-        "• Найди пост про космос"
+        "• зайди в x.com\n"
+        "• скрин\n"
+        "• найди пост\n"
+        "• найди пост про космос"
     )
 
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
