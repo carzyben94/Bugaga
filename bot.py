@@ -1225,8 +1225,57 @@ class CDPClient:
             file_logger.log(f"❌ CDP set value error: {e}", "ERROR")
             return {"success": False, "error": str(e)}
     
+    async def search_via_form(self, text):
+        """Поиск через отправку формы (запасной вариант)"""
+        try:
+            file_logger.log("📤 Пробую отправить форму...")
+            
+            # Находим поле и вводим текст
+            await self.fill_element("", text)
+            await asyncio.sleep(0.5)
+            
+            # Находим форму
+            form = await self.eval_js("""
+                (function() {
+                    const active = document.activeElement;
+                    if (active) {
+                        const form = active.closest('form');
+                        if (form) return form;
+                    }
+                    
+                    const forms = document.querySelectorAll('form');
+                    for (const form of forms) {
+                        const inputs = form.querySelectorAll('input[type="text"], input[type="search"]');
+                        if (inputs.length > 0) {
+                            return form;
+                        }
+                    }
+                    return null;
+                })()
+            """)
+            
+            if form:
+                await self.eval_js("""
+                    (function() {
+                        const form = document.querySelector('form');
+                        if (form) {
+                            form.dispatchEvent(new Event('submit', { bubbles: true }));
+                            form.submit();
+                        }
+                    })()
+                """)
+                file_logger.log("✅ Форма отправлена")
+                return {"success": True, "method": "form_submit"}
+            
+            file_logger.log("❌ Форма не найдена")
+            return {"success": False, "error": "Form not found"}
+            
+        except Exception as e:
+            file_logger.log(f"❌ Form search error: {e}", "ERROR")
+            return {"success": False, "error": str(e)}
+    
     async def smart_search_cdp(self, text, selector=None):
-        """УМНЫЙ ПОИСК через CDP - активирует поле, вводит текст, кликает по кнопке"""
+        """УМНЫЙ ПОИСК через CDP - пробует все методы"""
         
         file_logger.log(f"🔍 Умный поиск CDP: {text[:20]}...")
         
@@ -1235,12 +1284,12 @@ class CDPClient:
             selector = await self.find_search_field_selector()
         
         if selector:
-            # 2. АКТИВИРУЕМ ПОЛЕ (кликаем в него)
+            # 2. Активируем поле
             file_logger.log(f"🖱️ Активирую поле: {selector}")
             await self.click_element(selector)
-            await asyncio.sleep(0.5)  # Ждем появления кнопки
+            await asyncio.sleep(0.5)
             
-            # 3. Вводим текст через CDP
+            # 3. Вводим текст
             result = await self.set_value_cdp(selector, text)
             if result.get('success'):
                 await asyncio.sleep(0.5)
@@ -1255,7 +1304,7 @@ class CDPClient:
                     else:
                         file_logger.log("🔍 Enter не сработал, ищу кнопку поиска...")
         
-        # 5. Ищем кнопку поиска (лупу)
+        # 5. Ищем кнопку поиска
         file_logger.log("🔍 Ищу кнопку поиска (лупу)...")
         btn_selector = await self.find_search_button()
         
@@ -1264,8 +1313,12 @@ class CDPClient:
             result = await self.click_element(btn_selector)
             if result.get('success'):
                 return {"success": True, "method": "click_search_button"}
-        else:
-            file_logger.log("⚠️ Кнопка поиска не найдена")
+        
+        # 6. Пробуем отправить форму
+        file_logger.log("📤 Пробую отправить форму...")
+        form_result = await self.search_via_form(text)
+        if form_result.get('success'):
+            return {"success": True, "method": "form_submit"}
         
         return {"success": False, "error": "Все методы не сработали"}
     
@@ -1614,6 +1667,8 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
                 method = result.get("method", "")
                 if method == "click_search_button":
                     return f"✅ Поиск выполнен (клик по кнопке): {value}"
+                elif method == "form_submit":
+                    return f"✅ Поиск выполнен (отправка формы): {value}"
                 return f"✅ Поиск выполнен ({method}): {value}"
             return f"❌ Не удалось выполнить поиск: {result.get('error', '')}"
         
@@ -1747,6 +1802,59 @@ async def mask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_logger.log(f"❌ Ошибка: {e}", "ERROR")
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
+async def get_snapshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Скачать полный слепок страницы в JSON"""
+    user_id = update.message.from_user.id
+    
+    if user_id not in clients:
+        await update.message.reply_text("❌ Сначала откройте страницу (например, 'Зайди на x.com')")
+        return
+    
+    client = clients[user_id]
+    
+    try:
+        await update.message.reply_text("📸 Делаю полный слепок страницы...")
+        
+        # Делаем свежий слепок
+        await client.get_maximum_snapshot()
+        
+        if not client.full_snapshot:
+            await update.message.reply_text("❌ Не удалось получить слепок страницы")
+            return
+        
+        # Сохраняем в JSON
+        snapshot = client.full_snapshot.copy()
+        
+        # Добавляем информацию о времени
+        snapshot["timestamp"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        snapshot["user_id"] = user_id
+        
+        # Сохраняем в файл
+        filename = f"snapshot_{user_id}_{int(time.time())}.json"
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(snapshot, f, ensure_ascii=False, indent=2)
+        
+        # Отправляем файл
+        with open(filename, 'rb') as f:
+            await update.message.reply_document(
+                document=f,
+                filename=filename,
+                caption=f"📊 Слепок страницы\n\n"
+                        f"📄 {snapshot.get('title', 'Нет заголовка')}\n"
+                        f"🔗 {snapshot.get('url', 'Нет URL')}\n"
+                        f"📊 Элементов: {snapshot.get('total', 0)}\n"
+                        f"🔘 Кнопок: {len(snapshot.get('buttons', []))}\n"
+                        f"📝 Полей: {len(snapshot.get('fields', []))}\n"
+                        f"🕐 {snapshot['timestamp']}"
+            )
+        
+        # Удаляем временный файл
+        os.remove(filename)
+        
+    except Exception as e:
+        file_logger.log(f"❌ Ошибка: {e}", "ERROR")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
 # ---------- Обработчик ----------
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1815,7 +1923,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/logs - логи\n"
         "/set_cookies - установить куки\n"
         "/mask - применить маскировку\n"
-        "/find_button - найти кнопку"
+        "/find_button - найти кнопку\n"
+        "/get_snapshot - скачать слепок страницы"
     )
 
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1880,6 +1989,7 @@ def main():
     app.add_handler(CommandHandler("set_cookies", set_cookies_command))
     app.add_handler(CommandHandler("mask", mask_command))
     app.add_handler(CommandHandler("find_button", find_button_command))
+    app.add_handler(CommandHandler("get_snapshot", get_snapshot_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print("🚀 Бот запущен!")
