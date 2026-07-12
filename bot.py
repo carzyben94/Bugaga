@@ -174,7 +174,6 @@ file_logger = FileLogger()
 # ---------- Управление Chrome ----------
 
 def is_chrome_alive():
-    """Проверка, жив ли Chrome"""
     try:
         response = requests.get("http://localhost:9222/json", timeout=2)
         return response.status_code == 200
@@ -182,7 +181,6 @@ def is_chrome_alive():
         return False
 
 def start_chrome_with_mask():
-    """Запуск Chrome с маскировкой"""
     try:
         file_logger.log("Запуск Chrome с маскировкой...")
         
@@ -218,19 +216,15 @@ def start_chrome_with_mask():
         return False
 
 def restart_chrome():
-    """Перезапуск Chrome"""
     file_logger.log("🔄 Перезапуск Chrome...")
-    
     try:
         subprocess.run(["pkill", "-f", "google-chrome"], capture_output=True)
         time.sleep(2)
     except:
         pass
-    
     return start_chrome_with_mask()
 
 def ensure_chrome_running():
-    """Гарантирует, что Chrome работает"""
     if not is_chrome_alive():
         file_logger.log("⚠️ Chrome не отвечает, перезапускаю...")
         return restart_chrome()
@@ -277,28 +271,22 @@ class CDPClient:
         self.max_reconnect_attempts = 5
     
     async def connect_with_retry(self):
-        """Подключение с повторными попытками"""
         for attempt in range(self.max_reconnect_attempts):
             try:
                 if not is_chrome_alive():
                     file_logger.log("🔄 Chrome не отвечает, перезапускаю...")
                     restart_chrome()
                     await asyncio.sleep(3)
-                
                 return await self.connect()
-                
             except Exception as e:
                 file_logger.log(f"⚠️ Попытка {attempt+1}/{self.max_reconnect_attempts}: {e}")
                 await asyncio.sleep(2 ** attempt)
-        
         file_logger.log("❌ Не удалось подключиться после всех попыток", "ERROR")
         return False
     
     async def ensure_connection(self):
-        """Гарантирует активное соединение"""
         if not self.connected or not self.ws:
             return await self.connect_with_retry()
-        
         try:
             await asyncio.wait_for(
                 self.send("Runtime.evaluate", {"expression": "1"}),
@@ -314,11 +302,9 @@ class CDPClient:
             return True
         
         file_logger.log(f"Подключение для пользователя {self.user_id}")
-        
         ws_url = get_page_ws_url()
         if not ws_url:
             ws_url = create_page()
-        
         if not ws_url:
             file_logger.log("❌ Не удалось получить WebSocket URL", "ERROR")
             return False
@@ -342,7 +328,6 @@ class CDPClient:
             await self.apply_mask()
             await self.set_cookies(X_COOKIES)
             await self.navigate("https://google.com")
-            
             return True
             
         except Exception as e:
@@ -350,7 +335,6 @@ class CDPClient:
             return False
     
     async def reconnect(self):
-        """Переподключение при разрыве"""
         file_logger.log("🔄 Переподключение...")
         self.connected = False
         if self.ws:
@@ -361,28 +345,22 @@ class CDPClient:
         return await self.connect_with_retry()
     
     async def apply_mask(self):
-        """Применение маскировки через JS"""
         try:
             file_logger.log("🕵️ Применяю маскировку браузера...")
-            
             mask_js = """
             (function() {
                 Object.defineProperty(navigator, 'webdriver', {
                     get: () => undefined
                 });
-                
                 if (!window.chrome) {
                     window.chrome = { runtime: {} };
                 }
-                
                 Object.defineProperty(navigator, 'plugins', {
                     get: () => [1, 2, 3, 4, 5]
                 });
-                
                 Object.defineProperty(navigator, 'languages', {
                     get: () => ['ru-RU', 'ru', 'en-US', 'en']
                 });
-                
                 if (window.navigator.permissions) {
                     const originalQuery = window.navigator.permissions.query;
                     window.navigator.permissions.query = (parameters) => (
@@ -391,11 +369,9 @@ class CDPClient:
                             originalQuery(parameters)
                     );
                 }
-                
                 return { success: true };
             })()
             """
-            
             result = await self.eval_js(mask_js)
             if result and result.get('success'):
                 self.masked = True
@@ -404,16 +380,13 @@ class CDPClient:
             else:
                 file_logger.log("⚠️ Маскировка применена частично", "WARNING")
                 return False
-                
         except Exception as e:
             file_logger.log(f"❌ Ошибка маскировки: {e}", "ERROR")
             return False
     
     async def set_cookies(self, cookies):
-        """Установка кук в браузере"""
         try:
             file_logger.log(f"🍪 Установка {len(cookies)} кук...")
-            
             cdp_cookies = []
             for cookie in cookies:
                 cdp_cookie = {
@@ -427,11 +400,9 @@ class CDPClient:
                     "session": cookie.get("session", True)
                 }
                 cdp_cookies.append(cdp_cookie)
-            
             result = await self.send("Network.setCookies", {
                 "cookies": cdp_cookies
             })
-            
             if "error" not in result:
                 self.cookies_set = True
                 file_logger.log(f"✅ Установлено {len(cookies)} кук")
@@ -439,7 +410,6 @@ class CDPClient:
             else:
                 file_logger.log(f"❌ Ошибка установки кук: {result.get('error')}", "ERROR")
                 return False
-                
         except Exception as e:
             file_logger.log(f"❌ Ошибка установки кук: {e}", "ERROR")
             return False
@@ -447,52 +417,40 @@ class CDPClient:
     async def send(self, method, params=None):
         if not self.connected:
             await self.connect()
-        
         self.msg_id += 1
         msg_id = self.msg_id
-        
         msg = {
             "id": msg_id,
             "method": method,
             "params": params or {}
         }
-        
         try:
             await self.ws.send(json.dumps(msg))
-            
             while True:
                 response = await asyncio.wait_for(self.ws.recv(), timeout=30)
                 data = json.loads(response)
-                
                 if data.get("id") == msg_id:
                     if "error" in data:
                         file_logger.log(f"❌ {method}: {data['error']}", "ERROR")
                     return data
-                
                 if "method" in data:
                     continue
-                
         except (websockets.exceptions.ConnectionClosed, asyncio.TimeoutError, Exception) as e:
             file_logger.log(f"❌ {method} ошибка: {e}", "ERROR")
             await self.reconnect()
             return await self.send(method, params)
     
     async def send_safe(self, method, params=None, retries=3):
-        """Безопасная отправка с автоматическим восстановлением"""
         for attempt in range(retries):
             try:
                 if not await self.ensure_connection():
                     return {"error": "Connection failed"}
-                
                 return await self.send(method, params)
-                
             except (websockets.exceptions.ConnectionClosed,
                     websockets.exceptions.WebSocketException,
                     BrokenPipeError,
                     ConnectionResetError) as e:
-                
                 file_logger.log(f"⚠️ Ошибка {method}, попытка {attempt+1}/{retries}: {e}")
-                
                 if attempt < retries - 1:
                     await self.reconnect()
                     await asyncio.sleep(1)
@@ -502,17 +460,14 @@ class CDPClient:
                     await asyncio.sleep(3)
                     await self.connect_with_retry()
                     return await self.send(method, params)
-        
         return {"error": "Max retries exceeded"}
     
     async def navigate(self, url):
         file_logger.log(f"🌐 Навигация на {url}")
         result = await self.send_safe("Page.navigate", {"url": url})
-        
         if result and "error" in result:
             file_logger.log(f"❌ Ошибка навигации: {result['error']}", "ERROR")
             return False
-        
         for i in range(10):
             await asyncio.sleep(1)
             title = await self.eval_js("document.title")
@@ -520,7 +475,6 @@ class CDPClient:
                 file_logger.log(f"📄 Страница загружена: {title}")
                 await self.get_maximum_snapshot()
                 return True
-        
         return False
     
     async def eval_js(self, code):
@@ -530,14 +484,11 @@ class CDPClient:
                 "returnByValue": True,
                 "awaitPromise": True
             })
-            
             if "result" in resp:
                 result_obj = resp["result"]
-                
                 if "exceptionDetails" in result_obj:
                     file_logger.log(f"❌ JS ошибка: {result_obj['exceptionDetails']}", "ERROR")
                     return None
-                
                 if "result" in result_obj:
                     remote = result_obj["result"]
                     if remote.get("type") == "undefined":
@@ -546,10 +497,8 @@ class CDPClient:
                         return remote["value"]
                     if "objectId" in remote:
                         return remote
-                
                 if "value" in result_obj:
                     return result_obj["value"]
-            
             return None
         except Exception as e:
             file_logger.log(f"❌ eval_js error: {e}", "ERROR")
@@ -558,27 +507,21 @@ class CDPClient:
     async def get_maximum_snapshot(self):
         try:
             file_logger.log("📸 Делаю максимальный слепок...")
-            
             elements = await self.eval_js("""
                 (function() {
                     const result = [];
                     const all = document.querySelectorAll('*');
-                    
                     all.forEach(el => {
                         const tag = el.tagName.toLowerCase();
                         const rect = el.getBoundingClientRect();
                         const style = window.getComputedStyle(el);
-                        
                         const visible = rect.width > 0 && rect.height > 0 && 
                                        style.display !== 'none' && 
                                        style.visibility !== 'hidden';
-                        
                         const attrs = {};
                         for (const attr of el.attributes) {
                             attrs[attr.name] = attr.value;
                         }
-                        
-                        // Ищем все интерактивные элементы (русские И английские названия)
                         const isInteractive = (
                             tag === 'button' ||
                             tag === 'a' ||
@@ -590,24 +533,19 @@ class CDPClient:
                                 attrs['aria-label'].toLowerCase().includes('review')
                             ))
                         );
-                        
                         const important = ['button', 'a', 'input', 'textarea', 'select', 'form',
                                           'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'img', 'video',
                                           'iframe', 'div', 'span', 'section', 'article', 'nav',
                                           'header', 'footer', 'main', 'aside', 'ul', 'ol', 'li',
                                           'label', 'option', 'legend', 'fieldset', 'dialog',
                                           'svg', 'path', 'g'];
-                        
                         const hasText = (el.textContent || '').trim().length > 0;
                         const hasRole = attrs.role || attrs['aria-label'] || attrs['aria-labelledby'];
-                        
                         if (important.includes(tag) || hasRole || isInteractive || (hasText && tag === 'span')) {
-                            // Получаем текст из разных источников
                             let text = (el.textContent || '').trim().slice(0, 200);
                             if (!text && attrs['aria-label']) {
                                 text = attrs['aria-label'];
                             }
-                            
                             result.push({
                                 tag: tag,
                                 text: text,
@@ -634,40 +572,32 @@ class CDPClient:
                             });
                         }
                     });
-                    
                     return result;
                 })()
             """)
-            
             if elements is None:
                 elements = []
-            
             title = await self.eval_js("document.title") or "Нет заголовка"
             url = await self.eval_js("window.location.href") or "Нет URL"
-            
             all_fields = []
-            
             inputs = [e for e in elements if e.get('tag') == 'input']
             for inp in inputs:
                 attrs = inp.get('attrs', {})
                 inp['field_type'] = 'input'
                 inp['field_selector'] = f"input[name='{attrs.get('name', '')}']" if attrs.get('name') else f"input[type='{attrs.get('type', 'text')}']"
                 all_fields.append(inp)
-            
             textareas = [e for e in elements if e.get('tag') == 'textarea']
             for ta in textareas:
                 attrs = ta.get('attrs', {})
                 ta['field_type'] = 'textarea'
                 ta['field_selector'] = f"textarea[name='{attrs.get('name', '')}']" if attrs.get('name') else "textarea"
                 all_fields.append(ta)
-            
             selects = [e for e in elements if e.get('tag') == 'select']
             for sel in selects:
                 attrs = sel.get('attrs', {})
                 sel['field_type'] = 'select'
                 sel['field_selector'] = f"select[name='{attrs.get('name', '')}']" if attrs.get('name') else "select"
                 all_fields.append(sel)
-            
             contenteditables = [e for e in elements if e.get('attrs', {}).get('contenteditable') == 'true']
             for ce in contenteditables:
                 ce['field_type'] = 'contenteditable'
@@ -676,21 +606,16 @@ class CDPClient:
                     class_name = ' '.join(class_name)
                 ce['field_selector'] = ce.get('id') and f"#{ce.get('id')}" or (class_name and f".{class_name.replace(' ', '.')}" or "div[contenteditable='true']")
                 all_fields.append(ce)
-            
             roles = [e for e in elements if e.get('attrs', {}).get('role') in ['textbox', 'searchbox', 'combobox']]
             for role in roles:
                 role['field_type'] = 'role'
                 role['field_selector'] = role.get('id') and f"#{role.get('id')}" or f"[role='{role.get('attrs', {}).get('role')}']"
                 all_fields.append(role)
-            
-            # Ищем ВСЕ кнопки (русские И английские названия)
             buttons = []
             for el in elements:
                 tag = el.get('tag', '')
                 attrs = el.get('attrs', {})
                 is_interactive = el.get('isInteractive', False)
-                
-                # Проверяем все возможные варианты кнопок
                 if (tag == 'button' or 
                     (tag == 'input' and attrs.get('type') in ['submit', 'button']) or
                     attrs.get('role') == 'button' or
@@ -703,12 +628,10 @@ class CDPClient:
                         'review' in attrs.get('aria-label', '').lower()
                     ))):
                     buttons.append(el)
-            
             links = [e for e in elements if e.get('tag') == 'a' and e.get('attrs', {}).get('href')]
             forms = [e for e in elements if e.get('tag') == 'form']
             headings = [e for e in elements if e.get('tag') in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']]
             visible = [e for e in elements if e.get('visible')]
-            
             self.full_snapshot = {
                 "title": title,
                 "url": url,
@@ -727,22 +650,18 @@ class CDPClient:
                 "visible": visible,
                 "masked": self.masked
             }
-            
             file_logger.log(f"✅ Максимальный слепок: {len(elements)} элементов, {len(buttons)} кнопок, {len(all_fields)} полей")
             return True
-            
         except Exception as e:
             file_logger.log(f"❌ Maximum snapshot error: {e}", "ERROR")
             return False
     
     async def find_clickable_elements(self):
-        """Поиск всех кликабельных элементов на странице"""
         try:
             result = await self.eval_js("""
                 (function() {
                     const result = [];
                     const all = document.querySelectorAll('*');
-                    
                     all.forEach(el => {
                         const style = window.getComputedStyle(el);
                         const cursor = style.cursor;
@@ -758,7 +677,6 @@ class CDPClient:
                               el.getAttribute('aria-label').toLowerCase().includes('explore') ||
                               el.getAttribute('aria-label').toLowerCase().includes('review')))
                         );
-                        
                         if (isClickable) {
                             const item = {
                                 tag: el.tagName.toLowerCase(),
@@ -773,55 +691,38 @@ class CDPClient:
                             result.push(item);
                         }
                     });
-                    
                     return result;
                 })()
             """)
-            
             return result if result else []
-            
         except Exception as e:
             file_logger.log(f"❌ find_clickable_elements error: {e}", "ERROR")
             return []
     
     async def get_page_description(self):
-        """Полное описание страницы со всеми кнопками"""
         if not self.full_snapshot:
             await self.get_maximum_snapshot()
-        
         info = self.full_snapshot or {}
-        
-        # Формируем список всех кнопок
         buttons_text = ""
         buttons = info.get('buttons', [])
-        
         if buttons:
-            # Сортируем по видимости (видимые сначала)
             buttons_sorted = sorted(buttons, key=lambda x: x.get('visible', False), reverse=True)
-            
-            # Показываем ВСЕ кнопки без ограничений
             for el in buttons_sorted:
-                # Пробуем получить текст из разных источников
                 text = el.get('text', '')
                 if not text:
                     attrs = el.get('attrs', {})
                     text = attrs.get('aria-label', '') or attrs.get('value', '') or attrs.get('title', '') or attrs.get('data-testid', '')
-                
-                # Если текст есть - показываем
                 if text and text.strip():
                     visible_mark = "👁️" if el.get('visible') else "👻"
                     selector = el.get('id') and f"#{el.get('id')}" or el.get('class') and f".{el.get('class', '').split()[0] if el.get('class') else ''}" or el.get('tag', '')
                     buttons_text += f"  {visible_mark} {text[:50]}\n"
                 else:
-                    # Если нет текста - показываем тег и атрибуты
                     tag = el.get('tag', '')
                     attrs = el.get('attrs', {})
                     aria_label = attrs.get('aria-label', '')
                     data_testid = attrs.get('data-testid', '')
                     if aria_label or data_testid:
                         buttons_text += f"  🏷️ {tag} [aria-label={aria_label[:30]}] [data-testid={data_testid[:30]}]\n"
-        
-        # Формируем поля ввода
         fields_text = ""
         for el in info.get('fields', []):
             attrs = el.get('attrs', {})
@@ -832,8 +733,6 @@ class CDPClient:
             field_name = name or placeholder or aria_label or field_type
             selector = el.get('field_selector', '')
             fields_text += f"  • {field_name[:30]} → {selector}\n"
-        
-        # Собираем полное описание
         desc = f"""
 📄 **СТРАНИЦА:** {info.get('title', 'Нет заголовка')}
 🔗 **URL:** {info.get('url', 'Нет URL')}
@@ -847,26 +746,16 @@ class CDPClient:
 📝 **ПОЛЯ ВВОДА ({len(info.get('fields', []))}):**
 {fields_text}
 """
-        
         return desc
     
     async def click_element(self, selector):
-        """Клик по элементу с поддержкой разных селекторов и языков"""
-        # Экранируем кавычки
         selector_escaped = selector.replace("'", "\\'").replace('"', '\\"')
-        
         js_code = f"""
         (function() {{
             let el = null;
-            
-            // 1. Пробуем найти по селектору
             try {{
                 el = document.querySelector("{selector_escaped}");
-            }} catch(e) {{
-                // Если селектор невалидный - игнорируем
-            }}
-            
-            // 2. Если не нашли - ищем по aria-label (русский И английский)
+            }} catch(e) {{}}
             if (!el) {{
                 const allElements = document.querySelectorAll('[aria-label]');
                 for (const elem of allElements) {{
@@ -880,8 +769,6 @@ class CDPClient:
                     }}
                 }}
             }}
-            
-            // 3. Если не нашли - ищем по тексту (русский И английский)
             if (!el) {{
                 const allButtons = document.querySelectorAll('button, a, [role="button"], [data-testid="obst"]');
                 for (const btn of allButtons) {{
@@ -895,13 +782,9 @@ class CDPClient:
                     }}
                 }}
             }}
-            
-            // 4. Поиск по data-testid="obst" (X.com)
             if (!el) {{
                 el = document.querySelector('[data-testid="obst"]');
             }}
-            
-            // 5. Поиск по SVG иконке (ищем родителя)
             if (!el) {{
                 const svgs = document.querySelectorAll('svg');
                 for (const svg of svgs) {{
@@ -912,7 +795,6 @@ class CDPClient:
                     }}
                 }}
             }}
-            
             if (el) {{
                 el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
                 setTimeout(function() {{
@@ -925,12 +807,9 @@ class CDPClient:
         }})()
         """
         result = await self.eval_js(js_code)
-        
-        # Если клик успешен - обновляем слепок
         if result and result.get('success'):
             await asyncio.sleep(1)
             await self.get_maximum_snapshot()
-        
         return result
     
     async def fill_element(self, selector, value):
@@ -977,17 +856,13 @@ class CDPClient:
         try:
             if not await self.ensure_connection():
                 return None
-            
             title = await self.eval_js("document.title")
             file_logger.log(f"📄 Текущий заголовок: {title}")
-            
             if not title or title == "":
                 file_logger.log("🌐 Открываю Google...")
                 await self.navigate("https://google.com")
                 await asyncio.sleep(2)
-            
             file_logger.log("📸 Делаю скриншот...")
-            
             resp = await self.send_safe("Page.captureScreenshot", {
                 "format": "jpeg",
                 "quality": 70,
@@ -995,25 +870,19 @@ class CDPClient:
                 "fromSurface": True,
                 "optimizeForSpeed": True
             })
-            
             if "result" in resp and "data" in resp["result"]:
                 img_data = base64.b64decode(resp["result"]["data"])
-                
                 if len(img_data) < 100:
                     file_logger.log("❌ Скриншот слишком маленький", "ERROR")
                     return None
-                
                 file_logger.log(f"✅ Скриншот сделан ({len(img_data)} байт)")
-                
                 if img_data[:2] == b'\xff\xd8':
                     return img_data
                 else:
                     file_logger.log("❌ Невалидный формат изображения", "ERROR")
                     return None
-            
             file_logger.log("❌ Не удалось получить скриншот", "ERROR")
             return None
-                
         except Exception as e:
             file_logger.log(f"❌ Screenshot error: {e}", "ERROR")
             return None
@@ -1039,28 +908,9 @@ AGENT_CODE = """
 - По ID: #APjFqb
 - По классу: .gLFyf
 - По имени: input[name='q']
-- По aria-label: [aria-label="Explore"]  ← ТОЛЬКО АНГЛИЙСКИЙ!
-- По data-testid: [data-testid="obst"]
+- По aria-label: [aria-label="Explore"]
 
 ⚠️ ВАЖНО: ВСЕ селекторы должны быть на АНГЛИЙСКОМ языке!
-Перевод названий кнопок X.com:
-- "Обзор" → "Explore"
-- "Главная" → "Home"  
-- "Уведомления" → "Notifications"
-- "Сообщения" → "Messages"
-- "Закладки" → "Bookmarks"
-- "Профиль" → "Profile"
-
-⚠️ ЕСЛИ НУЖНО НЕСКОЛЬКО ДЕЙСТВИЙ - ВОЗВРАЩАЙ МАССИВ:
-[{"action": "fill", "params": {"selector": "#APjFqb", "value": "текст"}}, {"action": "press_enter", "params": {}}]
-
-⚠️ ЕСЛИ ПРОСТО ОТВЕТИТЬ - ИСПОЛЬЗУЙ ФОРМАТ:
-{"action": "answer", "params": {"text": "твой ответ"}}
-
-🔍 КАК НАЙТИ КНОПКУ:
-1. Сначала проверь все кнопки в описании страницы
-2. Используй английские названия в селекторах
-3. На X.com кнопка "Обзор" → "Explore" с data-testid="obst"
 """
 
 # ---------- Агент ----------
@@ -1068,14 +918,11 @@ AGENT_CODE = """
 async def ask_agnes(prompt: str, client: CDPClient) -> dict:
     if not AGNES_API_KEY:
         return {"error": "AGNES_API_KEY не установлен"}
-    
     headers = {
         "Authorization": f"Bearer {AGNES_API_KEY}",
         "Content-Type": "application/json"
     }
-    
     page_desc = await client.get_page_description()
-    
     system_prompt = f"""
 {AGENT_CODE}
 
@@ -1083,18 +930,7 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
 {page_desc}
 
 📝 ОТВЕЧАЙ ТОЛЬКО JSON!
-
-⚠️ ВАЖНО:
-- Пользователь может писать по-русски, но ты должен использовать АНГЛИЙСКИЕ названия в селекторах
-- "Обзор" → "Explore"
-- "Главная" → "Home"
-- "Уведомления" → "Notifications"
-- "Сообщения" → "Messages"
-- "Закладки" → "Bookmarks"
-- "Профиль" → "Profile"
-- Все атрибуты в селекторах пиши на английском!
 """
-
     data = {
         "model": "agnes-2.0-flash",
         "messages": [
@@ -1104,23 +940,18 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
         "temperature": 0.3,
         "max_tokens": 2000
     }
-    
     for attempt in range(3):
         try:
             response = requests.post(AGNES_API_URL, headers=headers, json=data, timeout=60)
             response.raise_for_status()
             content = response.json()["choices"][0]["message"]["content"]
-            
             file_logger.log(f"Agnes ответ: {content[:200]}...")
-            
             if not content or not content.strip():
                 return {"action": "answer", "params": {"text": "⚠️ Получен пустой ответ от AI"}}
-            
             json_match = re.search(r'\[.*\]|\{.*\}', content, re.DOTALL)
             if json_match:
                 try:
                     parsed = json.loads(json_match.group())
-                    
                     if isinstance(parsed, list):
                         if len(parsed) == 0:
                             return {"action": "answer", "params": {"text": "⚠️ AI вернул пустой массив"}}
@@ -1128,36 +959,27 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
                             parsed = parsed[0]
                         else:
                             return parsed
-                    
                     if isinstance(parsed, dict):
                         if "answer" in parsed and "action" not in parsed:
                             return {"action": "answer", "params": {"text": parsed["answer"]}}
-                        
                         if "action" in parsed and "text" in parsed and "params" not in parsed:
                             parsed["params"] = {"text": parsed.pop("text")}
                             return parsed
-                        
                         if "action" in parsed and "answer" in parsed and "params" not in parsed:
                             parsed["params"] = {"text": parsed.pop("answer")}
                             return parsed
-                        
                         if "text" in parsed and "action" not in parsed:
                             return {"action": "answer", "params": {"text": parsed["text"]}}
-                        
                         if "action" not in parsed:
                             return {"action": "answer", "params": {"text": json.dumps(parsed, ensure_ascii=False)}}
-                        
                         return parsed
-                    
                 except json.JSONDecodeError:
                     if content.strip():
                         return {"action": "answer", "params": {"text": content}}
-            
             if content.strip():
                 return {"action": "answer", "params": {"text": content}}
             else:
                 return {"action": "answer", "params": {"text": "⚠️ Получен пустой ответ от AI"}}
-                
         except requests.exceptions.Timeout:
             file_logger.log(f"⚠️ Попытка {attempt + 1} таймаут, повтор...")
             if attempt == 2:
@@ -1166,7 +988,6 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
         except Exception as e:
             file_logger.log(f"Agnes error: {e}", "ERROR")
             return {"action": "answer", "params": {"text": f"❌ Ошибка: {str(e)}"}}
-    
     return {"action": "answer", "params": {"text": "❌ Не удалось получить ответ от AI"}}
 
 # ---------- Выполнение действий ----------
@@ -1183,22 +1004,17 @@ async def execute_action(client: CDPClient, action) -> str:
 async def execute_single_action(client: CDPClient, action: dict) -> str:
     if "text" in action and "params" not in action:
         action["params"] = {"text": action.pop("text")}
-    
     if "answer" in action and "action" not in action:
         action = {"action": "answer", "params": {"text": action.pop("answer")}}
-    
     action_type = action.get("action")
     params = action.get("params", {})
-    
     file_logger.log(f"Выполнение: {action_type}")
-    
     try:
         if action_type == "navigate":
             url = params.get("url", "https://google.com")
             await client.navigate(url)
             title = await client.eval_js("document.title")
             return f"✅ Открыл: {url}\n📄 {title}"
-        
         elif action_type == "screenshot":
             img_data = await client.screenshot()
             if img_data:
@@ -1206,7 +1022,6 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
                     f.write(img_data)
                 return "screenshot"
             return "❌ Не удалось сделать скриншот"
-        
         elif action_type == "click":
             selector = params.get("selector")
             if not selector:
@@ -1215,7 +1030,6 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
             if result and result.get("success"):
                 return f"✅ Кликнул: {selector}"
             return f"❌ Элемент не найден: {selector}"
-        
         elif action_type == "fill":
             selector = params.get("selector")
             value = params.get("value", "")
@@ -1226,42 +1040,83 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
                 await client.get_maximum_snapshot()
                 return f"✅ Заполнил: {selector} = {value}"
             return f"❌ Элемент не найден: {selector}"
-        
         elif action_type == "press_enter":
             result = await client.press_enter()
             if result and result.get("success"):
                 await client.get_maximum_snapshot()
                 return "✅ Нажал Enter"
             return "❌ Не удалось нажать Enter"
-        
         elif action_type == "answer":
             text = params.get('text', 'Нет ответа')
             return f"📝 {text}"
-        
         else:
             return f"⚠️ Неизвестное действие: {action_type}"
-            
     except Exception as e:
         file_logger.log(f"Execute error: {e}", "ERROR")
         return f"❌ Ошибка: {str(e)}"
+
+# ---------- Обработчик сообщений ----------
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
+    
+    user_id = update.message.from_user.id
+    prompt = update.message.text
+    
+    file_logger.log(f"Сообщение от {user_id}: {prompt[:100]}...")
+    
+    await update.message.chat.send_action(action="typing")
+    
+    try:
+        ensure_chrome_running()
+        
+        if user_id not in clients:
+            client = CDPClient()
+            client.user_id = user_id
+            await client.connect_with_retry()
+            clients[user_id] = client
+        
+        client = clients[user_id]
+        
+        if not await client.ensure_connection():
+            await update.message.reply_text("❌ Не удалось подключиться к браузеру. Попробуйте позже.")
+            return
+        
+        await client.get_maximum_snapshot()
+        
+        if AGNES_API_KEY:
+            response = await ask_agnes(prompt, client)
+            if "error" not in response:
+                result = await execute_action(client, response)
+                if result == "screenshot":
+                    screenshot_files = ["screenshot.jpg", "screenshot.png"]
+                    sent = False
+                    for file in screenshot_files:
+                        if os.path.exists(file) and os.path.getsize(file) > 0:
+                            try:
+                                with open(file, "rb") as photo:
+                                    await update.message.reply_photo(photo=photo)
+                                sent = True
+                                break
+                            except Exception as e:
+                                file_logger.log(f"❌ Ошибка отправки {file}: {e}", "ERROR")
+                    if not sent:
+                        await update.message.reply_text("❌ Не удалось отправить скриншот")
+                else:
+                    await update.message.reply_text(result)
+                return
+        
+        await update.message.reply_text("❌ Не понял команду. Попробуйте переформулировать.")
+            
+    except Exception as e:
+        file_logger.log(f"❌ Ошибка: {e}", "ERROR")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 # ---------- Команды ----------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🧠 **МАКСИМАЛЬНЫЙ АГЕНТ**\n\n"
-        "🕵️ **Маскировка браузера активна!**\n"
-        "🍪 **Куки X.com установлены автоматически**\n"
-        "🔄 **Автоматическое восстановление при обрывах**\n\n"
-        "💡 **Примеры команд:**\n"
-        "• Открой Google\n"
-        "• Что видишь?\n"
-        "• Сделай скриншот\n"
-        "• Зайди на x.com\n"
-        "• Нажми на кнопку Обзор\n\n"
-        "🔍 **Поиск кнопок:**\n"
-        "/find_button Обзор - найти кнопку\n"
-        "/find_button Explore - найти кнопку (англ)\n\n"
         "/cdp - статус браузера\n"
         "/logs - логи"
     )
