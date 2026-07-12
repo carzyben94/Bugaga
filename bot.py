@@ -20,7 +20,6 @@ LOG_FILE = "bot_logs.txt"
 class FileLogger:
     def __init__(self, filename=LOG_FILE):
         self.filename = filename
-        # Создаём файл с заголовком
         with open(self.filename, 'w', encoding='utf-8') as f:
             f.write(f"=== Логи бота ===\n")
             f.write(f"Время запуска: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
@@ -250,11 +249,7 @@ class CDPClient:
                 self._receiver_task = asyncio.create_task(self._receiver())
                 file_logger.log("📡 Приёмник запущен")
             
-            await self.send("Page.enable")
-            await self.send("Runtime.enable")
-            await self.send("DOM.enable")
-            await self.send("Network.enable")
-            
+            # Домены включаются автоматически в новых версиях Chrome
             await self.start_keep_alive()
             return True
             
@@ -370,11 +365,6 @@ class CDPClient:
         if "error" in result:
             raise Exception(f"Attach error: {result['error']}")
         session_id = result["result"]["sessionId"]
-        
-        await self.send("Page.enable", session_id=session_id)
-        await self.send("Runtime.enable", session_id=session_id)
-        await self.send("DOM.enable", session_id=session_id)
-        await self.send("Network.enable", session_id=session_id)
         
         self.targets[session_id] = target_id
         self.session_id = session_id
@@ -493,29 +483,129 @@ class CDPClient:
         return result.get("result", {}).get("result", {}).get("value")
     
     async def click_element(self, session_id, selector):
+        """Клик по элементу с поддержкой текста, атрибутов и селекторов"""
         file_logger.log(f"🖱️ Клик по '{selector}'")
-        coords = await self.get_element_by_selector(session_id, selector)
-        if not coords:
-            raise Exception("Элемент не найден")
-        await self.send("Input.dispatchMouseEvent", {
-            "type": "mousePressed",
-            "x": coords["x"],
-            "y": coords["y"],
-            "button": "left",
-            "clickCount": 1,
-            "modifiers": 0
-        }, session_id=session_id)
-        await asyncio.sleep(0.1)
-        await self.send("Input.dispatchMouseEvent", {
-            "type": "mouseReleased",
-            "x": coords["x"],
-            "y": coords["y"],
-            "button": "left",
-            "clickCount": 1,
-            "modifiers": 0
-        }, session_id=session_id)
-        file_logger.log(f"✅ Клик выполнен ({coords['x']:.0f}, {coords['y']:.0f})")
-        return coords
+        
+        # Экранируем кавычки для JS
+        selector_escaped = selector.replace("'", "\\'").replace('"', '\\"')
+        
+        js_code = f"""
+        (function() {{
+            let el = null;
+            const search = '{selector_escaped}';
+            const searchLower = search.toLowerCase();
+            
+            // 1. Пробуем как CSS-селектор
+            try {{
+                el = document.querySelector(search);
+                if (el) console.log('Найден по CSS-селектору');
+            }} catch(e) {{}}
+            
+            // 2. Ищем по тексту (точное совпадение или содержит)
+            if (!el) {{
+                const all = document.querySelectorAll('*');
+                for (const elem of all) {{
+                    const text = elem.textContent?.trim() || '';
+                    const textLower = text.toLowerCase();
+                    if (textLower === searchLower || textLower.includes(searchLower)) {{
+                        el = elem;
+                        console.log('Найден по тексту:', text);
+                        break;
+                    }}
+                }}
+            }}
+            
+            // 3. Ищем по aria-label
+            if (!el) {{
+                const all = document.querySelectorAll('[aria-label]');
+                for (const elem of all) {{
+                    const label = elem.getAttribute('aria-label') || '';
+                    const labelLower = label.toLowerCase();
+                    if (labelLower === searchLower || labelLower.includes(searchLower)) {{
+                        el = elem;
+                        console.log('Найден по aria-label:', label);
+                        break;
+                    }}
+                }}
+            }}
+            
+            // 4. Ищем по data-testid
+            if (!el) {{
+                const all = document.querySelectorAll('[data-testid]');
+                for (const elem of all) {{
+                    const testid = elem.getAttribute('data-testid') || '';
+                    const testidLower = testid.toLowerCase();
+                    if (testidLower === searchLower || testidLower.includes(searchLower) || searchLower.includes(testidLower)) {{
+                        el = elem;
+                        console.log('Найден по data-testid:', testid);
+                        break;
+                    }}
+                }}
+            }}
+            
+            // 5. Ищем по title
+            if (!el) {{
+                const all = document.querySelectorAll('[title]');
+                for (const elem of all) {{
+                    const title = elem.getAttribute('title') || '';
+                    const titleLower = title.toLowerCase();
+                    if (titleLower === searchLower || titleLower.includes(searchLower)) {{
+                        el = elem;
+                        console.log('Найден по title:', title);
+                        break;
+                    }}
+                }}
+            }}
+            
+            // 6. Ищем по role
+            if (!el) {{
+                const all = document.querySelectorAll('[role]');
+                for (const elem of all) {{
+                    const role = elem.getAttribute('role') || '';
+                    const roleLower = role.toLowerCase();
+                    if (roleLower === searchLower || roleLower.includes(searchLower)) {{
+                        el = elem;
+                        console.log('Найден по role:', role);
+                        break;
+                    }}
+                }}
+            }}
+            
+            if (el) {{
+                // Скроллим к элементу
+                el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+                
+                // Ждём скролл и кликаем
+                setTimeout(function() {{
+                    el.click();
+                    el.dispatchEvent(new Event('click', {{ bubbles: true }}));
+                    el.dispatchEvent(new Event('mousedown', {{ bubbles: true }}));
+                    el.dispatchEvent(new Event('mouseup', {{ bubbles: true }}));
+                }}, 300);
+                
+                return {{
+                    success: true,
+                    tag: el.tagName,
+                    text: el.textContent?.trim()?.slice(0, 50) || '',
+                    id: el.id || '',
+                    testid: el.getAttribute('data-testid') || '',
+                    aria: el.getAttribute('aria-label') || ''
+                }};
+            }}
+            
+            return {{ success: false, error: 'Element not found' }};
+        }})()
+        """
+        
+        result = await self.eval_js(js_code, session_id)
+        
+        if result and result.get('success'):
+            file_logger.log(f"✅ Клик выполнен: {result.get('tag')} '{result.get('text')}'")
+            await asyncio.sleep(1)
+            return result
+        
+        file_logger.log(f"❌ Элемент не найден: {selector}", "ERROR")
+        raise Exception(f"Элемент не найден: {selector}")
     
     async def fill_input(self, session_id, selector, text):
         file_logger.log(f"✍️ Заполняю '{selector}' = '{text[:20]}...'")
@@ -616,9 +706,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🤖 Привет! Я бот для автоматизации браузера.\n\n"
         f"📌 Отправь мне URL, и я покажу все элементы.\n"
-        f"📌 Используй /click <селектор> для клика.\n"
+        f"📌 Используй /click <название> для клика.\n"
         f"📌 Используй /fill <селектор> <текст> для заполнения.\n"
         f"📌 Используй /screenshot для скриншота.\n"
+        f"📌 Используй /find <название> для поиска.\n"
         f"🖼️ Pillow: {pillow_status}\n"
         f"🍪 Куки X.com установлены автоматически!\n"
         f"💓 Авто-пинг для стабильного соединения"
@@ -657,9 +748,10 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         interactive = []
         for node in nodes:
             role = node.get("role", {}).get("value", "")
-            if role in ["button", "link", "textbox", "checkbox", "combobox", "radio"]:
+            if role in ["button", "link", "textbox", "checkbox", "combobox", "radio", "menuitem", "tab"]:
                 name = node.get("name", {}).get("value", "")
-                interactive.append({"role": role, "name": name[:100]})
+                if name:
+                    interactive.append({"role": role, "name": name[:100]})
         
         context.user_data['elements'] = interactive
         
@@ -684,19 +776,112 @@ async def click_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.message.from_user.id
         args = update.message.text.split()
         if len(args) < 2:
-            await update.message.reply_text("❌ Использование: /click <селектор>")
+            await update.message.reply_text("❌ Использование: /click <название>")
+            await update.message.reply_text("Примеры: /click Чат, /click Главная, /click Личные сообщения")
             return
-        selector = args[1]
+        
+        selector = " ".join(args[1:])
         session_id = context.user_data.get('session_id')
         if not session_id:
             await update.message.reply_text("❌ Сначала отправь URL")
             return
+        
         file_logger.log(f"🖱️ Клик от {user_id}: {selector}")
-        await update.message.reply_text(f"🖱️ Кликаю по '{selector}'...")
-        coords = await cdp.click_element(session_id, selector)
-        await update.message.reply_text(f"✅ Клик выполнен ({coords['x']:.0f}, {coords['y']:.0f})")
+        await update.message.reply_text(f"🖱️ Ищу и кликаю по '{selector}'...")
+        
+        result = await cdp.click_element(session_id, selector)
+        
+        if result and result.get('success'):
+            tag = result.get('tag', '')
+            text = result.get('text', '')
+            await update.message.reply_text(f"✅ Клик выполнен по [{tag}] '{text}'")
+        else:
+            await update.message.reply_text(f"❌ Не найден элемент: {selector}")
+            
     except Exception as e:
         file_logger.log(f"❌ Ошибка click: {e}", "ERROR")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def find_button_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Поиск кнопки по названию"""
+    try:
+        user_id = update.message.from_user.id
+        args = update.message.text.split()
+        if len(args) < 2:
+            await update.message.reply_text("❌ Использование: /find <название>")
+            await update.message.reply_text("Пример: /find Messages")
+            return
+        
+        search_term = " ".join(args[1:])
+        session_id = context.user_data.get('session_id')
+        if not session_id:
+            await update.message.reply_text("❌ Сначала отправь URL")
+            return
+        
+        file_logger.log(f"🔍 Поиск '{search_term}' от {user_id}")
+        await update.message.reply_text(f"🔍 Ищу '{search_term}'...")
+        
+        search_escaped = search_term.replace("'", "\\'").replace('"', '\\"')
+        result = await cdp.eval_js(f"""
+            (function() {{
+                const found = [];
+                const all = document.querySelectorAll('*');
+                const search = '{search_escaped}'.toLowerCase();
+                
+                all.forEach(el => {{
+                    const text = el.textContent?.trim()?.toLowerCase() || '';
+                    const aria = el.getAttribute('aria-label')?.toLowerCase() || '';
+                    const title = el.getAttribute('title')?.toLowerCase() || '';
+                    const testid = el.getAttribute('data-testid')?.toLowerCase() || '';
+                    const role = el.getAttribute('role') || '';
+                    
+                    if (text.includes(search) || aria.includes(search) || 
+                        title.includes(search) || testid.includes(search)) {{
+                        const rect = el.getBoundingClientRect();
+                        found.push({{
+                            tag: el.tagName,
+                            text: el.textContent?.trim()?.slice(0, 50) || '',
+                            aria: el.getAttribute('aria-label') || '',
+                            testid: el.getAttribute('data-testid') || '',
+                            id: el.id || '',
+                            class: el.className || '',
+                            visible: rect.width > 0 && rect.height > 0,
+                            x: Math.round(rect.x),
+                            y: Math.round(rect.y)
+                        }});
+                    }}
+                }});
+                
+                return found.slice(0, 20);
+            }})()
+        """, session_id)
+        
+        if result and len(result) > 0:
+            msg = f"🔍 Найдено {len(result)} элементов с '{search_term}':\n\n"
+            for i, el in enumerate(result[:15], 1):
+                visible = "👁️" if el.get('visible') else "👻"
+                tag = el.get('tag', '')
+                text = el.get('text', '') or el.get('aria', '') or el.get('testid', '')
+                if text:
+                    msg += f"{i}. {visible} [{tag}] {text[:40]}\n"
+                else:
+                    msg += f"{i}. {visible} [{tag}] (без текста)\n"
+                if el.get('id'):
+                    msg += f"   id: #{el['id']}\n"
+                if el.get('testid'):
+                    msg += f"   data-testid: {el['testid']}\n"
+                if el.get('aria'):
+                    msg += f"   aria-label: {el['aria']}\n"
+            
+            if len(result) > 15:
+                msg += f"\n... и ещё {len(result) - 15} элементов"
+            
+            await update.message.reply_text(msg)
+        else:
+            await update.message.reply_text(f"❌ Ничего не найдено по '{search_term}'")
+            
+    except Exception as e:
+        file_logger.log(f"❌ Ошибка find_button: {e}", "ERROR")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def fill_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -770,7 +955,6 @@ async def set_cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отправляет файл с логами"""
     try:
         if os.path.exists(LOG_FILE):
             with open(LOG_FILE, 'rb') as f:
@@ -785,7 +969,6 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 async def clear_logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Очищает файл логов"""
     try:
         with open(LOG_FILE, 'w', encoding='utf-8') as f:
             f.write(f"=== Логи очищены ===\n")
@@ -810,7 +993,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📖 Доступные команды:\n\n"
         "/start - Начать работу\n"
         "/help - Эта справка\n"
-        "/click <селектор> - Кликнуть\n"
+        "/click <название> - Кликнуть по элементу (по тексту)\n"
+        "/find <название> - Найти элементы на странице\n"
         "/fill <селектор> <текст> - Заполнить поле\n"
         "/screenshot - Скриншот\n"
         "/reload - Перезагрузить страницу\n"
@@ -818,7 +1002,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/logs - Получить файл логов\n"
         "/clear_logs - Очистить логи\n"
         "/clear - Очистить сессию\n\n"
-        "🔹 Просто отправь URL для анализа"
+        "🔹 Просто отправь URL для анализа\n\n"
+        "💡 Примеры:\n"
+        "/click Чат\n"
+        "/click Главная\n"
+        "/find Messages"
     )
 
 # ==================== ЗАПУСК ====================
@@ -857,6 +1045,7 @@ async def main_async():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("click", click_command))
+    app.add_handler(CommandHandler("find", find_button_command))
     app.add_handler(CommandHandler("fill", fill_command))
     app.add_handler(CommandHandler("screenshot", screenshot_command))
     app.add_handler(CommandHandler("reload", reload_command))
