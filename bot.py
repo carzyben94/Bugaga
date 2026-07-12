@@ -40,24 +40,43 @@ class ChromeManager:
         self.process = None
         self.ws_endpoint = None
         self.user_data_dir = None
+        self._loop = None
+    
+    def _find_chrome(self):
+        """Ищет Chrome в разных местах"""
+        paths = [
+            "/usr/bin/google-chrome",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/usr/local/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/app/.apt/usr/bin/google-chrome"
+        ]
+        
+        for path in paths:
+            if os.path.exists(path):
+                print(f"✅ Найден Chrome: {path}")
+                return path
+        
+        try:
+            result = subprocess.run(["which", "google-chrome"], capture_output=True, text=True)
+            if result.returncode == 0:
+                path = result.stdout.strip()
+                print(f"✅ Найден Chrome через which: {path}")
+                return path
+        except:
+            pass
+        
+        return None
     
     def _prepare_cookies_file(self):
-        """Создаёт файл с куками в формате Chrome"""
-        # Создаём временную директорию для профиля
+        """Создаёт временную директорию для профиля"""
         self.user_data_dir = tempfile.mkdtemp(prefix="chrome_profile_")
         print(f"📁 Профиль Chrome: {self.user_data_dir}")
-        
-        # Формируем куки в формате для Chrome
-        cookies_file = os.path.join(self.user_data_dir, "Cookies")
-        
-        # Chrome использует SQLite для хранения кук
-        # Но проще установить куки через CDP после запуска
-        # или использовать готовый профиль
-        
         return self.user_data_dir
     
     def start(self):
-        """Запускает Chrome с CDP и устанавливает куки"""
+        """Запускает Chrome с CDP"""
         if self.is_running():
             print("✅ Chrome уже запущен")
             self.ws_endpoint = self.get_ws_endpoint()
@@ -65,81 +84,59 @@ class ChromeManager:
         
         print("🚀 Запускаю Chrome...")
         
-        # Создаём профиль с куками
+        chrome_path = self._find_chrome()
+        if not chrome_path:
+            print("❌ Chrome не найден!")
+            return False
+        
         self._prepare_cookies_file()
         
         cmd = [
-            self.chrome_path,
-            "--headless",
+            chrome_path,
+            "--headless=new",
             "--no-sandbox",
             "--disable-dev-shm-usage",
             "--disable-gpu",
             "--disable-software-rasterizer",
             "--disable-extensions",
+            "--disable-setuid-sandbox",
+            "--disable-web-security",
+            "--disable-features=IsolateOrigins,site-per-process",
             f"--remote-debugging-port={self.port}",
-            f"--user-data-dir={self.user_data_dir}",  # <-- ПРОФИЛЬ С КУКАМИ
-            "--window-size=1920,1080"
+            f"--user-data-dir={self.user_data_dir}",
+            "--window-size=1920,1080",
+            "--disable-blink-features=AutomationControlled"
         ]
         
         try:
             self.process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
+                text=True
             )
             
-            time.sleep(3)
+            # Ждём запуска
+            for _ in range(10):
+                time.sleep(1)
+                if self.is_running():
+                    self.ws_endpoint = self.get_ws_endpoint()
+                    if self.ws_endpoint:
+                        print(f"✅ Chrome запущен: {self.ws_endpoint}")
+                        return True
+                print(f"⏳ Жду запуск Chrome... {_+1}/10")
             
-            self.ws_endpoint = self.get_ws_endpoint()
-            if self.ws_endpoint:
-                print(f"✅ Chrome запущен: {self.ws_endpoint}")
-                
-                # Устанавливаем куки через CDP после запуска
-                asyncio.create_task(self._set_cookies_after_start())
-                
-                return True
-            else:
-                print("❌ Не удалось получить WebSocket endpoint")
-                return False
+            # Если не запустился, выводим ошибку
+            stdout, stderr = self.process.communicate(timeout=5)
+            print(f"❌ Ошибка запуска Chrome:")
+            print(f"STDOUT: {stdout[:500]}")
+            print(f"STDERR: {stderr[:500]}")
+            return False
                 
         except Exception as e:
             print(f"❌ Ошибка запуска Chrome: {e}")
             return False
-    
-    async def _set_cookies_after_start(self):
-        """Устанавливает куки после запуска браузера"""
-        try:
-            # Подключаемся к Chrome
-            cdp = CDPClient(self.ws_endpoint)
-            await cdp.connect()
-            
-            # Создаём временную вкладку для установки кук
-            session_id, _ = await cdp.create_tab()
-            
-            # Устанавливаем куки
-            for cookie in COOKIES:
-                try:
-                    await cdp.send("Network.setCookie", {
-                        "name": cookie["name"],
-                        "value": cookie["value"],
-                        "domain": cookie["domain"],
-                        "path": cookie.get("path", "/"),
-                        "secure": False,
-                        "httpOnly": False,
-                        "sameSite": "None"
-                    }, session_id=session_id)
-                    print(f"🍪 Кука установлена: {cookie['name']}")
-                except Exception as e:
-                    print(f"⚠️ Ошибка установки куки {cookie['name']}: {e}")
-            
-            # Закрываем вкладку
-            await cdp.close_tab(session_id)
-            await cdp.close()
-            
-            print("✅ Все куки установлены в профиле")
-        except Exception as e:
-            print(f"⚠️ Ошибка установки кук: {e}")
     
     def is_running(self):
         try:
@@ -155,14 +152,46 @@ class ChromeManager:
         except:
             return None
     
+    async def set_cookies_after_start(self):
+        """Устанавливает куки после запуска браузера (вызывается из main)"""
+        try:
+            print("🍪 Начинаю установку кук...")
+            cdp = CDPClient(self.ws_endpoint)
+            await cdp.connect()
+            
+            session_id, _ = await cdp.create_tab()
+            
+            for cookie in COOKIES:
+                try:
+                    await cdp.send("Network.setCookie", {
+                        "name": cookie["name"],
+                        "value": cookie["value"],
+                        "domain": cookie["domain"],
+                        "path": cookie.get("path", "/"),
+                        "secure": False,
+                        "httpOnly": False,
+                        "sameSite": "None"
+                    }, session_id=session_id)
+                    print(f"🍪 Кука установлена: {cookie['name']}")
+                except Exception as e:
+                    print(f"⚠️ Ошибка куки {cookie['name']}: {e}")
+            
+            await cdp.close_tab(session_id)
+            await cdp.close()
+            print("✅ Все куки установлены")
+        except Exception as e:
+            print(f"⚠️ Ошибка установки кук: {e}")
+    
     def stop(self):
         if self.process:
             self.process.terminate()
-            self.process.wait(timeout=5)
+            try:
+                self.process.wait(timeout=5)
+            except:
+                self.process.kill()
             self.process = None
             print("🛑 Chrome остановлен")
         
-        # Удаляем временный профиль
         if self.user_data_dir and os.path.exists(self.user_data_dir):
             shutil.rmtree(self.user_data_dir, ignore_errors=True)
             print(f"🗑️ Профиль удалён: {self.user_data_dir}")
@@ -240,7 +269,6 @@ class CDPClient:
         return False
     
     async def wait_for_content(self, session_id, timeout=30):
-        """Ожидает появления контента на странице"""
         for _ in range(timeout):
             result = await self.send("Runtime.evaluate", {
                 "expression": """
@@ -257,9 +285,7 @@ class CDPClient:
             
             if result.get("result", {}).get("result", {}).get("value"):
                 return True
-            
             await asyncio.sleep(1)
-        
         return False
     
     async def get_accessibility_tree(self, session_id):
@@ -404,7 +430,6 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⏳ Ожидаю загрузку страницы...")
         await cdp.wait_for_load(session_id)
         
-        # Для Twitter ждём контент
         if "x.com" in url or "twitter.com" in url:
             await update.message.reply_text("⏳ Жду загрузки контента...")
             await cdp.wait_for_content(session_id, timeout=30)
@@ -529,9 +554,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ==================== ЗАПУСК БОТА ====================
-def main():
+async def main_async():
+    """Асинхронный запуск бота"""
     print("🚀 Запуск бота...")
     print(f"🔗 Chrome: {chrome_manager.ws_endpoint}")
+    
+    # Устанавливаем куки
+    await chrome_manager.set_cookies_after_start()
     
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
@@ -544,7 +573,11 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     
     print("✅ Бот запущен и готов к работе!")
-    app.run_polling()
+    await app.run_polling()
+
+def main():
+    """Запуск"""
+    asyncio.run(main_async())
 
 if __name__ == "__main__":
     main()
