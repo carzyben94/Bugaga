@@ -262,6 +262,7 @@ class CDPClient:
         self._pending_requests = {}
         self.user_id = None
         self.full_snapshot = None
+        self.tweets_snapshot = []  # Хранит только твиты
     
     async def _receiver(self):
         file_logger.log("📡 Запущен приёмник сообщений")
@@ -524,6 +525,7 @@ class CDPClient:
         info = self.full_snapshot or {}
         nodes = info.get('elements', [])
         
+        # Кнопки из Accessibility Tree
         buttons = []
         for el in nodes:
             role = el.get('role', '')
@@ -531,6 +533,7 @@ class CDPClient:
             if role in ['button', 'link'] and name:
                 buttons.append(name)
         
+        # Поля из Accessibility Tree
         fields = []
         for el in nodes:
             role = el.get('role', '')
@@ -538,7 +541,8 @@ class CDPClient:
             if role in ['textbox', 'searchbox', 'combobox'] and name:
                 fields.append(name)
         
-        tweets = await self.get_tweets_text(self.session_id)
+        # Твиты из DOM слепка (чистые, без мусора)
+        tweets = self.tweets_snapshot or await self.take_tweets_snapshot(self.session_id)
         
         desc = f"""
 📄 СТРАНИЦА: {info.get('title', 'Нет заголовка')}
@@ -556,7 +560,9 @@ class CDPClient:
         desc += f"\n📋 ТВИТЫ НА СТРАНИЦЕ ({len(tweets)}):\n"
         if tweets:
             for i, tweet in enumerate(tweets[:10], 1):
-                desc += f"  {i}. {tweet.get('author', '')}: {tweet.get('text', '')[:100]}...\n"
+                author = tweet.get('author', 'Unknown')
+                text = tweet.get('text', '')[:150]
+                desc += f"  {i}. {author}: {text}{'...' if len(tweet.get('text', '')) > 150 else ''}\n"
         else:
             desc += "  ⚠️ Твиты не найдены\n"
         
@@ -590,169 +596,79 @@ class CDPClient:
                 "elements": elements
             }
             
-            file_logger.log(f"✅ Слепок: {len(elements)} элементов")
+            # Также обновляем твиты
+            self.tweets_snapshot = await self.take_tweets_snapshot(self.session_id)
+            
+            file_logger.log(f"✅ Слепок: {len(elements)} элементов, {len(self.tweets_snapshot)} твитов")
             return True
             
         except Exception as e:
             file_logger.log(f"❌ Maximum snapshot error: {e}", "ERROR")
             return False
     
-    async def get_tweets_text(self, session_id, limit=10):
-        """Получает текст твитов для AI"""
+    async def take_tweets_snapshot(self, session_id):
+        """Делает слепок только твитов (чисто, без мусора)"""
         try:
             result = await self.send("Runtime.evaluate", {
-                "expression": f"""
-                    (function() {{
+                "expression": """
+                    (function() {
                         const tweets = [];
-                        const articles = document.querySelectorAll('article');
-                        const limit = {limit};
-                        
-                        for (let i = 0; i < Math.min(articles.length, limit); i++) {{
-                            const article = articles[i];
+                        document.querySelectorAll('article').forEach(article => {
                             const textEl = article.querySelector('[data-testid="tweetText"]');
                             const nameEl = article.querySelector('[data-testid="User-Name"]');
-                            
-                            tweets.push({{
-                                text: textEl ? textEl.innerText : '',
-                                author: nameEl ? nameEl.innerText : ''
-                            }});
-                        }}
+                            if (textEl) {
+                                tweets.push({
+                                    text: textEl.innerText.slice(0, 500),
+                                    author: nameEl ? nameEl.innerText : 'Unknown'
+                                });
+                            }
+                        });
                         return tweets;
-                    }})()
+                    })()
                 """
             }, session_id=session_id)
             
             return result.get("result", {}).get("result", {}).get("value", [])
+            
         except Exception as e:
-            file_logger.log(f"❌ get_tweets_text error: {e}", "ERROR")
+            file_logger.log(f"❌ Ошибка создания слепка твитов: {e}", "ERROR")
             return []
     
     async def get_tweets(self, session_id, limit=5) -> List[Tweet]:
-        """Парсит твиты с улучшенным поиском"""
+        """Берёт твиты из сохранённого слепка или создаёт новый"""
         try:
-            file_logger.log("📋 Начинаю парсинг твитов...")
+            # Если есть сохранённые твиты — берём их
+            if self.tweets_snapshot:
+                file_logger.log(f"📋 Беру твиты из кэша ({len(self.tweets_snapshot)})")
+                tweets = []
+                for item in self.tweets_snapshot[:limit]:
+                    tweet = Tweet(
+                        text=item.get('text', ''),
+                        author=item.get('author', 'Unknown')
+                    )
+                    tweets.append(tweet)
+                return tweets
             
-            # 1. Ждём появления твитов
-            for i in range(15):
-                check = await self.send("Runtime.evaluate", {
-                    "expression": "document.querySelectorAll('article').length"
-                }, session_id=session_id)
-                
-                count = check.get("result", {}).get("result", {}).get("value", 0)
-                if count > 0:
-                    file_logger.log(f"✅ Найдено {count} твитов")
-                    break
-                file_logger.log(f"⏳ Жду твиты... {i+1}/15")
-                await asyncio.sleep(1)
-            else:
-                file_logger.log("❌ Твиты не загрузились", "WARNING")
-                return []
-            
-            # 2. Скроллим для подгрузки
-            await self.send("Runtime.evaluate", {
-                "expression": "window.scrollTo(0, document.body.scrollHeight)"
-            }, session_id=session_id)
-            await asyncio.sleep(1)
-            
-            # 3. Парсим с универсальным подходом
-            result = await self.send("Runtime.evaluate", {
-                "expression": f"""
-                    (function() {{
-                        const tweets = [];
-                        const articles = document.querySelectorAll('article');
-                        const limit = {limit};
-                        
-                        for (let i = 0; i < Math.min(articles.length, limit); i++) {{
-                            const article = articles[i];
-                            
-                            // Пробуем найти текст разными способами
-                            let text = '';
-                            const textEl = article.querySelector('[data-testid="tweetText"]');
-                            if (textEl) {{
-                                text = textEl.innerText.trim();
-                            }}
-                            
-                            // Если не нашли — берём весь текст и убираем имя/ник
-                            if (!text) {{
-                                const allText = article.innerText || '';
-                                const lines = allText.split('\\n').filter(l => l.trim());
-                                if (lines.length > 2) {{
-                                    text = lines.slice(2).join(' ').trim();
-                                }}
-                            }}
-                            
-                            // Ищем автора
-                            let author = 'Unknown';
-                            let handle = '';
-                            const nameEl = article.querySelector('[data-testid="User-Name"]');
-                            if (nameEl) {{
-                                const parts = nameEl.innerText.split('@');
-                                author = parts[0].trim();
-                                handle = parts.length > 1 ? '@' + parts[1].trim() : '';
-                            }}
-                            
-                            // Ищем дату
-                            const dateEl = article.querySelector('time');
-                            const date = dateEl ? dateEl.getAttribute('datetime') : '';
-                            
-                            // Ищем лайки
-                            let likes = 0;
-                            const likesEl = article.querySelector('[data-testid="like"]');
-                            if (likesEl) {{
-                                const likesText = likesEl.innerText.replace(/[^0-9]/g, '');
-                                likes = parseInt(likesText) || 0;
-                            }}
-                            
-                            // Ретвиты
-                            let retweets = 0;
-                            const retweetsEl = article.querySelector('[data-testid="retweet"]');
-                            if (retweetsEl) {{
-                                const retweetsText = retweetsEl.innerText.replace(/[^0-9]/g, '');
-                                retweets = parseInt(retweetsText) || 0;
-                            }}
-                            
-                            // Ответы
-                            let replies = 0;
-                            const repliesEl = article.querySelector('[data-testid="reply"]');
-                            if (repliesEl) {{
-                                const repliesText = repliesEl.innerText.replace(/[^0-9]/g, '');
-                                replies = parseInt(repliesText) || 0;
-                            }}
-                            
-                            tweets.push({{
-                                text: text || 'Текст не найден',
-                                author: author || 'Unknown',
-                                handle: handle || '@unknown',
-                                date: date || '',
-                                likes: likes,
-                                retweets: retweets,
-                                replies: replies
-                            }});
-                        }}
-                        return tweets;
-                    }})()
-                """
-            }, session_id=session_id)
-            
-            raw_tweets = result.get("result", {}).get("result", {}).get("value", [])
+            # Если нет — делаем новый слепок
+            file_logger.log("📋 Создаю новый слепок твитов...")
+            self.tweets_snapshot = await self.take_tweets_snapshot(session_id)
             
             tweets = []
-            for item in raw_tweets:
-                try:
-                    tweet = Tweet(**item)
-                    tweets.append(tweet)
-                except Exception as e:
-                    file_logger.log(f"⚠️ Ошибка валидации: {e}", "WARNING")
+            for item in self.tweets_snapshot[:limit]:
+                tweet = Tweet(
+                    text=item.get('text', ''),
+                    author=item.get('author', 'Unknown')
+                )
+                tweets.append(tweet)
             
-            file_logger.log(f"✅ Спарсено {len(tweets)} твитов")
             return tweets
             
         except Exception as e:
-            file_logger.log(f"❌ Ошибка парсинга: {e}", "ERROR")
+            file_logger.log(f"❌ Ошибка получения твитов: {e}", "ERROR")
             return []
     
     async def click_element(self, session_id, selector):
-        """Клик по элементу с поддержкой текста, атрибутов и селекторов"""
+        """Клик по элементу с обновлением слепка"""
         file_logger.log(f"🖱️ Клик по '{selector}'")
         
         selector_escaped = selector.replace("'", "\\'").replace('"', '\\"')
@@ -823,6 +739,7 @@ class CDPClient:
         if result and result.get('success'):
             file_logger.log(f"✅ Клик выполнен: {result.get('tag')} '{result.get('text')}'")
             await asyncio.sleep(1)
+            # Обновляем слепок после клика
             await self.get_maximum_snapshot()
             return result
         
@@ -923,6 +840,7 @@ class CDPClient:
         file_logger.log(f"✅ Проверка: значение = '{actual_value}'")
         
         file_logger.log("✅ Поле заполнено")
+        # Обновляем слепок после заполнения
         await self.get_maximum_snapshot()
         return True
     
@@ -942,6 +860,7 @@ class CDPClient:
             "text": "\r"
         }, session_id=session_id)
         file_logger.log("⌨️ Нажал Enter")
+        # Обновляем слепок после Enter
         await self.get_maximum_snapshot()
     
     async def screenshot(self, session_id):
@@ -1113,12 +1032,10 @@ def format_tweets(tweets: List[Tweet]) -> str:
     
     msg = f"📋 **Твиты ({len(tweets)}):**\n\n"
     for i, tweet in enumerate(tweets, 1):
-        msg += f"{i}. **{tweet.author}** {tweet.handle}\n"
+        msg += f"{i}. **{tweet.author}**\n"
         msg += f"   📝 {tweet.text[:200]}{'...' if len(tweet.text) > 200 else ''}\n"
-        if tweet.likes > 0 or tweet.retweets > 0 or tweet.replies > 0:
-            msg += f"   ❤️ {tweet.likes}  🔄 {tweet.retweets}  💬 {tweet.replies}\n"
-        if tweet.date:
-            msg += f"   📅 {tweet.date[:10]}\n"
+        if tweet.likes > 0:
+            msg += f"   ❤️ {tweet.likes}\n"
         msg += "\n"
     
     return msg
@@ -1163,7 +1080,6 @@ async def execute_single_action(client: CDPClient, action: dict, user_id) -> str
                 return "❌ Нет текста для клика"
             result = await client.click_element(session_id, text)
             if result and result.get('success'):
-                await client.get_maximum_snapshot()
                 return f"✅ Кликнул: {text}"
             return f"❌ Элемент не найден: {text}"
         
@@ -1236,112 +1152,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/click <название> - Кликнуть\n"
         f"/screenshot - Скриншот\n"
         f"/tweets [количество] - Показать твиты\n"
-        f"/debug - Отладка страницы\n"
-        f"/findselectors - Найти селекторы\n"
         f"/logs - Логи\n"
         f"/clear - Очистить сессию"
     )
-
-# ==================== ОТЛАДОЧНЫЕ КОМАНДЫ ====================
-async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отладка — показывает что на странице"""
-    user_id = update.message.from_user.id
-    
-    if user_id not in clients:
-        await update.message.reply_text("❌ Сначала отправь сообщение")
-        return
-    
-    client = clients[user_id]
-    if not client.session_id:
-        await update.message.reply_text("❌ Нет активной вкладки")
-        return
-    
-    result = await client.send("Runtime.evaluate", {
-        "expression": """
-            (function() {
-                const articles = document.querySelectorAll('article');
-                const bodyText = document.body ? document.body.innerText : '';
-                
-                return {
-                    url: window.location.href,
-                    title: document.title,
-                    articles: articles.length,
-                    bodyLength: bodyText.length,
-                    hasArticles: articles.length > 0,
-                    firstArticleHTML: articles.length > 0 ? articles[0].outerHTML.slice(0, 500) : 'нет'
-                };
-            })()
-        """
-    }, session_id=client.session_id)
-    
-    data = result.get("result", {}).get("result", {}).get("value", {})
-    
-    msg = f"🔍 **Отладка:**\n"
-    msg += f"📄 URL: {data.get('url', 'нет')}\n"
-    msg += f"📄 Заголовок: {data.get('title', 'нет')}\n"
-    msg += f"📄 Твитов (article): {data.get('articles', 0)}\n"
-    msg += f"📄 Длина текста: {data.get('bodyLength', 0)}\n"
-    msg += f"📄 Есть твиты: {'✅' if data.get('hasArticles') else '❌'}\n"
-    
-    if data.get('articles', 0) > 0:
-        msg += f"\n📋 Первый твит (HTML):\n{data.get('firstArticleHTML', '')[:300]}..."
-    
-    await update.message.reply_text(msg)
-
-async def find_selectors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ищет правильные селекторы для твитов"""
-    user_id = update.message.from_user.id
-    
-    if user_id not in clients:
-        await update.message.reply_text("❌ Сначала отправь сообщение")
-        return
-    
-    client = clients[user_id]
-    if not client.session_id:
-        await update.message.reply_text("❌ Нет активной вкладки")
-        return
-    
-    result = await client.send("Runtime.evaluate", {
-        "expression": """
-            (function() {
-                const selectors = {
-                    articles: document.querySelectorAll('article').length,
-                    tweetTest: document.querySelectorAll('[data-testid="tweet"]').length,
-                    tweetText: document.querySelectorAll('[data-testid="tweetText"]').length,
-                    userNames: document.querySelectorAll('[data-testid="User-Name"]').length,
-                    likes: document.querySelectorAll('[data-testid="like"]').length,
-                    retweets: document.querySelectorAll('[data-testid="retweet"]').length,
-                };
-                
-                const firstArticle = document.querySelector('article');
-                if (firstArticle) {
-                    const textEl = firstArticle.querySelector('[data-testid="tweetText"]');
-                    const nameEl = firstArticle.querySelector('[data-testid="User-Name"]');
-                    selectors.firstTweetText = textEl ? textEl.innerText.slice(0, 50) : 'нет';
-                    selectors.firstUserName = nameEl ? nameEl.innerText : 'нет';
-                    selectors.firstArticleClass = firstArticle.className || 'нет';
-                }
-                
-                return selectors;
-            })()
-        """
-    }, session_id=client.session_id)
-    
-    data = result.get("result", {}).get("result", {}).get("value", {})
-    
-    msg = f"🔍 **Селекторы на странице:**\n"
-    msg += f"📄 article: {data.get('articles', 0)}\n"
-    msg += f"📄 [data-testid='tweet']: {data.get('tweetTest', 0)}\n"
-    msg += f"📄 [data-testid='tweetText']: {data.get('tweetText', 0)}\n"
-    msg += f"📄 [data-testid='User-Name']: {data.get('userNames', 0)}\n"
-    msg += f"📄 [data-testid='like']: {data.get('likes', 0)}\n"
-    msg += f"📄 [data-testid='retweet']: {data.get('retweets', 0)}\n"
-    msg += f"\n📋 **Первый твит:**\n"
-    msg += f"  • Текст: {data.get('firstTweetText', 'нет')}\n"
-    msg += f"  • Автор: {data.get('firstUserName', 'нет')}\n"
-    msg += f"  • Класс: {data.get('firstArticleClass', 'нет')}\n"
-    
-    await update.message.reply_text(msg)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -1374,8 +1187,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await client.navigate(client.session_id, "https://x.com")
             await client.wait_for_load(client.session_id)
             await client.wait_for_content(client.session_id)
-        
-        await client.get_maximum_snapshot()
+            await client.get_maximum_snapshot()
         
         if AGNES_API_KEY:
             response = await ask_agnes(prompt, client)
@@ -1525,8 +1337,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/click <название> - Кликнуть\n"
         "/screenshot - Скриншот\n"
         "/tweets [количество] - Показать твиты\n"
-        "/debug - Отладка страницы\n"
-        "/findselectors - Найти селекторы\n"
         "/logs - Логи\n"
         "/clear - Очистить сессию\n\n"
         "💡 На X.com доступны:\n"
@@ -1585,8 +1395,6 @@ async def main_async():
     app.add_handler(CommandHandler("click", click_command))
     app.add_handler(CommandHandler("screenshot", screenshot_command))
     app.add_handler(CommandHandler("tweets", tweets_command))
-    app.add_handler(CommandHandler("debug", debug_command))
-    app.add_handler(CommandHandler("findselectors", find_selectors_command))
     app.add_handler(CommandHandler("logs", logs_command))
     app.add_handler(CommandHandler("clear", clear_command))
     
