@@ -324,7 +324,6 @@ class CDPClient:
             return False
         
         try:
-            # Увеличиваем лимит WebSocket до 50 МБ
             self.ws = await websockets.connect(
                 ws_url,
                 ping_interval=20,
@@ -558,6 +557,7 @@ class CDPClient:
             return None
     
     async def get_maximum_snapshot(self):
+        """Оптимизированный сбор информации о странице (только полезные элементы)"""
         try:
             file_logger.log("📸 Делаю максимальный слепок...")
             
@@ -566,74 +566,78 @@ class CDPClient:
                     const result = [];
                     const all = document.querySelectorAll('*');
                     
-                    all.forEach(el => {
+                    for (const el of all) {
                         const tag = el.tagName.toLowerCase();
                         const rect = el.getBoundingClientRect();
                         const style = window.getComputedStyle(el);
+                        
+                        // Только первые 100 символов
+                        const text = (el.textContent || '').trim().slice(0, 100);
+                        const hasText = text.length > 0;
                         
                         const visible = rect.width > 0 && rect.height > 0 && 
                                        style.display !== 'none' && 
                                        style.visibility !== 'hidden';
                         
                         const attrs = {};
+                        // Берем ТОЛЬКО важные атрибуты
+                        const importantAttrs = ['id', 'class', 'role', 'aria-label', 'data-testid', 
+                                               'name', 'type', 'placeholder', 'href', 'title'];
                         for (const attr of el.attributes) {
-                            attrs[attr.name] = attr.value;
+                            if (importantAttrs.includes(attr.name)) {
+                                attrs[attr.name] = attr.value;
+                            }
                         }
                         
+                        // Проверка на полезность
                         const isInteractive = (
                             tag === 'button' ||
                             tag === 'a' ||
                             attrs.role === 'button' ||
-                            (attrs['data-testid'] && attrs['data-testid'].toLowerCase().includes('obst')) ||
-                            (attrs['aria-label'] && (
-                                attrs['aria-label'].toLowerCase().includes('обзор') ||
-                                attrs['aria-label'].toLowerCase().includes('explore') ||
-                                attrs['aria-label'].toLowerCase().includes('review')
-                            ))
+                            attrs['data-testid'] ||
+                            attrs['aria-label']
                         );
                         
-                        const important = ['button', 'a', 'input', 'textarea', 'select', 'form',
-                                          'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'img', 'video',
-                                          'iframe', 'div', 'span', 'section', 'article', 'nav',
-                                          'header', 'footer', 'main', 'aside', 'ul', 'ol', 'li',
-                                          'label', 'option', 'legend', 'fieldset', 'dialog',
-                                          'svg', 'path', 'g'];
+                        const isField = (
+                            tag === 'input' ||
+                            tag === 'textarea' ||
+                            tag === 'select'
+                        );
                         
-                        const hasText = (el.textContent || '').trim().length > 0;
-                        const hasRole = attrs.role || attrs['aria-label'] || attrs['aria-labelledby'];
+                        const isHeading = (
+                            tag === 'h1' || tag === 'h2' || tag === 'h3' ||
+                            tag === 'h4' || tag === 'h5' || tag === 'h6'
+                        );
                         
-                        if (important.includes(tag) || hasRole || isInteractive || (hasText && tag === 'span')) {
-                            let text = (el.textContent || '').trim().slice(0, 200);
-                            if (!text && attrs['aria-label']) {
-                                text = attrs['aria-label'];
-                            }
-                            
-                            result.push({
-                                tag: tag,
-                                text: text,
-                                id: el.id || '',
-                                class: el.className || '',
-                                attrs: attrs,
-                                visible: visible,
-                                x: Math.round(rect.x),
-                                y: Math.round(rect.y),
-                                width: Math.round(rect.width),
-                                height: Math.round(rect.height),
-                                style: {
-                                    display: style.display,
-                                    visibility: style.visibility,
-                                    position: style.position,
-                                    color: style.color,
-                                    fontSize: style.fontSize,
-                                    backgroundColor: style.backgroundColor,
-                                    cursor: style.cursor
-                                },
-                                parent: el.parentElement ? el.parentElement.tagName.toLowerCase() : null,
-                                children: el.children.length,
-                                isInteractive: isInteractive
-                            });
-                        }
-                    });
+                        const isTextElement = (
+                            tag === 'p' || tag === 'span' || tag === 'div' || 
+                            tag === 'li' || tag === 'label'
+                        );
+                        
+                        const isUseful = (
+                            isInteractive || isField ||
+                            (isHeading && hasText) ||
+                            ((isTextElement) && hasText) ||
+                            attrs['aria-label'] || attrs['title'] || attrs['data-testid']
+                        );
+                        
+                        // Отсеиваем мусор
+                        if (!isUseful) continue;
+                        if (!hasText && !attrs['aria-label'] && !attrs['title']) continue;
+                        if (!visible && !isInteractive) continue;
+                        
+                        // МИНИМАЛЬНЫЙ набор данных
+                        result.push({
+                            t: tag,                    // tag
+                            x: text.slice(0, 50),      // текст (50 символов)
+                            a: attrs,                  // только важные атрибуты
+                            v: visible,                // видимость
+                            i: isInteractive           // интерактивность
+                        });
+                        
+                        // Ограничиваем количество элементов
+                        if (result.length >= 300) break;
+                    }
                     
                     return result;
                 })()
@@ -642,91 +646,25 @@ class CDPClient:
             if elements is None:
                 elements = []
             
+            # Получаем заголовок и URL (отдельно, один раз)
             title = await self.eval_js("document.title") or "Нет заголовка"
             url = await self.eval_js("window.location.href") or "Нет URL"
             
-            all_fields = []
-            
-            inputs = [e for e in elements if e.get('tag') == 'input']
-            for inp in inputs:
-                attrs = inp.get('attrs', {})
-                inp['field_type'] = 'input'
-                inp['field_selector'] = f"input[name='{attrs.get('name', '')}']" if attrs.get('name') else f"input[type='{attrs.get('type', 'text')}']"
-                all_fields.append(inp)
-            
-            textareas = [e for e in elements if e.get('tag') == 'textarea']
-            for ta in textareas:
-                attrs = ta.get('attrs', {})
-                ta['field_type'] = 'textarea'
-                ta['field_selector'] = f"textarea[name='{attrs.get('name', '')}']" if attrs.get('name') else "textarea"
-                all_fields.append(ta)
-            
-            selects = [e for e in elements if e.get('tag') == 'select']
-            for sel in selects:
-                attrs = sel.get('attrs', {})
-                sel['field_type'] = 'select'
-                sel['field_selector'] = f"select[name='{attrs.get('name', '')}']" if attrs.get('name') else "select"
-                all_fields.append(sel)
-            
-            contenteditables = [e for e in elements if e.get('attrs', {}).get('contenteditable') == 'true']
-            for ce in contenteditables:
-                ce['field_type'] = 'contenteditable'
-                class_name = ce.get('class', '')
-                if isinstance(class_name, list):
-                    class_name = ' '.join(class_name)
-                ce['field_selector'] = ce.get('id') and f"#{ce.get('id')}" or (class_name and f".{class_name.replace(' ', '.')}" or "div[contenteditable='true']")
-                all_fields.append(ce)
-            
-            roles = [e for e in elements if e.get('attrs', {}).get('role') in ['textbox', 'searchbox', 'combobox']]
-            for role in roles:
-                role['field_type'] = 'role'
-                role['field_selector'] = role.get('id') and f"#{role.get('id')}" or f"[role='{role.get('attrs', {}).get('role')}']"
-                all_fields.append(role)
-            
-            buttons = []
-            for el in elements:
-                tag = el.get('tag', '')
-                attrs = el.get('attrs', {})
-                is_interactive = el.get('isInteractive', False)
-                
-                if (tag == 'button' or 
-                    (tag == 'input' and attrs.get('type') in ['submit', 'button']) or
-                    attrs.get('role') == 'button' or
-                    is_interactive or
-                    attrs.get('data-testid') == 'obst' or
-                    'button' in (attrs.get('class', '') or '').lower() or
-                    (attrs.get('aria-label') and (
-                        'обзор' in attrs.get('aria-label', '').lower() or
-                        'explore' in attrs.get('aria-label', '').lower() or
-                        'review' in attrs.get('aria-label', '').lower()
-                    ))):
-                    buttons.append(el)
-            
-            links = [e for e in elements if e.get('tag') == 'a' and e.get('attrs', {}).get('href')]
-            forms = [e for e in elements if e.get('tag') == 'form']
-            headings = [e for e in elements if e.get('tag') in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']]
-            visible = [e for e in elements if e.get('visible')]
+            # Собираем кнопки и поля из уже полученных элементов
+            buttons = [e for e in elements if e.get('i') or e.get('t') == 'button' or e.get('t') == 'a']
+            fields = [e for e in elements if e.get('t') in ['input', 'textarea', 'select']]
             
             self.full_snapshot = {
                 "title": title,
                 "url": url,
                 "total": len(elements),
-                "all_elements": elements[:500],
+                "all_elements": elements,
                 "buttons": buttons,
-                "fields": all_fields,
-                "inputs": inputs,
-                "textareas": textareas,
-                "selects": selects,
-                "contenteditables": contenteditables,
-                "roles": roles,
-                "links": links,
-                "forms": forms,
-                "headings": headings,
-                "visible": visible,
+                "fields": fields,
                 "masked": self.masked
             }
             
-            file_logger.log(f"✅ Максимальный слепок: {len(elements)} элементов, {len(buttons)} кнопок, {len(all_fields)} полей")
+            file_logger.log(f"✅ Слепок: {len(elements)} элементов, {len(buttons)} кнопок, {len(fields)} полей")
             return True
             
         except Exception as e:
@@ -783,61 +721,40 @@ class CDPClient:
             return []
     
     async def get_page_description(self):
-        """Полное описание страницы со всеми кнопками"""
+        """Полное описание страницы со всеми кнопками (оптимизированное)"""
         if not self.full_snapshot:
             await self.get_maximum_snapshot()
         
         info = self.full_snapshot or {}
         
         buttons_text = ""
-        buttons = info.get('buttons', [])
-        
-        if buttons:
-            buttons_sorted = sorted(buttons, key=lambda x: x.get('visible', False), reverse=True)
-            
-            for el in buttons_sorted:
-                text = el.get('text', '')
-                if not text:
-                    attrs = el.get('attrs', {})
-                    text = attrs.get('aria-label', '') or attrs.get('value', '') or attrs.get('title', '') or attrs.get('data-testid', '')
-                
-                if text and text.strip():
-                    visible_mark = "👁️" if el.get('visible') else "👻"
-                    selector = el.get('id') and f"#{el.get('id')}" or el.get('class') and f".{el.get('class', '').split()[0] if el.get('class') else ''}" or el.get('tag', '')
-                    buttons_text += f"  {visible_mark} {text[:50]}\n"
-                else:
-                    tag = el.get('tag', '')
-                    attrs = el.get('attrs', {})
-                    aria_label = attrs.get('aria-label', '')
-                    data_testid = attrs.get('data-testid', '')
-                    if aria_label or data_testid:
-                        buttons_text += f"  🏷️ {tag} [aria-label={aria_label[:30]}] [data-testid={data_testid[:30]}]\n"
+        for el in info.get('buttons', [])[:20]:
+            attrs = el.get('a', {})
+            text = el.get('x', '') or attrs.get('aria-label', '') or attrs.get('data-testid', '')
+            if text:
+                visible_mark = "👁️" if el.get('v') else "👻"
+                buttons_text += f"  {visible_mark} {text[:30]}\n"
         
         fields_text = ""
-        for el in info.get('fields', []):
-            attrs = el.get('attrs', {})
-            field_type = el.get('field_type', 'unknown')
-            name = attrs.get('name', '')
-            placeholder = attrs.get('placeholder', '')
-            aria_label = attrs.get('aria-label', '')
-            field_name = name or placeholder or aria_label or field_type
-            selector = el.get('field_selector', '')
-            fields_text += f"  • {field_name[:30]} → {selector}\n"
+        for el in info.get('fields', [])[:5]:
+            attrs = el.get('a', {})
+            name = attrs.get('name', '') or attrs.get('placeholder', '') or attrs.get('aria-label', '')
+            if name:
+                fields_text += f"  • {name[:30]}\n"
         
         desc = f"""
 📄 **СТРАНИЦА:** {info.get('title', 'Нет заголовка')}
 🔗 **URL:** {info.get('url', 'Нет URL')}
-📊 **ВСЕГО ЭЛЕМЕНТОВ:** {info.get('total', 0)}
-🍪 **КУКИ УСТАНОВЛЕНЫ:** {'✅ Да' if self.cookies_set else '❌ Нет'}
+📊 **ЭЛЕМЕНТОВ:** {info.get('total', 0)}
+🍪 **КУКИ:** {'✅ Да' if self.cookies_set else '❌ Нет'}
 🕵️ **МАСКИРОВКА:** {'✅ Активна' if self.masked else '❌ Не активна'}
 
-🔘 **ВСЕ КНОПКИ ({len(buttons)}):**
+🔘 **КНОПКИ ({len(info.get('buttons', []))}):**
 {buttons_text}
 
-📝 **ПОЛЯ ВВОДА ({len(info.get('fields', []))}):**
+📝 **ПОЛЯ ({len(info.get('fields', []))}):**
 {fields_text}
 """
-        
         return desc
     
     async def click_element(self, selector):
@@ -1408,7 +1325,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- Команды ----------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Короткое меню без лишнего текста
     await update.message.reply_text(
         "🔍 **Команды:**\n"
         "/cdp - статус браузера\n"
