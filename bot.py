@@ -1,10 +1,21 @@
 import os
+import sys
 import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
+# Добавляем текущую папку в путь (чтобы найти accessibility.py)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 # Импортируем модуль с Accessibility Tree
-from accessibility import UniversalModel, get_accessibility_snapshot
+try:
+    from accessibility import UniversalModel, UniversalElement, get_accessibility_snapshot
+    print("✅ Модуль accessibility.py найден и импортирован!")
+except ImportError as e:
+    print(f"❌ Ошибка импорта: {e}")
+    print(f"   Файл accessibility.py должен лежать в {os.path.dirname(os.path.abspath(__file__))}")
+    UniversalModel = None
+    get_accessibility_snapshot = None
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -21,16 +32,16 @@ if not TOKEN:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "✅ Бот работает!\n\n"
-        "Модуль accessibility.py подключен.\n"
-        "UniversalModel доступен."
+        "Проверь /test - покажет, найден ли модуль"
     )
 
 
 async def test_ax(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Тестовая команда для проверки модуля"""
     try:
-        # Проверяем, что модуль импортирован
-        from accessibility import UniversalModel, UniversalElement, get_accessibility_snapshot
+        if UniversalModel is None:
+            await update.message.reply_text("❌ Модуль accessibility.py НЕ НАЙДЕН!\n\nФайл должен лежать в одной папке с bot.py")
+            return
         
         # Создаём тестовую модель
         test_model = UniversalModel()
