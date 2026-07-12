@@ -558,87 +558,72 @@ class CDPClient:
         
         return True
     
-    async def screenshot_with_pillow(self, session_id):
-        """Скриншот с обработкой через Pillow"""
+    # ==================== НОВЫЙ МЕТОД СКРИНШОТА ====================
+    async def screenshot(self, session_id):
+        """Скриншот как в рабочем примере - ПРОСТОЙ И НАДЁЖНЫЙ"""
         try:
-            # 1. Проверяем размеры страницы через JS
-            dims = await self.eval_js("""
-                (function() {
-                    const d = document.documentElement;
-                    const b = document.body;
-                    return {
-                        w: Math.max(d.scrollWidth, b.scrollWidth, window.innerWidth) || 1920,
-                        h: Math.max(d.scrollHeight, b.scrollHeight, window.innerHeight) || 1080
-                    };
-                })()
-            """, session_id)
+            # 1. Проверяем, что страница загружена
+            title = await self.eval_js("document.title", session_id)
+            if not title or title == "":
+                print("🌐 Открываю Google...")
+                await self.navigate(session_id, "https://google.com")
+                await asyncio.sleep(2)
+                title = await self.eval_js("document.title", session_id)
+                if not title:
+                    print("❌ Не удалось загрузить страницу")
+                    return None
             
-            width = dims.get('w', 1920) if dims else 1920
-            height = dims.get('h', 1080) if dims else 1080
+            print(f"📄 Текущий заголовок: {title}")
+            print("📸 Делаю скриншот...")
             
-            print(f"📐 Размеры страницы: {width}x{height}")
-            
-            # 2. Делаем скриншот
-            result = await self.send("Page.captureScreenshot", {
-                "format": "png",
-                "captureBeyondViewport": True,
-                "fromSurface": True
+            # 2. Делаем скриншот с ПРОСТЫМИ параметрами (как в примере)
+            resp = await self.send("Page.captureScreenshot", {
+                "format": "jpeg",
+                "quality": 70,
+                "captureBeyondViewport": False,
+                "fromSurface": True,
+                "optimizeForSpeed": True
             }, session_id=session_id)
             
-            if "result" not in result or "data" not in result["result"]:
-                return None
+            if "result" in resp and "data" in resp["result"]:
+                img_data = base64.b64decode(resp["result"]["data"])
+                
+                if len(img_data) < 100:
+                    print("❌ Скриншот слишком маленький")
+                    return None
+                
+                # Проверяем JPEG сигнатуру
+                if img_data[:2] == b'\xff\xd8':
+                    print(f"✅ Скриншот сделан ({len(img_data)} байт)")
+                    return img_data
+                else:
+                    print("❌ Невалидный формат изображения")
+                    return None
             
-            img_data = base64.b64decode(result["result"]["data"])
-            
-            if len(img_data) < 100:
-                print("❌ Скриншот слишком маленький")
-                return None
-            
-            # 3. Обрабатываем через Pillow
-            if PILLOW_AVAILABLE:
+            print("❌ Не удалось получить скриншот")
+            return None
+                
+        except Exception as e:
+            print(f"❌ Screenshot error: {e}")
+            return None
+    
+    async def screenshot_with_pillow(self, session_id):
+        """Скриншот с обработкой через Pillow (как запасной вариант)"""
+        try:
+            # Пробуем простой метод
+            img_data = await self.screenshot(session_id)
+            if img_data and PILLOW_AVAILABLE:
                 try:
                     img = Image.open(BytesIO(img_data))
                     w, h = img.size
-                    print(f"📐 Реальный размер: {w}x{h}")
+                    print(f"📐 Размер: {w}x{h}")
                     
-                    # Если изображение слишком маленькое - пробуем с clip
-                    if w < 100 or h < 100:
-                        print("⚠️ Изображение слишком маленькое, пробую с clip...")
-                        
-                        result = await self.send("Page.captureScreenshot", {
-                            "format": "png",
-                            "clip": {
-                                "x": 0,
-                                "y": 0,
-                                "width": min(width, 1920),
-                                "height": min(height, 1080),
-                                "scale": 1
-                            }
-                        }, session_id=session_id)
-                        
-                        if "result" in result and "data" in result["result"]:
-                            img_data = base64.b64decode(result["result"]["data"])
-                            img = Image.open(BytesIO(img_data))
-                            w, h = img.size
-                            print(f"📐 Новый размер: {w}x{h}")
-                    
-                    # Сохраняем как JPEG для уменьшения размера
-                    output = BytesIO()
-                    if img.mode in ('RGBA', 'LA', 'P'):
-                        img = img.convert('RGB')
-                    img.save(output, format='JPEG', quality=85)
-                    output.seek(0)
-                    
-                    print(f"✅ Скриншот обработан через Pillow: {w}x{h}")
-                    return output.getvalue()
-                    
+                    if w > 0 and h > 0:
+                        return img_data
                 except Exception as e:
                     print(f"⚠️ Pillow ошибка: {e}")
-                    # Возвращаем оригинал
                     return img_data
-            else:
-                # Если Pillow нет - возвращаем оригинал
-                return img_data
+            return img_data
                 
         except Exception as e:
             print(f"❌ Screenshot error: {e}")
@@ -806,12 +791,11 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         await update.message.reply_text("📸 Делаю скриншот...")
         
-        # Используем скриншот с Pillow
-        image_data = await cdp.screenshot_with_pillow(session_id)
+        # Используем простой метод (как в рабочем примере)
+        image_data = await cdp.screenshot(session_id)
         
         if image_data:
             try:
-                # Отправляем как JPEG
                 await update.message.reply_photo(
                     photo=BytesIO(image_data),
                     caption="📸 Скриншот страницы"
