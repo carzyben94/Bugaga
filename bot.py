@@ -2,7 +2,7 @@ import os
 import time
 import logging
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
 logging.basicConfig(
@@ -36,7 +36,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     file_logger.log(f"User {user.id} (@{user.username}) started bot")
     
     await update.message.reply_text(
-        "/logs - Получить логи"
+        "👋 Привет! Я бот-логгер.\n\n"
+        "Доступные команды:\n"
+        "/logs - Получить файл с логами"
     )
 
 async def logs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -54,19 +56,12 @@ async def logs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка при отправке логов: {e}")
 
-async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    text = update.message.text
-    file_logger.log(f"User {user.id}: {text}", level="DEBUG")
-    await update.message.reply_text(f"Вы написали: {text}")
-
 # ========== ЗАПУСК ==========
 def main() -> None:
     app = Application.builder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("logs", logs))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
     
     logger.info("🚀 Бот запущен!")
     file_logger.log("Bot started", "INFO")
