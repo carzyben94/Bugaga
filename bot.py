@@ -324,11 +324,13 @@ class CDPClient:
             return False
         
         try:
+            # ⚡ УВЕЛИЧИВАЕМ ЛИМИТ WEBSOCKET ДО 50 МБ
             self.ws = await websockets.connect(
                 ws_url,
                 ping_interval=20,
                 ping_timeout=60,
-                close_timeout=10
+                close_timeout=10,
+                max_size=50 * 1024 * 1024  # 50 MB лимит
             )
             self.connected = True
             file_logger.log("✅ WebSocket подключен")
