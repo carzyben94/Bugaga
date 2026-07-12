@@ -8,6 +8,8 @@ import time
 import base64
 import tempfile
 import shutil
+import signal
+import sys
 from io import BytesIO
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -32,6 +34,11 @@ COOKIES = [
     {"domain": ".x.com", "name": "__cf_bm", "value": "Ipt0If1rT4S3kI3tVsr58Sup_Fm8GPuT370v3cw5dW4-1783875796.4839864-1.0.1.1-RSmrxzVUAp2qPLNWwlQOxmNTWhPuyAZTQWafhPHEMyS47WRvhV9dkM6b2ltAOWrIC6zrzNH9ezPI0iZyG82bLPSJ7OFV1aYc1a5rwQJdlrUqp3gxHe_JjkpeqdMoEZ9O", "path": "/"}
 ]
 
+# ==================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ====================
+app = None
+chrome_manager = None
+cdp = None
+
 # ==================== УПРАВЛЕНИЕ БРАУЗЕРОМ ====================
 class ChromeManager:
     def __init__(self, chrome_path=CHROME_PATH, port=CHROME_PORT):
@@ -40,7 +47,6 @@ class ChromeManager:
         self.process = None
         self.ws_endpoint = None
         self.user_data_dir = None
-        self._loop = None
     
     def _find_chrome(self):
         """Ищет Chrome в разных местах"""
@@ -111,10 +117,9 @@ class ChromeManager:
         try:
             self.process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                stdin=subprocess.DEVNULL,
-                text=True
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL
             )
             
             # Ждём запуска
@@ -127,11 +132,7 @@ class ChromeManager:
                         return True
                 print(f"⏳ Жду запуск Chrome... {_+1}/10")
             
-            # Если не запустился, выводим ошибку
-            stdout, stderr = self.process.communicate(timeout=5)
-            print(f"❌ Ошибка запуска Chrome:")
-            print(f"STDOUT: {stdout[:500]}")
-            print(f"STDERR: {stderr[:500]}")
+            print("❌ Chrome не запустился за 10 секунд")
             return False
                 
         except Exception as e:
@@ -153,17 +154,17 @@ class ChromeManager:
             return None
     
     async def set_cookies_after_start(self):
-        """Устанавливает куки после запуска браузера (вызывается из main)"""
+        """Устанавливает куки после запуска браузера"""
         try:
             print("🍪 Начинаю установку кук...")
-            cdp = CDPClient(self.ws_endpoint)
-            await cdp.connect()
+            cdp_temp = CDPClient(self.ws_endpoint)
+            await cdp_temp.connect()
             
-            session_id, _ = await cdp.create_tab()
+            session_id, _ = await cdp_temp.create_tab()
             
             for cookie in COOKIES:
                 try:
-                    await cdp.send("Network.setCookie", {
+                    await cdp_temp.send("Network.setCookie", {
                         "name": cookie["name"],
                         "value": cookie["value"],
                         "domain": cookie["domain"],
@@ -176,8 +177,8 @@ class ChromeManager:
                 except Exception as e:
                     print(f"⚠️ Ошибка куки {cookie['name']}: {e}")
             
-            await cdp.close_tab(session_id)
-            await cdp.close()
+            await cdp_temp.close_tab(session_id)
+            await cdp_temp.close()
             print("✅ Все куки установлены")
         except Exception as e:
             print(f"⚠️ Ошибка установки кук: {e}")
@@ -208,7 +209,12 @@ class CDPClient:
     async def connect(self):
         if not self.ws_endpoint:
             raise Exception("WebSocket endpoint не указан")
-        self.websocket = await websockets.connect(self.ws_endpoint)
+        self.websocket = await websockets.connect(
+            self.ws_endpoint,
+            ping_interval=20,
+            ping_timeout=30,
+            close_timeout=10
+        )
         print(f"✅ Подключено к Chrome: {self.ws_endpoint}")
     
     async def send(self, method, params=None, session_id=None):
@@ -391,15 +397,6 @@ class CDPClient:
         if self.websocket:
             await self.websocket.close()
 
-# ==================== ИНИЦИАЛИЗАЦИЯ ====================
-chrome_manager = ChromeManager()
-
-if not chrome_manager.start():
-    print("❌ Не удалось запустить Chrome")
-    exit(1)
-
-cdp = CDPClient(chrome_manager.ws_endpoint)
-
 # ==================== ТЕЛЕГРАМ БОТ ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -411,6 +408,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global cdp
+    
     url = update.message.text.strip()
     
     if not url.startswith(("http://", "https://")):
@@ -554,16 +553,43 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ==================== ЗАПУСК БОТА ====================
+async def shutdown():
+    """Корректное завершение"""
+    global app, chrome_manager, cdp
+    
+    print("\n🛑 Завершение работы...")
+    
+    # Останавливаем бота
+    if app:
+        await app.stop()
+        await app.shutdown()
+        print("✅ Бот остановлен")
+    
+    # Закрываем соединение с Chrome
+    if cdp and cdp.websocket:
+        await cdp.close()
+        print("✅ WebSocket закрыт")
+    
+    # Останавливаем Chrome
+    if chrome_manager:
+        chrome_manager.stop()
+    
+    print("👋 Завершено")
+
 async def main_async():
     """Асинхронный запуск бота"""
+    global app, chrome_manager, cdp
+    
     print("🚀 Запуск бота...")
     print(f"🔗 Chrome: {chrome_manager.ws_endpoint}")
     
     # Устанавливаем куки
     await chrome_manager.set_cookies_after_start()
     
+    # Создаём приложение
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
+    # Регистрируем обработчики
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("click", click_command))
@@ -572,12 +598,49 @@ async def main_async():
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     
+    # Обработка сигналов
+    loop = asyncio.get_event_loop()
+    for sig in [signal.SIGINT, signal.SIGTERM]:
+        loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown()))
+    
     print("✅ Бот запущен и готов к работе!")
-    await app.run_polling()
+    
+    try:
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling()
+        
+        # Держим бота запущенным
+        while True:
+            await asyncio.sleep(1)
+            
+    except asyncio.CancelledError:
+        pass
+    finally:
+        await shutdown()
 
 def main():
     """Запуск"""
-    asyncio.run(main_async())
+    global chrome_manager, cdp
+    
+    # Создаём менеджер Chrome
+    chrome_manager = ChromeManager()
+    
+    if not chrome_manager.start():
+        print("❌ Не удалось запустить Chrome")
+        sys.exit(1)
+    
+    # Создаём CDP клиент
+    cdp = CDPClient(chrome_manager.ws_endpoint)
+    
+    # Запускаем асинхронный main
+    try:
+        asyncio.run(main_async())
+    except KeyboardInterrupt:
+        print("\n👋 Прервано пользователем")
+    finally:
+        if chrome_manager:
+            chrome_manager.stop()
 
 if __name__ == "__main__":
     main()
