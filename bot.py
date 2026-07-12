@@ -19,19 +19,129 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHROME_PATH = "/usr/bin/google-chrome"
 CHROME_PORT = 9222
 
-# ==================== КУКИ ДЛЯ X/TWITTER ====================
-COOKIES = [
-    {"domain": ".x.com", "name": "__cuid", "value": "55d2d7c5-4888-430a-b024-dd785da46ef4", "path": "/"},
-    {"domain": ".x.com", "name": "lang", "value": "ru", "path": "/"},
-    {"domain": ".x.com", "name": "dnt", "value": "1", "path": "/"},
-    {"domain": ".x.com", "name": "guest_id", "value": "v1%3A178267838599411411", "path": "/"},
-    {"domain": ".x.com", "name": "guest_id_marketing", "value": "v1%3A178267838599411411", "path": "/"},
-    {"domain": ".x.com", "name": "guest_id_ads", "value": "v1%3A178267838599411411", "path": "/"},
-    {"domain": ".x.com", "name": "personalization_id", "value": "\"v1_DKrxLZAC902dMFdd1QrVYg==\"", "path": "/"},
-    {"domain": ".x.com", "name": "twid", "value": "u%3D2067347503503052800", "path": "/"},
-    {"domain": ".x.com", "name": "auth_token", "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936", "path": "/"},
-    {"domain": ".x.com", "name": "ct0", "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb", "path": "/"},
-    {"domain": ".x.com", "name": "__cf_bm", "value": "Ipt0If1rT4S3kI3tVsr58Sup_Fm8GPuT370v3cw5dW4-1783875796.4839864-1.0.1.1-RSmrxzVUAp2qPLNWwlQOxmNTWhPuyAZTQWafhPHEMyS47WRvhV9dkM6b2ltAOWrIC6zrzNH9ezPI0iZyG82bLPSJ7OFV1aYc1a5rwQJdlrUqp3gxHe_JjkpeqdMoEZ9O", "path": "/"}
+# ==================== КУКИ ДЛЯ X/TWITTER (как в примере) ====================
+X_COOKIES = [
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "__cuid",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "lang",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "ru"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "dnt",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "1"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "guest_id",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "v1%3A178267838599411411"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "guest_id_marketing",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "v1%3A178267838599411411"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "guest_id_ads",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "v1%3A178267838599411411"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "personalization_id",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "\"v1_DKrxLZAC902dMFdd1QrVYg==\""
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "twid",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "u%3D2067347503503052800"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "auth_token",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "ct0",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "__cf_bm",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "Eb4nVvazwJ5mDp0c.6Ye5ub0rukgdQkcFzPf8.wdbIQ-1783798267.7075489-1.0.1.1-59IptPdWY9w0zyKvebR59I.8iB4M1DWfNNZQW0.c.E4lDCU3wTfEcds69RVBkOeQ9LUDZNLGRv6z8InGbCsH1RaTCKaqehL94yq0FgvU7QB9cbE8BO4.2Y8BMRnN_Nks"
+    }
 ]
 
 # ==================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ====================
@@ -154,7 +264,7 @@ class ChromeManager:
             return None
     
     async def set_cookies_after_start(self):
-        """Устанавливает куки после запуска браузера"""
+        """Устанавливает куки как в рабочем примере через Network.setCookies"""
         try:
             print("🍪 Начинаю установку кук...")
             cdp_temp = CDPClient(self.ws_endpoint)
@@ -162,24 +272,35 @@ class ChromeManager:
             
             session_id, _ = await cdp_temp.create_tab()
             
-            for cookie in COOKIES:
-                try:
-                    await cdp_temp.send("Network.setCookie", {
-                        "name": cookie["name"],
-                        "value": cookie["value"],
-                        "domain": cookie["domain"],
-                        "path": cookie.get("path", "/"),
-                        "secure": False,
-                        "httpOnly": False,
-                        "sameSite": "None"
-                    }, session_id=session_id)
-                    print(f"🍪 Кука установлена: {cookie['name']}")
-                except Exception as e:
-                    print(f"⚠️ Ошибка куки {cookie['name']}: {e}")
+            # Формируем куки для CDP
+            cdp_cookies = []
+            for cookie in X_COOKIES:
+                cdp_cookie = {
+                    "name": cookie.get("name"),
+                    "value": cookie.get("value"),
+                    "domain": cookie.get("domain"),
+                    "path": cookie.get("path", "/"),
+                    "secure": cookie.get("secure", False),
+                    "httpOnly": cookie.get("httpOnly", False),
+                    "sameSite": cookie.get("sameSite", "unspecified"),
+                    "session": cookie.get("session", True)
+                }
+                cdp_cookies.append(cdp_cookie)
+            
+            # Отправляем все куки одним запросом (как в примере)
+            result = await cdp_temp.send("Network.setCookies", {
+                "cookies": cdp_cookies
+            }, session_id=session_id)
+            
+            if "error" not in result:
+                print(f"✅ Установлено {len(X_COOKIES)} кук")
+            else:
+                print(f"❌ Ошибка: {result.get('error')}")
             
             await cdp_temp.close_tab(session_id)
             await cdp_temp.close()
             print("✅ Все куки установлены")
+            
         except Exception as e:
             print(f"⚠️ Ошибка установки кук: {e}")
     
@@ -205,6 +326,7 @@ class CDPClient:
         self.msg_id = 0
         self.targets = {}
         self.session_id = None
+        self.cookies_set = False  # как в примере
     
     async def connect(self):
         if not self.ws_endpoint:
@@ -213,7 +335,8 @@ class CDPClient:
             self.ws_endpoint,
             ping_interval=20,
             ping_timeout=30,
-            close_timeout=10
+            close_timeout=10,
+            max_size=50 * 1024 * 1024  # как в примере - 50 MB
         )
         print(f"✅ Подключено к Chrome: {self.ws_endpoint}")
     
@@ -255,6 +378,41 @@ class CDPClient:
         self.targets[session_id] = target_id
         self.session_id = session_id
         return session_id, target_id
+    
+    async def set_cookies(self, cookies):
+        """Установка кук через Network.setCookies (как в примере)"""
+        try:
+            print(f"🍪 Установка {len(cookies)} кук...")
+            
+            cdp_cookies = []
+            for cookie in cookies:
+                cdp_cookie = {
+                    "name": cookie.get("name"),
+                    "value": cookie.get("value"),
+                    "domain": cookie.get("domain"),
+                    "path": cookie.get("path", "/"),
+                    "secure": cookie.get("secure", False),
+                    "httpOnly": cookie.get("httpOnly", False),
+                    "sameSite": cookie.get("sameSite", "unspecified"),
+                    "session": cookie.get("session", True)
+                }
+                cdp_cookies.append(cdp_cookie)
+            
+            result = await self.send("Network.setCookies", {
+                "cookies": cdp_cookies
+            }, session_id=self.session_id)
+            
+            if "error" not in result:
+                self.cookies_set = True
+                print(f"✅ Установлено {len(cookies)} кук")
+                return True
+            else:
+                print(f"❌ Ошибка: {result.get('error')}")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Ошибка установки кук: {e}")
+            return False
     
     async def navigate(self, session_id, url):
         return await self.send("Page.navigate", {"url": url}, session_id=session_id)
@@ -404,8 +562,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📌 Отправь мне URL, и я покажу все элементы.\n"
         "📌 Используй /click <селектор> для клика.\n"
         "📌 Используй /fill <селектор> <текст> для заполнения.\n"
-        "📌 Используй /screenshot для скриншота."
+        "📌 Используй /screenshot для скриншота.\n"
+        "🍪 Куки X.com установлены автоматически!"
     )
+
+async def set_cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ручная установка кук"""
+    global cdp
+    
+    try:
+        await update.message.reply_text("🍪 Устанавливаю куки для X.com...")
+        
+        # Проверяем соединение
+        if not cdp.websocket or not cdp.session_id:
+            await update.message.reply_text("❌ Сначала отправь URL для анализа")
+            return
+        
+        result = await cdp.set_cookies(X_COOKIES)
+        
+        if result:
+            await update.message.reply_text(f"✅ Установлено {len(X_COOKIES)} кук для X.com")
+        else:
+            await update.message.reply_text("❌ Не удалось установить куки")
+            
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global cdp
@@ -424,6 +605,9 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         session_id, target_id = await cdp.create_tab()
         context.user_data['session_id'] = session_id
+        
+        # Устанавливаем куки перед навигацией (как в примере)
+        await cdp.set_cookies(X_COOKIES)
         
         await cdp.navigate(session_id, url)
         await update.message.reply_text("⏳ Ожидаю загрузку страницы...")
@@ -463,7 +647,8 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 "❌ Интерактивных элементов не найдено.\n\n"
                 "💡 Попробуйте:\n"
-                "• /screenshot - посмотреть страницу"
+                "• /screenshot - посмотреть страницу\n"
+                "• /set_cookies - переустановить куки"
             )
             
     except Exception as e:
@@ -548,6 +733,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/click <селектор> - Кликнуть по элементу\n"
         "/fill <селектор> <текст> - Заполнить поле\n"
         "/screenshot - Сделать скриншот\n"
+        "/set_cookies - Переустановить куки X.com\n"
         "/clear - Очистить сессию\n\n"
         "🔹 Просто отправь URL для анализа страницы"
     )
@@ -559,18 +745,21 @@ async def shutdown():
     
     print("\n🛑 Завершение работы...")
     
-    # Останавливаем бота
     if app:
-        await app.stop()
-        await app.shutdown()
-        print("✅ Бот остановлен")
+        try:
+            await app.stop()
+            await app.shutdown()
+            print("✅ Бот остановлен")
+        except:
+            pass
     
-    # Закрываем соединение с Chrome
     if cdp and cdp.websocket:
-        await cdp.close()
-        print("✅ WebSocket закрыт")
+        try:
+            await cdp.close()
+            print("✅ WebSocket закрыт")
+        except:
+            pass
     
-    # Останавливаем Chrome
     if chrome_manager:
         chrome_manager.stop()
     
@@ -582,23 +771,19 @@ async def main_async():
     
     print("🚀 Запуск бота...")
     print(f"🔗 Chrome: {chrome_manager.ws_endpoint}")
+    print(f"🍪 Загружено {len(X_COOKIES)} кук для X.com")
     
-    # Устанавливаем куки
-    await chrome_manager.set_cookies_after_start()
-    
-    # Создаём приложение
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Регистрируем обработчики
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("click", click_command))
     app.add_handler(CommandHandler("fill", fill_command))
     app.add_handler(CommandHandler("screenshot", screenshot_command))
+    app.add_handler(CommandHandler("set_cookies", set_cookies_command))
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     
-    # Обработка сигналов
     loop = asyncio.get_event_loop()
     for sig in [signal.SIGINT, signal.SIGTERM]:
         loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown()))
@@ -610,7 +795,6 @@ async def main_async():
         await app.start()
         await app.updater.start_polling()
         
-        # Держим бота запущенным
         while True:
             await asyncio.sleep(1)
             
@@ -623,17 +807,14 @@ def main():
     """Запуск"""
     global chrome_manager, cdp
     
-    # Создаём менеджер Chrome
     chrome_manager = ChromeManager()
     
     if not chrome_manager.start():
         print("❌ Не удалось запустить Chrome")
         sys.exit(1)
     
-    # Создаём CDP клиент
     cdp = CDPClient(chrome_manager.ws_endpoint)
     
-    # Запускаем асинхронный main
     try:
         asyncio.run(main_async())
     except KeyboardInterrupt:
