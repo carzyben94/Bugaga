@@ -1088,29 +1088,48 @@ class CDPClient:
             return {"success": False, "error": str(e)}
     
     async def find_search_button(self):
-        """Найти кнопку поиска на странице (возвращает СЕЛЕКТОР)"""
+        """Найти кнопку поиска (лупу) на странице"""
         selector = await self.eval_js("""
             (function() {
-                const selectors = [
-                    'button[aria-label*="search"]',
-                    'button[aria-label*="Search"]',
-                    'button[aria-label*="поиск"]',
-                    '[data-testid*="search"]',
-                    '[role="button"][aria-label*="search"]',
-                    'button[type="submit"]'
-                ];
-                
-                for (const selector of selectors) {
-                    const el = document.querySelector(selector);
-                    if (el) return selector;
+                // 1. Ищем по data-testid (самый надежный)
+                const searchBtn = document.querySelector('[data-testid="SearchBox_Search_Button"]');
+                if (searchBtn) {
+                    if (searchBtn.id) return '#' + searchBtn.id;
+                    if (searchBtn.getAttribute('data-testid')) {
+                        return '[data-testid="' + searchBtn.getAttribute('data-testid') + '"]';
+                    }
                 }
                 
-                // Ищем по тексту
-                const buttons = document.querySelectorAll('button, a, [role="button"]');
-                for (const btn of buttons) {
-                    const text = btn.textContent?.toLowerCase() || '';
-                    if (text.includes('search') || text.includes('поиск')) {
-                        return 'button:contains("' + btn.textContent.trim() + '")';
+                // 2. Ищем по aria-label
+                const btns = document.querySelectorAll('button, a, [role="button"]');
+                for (const btn of btns) {
+                    const ariaLabel = btn.getAttribute('aria-label') || '';
+                    if (ariaLabel.toLowerCase().includes('search') ||
+                        ariaLabel.toLowerCase().includes('поиск')) {
+                        if (btn.id) return '#' + btn.id;
+                        if (btn.getAttribute('data-testid')) {
+                            return '[data-testid="' + btn.getAttribute('data-testid') + '"]';
+                        }
+                        return '[aria-label="' + ariaLabel + '"]';
+                    }
+                }
+                
+                // 3. Ищем SVG с лупой
+                const svgs = document.querySelectorAll('svg');
+                for (const svg of svgs) {
+                    const parent = svg.closest('button, a, [role="button"]');
+                    if (parent) {
+                        const paths = svg.querySelectorAll('path');
+                        for (const path of paths) {
+                            const d = path.getAttribute('d') || '';
+                            if (d.includes('circle') && d.includes('M')) {
+                                if (parent.id) return '#' + parent.id;
+                                if (parent.getAttribute('data-testid')) {
+                                    return '[data-testid="' + parent.getAttribute('data-testid') + '"]';
+                                }
+                                return parent.tagName.toLowerCase();
+                            }
+                        }
                     }
                 }
                 
@@ -1213,7 +1232,7 @@ class CDPClient:
             return {"success": False, "error": str(e)}
     
     async def smart_search_cdp(self, text, selector=None):
-        """УМНЫЙ ПОИСК через CDP - попробует все методы"""
+        """УМНЫЙ ПОИСК через CDP - пробует Enter, потом клик по кнопке"""
         
         file_logger.log(f"🔍 Умный поиск CDP: {text[:20]}...")
         
@@ -1224,9 +1243,14 @@ class CDPClient:
                 await asyncio.sleep(0.5)
                 enter_result = await self.press_enter_cdp()
                 if enter_result.get('success'):
-                    return {"success": True, "method": "cdp_native_enter"}
+                    await asyncio.sleep(1)
+                    url = await self.eval_js("window.location.href")
+                    if "search" in url or "query" in url or url != self.last_url:
+                        return {"success": True, "method": "cdp_native_enter"}
+                    else:
+                        file_logger.log("🔍 Enter не сработал, ищу кнопку поиска...")
         
-        # 2. Находим селектор автоматически (ТЕПЕРЬ ЭТО СТРОКА!)
+        # 2. Находим селектор автоматически
         field_selector = await self.find_search_field_selector()
         if field_selector:
             file_logger.log(f"🔍 Найден селектор поля: {field_selector}")
@@ -1235,7 +1259,12 @@ class CDPClient:
                 await asyncio.sleep(0.5)
                 enter_result = await self.press_enter_cdp()
                 if enter_result.get('success'):
-                    return {"success": True, "method": "cdp_found_selector"}
+                    await asyncio.sleep(1)
+                    url = await self.eval_js("window.location.href")
+                    if "search" in url or "query" in url or url != self.last_url:
+                        return {"success": True, "method": "cdp_found_selector"}
+                    else:
+                        file_logger.log("🔍 Enter не сработал, ищу кнопку поиска...")
         
         # 3. Пробуем через fill
         fill_result = await self.fill_element("", text)
@@ -1243,15 +1272,23 @@ class CDPClient:
             await asyncio.sleep(0.5)
             enter_result = await self.press_enter_cdp()
             if enter_result.get('success'):
-                return {"success": True, "method": "fill_cdp_enter"}
+                await asyncio.sleep(1)
+                url = await self.eval_js("window.location.href")
+                if "search" in url or "query" in url or url != self.last_url:
+                    return {"success": True, "method": "fill_cdp_enter"}
+                else:
+                    file_logger.log("🔍 Enter не сработал, ищу кнопку поиска...")
         
-        # 4. Ищем кнопку поиска (возвращает селектор)
+        # 4. ИЩЕМ И КЛИКАЕМ НА ЛУПУ
+        file_logger.log("🔍 Ищу кнопку поиска (лупу)...")
+        
         btn_selector = await self.find_search_button()
+        
         if btn_selector:
             file_logger.log(f"🔍 Найден селектор кнопки: {btn_selector}")
             result = await self.click_element(btn_selector)
             if result.get('success'):
-                return {"success": True, "method": "click_button"}
+                return {"success": True, "method": "click_search_button"}
         
         return {"success": False, "error": "Все методы не сработали"}
     
@@ -1597,6 +1634,8 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
             result = await client.smart_search_cdp(value, selector)
             if result and result.get("success"):
                 method = result.get("method", "")
+                if method == "click_search_button":
+                    return f"✅ Поиск выполнен (клик по кнопке): {value}"
                 return f"✅ Поиск выполнен ({method}): {value}"
             return f"❌ Не удалось выполнить поиск: {result.get('error', '')}"
         
