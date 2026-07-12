@@ -1087,51 +1087,6 @@ class CDPClient:
             file_logger.log(f"❌ CDP type error: {e}", "ERROR")
             return {"success": False, "error": str(e)}
     
-    async def find_search_button(self):
-        """Найти кнопку поиска (лупу) на странице"""
-        selector = await self.eval_js("""
-            (function() {
-                // 1. Ищем по data-testid (самый надежный)
-                const searchBtn = document.querySelector('[data-testid="SearchBox_Search_Button"]');
-                if (searchBtn) {
-                    if (searchBtn.id) return '#' + searchBtn.id;
-                    if (searchBtn.getAttribute('data-testid')) {
-                        return '[data-testid="' + searchBtn.getAttribute('data-testid') + '"]';
-                    }
-                }
-                
-                // 2. Ищем по aria-label (только search, не explore!)
-                const btns = document.querySelectorAll('button, a, [role="button"]');
-                for (const btn of btns) {
-                    const ariaLabel = btn.getAttribute('aria-label') || '';
-                    if (ariaLabel.toLowerCase().includes('search') &&
-                        !ariaLabel.toLowerCase().includes('explore') &&
-                        !ariaLabel.toLowerCase().includes('обзор')) {
-                        if (btn.id) return '#' + btn.id;
-                        if (btn.getAttribute('data-testid')) {
-                            return '[data-testid="' + btn.getAttribute('data-testid') + '"]';
-                        }
-                        return '[aria-label="' + ariaLabel + '"]';
-                    }
-                }
-                
-                // 3. Ищем по тексту (только search, не explore!)
-                for (const btn of btns) {
-                    const text = btn.textContent?.toLowerCase() || '';
-                    if (text.includes('search') && !text.includes('explore') && !text.includes('обзор')) {
-                        if (btn.id) return '#' + btn.id;
-                        if (btn.getAttribute('data-testid')) {
-                            return '[data-testid="' + btn.getAttribute('data-testid') + '"]';
-                        }
-                        return btn.tagName.toLowerCase();
-                    }
-                }
-                
-                return null;
-            })()
-        """)
-        return selector
-    
     async def find_search_field_selector(self):
         """Найти СЕЛЕКТОР (строку) для поля поиска"""
         selector = await self.eval_js("""
@@ -1225,57 +1180,8 @@ class CDPClient:
             file_logger.log(f"❌ CDP set value error: {e}", "ERROR")
             return {"success": False, "error": str(e)}
     
-    async def search_via_form(self, text):
-        """Поиск через отправку формы (запасной вариант)"""
-        try:
-            file_logger.log("📤 Пробую отправить форму...")
-            
-            # Находим поле и вводим текст
-            await self.fill_element("", text)
-            await asyncio.sleep(0.5)
-            
-            # Находим форму
-            form = await self.eval_js("""
-                (function() {
-                    const active = document.activeElement;
-                    if (active) {
-                        const form = active.closest('form');
-                        if (form) return form;
-                    }
-                    
-                    const forms = document.querySelectorAll('form');
-                    for (const form of forms) {
-                        const inputs = form.querySelectorAll('input[type="text"], input[type="search"]');
-                        if (inputs.length > 0) {
-                            return form;
-                        }
-                    }
-                    return null;
-                })()
-            """)
-            
-            if form:
-                await self.eval_js("""
-                    (function() {
-                        const form = document.querySelector('form');
-                        if (form) {
-                            form.dispatchEvent(new Event('submit', { bubbles: true }));
-                            form.submit();
-                        }
-                    })()
-                """)
-                file_logger.log("✅ Форма отправлена")
-                return {"success": True, "method": "form_submit"}
-            
-            file_logger.log("❌ Форма не найдена")
-            return {"success": False, "error": "Form not found"}
-            
-        except Exception as e:
-            file_logger.log(f"❌ Form search error: {e}", "ERROR")
-            return {"success": False, "error": str(e)}
-    
     async def smart_search_cdp(self, text, selector=None):
-        """УМНЫЙ ПОИСК через CDP - пробует все методы"""
+        """УМНЫЙ ПОИСК — только по точному селектору лупы!"""
         
         file_logger.log(f"🔍 Умный поиск CDP: {text[:20]}...")
         
@@ -1284,43 +1190,35 @@ class CDPClient:
             selector = await self.find_search_field_selector()
         
         if selector:
-            # 2. Активируем поле
+            # 2. Активируем поле (кликаем в него)
             file_logger.log(f"🖱️ Активирую поле: {selector}")
             await self.click_element(selector)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.5)  # Ждем появления лупы
             
             # 3. Вводим текст
             result = await self.set_value_cdp(selector, text)
             if result.get('success'):
                 await asyncio.sleep(0.5)
                 
-                # 4. Пробуем Enter
-                enter_result = await self.press_enter_cdp()
-                if enter_result.get('success'):
-                    await asyncio.sleep(1)
-                    url = await self.eval_js("window.location.href")
-                    if "search" in url or "query" in url or url != self.last_url:
-                        return {"success": True, "method": "cdp_enter"}
-                    else:
-                        file_logger.log("🔍 Enter не сработал, ищу кнопку поиска...")
+                # 4. Ищем ТОЛЬКО по точному селектору!
+                file_logger.log("🔍 Ищу лупу...")
+                
+                btn_selector = await self.eval_js("""
+                    (function() {
+                        const btn = document.querySelector('[data-testid="SearchBox_Search_Button"]');
+                        if (btn) return '[data-testid="SearchBox_Search_Button"]';
+                        return null;
+                    })()
+                """)
+                
+                if btn_selector:
+                    file_logger.log(f"🔍 Найдена лупа: {btn_selector}")
+                    await self.click_element(btn_selector)
+                    return {"success": True, "method": "click_search_button"}
+                else:
+                    file_logger.log("⚠️ Лупа не найдена")
         
-        # 5. Ищем кнопку поиска
-        file_logger.log("🔍 Ищу кнопку поиска (лупу)...")
-        btn_selector = await self.find_search_button()
-        
-        if btn_selector:
-            file_logger.log(f"🔍 Найден селектор кнопки: {btn_selector}")
-            result = await self.click_element(btn_selector)
-            if result.get('success'):
-                return {"success": True, "method": "click_search_button"}
-        
-        # 6. Пробуем отправить форму
-        file_logger.log("📤 Пробую отправить форму...")
-        form_result = await self.search_via_form(text)
-        if form_result.get('success'):
-            return {"success": True, "method": "form_submit"}
-        
-        return {"success": False, "error": "Все методы не сработали"}
+        return {"success": False, "error": "Лупа не найдена"}
     
     async def reload(self):
         await self.send_safe("Page.reload", {})
@@ -1382,13 +1280,11 @@ AGENT_CODE = """
 🤖 ТЫ — АГЕНТ ДЛЯ УПРАВЛЕНИЯ БРАУЗЕРОМ
 
 ⚠️ ГЛАВНОЕ ПРАВИЛО: ДЛЯ ПОИСКА ИСПОЛЬЗУЙ ТОЛЬКО search_cdp!
-Никогда не используй fill + press_enter или fill + click для поиска!
 
 📌 ДОСТУПНЫЕ ДЕЙСТВИЯ:
 
 1. search_cdp(value) - ЕДИНСТВЕННЫЙ ПРАВИЛЬНЫЙ СПОСОБ ПОИСКА!
    Пример: {"action": "search_cdp", "params": {"value": "вова"}}
-   Пример с селектором: {"action": "search_cdp", "params": {"value": "вова", "selector": "[aria-label='Поисковый запрос']"}}
    
 2. navigate(url) - открыть сайт
    Пример: {"action": "navigate", "params": {"url": "https://x.com"}}
@@ -1408,84 +1304,35 @@ AGENT_CODE = """
 - Только fill без поиска
 
 ✅ ВСЕГДА ИСПОЛЬЗУЙ:
-- search_cdp - он сам найдет поле, введет текст и нажмет Enter!
+- search_cdp - он сам найдет поле, введет текст и кликнет по лупе!
 
 📝 КАК ВЫБИРАТЬ СЕЛЕКТОРЫ:
 
-⚠️ Селекторы ЗАВИСЯТ от сайта!
+🔹 X.com (Twitter):
+   - Поле поиска: [aria-label="Поисковый запрос"] или [data-testid="SearchBox_Search_Input"]
+   - Кнопка поиска (ЛУПА): [data-testid="SearchBox_Search_Button"]
+   - Кнопка "Обзор": [data-testid="obst"] или [data-testid="AppTabBar_Explore_Link"]
 
 🔹 Google:
    - Поле поиска: input[name='q'] или [aria-label="Найти"]
 
-🔹 X.com (Twitter):
-   - Поле поиска: [aria-label="Search Twitter"] или [data-testid="SearchBox_Search_Input"]
-   - Кнопка поиска (ЛУПА): [data-testid="SearchBox_Search_Button"]  ← ЭТО ВАЖНО!
-   - Кнопка "Обзор": [data-testid="obst"] или [data-testid="AppTabBar_Explore_Link"]
-
 🔹 YouTube:
    - Поле поиска: input[name='search_query'] или [aria-label="Поиск"]
 
-🔹 Другие сайты:
-   - Используй aria-label если есть (он универсальный)
-   - Используй data-testid если есть
-   - Используй placeholder если есть
-   - Используй name только если других нет
-
 📝 ФОРМАТ ОТВЕТА:
+- Одно действие: {"action": "search_cdp", "params": {"value": "@elonmusk"}}
+- Несколько действий: [{"action": "navigate", "params": {"url": "https://x.com"}}, {"action": "search_cdp", "params": {"value": "@elonmusk"}}]
+- Ответ текстом: {"action": "answer", "params": {"text": "твой ответ"}}
 
-✅ Одно действие:
-{"action": "search_cdp", "params": {"value": "@elonmusk"}}
-
-✅ Несколько действий (массив):
-[
-  {"action": "navigate", "params": {"url": "https://x.com"}},
-  {"action": "search_cdp", "params": {"value": "@elonmusk"}},
-  {"action": "screenshot", "params": {}}
-]
-
-✅ Ответ текстом:
-{"action": "answer", "params": {"text": "Вот что я вижу на странице..."}}
-
-⚠️ ВАЖНЫЕ ПРАВИЛА:
-
-1. ВСЕГДА проверяй описание страницы, чтобы увидеть какие поля и кнопки доступны!
-2. Для поиска ВСЕГДА используй search_cdp - это самый надежный способ!
-3. Пользователь может писать по-русски, но селекторы используй АНГЛИЙСКИЕ!
-4. Перевод названий X.com:
-   - "Обзор" → "Explore"
-   - "Главная" → "Home"  
-   - "Уведомления" → "Notifications"
-   - "Сообщения" → "Messages"
-   - "Закладки" → "Bookmarks"
-   - "Профиль" → "Profile"
-5. Если не знаешь селектор - просто используй search_cdp без selector, он сам найдет поле!
-
-🔍 ПРИМЕРЫ ЗАПРОСОВ И ОТВЕТОВ:
-
-Пользователь: "Зайди на x.com и найди @elonmusk"
-Ты отвечаешь:
-[
-  {"action": "navigate", "params": {"url": "https://x.com"}},
-  {"action": "search_cdp", "params": {"value": "@elonmusk"}}
-]
-
-Пользователь: "Что видишь на странице?"
-Ты отвечаешь:
-{"action": "answer", "params": {"text": "На странице вижу кнопки: Главная, Обзор, Уведомления..."}}
-
-Пользователь: "Нажми на кнопку Обзор"
-Ты отвечаешь:
-{"action": "click", "params": {"selector": "[data-testid='obst']"}}
-
-Пользователь: "Сделай скриншот"
-Ты отвечаешь:
-{"action": "screenshot", "params": {}}
-
-Пользователь: "Напиши в поиск погода в Москве"
-Ты отвечаешь:
-{"action": "search_cdp", "params": {"value": "погода в Москве"}}
-
-⚠️ ЗАПОМНИ: search_cdp - ЭТО МАГИЯ! ОН РАБОТАЕТ ВСЕГДА! 🔥
+⚠️ ВАЖНО:
+- Пользователь может писать по-русски, но селекторы используй АНГЛИЙСКИЕ!
+- "Обзор" → "Explore"
+- "Главная" → "Home"
+- "Уведомления" → "Notifications"
+- "Сообщения" → "Messages"
+- "Закладки" → "Bookmarks"
+- "Профиль" → "Profile"
+- ДЛЯ ПОИСКА ВСЕГДА ИСПОЛЬЗУЙ search_cdp!
 """
 
 # ---------- Агент ----------
@@ -1520,7 +1367,6 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
 - Все атрибуты в селекторах пиши на английском!
 - ВСЕГДА используй aria-label или data-testid если они есть в описании!
 - ДЛЯ ПОИСКА ВСЕГДА ИСПОЛЬЗУЙ search_cdp!
-- Кнопка поиска на X.com: [data-testid="SearchBox_Search_Button"]
 """
 
     data = {
@@ -1665,10 +1511,6 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
             result = await client.smart_search_cdp(value, selector)
             if result and result.get("success"):
                 method = result.get("method", "")
-                if method == "click_search_button":
-                    return f"✅ Поиск выполнен (клик по кнопке): {value}"
-                elif method == "form_submit":
-                    return f"✅ Поиск выполнен (отправка формы): {value}"
                 return f"✅ Поиск выполнен ({method}): {value}"
             return f"❌ Не удалось выполнить поиск: {result.get('error', '')}"
         
@@ -1815,26 +1657,20 @@ async def get_snapshot_command(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         await update.message.reply_text("📸 Делаю полный слепок страницы...")
         
-        # Делаем свежий слепок
         await client.get_maximum_snapshot()
         
         if not client.full_snapshot:
             await update.message.reply_text("❌ Не удалось получить слепок страницы")
             return
         
-        # Сохраняем в JSON
         snapshot = client.full_snapshot.copy()
-        
-        # Добавляем информацию о времени
         snapshot["timestamp"] = time.strftime("%Y-%m-%d %H:%M:%S")
         snapshot["user_id"] = user_id
         
-        # Сохраняем в файл
         filename = f"snapshot_{user_id}_{int(time.time())}.json"
         with open(filename, 'w', encoding='utf-8') as f:
             json.dump(snapshot, f, ensure_ascii=False, indent=2)
         
-        # Отправляем файл
         with open(filename, 'rb') as f:
             await update.message.reply_document(
                 document=f,
@@ -1848,7 +1684,6 @@ async def get_snapshot_command(update: Update, context: ContextTypes.DEFAULT_TYP
                         f"🕐 {snapshot['timestamp']}"
             )
         
-        # Удаляем временный файл
         os.remove(filename)
         
     except Exception as e:
