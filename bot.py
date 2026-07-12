@@ -34,7 +34,10 @@ file_logger = FileLogger()
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     file_logger.log(f"User {user.id} (@{user.username}) started bot")
-    await update.message.reply_text("👋 Привет! Я бот на Railway.")
+    
+    await update.message.reply_text(
+        "/logs - Получить логи"
+    )
 
 async def logs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
@@ -61,11 +64,8 @@ async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 def main() -> None:
     app = Application.builder().token(TOKEN).build()
     
-    # Регистрация команд
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("logs", logs))
-    
-    # Обработчик текстовых сообщений (эхо)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
     
     logger.info("🚀 Бот запущен!")
