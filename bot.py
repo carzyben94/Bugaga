@@ -13,6 +13,8 @@ import sys
 import re
 import glob
 from io import BytesIO
+from typing import List, Optional
+from pydantic import BaseModel
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -41,6 +43,25 @@ try:
 except ImportError:
     PILLOW_AVAILABLE = False
     file_logger.log("⚠️ Pillow не установлен. Установите: pip install pillow>=11.0.0", "WARNING")
+
+# ==================== PYDANTIC МОДЕЛИ ====================
+class Tweet(BaseModel):
+    """Модель твита"""
+    text: str
+    author: str
+    handle: Optional[str] = ""
+    date: Optional[str] = None
+    likes: int = 0
+    retweets: int = 0
+    replies: int = 0
+
+class PageData(BaseModel):
+    """Модель страницы"""
+    title: str
+    url: str
+    tweets: List[Tweet] = []
+    buttons: List[str] = []
+    fields: List[str] = []
 
 # ==================== КОНФИГУРАЦИЯ ====================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -77,22 +98,24 @@ AGENT_CODE = """
 📌 ТЫ ВИДИШЬ:
 - КНОПКИ (🔘) — для клика
 - ПОЛЯ ВВОДА (📝) — для заполнения
+- ТВИТЫ (📋) — можешь показывать
 
 📌 ДОСТУПНЫЕ ДЕЙСТВИЯ:
 1. navigate(url) - открыть сайт
 2. click(text) - кликнуть по кнопке (из списка 🔘)
 3. fill(selector, value) - заполнить поле (из списка 📝) и нажать Enter
-4. screenshot() - скриншот
-5. reload() - перезагрузить
-6. answer(text) - ответить
+4. get_tweets(limit) - получить последние твиты (через Pydantic)
+5. screenshot() - скриншот
+6. reload() - перезагрузить
+7. answer(text) - ответить
 
 📌 ПРАВИЛА:
-- Для fill используй ТОЛЬКО названия из списка 📝
+- Для get_tweets используй limit (по умолчанию 5)
+- После получения твитов — покажи их в читаемом формате
 - На X.com поле: "Поисковый запрос"
-- Для click используй ТОЛЬКО названия из списка 🔘
-- После fill автоматически нажимается Enter для поиска
 
 📌 ПРИМЕРЫ:
+{"action": "get_tweets", "params": {"limit": 5}}
 {"action": "fill", "params": {"selector": "Поисковый запрос", "value": "Путин"}}
 {"action": "click", "params": {"text": "Чат"}}
 {"action": "answer", "params": {"text": "📋 Готово!"}}
@@ -502,6 +525,7 @@ class CDPClient:
         info = self.full_snapshot or {}
         nodes = info.get('elements', [])
         
+        # Кнопки
         buttons = []
         for el in nodes:
             role = el.get('role', '')
@@ -509,6 +533,7 @@ class CDPClient:
             if role in ['button', 'link'] and name:
                 buttons.append(name)
         
+        # Поля
         fields = []
         for el in nodes:
             role = el.get('role', '')
@@ -516,10 +541,12 @@ class CDPClient:
             if role in ['textbox', 'searchbox', 'combobox'] and name:
                 fields.append(name)
         
+        # Твиты через DOM + JS
+        tweets = await self.get_tweets_text(self.session_id)
+        
         desc = f"""
 📄 СТРАНИЦА: {info.get('title', 'Нет заголовка')}
 🔗 URL: {info.get('url', 'Нет URL')}
-📊 ВСЕГО ЭЛЕМЕНТОВ: {info.get('total', 0)}
 
 🔘 КНОПКИ И ССЫЛКИ ({len(buttons)}):
 """
@@ -530,8 +557,12 @@ class CDPClient:
         for name in fields[:10]:
             desc += f"  • {name}\n"
         
-        if not fields:
-            desc += "  ⚠️ Полей ввода не найдено\n"
+        desc += f"\n📋 ТВИТЫ НА СТРАНИЦЕ ({len(tweets)}):\n"
+        if tweets:
+            for i, tweet in enumerate(tweets[:10], 1):
+                desc += f"  {i}. {tweet.get('author', '')}: {tweet.get('text', '')[:100]}...\n"
+        else:
+            desc += "  ⚠️ Твиты не найдены\n"
         
         return desc
     
@@ -569,6 +600,90 @@ class CDPClient:
         except Exception as e:
             file_logger.log(f"❌ Maximum snapshot error: {e}", "ERROR")
             return False
+    
+    async def get_tweets_text(self, session_id, limit=10):
+        """Получает текст твитов для AI (без Pydantic)"""
+        result = await self.send("Runtime.evaluate", {
+            "expression": f"""
+                (function() {{
+                    const tweets = [];
+                    const articles = document.querySelectorAll('article');
+                    const limit = {limit};
+                    
+                    for (let i = 0; i < Math.min(articles.length, limit); i++) {{
+                        const article = articles[i];
+                        const textEl = article.querySelector('[data-testid="tweetText"]');
+                        const nameEl = article.querySelector('[data-testid="User-Name"]');
+                        const dateEl = article.querySelector('time');
+                        const likesEl = article.querySelector('[data-testid="like"]');
+                        const retweetsEl = article.querySelector('[data-testid="retweet"]');
+                        const repliesEl = article.querySelector('[data-testid="reply"]');
+                        
+                        tweets.push({{
+                            text: textEl ? textEl.innerText : '',
+                            author: nameEl ? nameEl.innerText : '',
+                            date: dateEl ? dateEl.getAttribute('datetime') : '',
+                            likes: likesEl ? parseInt(likesEl.innerText) || 0 : 0,
+                            retweets: retweetsEl ? parseInt(retweetsEl.innerText) || 0 : 0,
+                            replies: repliesEl ? parseInt(repliesEl.innerText) || 0 : 0
+                        }});
+                    }}
+                    return tweets;
+                }})()
+            """
+        }, session_id=session_id)
+        
+        return result.get("result", {}).get("result", {}).get("value", [])
+    
+    async def get_tweets(self, session_id, limit=5) -> List[Tweet]:
+        """Парсит твиты и валидирует через Pydantic"""
+        result = await self.send("Runtime.evaluate", {
+            "expression": f"""
+                (function() {{
+                    const tweets = [];
+                    const articles = document.querySelectorAll('article');
+                    const limit = {limit};
+                    
+                    for (let i = 0; i < Math.min(articles.length, limit); i++) {{
+                        const article = articles[i];
+                        const textEl = article.querySelector('[data-testid="tweetText"]');
+                        const nameEl = article.querySelector('[data-testid="User-Name"]');
+                        const handleEl = article.querySelector('[data-testid="User-Name"] span:last-child');
+                        const dateEl = article.querySelector('time');
+                        const likesEl = article.querySelector('[data-testid="like"]');
+                        const retweetsEl = article.querySelector('[data-testid="retweet"]');
+                        const repliesEl = article.querySelector('[data-testid="reply"]');
+                        
+                        const author = nameEl ? nameEl.innerText.split('@')[0].trim() : '';
+                        const handle = handleEl ? handleEl.innerText.trim() : '';
+                        
+                        tweets.push({{
+                            text: textEl ? textEl.innerText : '',
+                            author: author || handle,
+                            handle: handle.startsWith('@') ? handle : '@' + handle,
+                            date: dateEl ? dateEl.getAttribute('datetime') : '',
+                            likes: likesEl ? parseInt(likesEl.innerText) || 0 : 0,
+                            retweets: retweetsEl ? parseInt(retweetsEl.innerText) || 0 : 0,
+                            replies: repliesEl ? parseInt(repliesEl.innerText) || 0 : 0
+                        }});
+                    }}
+                    return tweets;
+                }})()
+            """
+        }, session_id=session_id)
+        
+        raw_tweets = result.get("result", {}).get("result", {}).get("value", [])
+        
+        # Валидация через Pydantic
+        tweets = []
+        for item in raw_tweets:
+            try:
+                tweet = Tweet(**item)
+                tweets.append(tweet)
+            except Exception as e:
+                file_logger.log(f"⚠️ Ошибка валидации твита: {e}", "WARNING")
+        
+        return tweets
     
     async def click_element(self, session_id, selector):
         """Клик по элементу с поддержкой текста, атрибутов и селекторов"""
@@ -864,10 +979,9 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
 {page_desc}
 
 ⚠️ ВАЖНО:
-- Для fill используй ТОЛЬКО названия из списка 📝
+- Для get_tweets используй limit (по умолчанию 5)
+- После получения твитов — покажи их в читаемом формате
 - На X.com поле: "Поисковый запрос"
-- Для click используй ТОЛЬКО названия из списка 🔘
-- После fill автоматически нажимается Enter для поиска
 - Отвечай ТОЛЬКО JSON!
 """
 
@@ -943,6 +1057,23 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
         file_logger.log(f"❌ Agnes error: {e}", "ERROR")
         return {"action": "answer", "params": {"text": f"❌ Ошибка: {str(e)}"}}
 
+def format_tweets(tweets: List[Tweet]) -> str:
+    """Форматирует твиты для вывода"""
+    if not tweets:
+        return "❌ Твиты не найдены"
+    
+    msg = f"📋 **Твиты ({len(tweets)}):**\n\n"
+    for i, tweet in enumerate(tweets, 1):
+        msg += f"{i}. **{tweet.author}** {tweet.handle}\n"
+        msg += f"   📝 {tweet.text[:200]}{'...' if len(tweet.text) > 200 else ''}\n"
+        if tweet.likes > 0 or tweet.retweets > 0 or tweet.replies > 0:
+            msg += f"   ❤️ {tweet.likes}  🔄 {tweet.retweets}  💬 {tweet.replies}\n"
+        if tweet.date:
+            msg += f"   📅 {tweet.date[:10]}\n"
+        msg += "\n"
+    
+    return msg
+
 # ==================== ВЫПОЛНЕНИЕ ДЕЙСТВИЙ ====================
 async def execute_action(client: CDPClient, action, user_id) -> str:
     """Выполнение действия от AI"""
@@ -995,13 +1126,18 @@ async def execute_single_action(client: CDPClient, action: dict, user_id) -> str
             if not selector:
                 return "❌ Нет селектора"
             
-            # Заполняем поле
             result = await client.fill_input(session_id, selector, value)
             if result:
-                # Автоматически нажимаем Enter для поиска
                 await client.press_enter(session_id)
                 return f"✅ Поиск по '{value}' выполнен"
             return f"❌ Элемент не найден: {selector}"
+        
+        elif action_type == "get_tweets":
+            limit = params.get("limit", 5)
+            tweets = await client.get_tweets(session_id, limit)
+            if tweets:
+                return format_tweets(tweets)
+            return "❌ Твиты не найдены"
         
         elif action_type == "screenshot":
             img_data = await client.screenshot(session_id)
@@ -1041,7 +1177,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Нажми на кнопку Чат\n"
         f"• Сделай скриншот\n"
         f"• Какие кнопки видишь?\n"
-        f"• Введи Путин в поиск\n\n"
+        f"• Введи Путин в поиск\n"
+        f"• **Покажи твиты**\n\n"
         f"🖼️ Pillow: {pillow_status}\n"
         f"🧠 Agnes AI: {agnes_status}\n"
         f"🍪 Куки X.com: ✅ установлены\n"
@@ -1051,6 +1188,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/help - Справка\n"
         f"/click <название> - Кликнуть\n"
         f"/screenshot - Скриншот\n"
+        f"/tweets [количество] - Показать твиты\n"
         f"/logs - Логи\n"
         f"/clear - Очистить сессию"
     )
@@ -1121,6 +1259,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         file_logger.log(f"❌ Ошибка в handle_message: {e}", "ERROR")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает твиты (команда /tweets)"""
+    user_id = update.message.from_user.id
+    
+    # Парсим количество
+    args = update.message.text.split()
+    limit = 5
+    if len(args) > 1:
+        try:
+            limit = int(args[1])
+            if limit > 20:
+                limit = 20
+        except:
+            pass
+    
+    if user_id not in clients:
+        await update.message.reply_text("❌ Сначала отправь сообщение")
+        return
+    
+    client = clients[user_id]
+    if not client.session_id:
+        await update.message.reply_text("❌ Нет активной вкладки")
+        return
+    
+    await update.message.reply_text(f"📋 Парсю {limit} твитов...")
+    
+    tweets = await client.get_tweets(client.session_id, limit)
+    
+    if tweets:
+        await update.message.reply_text(format_tweets(tweets))
+    else:
+        await update.message.reply_text("❌ Твиты не найдены")
 
 async def click_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -1200,10 +1371,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Нажми на Чат\n"
         "• Сделай скриншот\n"
         "• Какие кнопки видишь?\n"
-        "• Введи Путин в поиск\n\n"
+        "• Введи Путин в поиск\n"
+        "• **Покажи твиты**\n\n"
         "📌 **Команды:**\n"
         "/click <название> - Кликнуть\n"
         "/screenshot - Скриншот\n"
+        "/tweets [количество] - Показать твиты\n"
         "/logs - Логи\n"
         "/clear - Очистить сессию\n\n"
         "💡 На X.com доступны:\n"
@@ -1261,6 +1434,7 @@ async def main_async():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("click", click_command))
     app.add_handler(CommandHandler("screenshot", screenshot_command))
+    app.add_handler(CommandHandler("tweets", tweets_command))
     app.add_handler(CommandHandler("logs", logs_command))
     app.add_handler(CommandHandler("clear", clear_command))
     
