@@ -157,6 +157,19 @@ app = None
 chrome_manager = None
 cdp = None
 
+def restart_chrome():
+    """Перезапуск Chrome"""
+    print("🔄 Перезапуск Chrome...")
+    try:
+        subprocess.run(["pkill", "-f", "google-chrome"], capture_output=True)
+        time.sleep(2)
+    except:
+        pass
+    
+    if chrome_manager:
+        return chrome_manager.start()
+    return False
+
 # ==================== УПРАВЛЕНИЕ БРАУЗЕРОМ ====================
 class ChromeManager:
     def __init__(self, chrome_path=CHROME_PATH, port=CHROME_PORT):
@@ -328,58 +341,162 @@ class CDPClient:
         self.targets = {}
         self.session_id = None
         self.cookies_set = False
+        self.ping_task = None
+        self._keep_alive = True
+    
+    async def keep_alive(self):
+        """Фоновый пинг для поддержания соединения (работает пока активна сессия)"""
+        print("💓 Запущен пинг для поддержания соединения")
+        while self._keep_alive:
+            try:
+                if self.websocket and not self.websocket.closed:
+                    # Отправляем простую команду, чтобы держать соединение
+                    await self.send("Runtime.evaluate", {"expression": "1"})
+                    print("💓 Пинг отправлен")
+                else:
+                    print("⚠️ WebSocket закрыт, останавливаю пинг")
+                    break
+                await asyncio.sleep(20)  # каждые 20 секунд
+            except asyncio.CancelledError:
+                print("🛑 Пинг остановлен")
+                break
+            except Exception as e:
+                print(f"⚠️ Ошибка пинга: {e}")
+                await asyncio.sleep(5)
+    
+    async def start_keep_alive(self):
+        """Запускает фоновый пинг"""
+        if self.ping_task is None or self.ping_task.done():
+            self._keep_alive = True
+            self.ping_task = asyncio.create_task(self.keep_alive())
+            print("✅ Пинг запущен")
+    
+    async def stop_keep_alive(self):
+        """Останавливает фоновый пинг"""
+        self._keep_alive = False
+        if self.ping_task and not self.ping_task.done():
+            self.ping_task.cancel()
+            try:
+                await self.ping_task
+            except:
+                pass
+            self.ping_task = None
+            print("🛑 Пинг остановлен")
     
     async def connect(self):
         if not self.ws_endpoint:
             raise Exception("WebSocket endpoint не указан")
-        self.websocket = await websockets.connect(
-            self.ws_endpoint,
-            ping_interval=20,
-            ping_timeout=30,
-            close_timeout=10,
-            max_size=50 * 1024 * 1024
-        )
-        print(f"✅ Подключено к Chrome: {self.ws_endpoint}")
+        
+        try:
+            self.websocket = await websockets.connect(
+                self.ws_endpoint,
+                ping_interval=20,
+                ping_timeout=30,
+                close_timeout=15,
+                max_size=50 * 1024 * 1024
+            )
+            print(f"✅ Подключено к Chrome: {self.ws_endpoint}")
+            
+            # Включаем домены если есть сессия
+            if self.session_id:
+                await self.send("Page.enable", session_id=self.session_id)
+                await self.send("Runtime.enable", session_id=self.session_id)
+                await self.send("DOM.enable", session_id=self.session_id)
+                await self.send("Network.enable", session_id=self.session_id)
+            
+            # Запускаем пинг АВТОМАТИЧЕСКИ
+            await self.start_keep_alive()
+            
+            return True
+            
+        except Exception as e:
+            print(f"❌ Ошибка подключения: {e}")
+            return False
     
-    async def send(self, method, params=None, session_id=None):
-        self.msg_id += 1
-        msg = {
-            "id": self.msg_id,
-            "method": method,
-            "params": params or {}
-        }
-        if session_id:
-            msg["sessionId"] = session_id
+    async def send(self, method, params=None, session_id=None, retries=3):
+        """Отправка CDP-команды с автоматическим переподключением"""
+        for attempt in range(retries):
+            try:
+                # Проверяем соединение
+                if not self.websocket or self.websocket.closed:
+                    print("🔄 WebSocket закрыт, переподключаюсь...")
+                    await self.connect()
+                    if not self.websocket:
+                        await asyncio.sleep(1)
+                        continue
+                
+                self.msg_id += 1
+                msg_id = self.msg_id
+                msg = {
+                    "id": msg_id,
+                    "method": method,
+                    "params": params or {}
+                }
+                if session_id:
+                    msg["sessionId"] = session_id
+                
+                await self.websocket.send(json.dumps(msg))
+                
+                # Ждём ответ с увеличенным таймаутом
+                response = await asyncio.wait_for(self.websocket.recv(), timeout=60)
+                data = json.loads(response)
+                
+                if data.get("id") == msg_id:
+                    if "error" in data:
+                        raise Exception(f"CDP Error: {data['error']}")
+                    return data
+                else:
+                    # Если получили событие, а не ответ
+                    continue
+                    
+            except (websockets.exceptions.ConnectionClosed, 
+                    websockets.exceptions.WebSocketException,
+                    asyncio.TimeoutError,
+                    BrokenPipeError,
+                    ConnectionResetError) as e:
+                
+                print(f"⚠️ Ошибка {method}, попытка {attempt+1}/{retries}: {e}")
+                self.websocket = None
+                
+                if attempt < retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+                    try:
+                        await self.connect()
+                    except:
+                        pass
+            
+            except Exception as e:
+                print(f"❌ Ошибка {method}: {e}")
+                if attempt < retries - 1:
+                    await asyncio.sleep(1)
+                else:
+                    return {"error": str(e)}
         
-        await self.websocket.send(json.dumps(msg))
-        
-        while True:
-            response = await self.websocket.recv()
-            data = json.loads(response)
-            if data.get("id") == self.msg_id:
-                if "error" in data:
-                    raise Exception(f"CDP Error: {data['error']}")
-                return data
+        return {"error": "Max retries exceeded"}
     
     async def eval_js(self, code, session_id=None):
-        """Выполняет JavaScript и возвращает результат"""
-        try:
-            result = await self.send("Runtime.evaluate", {
-                "expression": code,
-                "returnByValue": True,
-                "awaitPromise": True
-            }, session_id=session_id or self.session_id)
-            
-            if "result" in result:
-                obj = result["result"]
-                if "value" in obj:
-                    return obj["value"]
-                if "result" in obj and "value" in obj["result"]:
-                    return obj["result"]["value"]
-            return None
-        except Exception as e:
-            print(f"❌ eval_js error: {e}")
-            return None
+        """Выполняет JavaScript с автоматическим восстановлением"""
+        for attempt in range(3):
+            try:
+                result = await self.send("Runtime.evaluate", {
+                    "expression": code,
+                    "returnByValue": True,
+                    "awaitPromise": True
+                }, session_id=session_id or self.session_id)
+                
+                if "result" in result:
+                    obj = result["result"]
+                    if "value" in obj:
+                        return obj["value"]
+                    if "result" in obj and "value" in obj["result"]:
+                        return obj["result"]["value"]
+                return None
+            except Exception as e:
+                print(f"⚠️ eval_js попытка {attempt+1}: {e}")
+                if attempt < 2:
+                    await asyncio.sleep(1)
+                else:
+                    return None
     
     async def create_tab(self):
         result = await self.send("Target.createTarget", {"url": "about:blank"})
@@ -558,7 +675,6 @@ class CDPClient:
         
         return True
     
-    # ==================== НОВЫЙ МЕТОД СКРИНШОТА ====================
     async def screenshot(self, session_id):
         """Скриншот как в рабочем примере - ПРОСТОЙ И НАДЁЖНЫЙ"""
         try:
@@ -607,28 +723,6 @@ class CDPClient:
             print(f"❌ Screenshot error: {e}")
             return None
     
-    async def screenshot_with_pillow(self, session_id):
-        """Скриншот с обработкой через Pillow (как запасной вариант)"""
-        try:
-            # Пробуем простой метод
-            img_data = await self.screenshot(session_id)
-            if img_data and PILLOW_AVAILABLE:
-                try:
-                    img = Image.open(BytesIO(img_data))
-                    w, h = img.size
-                    print(f"📐 Размер: {w}x{h}")
-                    
-                    if w > 0 and h > 0:
-                        return img_data
-                except Exception as e:
-                    print(f"⚠️ Pillow ошибка: {e}")
-                    return img_data
-            return img_data
-                
-        except Exception as e:
-            print(f"❌ Screenshot error: {e}")
-            return None
-    
     async def close_tab(self, session_id):
         if session_id in self.targets:
             target_id = self.targets[session_id]
@@ -636,8 +730,16 @@ class CDPClient:
             del self.targets[session_id]
     
     async def close(self):
+        """Закрывает соединение и останавливает пинг"""
+        await self.stop_keep_alive()
+        
         if self.websocket:
-            await self.websocket.close()
+            try:
+                await self.websocket.close()
+                print("🔌 WebSocket закрыт")
+            except:
+                pass
+            self.websocket = None
 
 # ==================== ТЕЛЕГРАМ БОТ ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -649,7 +751,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📌 Используй /fill <селектор> <текст> для заполнения.\n"
         f"📌 Используй /screenshot для скриншота.\n"
         f"🖼️ Pillow: {pillow_status}\n"
-        f"🍪 Куки X.com установлены автоматически!"
+        f"🍪 Куки X.com установлены автоматически!\n"
+        f"💓 Авто-пинг для стабильного соединения"
     )
 
 async def set_cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -686,6 +789,9 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if not cdp.websocket:
             await cdp.connect()
+        else:
+            # Если соединение есть, запускаем пинг
+            await cdp.start_keep_alive()
         
         session_id, target_id = await cdp.create_tab()
         context.user_data['session_id'] = session_id
@@ -833,6 +939,7 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session_id = context.user_data.get('session_id')
     if session_id:
         await cdp.close_tab(session_id)
+        await cdp.stop_keep_alive()  # останавливаем пинг
         context.user_data.clear()
         await update.message.reply_text("🧹 Сессия очищена")
     else:
@@ -858,18 +965,15 @@ async def shutdown():
     
     print("\n🛑 Завершение работы...")
     
+    if cdp:
+        await cdp.stop_keep_alive()
+        await cdp.close()
+    
     if app:
         try:
             await app.stop()
             await app.shutdown()
             print("✅ Бот остановлен")
-        except:
-            pass
-    
-    if cdp and cdp.websocket:
-        try:
-            await cdp.close()
-            print("✅ WebSocket закрыт")
         except:
             pass
     
@@ -885,6 +989,7 @@ async def main_async():
     print(f"🔗 Chrome: {chrome_manager.ws_endpoint}")
     print(f"🍪 Загружено {len(X_COOKIES)} кук для X.com")
     print(f"🖼️ Pillow: {'✅ Доступен' if PILLOW_AVAILABLE else '❌ Не установлен'}")
+    print("💓 Авто-пинг для стабильного соединения включён")
     
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
