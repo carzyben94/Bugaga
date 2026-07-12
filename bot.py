@@ -324,13 +324,13 @@ class CDPClient:
             return False
         
         try:
-            # ⚡ УВЕЛИЧИВАЕМ ЛИМИТ WEBSOCKET ДО 50 МБ
+            # Увеличиваем лимит WebSocket до 50 МБ
             self.ws = await websockets.connect(
                 ws_url,
                 ping_interval=20,
                 ping_timeout=60,
                 close_timeout=10,
-                max_size=50 * 1024 * 1024  # 50 MB лимит
+                max_size=50 * 1024 * 1024
             )
             self.connected = True
             file_logger.log("✅ WebSocket подключен")
@@ -580,7 +580,6 @@ class CDPClient:
                             attrs[attr.name] = attr.value;
                         }
                         
-                        // Ищем все интерактивные элементы (русские И английские названия)
                         const isInteractive = (
                             tag === 'button' ||
                             tag === 'a' ||
@@ -604,7 +603,6 @@ class CDPClient:
                         const hasRole = attrs.role || attrs['aria-label'] || attrs['aria-labelledby'];
                         
                         if (important.includes(tag) || hasRole || isInteractive || (hasText && tag === 'span')) {
-                            // Получаем текст из разных источников
                             let text = (el.textContent || '').trim().slice(0, 200);
                             if (!text && attrs['aria-label']) {
                                 text = attrs['aria-label'];
@@ -685,14 +683,12 @@ class CDPClient:
                 role['field_selector'] = role.get('id') and f"#{role.get('id')}" or f"[role='{role.get('attrs', {}).get('role')}']"
                 all_fields.append(role)
             
-            # Ищем ВСЕ кнопки (русские И английские названия)
             buttons = []
             for el in elements:
                 tag = el.get('tag', '')
                 attrs = el.get('attrs', {})
                 is_interactive = el.get('isInteractive', False)
                 
-                # Проверяем все возможные варианты кнопок
                 if (tag == 'button' or 
                     (tag == 'input' and attrs.get('type') in ['submit', 'button']) or
                     attrs.get('role') == 'button' or
@@ -793,29 +789,23 @@ class CDPClient:
         
         info = self.full_snapshot or {}
         
-        # Формируем список всех кнопок
         buttons_text = ""
         buttons = info.get('buttons', [])
         
         if buttons:
-            # Сортируем по видимости (видимые сначала)
             buttons_sorted = sorted(buttons, key=lambda x: x.get('visible', False), reverse=True)
             
-            # Показываем ВСЕ кнопки без ограничений
             for el in buttons_sorted:
-                # Пробуем получить текст из разных источников
                 text = el.get('text', '')
                 if not text:
                     attrs = el.get('attrs', {})
                     text = attrs.get('aria-label', '') or attrs.get('value', '') or attrs.get('title', '') or attrs.get('data-testid', '')
                 
-                # Если текст есть - показываем
                 if text and text.strip():
                     visible_mark = "👁️" if el.get('visible') else "👻"
                     selector = el.get('id') and f"#{el.get('id')}" or el.get('class') and f".{el.get('class', '').split()[0] if el.get('class') else ''}" or el.get('tag', '')
                     buttons_text += f"  {visible_mark} {text[:50]}\n"
                 else:
-                    # Если нет текста - показываем тег и атрибуты
                     tag = el.get('tag', '')
                     attrs = el.get('attrs', {})
                     aria_label = attrs.get('aria-label', '')
@@ -823,7 +813,6 @@ class CDPClient:
                     if aria_label or data_testid:
                         buttons_text += f"  🏷️ {tag} [aria-label={aria_label[:30]}] [data-testid={data_testid[:30]}]\n"
         
-        # Формируем поля ввода
         fields_text = ""
         for el in info.get('fields', []):
             attrs = el.get('attrs', {})
@@ -835,7 +824,6 @@ class CDPClient:
             selector = el.get('field_selector', '')
             fields_text += f"  • {field_name[:30]} → {selector}\n"
         
-        # Собираем полное описание
         desc = f"""
 📄 **СТРАНИЦА:** {info.get('title', 'Нет заголовка')}
 🔗 **URL:** {info.get('url', 'Нет URL')}
@@ -854,21 +842,17 @@ class CDPClient:
     
     async def click_element(self, selector):
         """Клик по элементу с поддержкой разных селекторов и языков"""
-        # Экранируем кавычки
         selector_escaped = selector.replace("'", "\\'").replace('"', '\\"')
         
         js_code = f"""
         (function() {{
             let el = null;
             
-            // 1. Пробуем найти по селектору
             try {{
                 el = document.querySelector("{selector_escaped}");
             }} catch(e) {{
-                // Если селектор невалидный - игнорируем
             }}
             
-            // 2. Если не нашли - ищем по aria-label (русский И английский)
             if (!el) {{
                 const allElements = document.querySelectorAll('[aria-label]');
                 for (const elem of allElements) {{
@@ -883,7 +867,6 @@ class CDPClient:
                 }}
             }}
             
-            // 3. Если не нашли - ищем по тексту (русский И английский)
             if (!el) {{
                 const allButtons = document.querySelectorAll('button, a, [role="button"], [data-testid="obst"]');
                 for (const btn of allButtons) {{
@@ -898,12 +881,10 @@ class CDPClient:
                 }}
             }}
             
-            // 4. Поиск по data-testid="obst" (X.com)
             if (!el) {{
                 el = document.querySelector('[data-testid="obst"]');
             }}
             
-            // 5. Поиск по SVG иконке (ищем родителя)
             if (!el) {{
                 const svgs = document.querySelectorAll('svg');
                 for (const svg of svgs) {{
@@ -928,7 +909,6 @@ class CDPClient:
         """
         result = await self.eval_js(js_code)
         
-        # Если клик успешен - обновляем слепок
         if result and result.get('success'):
             await asyncio.sleep(1)
             await self.get_maximum_snapshot()
@@ -1263,7 +1243,6 @@ async def find_button_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         await update.message.reply_text(f"🔍 Ищу кнопку '{button_name}'...")
         
-        # Ищем все кликабельные элементы
         elements = await client.find_clickable_elements()
         
         if not elements:
@@ -1278,7 +1257,6 @@ async def find_button_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             data_testid = attrs.get('data-testid', '').lower()
             title_attr = attrs.get('title', '').lower()
             
-            # Ищем совпадения (русские И английские)
             search_term = button_name.lower()
             if (search_term in text or 
                 search_term in aria_label or 
@@ -1430,24 +1408,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- Команды ----------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Короткое меню без лишнего текста
     await update.message.reply_text(
-        "🧠 **МАКСИМАЛЬНЫЙ АГЕНТ**\n\n"
-        "🕵️ **Маскировка браузера активна!**\n"
-        "🍪 **Куки X.com установлены автоматически**\n"
-        "🔄 **Автоматическое восстановление при обрывах**\n\n"
-        "💡 **Примеры команд:**\n"
-        "• Открой Google\n"
-        "• Что видишь?\n"
-        "• Сделай скриншот\n"
-        "• Зайди на x.com\n"
-        "• Нажми на кнопку Обзор\n\n"
-        "🔍 **Поиск кнопок:**\n"
-        "/find_button Обзор - найти кнопку\n"
-        "/find_button Explore - найти кнопку (англ)\n\n"
+        "🔍 **Команды:**\n"
         "/cdp - статус браузера\n"
         "/logs - логи\n"
         "/set_cookies - установить куки\n"
-        "/mask - применить маскировку"
+        "/mask - применить маскировку\n"
+        "/find_button - найти кнопку"
     )
 
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
