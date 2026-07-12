@@ -10,6 +10,7 @@ import tempfile
 import shutil
 import signal
 import sys
+import re
 from io import BytesIO
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -47,6 +48,9 @@ if not TELEGRAM_TOKEN:
     print("❌ TELEGRAM_BOT_TOKEN не установлен!")
     sys.exit(1)
 
+AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
+AGNES_API_URL = os.environ.get("AGNES_API_URL", "https://apihub.agnes-ai.com/v1/chat/completions")
+
 CHROME_PATH = "/usr/bin/google-chrome"
 CHROME_PORT = 9222
 
@@ -65,10 +69,40 @@ X_COOKIES = [
     {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "__cf_bm", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "Eb4nVvazwJ5mDp0c.6Ye5ub0rukgdQkcFzPf8.wdbIQ-1783798267.7075489-1.0.1.1-59IptPdWY9w0zyKvebR59I.8iB4M1DWfNNZQW0.c.E4lDCU3wTfEcds69RVBkOeQ9LUDZNLGRv6z8InGbCsH1RaTCKaqehL94yq0FgvU7QB9cbE8BO4.2Y8BMRnN_Nks"}
 ]
 
+# ==================== КОД АГЕНТА ====================
+AGENT_CODE = """
+🤖 ТЫ — АГЕНТ ДЛЯ УПРАВЛЕНИЯ БРАУЗЕРОМ
+
+📌 ТЫ ВИДИШЬ ВСЕ КНОПКИ И ПОЛЯ НА СТРАНИЦЕ!
+Используй ТОЛЬКО названия из списка ниже.
+
+📌 ДОСТУПНЫЕ ДЕЙСТВИЯ:
+1. navigate(url) - открыть сайт
+2. click(text) - кликнуть по кнопке (из списка)
+3. fill(selector, value) - заполнить поле
+4. screenshot() - скриншот
+5. reload() - перезагрузить страницу
+6. answer(text) - ответить пользователю
+
+📌 ПРИМЕРЫ:
+{"action": "click", "params": {"text": "Чат"}}
+{"action": "navigate", "params": {"url": "https://x.com"}}
+{"action": "answer", "params": {"text": "Я открыл страницу"}}
+
+⚠️ ВАЖНО:
+- Для клика используй ТОЧНО такие названия как в списке кнопок
+- На X.com: "Чат", "Главная", "Личные сообщения", "Уведомления", "Закладки", "Профиль"
+- Если нужен поиск — используй fill с селектором
+
+📌 ЕСЛИ НУЖНО НЕСКОЛЬКО ДЕЙСТВИЙ - ВОЗВРАЩАЙ МАССИВ:
+[{"action": "click", "params": {"text": "Чат"}}, {"action": "screenshot", "params": {}}]
+"""
+
 # ==================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ====================
 app = None
 chrome_manager = None
 cdp = None
+clients = {}
 
 # ==================== УПРАВЛЕНИЕ БРАУЗЕРОМ ====================
 class ChromeManager:
@@ -204,6 +238,8 @@ class CDPClient:
         self._message_queue = asyncio.Queue()
         self._receiver_task = None
         self._pending_requests = {}
+        self.user_id = None
+        self.full_snapshot = None
     
     async def _receiver(self):
         file_logger.log("📡 Запущен приёмник сообщений")
@@ -249,7 +285,6 @@ class CDPClient:
                 self._receiver_task = asyncio.create_task(self._receiver())
                 file_logger.log("📡 Приёмник запущен")
             
-            # Домены включаются автоматически в новых версиях Chrome
             await self.start_keep_alive()
             return True
             
@@ -459,34 +494,79 @@ class CDPClient:
         file_logger.log(f"✅ Найдено {len(nodes)} элементов")
         return nodes
     
-    async def get_element_by_selector(self, session_id, selector):
-        result = await self.send("Runtime.evaluate", {
-            "expression": f"""
-                (function() {{
-                    const el = document.querySelector('{selector}');
-                    if (!el) return null;
-                    const rect = el.getBoundingClientRect();
-                    return {{
-                        id: el.id || '',
-                        className: el.className || '',
-                        tagName: el.tagName,
-                        x: rect.x + rect.width/2,
-                        y: rect.y + rect.height/2,
-                        width: rect.width,
-                        height: rect.height
-                    }};
-                }})()
-            """
-        }, session_id=session_id)
-        if "error" in result:
-            return None
-        return result.get("result", {}).get("result", {}).get("value")
+    async def get_page_description(self):
+        """Получение описания страницы для AI"""
+        if not self.full_snapshot:
+            await self.get_maximum_snapshot()
+        
+        info = self.full_snapshot or {}
+        nodes = info.get('elements', [])
+        
+        # Собираем кнопки
+        buttons = [el for el in nodes if el.get('role') in ['button', 'link']]
+        
+        # Собираем поля
+        fields = [el for el in nodes if el.get('role') in ['textbox', 'searchbox', 'combobox']]
+        
+        desc = f"""
+📄 СТРАНИЦА: {info.get('title', 'Нет заголовка')}
+🔗 URL: {info.get('url', 'Нет URL')}
+📊 ВСЕГО ЭЛЕМЕНТОВ: {info.get('total', 0)}
+
+🔘 КНОПКИ И ССЫЛКИ ({len(buttons)}):
+"""
+        for el in buttons[:30]:
+            name = el.get('name', '') or el.get('text', '')
+            if name:
+                desc += f"  • {name}\n"
+        
+        desc += f"\n📝 ПОЛЯ ВВОДА ({len(fields)}):\n"
+        for el in fields[:10]:
+            name = el.get('name', '') or el.get('text', '')
+            if name:
+                desc += f"  • {name}\n"
+        
+        return desc
+    
+    async def get_maximum_snapshot(self):
+        try:
+            file_logger.log("📸 Делаю максимальный слепок...")
+            
+            nodes = await self.get_accessibility_tree(self.session_id)
+            
+            title = await self.eval_js("document.title") or "Нет заголовка"
+            url = await self.eval_js("window.location.href") or "Нет URL"
+            
+            elements = []
+            for node in nodes:
+                role = node.get("role", {}).get("value", "")
+                name = node.get("name", {}).get("value", "")
+                if name:
+                    elements.append({
+                        "role": role,
+                        "name": name[:100],
+                        "text": name[:100],
+                        "description": node.get("description", {}).get("value", "")[:100]
+                    })
+            
+            self.full_snapshot = {
+                "title": title,
+                "url": url,
+                "total": len(elements),
+                "elements": elements
+            }
+            
+            file_logger.log(f"✅ Слепок: {len(elements)} элементов")
+            return True
+            
+        except Exception as e:
+            file_logger.log(f"❌ Maximum snapshot error: {e}", "ERROR")
+            return False
     
     async def click_element(self, session_id, selector):
         """Клик по элементу с поддержкой текста, атрибутов и селекторов"""
         file_logger.log(f"🖱️ Клик по '{selector}'")
         
-        # Экранируем кавычки для JS
         selector_escaped = selector.replace("'", "\\'").replace('"', '\\"')
         
         js_code = f"""
@@ -495,101 +575,58 @@ class CDPClient:
             const search = '{selector_escaped}';
             const searchLower = search.toLowerCase();
             
-            // 1. Пробуем как CSS-селектор
+            // 1. CSS-селектор
             try {{
                 el = document.querySelector(search);
-                if (el) console.log('Найден по CSS-селектору');
             }} catch(e) {{}}
             
-            // 2. Ищем по тексту (точное совпадение или содержит)
+            // 2. По тексту
             if (!el) {{
                 const all = document.querySelectorAll('*');
                 for (const elem of all) {{
                     const text = elem.textContent?.trim() || '';
-                    const textLower = text.toLowerCase();
-                    if (textLower === searchLower || textLower.includes(searchLower)) {{
+                    if (text === search || text.toLowerCase().includes(searchLower)) {{
                         el = elem;
-                        console.log('Найден по тексту:', text);
                         break;
                     }}
                 }}
             }}
             
-            // 3. Ищем по aria-label
+            // 3. По aria-label
             if (!el) {{
                 const all = document.querySelectorAll('[aria-label]');
                 for (const elem of all) {{
                     const label = elem.getAttribute('aria-label') || '';
-                    const labelLower = label.toLowerCase();
-                    if (labelLower === searchLower || labelLower.includes(searchLower)) {{
+                    if (label === search || label.toLowerCase().includes(searchLower)) {{
                         el = elem;
-                        console.log('Найден по aria-label:', label);
                         break;
                     }}
                 }}
             }}
             
-            // 4. Ищем по data-testid
+            // 4. По data-testid
             if (!el) {{
                 const all = document.querySelectorAll('[data-testid]');
                 for (const elem of all) {{
                     const testid = elem.getAttribute('data-testid') || '';
-                    const testidLower = testid.toLowerCase();
-                    if (testidLower === searchLower || testidLower.includes(searchLower) || searchLower.includes(testidLower)) {{
+                    if (testid.toLowerCase().includes(searchLower)) {{
                         el = elem;
-                        console.log('Найден по data-testid:', testid);
-                        break;
-                    }}
-                }}
-            }}
-            
-            // 5. Ищем по title
-            if (!el) {{
-                const all = document.querySelectorAll('[title]');
-                for (const elem of all) {{
-                    const title = elem.getAttribute('title') || '';
-                    const titleLower = title.toLowerCase();
-                    if (titleLower === searchLower || titleLower.includes(searchLower)) {{
-                        el = elem;
-                        console.log('Найден по title:', title);
-                        break;
-                    }}
-                }}
-            }}
-            
-            // 6. Ищем по role
-            if (!el) {{
-                const all = document.querySelectorAll('[role]');
-                for (const elem of all) {{
-                    const role = elem.getAttribute('role') || '';
-                    const roleLower = role.toLowerCase();
-                    if (roleLower === searchLower || roleLower.includes(searchLower)) {{
-                        el = elem;
-                        console.log('Найден по role:', role);
                         break;
                     }}
                 }}
             }}
             
             if (el) {{
-                // Скроллим к элементу
                 el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
-                
-                // Ждём скролл и кликаем
                 setTimeout(function() {{
                     el.click();
                     el.dispatchEvent(new Event('click', {{ bubbles: true }}));
-                    el.dispatchEvent(new Event('mousedown', {{ bubbles: true }}));
-                    el.dispatchEvent(new Event('mouseup', {{ bubbles: true }}));
                 }}, 300);
                 
                 return {{
                     success: true,
                     tag: el.tagName,
-                    text: el.textContent?.trim()?.slice(0, 50) || '',
-                    id: el.id || '',
-                    testid: el.getAttribute('data-testid') || '',
-                    aria: el.getAttribute('aria-label') || ''
+                    text: el.textContent?.trim()?.slice(0, 50) || ''
                 }};
             }}
             
@@ -602,6 +639,7 @@ class CDPClient:
         if result and result.get('success'):
             file_logger.log(f"✅ Клик выполнен: {result.get('tag')} '{result.get('text')}'")
             await asyncio.sleep(1)
+            await self.get_maximum_snapshot()
             return result
         
         file_logger.log(f"❌ Элемент не найден: {selector}", "ERROR")
@@ -609,32 +647,28 @@ class CDPClient:
     
     async def fill_input(self, session_id, selector, text):
         file_logger.log(f"✍️ Заполняю '{selector}' = '{text[:20]}...'")
-        await self.send("Runtime.evaluate", {
+        result = await self.send("Runtime.evaluate", {
             "expression": f"""
                 (function() {{
                     const el = document.querySelector('{selector}');
                     if (el) {{
                         el.focus();
-                        el.value = '';
+                        el.value = '{text}';
+                        el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        el.dispatchEvent(new Event('change', {{ bubbles: true }}));
                         return true;
                     }}
                     return false;
                 }})()
             """
         }, session_id=session_id)
-        await asyncio.sleep(0.1)
-        for char in text:
-            await self.send("Input.dispatchKeyEvent", {
-                "type": "keyDown",
-                "text": char
-            }, session_id=session_id)
-            await asyncio.sleep(0.01)
-            await self.send("Input.dispatchKeyEvent", {
-                "type": "keyUp",
-                "text": char
-            }, session_id=session_id)
-            await asyncio.sleep(0.01)
+        
+        if "error" in result:
+            file_logger.log(f"❌ Ошибка заполнения: {result['error']}", "ERROR")
+            return False
+        
         file_logger.log("✅ Поле заполнено")
+        await self.get_maximum_snapshot()
         return True
     
     async def screenshot(self, session_id):
@@ -674,6 +708,11 @@ class CDPClient:
             file_logger.log(f"❌ Screenshot error: {e}", "ERROR")
             return None
     
+    async def reload(self, session_id):
+        await self.send("Page.reload", {}, session_id=session_id)
+        await asyncio.sleep(2)
+        await self.get_maximum_snapshot()
+    
     async def close_tab(self, session_id):
         if session_id in self.targets:
             target_id = self.targets[session_id]
@@ -699,77 +738,280 @@ class CDPClient:
                 pass
             self.websocket = None
 
+# ==================== AI АГЕНТ ====================
+async def ask_agnes(prompt: str, client: CDPClient) -> dict:
+    """Запрос к Agnes AI"""
+    if not AGNES_API_KEY:
+        return {"action": "answer", "params": {"text": "❌ AGNES_API_KEY не установлен"}}
+    
+    headers = {
+        "Authorization": f"Bearer {AGNES_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    # Получаем описание страницы
+    page_desc = await client.get_page_description()
+    
+    system_prompt = f"""
+{AGENT_CODE}
+
+📄 ТЕКУЩАЯ СТРАНИЦА:
+{page_desc}
+
+⚠️ ВАЖНО:
+- Используй ТОЛЬКО названия из списка кнопок
+- На X.com: "Чат", "Главная", "Личные сообщения", "Уведомления", "Закладки", "Профиль"
+- Отвечай ТОЛЬКО JSON!
+"""
+
+    data = {
+        "model": "agnes-2.0-flash",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.3,
+        "max_tokens": 2000
+    }
+    
+    try:
+        response = requests.post(AGNES_API_URL, headers=headers, json=data, timeout=60)
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+        
+        file_logger.log(f"Agnes ответ: {content[:200]}...")
+        
+        if not content or not content.strip():
+            return {"action": "answer", "params": {"text": "⚠️ Получен пустой ответ от AI"}}
+        
+        # Парсим JSON
+        json_match = re.search(r'\[.*\]|\{.*\}', content, re.DOTALL)
+        if json_match:
+            try:
+                parsed = json.loads(json_match.group())
+                
+                # Если массив с одним элементом
+                if isinstance(parsed, list):
+                    if len(parsed) == 0:
+                        return {"action": "answer", "params": {"text": "⚠️ AI вернул пустой массив"}}
+                    if len(parsed) == 1:
+                        parsed = parsed[0]
+                    else:
+                        return parsed
+                
+                # Если словарь
+                if isinstance(parsed, dict):
+                    # Преобразуем answer в action
+                    if "answer" in parsed and "action" not in parsed:
+                        return {"action": "answer", "params": {"text": parsed["answer"]}}
+                    
+                    # Преобразуем text в params
+                    if "action" in parsed and "text" in parsed and "params" not in parsed:
+                        parsed["params"] = {"text": parsed.pop("text")}
+                        return parsed
+                    
+                    if "action" not in parsed:
+                        return {"action": "answer", "params": {"text": json.dumps(parsed, ensure_ascii=False)}}
+                    
+                    return parsed
+                    
+            except json.JSONDecodeError:
+                if content.strip():
+                    return {"action": "answer", "params": {"text": content}}
+        
+        if content.strip():
+            return {"action": "answer", "params": {"text": content}}
+        else:
+            return {"action": "answer", "params": {"text": "⚠️ Получен пустой ответ от AI"}}
+            
+    except requests.exceptions.Timeout:
+        file_logger.log("⏳ Таймаут Agnes API", "WARNING")
+        return {"action": "answer", "params": {"text": "⏳ Превышено время ожидания ответа от AI. Попробуйте ещё раз."}}
+    except Exception as e:
+        file_logger.log(f"❌ Agnes error: {e}", "ERROR")
+        return {"action": "answer", "params": {"text": f"❌ Ошибка: {str(e)}"}}
+
+# ==================== ВЫПОЛНЕНИЕ ДЕЙСТВИЙ ====================
+async def execute_action(client: CDPClient, action, user_id) -> str:
+    """Выполнение действия от AI"""
+    if isinstance(action, list):
+        results = []
+        for a in action:
+            result = await execute_single_action(client, a, user_id)
+            results.append(result)
+        return "\n".join(results)
+    return await execute_single_action(client, action, user_id)
+
+async def execute_single_action(client: CDPClient, action: dict, user_id) -> str:
+    """Выполнение одного действия"""
+    if "text" in action and "params" not in action:
+        action["params"] = {"text": action.pop("text")}
+    
+    if "answer" in action and "action" not in action:
+        action = {"action": "answer", "params": {"text": action.pop("answer")}}
+    
+    action_type = action.get("action")
+    params = action.get("params", {})
+    
+    file_logger.log(f"Выполнение действия: {action_type}")
+    
+    try:
+        session_id = client.session_id
+        
+        if action_type == "navigate":
+            url = params.get("url", "https://google.com")
+            await client.navigate(session_id, url)
+            await client.wait_for_load(session_id)
+            await client.wait_for_content(session_id, timeout=30)
+            await client.get_maximum_snapshot()
+            title = await client.eval_js("document.title", session_id)
+            return f"✅ Открыл: {url}\n📄 {title}"
+        
+        elif action_type == "click":
+            text = params.get("text") or params.get("selector")
+            if not text:
+                return "❌ Нет текста для клика"
+            result = await client.click_element(session_id, text)
+            if result and result.get('success'):
+                await client.get_maximum_snapshot()
+                return f"✅ Кликнул: {text}"
+            return f"❌ Элемент не найден: {text}"
+        
+        elif action_type == "fill":
+            selector = params.get("selector")
+            value = params.get("value", "")
+            if not selector:
+                return "❌ Нет селектора"
+            result = await client.fill_input(session_id, selector, value)
+            if result:
+                return f"✅ Заполнил: {selector} = {value}"
+            return f"❌ Элемент не найден: {selector}"
+        
+        elif action_type == "screenshot":
+            img_data = await client.screenshot(session_id)
+            if img_data:
+                filename = f"screenshot_{user_id}_{int(time.time())}.jpg"
+                with open(filename, "wb") as f:
+                    f.write(img_data)
+                return "screenshot"
+            return "❌ Не удалось сделать скриншот"
+        
+        elif action_type == "reload":
+            await client.reload(session_id)
+            return "✅ Страница перезагружена"
+        
+        elif action_type == "answer":
+            text = params.get('text', 'Нет ответа')
+            return f"📝 {text}"
+        
+        else:
+            return f"⚠️ Неизвестное действие: {action_type}"
+            
+    except Exception as e:
+        file_logger.log(f"❌ Execute error: {e}", "ERROR")
+        return f"❌ Ошибка: {str(e)}"
+
 # ==================== ТЕЛЕГРАМ БОТ ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_logger.log(f"📩 /start от {update.message.from_user.id}")
+    agnes_status = "✅" if AGNES_API_KEY else "❌"
     pillow_status = "✅" if PILLOW_AVAILABLE else "❌"
+    
     await update.message.reply_text(
-        f"🤖 Привет! Я бот для автоматизации браузера.\n\n"
-        f"📌 Отправь мне URL, и я покажу все элементы.\n"
-        f"📌 Используй /click <название> для клика.\n"
-        f"📌 Используй /fill <селектор> <текст> для заполнения.\n"
-        f"📌 Используй /screenshot для скриншота.\n"
-        f"📌 Используй /find <название> для поиска.\n"
+        f"🧠 **AI АГЕНТ ДЛЯ БРАУЗЕРА**\n\n"
+        f"🤖 Управляй браузером через AI!\n\n"
+        f"📌 **Просто напиши что хочешь сделать:**\n"
+        f"• Открой x.com\n"
+        f"• Нажми на кнопку Чат\n"
+        f"• Сделай скриншот\n"
+        f"• Что видишь на странице?\n\n"
         f"🖼️ Pillow: {pillow_status}\n"
-        f"🍪 Куки X.com установлены автоматически!\n"
-        f"💓 Авто-пинг для стабильного соединения"
+        f"🧠 Agnes AI: {agnes_status}\n"
+        f"🍪 Куки X.com: ✅ установлены\n"
+        f"💓 Авто-пинг: ✅ активен\n\n"
+        f"📌 Доступные команды:\n"
+        f"/start - Начать\n"
+        f"/help - Справка\n"
+        f"/click <название> - Кликнуть\n"
+        f"/screenshot - Скриншот\n"
+        f"/logs - Логи\n"
+        f"/clear - Очистить сессию"
     )
 
-async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global cdp
-    url = update.message.text.strip()
-    user_id = update.message.from_user.id
-    file_logger.log(f"📩 URL от {user_id}: {url}")
-    
-    if not url.startswith(("http://", "https://")):
-        await update.message.reply_text("❌ Отправь корректный URL")
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка сообщений через AI"""
+    if not update.message or not update.message.text:
         return
     
-    await update.message.reply_text(f"🔄 Анализирую {url}...")
+    user_id = update.message.from_user.id
+    prompt = update.message.text
+    
+    file_logger.log(f"💬 Сообщение от {user_id}: {prompt[:100]}...")
+    
+    await update.message.chat.send_action(action="typing")
     
     try:
-        if not cdp.websocket:
-            await cdp.connect()
-        else:
-            await cdp.start_keep_alive()
+        # Получаем или создаём клиент
+        if user_id not in clients:
+            file_logger.log(f"🆕 Создаю клиент для {user_id}")
+            client = CDPClient(chrome_manager.ws_endpoint)
+            client.user_id = user_id
+            await client.connect()
+            clients[user_id] = client
         
-        session_id, _ = await cdp.create_tab()
-        context.user_data['session_id'] = session_id
-        await cdp.set_cookies(X_COOKIES)
-        await cdp.navigate(session_id, url)
-        await update.message.reply_text("⏳ Ожидаю загрузку страницы...")
-        await cdp.wait_for_load(session_id)
+        client = clients[user_id]
         
-        if "x.com" in url or "twitter.com" in url:
-            await update.message.reply_text("⏳ Жду загрузки контента...")
-            await cdp.wait_for_content(session_id, timeout=30)
+        # Проверяем соединение
+        if not client.websocket or client.websocket.closed:
+            file_logger.log(f"🔄 Переподключение для {user_id}")
+            await client.connect()
         
-        nodes = await cdp.get_accessibility_tree(session_id)
-        interactive = []
-        for node in nodes:
-            role = node.get("role", {}).get("value", "")
-            if role in ["button", "link", "textbox", "checkbox", "combobox", "radio", "menuitem", "tab"]:
-                name = node.get("name", {}).get("value", "")
-                if name:
-                    interactive.append({"role": role, "name": name[:100]})
+        # Если нет вкладки - создаём
+        if not client.session_id:
+            await client.create_tab()
+            await client.set_cookies(X_COOKIES)
+            await client.navigate(client.session_id, "https://x.com")
+            await client.wait_for_load(client.session_id)
+            await client.wait_for_content(client.session_id)
         
-        context.user_data['elements'] = interactive
+        # Обновляем слепок
+        await client.get_maximum_snapshot()
         
-        if interactive:
-            msg = "🔍 Найдены интерактивные элементы:\n\n"
-            for i, el in enumerate(interactive[:20], 1):
-                name = el['name'] if el['name'] else "(без названия)"
-                msg += f"{i}. [{el['role']}] {name}\n"
-            if len(interactive) > 20:
-                msg += f"\n... и ещё {len(interactive) - 20} элементов"
-            await update.message.reply_text(msg)
-        else:
-            await update.message.reply_text("❌ Интерактивных элементов не найдено.\n\n💡 Попробуйте /screenshot")
+        # Запрашиваем AI
+        if AGNES_API_KEY:
+            response = await ask_agnes(prompt, client)
+            if "error" not in response:
+                result = await execute_action(client, response, user_id)
+                
+                if result == "screenshot":
+                    # Ищем файл скриншота
+                    import glob
+                    files = glob.glob(f"screenshot_{user_id}_*.jpg")
+                    if files:
+                        latest = max(files, key=os.path.getctime)
+                        with open(latest, "rb") as f:
+                            await update.message.reply_photo(photo=f, caption="📸 Скриншот")
+                        os.remove(latest)
+                    else:
+                        await update.message.reply_text("❌ Не удалось найти скриншот")
+                else:
+                    await update.message.reply_text(result)
+                return
+            else:
+                await update.message.reply_text(f"❌ Ошибка AI: {response.get('error', 'Неизвестная ошибка')}")
+                return
+        
+        # Если нет API ключа - обычный режим
+        await update.message.reply_text(
+            "❌ AGNES_API_KEY не установлен.\n"
+            "Используйте команды напрямую:\n"
+            "/click Чат\n"
+            "/screenshot"
+        )
             
     except Exception as e:
-        error_msg = str(e)[:200]
-        file_logger.log(f"❌ Ошибка в handle_url: {e}", "ERROR")
-        await update.message.reply_text(f"❌ Ошибка: {error_msg}")
+        file_logger.log(f"❌ Ошибка в handle_message: {e}", "ERROR")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def click_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -777,181 +1019,54 @@ async def click_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         args = update.message.text.split()
         if len(args) < 2:
             await update.message.reply_text("❌ Использование: /click <название>")
-            await update.message.reply_text("Примеры: /click Чат, /click Главная, /click Личные сообщения")
             return
         
         selector = " ".join(args[1:])
-        session_id = context.user_data.get('session_id')
-        if not session_id:
-            await update.message.reply_text("❌ Сначала отправь URL")
+        
+        if user_id not in clients:
+            await update.message.reply_text("❌ Сначала отправь сообщение")
             return
         
-        file_logger.log(f"🖱️ Клик от {user_id}: {selector}")
-        await update.message.reply_text(f"🖱️ Ищу и кликаю по '{selector}'...")
+        client = clients[user_id]
+        if not client.session_id:
+            await update.message.reply_text("❌ Нет активной вкладки")
+            return
         
-        result = await cdp.click_element(session_id, selector)
+        await update.message.reply_text(f"🖱️ Кликаю по '{selector}'...")
+        result = await client.click_element(client.session_id, selector)
         
         if result and result.get('success'):
-            tag = result.get('tag', '')
-            text = result.get('text', '')
-            await update.message.reply_text(f"✅ Клик выполнен по [{tag}] '{text}'")
+            await update.message.reply_text(f"✅ Клик выполнен")
         else:
-            await update.message.reply_text(f"❌ Не найден элемент: {selector}")
+            await update.message.reply_text(f"❌ Элемент не найден: {selector}")
             
     except Exception as e:
         file_logger.log(f"❌ Ошибка click: {e}", "ERROR")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
-async def find_button_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Поиск кнопки по названию"""
-    try:
-        user_id = update.message.from_user.id
-        args = update.message.text.split()
-        if len(args) < 2:
-            await update.message.reply_text("❌ Использование: /find <название>")
-            await update.message.reply_text("Пример: /find Messages")
-            return
-        
-        search_term = " ".join(args[1:])
-        session_id = context.user_data.get('session_id')
-        if not session_id:
-            await update.message.reply_text("❌ Сначала отправь URL")
-            return
-        
-        file_logger.log(f"🔍 Поиск '{search_term}' от {user_id}")
-        await update.message.reply_text(f"🔍 Ищу '{search_term}'...")
-        
-        search_escaped = search_term.replace("'", "\\'").replace('"', '\\"')
-        result = await cdp.eval_js(f"""
-            (function() {{
-                const found = [];
-                const all = document.querySelectorAll('*');
-                const search = '{search_escaped}'.toLowerCase();
-                
-                all.forEach(el => {{
-                    const text = el.textContent?.trim()?.toLowerCase() || '';
-                    const aria = el.getAttribute('aria-label')?.toLowerCase() || '';
-                    const title = el.getAttribute('title')?.toLowerCase() || '';
-                    const testid = el.getAttribute('data-testid')?.toLowerCase() || '';
-                    const role = el.getAttribute('role') || '';
-                    
-                    if (text.includes(search) || aria.includes(search) || 
-                        title.includes(search) || testid.includes(search)) {{
-                        const rect = el.getBoundingClientRect();
-                        found.push({{
-                            tag: el.tagName,
-                            text: el.textContent?.trim()?.slice(0, 50) || '',
-                            aria: el.getAttribute('aria-label') || '',
-                            testid: el.getAttribute('data-testid') || '',
-                            id: el.id || '',
-                            class: el.className || '',
-                            visible: rect.width > 0 && rect.height > 0,
-                            x: Math.round(rect.x),
-                            y: Math.round(rect.y)
-                        }});
-                    }}
-                }});
-                
-                return found.slice(0, 20);
-            }})()
-        """, session_id)
-        
-        if result and len(result) > 0:
-            msg = f"🔍 Найдено {len(result)} элементов с '{search_term}':\n\n"
-            for i, el in enumerate(result[:15], 1):
-                visible = "👁️" if el.get('visible') else "👻"
-                tag = el.get('tag', '')
-                text = el.get('text', '') or el.get('aria', '') or el.get('testid', '')
-                if text:
-                    msg += f"{i}. {visible} [{tag}] {text[:40]}\n"
-                else:
-                    msg += f"{i}. {visible} [{tag}] (без текста)\n"
-                if el.get('id'):
-                    msg += f"   id: #{el['id']}\n"
-                if el.get('testid'):
-                    msg += f"   data-testid: {el['testid']}\n"
-                if el.get('aria'):
-                    msg += f"   aria-label: {el['aria']}\n"
-            
-            if len(result) > 15:
-                msg += f"\n... и ещё {len(result) - 15} элементов"
-            
-            await update.message.reply_text(msg)
-        else:
-            await update.message.reply_text(f"❌ Ничего не найдено по '{search_term}'")
-            
-    except Exception as e:
-        file_logger.log(f"❌ Ошибка find_button: {e}", "ERROR")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def fill_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        user_id = update.message.from_user.id
-        args = update.message.text.split()
-        if len(args) < 3:
-            await update.message.reply_text("❌ Использование: /fill <селектор> <текст>")
-            return
-        selector = args[1]
-        text = " ".join(args[2:])
-        session_id = context.user_data.get('session_id')
-        if not session_id:
-            await update.message.reply_text("❌ Сначала отправь URL")
-            return
-        file_logger.log(f"✍️ Заполнение от {user_id}: {selector} = {text[:20]}...")
-        await update.message.reply_text(f"✍️ Заполняю '{selector}'...")
-        await cdp.fill_input(session_id, selector, text)
-        await update.message.reply_text("✅ Поле заполнено")
-    except Exception as e:
-        file_logger.log(f"❌ Ошибка fill: {e}", "ERROR")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
 async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_id = update.message.from_user.id
-        file_logger.log(f"📸 Скриншот от {user_id}")
-        session_id = context.user_data.get('session_id')
-        if not session_id:
-            await update.message.reply_text("❌ Сначала отправь URL")
+        
+        if user_id not in clients:
+            await update.message.reply_text("❌ Сначала отправь сообщение")
             return
+        
+        client = clients[user_id]
+        if not client.session_id:
+            await update.message.reply_text("❌ Нет активной вкладки")
+            return
+        
         await update.message.reply_text("📸 Делаю скриншот...")
-        image_data = await cdp.screenshot(session_id)
-        if image_data:
-            try:
-                await update.message.reply_photo(photo=BytesIO(image_data), caption="📸 Скриншот")
-            except Exception as e:
-                if "Photo_invalid_dimensions" in str(e):
-                    await update.message.reply_text("❌ Ошибка размеров. Попробуйте /reload")
-                else:
-                    await update.message.reply_text(f"❌ Ошибка отправки: {str(e)[:100]}")
+        img_data = await client.screenshot(client.session_id)
+        
+        if img_data:
+            await update.message.reply_photo(photo=BytesIO(img_data), caption="📸 Скриншот")
         else:
             await update.message.reply_text("❌ Не удалось сделать скриншот")
+            
     except Exception as e:
         file_logger.log(f"❌ Ошибка screenshot: {e}", "ERROR")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def reload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    session_id = context.user_data.get('session_id')
-    if not session_id:
-        await update.message.reply_text("❌ Сначала отправь URL")
-        return
-    await update.message.reply_text("🔄 Перезагружаю страницу...")
-    await cdp.send("Page.reload", {}, session_id=session_id)
-    await asyncio.sleep(2)
-    await update.message.reply_text("✅ Страница перезагружена")
-
-async def set_cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        await update.message.reply_text("🍪 Устанавливаю куки...")
-        if not cdp.websocket:
-            await update.message.reply_text("❌ Сначала отправь URL")
-            return
-        result = await cdp.set_cookies(X_COOKIES)
-        if result:
-            await update.message.reply_text(f"✅ Установлено {len(X_COOKIES)} кук")
-        else:
-            await update.message.reply_text("❌ Не удалось установить куки")
-    except Exception as e:
-        file_logger.log(f"❌ Ошибка set_cookies: {e}", "ERROR")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -968,55 +1083,45 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
-async def clear_logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        with open(LOG_FILE, 'w', encoding='utf-8') as f:
-            f.write(f"=== Логи очищены ===\n")
-            f.write(f"Время очистки: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write("=" * 50 + "\n\n")
-        await update.message.reply_text("✅ Логи очищены")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🧠 **AI АГЕНТ**\n\n"
+        "📌 **Просто напиши что хочешь сделать:**\n"
+        "• Открой x.com\n"
+        "• Нажми на Чат\n"
+        "• Сделай скриншот\n"
+        "• Что видишь на странице?\n\n"
+        "📌 **Команды:**\n"
+        "/click <название> - Кликнуть\n"
+        "/screenshot - Скриншот\n"
+        "/logs - Логи\n"
+        "/clear - Очистить сессию\n\n"
+        "💡 На X.com доступны кнопки:\n"
+        "Главная, Чат, Личные сообщения, Уведомления, Закладки, Профиль"
+    )
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    session_id = context.user_data.get('session_id')
-    if session_id:
-        await cdp.close_tab(session_id)
-        await cdp.stop_keep_alive()
-        context.user_data.clear()
+    user_id = update.message.from_user.id
+    if user_id in clients:
+        await clients[user_id].close()
+        del clients[user_id]
         await update.message.reply_text("🧹 Сессия очищена")
     else:
         await update.message.reply_text("Активной сессии нет")
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📖 Доступные команды:\n\n"
-        "/start - Начать работу\n"
-        "/help - Эта справка\n"
-        "/click <название> - Кликнуть по элементу (по тексту)\n"
-        "/find <название> - Найти элементы на странице\n"
-        "/fill <селектор> <текст> - Заполнить поле\n"
-        "/screenshot - Скриншот\n"
-        "/reload - Перезагрузить страницу\n"
-        "/set_cookies - Переустановить куки\n"
-        "/logs - Получить файл логов\n"
-        "/clear_logs - Очистить логи\n"
-        "/clear - Очистить сессию\n\n"
-        "🔹 Просто отправь URL для анализа\n\n"
-        "💡 Примеры:\n"
-        "/click Чат\n"
-        "/click Главная\n"
-        "/find Messages"
-    )
-
 # ==================== ЗАПУСК ====================
 async def shutdown():
-    global app, chrome_manager, cdp
+    global app, chrome_manager, cdp, clients
     file_logger.log("🛑 Завершение работы...")
     print("\n🛑 Завершение работы...")
     
-    if cdp:
-        await cdp.close()
+    # Закрываем все клиенты
+    for user_id, client in clients.items():
+        try:
+            await client.close()
+        except:
+            pass
+    
     if app:
         try:
             await app.stop()
@@ -1024,8 +1129,10 @@ async def shutdown():
             file_logger.log("✅ Бот остановлен")
         except:
             pass
+    
     if chrome_manager:
         chrome_manager.stop()
+    
     file_logger.log("👋 Завершено")
     print("👋 Завершено")
 
@@ -1035,25 +1142,21 @@ async def main_async():
     print("🚀 Запуск бота...")
     print(f"🔗 Chrome: {chrome_manager.ws_endpoint}")
     print(f"🍪 Загружено {len(X_COOKIES)} кук")
-    print(f"🖼️ Pillow: {'✅ Доступен' if PILLOW_AVAILABLE else '❌ Не установлен'}")
+    print(f"🧠 Agnes AI: {'✅ Доступен' if AGNES_API_KEY else '❌ Не установлен'}")
     print("💓 Авто-пинг включён")
-    file_logger.log(f"🔗 Chrome: {chrome_manager.ws_endpoint}")
-    file_logger.log(f"🍪 Загружено {len(X_COOKIES)} кук")
-    file_logger.log(f"🖼️ Pillow: {'✅ Доступен' if PILLOW_AVAILABLE else '❌ Не установлен'}")
     
     app = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("click", click_command))
-    app.add_handler(CommandHandler("find", find_button_command))
-    app.add_handler(CommandHandler("fill", fill_command))
     app.add_handler(CommandHandler("screenshot", screenshot_command))
-    app.add_handler(CommandHandler("reload", reload_command))
-    app.add_handler(CommandHandler("set_cookies", set_cookies_command))
     app.add_handler(CommandHandler("logs", logs_command))
-    app.add_handler(CommandHandler("clear_logs", clear_logs_command))
     app.add_handler(CommandHandler("clear", clear_command))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
+    
+    # Обработчик сообщений (AI)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     loop = asyncio.get_event_loop()
     for sig in [signal.SIGINT, signal.SIGTERM]:
