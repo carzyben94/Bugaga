@@ -11,6 +11,7 @@ import shutil
 import signal
 import sys
 import re
+import glob
 from io import BytesIO
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -74,28 +75,27 @@ AGENT_CODE = """
 🤖 ТЫ — АГЕНТ ДЛЯ УПРАВЛЕНИЯ БРАУЗЕРОМ
 
 📌 ТЫ ВИДИШЬ ВСЕ КНОПКИ И ПОЛЯ НА СТРАНИЦЕ!
-Используй ТОЛЬКО названия из списка ниже.
 
 📌 ДОСТУПНЫЕ ДЕЙСТВИЯ:
 1. navigate(url) - открыть сайт
-2. click(text) - кликнуть по кнопке (из списка)
+2. click(text) - кликнуть по кнопке
 3. fill(selector, value) - заполнить поле
 4. screenshot() - скриншот
 5. reload() - перезагрузить страницу
 6. answer(text) - ответить пользователю
 
-📌 ПРИМЕРЫ:
-{"action": "click", "params": {"text": "Чат"}}
-{"action": "navigate", "params": {"url": "https://x.com"}}
-{"action": "answer", "params": {"text": "Я открыл страницу"}}
+📌 ПРАВИЛА ОТВЕТА:
+- На вопрос "Какие кнопки?" — отвечай СПИСКОМ с нумерацией
+- На вопрос "Что видишь?" — отвечай кратко и структурировано
+- На вопрос "Что делает бот?" — объясняй кратко
 
-⚠️ ВАЖНО:
-- Для клика используй ТОЧНО такие названия как в списке кнопок
+📌 ФОРМАТ ОТВЕТА ДЛЯ СПИСКА КНОПОК:
+{"action": "answer", "params": {"text": "📋 Кнопки на странице:\\n1. Чат\\n2. Главная\\n3. Профиль\\n4. Уведомления"}}
+
+📌 ВАЖНО:
+- Используй ТОЛЬКО названия из списка кнопок
 - На X.com: "Чат", "Главная", "Личные сообщения", "Уведомления", "Закладки", "Профиль"
-- Если нужен поиск — используй fill с селектором
-
-📌 ЕСЛИ НУЖНО НЕСКОЛЬКО ДЕЙСТВИЙ - ВОЗВРАЩАЙ МАССИВ:
-[{"action": "click", "params": {"text": "Чат"}}, {"action": "screenshot", "params": {}}]
+- Отвечай ТОЛЬКО JSON!
 """
 
 # ==================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ====================
@@ -813,6 +813,18 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
                     if "action" not in parsed:
                         return {"action": "answer", "params": {"text": json.dumps(parsed, ensure_ascii=False)}}
                     
+                    # Если это ответ со списком кнопок — форматируем
+                    if parsed.get("action") == "answer":
+                        text = parsed.get("params", {}).get("text", "")
+                        if text and len(text) > 50:
+                            # Если текст в одну строку через запятую - разбиваем
+                            if ', ' in text and '\\n' not in text:
+                                items = text.split(', ')
+                                if len(items) > 3:
+                                    formatted = "📋 **Найдены элементы:**\n"
+                                    for i, item in enumerate(items, 1):
+                                        formatted += f"{i}. {item.strip()}\n"
+                                    parsed["params"]["text"] = formatted
                     return parsed
                     
             except json.JSONDecodeError:
@@ -924,7 +936,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Открой x.com\n"
         f"• Нажми на кнопку Чат\n"
         f"• Сделай скриншот\n"
-        f"• Что видишь на странице?\n\n"
+        f"• Какие кнопки видишь?\n\n"
         f"🖼️ Pillow: {pillow_status}\n"
         f"🧠 Agnes AI: {agnes_status}\n"
         f"🍪 Куки X.com: ✅ установлены\n"
@@ -985,7 +997,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 if result == "screenshot":
                     # Ищем файл скриншота
-                    import glob
                     files = glob.glob(f"screenshot_{user_id}_*.jpg")
                     if files:
                         latest = max(files, key=os.path.getctime)
@@ -1090,7 +1101,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Открой x.com\n"
         "• Нажми на Чат\n"
         "• Сделай скриншот\n"
-        "• Что видишь на странице?\n\n"
+        "• Какие кнопки видишь?\n\n"
         "📌 **Команды:**\n"
         "/click <название> - Кликнуть\n"
         "/screenshot - Скриншот\n"
