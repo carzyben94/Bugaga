@@ -1,4 +1,3 @@
-
 import os
 import logging
 import json
@@ -1248,186 +1247,6 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
 
 # ---------- Команды ----------
 
-async def find_button_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Поиск кнопки на странице"""
-    user_id = update.message.from_user.id
-    button_name = ' '.join(context.args) if context.args else 'Обзор'
-    
-    if user_id not in clients:
-        await update.message.reply_text("❌ Сначала откройте страницу (например, 'Зайди на x.com')")
-        return
-    
-    client = clients[user_id]
-    
-    try:
-        await update.message.reply_text(f"🔍 Ищу кнопку '{button_name}'...")
-        
-        # Ищем все кликабельные элементы
-        elements = await client.find_clickable_elements()
-        
-        if not elements:
-            await update.message.reply_text("❌ Не удалось найти элементы на странице")
-            return
-        
-        found = []
-        for el in elements:
-            text = el.get('text', '').lower()
-            attrs = el.get('attrs', {})
-            aria_label = attrs.get('aria-label', '').lower()
-            data_testid = attrs.get('data-testid', '').lower()
-            title_attr = attrs.get('title', '').lower()
-            
-            # Ищем совпадения (русские И английские)
-            search_term = button_name.lower()
-            if (search_term in text or 
-                search_term in aria_label or 
-                search_term in data_testid or
-                search_term in title_attr or
-                ('обзор' in text and 'explore' in search_term) or
-                ('explore' in text and 'обзор' in search_term)):
-                found.append(el)
-        
-        if found:
-            msg = f"✅ Найдено {len(found)} элементов с '{button_name}':\n\n"
-            for el in found[:20]:
-                attrs = el.get('attrs', {})
-                text = el.get('text', '') or attrs.get('aria-label', '') or attrs.get('title', '') or el.get('tag', '')
-                selector = el.get('id') and f"#{el.get('id')}" or (el.get('class') and f".{el.get('class', '').split()[0] if el.get('class') else ''}")
-                data_testid = attrs.get('data-testid', '')
-                aria_label = attrs.get('aria-label', '')
-                
-                msg += f"  • {text[:50]}\n"
-                if selector:
-                    msg += f"    Селектор: {selector}\n"
-                if data_testid:
-                    msg += f"    data-testid: {data_testid}\n"
-                if aria_label:
-                    msg += f"    aria-label: {aria_label}\n"
-                msg += "\n"
-            
-            if len(found) > 20:
-                msg += f"... и еще {len(found) - 20} элементов"
-                
-            await update.message.reply_text(msg)
-        else:
-            await update.message.reply_text(
-                f"❌ Кнопка '{button_name}' не найдена\n\n"
-                f"💡 Попробуйте:\n"
-                f"• Проверить написание (Обзор, обзор, explore)\n"
-                f"• Использовать /find_button [название]\n"
-                f"• Сделать скриншот и посмотреть визуально\n"
-                f"• На X.com кнопка 'Обзор' → 'Explore'"
-            )
-            
-    except Exception as e:
-        file_logger.log(f"❌ Ошибка: {e}", "ERROR")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-
-async def set_cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    
-    if user_id not in clients:
-        await update.message.reply_text("❌ Сначала отправьте команду чтобы инициализировать браузер")
-        return
-    
-    client = clients[user_id]
-    
-    try:
-        await update.message.reply_text("🍪 Устанавливаю куки для X.com...")
-        result = await client.set_cookies(X_COOKIES)
-        
-        if result:
-            await update.message.reply_text(f"✅ Установлено {len(X_COOKIES)} кук для X.com")
-        else:
-            await update.message.reply_text("❌ Не удалось установить куки")
-            
-    except Exception as e:
-        file_logger.log(f"❌ Ошибка: {e}", "ERROR")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-
-async def mask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    
-    if user_id not in clients:
-        await update.message.reply_text("❌ Сначала отправьте команду чтобы инициализировать браузер")
-        return
-    
-    client = clients[user_id]
-    
-    try:
-        await update.message.reply_text("🕵️ Применяю маскировку...")
-        result = await client.apply_mask()
-        
-        if result:
-            await update.message.reply_text("✅ Маскировка успешно применена!")
-        else:
-            await update.message.reply_text("⚠️ Маскировка применена частично")
-            
-    except Exception as e:
-        file_logger.log(f"❌ Ошибка: {e}", "ERROR")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-
-# ---------- Обработчик ----------
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
-        return
-    
-    user_id = update.message.from_user.id
-    prompt = update.message.text
-    
-    file_logger.log(f"Сообщение от {user_id}: {prompt[:100]}...")
-    
-    await update.message.chat.send_action(action="typing")
-    
-    try:
-        ensure_chrome_running()
-        
-        if user_id not in clients:
-            client = CDPClient()
-            client.user_id = user_id
-            await client.connect_with_retry()
-            clients[user_id] = client
-        
-        client = clients[user_id]
-        
-        if not await client.ensure_connection():
-            await update.message.reply_text("❌ Не удалось подключиться к браузеру. Попробуйте позже.")
-            return
-        
-        await client.get_maximum_snapshot()
-        
-        if AGNES_API_KEY:
-            response = await ask_agnes(prompt, client)
-            if "error" not in response:
-                result = await execute_action(client, response)
-                if result == "screenshot":
-                    screenshot_files = ["screenshot.jpg", "screenshot.png"]
-                    sent = False
-                    for file in screenshot_files:
-                        if os.path.exists(file) and os.path.getsize(file) > 0:
-                            try:
-                                with open(file, "rb") as photo:
-                                    await update.message.reply_photo(photo=photo)
-                                sent = True
-                                break
-                            except Exception as e:
-                                file_logger.log(f"❌ Ошибка отправки {file}: {e}", "ERROR")
-                    
-                    if not sent:
-                        await update.message.reply_text("❌ Не удалось отправить скриншот")
-                else:
-                    await update.message.reply_text(result)
-                return
-        
-        await update.message.reply_text("❌ Не понял команду. Попробуйте переформулировать.")
-            
-    except Exception as e:
-        file_logger.log(f"❌ Ошибка: {e}", "ERROR")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-
-# ---------- Команды ----------
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🧠 **МАКСИМАЛЬНЫЙ АГЕНТ**\n\n"
@@ -1444,9 +1263,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/find_button Обзор - найти кнопку\n"
         "/find_button Explore - найти кнопку (англ)\n\n"
         "/cdp - статус браузера\n"
-        "/logs - логи\n"
-        "/set_cookies - установить куки\n"
-        "/mask - применить маскировку"
+        "/logs - логи"
     )
 
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1460,16 +1277,6 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
         else:
             await update.message.reply_text("❌ Файл логов не найден")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-
-async def clear_logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        with open(LOG_FILE, 'w', encoding='utf-8') as f:
-            f.write(f"=== Логи очищены ===\n")
-            f.write(f"Время очистки: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write("=" * 50 + "\n\n")
-        await update.message.reply_text("✅ Логи очищены")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
@@ -1507,10 +1314,6 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("cdp", cdp))
     app.add_handler(CommandHandler("logs", logs_command))
-    app.add_handler(CommandHandler("clear_logs", clear_logs_command))
-    app.add_handler(CommandHandler("set_cookies", set_cookies_command))
-    app.add_handler(CommandHandler("mask", mask_command))
-    app.add_handler(CommandHandler("find_button", find_button_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print("🚀 Бот запущен!")
