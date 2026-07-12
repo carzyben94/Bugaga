@@ -98,14 +98,50 @@ class CDPClient:
         self.msg_id = 0
         self.targets = {}
         self.session_id = None
+        self.event_futures = {}  # для хранения Future объектов событий
     
     async def connect(self):
         if not self.ws_endpoint:
             raise Exception("WebSocket endpoint не указан")
         self.websocket = await websockets.connect(self.ws_endpoint)
         print(f"✅ Подключено к Chrome: {self.ws_endpoint}")
+        
+        # Запускаем слушатель событий
+        asyncio.create_task(self._event_listener())
+    
+    async def _event_listener(self):
+        """Постоянно слушает входящие сообщения и обрабатывает события"""
+        try:
+            async for message in self.websocket:
+                data = json.loads(message)
+                
+                # Если это событие (не ответ на команду)
+                if "method" in data:
+                    event_name = data["method"]
+                    session_id = data.get("sessionId")
+                    
+                    # Если есть ожидающие Future для этого события
+                    key = f"{event_name}_{session_id}"
+                    if key in self.event_futures:
+                        future = self.event_futures.pop(key)
+                        if not future.done():
+                            future.set_result(data)
+        except Exception as e:
+            print(f"Ошибка в event_listener: {e}")
+    
+    async def wait_for_event(self, event_name, session_id=None, timeout=30):
+        """Ожидает конкретное CDP-событие"""
+        key = f"{event_name}_{session_id}"
+        self.event_futures[key] = asyncio.Future()
+        
+        try:
+            return await asyncio.wait_for(self.event_futures[key], timeout=timeout)
+        except asyncio.TimeoutError:
+            self.event_futures.pop(key, None)
+            raise Exception(f"Таймаут ожидания события {event_name}")
     
     async def send(self, method, params=None, session_id=None):
+        """Отправка CDP-команды"""
         self.msg_id += 1
         msg = {
             "id": self.msg_id,
@@ -117,6 +153,7 @@ class CDPClient:
         
         await self.websocket.send(json.dumps(msg))
         
+        # Ждём ответ
         while True:
             response = await self.websocket.recv()
             data = json.loads(response)
@@ -135,30 +172,123 @@ class CDPClient:
         })
         session_id = result["result"]["sessionId"]
         
+        # Включаем необходимые домены
         await self.send("Page.enable", session_id=session_id)
         await self.send("Runtime.enable", session_id=session_id)
         await self.send("DOM.enable", session_id=session_id)
+        await self.send("Network.enable", session_id=session_id)
         
         self.targets[session_id] = target_id
         self.session_id = session_id
         return session_id, target_id
     
-    async def navigate(self, session_id, url):
-        return await self.send("Page.navigate", {"url": url}, session_id=session_id)
+    async def navigate_and_wait(self, session_id, url, timeout=60):
+        """Навигация с ожиданием полной загрузки по документации CDP"""
+        
+        # Подписываемся на события через Page.enable уже сделано в create_tab
+        
+        # Создаём задачи для ожидания событий загрузки
+        load_event = asyncio.create_task(
+            self.wait_for_event("Page.loadEventFired", session_id, timeout)
+        )
+        
+        # Дополнительно ждём DOMContentLoaded
+        dom_event = asyncio.create_task(
+            self.wait_for_event("Page.domContentEventFired", session_id, timeout)
+        )
+        
+        # Отправляем команду навигации
+        await self.send("Page.navigate", {"url": url}, session_id=session_id)
+        
+        # Ждём оба события
+        try:
+            await asyncio.gather(load_event, dom_event)
+            print(f"✅ Страница загружена: {url}")
+            
+            # Дополнительно ждём пока readyState станет complete
+            await self.wait_for_ready_state(session_id, "complete", timeout=30)
+            
+            return True
+        except Exception as e:
+            print(f"⚠️ Ошибка ожидания загрузки: {e}")
+            return False
     
-    async def wait_for_load(self, session_id, timeout=30):
+    async def wait_for_ready_state(self, session_id, state="complete", timeout=30):
+        """Ожидает определённого состояния readyState"""
+        for _ in range(timeout * 2):
+            result = await self.send("Runtime.evaluate", {
+                "expression": "document.readyState"
+            }, session_id=session_id)
+            
+            current_state = result.get("result", {}).get("result", {}).get("value", "")
+            if current_state == state:
+                print(f"✅ readyState: {state}")
+                return True
+            
+            await asyncio.sleep(0.5)
+        
+        print(f"⚠️ Таймаут ожидания readyState: {state}")
+        return False
+    
+    async def wait_for_selector(self, session_id, selector, timeout=30):
+        """Ждёт появления элемента по CSS-селектору"""
         for _ in range(timeout):
+            result = await self.send("Runtime.evaluate", {
+                "expression": f"""
+                    (function() {{
+                        const el = document.querySelector('{selector}');
+                        if (el) return true;
+                        return false;
+                    }})()
+                """
+            }, session_id=session_id)
+            
+            if result.get("result", {}).get("result", {}).get("value"):
+                print(f"✅ Элемент найден: {selector}")
+                return True
+            
+            await asyncio.sleep(1)
+        
+        print(f"⚠️ Элемент не найден: {selector}")
+        return False
+    
+    async def wait_for_network_idle(self, session_id, timeout=30):
+        """Ожидает завершения всех сетевых запросов"""
+        pending_requests = set()
+        
+        for _ in range(timeout * 2):
             try:
-                response = await asyncio.wait_for(self.websocket.recv(), timeout=1)
-                data = json.loads(response)
-                if data.get("method") == "Page.loadEventFired":
+                # Проверяем через оценку количества активных запросов
+                result = await self.send("Runtime.evaluate", {
+                    "expression": "performance.getEntriesByType('resource').length"
+                }, session_id=session_id)
+                
+                # Если за последние 2 секунды не было новых запросов, считаем что всё загружено
+                await asyncio.sleep(2)
+                
+                # Проверяем, есть ли незавершённые запросы
+                result = await self.send("Runtime.evaluate", {
+                    "expression": """
+                        (function() {
+                            const resources = performance.getEntriesByType('resource');
+                            const now = performance.now();
+                            const recent = resources.filter(r => now - r.responseEnd < 2000);
+                            return recent.length;
+                        })()
+                    """
+                }, session_id=session_id)
+                
+                count = result.get("result", {}).get("result", {}).get("value", 0)
+                
+                if count == 0:
+                    print("✅ Сеть простаивает")
                     return True
-                if data.get("method") == "Page.frameStoppedLoading":
-                    return True
-                if data.get("id") and data.get("error"):
-                    return False
-            except asyncio.TimeoutError:
+                    
+            except Exception as e:
+                print(f"⚠️ Ошибка проверки сети: {e}")
                 continue
+        
+        print("⚠️ Таймаут ожидания простоя сети")
         return False
     
     async def get_accessibility_tree(self, session_id):
@@ -277,7 +407,7 @@ cdp = CDPClient(chrome_manager.ws_endpoint)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 Привет! Я бот для автоматизации браузера.\n\n"
-        "📌 Отправь мне URL, и я покажу все элементы.\n"
+        "📌 Отправь мне URL, и я проанализирую страницу.\n"
         "📌 Используй /click <селектор> для клика.\n"
         "📌 Используй /fill <селектор> <текст> для заполнения.\n"
         "📌 Используй /screenshot для скриншота."
@@ -299,23 +429,35 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session_id, target_id = await cdp.create_tab()
         context.user_data['session_id'] = session_id
         
-        await cdp.navigate(session_id, url)
-        await update.message.reply_text("⏳ Ожидаю загрузку страницы...")
-        await cdp.wait_for_load(session_id)
+        # Навигация с ожиданием загрузки
+        await update.message.reply_text("⏳ Ожидаю загрузку страницы (до 60 сек)...")
+        loaded = await cdp.navigate_and_wait(session_id, url, timeout=60)
         
+        if not loaded:
+            await update.message.reply_text("⚠️ Страница загружена не полностью, продолжаю анализ...")
+        
+        # Дополнительно ждём сетевой активности для SPA
+        await update.message.reply_text("⏳ Ожидаю завершения загрузки данных...")
+        await cdp.wait_for_network_idle(session_id, timeout=20)
+        
+        # Для Twitter/X ждём конкретные элементы
+        if "twitter.com" in url or "x.com" in url:
+            await update.message.reply_text("⏳ Ищу твиты...")
+            await cdp.wait_for_selector(session_id, "article", timeout=20)
+        
+        # Получаем Accessibility Tree
         nodes = await cdp.get_accessibility_tree(session_id)
         
         interactive = []
         for node in nodes:
             role = node.get("role", {}).get("value", "")
-            if role in ["button", "link", "textbox", "checkbox", "combobox", "radio"]:
+            if role in ["button", "link", "textbox", "checkbox", "combobox", "radio", "menuitem", "tab"]:
                 name = node.get("name", {}).get("value", "")
-                node_id = node.get("nodeId")
-                interactive.append({
-                    "id": node_id,
-                    "role": role,
-                    "name": name[:100]
-                })
+                if name:  # только элементы с названием
+                    interactive.append({
+                        "role": role,
+                        "name": name[:100]
+                    })
         
         context.user_data['elements'] = interactive
         
@@ -330,7 +472,16 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             await update.message.reply_text(msg)
         else:
-            await update.message.reply_text("❌ Интерактивных элементов не найдено")
+            await update.message.reply_text(
+                "❌ Не найдено интерактивных элементов.\n\n"
+                "💡 Возможные причины:\n"
+                "• Страница требует авторизации\n"
+                "• Используется Shadow DOM\n"
+                "• Элементы загружаются динамически\n\n"
+                "📌 Попробуйте:\n"
+                "• /screenshot - посмотреть страницу\n"
+                "• /click <селектор> - кликнуть вручную"
+            )
             
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
@@ -341,6 +492,7 @@ async def click_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         args = update.message.text.split()
         if len(args) < 2:
             await update.message.reply_text("❌ Использование: /click <селектор>")
+            await update.message.reply_text("Пример: /click button.submit")
             return
         
         selector = args[1]
@@ -362,6 +514,7 @@ async def fill_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         args = update.message.text.split()
         if len(args) < 3:
             await update.message.reply_text("❌ Использование: /fill <селектор> <текст>")
+            await update.message.reply_text("Пример: /fill input[name=email] test@mail.com")
             return
         
         selector = args[1]
@@ -415,7 +568,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/fill <селектор> <текст> - Заполнить поле\n"
         "/screenshot - Сделать скриншот\n"
         "/clear - Очистить сессию\n\n"
-        "🔹 Просто отправь URL для анализа страницы"
+        "🔹 Просто отправь URL для анализа страницы\n\n"
+        "📌 Примеры селекторов:\n"
+        "• button#submit - по ID\n"
+        "• .btn-primary - по классу\n"
+        "• input[name=email] - по атрибуту\n"
+        "• button[type=submit] - по типу"
     )
 
 # ==================== ЗАПУСК БОТА ====================
