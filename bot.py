@@ -857,23 +857,25 @@ class CDPClient:
         (function() {{
             let el = null;
             
-            // 1. Пробуем найти по селектору
-            try {{
-                el = document.querySelector("{selector_escaped}");
-            }} catch(e) {{
-                // Если селектор невалидный - игнорируем
+            // 1. Пробуем найти по селектору (если он есть)
+            if ("{selector_escaped}" && "{selector_escaped}" !== "") {{
+                try {{
+                    el = document.querySelector("{selector_escaped}");
+                }} catch(e) {{
+                    // Если селектор невалидный - игнорируем
+                }}
             }}
             
             // 2. Если не нашли - ищем по атрибутам
             if (!el) {{
                 const allInputs = document.querySelectorAll('input, textarea, [contenteditable="true"]');
                 const searchTerms = [
-                    "{selector_escaped}",
                     "Search Twitter",
                     "Поиск",
                     "Search",
                     "search",
-                    "q"
+                    "q",
+                    "query"
                 ];
                 
                 for (const input of allInputs) {{
@@ -885,17 +887,23 @@ class CDPClient:
                         id: input.id || ''
                     }};
                     
+                    // Проверяем все атрибуты
+                    const allAttrs = Object.values(attrs);
+                    let found = false;
                     for (const term of searchTerms) {{
-                        if (attrs.name.toLowerCase().includes(term.toLowerCase()) ||
-                            attrs.placeholder.toLowerCase().includes(term.toLowerCase()) ||
-                            attrs.ariaLabel.toLowerCase().includes(term.toLowerCase()) ||
-                            attrs.testId.toLowerCase().includes(term.toLowerCase()) ||
-                            attrs.id.toLowerCase().includes(term.toLowerCase())) {{
-                            el = input;
-                            break;
+                        for (const attr of allAttrs) {{
+                            if (attr.toLowerCase().includes(term.toLowerCase())) {{
+                                found = true;
+                                break;
+                            }}
                         }}
+                        if (found) break;
                     }}
-                    if (el) break;
+                    
+                    if (found) {{
+                        el = input;
+                        break;
+                    }}
                 }}
             }}
             
@@ -1080,8 +1088,8 @@ class CDPClient:
             return {"success": False, "error": str(e)}
     
     async def find_search_button(self):
-        """Найти кнопку поиска на странице"""
-        btn = await self.eval_js("""
+        """Найти кнопку поиска на странице (возвращает СЕЛЕКТОР)"""
+        selector = await self.eval_js("""
             (function() {
                 const selectors = [
                     'button[aria-label*="search"]',
@@ -1089,14 +1097,12 @@ class CDPClient:
                     'button[aria-label*="поиск"]',
                     '[data-testid*="search"]',
                     '[role="button"][aria-label*="search"]',
-                    'button[type="submit"]',
-                    'svg[aria-label*="search"]',
-                    'svg[aria-label*="Search"]'
+                    'button[type="submit"]'
                 ];
                 
                 for (const selector of selectors) {
                     const el = document.querySelector(selector);
-                    if (el) return el;
+                    if (el) return selector;
                 }
                 
                 // Ищем по тексту
@@ -1104,34 +1110,43 @@ class CDPClient:
                 for (const btn of buttons) {
                     const text = btn.textContent?.toLowerCase() || '';
                     if (text.includes('search') || text.includes('поиск')) {
-                        return btn;
+                        return 'button:contains("' + btn.textContent.trim() + '")';
                     }
                 }
                 
                 return null;
             })()
         """)
-        return btn
+        return selector
     
     async def find_search_field_selector(self):
-        """Найти селектор для поля поиска"""
+        """Найти СЕЛЕКТОР (строку) для поля поиска"""
         selector = await self.eval_js("""
             (function() {
-                const fields = document.querySelectorAll('input, textarea');
+                const fields = document.querySelectorAll('input, textarea, [contenteditable="true"]');
+                const searchTerms = ['search', 'поиск', 'query', 'q', 'find'];
+                
                 for (const field of fields) {
                     const ariaLabel = field.getAttribute('aria-label') || '';
                     const placeholder = field.getAttribute('placeholder') || '';
                     const name = field.getAttribute('name') || '';
                     const testId = field.getAttribute('data-testid') || '';
+                    const id = field.id || '';
                     
-                    if (ariaLabel.toLowerCase().includes('search') ||
-                        placeholder.toLowerCase().includes('search') ||
-                        placeholder.toLowerCase().includes('поиск') ||
-                        name === 'q' ||
-                        name === 'search' ||
-                        name === 'query' ||
-                        testId.toLowerCase().includes('search')) {
-                        return field;
+                    const allAttrs = [ariaLabel, placeholder, name, testId, id];
+                    
+                    for (const term of searchTerms) {
+                        for (const attr of allAttrs) {
+                            if (attr.toLowerCase().includes(term.toLowerCase())) {
+                                // Возвращаем СЕЛЕКТОР (строку), а не элемент!
+                                if (id) return '#' + id;
+                                if (name) return '[name="' + name + '"]';
+                                if (ariaLabel) return '[aria-label="' + ariaLabel + '"]';
+                                if (testId) return '[data-testid="' + testId + '"]';
+                                if (placeholder) return '[placeholder="' + placeholder + '"]';
+                                return 'input[type="text"]';
+                            }
+                        }
                     }
                 }
                 return null;
@@ -1139,70 +1154,44 @@ class CDPClient:
         """)
         return selector
     
-    async def smart_search_cdp(self, text, selector=None):
-        """УМНЫЙ ПОИСК через CDP - попробует все методы"""
-        
-        file_logger.log(f"🔍 Умный поиск CDP: {text[:20]}...")
-        
-        # 1. Если есть селектор - пробуем найти поле
-        if selector:
-            # Пробуем заполнить через CDP
-            result = await self.set_value_cdp(selector, text)
-            if result.get('success'):
-                await asyncio.sleep(0.5)
-                enter_result = await self.press_enter_cdp()
-                if enter_result.get('success'):
-                    return {"success": True, "method": "cdp_native_enter"}
-        
-        # 2. Пробуем найти поле автоматически
-        field = await self.find_search_field_selector()
-        if field:
-            # Заполняем через CDP
-            await self.eval_js("""
-                (function(field) {
-                    field.focus();
-                    field.value = '';
-                })(arguments[0])
-            """, field)
-            
-            await asyncio.sleep(0.3)
-            
-            # Вводим текст через CDP клавиатуру
-            result = await self.type_text_cdp(text)
-            if result.get('success'):
-                await asyncio.sleep(0.5)
-                enter_result = await self.press_enter_cdp()
-                if enter_result.get('success'):
-                    return {"success": True, "method": "cdp_keyboard"}
-        
-        # 3. Пробуем через обычный fill + CDP Enter
-        fill_result = await self.fill_element("", text)
-        if fill_result.get('success'):
-            await asyncio.sleep(0.5)
-            enter_result = await self.press_enter_cdp()
-            if enter_result.get('success'):
-                return {"success": True, "method": "fill_cdp_enter"}
-        
-        # 4. Последний шанс - найти и кликнуть кнопку поиска
-        file_logger.log("🔍 Ищу кнопку поиска...")
-        btn = await self.find_search_button()
-        if btn:
-            await self.click_element_by_element(btn)
-            return {"success": True, "method": "click_button"}
-        
-        return {"success": False, "error": "Все методы не сработали"}
-    
     async def set_value_cdp(self, selector, value):
         """Нативный ввод через CDP (устанавливает значение напрямую)"""
         try:
             file_logger.log(f"📝 Устанавливаю значение через CDP: {value[:20]}...")
             
             value_escaped = value.replace("'", "\\'").replace('"', '\\"')
+            selector_escaped = selector.replace("'", "\\'").replace('"', '\\"')
             
             js_code = f"""
             (function() {{
-                let el = document.querySelector('{selector}');
+                let el = null;
+                try {{
+                    el = document.querySelector("{selector_escaped}");
+                }} catch(e) {{}}
+                
+                if (!el) {{
+                    // Пробуем найти по атрибутам
+                    const inputs = document.querySelectorAll('input, textarea');
+                    for (const input of inputs) {{
+                        const attrs = {{
+                            ariaLabel: input.getAttribute('aria-label') || '',
+                            placeholder: input.getAttribute('placeholder') || '',
+                            name: input.getAttribute('name') || '',
+                            testId: input.getAttribute('data-testid') || ''
+                        }};
+                        if (attrs.ariaLabel.toLowerCase().includes('search') || 
+                            attrs.placeholder.toLowerCase().includes('поиск') ||
+                            attrs.name === 'q' ||
+                            attrs.name === 'search' ||
+                            attrs.testId.toLowerCase().includes('search')) {{
+                            el = input;
+                            break;
+                        }}
+                    }}
+                }}
+                
                 if (el) {{
+                    el.focus();
                     el.value = '{value_escaped}';
                     el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                     el.dispatchEvent(new Event('change', {{ bubbles: true }}));
@@ -1223,20 +1212,48 @@ class CDPClient:
             file_logger.log(f"❌ CDP set value error: {e}", "ERROR")
             return {"success": False, "error": str(e)}
     
-    async def click_element_by_element(self, element):
-        """Клик по элементу (переданному из JS)"""
-        if element:
-            await self.eval_js("""
-                (function(el) {
-                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    setTimeout(() => {
-                        el.click();
-                        el.dispatchEvent(new Event('click', { bubbles: true }));
-                    }, 300);
-                })(arguments[0])
-            """, element)
-            return {"success": True}
-        return {"success": False}
+    async def smart_search_cdp(self, text, selector=None):
+        """УМНЫЙ ПОИСК через CDP - попробует все методы"""
+        
+        file_logger.log(f"🔍 Умный поиск CDP: {text[:20]}...")
+        
+        # 1. Если есть селектор - пробуем
+        if selector:
+            result = await self.set_value_cdp(selector, text)
+            if result.get('success'):
+                await asyncio.sleep(0.5)
+                enter_result = await self.press_enter_cdp()
+                if enter_result.get('success'):
+                    return {"success": True, "method": "cdp_native_enter"}
+        
+        # 2. Находим селектор автоматически (ТЕПЕРЬ ЭТО СТРОКА!)
+        field_selector = await self.find_search_field_selector()
+        if field_selector:
+            file_logger.log(f"🔍 Найден селектор поля: {field_selector}")
+            result = await self.set_value_cdp(field_selector, text)
+            if result.get('success'):
+                await asyncio.sleep(0.5)
+                enter_result = await self.press_enter_cdp()
+                if enter_result.get('success'):
+                    return {"success": True, "method": "cdp_found_selector"}
+        
+        # 3. Пробуем через fill
+        fill_result = await self.fill_element("", text)
+        if fill_result.get('success'):
+            await asyncio.sleep(0.5)
+            enter_result = await self.press_enter_cdp()
+            if enter_result.get('success'):
+                return {"success": True, "method": "fill_cdp_enter"}
+        
+        # 4. Ищем кнопку поиска (возвращает селектор)
+        btn_selector = await self.find_search_button()
+        if btn_selector:
+            file_logger.log(f"🔍 Найден селектор кнопки: {btn_selector}")
+            result = await self.click_element(btn_selector)
+            if result.get('success'):
+                return {"success": True, "method": "click_button"}
+        
+        return {"success": False, "error": "Все методы не сработали"}
     
     async def reload(self):
         await self.send_safe("Page.reload", {})
@@ -1297,32 +1314,34 @@ clients = {}
 AGENT_CODE = """
 🤖 ТЫ — АГЕНТ ДЛЯ УПРАВЛЕНИЯ БРАУЗЕРОМ
 
+⚠️ ГЛАВНОЕ ПРАВИЛО: ДЛЯ ПОИСКА ИСПОЛЬЗУЙ ТОЛЬКО search_cdp!
+Никогда не используй fill + press_enter или fill + click для поиска!
+
 📌 ДОСТУПНЫЕ ДЕЙСТВИЯ:
 
-1. navigate(url) - открыть сайт
+1. search_cdp(value) - ЕДИНСТВЕННЫЙ ПРАВИЛЬНЫЙ СПОСОБ ПОИСКА!
+   Пример: {"action": "search_cdp", "params": {"value": "вова"}}
+   Пример с селектором: {"action": "search_cdp", "params": {"value": "вова", "selector": "[aria-label='Поисковый запрос']"}}
+   
+2. navigate(url) - открыть сайт
    Пример: {"action": "navigate", "params": {"url": "https://x.com"}}
 
-2. click(selector) - кликнуть по элементу
+3. click(selector) - кликнуть по кнопке
    Пример: {"action": "click", "params": {"selector": "[data-testid='obst']"}}
 
-3. fill(selector, value) - заполнить поле
-   Пример: {"action": "fill", "params": {"selector": "input[name='q']", "value": "текст"}}
-
-4. search_cdp(value, selector) - САМЫЙ НАДЕЖНЫЙ ПОИСК! (CDP)
-   Пример: {"action": "search_cdp", "params": {"value": "@elonmusk"}}
-   Пример с селектором: {"action": "search_cdp", "params": {"value": "погода", "selector": "[aria-label='Search Twitter']"}}
-
-5. screenshot() - сделать скриншот
+4. screenshot() - скриншот
    Пример: {"action": "screenshot", "params": {}}
 
-6. answer(text) - ответить текстом
+5. answer(text) - ответить
    Пример: {"action": "answer", "params": {"text": "твой ответ"}}
 
-⚠️ ВАЖНО: ДЛЯ ПОИСКА ВСЕГДА ИСПОЛЬЗУЙ search_cdp!
-   - search_cdp работает через CDP (обходит все блокировки)
-   - search_cdp сам найдет поле, если не указать selector
-   - search_cdp сам нажмет Enter или кнопку поиска
-   - search_cdp работает на 100% даже на X.com!
+❌ НЕ ИСПОЛЬЗУЙ для поиска:
+- fill + press_enter
+- fill + click
+- Только fill без поиска
+
+✅ ВСЕГДА ИСПОЛЬЗУЙ:
+- search_cdp - он сам найдет поле, введет текст и нажмет Enter!
 
 📝 КАК ВЫБИРАТЬ СЕЛЕКТОРЫ:
 
@@ -1330,7 +1349,6 @@ AGENT_CODE = """
 
 🔹 Google:
    - Поле поиска: input[name='q'] или [aria-label="Найти"]
-   - Кнопка поиска: [aria-label="Поиск в Google"]
 
 🔹 X.com (Twitter):
    - Поле поиска: [aria-label="Search Twitter"] или [data-testid="SearchBox_Search_Input"]
@@ -1345,8 +1363,6 @@ AGENT_CODE = """
    - Используй data-testid если есть
    - Используй placeholder если есть
    - Используй name только если других нет
-
-❌ НЕ ИСПОЛЬЗУЙ input[name='q'] НА X.COM - ЭТО ТОЛЬКО ДЛЯ GOOGLE!
 
 📝 ФОРМАТ ОТВЕТА:
 
