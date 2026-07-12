@@ -1,7 +1,7 @@
 import os
 import logging
 import json
-import subprocess 
+import subprocess
 import time
 import requests
 import re
@@ -339,7 +339,7 @@ class UniversalModel:
                 name=el.get('name', ''),
                 description=el.get('description', ''),
                 states=el.get('states', {}),
-                ref=f"@e{idx}",  # Точный номер по индексу
+                ref=f"@e{idx}",
                 node_id=el.get('node_id', '')
             )
             
@@ -376,7 +376,7 @@ class UniversalModel:
                 search_terms.extend(en_list)
                 search_terms.append(ru)
         
-        search_terms = list(set(search_terms))  # Убираем дубли
+        search_terms = list(set(search_terms))
         
         for el in self.all_elements:
             name_lower = el.name.lower()
@@ -416,6 +416,100 @@ class UniversalModel:
             return self.buttons[number]
         return None
     
+    # ---------- ГРУППИРОВКА ----------
+    
+    def group_sort(self, elements: List[UniversalElement]) -> Dict[str, List[UniversalElement]]:
+        """Группировка элементов по категориям"""
+        
+        groups = {
+            'navigation': [],   # Навигация
+            'actions': [],      # Действия
+            'content': [],      # Контент
+            'settings': [],     # Настройки
+            'other': []         # Остальное
+        }
+        
+        # Ключевые слова для групп (русский + английский)
+        NAVIGATION = ['home', 'explore', 'notifications', 'messages', 'bookmarks', 
+                      'profile', 'grok', 'чат', 'лента', 'обзор', 'главная',
+                      'уведомления', 'сообщения', 'закладки', 'профиль']
+        
+        ACTIONS = ['post', 'reply', 'like', 'retweet', 'share', 'send', 'publish',
+                   'опубликовать', 'ответить', 'отправить', 'лайк', 'репост']
+        
+        SETTINGS = ['settings', 'privacy', 'security', 'help', 'about',
+                    'настройки', 'конфиденциальность', 'помощь']
+        
+        CONTENT = ['article', 'post', 'tweet', 'читат', 'читать', 'новости']
+        
+        for el in elements:
+            name_lower = el.name.lower()
+            
+            if any(word in name_lower for word in NAVIGATION):
+                groups['navigation'].append(el)
+            elif any(word in name_lower for word in ACTIONS):
+                groups['actions'].append(el)
+            elif any(word in name_lower for word in SETTINGS):
+                groups['settings'].append(el)
+            elif any(word in name_lower for word in CONTENT) or el.role == 'article':
+                groups['content'].append(el)
+            else:
+                groups['other'].append(el)
+        
+        return groups
+    
+    def format_with_groups(self, max_items: int = 10) -> str:
+        """Форматированный вывод с группировкой"""
+        
+        if not self.buttons:
+            return "❌ Кнопки не найдены"
+        
+        groups = self.group_sort(self.buttons)
+        
+        group_names = {
+            'navigation': '🧭 НАВИГАЦИЯ',
+            'actions': '⚡ ДЕЙСТВИЯ',
+            'content': '📄 КОНТЕНТ',
+            'settings': '⚙️ НАСТРОЙКИ',
+            'other': '📦 ОСТАЛЬНОЕ'
+        }
+        
+        result = []
+        result.append(f"📄 СТРАНИЦА: {self.title}")
+        result.append(f"🔗 URL: {self.url}")
+        result.append(f"🔘 ВСЕГО КНОПОК: {len(self.buttons)}")
+        result.append("")
+        
+        for group_key, group_name in group_names.items():
+            items = groups.get(group_key, [])
+            if items:
+                result.append(f"{group_name} ({len(items)}):")
+                for i, item in enumerate(items[:max_items], 1):
+                    state = "✅" if item.states.get('enabled', True) else "🔒"
+                    result.append(f"  {i}. {state} [{item.ref}] {item.name}")
+                if len(items) > max_items:
+                    result.append(f"  ... и ещё {len(items) - max_items}")
+                result.append("")
+        
+        # Поля ввода
+        if self.text_inputs:
+            result.append(f"📝 ПОЛЯ ВВОДА ({len(self.text_inputs)}):")
+            for i, inp in enumerate(self.text_inputs[:5], 1):
+                result.append(f"  {i}. [{inp.ref}] {inp.name}")
+            if len(self.text_inputs) > 5:
+                result.append(f"  ... и ещё {len(self.text_inputs) - 5}")
+            result.append("")
+        
+        # Посты
+        if self.articles:
+            result.append(f"📰 ПОСТЫ ({len(self.articles)}):")
+            for i, article in enumerate(self.articles[:5], 1):
+                result.append(f"  {i}. [{article.ref}] {article.name[:80]}...")
+            if len(self.articles) > 5:
+                result.append(f"  ... и ещё {len(self.articles) - 5}")
+        
+        return "\n".join(result)
+    
     def format_posts(self, posts: List[UniversalElement], limit: int = 5) -> str:
         """Форматирование списка постов"""
         if not posts:
@@ -435,7 +529,7 @@ class UniversalModel:
         return result
     
     def to_text(self, max_items: int = 20) -> str:
-        """Форматированное текстовое представление с точными номерами"""
+        """Обычный текстовый вывод (без группировки)"""
         result = []
         
         result.append(f"📄 СТРАНИЦА: {self.title}")
@@ -468,19 +562,6 @@ class UniversalModel:
                 result.append(f"  ... и ещё {len(self.articles) - max_items} постов")
         
         return "\n".join(result)
-    
-    def to_json(self) -> Dict:
-        """JSON представление модели"""
-        return {
-            "title": self.title,
-            "url": self.url,
-            "total_elements": self.total_elements,
-            "buttons": [{"ref": el.ref, "name": el.name, "states": el.states} for el in self.buttons],
-            "links": [{"ref": el.ref, "name": el.name} for el in self.links],
-            "text_inputs": [{"ref": el.ref, "name": el.name} for el in self.text_inputs],
-            "headings": [{"ref": el.ref, "name": el.name} for el in self.headings],
-            "articles": [{"ref": el.ref, "name": el.name} for el in self.articles]
-        }
 
 
 # ---------- CDP Client ----------
@@ -801,7 +882,6 @@ class CDPClient:
             buttons = []
             fields = []
             
-            # ТОЧНАЯ НУМЕРАЦИЯ — каждый элемент получает свой номер
             for idx, node in enumerate(nodes):
                 role_obj = node.get("role", {})
                 role = role_obj.get("value", "unknown") if isinstance(role_obj, dict) else "unknown"
@@ -828,7 +908,6 @@ class CDPClient:
                 is_interactive = role in interactive_roles
                 is_button = role == 'button' or (role == 'link' and is_interactive)
                 
-                # ТОЧНЫЙ НОМЕР — используем индекс в массиве
                 element = {
                     "role": role,
                     "name": name,
@@ -836,8 +915,8 @@ class CDPClient:
                     "states": states,
                     "node_id": node_id,
                     "is_interactive": is_interactive,
-                    "ref": f"@e{idx}",  # Точный номер
-                    "number": idx  # Сохраняем номер отдельно
+                    "ref": f"@e{idx}",
+                    "number": idx
                 }
                 
                 elements.append(element)
@@ -930,7 +1009,6 @@ class CDPClient:
             const all = document.querySelectorAll('[role="button"], button, a, [role="link"]');
             const searchText = '{selector}'.toLowerCase();
             
-            // Список для поиска (русский + английский)
             const searchTerms = [searchText];
             const translations = {{
                 'обзор': ['explore', 'обзор', 'review'],
@@ -945,7 +1023,6 @@ class CDPClient:
                 'настройки': ['settings', 'настройки']
             }};
             
-            // Добавляем переводы
             for (const [ru, enList] of Object.entries(translations)) {{
                 if (searchText === ru || enList.some(en => searchText === en)) {{
                     searchTerms.push(ru, ...enList);
@@ -1075,7 +1152,7 @@ AGENT_CODE = """
 
 2. КЛИКНУТЬ (по ref ID или номеру):
 {"action": "click", "params": {"selector": "@e18"}}
-{"action": "click", "params": {"selector": "18"}}  # по номеру
+{"action": "click", "params": {"selector": "18"}}
 
 3. ЗАПОЛНИТЬ ПОЛЕ:
 {"action": "fill", "params": {"selector": "@e10", "value": "текст"}}
@@ -1089,7 +1166,7 @@ AGENT_CODE = """
 6. ОТВЕТИТЬ:
 {"action": "answer", "params": {"text": "твой ответ"}}
 
-📝 ПЕРЕВОД НАЗВАНИЙ X.COM (русский → английский):
+📝 ПЕРЕВОД НАЗВАНИЙ X.COM:
 - "Обзор" → "Explore"
 - "Главная" → "Home"
 - "Закладки" → "Bookmarks"
@@ -1150,7 +1227,6 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
             if not content or not content.strip():
                 return {"action": "answer", "params": {"text": "⚠️ Получен пустой ответ от AI"}}
             
-            # Парсим JSON
             json_match = re.search(r'\[.*\]|\{.*\}', content, re.DOTALL)
             if json_match:
                 try:
@@ -1179,7 +1255,6 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
                         return {"action": "answer", "params": {"text": json.dumps(parsed, ensure_ascii=False)}}
                     
                 except json.JSONDecodeError:
-                    # Если не JSON, пытаемся извлечь команду
                     if "navigate" in content.lower() or "открой" in content.lower():
                         url_match = re.search(r'https?://[^\s"\']+', content)
                         if url_match:
@@ -1192,7 +1267,6 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
                     if content.strip():
                         return {"action": "answer", "params": {"text": content}}
             
-            # Если не нашли JSON
             if "navigate" in content.lower() or "открой" in content.lower():
                 url_match = re.search(r'https?://[^\s"\']+', content)
                 if url_match:
@@ -1296,8 +1370,31 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
 
 # ---------- Команды ----------
 
+async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Анализ страницы с группировкой"""
+    user_id = update.message.from_user.id
+    
+    if user_id not in clients:
+        await update.message.reply_text("❌ Сначала откройте страницу")
+        return
+    
+    client = clients[user_id]
+    
+    try:
+        await update.message.reply_text("📊 Анализирую страницу...")
+        
+        model = await client.get_universal_model()
+        result = model.format_with_groups(max_items=10)
+        
+        await update.message.reply_text(result)
+        
+    except Exception as e:
+        file_logger.log(f"❌ Ошибка: {e}", "ERROR")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
+
 async def find_button_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Поиск кнопки по тексту (русский + английский)"""
+    """Поиск кнопки по тексту"""
     user_id = update.message.from_user.id
     query = ' '.join(context.args) if context.args else ''
     
@@ -1315,11 +1412,7 @@ async def find_button_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"🔍 Ищу '{query}'...")
         
         model = await client.get_universal_model()
-        
-        # Ищем по русскому и английскому
         results = model.find_by_text(query)
-        
-        # Фильтруем только кнопки
         buttons = [el for el in results if el.role == 'button']
         
         if buttons:
@@ -1331,7 +1424,6 @@ async def find_button_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             if len(buttons) > 10:
                 msg += f"\n... и ещё {len(buttons) - 10} кнопок"
             
-            # Подсказка для клика
             msg += f"\n💡 Для клика: нажми на {buttons[0].ref}"
             
             await update.message.reply_text(msg)
@@ -1341,6 +1433,7 @@ async def find_button_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         file_logger.log(f"❌ Ошибка: {e}", "ERROR")
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
 
 async def find_posts_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Поиск всех постов на странице"""
@@ -1398,29 +1491,6 @@ async def search_post_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         file_logger.log(f"❌ Ошибка: {e}", "ERROR")
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
-
-async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Анализ страницы через UniversalModel"""
-    user_id = update.message.from_user.id
-    
-    if user_id not in clients:
-        await update.message.reply_text("❌ Сначала откройте страницу")
-        return
-    
-    client = clients[user_id]
-    
-    try:
-        await update.message.reply_text("📊 Анализирую страницу...")
-        
-        model = await client.get_universal_model()
-        result = model.to_text()
-        
-        await update.message.reply_text(result)
-        
-    except Exception as e:
-        file_logger.log(f"❌ Ошибка: {e}", "ERROR")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-
 # ---------- Обработчик ----------
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1432,12 +1502,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     file_logger.log(f"Сообщение от {user_id}: {prompt[:100]}...")
     
-    # Проверяем команды на естественном языке
     if "найди пост" in prompt or "покажи пост" in prompt:
         await find_posts_command(update, context)
         return
     
-    if "ищу" in prompt or "найти" in prompt and "пост" in prompt:
+    if ("ищу" in prompt or "найти" in prompt) and "пост" in prompt:
         import re
         match = re.search(r'(?:ищу|найти)\s+["\']?(.+?)["\']?', prompt)
         if match:
@@ -1553,8 +1622,8 @@ def main():
     app.add_handler(CommandHandler("analyze", analyze_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("🚀 Бот запущен с UniversalModel!")
-    file_logger.log("🚀 Бот запущен с UniversalModel!")
+    print("🚀 Бот запущен с группировкой!")
+    file_logger.log("🚀 Бот запущен с группировкой!")
     app.run_polling()
 
 if __name__ == "__main__":
