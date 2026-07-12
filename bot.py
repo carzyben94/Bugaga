@@ -733,14 +733,28 @@ class CDPClient:
             text = el.get('x', '') or attrs.get('aria-label', '') or attrs.get('data-testid', '')
             if text:
                 visible_mark = "👁️" if el.get('v') else "👻"
-                buttons_text += f"  {visible_mark} {text[:30]}\n"
+                # Показываем селектор для кнопки
+                selector = ""
+                if attrs.get('data-testid'):
+                    selector = f" [data-testid='{attrs.get('data-testid')}']"
+                elif attrs.get('aria-label'):
+                    selector = f" [aria-label='{attrs.get('aria-label')}']"
+                buttons_text += f"  {visible_mark} {text[:30]}{selector}\n"
         
         fields_text = ""
         for el in info.get('fields', [])[:5]:
             attrs = el.get('a', {})
             name = attrs.get('name', '') or attrs.get('placeholder', '') or attrs.get('aria-label', '')
+            # Показываем селектор для поля
+            selector = ""
+            if attrs.get('aria-label'):
+                selector = f" [aria-label='{attrs.get('aria-label')}']"
+            elif attrs.get('data-testid'):
+                selector = f" [data-testid='{attrs.get('data-testid')}']"
+            elif attrs.get('name'):
+                selector = f" [name='{attrs.get('name')}']"
             if name:
-                fields_text += f"  • {name[:30]}\n"
+                fields_text += f"  • {name[:30]}{selector}\n"
         
         desc = f"""
 📄 **СТРАНИЦА:** {info.get('title', 'Нет заголовка')}
@@ -833,19 +847,87 @@ class CDPClient:
         return result
     
     async def fill_element(self, selector, value):
+        """Заполнение поля с правильным экранированием и запасным поиском"""
+        # Экранируем все опасные символы
+        value_escaped = value.replace("'", "\\'").replace('"', '\\"').replace('\n', '\\n')
+        selector_escaped = selector.replace("'", "\\'").replace('"', '\\"')
+        
         js_code = f"""
         (function() {{
-            const el = document.querySelector('{selector}');
+            let el = null;
+            
+            // 1. Пробуем найти по селектору
+            try {{
+                el = document.querySelector("{selector_escaped}");
+            }} catch(e) {{
+                // Если селектор невалидный - игнорируем
+            }}
+            
+            // 2. Если не нашли - ищем по атрибутам
+            if (!el) {{
+                const allInputs = document.querySelectorAll('input, textarea, [contenteditable="true"]');
+                const searchTerms = [
+                    "{selector_escaped}",
+                    "Search Twitter",
+                    "Поиск",
+                    "Search",
+                    "search",
+                    "q"
+                ];
+                
+                for (const input of allInputs) {{
+                    const attrs = {{
+                        name: input.getAttribute('name') || '',
+                        placeholder: input.getAttribute('placeholder') || '',
+                        ariaLabel: input.getAttribute('aria-label') || '',
+                        testId: input.getAttribute('data-testid') || '',
+                        id: input.id || ''
+                    }};
+                    
+                    for (const term of searchTerms) {{
+                        if (attrs.name.toLowerCase().includes(term.toLowerCase()) ||
+                            attrs.placeholder.toLowerCase().includes(term.toLowerCase()) ||
+                            attrs.ariaLabel.toLowerCase().includes(term.toLowerCase()) ||
+                            attrs.testId.toLowerCase().includes(term.toLowerCase()) ||
+                            attrs.id.toLowerCase().includes(term.toLowerCase())) {{
+                            el = input;
+                            break;
+                        }}
+                    }}
+                    if (el) break;
+                }}
+            }}
+            
+            // 3. Если всё равно не нашли - ищем видимое поле ввода
+            if (!el) {{
+                const allInputs = document.querySelectorAll('input[type="text"], input:not([type]), textarea');
+                for (const input of allInputs) {{
+                    const rect = input.getBoundingClientRect();
+                    if (rect.width > 0 && rect.height > 0) {{
+                        el = input;
+                        break;
+                    }}
+                }}
+            }}
+            
             if (el) {{
-                el.value = '{value}';
+                el.focus();
+                el.value = '';
+                const text = "{value_escaped}";
+                el.value = text;
                 el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                 el.dispatchEvent(new Event('change', {{ bubbles: true }}));
                 return {{ success: true }};
             }}
-            return {{ success: false }};
+            return {{ success: false, error: 'Element not found' }};
         }})()
         """
-        return await self.eval_js(js_code)
+        result = await self.eval_js(js_code)
+        
+        if result and result.get('success'):
+            await self.get_maximum_snapshot()
+        
+        return result
     
     async def press_enter(self):
         js_code = """
@@ -934,32 +1016,36 @@ AGENT_CODE = """
 5. screenshot() - скриншот
 6. answer(text) - ответить
 
-📝 СЕЛЕКТОРЫ - ИСПОЛЬЗУЙ ТОЛЬКО АНГЛИЙСКИЕ НАЗВАНИЯ!
-- По ID: #APjFqb
-- По классу: .gLFyf
-- По имени: input[name='q']
-- По aria-label: [aria-label="Explore"]  ← ТОЛЬКО АНГЛИЙСКИЙ!
-- По data-testid: [data-testid="obst"]
+📝 КАК ВЫБИРАТЬ СЕЛЕКТОРЫ:
 
-⚠️ ВАЖНО: ВСЕ селекторы должны быть на АНГЛИЙСКОМ языке!
-Перевод названий кнопок X.com:
-- "Обзор" → "Explore"
-- "Главная" → "Home"  
-- "Уведомления" → "Notifications"
-- "Сообщения" → "Messages"
-- "Закладки" → "Bookmarks"
-- "Профиль" → "Profile"
+⚠️ ВАЖНО: Селекторы ЗАВИСЯТ от сайта!
 
-⚠️ ЕСЛИ НУЖНО НЕСКОЛЬКО ДЕЙСТВИЙ - ВОЗВРАЩАЙ МАССИВ:
-[{"action": "fill", "params": {"selector": "#APjFqb", "value": "текст"}}, {"action": "press_enter", "params": {}}]
+🔹 Google:
+   - Поле поиска: input[name='q'] или [aria-label="Найти"]
+   - Кнопка поиска: [aria-label="Поиск в Google"]
 
-⚠️ ЕСЛИ ПРОСТО ОТВЕТИТЬ - ИСПОЛЬЗУЙ ФОРМАТ:
-{"action": "answer", "params": {"text": "твой ответ"}}
+🔹 X.com (Twitter):
+   - Поле поиска: [aria-label="Search Twitter"] или [data-testid="SearchBox_Search_Input"]
+   - Кнопка "Обзор": [data-testid="obst"]
+   - Кнопка "Главная": [data-testid="AppTabBar_Home_Link"]
 
-🔍 КАК НАЙТИ КНОПКУ:
-1. Сначала проверь все кнопки в описании страницы
-2. Используй английские названия в селекторах
-3. На X.com кнопка "Обзор" → "Explore" с data-testid="obst"
+🔹 YouTube:
+   - Поле поиска: input[name='search_query'] или [aria-label="Поиск"]
+
+🔹 Другие сайты:
+   - Используй aria-label если есть (он универсальный)
+   - Используй data-testid если есть
+   - Используй placeholder если есть
+   - Используй name только если других нет
+
+❌ НЕ ИСПОЛЬЗУЙ input[name='q'] НА X.COM - ЭТО ТОЛЬКО ДЛЯ GOOGLE!
+
+📝 ФОРМАТ ОТВЕТА:
+- Одно действие: {"action": "click", "params": {"selector": "[data-testid='obst']"}}
+- Несколько действий: [{"action": "fill", "params": {"selector": "[aria-label='Search Twitter']", "value": "текст"}}, {"action": "press_enter", "params": {}}]
+- Ответ текстом: {"action": "answer", "params": {"text": "твой ответ"}}
+
+⚠️ ВСЕГДА проверяй описание страницы, чтобы увидеть какие поля и кнопки доступны!
 """
 
 # ---------- Агент ----------
@@ -992,6 +1078,7 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
 - "Закладки" → "Bookmarks"
 - "Профиль" → "Profile"
 - Все атрибуты в селекторах пиши на английском!
+- ВСЕГДА используй aria-label или data-testid если они есть в описании!
 """
 
     data = {
@@ -1122,7 +1209,6 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
                 return "❌ Нет селектора"
             result = await client.fill_element(selector, value)
             if result and result.get("success"):
-                await client.get_maximum_snapshot()
                 return f"✅ Заполнил: {selector} = {value}"
             return f"❌ Элемент не найден: {selector}"
         
