@@ -14,17 +14,37 @@ from io import BytesIO
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
+# ==================== ЛОГИРОВАНИЕ ====================
+LOG_FILE = "bot_logs.txt"
+
+class FileLogger:
+    def __init__(self, filename=LOG_FILE):
+        self.filename = filename
+        # Создаём файл с заголовком
+        with open(self.filename, 'w', encoding='utf-8') as f:
+            f.write(f"=== Логи бота ===\n")
+            f.write(f"Время запуска: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write("=" * 50 + "\n\n")
+    
+    def log(self, message, level="INFO"):
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with open(self.filename, 'a', encoding='utf-8') as f:
+            f.write(f"[{timestamp}] [{level}] {message}\n")
+
+file_logger = FileLogger()
+
 # ==================== Pillow ====================
 try:
     from PIL import Image, ImageEnhance
     PILLOW_AVAILABLE = True
 except ImportError:
     PILLOW_AVAILABLE = False
-    print("⚠️ Pillow не установлен. Установите: pip install pillow>=11.0.0")
+    file_logger.log("⚠️ Pillow не установлен. Установите: pip install pillow>=11.0.0", "WARNING")
 
 # ==================== КОНФИГУРАЦИЯ ====================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TELEGRAM_TOKEN:
+    file_logger.log("❌ TELEGRAM_BOT_TOKEN не установлен!", "ERROR")
     print("❌ TELEGRAM_BOT_TOKEN не установлен!")
     sys.exit(1)
 
@@ -71,33 +91,34 @@ class ChromeManager:
         ]
         for path in paths:
             if os.path.exists(path):
-                print(f"✅ Найден Chrome: {path}")
+                file_logger.log(f"✅ Найден Chrome: {path}")
                 return path
         try:
             result = subprocess.run(["which", "google-chrome"], capture_output=True, text=True)
             if result.returncode == 0:
                 path = result.stdout.strip()
-                print(f"✅ Найден Chrome через which: {path}")
+                file_logger.log(f"✅ Найден Chrome через which: {path}")
                 return path
         except:
             pass
+        file_logger.log("❌ Chrome не найден!", "ERROR")
         return None
     
     def _prepare_profile(self):
         self.user_data_dir = tempfile.mkdtemp(prefix="chrome_profile_")
-        print(f"📁 Профиль Chrome: {self.user_data_dir}")
+        file_logger.log(f"📁 Профиль Chrome: {self.user_data_dir}")
         return self.user_data_dir
     
     def start(self):
         if self.is_running():
-            print("✅ Chrome уже запущен")
+            file_logger.log("✅ Chrome уже запущен")
             self.ws_endpoint = self.get_ws_endpoint()
             return True
         
-        print("🚀 Запускаю Chrome...")
+        file_logger.log("🚀 Запускаю Chrome...")
         chrome_path = self._find_chrome()
         if not chrome_path:
-            print("❌ Chrome не найден!")
+            file_logger.log("❌ Chrome не найден!", "ERROR")
             return False
         
         self._prepare_profile()
@@ -132,14 +153,14 @@ class ChromeManager:
                 if self.is_running():
                     self.ws_endpoint = self.get_ws_endpoint()
                     if self.ws_endpoint:
-                        print(f"✅ Chrome запущен: {self.ws_endpoint}")
+                        file_logger.log(f"✅ Chrome запущен: {self.ws_endpoint}")
                         return True
-                print(f"⏳ Жду запуск Chrome... {_+1}/10")
+                file_logger.log(f"⏳ Жду запуск Chrome... {_+1}/10")
             
-            print("❌ Chrome не запустился за 10 секунд")
+            file_logger.log("❌ Chrome не запустился за 10 секунд", "ERROR")
             return False
         except Exception as e:
-            print(f"❌ Ошибка запуска Chrome: {e}")
+            file_logger.log(f"❌ Ошибка запуска Chrome: {e}", "ERROR")
             return False
     
     def is_running(self):
@@ -164,13 +185,13 @@ class ChromeManager:
             except:
                 self.process.kill()
             self.process = None
-            print("🛑 Chrome остановлен")
+            file_logger.log("🛑 Chrome остановлен")
         
         if self.user_data_dir and os.path.exists(self.user_data_dir):
             shutil.rmtree(self.user_data_dir, ignore_errors=True)
-            print(f"🗑️ Профиль удалён: {self.user_data_dir}")
+            file_logger.log(f"🗑️ Профиль удалён: {self.user_data_dir}")
 
-# ==================== CDP КЛИЕНТ (с очередью сообщений) ====================
+# ==================== CDP КЛИЕНТ ====================
 class CDPClient:
     def __init__(self, ws_endpoint):
         self.ws_endpoint = ws_endpoint
@@ -186,8 +207,7 @@ class CDPClient:
         self._pending_requests = {}
     
     async def _receiver(self):
-        """Фоновый приём всех сообщений из WebSocket"""
-        print("📡 Запущен приёмник сообщений")
+        file_logger.log("📡 Запущен приёмник сообщений")
         while True:
             try:
                 if not self.websocket:
@@ -206,10 +226,10 @@ class CDPClient:
                     await self._message_queue.put(data)
                     
             except websockets.exceptions.ConnectionClosed:
-                print("⚠️ WebSocket закрыт, останавливаю приёмник")
+                file_logger.log("⚠️ WebSocket закрыт, останавливаю приёмник", "WARNING")
                 break
             except Exception as e:
-                print(f"⚠️ Ошибка приёмника: {e}")
+                file_logger.log(f"⚠️ Ошибка приёмника: {e}", "WARNING")
                 await asyncio.sleep(0.5)
     
     async def connect(self):
@@ -224,11 +244,11 @@ class CDPClient:
                 close_timeout=15,
                 max_size=50 * 1024 * 1024
             )
-            print(f"✅ Подключено к Chrome: {self.ws_endpoint}")
+            file_logger.log(f"✅ Подключено к Chrome: {self.ws_endpoint}")
             
             if self._receiver_task is None or self._receiver_task.done():
                 self._receiver_task = asyncio.create_task(self._receiver())
-                print("📡 Приёмник запущен")
+                file_logger.log("📡 Приёмник запущен")
             
             await self.send("Page.enable")
             await self.send("Runtime.enable")
@@ -239,12 +259,11 @@ class CDPClient:
             return True
             
         except Exception as e:
-            print(f"❌ Ошибка подключения: {e}")
+            file_logger.log(f"❌ Ошибка подключения: {e}", "ERROR")
             return False
     
     async def keep_alive(self):
-        """Фоновый пинг для поддержания соединения"""
-        print("💓 Запущен пинг для поддержания соединения")
+        file_logger.log("💓 Запущен пинг для поддержания соединения")
         while self._keep_alive:
             try:
                 if self.websocket and not self.websocket.closed:
@@ -255,23 +274,23 @@ class CDPClient:
                         "params": {"expression": "1"}
                     }
                     await self.websocket.send(json.dumps(ping_msg))
-                    print("💓 Пинг отправлен")
+                    file_logger.log("💓 Пинг отправлен")
                 else:
-                    print("⚠️ WebSocket закрыт, останавливаю пинг")
+                    file_logger.log("⚠️ WebSocket закрыт, останавливаю пинг", "WARNING")
                     break
                 await asyncio.sleep(20)
             except asyncio.CancelledError:
-                print("🛑 Пинг остановлен")
+                file_logger.log("🛑 Пинг остановлен")
                 break
             except Exception as e:
-                print(f"⚠️ Ошибка пинга: {e}")
+                file_logger.log(f"⚠️ Ошибка пинга: {e}", "WARNING")
                 await asyncio.sleep(5)
     
     async def start_keep_alive(self):
         if self.ping_task is None or self.ping_task.done():
             self._keep_alive = True
             self.ping_task = asyncio.create_task(self.keep_alive())
-            print("✅ Пинг запущен")
+            file_logger.log("✅ Пинг запущен")
     
     async def stop_keep_alive(self):
         self._keep_alive = False
@@ -282,10 +301,9 @@ class CDPClient:
             except:
                 pass
             self.ping_task = None
-            print("🛑 Пинг остановлен")
+            file_logger.log("🛑 Пинг остановлен")
     
     async def send(self, method, params=None, session_id=None, timeout=60):
-        """Отправка CDP-команды"""
         self.msg_id += 1
         msg_id = self.msg_id
         
@@ -300,15 +318,15 @@ class CDPClient:
             await self.websocket.send(json.dumps(msg))
             response = await asyncio.wait_for(future, timeout=timeout)
             if "error" in response:
-                print(f"❌ CDP Error: {response['error']}")
+                file_logger.log(f"❌ CDP Error: {response['error']}", "ERROR")
             return response
         except asyncio.TimeoutError:
             self._pending_requests.pop(msg_id, None)
-            print(f"⏰ Таймаут {method}")
+            file_logger.log(f"⏰ Таймаут {method}", "WARNING")
             return {"error": "timeout"}
         except Exception as e:
             self._pending_requests.pop(msg_id, None)
-            print(f"❌ Ошибка {method}: {e}")
+            file_logger.log(f"❌ Ошибка {method}: {e}", "ERROR")
             return {"error": str(e)}
     
     async def eval_js(self, code, session_id=None):
@@ -324,6 +342,7 @@ class CDPClient:
             if "result" in result:
                 obj = result["result"]
                 if "exceptionDetails" in obj:
+                    file_logger.log(f"❌ JS исключение: {obj['exceptionDetails']}", "ERROR")
                     return None
                 if "result" in obj:
                     if "value" in obj["result"]:
@@ -334,10 +353,11 @@ class CDPClient:
                     return obj["value"]
             return None
         except Exception as e:
-            print(f"❌ eval_js error: {e}")
+            file_logger.log(f"❌ eval_js error: {e}", "ERROR")
             return None
     
     async def create_tab(self):
+        file_logger.log("📑 Создаю вкладку...")
         result = await self.send("Target.createTarget", {"url": "about:blank"})
         if "error" in result:
             raise Exception(f"Create tab error: {result['error']}")
@@ -358,11 +378,12 @@ class CDPClient:
         
         self.targets[session_id] = target_id
         self.session_id = session_id
+        file_logger.log(f"✅ Вкладка создана: {session_id}")
         return session_id, target_id
     
     async def set_cookies(self, cookies):
         try:
-            print(f"🍪 Установка {len(cookies)} кук...")
+            file_logger.log(f"🍪 Установка {len(cookies)} кук...")
             cdp_cookies = []
             for cookie in cookies:
                 cdp_cookies.append({
@@ -380,36 +401,43 @@ class CDPClient:
             }, session_id=self.session_id)
             if "error" not in result:
                 self.cookies_set = True
-                print(f"✅ Установлено {len(cookies)} кук")
+                file_logger.log(f"✅ Установлено {len(cookies)} кук")
                 return True
+            file_logger.log(f"❌ Ошибка установки кук: {result.get('error')}", "ERROR")
             return False
         except Exception as e:
-            print(f"❌ Ошибка установки кук: {e}")
+            file_logger.log(f"❌ Ошибка установки кук: {e}", "ERROR")
             return False
     
     async def navigate(self, session_id, url):
+        file_logger.log(f"🌐 Навигация на {url}")
         result = await self.send("Page.navigate", {"url": url}, session_id=session_id)
         if "error" in result:
-            print(f"❌ Ошибка навигации: {result['error']}")
+            file_logger.log(f"❌ Ошибка навигации: {result['error']}", "ERROR")
             return False
+        file_logger.log(f"✅ Навигация выполнена")
         return True
     
     async def wait_for_load(self, session_id, timeout=30):
+        file_logger.log("⏳ Ожидаю загрузку страницы...")
         for _ in range(timeout):
             try:
                 if not self._message_queue.empty():
                     data = await asyncio.wait_for(self._message_queue.get(), timeout=0.1)
                     if data.get("method") in ["Page.loadEventFired", "Page.frameStoppedLoading"]:
+                        file_logger.log("✅ Страница загружена")
                         return True
                 await asyncio.sleep(0.5)
             except asyncio.TimeoutError:
                 continue
             except Exception as e:
-                print(f"⚠️ wait_for_load error: {e}")
+                file_logger.log(f"⚠️ wait_for_load error: {e}", "WARNING")
                 continue
+        file_logger.log("⚠️ Таймаут загрузки страницы", "WARNING")
         return False
     
     async def wait_for_content(self, session_id, timeout=30):
+        file_logger.log("⏳ Жду загрузки контента...")
         for _ in range(timeout):
             result = await self.send("Runtime.evaluate", {
                 "expression": """
@@ -425,15 +453,21 @@ class CDPClient:
             }, session_id=session_id)
             if result and "error" not in result:
                 if result.get("result", {}).get("result", {}).get("value", False):
+                    file_logger.log("✅ Контент загружен")
                     return True
             await asyncio.sleep(1)
+        file_logger.log("⚠️ Таймаут загрузки контента", "WARNING")
         return False
     
     async def get_accessibility_tree(self, session_id):
+        file_logger.log("🌳 Получаю дерево доступности...")
         result = await self.send("Accessibility.getFullAXTree", session_id=session_id)
         if "error" in result:
+            file_logger.log(f"❌ Ошибка: {result['error']}", "ERROR")
             return []
-        return result.get("result", {}).get("nodes", [])
+        nodes = result.get("result", {}).get("nodes", [])
+        file_logger.log(f"✅ Найдено {len(nodes)} элементов")
+        return nodes
     
     async def get_element_by_selector(self, session_id, selector):
         result = await self.send("Runtime.evaluate", {
@@ -459,6 +493,7 @@ class CDPClient:
         return result.get("result", {}).get("result", {}).get("value")
     
     async def click_element(self, session_id, selector):
+        file_logger.log(f"🖱️ Клик по '{selector}'")
         coords = await self.get_element_by_selector(session_id, selector)
         if not coords:
             raise Exception("Элемент не найден")
@@ -479,9 +514,11 @@ class CDPClient:
             "clickCount": 1,
             "modifiers": 0
         }, session_id=session_id)
+        file_logger.log(f"✅ Клик выполнен ({coords['x']:.0f}, {coords['y']:.0f})")
         return coords
     
     async def fill_input(self, session_id, selector, text):
+        file_logger.log(f"✍️ Заполняю '{selector}' = '{text[:20]}...'")
         await self.send("Runtime.evaluate", {
             "expression": f"""
                 (function() {{
@@ -507,19 +544,23 @@ class CDPClient:
                 "text": char
             }, session_id=session_id)
             await asyncio.sleep(0.01)
+        file_logger.log("✅ Поле заполнено")
         return True
     
     async def screenshot(self, session_id):
         try:
+            file_logger.log("📸 Делаю скриншот...")
             title = await self.eval_js("document.title", session_id)
             if not title or title == "":
-                print("🌐 Открываю Google...")
+                file_logger.log("🌐 Открываю Google...")
                 await self.navigate(session_id, "https://google.com")
                 await asyncio.sleep(2)
                 title = await self.eval_js("document.title", session_id)
                 if not title:
+                    file_logger.log("❌ Не удалось загрузить страницу", "ERROR")
                     return None
-            print(f"📄 Заголовок: {title}")
+            file_logger.log(f"📄 Заголовок: {title}")
+            
             resp = await self.send("Page.captureScreenshot", {
                 "format": "jpeg",
                 "quality": 70,
@@ -527,16 +568,20 @@ class CDPClient:
                 "fromSurface": True,
                 "optimizeForSpeed": True
             }, session_id=session_id)
+            
             if "error" in resp:
-                print(f"❌ Ошибка скриншота: {resp['error']}")
+                file_logger.log(f"❌ Ошибка скриншота: {resp['error']}", "ERROR")
                 return None
+            
             if "result" in resp and "data" in resp["result"]:
                 img_data = base64.b64decode(resp["result"]["data"])
                 if len(img_data) > 100 and img_data[:2] == b'\xff\xd8':
+                    file_logger.log(f"✅ Скриншот сделан ({len(img_data)} байт)")
                     return img_data
+            file_logger.log("❌ Не удалось получить скриншот", "ERROR")
             return None
         except Exception as e:
-            print(f"❌ Screenshot error: {e}")
+            file_logger.log(f"❌ Screenshot error: {e}", "ERROR")
             return None
     
     async def close_tab(self, session_id):
@@ -544,8 +589,10 @@ class CDPClient:
             target_id = self.targets[session_id]
             await self.send("Target.closeTarget", {"targetId": target_id})
             del self.targets[session_id]
+            file_logger.log(f"📑 Вкладка закрыта: {session_id}")
     
     async def close(self):
+        file_logger.log("🔌 Закрываю соединение...")
         await self.stop_keep_alive()
         if self._receiver_task and not self._receiver_task.done():
             self._receiver_task.cancel()
@@ -557,13 +604,14 @@ class CDPClient:
         if self.websocket:
             try:
                 await self.websocket.close()
-                print("🔌 WebSocket закрыт")
+                file_logger.log("🔌 WebSocket закрыт")
             except:
                 pass
             self.websocket = None
 
 # ==================== ТЕЛЕГРАМ БОТ ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    file_logger.log(f"📩 /start от {update.message.from_user.id}")
     pillow_status = "✅" if PILLOW_AVAILABLE else "❌"
     await update.message.reply_text(
         f"🤖 Привет! Я бот для автоматизации браузера.\n\n"
@@ -579,24 +627,32 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global cdp
     url = update.message.text.strip()
+    user_id = update.message.from_user.id
+    file_logger.log(f"📩 URL от {user_id}: {url}")
+    
     if not url.startswith(("http://", "https://")):
         await update.message.reply_text("❌ Отправь корректный URL")
         return
+    
     await update.message.reply_text(f"🔄 Анализирую {url}...")
+    
     try:
         if not cdp.websocket:
             await cdp.connect()
         else:
             await cdp.start_keep_alive()
+        
         session_id, _ = await cdp.create_tab()
         context.user_data['session_id'] = session_id
         await cdp.set_cookies(X_COOKIES)
         await cdp.navigate(session_id, url)
         await update.message.reply_text("⏳ Ожидаю загрузку страницы...")
         await cdp.wait_for_load(session_id)
+        
         if "x.com" in url or "twitter.com" in url:
             await update.message.reply_text("⏳ Жду загрузки контента...")
             await cdp.wait_for_content(session_id, timeout=30)
+        
         nodes = await cdp.get_accessibility_tree(session_id)
         interactive = []
         for node in nodes:
@@ -604,7 +660,9 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if role in ["button", "link", "textbox", "checkbox", "combobox", "radio"]:
                 name = node.get("name", {}).get("value", "")
                 interactive.append({"role": role, "name": name[:100]})
+        
         context.user_data['elements'] = interactive
+        
         if interactive:
             msg = "🔍 Найдены интерактивные элементы:\n\n"
             for i, el in enumerate(interactive[:20], 1):
@@ -615,12 +673,15 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(msg)
         else:
             await update.message.reply_text("❌ Интерактивных элементов не найдено.\n\n💡 Попробуйте /screenshot")
+            
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-        print(f"Error: {e}")
+        error_msg = str(e)[:200]
+        file_logger.log(f"❌ Ошибка в handle_url: {e}", "ERROR")
+        await update.message.reply_text(f"❌ Ошибка: {error_msg}")
 
 async def click_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
+        user_id = update.message.from_user.id
         args = update.message.text.split()
         if len(args) < 2:
             await update.message.reply_text("❌ Использование: /click <селектор>")
@@ -630,14 +691,17 @@ async def click_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not session_id:
             await update.message.reply_text("❌ Сначала отправь URL")
             return
+        file_logger.log(f"🖱️ Клик от {user_id}: {selector}")
         await update.message.reply_text(f"🖱️ Кликаю по '{selector}'...")
         coords = await cdp.click_element(session_id, selector)
         await update.message.reply_text(f"✅ Клик выполнен ({coords['x']:.0f}, {coords['y']:.0f})")
     except Exception as e:
+        file_logger.log(f"❌ Ошибка click: {e}", "ERROR")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def fill_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
+        user_id = update.message.from_user.id
         args = update.message.text.split()
         if len(args) < 3:
             await update.message.reply_text("❌ Использование: /fill <селектор> <текст>")
@@ -648,14 +712,18 @@ async def fill_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not session_id:
             await update.message.reply_text("❌ Сначала отправь URL")
             return
+        file_logger.log(f"✍️ Заполнение от {user_id}: {selector} = {text[:20]}...")
         await update.message.reply_text(f"✍️ Заполняю '{selector}'...")
         await cdp.fill_input(session_id, selector, text)
         await update.message.reply_text("✅ Поле заполнено")
     except Exception as e:
+        file_logger.log(f"❌ Ошибка fill: {e}", "ERROR")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
+        user_id = update.message.from_user.id
+        file_logger.log(f"📸 Скриншот от {user_id}")
         session_id = context.user_data.get('session_id')
         if not session_id:
             await update.message.reply_text("❌ Сначала отправь URL")
@@ -673,6 +741,7 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         else:
             await update.message.reply_text("❌ Не удалось сделать скриншот")
     except Exception as e:
+        file_logger.log(f"❌ Ошибка screenshot: {e}", "ERROR")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def reload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -697,7 +766,34 @@ async def set_cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         else:
             await update.message.reply_text("❌ Не удалось установить куки")
     except Exception as e:
+        file_logger.log(f"❌ Ошибка set_cookies: {e}", "ERROR")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправляет файл с логами"""
+    try:
+        if os.path.exists(LOG_FILE):
+            with open(LOG_FILE, 'rb') as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename=f"bot_logs_{time.strftime('%Y-%m-%d_%H-%M-%S')}.txt",
+                    caption="📋 Логи бота"
+                )
+        else:
+            await update.message.reply_text("❌ Файл логов не найден")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
+async def clear_logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Очищает файл логов"""
+    try:
+        with open(LOG_FILE, 'w', encoding='utf-8') as f:
+            f.write(f"=== Логи очищены ===\n")
+            f.write(f"Время очистки: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write("=" * 50 + "\n\n")
+        await update.message.reply_text("✅ Логи очищены")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session_id = context.user_data.get('session_id')
@@ -719,6 +815,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/screenshot - Скриншот\n"
         "/reload - Перезагрузить страницу\n"
         "/set_cookies - Переустановить куки\n"
+        "/logs - Получить файл логов\n"
+        "/clear_logs - Очистить логи\n"
         "/clear - Очистить сессию\n\n"
         "🔹 Просто отправь URL для анализа"
     )
@@ -726,27 +824,34 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================== ЗАПУСК ====================
 async def shutdown():
     global app, chrome_manager, cdp
+    file_logger.log("🛑 Завершение работы...")
     print("\n🛑 Завершение работы...")
+    
     if cdp:
         await cdp.close()
     if app:
         try:
             await app.stop()
             await app.shutdown()
-            print("✅ Бот остановлен")
+            file_logger.log("✅ Бот остановлен")
         except:
             pass
     if chrome_manager:
         chrome_manager.stop()
+    file_logger.log("👋 Завершено")
     print("👋 Завершено")
 
 async def main_async():
     global app, chrome_manager, cdp
+    file_logger.log("🚀 Запуск бота...")
     print("🚀 Запуск бота...")
     print(f"🔗 Chrome: {chrome_manager.ws_endpoint}")
     print(f"🍪 Загружено {len(X_COOKIES)} кук")
     print(f"🖼️ Pillow: {'✅ Доступен' if PILLOW_AVAILABLE else '❌ Не установлен'}")
     print("💓 Авто-пинг включён")
+    file_logger.log(f"🔗 Chrome: {chrome_manager.ws_endpoint}")
+    file_logger.log(f"🍪 Загружено {len(X_COOKIES)} кук")
+    file_logger.log(f"🖼️ Pillow: {'✅ Доступен' if PILLOW_AVAILABLE else '❌ Не установлен'}")
     
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -756,6 +861,8 @@ async def main_async():
     app.add_handler(CommandHandler("screenshot", screenshot_command))
     app.add_handler(CommandHandler("reload", reload_command))
     app.add_handler(CommandHandler("set_cookies", set_cookies_command))
+    app.add_handler(CommandHandler("logs", logs_command))
+    app.add_handler(CommandHandler("clear_logs", clear_logs_command))
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     
@@ -763,7 +870,9 @@ async def main_async():
     for sig in [signal.SIGINT, signal.SIGTERM]:
         loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown()))
     
+    file_logger.log("✅ Бот запущен!")
     print("✅ Бот запущен!")
+    
     try:
         await app.initialize()
         await app.start()
@@ -779,12 +888,14 @@ def main():
     global chrome_manager, cdp
     chrome_manager = ChromeManager()
     if not chrome_manager.start():
+        file_logger.log("❌ Не удалось запустить Chrome", "ERROR")
         print("❌ Не удалось запустить Chrome")
         sys.exit(1)
     cdp = CDPClient(chrome_manager.ws_endpoint)
     try:
         asyncio.run(main_async())
     except KeyboardInterrupt:
+        file_logger.log("👋 Прервано пользователем")
         print("\n👋 Прервано пользователем")
     finally:
         if chrome_manager:
