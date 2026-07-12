@@ -74,28 +74,31 @@ X_COOKIES = [
 AGENT_CODE = """
 🤖 ТЫ — АГЕНТ ДЛЯ УПРАВЛЕНИЯ БРАУЗЕРОМ
 
-📌 ТЫ ВИДИШЬ ВСЕ КНОПКИ И ПОЛЯ НА СТРАНИЦЕ!
+📌 ТЫ ВИДИШЬ:
+- КНОПКИ (🔘) — для клика
+- ПОЛЯ ВВОДА (📝) — для заполнения
 
 📌 ДОСТУПНЫЕ ДЕЙСТВИЯ:
 1. navigate(url) - открыть сайт
-2. click(text) - кликнуть по кнопке
-3. fill(selector, value) - заполнить поле
+2. click(text) - кликнуть по кнопке (из списка 🔘)
+3. fill(selector, value) - заполнить поле (из списка 📝)
 4. screenshot() - скриншот
-5. reload() - перезагрузить страницу
-6. answer(text) - ответить пользователю
+5. reload() - перезагрузить
+6. answer(text) - ответить
 
-📌 ПРАВИЛА ОТВЕТА:
-- На вопрос "Какие кнопки?" — отвечай СПИСКОМ с нумерацией
-- На вопрос "Что видишь?" — отвечай кратко и структурировано
-- На вопрос "Что делает бот?" — объясняй кратко
+📌 ПРАВИЛА:
+- Для fill используй ТОЛЬКО названия из списка 📝
+- На X.com поле: "Поисковый запрос"
+- Для click используй ТОЛЬКО названия из списка 🔘
 
-📌 ФОРМАТ ОТВЕТА ДЛЯ СПИСКА КНОПОК:
-{"action": "answer", "params": {"text": "📋 Кнопки на странице:\\n1. Чат\\n2. Главная\\n3. Профиль\\n4. Уведомления"}}
+📌 ПРИМЕРЫ:
+{"action": "fill", "params": {"selector": "Поисковый запрос", "value": "Путин"}}
+{"action": "click", "params": {"text": "Чат"}}
+{"action": "answer", "params": {"text": "📋 Готово!"}}
 
-📌 ВАЖНО:
-- Используй ТОЛЬКО названия из списка кнопок
-- На X.com: "Чат", "Главная", "Личные сообщения", "Уведомления", "Закладки", "Профиль"
-- Отвечай ТОЛЬКО JSON!
+⚠️ ВАЖНО:
+- fill → "Поисковый запрос" (из полей)
+- click → "Чат", "Главная" (из кнопок)
 """
 
 # ==================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ====================
@@ -502,11 +505,21 @@ class CDPClient:
         info = self.full_snapshot or {}
         nodes = info.get('elements', [])
         
-        # Собираем кнопки
-        buttons = [el for el in nodes if el.get('role') in ['button', 'link']]
+        # Кнопки и ссылки
+        buttons = []
+        for el in nodes:
+            role = el.get('role', '')
+            name = el.get('name', '')
+            if role in ['button', 'link'] and name:
+                buttons.append(name)
         
-        # Собираем поля
-        fields = [el for el in nodes if el.get('role') in ['textbox', 'searchbox', 'combobox']]
+        # ПОЛЯ ВВОДА (отдельно!)
+        fields = []
+        for el in nodes:
+            role = el.get('role', '')
+            name = el.get('name', '')
+            if role in ['textbox', 'searchbox', 'combobox'] and name:
+                fields.append(name)
         
         desc = f"""
 📄 СТРАНИЦА: {info.get('title', 'Нет заголовка')}
@@ -515,16 +528,15 @@ class CDPClient:
 
 🔘 КНОПКИ И ССЫЛКИ ({len(buttons)}):
 """
-        for el in buttons[:30]:
-            name = el.get('name', '') or el.get('text', '')
-            if name:
-                desc += f"  • {name}\n"
+        for name in buttons[:30]:
+            desc += f"  • {name}\n"
         
         desc += f"\n📝 ПОЛЯ ВВОДА ({len(fields)}):\n"
-        for el in fields[:10]:
-            name = el.get('name', '') or el.get('text', '')
-            if name:
-                desc += f"  • {name}\n"
+        for name in fields[:10]:
+            desc += f"  • {name}\n"
+        
+        if not fields:
+            desc += "  ⚠️ Полей ввода не найдено\n"
         
         return desc
     
@@ -646,15 +658,79 @@ class CDPClient:
         raise Exception(f"Элемент не найден: {selector}")
     
     async def fill_input(self, session_id, selector, text):
+        """Заполняет поле с поиском по названию, placeholder, aria-label"""
         file_logger.log(f"✍️ Заполняю '{selector}' = '{text[:20]}...'")
+        
+        selector_escaped = selector.replace("'", "\\'").replace('"', '\\"')
+        text_escaped = text.replace("'", "\\'").replace('"', '\\"')
+        
         result = await self.send("Runtime.evaluate", {
             "expression": f"""
                 (function() {{
-                    const el = document.querySelector('{selector}');
+                    let el = null;
+                    const search = '{selector_escaped}';
+                    const searchLower = search.toLowerCase();
+                    
+                    // 1. Пробуем как CSS-селектор
+                    try {{
+                        el = document.querySelector(search);
+                        if (el) console.log('Найден по CSS');
+                    }} catch(e) {{}}
+                    
+                    // 2. Ищем по placeholder, aria-label, name, data-testid
+                    if (!el) {{
+                        const all = document.querySelectorAll('input, textarea, [role="searchbox"], [role="textbox"]');
+                        for (const elem of all) {{
+                            const placeholder = (elem.getAttribute('placeholder') || '').toLowerCase();
+                            const aria = (elem.getAttribute('aria-label') || '').toLowerCase();
+                            const name = (elem.getAttribute('name') || '').toLowerCase();
+                            const testid = (elem.getAttribute('data-testid') || '').toLowerCase();
+                            const title = (elem.getAttribute('title') || '').toLowerCase();
+                            
+                            if (placeholder.includes(searchLower) || 
+                                aria.includes(searchLower) || 
+                                name.includes(searchLower) || 
+                                testid.includes(searchLower) ||
+                                title.includes(searchLower)) {{
+                                el = elem;
+                                console.log('Найден по атрибуту');
+                                break;
+                            }}
+                        }}
+                    }}
+                    
+                    // 3. Ищем по тексту label
+                    if (!el) {{
+                        const labels = document.querySelectorAll('label');
+                        for (const label of labels) {{
+                            const text = (label.textContent || '').toLowerCase();
+                            if (text.includes(searchLower)) {{
+                                const forAttr = label.getAttribute('for');
+                                if (forAttr) {{
+                                    el = document.getElementById(forAttr);
+                                }}
+                                if (!el) {{
+                                    el = label.querySelector('input, textarea');
+                                }}
+                                if (el) {{
+                                    console.log('Найден по label');
+                                    break;
+                                }}
+                            }}
+                        }}
+                    }}
+                    
                     if (el) {{
+                        el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
                         el.focus();
-                        el.value = '{text}';
-                        el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        el.value = '';
+                        const text = '{text_escaped}';
+                        for (const char of text) {{
+                            el.value += char;
+                            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                            el.dispatchEvent(new Event('keydown', {{ bubbles: true }}));
+                            el.dispatchEvent(new Event('keyup', {{ bubbles: true }}));
+                        }}
                         el.dispatchEvent(new Event('change', {{ bubbles: true }}));
                         return true;
                     }}
@@ -667,9 +743,14 @@ class CDPClient:
             file_logger.log(f"❌ Ошибка заполнения: {result['error']}", "ERROR")
             return False
         
-        file_logger.log("✅ Поле заполнено")
-        await self.get_maximum_snapshot()
-        return True
+        success = result.get("result", {}).get("result", {}).get("value", False)
+        if success:
+            file_logger.log("✅ Поле заполнено")
+            await self.get_maximum_snapshot()
+            return True
+        
+        file_logger.log("❌ Поле не найдено", "ERROR")
+        return False
     
     async def screenshot(self, session_id):
         try:
@@ -759,8 +840,9 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
 {page_desc}
 
 ⚠️ ВАЖНО:
-- Используй ТОЛЬКО названия из списка кнопок
-- На X.com: "Чат", "Главная", "Личные сообщения", "Уведомления", "Закладки", "Профиль"
+- Используй ТОЛЬКО названия из списка кнопок (🔘) для click
+- Используй ТОЛЬКО названия из списка полей (📝) для fill
+- На X.com поле: "Поисковый запрос"
 - Отвечай ТОЛЬКО JSON!
 """
 
@@ -790,7 +872,6 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
             try:
                 parsed = json.loads(json_match.group())
                 
-                # Если массив с одним элементом
                 if isinstance(parsed, list):
                     if len(parsed) == 0:
                         return {"action": "answer", "params": {"text": "⚠️ AI вернул пустой массив"}}
@@ -799,13 +880,10 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
                     else:
                         return parsed
                 
-                # Если словарь
                 if isinstance(parsed, dict):
-                    # Преобразуем answer в action
                     if "answer" in parsed and "action" not in parsed:
                         return {"action": "answer", "params": {"text": parsed["answer"]}}
                     
-                    # Преобразуем text в params
                     if "action" in parsed and "text" in parsed and "params" not in parsed:
                         parsed["params"] = {"text": parsed.pop("text")}
                         return parsed
@@ -813,11 +891,9 @@ async def ask_agnes(prompt: str, client: CDPClient) -> dict:
                     if "action" not in parsed:
                         return {"action": "answer", "params": {"text": json.dumps(parsed, ensure_ascii=False)}}
                     
-                    # Если это ответ со списком кнопок — форматируем
                     if parsed.get("action") == "answer":
                         text = parsed.get("params", {}).get("text", "")
                         if text and len(text) > 50:
-                            # Если текст в одну строку через запятую - разбиваем
                             if ', ' in text and '\\n' not in text:
                                 items = text.split(', ')
                                 if len(items) > 3:
@@ -936,7 +1012,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Открой x.com\n"
         f"• Нажми на кнопку Чат\n"
         f"• Сделай скриншот\n"
-        f"• Какие кнопки видишь?\n\n"
+        f"• Какие кнопки видишь?\n"
+        f"• Введи Путин в поиск\n\n"
         f"🖼️ Pillow: {pillow_status}\n"
         f"🧠 Agnes AI: {agnes_status}\n"
         f"🍪 Куки X.com: ✅ установлены\n"
@@ -963,7 +1040,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.chat.send_action(action="typing")
     
     try:
-        # Получаем или создаём клиент
         if user_id not in clients:
             file_logger.log(f"🆕 Создаю клиент для {user_id}")
             client = CDPClient(chrome_manager.ws_endpoint)
@@ -973,12 +1049,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         client = clients[user_id]
         
-        # Проверяем соединение
         if not client.websocket or client.websocket.closed:
             file_logger.log(f"🔄 Переподключение для {user_id}")
             await client.connect()
         
-        # Если нет вкладки - создаём
         if not client.session_id:
             await client.create_tab()
             await client.set_cookies(X_COOKIES)
@@ -986,17 +1060,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await client.wait_for_load(client.session_id)
             await client.wait_for_content(client.session_id)
         
-        # Обновляем слепок
         await client.get_maximum_snapshot()
         
-        # Запрашиваем AI
         if AGNES_API_KEY:
             response = await ask_agnes(prompt, client)
             if "error" not in response:
                 result = await execute_action(client, response, user_id)
                 
                 if result == "screenshot":
-                    # Ищем файл скриншота
                     files = glob.glob(f"screenshot_{user_id}_*.jpg")
                     if files:
                         latest = max(files, key=os.path.getctime)
@@ -1012,7 +1083,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"❌ Ошибка AI: {response.get('error', 'Неизвестная ошибка')}")
                 return
         
-        # Если нет API ключа - обычный режим
         await update.message.reply_text(
             "❌ AGNES_API_KEY не установлен.\n"
             "Используйте команды напрямую:\n"
@@ -1101,14 +1171,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Открой x.com\n"
         "• Нажми на Чат\n"
         "• Сделай скриншот\n"
-        "• Какие кнопки видишь?\n\n"
+        "• Какие кнопки видишь?\n"
+        "• Введи Путин в поиск\n\n"
         "📌 **Команды:**\n"
         "/click <название> - Кликнуть\n"
         "/screenshot - Скриншот\n"
         "/logs - Логи\n"
         "/clear - Очистить сессию\n\n"
-        "💡 На X.com доступны кнопки:\n"
-        "Главная, Чат, Личные сообщения, Уведомления, Закладки, Профиль"
+        "💡 На X.com доступны:\n"
+        "🔘 Кнопки: Чат, Главная, Личные сообщения, Уведомления, Закладки, Профиль\n"
+        "📝 Поля: Поисковый запрос"
     )
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1126,7 +1198,6 @@ async def shutdown():
     file_logger.log("🛑 Завершение работы...")
     print("\n🛑 Завершение работы...")
     
-    # Закрываем все клиенты
     for user_id, client in clients.items():
         try:
             await client.close()
@@ -1158,7 +1229,6 @@ async def main_async():
     
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("click", click_command))
@@ -1166,7 +1236,6 @@ async def main_async():
     app.add_handler(CommandHandler("logs", logs_command))
     app.add_handler(CommandHandler("clear", clear_command))
     
-    # Обработчик сообщений (AI)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     loop = asyncio.get_event_loop()
