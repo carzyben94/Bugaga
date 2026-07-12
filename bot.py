@@ -14,7 +14,7 @@ from io import BytesIO
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# ==================== Pillow для обработки изображений ====================
+# ==================== Pillow ====================
 try:
     from PIL import Image, ImageEnhance
     PILLOW_AVAILABLE = True
@@ -24,151 +24,32 @@ except ImportError:
 
 # ==================== КОНФИГУРАЦИЯ ====================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+if not TELEGRAM_TOKEN:
+    print("❌ TELEGRAM_BOT_TOKEN не установлен!")
+    sys.exit(1)
+
 CHROME_PATH = "/usr/bin/google-chrome"
 CHROME_PORT = 9222
 
 # ==================== КУКИ ДЛЯ X/TWITTER ====================
 X_COOKIES = [
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "__cuid",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "lang",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "ru"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "dnt",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "1"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "guest_id",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "v1%3A178267838599411411"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "guest_id_marketing",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "v1%3A178267838599411411"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "guest_id_ads",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "v1%3A178267838599411411"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "personalization_id",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "\"v1_DKrxLZAC902dMFdd1QrVYg==\""
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "twid",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "u%3D2067347503503052800"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "auth_token",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "ct0",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb"
-    },
-    {
-        "domain": ".x.com",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "__cf_bm",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "Eb4nVvazwJ5mDp0c.6Ye5ub0rukgdQkcFzPf8.wdbIQ-1783798267.7075489-1.0.1.1-59IptPdWY9w0zyKvebR59I.8iB4M1DWfNNZQW0.c.E4lDCU3wTfEcds69RVBkOeQ9LUDZNLGRv6z8InGbCsH1RaTCKaqehL94yq0FgvU7QB9cbE8BO4.2Y8BMRnN_Nks"
-    }
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "__cuid", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "lang", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "ru"},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "dnt", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "1"},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "guest_id", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "v1%3A178267838599411411"},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "guest_id_marketing", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "v1%3A178267838599411411"},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "guest_id_ads", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "v1%3A178267838599411411"},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "personalization_id", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "\"v1_DKrxLZAC902dMFdd1QrVYg==\""},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "twid", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "u%3D2067347503503052800"},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "auth_token", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936"},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "ct0", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb"},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "__cf_bm", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "Eb4nVvazwJ5mDp0c.6Ye5ub0rukgdQkcFzPf8.wdbIQ-1783798267.7075489-1.0.1.1-59IptPdWY9w0zyKvebR59I.8iB4M1DWfNNZQW0.c.E4lDCU3wTfEcds69RVBkOeQ9LUDZNLGRv6z8InGbCsH1RaTCKaqehL94yq0FgvU7QB9cbE8BO4.2Y8BMRnN_Nks"}
 ]
 
 # ==================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ====================
 app = None
 chrome_manager = None
 cdp = None
-
-def restart_chrome():
-    """Перезапуск Chrome"""
-    print("🔄 Перезапуск Chrome...")
-    try:
-        subprocess.run(["pkill", "-f", "google-chrome"], capture_output=True)
-        time.sleep(2)
-    except:
-        pass
-    
-    if chrome_manager:
-        return chrome_manager.start()
-    return False
 
 # ==================== УПРАВЛЕНИЕ БРАУЗЕРОМ ====================
 class ChromeManager:
@@ -188,12 +69,10 @@ class ChromeManager:
             "/usr/bin/google-chrome-stable",
             "/app/.apt/usr/bin/google-chrome"
         ]
-        
         for path in paths:
             if os.path.exists(path):
                 print(f"✅ Найден Chrome: {path}")
                 return path
-        
         try:
             result = subprocess.run(["which", "google-chrome"], capture_output=True, text=True)
             if result.returncode == 0:
@@ -202,10 +81,9 @@ class ChromeManager:
                 return path
         except:
             pass
-        
         return None
     
-    def _prepare_cookies_file(self):
+    def _prepare_profile(self):
         self.user_data_dir = tempfile.mkdtemp(prefix="chrome_profile_")
         print(f"📁 Профиль Chrome: {self.user_data_dir}")
         return self.user_data_dir
@@ -217,13 +95,12 @@ class ChromeManager:
             return True
         
         print("🚀 Запускаю Chrome...")
-        
         chrome_path = self._find_chrome()
         if not chrome_path:
             print("❌ Chrome не найден!")
             return False
         
-        self._prepare_cookies_file()
+        self._prepare_profile()
         
         cmd = [
             chrome_path,
@@ -261,7 +138,6 @@ class ChromeManager:
             
             print("❌ Chrome не запустился за 10 секунд")
             return False
-                
         except Exception as e:
             print(f"❌ Ошибка запуска Chrome: {e}")
             return False
@@ -280,44 +156,6 @@ class ChromeManager:
         except:
             return None
     
-    async def set_cookies_after_start(self):
-        try:
-            print("🍪 Начинаю установку кук...")
-            cdp_temp = CDPClient(self.ws_endpoint)
-            await cdp_temp.connect()
-            
-            session_id, _ = await cdp_temp.create_tab()
-            
-            cdp_cookies = []
-            for cookie in X_COOKIES:
-                cdp_cookie = {
-                    "name": cookie.get("name"),
-                    "value": cookie.get("value"),
-                    "domain": cookie.get("domain"),
-                    "path": cookie.get("path", "/"),
-                    "secure": cookie.get("secure", False),
-                    "httpOnly": cookie.get("httpOnly", False),
-                    "sameSite": cookie.get("sameSite", "unspecified"),
-                    "session": cookie.get("session", True)
-                }
-                cdp_cookies.append(cdp_cookie)
-            
-            result = await cdp_temp.send("Network.setCookies", {
-                "cookies": cdp_cookies
-            }, session_id=session_id)
-            
-            if "error" not in result:
-                print(f"✅ Установлено {len(X_COOKIES)} кук")
-            else:
-                print(f"❌ Ошибка: {result.get('error')}")
-            
-            await cdp_temp.close_tab(session_id)
-            await cdp_temp.close()
-            print("✅ Все куки установлены")
-            
-        except Exception as e:
-            print(f"⚠️ Ошибка установки кук: {e}")
-    
     def stop(self):
         if self.process:
             self.process.terminate()
@@ -332,7 +170,7 @@ class ChromeManager:
             shutil.rmtree(self.user_data_dir, ignore_errors=True)
             print(f"🗑️ Профиль удалён: {self.user_data_dir}")
 
-# ==================== CDP КЛИЕНТ ====================
+# ==================== CDP КЛИЕНТ (с очередью сообщений) ====================
 class CDPClient:
     def __init__(self, ws_endpoint):
         self.ws_endpoint = ws_endpoint
@@ -343,45 +181,36 @@ class CDPClient:
         self.cookies_set = False
         self.ping_task = None
         self._keep_alive = True
+        self._message_queue = asyncio.Queue()
+        self._receiver_task = None
+        self._pending_requests = {}
     
-    async def keep_alive(self):
-        """Фоновый пинг для поддержания соединения (работает пока активна сессия)"""
-        print("💓 Запущен пинг для поддержания соединения")
-        while self._keep_alive:
+    async def _receiver(self):
+        """Фоновый приём всех сообщений из WebSocket"""
+        print("📡 Запущен приёмник сообщений")
+        while True:
             try:
-                if self.websocket and not self.websocket.closed:
-                    # Отправляем простую команду, чтобы держать соединение
-                    await self.send("Runtime.evaluate", {"expression": "1"})
-                    print("💓 Пинг отправлен")
+                if not self.websocket:
+                    await asyncio.sleep(0.5)
+                    continue
+                
+                message = await self.websocket.recv()
+                data = json.loads(message)
+                
+                msg_id = data.get("id")
+                if msg_id and msg_id in self._pending_requests:
+                    future = self._pending_requests.pop(msg_id)
+                    if not future.done():
+                        future.set_result(data)
                 else:
-                    print("⚠️ WebSocket закрыт, останавливаю пинг")
-                    break
-                await asyncio.sleep(20)  # каждые 20 секунд
-            except asyncio.CancelledError:
-                print("🛑 Пинг остановлен")
+                    await self._message_queue.put(data)
+                    
+            except websockets.exceptions.ConnectionClosed:
+                print("⚠️ WebSocket закрыт, останавливаю приёмник")
                 break
             except Exception as e:
-                print(f"⚠️ Ошибка пинга: {e}")
-                await asyncio.sleep(5)
-    
-    async def start_keep_alive(self):
-        """Запускает фоновый пинг"""
-        if self.ping_task is None or self.ping_task.done():
-            self._keep_alive = True
-            self.ping_task = asyncio.create_task(self.keep_alive())
-            print("✅ Пинг запущен")
-    
-    async def stop_keep_alive(self):
-        """Останавливает фоновый пинг"""
-        self._keep_alive = False
-        if self.ping_task and not self.ping_task.done():
-            self.ping_task.cancel()
-            try:
-                await self.ping_task
-            except:
-                pass
-            self.ping_task = None
-            print("🛑 Пинг остановлен")
+                print(f"⚠️ Ошибка приёмника: {e}")
+                await asyncio.sleep(0.5)
     
     async def connect(self):
         if not self.ws_endpoint:
@@ -397,115 +226,129 @@ class CDPClient:
             )
             print(f"✅ Подключено к Chrome: {self.ws_endpoint}")
             
-            # Включаем домены если есть сессия
-            if self.session_id:
-                await self.send("Page.enable", session_id=self.session_id)
-                await self.send("Runtime.enable", session_id=self.session_id)
-                await self.send("DOM.enable", session_id=self.session_id)
-                await self.send("Network.enable", session_id=self.session_id)
+            if self._receiver_task is None or self._receiver_task.done():
+                self._receiver_task = asyncio.create_task(self._receiver())
+                print("📡 Приёмник запущен")
             
-            # Запускаем пинг АВТОМАТИЧЕСКИ
+            await self.send("Page.enable")
+            await self.send("Runtime.enable")
+            await self.send("DOM.enable")
+            await self.send("Network.enable")
+            
             await self.start_keep_alive()
-            
             return True
             
         except Exception as e:
             print(f"❌ Ошибка подключения: {e}")
             return False
     
-    async def send(self, method, params=None, session_id=None, retries=3):
-        """Отправка CDP-команды с автоматическим переподключением"""
-        for attempt in range(retries):
+    async def keep_alive(self):
+        """Фоновый пинг для поддержания соединения"""
+        print("💓 Запущен пинг для поддержания соединения")
+        while self._keep_alive:
             try:
-                # Проверяем соединение
-                if not self.websocket or self.websocket.closed:
-                    print("🔄 WebSocket закрыт, переподключаюсь...")
-                    await self.connect()
-                    if not self.websocket:
-                        await asyncio.sleep(1)
-                        continue
-                
-                self.msg_id += 1
-                msg_id = self.msg_id
-                msg = {
-                    "id": msg_id,
-                    "method": method,
-                    "params": params or {}
-                }
-                if session_id:
-                    msg["sessionId"] = session_id
-                
-                await self.websocket.send(json.dumps(msg))
-                
-                # Ждём ответ с увеличенным таймаутом
-                response = await asyncio.wait_for(self.websocket.recv(), timeout=60)
-                data = json.loads(response)
-                
-                if data.get("id") == msg_id:
-                    if "error" in data:
-                        raise Exception(f"CDP Error: {data['error']}")
-                    return data
+                if self.websocket and not self.websocket.closed:
+                    self.msg_id += 1
+                    ping_msg = {
+                        "id": self.msg_id,
+                        "method": "Runtime.evaluate",
+                        "params": {"expression": "1"}
+                    }
+                    await self.websocket.send(json.dumps(ping_msg))
+                    print("💓 Пинг отправлен")
                 else:
-                    # Если получили событие, а не ответ
-                    continue
-                    
-            except (websockets.exceptions.ConnectionClosed, 
-                    websockets.exceptions.WebSocketException,
-                    asyncio.TimeoutError,
-                    BrokenPipeError,
-                    ConnectionResetError) as e:
-                
-                print(f"⚠️ Ошибка {method}, попытка {attempt+1}/{retries}: {e}")
-                self.websocket = None
-                
-                if attempt < retries - 1:
-                    await asyncio.sleep(2 ** attempt)
-                    try:
-                        await self.connect()
-                    except:
-                        pass
-            
+                    print("⚠️ WebSocket закрыт, останавливаю пинг")
+                    break
+                await asyncio.sleep(20)
+            except asyncio.CancelledError:
+                print("🛑 Пинг остановлен")
+                break
             except Exception as e:
-                print(f"❌ Ошибка {method}: {e}")
-                if attempt < retries - 1:
-                    await asyncio.sleep(1)
-                else:
-                    return {"error": str(e)}
+                print(f"⚠️ Ошибка пинга: {e}")
+                await asyncio.sleep(5)
+    
+    async def start_keep_alive(self):
+        if self.ping_task is None or self.ping_task.done():
+            self._keep_alive = True
+            self.ping_task = asyncio.create_task(self.keep_alive())
+            print("✅ Пинг запущен")
+    
+    async def stop_keep_alive(self):
+        self._keep_alive = False
+        if self.ping_task and not self.ping_task.done():
+            self.ping_task.cancel()
+            try:
+                await self.ping_task
+            except:
+                pass
+            self.ping_task = None
+            print("🛑 Пинг остановлен")
+    
+    async def send(self, method, params=None, session_id=None, timeout=60):
+        """Отправка CDP-команды"""
+        self.msg_id += 1
+        msg_id = self.msg_id
         
-        return {"error": "Max retries exceeded"}
+        msg = {"id": msg_id, "method": method, "params": params or {}}
+        if session_id:
+            msg["sessionId"] = session_id
+        
+        future = asyncio.Future()
+        self._pending_requests[msg_id] = future
+        
+        try:
+            await self.websocket.send(json.dumps(msg))
+            response = await asyncio.wait_for(future, timeout=timeout)
+            if "error" in response:
+                print(f"❌ CDP Error: {response['error']}")
+            return response
+        except asyncio.TimeoutError:
+            self._pending_requests.pop(msg_id, None)
+            print(f"⏰ Таймаут {method}")
+            return {"error": "timeout"}
+        except Exception as e:
+            self._pending_requests.pop(msg_id, None)
+            print(f"❌ Ошибка {method}: {e}")
+            return {"error": str(e)}
     
     async def eval_js(self, code, session_id=None):
-        """Выполняет JavaScript с автоматическим восстановлением"""
-        for attempt in range(3):
-            try:
-                result = await self.send("Runtime.evaluate", {
-                    "expression": code,
-                    "returnByValue": True,
-                    "awaitPromise": True
-                }, session_id=session_id or self.session_id)
-                
-                if "result" in result:
-                    obj = result["result"]
-                    if "value" in obj:
-                        return obj["value"]
-                    if "result" in obj and "value" in obj["result"]:
-                        return obj["result"]["value"]
+        try:
+            result = await self.send("Runtime.evaluate", {
+                "expression": code,
+                "returnByValue": True,
+                "awaitPromise": True
+            }, session_id=session_id or self.session_id)
+            
+            if not result or "error" in result:
                 return None
-            except Exception as e:
-                print(f"⚠️ eval_js попытка {attempt+1}: {e}")
-                if attempt < 2:
-                    await asyncio.sleep(1)
-                else:
+            if "result" in result:
+                obj = result["result"]
+                if "exceptionDetails" in obj:
                     return None
+                if "result" in obj:
+                    if "value" in obj["result"]:
+                        return obj["result"]["value"]
+                    if obj["result"].get("type") == "undefined":
+                        return None
+                if "value" in obj:
+                    return obj["value"]
+            return None
+        except Exception as e:
+            print(f"❌ eval_js error: {e}")
+            return None
     
     async def create_tab(self):
         result = await self.send("Target.createTarget", {"url": "about:blank"})
+        if "error" in result:
+            raise Exception(f"Create tab error: {result['error']}")
         target_id = result["result"]["targetId"]
         
         result = await self.send("Target.attachToTarget", {
             "targetId": target_id,
             "flatten": True
         })
+        if "error" in result:
+            raise Exception(f"Attach error: {result['error']}")
         session_id = result["result"]["sessionId"]
         
         await self.send("Page.enable", session_id=session_id)
@@ -520,10 +363,9 @@ class CDPClient:
     async def set_cookies(self, cookies):
         try:
             print(f"🍪 Установка {len(cookies)} кук...")
-            
             cdp_cookies = []
             for cookie in cookies:
-                cdp_cookie = {
+                cdp_cookies.append({
                     "name": cookie.get("name"),
                     "value": cookie.get("value"),
                     "domain": cookie.get("domain"),
@@ -532,40 +374,38 @@ class CDPClient:
                     "httpOnly": cookie.get("httpOnly", False),
                     "sameSite": cookie.get("sameSite", "unspecified"),
                     "session": cookie.get("session", True)
-                }
-                cdp_cookies.append(cdp_cookie)
-            
+                })
             result = await self.send("Network.setCookies", {
                 "cookies": cdp_cookies
             }, session_id=self.session_id)
-            
             if "error" not in result:
                 self.cookies_set = True
                 print(f"✅ Установлено {len(cookies)} кук")
                 return True
-            else:
-                print(f"❌ Ошибка: {result.get('error')}")
-                return False
-                
+            return False
         except Exception as e:
             print(f"❌ Ошибка установки кук: {e}")
             return False
     
     async def navigate(self, session_id, url):
-        return await self.send("Page.navigate", {"url": url}, session_id=session_id)
+        result = await self.send("Page.navigate", {"url": url}, session_id=session_id)
+        if "error" in result:
+            print(f"❌ Ошибка навигации: {result['error']}")
+            return False
+        return True
     
     async def wait_for_load(self, session_id, timeout=30):
         for _ in range(timeout):
             try:
-                response = await asyncio.wait_for(self.websocket.recv(), timeout=1)
-                data = json.loads(response)
-                if data.get("method") == "Page.loadEventFired":
-                    return True
-                if data.get("method") == "Page.frameStoppedLoading":
-                    return True
-                if data.get("id") and data.get("error"):
-                    return False
+                if not self._message_queue.empty():
+                    data = await asyncio.wait_for(self._message_queue.get(), timeout=0.1)
+                    if data.get("method") in ["Page.loadEventFired", "Page.frameStoppedLoading"]:
+                        return True
+                await asyncio.sleep(0.5)
             except asyncio.TimeoutError:
+                continue
+            except Exception as e:
+                print(f"⚠️ wait_for_load error: {e}")
                 continue
         return False
     
@@ -583,15 +423,17 @@ class CDPClient:
                     })()
                 """
             }, session_id=session_id)
-            
-            if result.get("result", {}).get("result", {}).get("value"):
-                return True
+            if result and "error" not in result:
+                if result.get("result", {}).get("result", {}).get("value", False):
+                    return True
             await asyncio.sleep(1)
         return False
     
     async def get_accessibility_tree(self, session_id):
         result = await self.send("Accessibility.getFullAXTree", session_id=session_id)
-        return result["result"]["nodes"]
+        if "error" in result:
+            return []
+        return result.get("result", {}).get("nodes", [])
     
     async def get_element_by_selector(self, session_id, selector):
         result = await self.send("Runtime.evaluate", {
@@ -612,16 +454,14 @@ class CDPClient:
                 }})()
             """
         }, session_id=session_id)
-        
-        if result.get("result", {}).get("result", {}).get("value"):
-            return result["result"]["result"]["value"]
-        return None
+        if "error" in result:
+            return None
+        return result.get("result", {}).get("result", {}).get("value")
     
     async def click_element(self, session_id, selector):
         coords = await self.get_element_by_selector(session_id, selector)
         if not coords:
             raise Exception("Элемент не найден")
-        
         await self.send("Input.dispatchMouseEvent", {
             "type": "mousePressed",
             "x": coords["x"],
@@ -630,9 +470,7 @@ class CDPClient:
             "clickCount": 1,
             "modifiers": 0
         }, session_id=session_id)
-        
         await asyncio.sleep(0.1)
-        
         await self.send("Input.dispatchMouseEvent", {
             "type": "mouseReleased",
             "x": coords["x"],
@@ -641,7 +479,6 @@ class CDPClient:
             "clickCount": 1,
             "modifiers": 0
         }, session_id=session_id)
-        
         return coords
     
     async def fill_input(self, session_id, selector, text):
@@ -658,9 +495,7 @@ class CDPClient:
                 }})()
             """
         }, session_id=session_id)
-        
         await asyncio.sleep(0.1)
-        
         for char in text:
             await self.send("Input.dispatchKeyEvent", {
                 "type": "keyDown",
@@ -672,13 +507,10 @@ class CDPClient:
                 "text": char
             }, session_id=session_id)
             await asyncio.sleep(0.01)
-        
         return True
     
     async def screenshot(self, session_id):
-        """Скриншот как в рабочем примере - ПРОСТОЙ И НАДЁЖНЫЙ"""
         try:
-            # 1. Проверяем, что страница загружена
             title = await self.eval_js("document.title", session_id)
             if not title or title == "":
                 print("🌐 Открываю Google...")
@@ -686,13 +518,8 @@ class CDPClient:
                 await asyncio.sleep(2)
                 title = await self.eval_js("document.title", session_id)
                 if not title:
-                    print("❌ Не удалось загрузить страницу")
                     return None
-            
-            print(f"📄 Текущий заголовок: {title}")
-            print("📸 Делаю скриншот...")
-            
-            # 2. Делаем скриншот с ПРОСТЫМИ параметрами (как в примере)
+            print(f"📄 Заголовок: {title}")
             resp = await self.send("Page.captureScreenshot", {
                 "format": "jpeg",
                 "quality": 70,
@@ -700,25 +527,14 @@ class CDPClient:
                 "fromSurface": True,
                 "optimizeForSpeed": True
             }, session_id=session_id)
-            
+            if "error" in resp:
+                print(f"❌ Ошибка скриншота: {resp['error']}")
+                return None
             if "result" in resp and "data" in resp["result"]:
                 img_data = base64.b64decode(resp["result"]["data"])
-                
-                if len(img_data) < 100:
-                    print("❌ Скриншот слишком маленький")
-                    return None
-                
-                # Проверяем JPEG сигнатуру
-                if img_data[:2] == b'\xff\xd8':
-                    print(f"✅ Скриншот сделан ({len(img_data)} байт)")
+                if len(img_data) > 100 and img_data[:2] == b'\xff\xd8':
                     return img_data
-                else:
-                    print("❌ Невалидный формат изображения")
-                    return None
-            
-            print("❌ Не удалось получить скриншот")
             return None
-                
         except Exception as e:
             print(f"❌ Screenshot error: {e}")
             return None
@@ -730,9 +546,14 @@ class CDPClient:
             del self.targets[session_id]
     
     async def close(self):
-        """Закрывает соединение и останавливает пинг"""
         await self.stop_keep_alive()
-        
+        if self._receiver_task and not self._receiver_task.done():
+            self._receiver_task.cancel()
+            try:
+                await self._receiver_task
+            except:
+                pass
+            self._receiver_task = None
         if self.websocket:
             try:
                 await self.websocket.close()
@@ -755,93 +576,47 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💓 Авто-пинг для стабильного соединения"
     )
 
-async def set_cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global cdp
-    
-    try:
-        await update.message.reply_text("🍪 Устанавливаю куки для X.com...")
-        
-        if not cdp.websocket or not cdp.session_id:
-            await update.message.reply_text("❌ Сначала отправь URL для анализа")
-            return
-        
-        result = await cdp.set_cookies(X_COOKIES)
-        
-        if result:
-            await update.message.reply_text(f"✅ Установлено {len(X_COOKIES)} кук для X.com")
-        else:
-            await update.message.reply_text("❌ Не удалось установить куки")
-            
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global cdp
-    
     url = update.message.text.strip()
-    
     if not url.startswith(("http://", "https://")):
         await update.message.reply_text("❌ Отправь корректный URL")
         return
-    
     await update.message.reply_text(f"🔄 Анализирую {url}...")
-    
     try:
         if not cdp.websocket:
             await cdp.connect()
         else:
-            # Если соединение есть, запускаем пинг
             await cdp.start_keep_alive()
-        
-        session_id, target_id = await cdp.create_tab()
+        session_id, _ = await cdp.create_tab()
         context.user_data['session_id'] = session_id
-        
         await cdp.set_cookies(X_COOKIES)
-        
         await cdp.navigate(session_id, url)
         await update.message.reply_text("⏳ Ожидаю загрузку страницы...")
         await cdp.wait_for_load(session_id)
-        
         if "x.com" in url or "twitter.com" in url:
             await update.message.reply_text("⏳ Жду загрузки контента...")
             await cdp.wait_for_content(session_id, timeout=30)
-        
         nodes = await cdp.get_accessibility_tree(session_id)
-        
         interactive = []
         for node in nodes:
             role = node.get("role", {}).get("value", "")
             if role in ["button", "link", "textbox", "checkbox", "combobox", "radio"]:
                 name = node.get("name", {}).get("value", "")
-                node_id = node.get("nodeId")
-                interactive.append({
-                    "id": node_id,
-                    "role": role,
-                    "name": name[:100]
-                })
-        
+                interactive.append({"role": role, "name": name[:100]})
         context.user_data['elements'] = interactive
-        
         if interactive:
             msg = "🔍 Найдены интерактивные элементы:\n\n"
             for i, el in enumerate(interactive[:20], 1):
                 name = el['name'] if el['name'] else "(без названия)"
                 msg += f"{i}. [{el['role']}] {name}\n"
-            
             if len(interactive) > 20:
                 msg += f"\n... и ещё {len(interactive) - 20} элементов"
-            
             await update.message.reply_text(msg)
         else:
-            await update.message.reply_text(
-                "❌ Интерактивных элементов не найдено.\n\n"
-                "💡 Попробуйте:\n"
-                "• /screenshot - посмотреть страницу\n"
-                "• /set_cookies - переустановить куки"
-            )
-            
+            await update.message.reply_text("❌ Интерактивных элементов не найдено.\n\n💡 Попробуйте /screenshot")
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
         print(f"Error: {e}")
 
 async def click_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -850,20 +625,16 @@ async def click_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(args) < 2:
             await update.message.reply_text("❌ Использование: /click <селектор>")
             return
-        
         selector = args[1]
         session_id = context.user_data.get('session_id')
-        
         if not session_id:
-            await update.message.reply_text("❌ Сначала отправь URL для анализа")
+            await update.message.reply_text("❌ Сначала отправь URL")
             return
-        
         await update.message.reply_text(f"🖱️ Кликаю по '{selector}'...")
         coords = await cdp.click_element(session_id, selector)
-        await update.message.reply_text(f"✅ Клик выполнен по координатам ({coords['x']:.0f}, {coords['y']:.0f})")
-        
+        await update.message.reply_text(f"✅ Клик выполнен ({coords['x']:.0f}, {coords['y']:.0f})")
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def fill_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -871,75 +642,68 @@ async def fill_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(args) < 3:
             await update.message.reply_text("❌ Использование: /fill <селектор> <текст>")
             return
-        
         selector = args[1]
         text = " ".join(args[2:])
         session_id = context.user_data.get('session_id')
-        
         if not session_id:
-            await update.message.reply_text("❌ Сначала отправь URL для анализа")
+            await update.message.reply_text("❌ Сначала отправь URL")
             return
-        
-        await update.message.reply_text(f"✍️ Заполняю '{selector}' текстом: {text}")
+        await update.message.reply_text(f"✍️ Заполняю '{selector}'...")
         await cdp.fill_input(session_id, selector, text)
         await update.message.reply_text("✅ Поле заполнено")
-        
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         session_id = context.user_data.get('session_id')
-        
         if not session_id:
-            await update.message.reply_text("❌ Сначала отправь URL для анализа")
+            await update.message.reply_text("❌ Сначала отправь URL")
             return
-        
         await update.message.reply_text("📸 Делаю скриншот...")
-        
-        # Используем простой метод (как в рабочем примере)
         image_data = await cdp.screenshot(session_id)
-        
         if image_data:
             try:
-                await update.message.reply_photo(
-                    photo=BytesIO(image_data),
-                    caption="📸 Скриншот страницы"
-                )
+                await update.message.reply_photo(photo=BytesIO(image_data), caption="📸 Скриншот")
             except Exception as e:
                 if "Photo_invalid_dimensions" in str(e):
-                    await update.message.reply_text(
-                        "❌ Ошибка размеров изображения. Попробуйте:\n"
-                        "1. /reload - перезагрузить страницу\n"
-                        "2. Открыть другую страницу\n"
-                        "3. Проверить что страница загружена"
-                    )
+                    await update.message.reply_text("❌ Ошибка размеров. Попробуйте /reload")
                 else:
-                    await update.message.reply_text(f"❌ Ошибка отправки: {str(e)}")
+                    await update.message.reply_text(f"❌ Ошибка отправки: {str(e)[:100]}")
         else:
             await update.message.reply_text("❌ Не удалось сделать скриншот")
-        
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-        print(f"Error: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def reload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Перезагрузка страницы"""
     session_id = context.user_data.get('session_id')
     if not session_id:
-        await update.message.reply_text("❌ Сначала отправь URL для анализа")
+        await update.message.reply_text("❌ Сначала отправь URL")
         return
-    
     await update.message.reply_text("🔄 Перезагружаю страницу...")
     await cdp.send("Page.reload", {}, session_id=session_id)
     await asyncio.sleep(2)
     await update.message.reply_text("✅ Страница перезагружена")
 
+async def set_cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await update.message.reply_text("🍪 Устанавливаю куки...")
+        if not cdp.websocket:
+            await update.message.reply_text("❌ Сначала отправь URL")
+            return
+        result = await cdp.set_cookies(X_COOKIES)
+        if result:
+            await update.message.reply_text(f"✅ Установлено {len(X_COOKIES)} кук")
+        else:
+            await update.message.reply_text("❌ Не удалось установить куки")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session_id = context.user_data.get('session_id')
     if session_id:
         await cdp.close_tab(session_id)
-        await cdp.stop_keep_alive()  # останавливаем пинг
+        await cdp.stop_keep_alive()
         context.user_data.clear()
         await update.message.reply_text("🧹 Сессия очищена")
     else:
@@ -950,25 +714,21 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📖 Доступные команды:\n\n"
         "/start - Начать работу\n"
         "/help - Эта справка\n"
-        "/click <селектор> - Кликнуть по элементу\n"
+        "/click <селектор> - Кликнуть\n"
         "/fill <селектор> <текст> - Заполнить поле\n"
-        "/screenshot - Сделать скриншот\n"
+        "/screenshot - Скриншот\n"
         "/reload - Перезагрузить страницу\n"
-        "/set_cookies - Переустановить куки X.com\n"
+        "/set_cookies - Переустановить куки\n"
         "/clear - Очистить сессию\n\n"
-        "🔹 Просто отправь URL для анализа страницы"
+        "🔹 Просто отправь URL для анализа"
     )
 
-# ==================== ЗАПУСК БОТА ====================
+# ==================== ЗАПУСК ====================
 async def shutdown():
     global app, chrome_manager, cdp
-    
     print("\n🛑 Завершение работы...")
-    
     if cdp:
-        await cdp.stop_keep_alive()
         await cdp.close()
-    
     if app:
         try:
             await app.stop()
@@ -976,23 +736,19 @@ async def shutdown():
             print("✅ Бот остановлен")
         except:
             pass
-    
     if chrome_manager:
         chrome_manager.stop()
-    
     print("👋 Завершено")
 
 async def main_async():
     global app, chrome_manager, cdp
-    
     print("🚀 Запуск бота...")
     print(f"🔗 Chrome: {chrome_manager.ws_endpoint}")
-    print(f"🍪 Загружено {len(X_COOKIES)} кук для X.com")
+    print(f"🍪 Загружено {len(X_COOKIES)} кук")
     print(f"🖼️ Pillow: {'✅ Доступен' if PILLOW_AVAILABLE else '❌ Не установлен'}")
-    print("💓 Авто-пинг для стабильного соединения включён")
+    print("💓 Авто-пинг включён")
     
     app = Application.builder().token(TELEGRAM_TOKEN).build()
-    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("click", click_command))
@@ -1007,16 +763,13 @@ async def main_async():
     for sig in [signal.SIGINT, signal.SIGTERM]:
         loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown()))
     
-    print("✅ Бот запущен и готов к работе!")
-    
+    print("✅ Бот запущен!")
     try:
         await app.initialize()
         await app.start()
         await app.updater.start_polling()
-        
         while True:
             await asyncio.sleep(1)
-            
     except asyncio.CancelledError:
         pass
     finally:
@@ -1024,15 +777,11 @@ async def main_async():
 
 def main():
     global chrome_manager, cdp
-    
     chrome_manager = ChromeManager()
-    
     if not chrome_manager.start():
         print("❌ Не удалось запустить Chrome")
         sys.exit(1)
-    
     cdp = CDPClient(chrome_manager.ws_endpoint)
-    
     try:
         asyncio.run(main_async())
     except KeyboardInterrupt:
