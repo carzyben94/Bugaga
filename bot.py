@@ -327,7 +327,7 @@ class CDPClient:
             
             await self.apply_mask()
             await self.set_cookies(X_COOKIES)
-            await self.navigate("https://google.com")
+            # НЕ ОТКРЫВАЕМ GOOGLE АВТОМАТИЧЕСКИ - ждём команду пользователя
             return True
             
         except Exception as e:
@@ -1006,12 +1006,17 @@ async def execute_single_action(client: CDPClient, action: dict) -> str:
         action["params"] = {"text": action.pop("text")}
     if "answer" in action and "action" not in action:
         action = {"action": "answer", "params": {"text": action.pop("answer")}}
+    
     action_type = action.get("action")
     params = action.get("params", {})
+    
     file_logger.log(f"Выполнение: {action_type}")
+    file_logger.log(f"Параметры: {params}")
+    
     try:
         if action_type == "navigate":
             url = params.get("url", "https://google.com")
+            file_logger.log(f"🌐 Открываю URL: {url}")
             await client.navigate(url)
             title = await client.eval_js("document.title")
             return f"✅ Открыл: {url}\n📄 {title}"
@@ -1176,4 +1181,4 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
-    main() 
+    main()
