@@ -14,12 +14,20 @@ from io import BytesIO
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
+# ==================== Pillow для обработки изображений ====================
+try:
+    from PIL import Image, ImageEnhance
+    PILLOW_AVAILABLE = True
+except ImportError:
+    PILLOW_AVAILABLE = False
+    print("⚠️ Pillow не установлен. Установите: pip install pillow>=11.0.0")
+
 # ==================== КОНФИГУРАЦИЯ ====================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHROME_PATH = "/usr/bin/google-chrome"
 CHROME_PORT = 9222
 
-# ==================== КУКИ ДЛЯ X/TWITTER (как в примере) ====================
+# ==================== КУКИ ДЛЯ X/TWITTER ====================
 X_COOKIES = [
     {
         "domain": ".x.com",
@@ -159,7 +167,6 @@ class ChromeManager:
         self.user_data_dir = None
     
     def _find_chrome(self):
-        """Ищет Chrome в разных местах"""
         paths = [
             "/usr/bin/google-chrome",
             "/usr/bin/chromium",
@@ -186,13 +193,11 @@ class ChromeManager:
         return None
     
     def _prepare_cookies_file(self):
-        """Создаёт временную директорию для профиля"""
         self.user_data_dir = tempfile.mkdtemp(prefix="chrome_profile_")
         print(f"📁 Профиль Chrome: {self.user_data_dir}")
         return self.user_data_dir
     
     def start(self):
-        """Запускает Chrome с CDP"""
         if self.is_running():
             print("✅ Chrome уже запущен")
             self.ws_endpoint = self.get_ws_endpoint()
@@ -232,7 +237,6 @@ class ChromeManager:
                 stdin=subprocess.DEVNULL
             )
             
-            # Ждём запуска
             for _ in range(10):
                 time.sleep(1)
                 if self.is_running():
@@ -264,7 +268,6 @@ class ChromeManager:
             return None
     
     async def set_cookies_after_start(self):
-        """Устанавливает куки как в рабочем примере через Network.setCookies"""
         try:
             print("🍪 Начинаю установку кук...")
             cdp_temp = CDPClient(self.ws_endpoint)
@@ -272,7 +275,6 @@ class ChromeManager:
             
             session_id, _ = await cdp_temp.create_tab()
             
-            # Формируем куки для CDP
             cdp_cookies = []
             for cookie in X_COOKIES:
                 cdp_cookie = {
@@ -287,7 +289,6 @@ class ChromeManager:
                 }
                 cdp_cookies.append(cdp_cookie)
             
-            # Отправляем все куки одним запросом (как в примере)
             result = await cdp_temp.send("Network.setCookies", {
                 "cookies": cdp_cookies
             }, session_id=session_id)
@@ -326,7 +327,7 @@ class CDPClient:
         self.msg_id = 0
         self.targets = {}
         self.session_id = None
-        self.cookies_set = False  # как в примере
+        self.cookies_set = False
     
     async def connect(self):
         if not self.ws_endpoint:
@@ -336,7 +337,7 @@ class CDPClient:
             ping_interval=20,
             ping_timeout=30,
             close_timeout=10,
-            max_size=50 * 1024 * 1024  # как в примере - 50 MB
+            max_size=50 * 1024 * 1024
         )
         print(f"✅ Подключено к Chrome: {self.ws_endpoint}")
     
@@ -360,6 +361,26 @@ class CDPClient:
                     raise Exception(f"CDP Error: {data['error']}")
                 return data
     
+    async def eval_js(self, code, session_id=None):
+        """Выполняет JavaScript и возвращает результат"""
+        try:
+            result = await self.send("Runtime.evaluate", {
+                "expression": code,
+                "returnByValue": True,
+                "awaitPromise": True
+            }, session_id=session_id or self.session_id)
+            
+            if "result" in result:
+                obj = result["result"]
+                if "value" in obj:
+                    return obj["value"]
+                if "result" in obj and "value" in obj["result"]:
+                    return obj["result"]["value"]
+            return None
+        except Exception as e:
+            print(f"❌ eval_js error: {e}")
+            return None
+    
     async def create_tab(self):
         result = await self.send("Target.createTarget", {"url": "about:blank"})
         target_id = result["result"]["targetId"]
@@ -380,7 +401,6 @@ class CDPClient:
         return session_id, target_id
     
     async def set_cookies(self, cookies):
-        """Установка кук через Network.setCookies (как в примере)"""
         try:
             print(f"🍪 Установка {len(cookies)} кук...")
             
@@ -538,12 +558,91 @@ class CDPClient:
         
         return True
     
-    async def screenshot(self, session_id):
-        result = await self.send("Page.captureScreenshot", {
-            "format": "png",
-            "captureBeyondViewport": True
-        }, session_id=session_id)
-        return base64.b64decode(result["result"]["data"])
+    async def screenshot_with_pillow(self, session_id):
+        """Скриншот с обработкой через Pillow"""
+        try:
+            # 1. Проверяем размеры страницы через JS
+            dims = await self.eval_js("""
+                (function() {
+                    const d = document.documentElement;
+                    const b = document.body;
+                    return {
+                        w: Math.max(d.scrollWidth, b.scrollWidth, window.innerWidth) || 1920,
+                        h: Math.max(d.scrollHeight, b.scrollHeight, window.innerHeight) || 1080
+                    };
+                })()
+            """, session_id)
+            
+            width = dims.get('w', 1920) if dims else 1920
+            height = dims.get('h', 1080) if dims else 1080
+            
+            print(f"📐 Размеры страницы: {width}x{height}")
+            
+            # 2. Делаем скриншот
+            result = await self.send("Page.captureScreenshot", {
+                "format": "png",
+                "captureBeyondViewport": True,
+                "fromSurface": True
+            }, session_id=session_id)
+            
+            if "result" not in result or "data" not in result["result"]:
+                return None
+            
+            img_data = base64.b64decode(result["result"]["data"])
+            
+            if len(img_data) < 100:
+                print("❌ Скриншот слишком маленький")
+                return None
+            
+            # 3. Обрабатываем через Pillow
+            if PILLOW_AVAILABLE:
+                try:
+                    img = Image.open(BytesIO(img_data))
+                    w, h = img.size
+                    print(f"📐 Реальный размер: {w}x{h}")
+                    
+                    # Если изображение слишком маленькое - пробуем с clip
+                    if w < 100 or h < 100:
+                        print("⚠️ Изображение слишком маленькое, пробую с clip...")
+                        
+                        result = await self.send("Page.captureScreenshot", {
+                            "format": "png",
+                            "clip": {
+                                "x": 0,
+                                "y": 0,
+                                "width": min(width, 1920),
+                                "height": min(height, 1080),
+                                "scale": 1
+                            }
+                        }, session_id=session_id)
+                        
+                        if "result" in result and "data" in result["result"]:
+                            img_data = base64.b64decode(result["result"]["data"])
+                            img = Image.open(BytesIO(img_data))
+                            w, h = img.size
+                            print(f"📐 Новый размер: {w}x{h}")
+                    
+                    # Сохраняем как JPEG для уменьшения размера
+                    output = BytesIO()
+                    if img.mode in ('RGBA', 'LA', 'P'):
+                        img = img.convert('RGB')
+                    img.save(output, format='JPEG', quality=85)
+                    output.seek(0)
+                    
+                    print(f"✅ Скриншот обработан через Pillow: {w}x{h}")
+                    return output.getvalue()
+                    
+                except Exception as e:
+                    print(f"⚠️ Pillow ошибка: {e}")
+                    # Возвращаем оригинал
+                    return img_data
+            else:
+                # Если Pillow нет - возвращаем оригинал
+                return img_data
+                
+        except Exception as e:
+            print(f"❌ Screenshot error: {e}")
+            return None
     
     async def close_tab(self, session_id):
         if session_id in self.targets:
@@ -557,23 +656,23 @@ class CDPClient:
 
 # ==================== ТЕЛЕГРАМ БОТ ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pillow_status = "✅" if PILLOW_AVAILABLE else "❌"
     await update.message.reply_text(
-        "🤖 Привет! Я бот для автоматизации браузера.\n\n"
-        "📌 Отправь мне URL, и я покажу все элементы.\n"
-        "📌 Используй /click <селектор> для клика.\n"
-        "📌 Используй /fill <селектор> <текст> для заполнения.\n"
-        "📌 Используй /screenshot для скриншота.\n"
-        "🍪 Куки X.com установлены автоматически!"
+        f"🤖 Привет! Я бот для автоматизации браузера.\n\n"
+        f"📌 Отправь мне URL, и я покажу все элементы.\n"
+        f"📌 Используй /click <селектор> для клика.\n"
+        f"📌 Используй /fill <селектор> <текст> для заполнения.\n"
+        f"📌 Используй /screenshot для скриншота.\n"
+        f"🖼️ Pillow: {pillow_status}\n"
+        f"🍪 Куки X.com установлены автоматически!"
     )
 
 async def set_cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ручная установка кук"""
     global cdp
     
     try:
         await update.message.reply_text("🍪 Устанавливаю куки для X.com...")
         
-        # Проверяем соединение
         if not cdp.websocket or not cdp.session_id:
             await update.message.reply_text("❌ Сначала отправь URL для анализа")
             return
@@ -606,7 +705,6 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session_id, target_id = await cdp.create_tab()
         context.user_data['session_id'] = session_id
         
-        # Устанавливаем куки перед навигацией (как в примере)
         await cdp.set_cookies(X_COOKIES)
         
         await cdp.navigate(session_id, url)
@@ -707,14 +805,45 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return
         
         await update.message.reply_text("📸 Делаю скриншот...")
-        image_data = await cdp.screenshot(session_id)
-        await update.message.reply_photo(
-            photo=BytesIO(image_data),
-            caption="📸 Скриншот страницы"
-        )
+        
+        # Используем скриншот с Pillow
+        image_data = await cdp.screenshot_with_pillow(session_id)
+        
+        if image_data:
+            try:
+                # Отправляем как JPEG
+                await update.message.reply_photo(
+                    photo=BytesIO(image_data),
+                    caption="📸 Скриншот страницы"
+                )
+            except Exception as e:
+                if "Photo_invalid_dimensions" in str(e):
+                    await update.message.reply_text(
+                        "❌ Ошибка размеров изображения. Попробуйте:\n"
+                        "1. /reload - перезагрузить страницу\n"
+                        "2. Открыть другую страницу\n"
+                        "3. Проверить что страница загружена"
+                    )
+                else:
+                    await update.message.reply_text(f"❌ Ошибка отправки: {str(e)}")
+        else:
+            await update.message.reply_text("❌ Не удалось сделать скриншот")
         
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+        print(f"Error: {e}")
+
+async def reload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Перезагрузка страницы"""
+    session_id = context.user_data.get('session_id')
+    if not session_id:
+        await update.message.reply_text("❌ Сначала отправь URL для анализа")
+        return
+    
+    await update.message.reply_text("🔄 Перезагружаю страницу...")
+    await cdp.send("Page.reload", {}, session_id=session_id)
+    await asyncio.sleep(2)
+    await update.message.reply_text("✅ Страница перезагружена")
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session_id = context.user_data.get('session_id')
@@ -733,6 +862,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/click <селектор> - Кликнуть по элементу\n"
         "/fill <селектор> <текст> - Заполнить поле\n"
         "/screenshot - Сделать скриншот\n"
+        "/reload - Перезагрузить страницу\n"
         "/set_cookies - Переустановить куки X.com\n"
         "/clear - Очистить сессию\n\n"
         "🔹 Просто отправь URL для анализа страницы"
@@ -740,7 +870,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==================== ЗАПУСК БОТА ====================
 async def shutdown():
-    """Корректное завершение"""
     global app, chrome_manager, cdp
     
     print("\n🛑 Завершение работы...")
@@ -766,12 +895,12 @@ async def shutdown():
     print("👋 Завершено")
 
 async def main_async():
-    """Асинхронный запуск бота"""
     global app, chrome_manager, cdp
     
     print("🚀 Запуск бота...")
     print(f"🔗 Chrome: {chrome_manager.ws_endpoint}")
     print(f"🍪 Загружено {len(X_COOKIES)} кук для X.com")
+    print(f"🖼️ Pillow: {'✅ Доступен' if PILLOW_AVAILABLE else '❌ Не установлен'}")
     
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
@@ -780,6 +909,7 @@ async def main_async():
     app.add_handler(CommandHandler("click", click_command))
     app.add_handler(CommandHandler("fill", fill_command))
     app.add_handler(CommandHandler("screenshot", screenshot_command))
+    app.add_handler(CommandHandler("reload", reload_command))
     app.add_handler(CommandHandler("set_cookies", set_cookies_command))
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
@@ -804,7 +934,6 @@ async def main_async():
         await shutdown()
 
 def main():
-    """Запуск"""
     global chrome_manager, cdp
     
     chrome_manager = ChromeManager()
