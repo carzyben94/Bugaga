@@ -63,15 +63,13 @@ class AgnesAI:
                     "role": "system",
                     "content": """Ты - AI-агент для автоматизации браузера.
 
-ВАЖНО: Даже если страница кажется пустой, это НЕ значит что задача выполнена.
-Ты должен попытаться найти элементы, прокрутить страницу или подождать.
+Ты получаешь полный snapshot DOM-дерева страницы. Анализируй его и принимай решения.
 
 Правила:
-1. Если видишь кнопку с текстом "Обзор", "Войти", "Написать" - нажми её
-2. Если есть поле ввода - напиши в него
-3. Если видишь ссылки - перейди по ним
-4. Если страница пустая - подожди 5 секунд и проверь снова
-5. Отвечай ТОЛЬКО в формате JSON
+1. Если страница пустая (мало элементов) - ответь {"action": "wait", "reason": "жду загрузки"}
+2. Если видишь кнопку с текстом "Обзор", "Войти", "Написать" - нажми её
+3. Если есть поле ввода - напиши в него
+4. Отвечай ТОЛЬКО в формате JSON
 
 Формат ответа:
 {"action": "click|type|scroll|wait|get|done", "selector": "css_selector", "text": "текст", "reason": "почему"}
@@ -79,6 +77,7 @@ class AgnesAI:
 Примеры:
 {"action": "click", "selector": "[data-testid='tweetButton']", "reason": "Нажать кнопку Написать"}
 {"action": "type", "selector": "[data-testid='tweetTextarea_0']", "text": "Привет мир!", "reason": "Написать текст поста"}
+{"action": "wait", "reason": "Страница загружается, жду 5 секунд"}
 {"action": "done", "reason": "Задача выполнена"}"""
                 }
             ]
@@ -90,7 +89,7 @@ class AgnesAI:
             if context:
                 messages.append({
                     "role": "user",
-                    "content": f"Структура страницы:\n{context}\n\nЗадача: {prompt}"
+                    "content": f"Вот полный snapshot DOM-дерева страницы. Проанализируй его и выполни задачу.\n\nЗадача: {prompt}\n\nSnapshot:\n{context}"
                 })
             else:
                 messages.append({
@@ -231,6 +230,7 @@ class BrowserCDP:
         self.current_task = None
         self.current_url = None
         self.action_history = []
+        self.snapshot_history = []
     
     def ensure_browser(self):
         try:
@@ -634,55 +634,92 @@ class BrowserCDP:
                     raise Exception(f"CDP Error [{error_code}]: {error_msg}")
                 return data
     
-    async def navigate(self, url):
-        """Переход на URL с ожиданием элементов X.com"""
-        await self.send("Page.navigate", {"url": url}, session_id=self.session_id)
-        
-        file_logger.log(f"Ожидание загрузки {url}", "INFO")
-        
-        # Ждём появления элементов X.com
-        max_wait = 45
-        start_time = time.time()
-        
-        while time.time() - start_time < max_wait:
-            try:
-                result = await self.send("Runtime.evaluate", {
-                    "expression": """
-                        (function() {
-                            // Ждём появления элементов X.com
-                            const selectors = [
-                                '[data-testid="tweetButton"]',
-                                '[data-testid="AppTabBar_Home_Link"]',
-                                '[data-testid="SearchBox_Search_Input"]',
-                                '[data-testid="AppTabBar_Notifications_Link"]',
-                                'article'
-                            ];
+    async def get_full_snapshot(self, max_depth=4):
+        """Получает полный snapshot DOM-дерева"""
+        try:
+            result = await self.send("Runtime.evaluate", {
+                "expression": f"""
+                    (function() {{
+                        const maxDepth = {max_depth};
+                        
+                        function getNodeTree(node, depth) {{
+                            if (depth > maxDepth) return {{ tag: '...' }};
+                            if (!node || node.nodeType === 8) return null;
                             
-                            for (const selector of selectors) {
-                                if (document.querySelector(selector)) {
-                                    return true;
-                                }
-                            }
-                            return false;
-                        })();
-                    """
-                }, session_id=self.session_id)
-                
-                if result.get("result", {}).get("value") == True:
-                    file_logger.log("✅ Страница загружена (элементы найдены)", "INFO")
-                    await asyncio.sleep(2)
-                    return True
-                
-            except Exception as e:
-                file_logger.log(f"Ошибка проверки: {e}", "DEBUG")
+                            const data = {{
+                                tag: node.tagName ? node.tagName.toLowerCase() : 'text',
+                                type: node.nodeType
+                            }};
+                            
+                            if (node.nodeType === 3) {{
+                                data.text = node.textContent.trim().slice(0, 100);
+                                return data;
+                            }}
+                            
+                            if (node.attributes) {{
+                                data.attrs = {{}};
+                                for (let attr of node.attributes) {{
+                                    if (['id', 'class', 'data-testid', 'role', 'href', 'src', 'type', 'name', 'placeholder', 'aria-label'].includes(attr.name)) {{
+                                        data.attrs[attr.name] = attr.value;
+                                    }}
+                                }}
+                            }}
+                            
+                            if (node.children && node.children.length > 0) {{
+                                const textNodes = [];
+                                for (let child of node.children) {{
+                                    if (child.nodeType === 3) {{
+                                        const text = child.textContent.trim();
+                                        if (text) textNodes.push(text);
+                                    }}
+                                }}
+                                if (textNodes.length > 0) {{
+                                    data.text = textNodes.join(' ').slice(0, 200);
+                                }}
+                            }}
+                            
+                            if (node.children && node.children.length > 0) {{
+                                data.children = [];
+                                for (let child of node.children) {{
+                                    const childData = getNodeTree(child, depth + 1);
+                                    if (childData) data.children.push(childData);
+                                }}
+                                if (data.children.length === 0) delete data.children;
+                            }}
+                            
+                            return data;
+                        }}
+                        
+                        const snapshot = getNodeTree(document, 0);
+                        return JSON.stringify(snapshot);
+                    }})();
+                """
+            }, session_id=self.session_id)
             
-            await asyncio.sleep(0.5)
-        
-        file_logger.log("⚠️ Таймаут загрузки", "WARNING")
-        return False
+            snapshot = result.get("result", {}).get("value", "{}")
+            file_logger.log(f"📸 Snapshot получен: {len(snapshot)} символов", "INFO")
+            
+            # Проверяем наличие контента
+            try:
+                import json
+                data = json.loads(snapshot)
+                if data.get('children'):
+                    count = len(data['children'])
+                    file_logger.log(f"📊 В snapshot {count} элементов", "INFO")
+                else:
+                    file_logger.log("⚠️ Snapshot пустой", "WARNING")
+            except:
+                pass
+            
+            self.snapshot_history.append(snapshot)
+            return snapshot
+            
+        except Exception as e:
+            file_logger.log(f"❌ Ошибка получения snapshot: {e}", "ERROR")
+            return "{}"
     
     async def click(self, selector, timeout=10):
-        file_logger.log(f"Клик на {selector}", "INFO")
+        file_logger.log(f"🖱️ Клик на {selector}", "INFO")
         
         result = await self.send("Runtime.evaluate", {
             "expression": f"""
@@ -704,7 +741,7 @@ class BrowserCDP:
         }, session_id=self.session_id)
         
         if result.get("result", {}).get("value") != True:
-            file_logger.log(f"Элемент {selector} не найден", "WARNING")
+            file_logger.log(f"❌ Элемент {selector} не найден", "WARNING")
             return False
         
         await self.send("Runtime.evaluate", {
@@ -713,10 +750,11 @@ class BrowserCDP:
         }, session_id=self.session_id)
         
         self.action_history.append({"action": "click", "selector": selector, "success": True})
+        file_logger.log(f"✅ Клик на {selector} выполнен", "INFO")
         return True
     
     async def type_text(self, selector, text, timeout=10):
-        file_logger.log(f"Ввод текста в {selector}", "INFO")
+        file_logger.log(f"⌨️ Ввод текста в {selector}", "INFO")
         
         result = await self.send("Runtime.evaluate", {
             "expression": f"""
@@ -738,7 +776,7 @@ class BrowserCDP:
         }, session_id=self.session_id)
         
         if result.get("result", {}).get("value") != True:
-            file_logger.log(f"Элемент {selector} не найден", "WARNING")
+            file_logger.log(f"❌ Элемент {selector} не найден", "WARNING")
             return False
         
         escaped_text = text.replace("'", "\\'").replace('"', '\\"')
@@ -752,128 +790,8 @@ class BrowserCDP:
         }, session_id=self.session_id)
         
         self.action_history.append({"action": "type", "selector": selector, "text": text, "success": True})
+        file_logger.log(f"✅ Текст введён в {selector}", "INFO")
         return True
-    
-    async def get_page_context(self):
-        """Получает контекст страницы с проверкой элементов"""
-        # Ждём появления элементов
-        for attempt in range(10):
-            try:
-                check = await self.send("Runtime.evaluate", {
-                    "expression": """
-                        (function() {
-                            const selectors = [
-                                '[data-testid="tweetButton"]',
-                                '[data-testid="AppTabBar_Home_Link"]',
-                                'article'
-                            ];
-                            for (const selector of selectors) {
-                                if (document.querySelector(selector)) {
-                                    return true;
-                                }
-                            }
-                            return false;
-                        })();
-                    """
-                }, session_id=self.session_id)
-                
-                if check.get("result", {}).get("value") == True:
-                    file_logger.log("✅ Элементы найдены, собираю контекст", "INFO")
-                    break
-            except:
-                pass
-            await asyncio.sleep(1)
-        
-        try:
-            result = await self.send("Runtime.evaluate", {
-                "expression": """
-                    (function() {
-                        function getSelector(el) {
-                            if (el.id) return '#' + el.id;
-                            if (el.getAttribute('data-testid')) {
-                                return `[data-testid="${el.getAttribute('data-testid')}"]`;
-                            }
-                            if (el.className && typeof el.className === 'string') {
-                                const classes = el.className.split(' ').filter(c => c && c.length > 0);
-                                if (classes.length > 0) return '.' + classes.join('.');
-                            }
-                            return el.tagName.toLowerCase();
-                        }
-                        
-                        const data = {
-                            title: document.title || 'No title',
-                            url: window.location.href || 'No URL',
-                            buttons: [],
-                            inputs: [],
-                            links: [],
-                            text: ''
-                        };
-                        
-                        document.querySelectorAll('button, [role="button"], [data-testid*="button"]').forEach(el => {
-                            const text = el.innerText || el.textContent || el.getAttribute('aria-label') || '';
-                            if (text.trim()) {
-                                data.buttons.push({
-                                    text: text.trim().slice(0, 50),
-                                    selector: getSelector(el)
-                                });
-                            }
-                        });
-                        
-                        document.querySelectorAll('input, textarea, [contenteditable="true"]').forEach(el => {
-                            const placeholder = el.placeholder || el.getAttribute('aria-label') || '';
-                            if (placeholder) {
-                                data.inputs.push({
-                                    placeholder: placeholder.slice(0, 50),
-                                    selector: getSelector(el)
-                                });
-                            }
-                        });
-                        
-                        document.querySelectorAll('a[href]').forEach(el => {
-                            const text = el.innerText || el.textContent || '';
-                            if (text.trim() && el.href) {
-                                data.links.push({
-                                    text: text.trim().slice(0, 30),
-                                    href: el.href
-                                });
-                            }
-                        });
-                        
-                        const bodyText = document.body.innerText || '';
-                        data.text = bodyText.slice(0, 1000);
-                        data.total_elements = document.querySelectorAll('*').length;
-                        
-                        return JSON.stringify(data);
-                    })();
-                """
-            }, session_id=self.session_id)
-            
-            context = result.get("result", {}).get("value", "{}")
-            
-            try:
-                parsed = json.loads(context)
-                total = parsed.get('total_elements', 0)
-                buttons = len(parsed.get('buttons', []))
-                inputs = len(parsed.get('inputs', []))
-                
-                file_logger.log(f"📊 Контекст: {total} элементов, {buttons} кнопок, {inputs} полей", "INFO")
-                return context
-                    
-            except Exception as e:
-                file_logger.log(f"Ошибка парсинга контекста: {e}", "WARNING")
-                
-        except Exception as e:
-            file_logger.log(f"Ошибка получения контекста: {e}", "ERROR")
-        
-        return json.dumps({
-            "title": "Страница загружается...",
-            "url": "unknown",
-            "buttons": [],
-            "inputs": [],
-            "links": [],
-            "text": "Страница ещё не загружена. Попробуйте позже.",
-            "total_elements": 0
-        })
     
     async def screenshot(self):
         result = await self.send("Page.captureScreenshot", {
@@ -961,17 +879,53 @@ async def handle_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         browser.current_task = task
         browser.current_url = url
         browser.action_history = []
+        browser.snapshot_history = []
         
-        await browser.navigate(url)
+        # Навигация на URL
+        await browser.send("Page.navigate", {"url": url}, session_id=browser.session_id)
+        file_logger.log(f"🌐 Навигация на {url}", "INFO")
         
-        file_logger.log("Ожидание полной загрузки страницы...", "INFO")
-        await asyncio.sleep(3)
+        # Получаем snapshot с повторными попытками
+        snapshot = None
+        max_attempts = 15
         
-        context_data = await browser.get_page_context()
-        file_logger.log(f"Контекст получен", "INFO")
+        for attempt in range(max_attempts):
+            file_logger.log(f"📸 Попытка {attempt+1} получения snapshot...", "INFO")
+            
+            snapshot = await browser.get_full_snapshot(max_depth=4)
+            
+            try:
+                import json
+                data = json.loads(snapshot)
+                
+                if data.get('children') and len(data['children']) > 0:
+                    count = len(data['children'])
+                    file_logger.log(f"✅ Snapshot содержит {count} элементов", "INFO")
+                    break
+                else:
+                    file_logger.log(f"⏳ Snapshot пустой, ждём 2 секунды...", "INFO")
+                    await asyncio.sleep(2)
+                    
+            except Exception as e:
+                file_logger.log(f"⚠️ Ошибка проверки snapshot: {e}", "WARNING")
+                await asyncio.sleep(1)
+        else:
+            file_logger.log("⚠️ Не удалось получить контент после 15 попыток", "WARNING")
         
+        # Отправляем snapshot в AI
         ai = AgnesAI()
-        ai_response = await ai.ask(task, context_data)
+        prompt = f"""
+        Задача: {task}
+        URL: {url}
+        
+        Вот полная структура страницы (snapshot DOM-дерева):
+        {snapshot if snapshot else "{}"}
+        
+        Проанализируй структуру и скажи, что мне сделать, чтобы выполнить задачу.
+        Если страница пустая - ответь wait.
+        """
+        
+        ai_response = await ai.ask(prompt, snapshot if snapshot else "{}")
         
         results = []
         max_actions = 5
@@ -984,6 +938,19 @@ async def handle_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if ai_response.get("action") == "done":
                 results.append(f"✅ {ai_response.get('reason', 'Задача выполнена!')}")
                 break
+            
+            if ai_response.get("action") == "wait":
+                wait_time = int(ai_response.get('text', '3').replace('сек', '').strip() or '3')
+                results.append(f"⏳ Ожидание {wait_time} секунд...")
+                await asyncio.sleep(wait_time)
+                
+                # Обновляем snapshot после ожидания
+                snapshot = await browser.get_full_snapshot(max_depth=4)
+                ai_response = await ai.ask(
+                    f"Задача: {task}\n\nСтраница после ожидания:\n{snapshot}\n\nЧто дальше?",
+                    snapshot
+                )
+                continue
             
             action = ai_response.get("action")
             selector = ai_response.get("selector")
@@ -998,22 +965,24 @@ async def handle_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif action == "type":
                 success = await browser.type_text(selector, text)
                 results.append(f"⌨️ Ввод '{text}' - {'✅' if success else '❌'}")
-            elif action == "wait":
-                await asyncio.sleep(3)
-                results.append(f"⏳ Ожидание 3 сек - ✅")
             elif action == "scroll":
-                results.append(f"📜 Скролл - ✅")
+                await browser.send("Runtime.evaluate", {
+                    "expression": "window.scrollTo(0, document.body.scrollHeight);"
+                }, session_id=browser.session_id)
+                results.append(f"📜 Скролл вниз - ✅")
             else:
                 results.append(f"❌ Неизвестное действие: {action}")
                 break
             
             await asyncio.sleep(2)
             
-            context_data = await browser.get_page_context()
+            # Получаем свежий snapshot и спрашиваем следующий шаг
+            snapshot = await browser.get_full_snapshot(max_depth=4)
             history_text = "\n".join([f"- {h.get('action')} на {h.get('selector', '')}" for h in browser.action_history[-3:]])
+            
             ai_response = await ai.ask(
-                f"Задача: {task}\n\nЯ выполнил: {action} на {selector}\nРезультат: {success}\n\nИстория действий:\n{history_text}\n\nЧто дальше?",
-                context_data,
+                f"Задача: {task}\n\nЯ выполнил: {action} на {selector}\nРезультат: {success}\n\nИстория действий:\n{history_text}\n\nОбновлённый snapshot:\n{snapshot}\n\nЧто дальше?",
+                snapshot,
                 browser.action_history
             )
         
@@ -1075,43 +1044,74 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ У тебя нет активной сессии. Начни заново: /agent")
         return
     
-    if any(word in text.lower() for word in ['какие кнопки', 'кнопки видишь', 'что видишь', 'что на странице', 'есть ли']):
-        context_data = await browser.get_page_context()
+    if any(word in text.lower() for word in ['какие кнопки', 'кнопки видишь', 'что видишь', 'что на странице', 'есть ли', 'покажи что есть']):
+        snapshot = await browser.get_full_snapshot(max_depth=4)
         try:
-            data = json.loads(context_data)
+            data = json.loads(snapshot)
+            
             response = "🔍 **Что я вижу на странице:**\n\n"
             
-            if data.get('buttons'):
+            # Находим кнопки и поля через рекурсивный обход
+            buttons = []
+            inputs = []
+            
+            def find_elements(node, depth=0):
+                if depth > 5:
+                    return
+                
+                if isinstance(node, dict):
+                    if node.get('tag') in ['button', 'a'] and node.get('attrs', {}).get('role') == 'button':
+                        text = node.get('text', '')[:30]
+                        if text:
+                            buttons.append({
+                                'text': text,
+                                'selector': f"[data-testid='{node.get('attrs', {}).get('data-testid', '')}']" if node.get('attrs', {}).get('data-testid') else None
+                            })
+                    elif node.get('tag') == 'input' or node.get('tag') == 'textarea':
+                        placeholder = node.get('attrs', {}).get('placeholder', '') or node.get('attrs', {}).get('aria-label', '') or ''
+                        if placeholder:
+                            inputs.append({
+                                'placeholder': placeholder[:30],
+                                'selector': f"[data-testid='{node.get('attrs', {}).get('data-testid', '')}']" if node.get('attrs', {}).get('data-testid') else None
+                            })
+                    
+                    if node.get('children'):
+                        for child in node['children']:
+                            if isinstance(child, dict):
+                                find_elements(child, depth + 1)
+            
+            find_elements(data)
+            
+            if buttons:
                 response += "🖱️ **Кнопки:**\n"
-                for i, btn in enumerate(data['buttons'][:20], 1):
-                    response += f"  {i}. {btn['text']} → `{btn['selector']}`\n"
-                if len(data['buttons']) > 20:
-                    response += f"  ... и ещё {len(data['buttons']) - 20} кнопок\n"
+                for i, btn in enumerate(buttons[:15], 1):
+                    selector = btn['selector'] if btn['selector'] else 'не найден'
+                    response += f"  {i}. {btn['text']} → `{selector}`\n"
+                if len(buttons) > 15:
+                    response += f"  ... и ещё {len(buttons) - 15} кнопок\n"
             else:
                 response += "❌ Кнопки не найдены\n"
             
-            if data.get('inputs'):
+            if inputs:
                 response += "\n⌨️ **Поля ввода:**\n"
-                for inp in data['inputs'][:10]:
-                    response += f"  • {inp['placeholder']} → `{inp['selector']}`\n"
+                for inp in inputs[:10]:
+                    selector = inp['selector'] if inp['selector'] else 'не найден'
+                    response += f"  • {inp['placeholder']} → `{selector}`\n"
             
-            if data.get('links'):
-                response += "\n🔗 **Ссылки:**\n"
-                for link in data['links'][:5]:
-                    response += f"  • {link['text']} → {link['href']}\n"
-            
-            if data.get('text'):
-                response += f"\n📝 **Текст:**\n{data['text'][:300]}..."
+            if not buttons and not inputs:
+                response += "\n⚠️ На странице не найдено кнопок или полей ввода.\n"
+                response += "Возможно, страница ещё загружается или это не X.com."
             
             await update.message.reply_text(response[:4000])
             return
-        except:
-            pass
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка анализа страницы: {e}")
+            return
     
     file_logger.log(f"Продолжение сессии агента для {user}: {text}", "INFO")
     
     try:
-        context_data = await browser.get_page_context()
+        snapshot = await browser.get_full_snapshot(max_depth=4)
         
         ai = AgnesAI()
         prompt = f"""
@@ -1121,11 +1121,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         Пользователь говорит: {text}
         
-        Что мне сделать?
-        Ответь в формате JSON.
+        Вот текущий snapshot страницы:
+        {snapshot}
+        
+        Что мне сделать? Ответь в формате JSON.
         """
         
-        ai_response = await ai.ask(prompt, context_data, browser.action_history)
+        ai_response = await ai.ask(prompt, snapshot, browser.action_history)
         
         if ai_response.get("action") == "error":
             await update.message.reply_text(f"❌ Ошибка AI: {ai_response.get('reason')}")
@@ -1136,6 +1138,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             screenshot = await browser.screenshot()
             await update.message.reply_photo(screenshot, caption="📸 Финальный скриншот")
             session['active'] = False
+            return
+        
+        if ai_response.get("action") == "wait":
+            wait_time = int(ai_response.get('text', '3').replace('сек', '').strip() or '3')
+            await update.message.reply_text(f"⏳ Ожидание {wait_time} секунд...")
+            await asyncio.sleep(wait_time)
+            snapshot = await browser.get_full_snapshot(max_depth=4)
+            ai_response = await ai.ask(
+                f"Задача: {session['task']}\n\nСтраница после ожидания:\n{snapshot}\n\nЧто дальше?",
+                snapshot
+            )
+            if ai_response.get("action") == "done":
+                await update.message.reply_text(f"✅ {ai_response.get('reason', 'Задача выполнена!')}")
+                screenshot = await browser.screenshot()
+                await update.message.reply_photo(screenshot, caption="📸 Финальный скриншот")
+                session['active'] = False
             return
         
         action = ai_response.get("action")
@@ -1163,16 +1181,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         screenshot = await browser.screenshot()
         await update.message.reply_photo(screenshot, caption=f"📸 После действия: {action}")
         
-        context_data = await browser.get_page_context()
+        snapshot = await browser.get_full_snapshot(max_depth=4)
         next_prompt = f"""
         Я выполнил: {action} на {selector}
         Результат: {success}
         Задача: {session['task']}
         
+        Обновлённый snapshot:
+        {snapshot}
+        
         Что дальше?
         """
         
-        next_response = await ai.ask(next_prompt, context_data, browser.action_history)
+        next_response = await ai.ask(next_prompt, snapshot, browser.action_history)
         
         if next_response.get("action") == "done":
             await update.message.reply_text(f"✅ {next_response.get('reason', 'Задача выполнена!')}")
@@ -1208,7 +1229,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🤖 **Активная сессия:**\n"
             f"📍 {session['url']}\n"
             f"📝 {session['task']}\n"
-            f"📊 Действий выполнено: {len(browser.action_history)}\n\n"
+            f"📊 Действий выполнено: {len(browser.action_history)}\n"
+            f"📸 Snapshot'ов сохранено: {len(browser.snapshot_history)}\n\n"
             f"💡 Просто напиши что сделать дальше!\n"
             f"💡 Спроси: какие кнопки видишь?\n"
             f"⏹️ /end — завершить сессию"
@@ -1287,6 +1309,7 @@ def main():
     print("🔍 Статус: /status")
     print("⏹️ Завершить сессию: /end")
     print("💡 Спроси у агента: какие кнопки видишь?")
+    print("📸 Агент использует полный snapshot DOM")
     
     app.run_polling()
 
