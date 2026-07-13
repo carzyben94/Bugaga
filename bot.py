@@ -136,14 +136,12 @@ class Memory:
 def parse_command(text):
     """Распознает команды на естественном языке"""
     text_lower = text.lower().strip()
-    text_clean = text_lower
     
     # ====== URL напрямую ======
     if text.startswith(('http://', 'https://')):
         return {'action': 'navigate', 'url': text}
     
     # ====== НАВИГАЦИЯ ======
-    # "зайди на x.com", "открой гугл", "перейди на ютуб"
     nav_patterns = [
         (r'зайди на\s+(.+)', 'зайди на'),
         (r'зайди\s+(.+)', 'зайди'),
@@ -156,46 +154,63 @@ def parse_command(text):
         (r'перейти на\s+(.+)', 'перейти на'),
         (r'загрузи\s+(.+)', 'загрузи'),
         (r'открыть\s+(.+)', 'открыть'),
+        (r'перейти\s+(.+)', 'перейти'),
+        (r'загрузить\s+(.+)', 'загрузить'),
+        (r'сходи на\s+(.+)', 'сходи на'),
+        (r'дай\s+(.+)', 'дай'),
     ]
     
     for pattern, _ in nav_patterns:
         match = re.search(pattern, text_lower)
         if match:
             url = match.group(1).strip()
-            # Если это домен без протокола
             if not url.startswith(('http://', 'https://')):
-                # Убираем пробелы и лишнее
                 url = url.split()[0] if ' ' in url else url
                 url = 'https://' + url
             return {'action': 'navigate', 'url': url}
     
     # ====== ВОЗВРАТ НАЗАД ======
-    if any(word in text_lower for word in ['назад', 'вернись', 'вернуться', 'предыдущий']):
+    if any(word in text_lower for word in ['назад', 'вернись', 'вернуться', 'предыдущий', 'возврат']):
         return {'action': 'back'}
     
     # ====== СКРИНШОТ ======
-    screenshot_keywords = ['скриншот', 'скрин', 'фото', 'сфоткай', 'покажи страницу', 'сделай фото', 'сделай скрин', 'сними']
+    screenshot_keywords = ['скриншот', 'скрин', 'фото', 'сфоткай', 'покажи страницу', 'сделай фото', 
+                          'сделай скрин', 'сними', 'покажи скрин', 'сфотографируй', 'снимок']
     if any(keyword in text_lower for keyword in screenshot_keywords):
         return {'action': 'screenshot'}
     
-    # ====== ВОПРОСЫ ======
-    question_keywords = ['какие', 'что', 'есть ли', 'где', 'когда', 'почему', 'сколько', 'какой', 'какая', 'какое']
+    # ====== ВОПРОСЫ (РАСШИРЕННЫЕ) ======
+    question_keywords = [
+        'какие', 'что', 'есть ли', 'где', 'когда', 'почему', 'сколько',
+        'какой', 'какая', 'какое', 'покажи', 'найди', 'расскажи', 'опиши',
+        'поля', 'формы', 'инпуты', 'элементы', 'кнопки', 'ссылки', 'меню',
+        'картинки', 'видео', 'заголовки', 'списки', 'таблицы', 'параграфы'
+    ]
+    
     if any(keyword in text_lower for keyword in question_keywords):
         return {'action': 'ask', 'question': text}
     
+    if '?' in text:
+        return {'action': 'ask', 'question': text}
+    
     # ====== ИСТОРИЯ ======
-    history_keywords = ['история', 'что было', 'что я спрашивал', 'помнишь', 'покажи историю', 'список']
+    history_keywords = ['история', 'что было', 'что я спрашивал', 'помнишь', 'покажи историю', 
+                       'список', 'действия', 'что делал']
     if any(keyword in text_lower for keyword in history_keywords):
         return {'action': 'history'}
     
     # ====== ОЧИСТКА ======
-    clear_keywords = ['очисти', 'забудь', 'сбрось', 'удали память', 'стереть', 'очистить']
+    clear_keywords = ['очисти', 'забудь', 'сбрось', 'удали память', 'стереть', 'очистить', 'сбросить']
     if any(keyword in text_lower for keyword in clear_keywords):
         return {'action': 'clear'}
     
     # ====== ПРИВЕТСТВИЕ ======
-    if any(word in text_lower for word in ['привет', 'здравствуй', 'салам', 'hello', 'hi']):
+    if any(word in text_lower for word in ['привет', 'здравствуй', 'салам', 'hello', 'hi', 'хай', 'здарова']):
         return {'action': 'greeting'}
+    
+    # ====== ПОМОЩЬ ======
+    if any(word in text_lower for word in ['помоги', 'что умеешь', 'как работать', 'справка', 'help']):
+        return {'action': 'help'}
     
     return {'action': 'unknown'}
 
@@ -208,7 +223,7 @@ def ask_ai(prompt, context=None, memory=None):
         
         messages = []
         
-        system_prompt = "Ты - умный AI-ассистент для анализа веб-страниц. Отвечай кратко, понятно и по делу."
+        system_prompt = "Ты - умный AI-ассистент для анализа веб-страниц. Отвечай кратко, понятно и по делу. Если спрашивают про элементы, перечисли их с пояснениями."
         
         if memory:
             memory_context = memory.get_context_for_ai()
@@ -231,7 +246,7 @@ def ask_ai(prompt, context=None, memory=None):
             "model": AI_MODEL,
             "messages": messages,
             "temperature": 0.7,
-            "max_tokens": 1000
+            "max_tokens": 800
         }
         
         file_logger.log(f"🤖 Отправляю запрос к Agnes AI...", "INFO")
@@ -845,7 +860,8 @@ class BrowserCDP:
                         const important = ['button', 'a', 'input', 'textarea', 'select', 'form',
                                           'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'img', 'video',
                                           'iframe', 'div', 'span', 'section', 'article', 'nav',
-                                          'header', 'footer', 'main', 'aside', 'ul', 'ol', 'li'];
+                                          'header', 'footer', 'main', 'aside', 'ul', 'ol', 'li',
+                                          'table', 'tr', 'td'];
                         
                         if (important.includes(tag) || isInteractive || attrs['data-testid'] || attrs['aria-label']) {
                             result.push({
@@ -977,10 +993,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🗣️ Говори со мной как с человеком:\n"
         "• зайди на google.com\n"
         "• какие кнопки видишь?\n"
+        "• какие поля ввода?\n"
         "• сделай скриншот\n"
         "• вернись назад\n"
         "• покажи историю\n\n"
-        "📁 Команды: /log, /clear\n"
+        "📁 Команды: /log\n"
         "🕵️ Маскировка: ВСЕГДА ВКЛЮЧЕНА"
     )
 
@@ -1007,6 +1024,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• какие кнопки видишь?\n"
             "• сделай скриншот\n"
             "• вернись назад"
+        )
+        return
+    
+    # ====== ПОМОЩЬ ======
+    if command['action'] == 'help':
+        await update.message.reply_text(
+            "🤖 **Что я умею:**\n\n"
+            "🌐 **Навигация:**\n"
+            "• зайди на google.com\n"
+            "• открой ютуб\n"
+            "• перейди на x.com\n\n"
+            
+            "❓ **Вопросы:**\n"
+            "• какие кнопки видишь?\n"
+            "• какие поля ввода?\n"
+            "• есть ли форма входа?\n"
+            "• что в меню?\n"
+            "• найди ссылку на вход\n\n"
+            
+            "📸 **Действия:**\n"
+            "• сделай скриншот\n"
+            "• вернись назад\n"
+            "• покажи историю\n"
+            "• очисти память\n\n"
+            
+            "🕵️ Маскировка: ВСЕГДА ВКЛЮЧЕНА"
         )
         return
     
@@ -1038,9 +1081,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ====== ВОЗВРАТ НАЗАД ======
     if command['action'] == 'back':
-        last_url = memory.get_last_url(1)  # Предпоследний
+        last_url = memory.get_last_url(1)
         if last_url:
-            # Возвращаемся
             await update.message.reply_text(f"🔄 Возвращаюсь на {last_url}...")
             
             try:
@@ -1078,7 +1120,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         memory.add_action("screenshot", {"url": memory.current_url})
                         return
             
-                # Если нет активного браузера, перезагружаем
                 await update.message.reply_text("🔄 Перезагружаю страницу...")
                 browser = BrowserCDP()
                 screenshot = await browser.navigate_and_screenshot(memory.current_url)
@@ -1108,12 +1149,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🤖 Анализирую страницу...")
         
         try:
-            # Формируем контекст
             snapshot = memory.current_snapshot
-            elements = snapshot.get('elements', [])[:30]
+            elements = snapshot.get('elements', [])[:50]
             
             elements_text = []
-            for el in elements[:20]:
+            for el in elements[:30]:
                 tag = el.get('tag', 'unknown')
                 text = el.get('text', '').strip()[:100]
                 attrs = el.get('attrs', {})
@@ -1125,8 +1165,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     element_desc += f" — «{text}»"
                 if attrs.get('id'):
                     element_desc += f" (id: {attrs['id']})"
+                if attrs.get('class'):
+                    element_desc += f" (class: {attrs['class'][:30]})"
                 if attrs.get('href'):
                     element_desc += f" (ссылка: {attrs['href'][:50]})"
+                if attrs.get('type'):
+                    element_desc += f" (type: {attrs['type']})"
+                if attrs.get('placeholder'):
+                    element_desc += f" (placeholder: {attrs['placeholder']})"
+                if attrs.get('role'):
+                    element_desc += f" (role: {attrs['role']})"
                 
                 elements_text.append(element_desc)
             
@@ -1148,7 +1196,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 1. Отвечай кратко и по делу
 2. Ссылайся на конкретные элементы (кнопки, ссылки, поля)
 3. Если элемент не найден — скажи об этом
-4. Предложи действия, если нужно
+4. Перечисли все найденные элементы с пояснениями
+5. Если спрашивают про поля — покажи все input, textarea, select
+6. Если спрашивают про кнопки — покажи все button и a с role=button
 """
             
             answer = ask_ai(prompt, context_text, memory)
@@ -1184,15 +1234,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # ====== НЕИЗВЕСТНО ======
+    file_logger.log(f"⚠️ Неизвестная команда: {text[:50]}", "WARNING")
     await update.message.reply_text(
         "❌ Не понял команду\n\n"
         "Вот что я умею:\n"
         "• зайди на google.com\n"
         "• какие кнопки видишь?\n"
+        "• какие поля ввода?\n"
         "• сделай скриншот\n"
         "• вернись назад\n"
         "• покажи историю\n"
-        "• очисти память"
+        "• /start — справка"
     )
 
 async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
