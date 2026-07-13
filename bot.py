@@ -231,6 +231,8 @@ class BrowserCDP:
         self.current_url = None
         self.action_history = []
         self.snapshot_history = []
+        self.load_event = asyncio.Event()
+        self._listener_task = None
     
     def ensure_browser(self):
         try:
@@ -269,9 +271,14 @@ class BrowserCDP:
         self.session_id = attach_result["result"]["sessionId"]
         file_logger.log("Прикреплен к вкладке", "INFO")
         
+        # Включаем Page и Runtime домены
         await self.send("Page.enable", session_id=self.session_id)
         await self.send("Runtime.enable", session_id=self.session_id)
         await self.send("Network.enable", session_id=self.session_id)
+        
+        # Запускаем слушатель событий
+        self.load_event.clear()
+        self._listener_task = asyncio.create_task(self._listen_events())
         
         if self.cookies:
             await self.set_cookies_global(self.cookies)
@@ -280,6 +287,49 @@ class BrowserCDP:
         await asyncio.sleep(2)
         
         await self.apply_full_mask()
+    
+    async def _listen_events(self):
+        """Слушает события от браузера"""
+        try:
+            while True:
+                response = await self.ws.recv()
+                data = json.loads(response)
+                
+                # Проверяем событие загрузки
+                if data.get("method") == "Page.loadEventFired":
+                    file_logger.log("✅ Событие Page.loadEventFired получено", "INFO")
+                    self.load_event.set()
+                
+                # Логируем другие события для отладки
+                elif data.get("method") and data["method"].startswith("Page."):
+                    file_logger.log(f"📡 Событие: {data['method']}", "DEBUG")
+                    
+        except websockets.exceptions.ConnectionClosed:
+            file_logger.log("WebSocket соединение закрыто", "WARNING")
+        except Exception as e:
+            file_logger.log(f"Ошибка в слушателе событий: {e}", "ERROR")
+    
+    async def navigate_and_wait(self, url, timeout=30):
+        """Навигация с ожиданием Page.loadEventFired"""
+        # Сбрасываем событие
+        self.load_event.clear()
+        
+        # Отправляем команду навигации
+        await self.send("Page.navigate", {"url": url}, session_id=self.session_id)
+        file_logger.log(f"🌐 Навигация на {url}", "INFO")
+        
+        # Ждём событие загрузки
+        try:
+            await asyncio.wait_for(self.load_event.wait(), timeout=timeout)
+            file_logger.log("✅ Страница загружена (Page.loadEventFired)", "INFO")
+            
+            # Дополнительная задержка для динамического контента
+            await asyncio.sleep(2)
+            return True
+            
+        except asyncio.TimeoutError:
+            file_logger.log(f"⏰ Таймаут ожидания загрузки страницы ({timeout}с)", "WARNING")
+            return False
     
     async def set_cookies_global(self, cookies):
         try:
@@ -802,6 +852,8 @@ class BrowserCDP:
         return base64.b64decode(result["result"]["data"])
     
     async def close(self):
+        if self._listener_task:
+            self._listener_task.cancel()
         try:
             await self.send("Target.closeTarget", {"targetId": self.target_id})
         except:
@@ -879,38 +931,29 @@ async def handle_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         browser.current_task = task
         browser.current_url = url
         browser.action_history = []
-        browser.snapshot_history = []
+        browser.socket_url = url
+        browser.navigation_error = None
         
-        # Навигация на URL
-        await browser.send("Page.navigate", {"url": url}, session_id=browser.session_id)
-        file_logger.log(f"🌐 Навигация на {url}", "INFO")
+        # Навигация с ожиданием Page.loadEventFired
+        loaded = await browser.navigate_and_wait(url, timeout=45)
         
-        # Получаем snapshot с повторными попытками
-        snapshot = None
-        max_attempts = 15
+        if not loaded:
+            file_logger.log("⚠️ Страница не загрузилась, пробуем получить snapshot", "WARNING")
         
-        for attempt in range(max_attempts):
-            file_logger.log(f"📸 Попытка {attempt+1} получения snapshot...", "INFO")
-            
-            snapshot = await browser.get_full_snapshot(max_depth=4)
-            
-            try:
-                import json
-                data = json.loads(snapshot)
-                
-                if data.get('children') and len(data['children']) > 0:
-                    count = len(data['children'])
-                    file_logger.log(f"✅ Snapshot содержит {count} элементов", "INFO")
-                    break
-                else:
-                    file_logger.log(f"⏳ Snapshot пустой, ждём 2 секунды...", "INFO")
-                    await asyncio.sleep(2)
-                    
-            except Exception as e:
-                file_logger.log(f"⚠️ Ошибка проверки snapshot: {e}", "WARNING")
-                await asyncio.sleep(1)
-        else:
-            file_logger.log("⚠️ Не удалось получить контент после 15 попыток", "WARNING")
+        # Получаем snapshot (уже после загрузки или таймаута)
+        snapshot = await browser.get_full_snapshot(max_depth=4)
+        
+        # Проверяем, есть ли контент
+        import json
+        try:
+            data = json.loads(snapshot)
+            has_content = data.get('children') and len(data['children']) > 0
+            if has_content:
+                file_logger.log("✅ Snapshot содержит контент", "INFO")
+            else:
+                file_logger.log("⚠️ Snapshot пустой даже после загрузки", "WARNING")
+        except:
+            pass
         
         # Отправляем snapshot в AI
         ai = AgnesAI()
@@ -944,7 +987,6 @@ async def handle_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 results.append(f"⏳ Ожидание {wait_time} секунд...")
                 await asyncio.sleep(wait_time)
                 
-                # Обновляем snapshot после ожидания
                 snapshot = await browser.get_full_snapshot(max_depth=4)
                 ai_response = await ai.ask(
                     f"Задача: {task}\n\nСтраница после ожидания:\n{snapshot}\n\nЧто дальше?",
@@ -976,7 +1018,6 @@ async def handle_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             await asyncio.sleep(2)
             
-            # Получаем свежий snapshot и спрашиваем следующий шаг
             snapshot = await browser.get_full_snapshot(max_depth=4)
             history_text = "\n".join([f"- {h.get('action')} на {h.get('selector', '')}" for h in browser.action_history[-3:]])
             
@@ -1051,7 +1092,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             response = "🔍 **Что я вижу на странице:**\n\n"
             
-            # Находим кнопки и поля через рекурсивный обход
             buttons = []
             inputs = []
             
@@ -1310,6 +1350,7 @@ def main():
     print("⏹️ Завершить сессию: /end")
     print("💡 Спроси у агента: какие кнопки видишь?")
     print("📸 Агент использует полный snapshot DOM")
+    print("⏳ Ожидание Page.loadEventFired вместо sleep")
     
     app.run_polling()
 
