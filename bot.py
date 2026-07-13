@@ -60,22 +60,29 @@ class BrowserCDP:
                 return False
     
     async def connect(self):
-        """Подключение к браузеру через WebSocket (асинхронно)"""
+        """Подключение к конкретной вкладке браузера через WebSocket"""
         if not self.ensure_browser():
             raise Exception("Chrome не доступен")
         
-        resp = requests.get(f"http://localhost:{CDP_PORT}/json/version")
-        ws_url = resp.json()["webSocketDebuggerUrl"]
+        # Получаем список вкладок, а не версию браузера
+        resp = requests.get(f"http://localhost:{CDP_PORT}/json/list")
+        targets = resp.json()
+        
+        # Находим первую страницу (type = "page")
+        ws_url = None
+        for target in targets:
+            if target.get("type") == "page":
+                ws_url = target.get("webSocketDebuggerUrl")
+                file_logger.log(f"Найдена вкладка: {target.get('url', 'unknown')}", "INFO")
+                break
+        
+        if not ws_url:
+            raise Exception("Не найдена активная вкладка")
         
         self.ws = await websockets.connect(ws_url)
-        file_logger.log("Подключен к Chrome CDP", "INFO")
+        file_logger.log("Подключен к Chrome CDP (вкладка)", "INFO")
         
-        # Проверяем соединение
-        version = await self.send("Browser.getVersion")
-        browser_name = version.get('result', {}).get('product', 'Unknown')
-        file_logger.log(f"Браузер: {browser_name}", "INFO")
-        
-        # Активируем домены
+        # Активируем домены после подключения к вкладке
         await self.send("Page.enable")
         await self.send("Runtime.enable")
         await self.send("Network.enable")
@@ -247,6 +254,7 @@ def main():
     
     print("🚀 Бот запущен! Логи пишутся в bot_logs.txt")
     print("📁 Команды: /start, /log")
+    
     app.run_polling()
 
 if __name__ == "__main__":
