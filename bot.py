@@ -19,7 +19,7 @@ CDP_PORT = 9222
 
 # ---------- AGNES AI API ----------
 AGNES_API_KEY = os.getenv("AGNES_API_KEY", "ваш_api_ключ")
-AGNES_API_URL = "https://apihub.agnes-ai.com/v1/chat/completions"  # Исправленный URL
+AGNES_API_URL = "https://apihub.agnes-ai.com/v1/chat/completions"
 
 # ---------- КУКИ ----------
 COOKIES = [
@@ -78,12 +78,10 @@ class AgnesAI:
                 }
             ]
             
-            # Добавляем историю если есть
             if history:
-                for h in history[-5:]:  # последние 5 действий
+                for h in history[-5:]:
                     messages.append({"role": "assistant", "content": json.dumps(h)})
             
-            # Добавляем контекст страницы
             if context:
                 messages.append({
                     "role": "user",
@@ -665,7 +663,6 @@ class BrowserCDP:
             "expression": f"document.querySelector('{selector}').click();"
         }, session_id=self.session_id)
         
-        # Добавляем в историю
         self.action_history.append({"action": "click", "selector": selector, "success": True})
         return True
     
@@ -813,7 +810,6 @@ async def handle_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Ищем URL среди аргументов
     url = None
     task_parts = []
     
@@ -853,19 +849,15 @@ async def handle_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         browser = BrowserCDP()
         await browser.connect()
         
-        # Сохраняем сессию
         browser.agent_active = True
         browser.current_task = task
         browser.current_url = url
         browser.action_history = []
         
-        # Переходим на URL
         await browser.navigate(url)
         
-        # Получаем контекст
         context_data = await browser.get_page_context()
         
-        # Спрашиваем AI
         ai = AgnesAI()
         ai_response = await ai.ask(task, context_data)
         
@@ -905,7 +897,6 @@ async def handle_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             await asyncio.sleep(2)
             
-            # Следующий шаг
             context_data = await browser.get_page_context()
             history_text = "\n".join([f"- {h.get('action')} на {h.get('selector', '')}" for h in browser.action_history[-3:]])
             ai_response = await ai.ask(
@@ -914,7 +905,6 @@ async def handle_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 browser.action_history
             )
         
-        # Сохраняем сессию в user_data
         context.user_data['agent_session'] = {
             'browser': browser,
             'url': url,
@@ -922,10 +912,8 @@ async def handle_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'active': True
         }
         
-        # Скриншот
         screenshot = await browser.screenshot()
         
-        # Отправляем результат
         caption = f"🤖 **Задача выполнена!**\n📍 {url}\n📝 {task}\n\n📋 **Действия:**\n" + "\n".join(results)
         
         await update.message.reply_photo(screenshot, caption=caption[:1024])
@@ -934,7 +922,7 @@ async def handle_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "💡 Теперь ты можешь просто писать команды, и агент продолжит работу:\n"
             "• Нажми на кнопку Обзор\n"
-            • Напиши привет\n"
+            "• Напиши привет\n"
             "• Сделай скриншот"
         )
         
@@ -948,11 +936,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user.first_name
     text = update.message.text.strip()
     
-    # Проверяем, есть ли активная сессия агента
     if not context.user_data.get('agent_session'):
-        # Если нет сессии, но сообщение похоже на URL - запускаем агента
         if text.startswith(('http://', 'https://')) or '.' in text:
-            # Перенаправляем в агент
             context.args = text.split()
             await handle_agent(update, context)
             return
@@ -974,10 +959,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_logger.log(f"Продолжение сессии агента для {user}: {text}", "INFO")
     
     try:
-        # Получаем контекст страницы
         context_data = await browser.get_page_context()
         
-        # Отправляем в AI
         ai = AgnesAI()
         prompt = f"""
         Ты уже на странице {session['url']}
@@ -998,7 +981,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if ai_response.get("action") == "done":
             await update.message.reply_text(f"✅ {ai_response.get('reason', 'Задача выполнена!')}")
-            # Делаем финальный скриншот
             screenshot = await browser.screenshot()
             await update.message.reply_photo(screenshot, caption="📸 Финальный скриншот")
             session['active'] = False
@@ -1026,11 +1008,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Неизвестное действие: {action}")
             return
         
-        # Делаем скриншот после действия
         screenshot = await browser.screenshot()
         await update.message.reply_photo(screenshot, caption=f"📸 После действия: {action}")
         
-        # Спрашиваем что дальше
         context_data = await browser.get_page_context()
         next_prompt = f"""
         Я выполнил: {action} на {selector}
