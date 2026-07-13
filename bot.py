@@ -34,6 +34,7 @@ class BrowserCDP:
         self.ws = None
         self.msg_id = 0
         self.session_id = None
+        self.target_id = None  # ← сохраняем target_id для закрытия
     
     def ensure_browser(self):
         """Проверяет и запускает Chrome если не запущен"""
@@ -74,12 +75,12 @@ class BrowserCDP:
         
         # Создаём новую вкладку
         result = await self.send("Target.createTarget", {"url": "about:blank"})
-        target_id = result["result"]["targetId"]
-        file_logger.log(f"Создана вкладка: {target_id}", "INFO")
+        self.target_id = result["result"]["targetId"]  # ← сохраняем
+        file_logger.log(f"Создана вкладка: {self.target_id}", "INFO")
         
         # Прикрепляемся к вкладке
         attach_result = await self.send("Target.attachToTarget", {
-            "targetId": target_id,
+            "targetId": self.target_id,
             "flatten": True
         })
         self.session_id = attach_result["result"]["sessionId"]
@@ -100,18 +101,15 @@ class BrowserCDP:
             "params": params or {}
         }
         
-        # Если указана сессия, добавляем её
         if session_id:
             msg["sessionId"] = session_id
         
         await self.ws.send(json.dumps(msg))
         
-        # Ждём ответ
         while True:
             response = await self.ws.recv()
             data = json.loads(response)
             
-            # Проверяем, что это ответ на нашу команду
             if data.get("id") == self.msg_id:
                 if "error" in data:
                     error_msg = data["error"].get("message", "Unknown CDP error")
@@ -148,7 +146,7 @@ class BrowserCDP:
         # Скриншот через сессию
         result = await self.send("Page.captureScreenshot", {
             "format": "png",
-            "captureBeyondViewport": True
+            "captureBeyondViewport": True  # ← полностраничный скриншот
         }, session_id=self.session_id)
         
         if "result" not in result or "data" not in result["result"]:
@@ -158,7 +156,7 @@ class BrowserCDP:
         file_logger.log(f"Скриншот создан для {url}", "INFO")
         
         # Закрываем вкладку
-        await self.send("Target.closeTarget", {"targetId": target_id})
+        await self.send("Target.closeTarget", {"targetId": self.target_id})
         await self.ws.close()
         
         return base64.b64decode(result["result"]["data"])
