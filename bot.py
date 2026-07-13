@@ -39,88 +39,84 @@ def get_random_window_position():
         "height": random.randint(800, 1080)
     }
 
-class BrowserMask:
-    """Настройки маскировки браузера"""
+def get_random_user_agent():
+    """Генерирует реалистичный User-Agent"""
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
+    ]
+    return random.choice(user_agents)
+
+def get_launch_args():
+    """Возвращает аргументы запуска Chrome с маскировкой"""
+    window = get_random_window_position()
     
-    @staticmethod
-    def get_launch_args():
-        """Возвращает аргументы запуска Chrome с маскировкой"""
-        window = get_random_window_position()
+    args = [
+        CHROME_PATH,
+        "--headless=new",
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--disable-software-rasterizer",
         
-        args = [
-            CHROME_PATH,
-            "--headless=new",  # Новый headless режим (сложнее обнаружить)
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--disable-software-rasterizer",
-            
-            # Скрытие отпечатков GPU/WebGL
-            "--use-gl=swiftshader",
-            "--disable-reading-from-canvas",
-            "--disable-features=AudioServiceOutOfProcess",
-            "--disable-accelerated-2d-canvas",
-            "--disable-accelerated-video-decode",
-            
-            # Безопасность и скрытие автоматизации
-            "--disable-blink-features=AutomationControlled",  # Ключевой флаг!
-            "--disable-features=IsolateOrigins,site-per-process",
-            "--disable-site-isolation-trials",
-            "--disable-webgl",  # Скрываем GPU
-            
-            # Скрываем автоматизацию
-            "--disable-automation",
-            "--disable-default-apps",
-            "--disable-extensions",
-            "--disable-component-extensions-with-background-pages",
-            "--disable-client-side-phishing-detection",
-            "--disable-crash-reporter",
-            "--disable-component-update",
-            "--disable-logging",
-            "--disable-prompt-on-repost",
-            "--disable-sync",
-            
-            # Настройки окна
-            f"--window-position={window['left']},{window['top']}",
-            f"--window-size={window['width']},{window['height']}",
-            
-            # Дополнительно
-            "--no-default-browser-check",
-            "--no-first-run",
-            "--force-color-profile=srgb",
-            "--metrics-recording-only",
-            "--password-store=basic",
-            "--use-mock-keychain",
-            "--export-tagged-pdf",
-            "--disable-background-networking",
-            "--disable-background-timer-throttling",
-            "--disable-backgrounding-occluded-windows",
-            "--disable-breakpad",
-            "--disable-ipc-flooding-protection",
-            "--disable-renderer-backgrounding",
-            
-            # Убираем следы headless
-            "--enable-features=NetworkService,NetworkServiceInProcess",
-            
-            # User-Agent подмена
-            f"--user-agent={self.get_random_user_agent()}",
-            
-            f"--remote-debugging-port={CDP_PORT}"
-        ]
+        # Скрытие отпечатков GPU/WebGL
+        "--use-gl=swiftshader",
+        "--disable-reading-from-canvas",
+        "--disable-features=AudioServiceOutOfProcess",
+        "--disable-accelerated-2d-canvas",
+        "--disable-accelerated-video-decode",
         
-        return args
+        # Безопасность и скрытие автоматизации
+        "--disable-blink-features=AutomationControlled",
+        "--disable-features=IsolateOrigins,site-per-process",
+        "--disable-site-isolation-trials",
+        "--disable-webgl",
+        
+        # Скрываем автоматизацию
+        "--disable-automation",
+        "--disable-default-apps",
+        "--disable-extensions",
+        "--disable-component-extensions-with-background-pages",
+        "--disable-client-side-phishing-detection",
+        "--disable-crash-reporter",
+        "--disable-component-update",
+        "--disable-logging",
+        "--disable-prompt-on-repost",
+        "--disable-sync",
+        
+        # Настройки окна
+        f"--window-position={window['left']},{window['top']}",
+        f"--window-size={window['width']},{window['height']}",
+        
+        # Дополнительно
+        "--no-default-browser-check",
+        "--no-first-run",
+        "--force-color-profile=srgb",
+        "--metrics-recording-only",
+        "--password-store=basic",
+        "--use-mock-keychain",
+        "--export-tagged-pdf",
+        "--disable-background-networking",
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-breakpad",
+        "--disable-ipc-flooding-protection",
+        "--disable-renderer-backgrounding",
+        
+        # Убираем следы headless
+        "--enable-features=NetworkService,NetworkServiceInProcess",
+        
+        # User-Agent подмена
+        f"--user-agent={get_random_user_agent()}",
+        
+        f"--remote-debugging-port={CDP_PORT}"
+    ]
     
-    @staticmethod
-    def get_random_user_agent():
-        """Генерирует реалистичный User-Agent"""
-        user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
-        ]
-        return random.choice(user_agents)
+    return args
 
 # ---------- БРАУЗЕР (АСИНХРОННЫЙ) ----------
 class BrowserCDP:
@@ -129,7 +125,6 @@ class BrowserCDP:
         self.msg_id = 0
         self.session_id = None
         self.target_id = None
-        self.mask = BrowserMask()
     
     def ensure_browser(self):
         """Проверяет и запускает Chrome с маскировкой если не запущен"""
@@ -140,7 +135,7 @@ class BrowserCDP:
         except:
             file_logger.log("Запускаю Chrome с маскировкой...", "INFO")
             try:
-                args = self.mask.get_launch_args()
+                args = get_launch_args()
                 file_logger.log(f"Аргументы Chrome: {' '.join(args[:5])}...", "DEBUG")
                 
                 subprocess.Popen(
@@ -149,7 +144,7 @@ class BrowserCDP:
                     stderr=subprocess.DEVNULL,
                     env={**os.environ, "LANG": "en_US.UTF-8"}
                 )
-                time.sleep(5)  # Даём время на запуск с маскировкой
+                time.sleep(5)
                 file_logger.log("Chrome запущен успешно с маскировкой", "INFO")
                 return True
             except Exception as e:
@@ -161,14 +156,13 @@ class BrowserCDP:
         if not self.ensure_browser():
             raise Exception("Chrome не доступен")
         
-        # Подключаемся к браузеру
         resp = requests.get(f"http://localhost:{CDP_PORT}/json/version")
         ws_url = resp.json()["webSocketDebuggerUrl"]
         
         self.ws = await websockets.connect(ws_url)
         file_logger.log("Подключен к браузеру", "INFO")
         
-        # Устанавливаем настройки эмуляции (маскировка)
+        # Устанавливаем настройки эмуляции
         await self.set_emulation_settings()
         
         # Создаём новую вкладку
@@ -182,15 +176,15 @@ class BrowserCDP:
             "flatten": True
         })
         self.session_id = attach_result["result"]["sessionId"]
-        file_logger.log(f"Прикреплен к вкладке", "INFO")
+        file_logger.log("Прикреплен к вкладке", "INFO")
         
-        # Активируем домены через сессию
+        # Активируем домены
         await self.send("Page.enable", session_id=self.session_id)
         await self.send("Runtime.enable", session_id=self.session_id)
         await self.send("Network.enable", session_id=self.session_id)
         file_logger.log("Домены активированы", "INFO")
         
-        # Скрываем WebDriver (маскировка)
+        # Скрываем WebDriver
         await self.send("Runtime.evaluate", {
             "expression": """
                 Object.defineProperty(navigator, 'webdriver', {
@@ -215,22 +209,25 @@ class BrowserCDP:
     
     async def set_emulation_settings(self):
         """Устанавливает настройки эмуляции для маскировки"""
-        # Эмуляция устройства (реалистичные параметры)
-        await self.send("Emulation.setDeviceMetricsOverride", {
-            "width": random.randint(1200, 1920),
-            "height": random.randint(800, 1080),
-            "deviceScaleFactor": 1,
-            "mobile": False,
-            "scale": 1
-        })
-        
-        # Эмуляция геолокации (США)
-        await self.send("Emulation.setGeolocationOverride", {
-            "latitude": 37.7749 + random.uniform(-1, 1),
-            "longitude": -122.4194 + random.uniform(-1, 1),
-            "accuracy": 100
-        })
-        file_logger.log("Настройки эмуляции установлены", "INFO")
+        try:
+            # Эмуляция устройства
+            await self.send("Emulation.setDeviceMetricsOverride", {
+                "width": random.randint(1200, 1920),
+                "height": random.randint(800, 1080),
+                "deviceScaleFactor": 1,
+                "mobile": False,
+                "scale": 1
+            })
+            
+            # Эмуляция геолокации (США)
+            await self.send("Emulation.setGeolocationOverride", {
+                "latitude": 37.7749 + random.uniform(-1, 1),
+                "longitude": -122.4194 + random.uniform(-1, 1),
+                "accuracy": 100
+            })
+            file_logger.log("Настройки эмуляции установлены", "INFO")
+        except Exception as e:
+            file_logger.log(f"Ошибка при установке эмуляции: {e}", "WARNING")
     
     async def send(self, method, params=None, session_id=None):
         """Отправка CDP команды с поддержкой сессий"""
@@ -262,11 +259,11 @@ class BrowserCDP:
         file_logger.log(f"Навигация на {url}", "INFO")
         await self.connect()
         
-        # Навигация через сессию
+        # Навигация
         await self.send("Page.navigate", {"url": url}, session_id=self.session_id)
         file_logger.log("Навигация инициирована", "INFO")
         
-        # Ждём загрузку через Runtime.evaluate
+        # Ждём загрузку
         start_time = time.time()
         while time.time() - start_time < 30:
             try:
@@ -283,7 +280,7 @@ class BrowserCDP:
         else:
             file_logger.log("Таймаут ожидания загрузки страницы", "WARNING")
         
-        # Скриншот через сессию
+        # Скриншот
         result = await self.send("Page.captureScreenshot", {
             "format": "png",
             "captureBeyondViewport": True
