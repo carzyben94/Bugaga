@@ -630,8 +630,53 @@ class BrowserCDP:
                 return data
     
     async def navigate(self, url):
+        """Переход на URL с полным ожиданием загрузки DOM"""
         await self.send("Page.navigate", {"url": url}, session_id=self.session_id)
-        await asyncio.sleep(3)
+        
+        file_logger.log(f"Ожидание загрузки страницы: {url}", "INFO")
+        
+        max_wait = 30
+        start_time = time.time()
+        
+        while time.time() - start_time < max_wait:
+            try:
+                result = await self.send("Runtime.evaluate", {
+                    "expression": """
+                        (function() {
+                            if (document.readyState !== 'complete') return false;
+                            if (!document.body) return false;
+                            if (document.body.children.length === 0) return false;
+                            return true;
+                        })();
+                    """
+                }, session_id=self.session_id)
+                
+                if result.get("result", {}).get("value") == True:
+                    file_logger.log("✅ DOM полностью загружен", "INFO")
+                    await asyncio.sleep(2)
+                    
+                    content_check = await self.send("Runtime.evaluate", {
+                        "expression": """
+                            document.body.innerText.length > 100 || 
+                            document.querySelectorAll('button, input, a').length > 0
+                        """
+                    }, session_id=self.session_id)
+                    
+                    if content_check.get("result", {}).get("value") == True:
+                        file_logger.log("✅ Контент загружен", "INFO")
+                        return True
+                    else:
+                        file_logger.log("⏳ Контент ещё не загружен, ждём...", "INFO")
+                        await asyncio.sleep(1)
+                        continue
+                        
+            except Exception as e:
+                file_logger.log(f"Ошибка проверки загрузки: {e}", "WARNING")
+            
+            await asyncio.sleep(0.5)
+        
+        file_logger.log("⚠️ Таймаут загрузки страницы", "WARNING")
+        return False
     
     async def click(self, selector, timeout=10):
         file_logger.log(f"Клик на {selector}", "INFO")
@@ -706,66 +751,133 @@ class BrowserCDP:
         return True
     
     async def get_page_context(self):
-        result = await self.send("Runtime.evaluate", {
-            "expression": """
-                (function() {
-                    function getSelector(el) {
-                        if (el.id) return '#' + el.id;
-                        if (el.getAttribute('data-testid')) {
-                            return `[data-testid="${el.getAttribute('data-testid')}"]`;
-                        }
-                        if (el.className && typeof el.className === 'string') {
-                            const classes = el.className.split(' ').filter(c => c && c.length > 0);
-                            if (classes.length > 0) return '.' + classes.join('.');
-                        }
-                        return el.tagName.toLowerCase();
-                    }
-                    
-                    const data = {
-                        title: document.title,
-                        url: window.location.href,
-                        buttons: [],
-                        inputs: [],
-                        links: []
-                    };
-                    
-                    document.querySelectorAll('button, [role="button"]').forEach(el => {
-                        const text = el.innerText || el.textContent || '';
-                        if (text.trim()) {
-                            data.buttons.push({
-                                text: text.trim().slice(0, 50),
-                                selector: getSelector(el)
-                            });
-                        }
-                    });
-                    
-                    document.querySelectorAll('input, textarea, [contenteditable="true"]').forEach(el => {
-                        const placeholder = el.placeholder || el.getAttribute('aria-label') || '';
-                        if (placeholder) {
-                            data.inputs.push({
-                                placeholder: placeholder.slice(0, 50),
-                                selector: getSelector(el)
-                            });
-                        }
-                    });
-                    
-                    document.querySelectorAll('a[href]').forEach(el => {
-                        const text = el.innerText || el.textContent || '';
-                        if (text.trim() && el.href) {
-                            data.links.push({
-                                text: text.trim().slice(0, 30),
-                                href: el.href
-                            });
-                        }
-                    });
-                    
-                    return JSON.stringify(data);
-                })();
-            """
-        }, session_id=self.session_id)
+        """Получает контекст страницы с ожиданием DOM"""
         
-        context = result.get("result", {}).get("value", "{}")
-        return context
+        for attempt in range(5):
+            try:
+                check = await self.send("Runtime.evaluate", {
+                    "expression": """
+                        (function() {
+                            if (document.readyState !== 'complete') return 'loading';
+                            if (!document.body) return 'no_body';
+                            if (document.body.children.length === 0) return 'empty';
+                            return 'ready';
+                        })();
+                    """
+                }, session_id=self.session_id)
+                
+                status = check.get("result", {}).get("value", "")
+                
+                if status == 'ready':
+                    file_logger.log("✅ DOM готов для сбора контекста", "INFO")
+                    break
+                elif status == 'loading':
+                    file_logger.log(f"⏳ Страница загружается... (попытка {attempt+1})", "INFO")
+                    await asyncio.sleep(2)
+                    continue
+                elif status == 'empty':
+                    file_logger.log(f"⏳ DOM пустой, ждём контент... (попытка {attempt+1})", "INFO")
+                    await asyncio.sleep(2)
+                    continue
+            except Exception as e:
+                file_logger.log(f"Ошибка проверки DOM: {e}", "WARNING")
+                await asyncio.sleep(1)
+        
+        try:
+            result = await self.send("Runtime.evaluate", {
+                "expression": """
+                    (function() {
+                        function getSelector(el) {
+                            if (el.id) return '#' + el.id;
+                            if (el.getAttribute('data-testid')) {
+                                return `[data-testid="${el.getAttribute('data-testid')}"]`;
+                            }
+                            if (el.className && typeof el.className === 'string') {
+                                const classes = el.className.split(' ').filter(c => c && c.length > 0);
+                                if (classes.length > 0) return '.' + classes.join('.');
+                            }
+                            return el.tagName.toLowerCase();
+                        }
+                        
+                        const data = {
+                            title: document.title || 'No title',
+                            url: window.location.href || 'No URL',
+                            buttons: [],
+                            inputs: [],
+                            links: [],
+                            text: ''
+                        };
+                        
+                        document.querySelectorAll('button, [role="button"], [data-testid*="button"]').forEach(el => {
+                            const text = el.innerText || el.textContent || el.getAttribute('aria-label') || '';
+                            if (text.trim()) {
+                                data.buttons.push({
+                                    text: text.trim().slice(0, 50),
+                                    selector: getSelector(el)
+                                });
+                            }
+                        });
+                        
+                        document.querySelectorAll('input, textarea, [contenteditable="true"]').forEach(el => {
+                            const placeholder = el.placeholder || el.getAttribute('aria-label') || '';
+                            if (placeholder) {
+                                data.inputs.push({
+                                    placeholder: placeholder.slice(0, 50),
+                                    selector: getSelector(el)
+                                });
+                            }
+                        });
+                        
+                        document.querySelectorAll('a[href]').forEach(el => {
+                            const text = el.innerText || el.textContent || '';
+                            if (text.trim() && el.href) {
+                                data.links.push({
+                                    text: text.trim().slice(0, 30),
+                                    href: el.href
+                                });
+                            }
+                        });
+                        
+                        const bodyText = document.body.innerText || '';
+                        data.text = bodyText.slice(0, 1000);
+                        data.total_elements = document.querySelectorAll('*').length;
+                        
+                        return JSON.stringify(data);
+                    })();
+                """
+            }, session_id=self.session_id)
+            
+            context = result.get("result", {}).get("value", "{}")
+            
+            try:
+                parsed = json.loads(context)
+                total = parsed.get('total_elements', 0)
+                buttons = len(parsed.get('buttons', []))
+                inputs = len(parsed.get('inputs', []))
+                
+                file_logger.log(f"📊 Контекст: {total} элементов, {buttons} кнопок, {inputs} полей", "INFO")
+                
+                if total > 10:
+                    return context
+                else:
+                    file_logger.log("⚠️ Мало элементов на странице", "WARNING")
+                    return context
+                    
+            except Exception as e:
+                file_logger.log(f"Ошибка парсинга контекста: {e}", "WARNING")
+                
+        except Exception as e:
+            file_logger.log(f"Ошибка получения контекста: {e}", "ERROR")
+        
+        return json.dumps({
+            "title": "Страница загружается...",
+            "url": "unknown",
+            "buttons": [],
+            "inputs": [],
+            "links": [],
+            "text": "Страница ещё не загружена. Попробуйте позже.",
+            "total_elements": 0
+        })
     
     async def screenshot(self):
         result = await self.send("Page.captureScreenshot", {
@@ -795,11 +907,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/agent https://x.com напиши пост Привет`\n"
         "• `/agent зайди на https://x.com`\n\n"
         "📁 `/log` — получить логи\n"
-        "🔍 `/status` — статус агента"
+        "🔍 `/status` — статус агента\n"
+        "⏹️ `/end` — завершить сессию"
     )
 
 async def handle_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик AI-агента"""
     user = update.effective_user.first_name
     user_id = update.effective_user.id
     
@@ -856,7 +968,11 @@ async def handle_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await browser.navigate(url)
         
+        file_logger.log("Ожидание полной загрузки страницы...", "INFO")
+        await asyncio.sleep(5)
+        
         context_data = await browser.get_page_context()
+        file_logger.log(f"Контекст получен", "INFO")
         
         ai = AgnesAI()
         ai_response = await ai.ask(task, context_data)
@@ -909,7 +1025,8 @@ async def handle_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'browser': browser,
             'url': url,
             'task': task,
-            'active': True
+            'active': True,
+            'user_id': user_id
         }
         
         screenshot = await browser.screenshot()
@@ -923,7 +1040,9 @@ async def handle_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "💡 Теперь ты можешь просто писать команды, и агент продолжит работу:\n"
             "• Нажми на кнопку Обзор\n"
             "• Напиши привет\n"
-            "• Сделай скриншот"
+            "• Сделай скриншот\n"
+            "• Какие кнопки видишь?\n\n"
+            "⏹️ /end — завершить сессию"
         )
         
     except Exception as e:
@@ -932,8 +1051,8 @@ async def handle_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {error_msg}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает обычные сообщения (продолжение сессии агента)"""
     user = update.effective_user.first_name
+    user_id = update.effective_user.id
     text = update.message.text.strip()
     
     if not context.user_data.get('agent_session'):
@@ -955,6 +1074,44 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not session.get('active', False):
         await update.message.reply_text("❌ Сессия не активна. Начни заново: /agent")
         return
+    
+    if session.get('user_id') != user_id:
+        await update.message.reply_text("❌ У тебя нет активной сессии. Начни заново: /agent")
+        return
+    
+    # Проверяем специальные вопросы про кнопки
+    if any(word in text.lower() for word in ['какие кнопки', 'кнопки видишь', 'что видишь', 'что на странице', 'есть ли']):
+        context_data = await browser.get_page_context()
+        try:
+            data = json.loads(context_data)
+            response = "🔍 **Что я вижу на странице:**\n\n"
+            
+            if data.get('buttons'):
+                response += "🖱️ **Кнопки:**\n"
+                for i, btn in enumerate(data['buttons'][:20], 1):
+                    response += f"  {i}. {btn['text']} → `{btn['selector']}`\n"
+                if len(data['buttons']) > 20:
+                    response += f"  ... и ещё {len(data['buttons']) - 20} кнопок\n"
+            else:
+                response += "❌ Кнопки не найдены\n"
+            
+            if data.get('inputs'):
+                response += "\n⌨️ **Поля ввода:**\n"
+                for inp in data['inputs'][:10]:
+                    response += f"  • {inp['placeholder']} → `{inp['selector']}`\n"
+            
+            if data.get('links'):
+                response += "\n🔗 **Ссылки:**\n"
+                for link in data['links'][:5]:
+                    response += f"  • {link['text']} → {link['href']}\n"
+            
+            if data.get('text'):
+                response += f"\n📝 **Текст:**\n{data['text'][:300]}..."
+            
+            await update.message.reply_text(response[:4000])
+            return
+        except:
+            pass
     
     file_logger.log(f"Продолжение сессии агента для {user}: {text}", "INFO")
     
@@ -1030,7 +1187,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text(
                 f"💡 Продолжаю работу. Просто напиши что дальше.\n"
-                f"📝 Текущая задача: {session['task']}"
+                f"📝 Текущая задача: {session['task']}\n\n"
+                f"💡 Спроси: какие кнопки видишь?\n"
+                f"⏹️ /end — завершить сессию"
             )
         
     except Exception as e:
@@ -1040,16 +1199,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session['active'] = False
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает статус агента"""
+    user_id = update.effective_user.id
+    
     if context.user_data.get('agent_session') and context.user_data['agent_session'].get('active', False):
         session = context.user_data['agent_session']
+        
+        if session.get('user_id') != user_id:
+            await update.message.reply_text("🤖 Нет активной сессии для тебя.")
+            return
+        
         browser = session['browser']
         await update.message.reply_text(
             f"🤖 **Активная сессия:**\n"
             f"📍 {session['url']}\n"
             f"📝 {session['task']}\n"
             f"📊 Действий выполнено: {len(browser.action_history)}\n\n"
-            f"💡 Просто напиши что сделать дальше!"
+            f"💡 Просто напиши что сделать дальше!\n"
+            f"💡 Спроси: какие кнопки видишь?\n"
+            f"⏹️ /end — завершить сессию"
         )
     else:
         await update.message.reply_text(
@@ -1057,6 +1224,37 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Начни с команды:\n"
             "/agent https://x.com задача"
         )
+
+async def end_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user.first_name
+    user_id = update.effective_user.id
+    
+    if not context.user_data.get('agent_session'):
+        await update.message.reply_text("🤖 Нет активной сессии для завершения")
+        return
+    
+    session = context.user_data['agent_session']
+    
+    if session.get('user_id') != user_id:
+        await update.message.reply_text("⛔ У тебя нет активной сессии для завершения.")
+        return
+    
+    browser = session.get('browser')
+    
+    if browser:
+        try:
+            await browser.close()
+        except:
+            pass
+    
+    context.user_data['agent_session'] = None
+    file_logger.log(f"Пользователь {user} завершил сессию", "INFO")
+    
+    await update.message.reply_text(
+        "✅ **Сессия завершена!**\n\n"
+        "Чтобы начать новую:\n"
+        "/agent https://x.com задача"
+    )
 
 async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user.first_name
@@ -1084,6 +1282,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("log", get_log))
     app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("end", end_session))
     app.add_handler(CommandHandler("agent", handle_agent))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
@@ -1091,7 +1290,8 @@ def main():
     print("🤖 AI-агент: /agent https://x.com задача")
     print("📁 Логи: /log")
     print("🔍 Статус: /status")
-    print("💡 После запуска агента просто пиши команды!")
+    print("⏹️ Завершить сессию: /end")
+    print("💡 Спроси у агента: какие кнопки видишь?")
     
     app.run_polling()
 
