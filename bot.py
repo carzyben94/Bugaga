@@ -16,7 +16,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "ВАШ_ТОКЕН")
 CHROME_PATH = os.getenv("CHROME_PATH", "/usr/bin/google-chrome")
 CDP_PORT = 9222
 
-# ---------- КУКИ (упрощённый формат, без домена) ----------
+# ---------- КУКИ (глобальный формат) ----------
 COOKIES = [
     {"name": "__cuid", "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"},
     {"name": "lang", "value": "ru"},
@@ -201,29 +201,37 @@ class BrowserCDP:
         await self.send("Runtime.enable", session_id=self.session_id)
         await self.send("Network.enable", session_id=self.session_id)
         
-        # Сначала переходим на домен X.com
-        await self.send("Page.navigate", {"url": "https://x.com"}, session_id=self.session_id)
-        await asyncio.sleep(3)
-        
-        # Устанавливаем куки
+        # Устанавливаем куки глобально через Network.setCookies
         if self.cookies:
-            await self.set_cookies(self.cookies)
+            await self.set_cookies_global(self.cookies)
+        
+        # Переходим на X.com и применяем маскировку
+        await self.send("Page.navigate", {"url": "https://x.com"}, session_id=self.session_id)
+        await asyncio.sleep(2)
         
         await self.apply_full_mask()
     
-    async def set_cookies(self, cookies):
-        """Устанавливает куки без привязки к домену"""
+    async def set_cookies_global(self, cookies):
+        """Устанавливает куки глобально через Network.setCookies (все сразу)"""
         try:
+            cookies_list = []
             for cookie in cookies:
-                params = {
+                cookies_list.append({
                     "name": cookie["name"],
                     "value": cookie["value"],
-                    "path": "/"
-                }
-                await self.send("Network.setCookie", params, session_id=self.session_id)
-                file_logger.log(f"Установлена кука: {cookie['name']}", "DEBUG")
+                    "domain": ".x.com",  # Глобально для всех поддоменов
+                    "path": "/",
+                    "secure": True,
+                    "httpOnly": cookie.get("httpOnly", False),
+                    "sameSite": "Lax"
+                })
             
-            file_logger.log(f"✅ Установлено {len(cookies)} кук", "INFO")
+            # Отправляем все куки одной командой
+            await self.send("Network.setCookies", {
+                "cookies": cookies_list
+            }, session_id=self.session_id)
+            
+            file_logger.log(f"✅ Установлено {len(cookies)} кук глобально (domain: .x.com)", "INFO")
         except Exception as e:
             file_logger.log(f"Ошибка при установке кук: {e}", "ERROR")
     
@@ -603,7 +611,7 @@ class BrowserCDP:
         file_logger.log(f"Навигация на {url}", "INFO")
         await self.connect()
         
-        # Если URL не X.com, переходим на него
+        # Если URL не X.com, переходим на него после установки кук
         if "x.com" not in url and "twitter.com" not in url:
             await self.send("Page.navigate", {"url": url}, session_id=self.session_id)
             file_logger.log("Навигация на целевой URL", "INFO")
@@ -667,7 +675,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 Отправь URL и я сделаю скриншот\n"
         "Пример: https://x.com\n\n"
         "📁 /log — получить файл логов\n"
-        "🕵️ 100% маскировка + куки X.com\n"
+        "🕵️ 100% маскировка + глобальные куки X.com\n"
         "⚡ WebSocket лимит: 15 MB"
     )
 
@@ -683,7 +691,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Добавь http:// или https://")
         return
     
-    await update.message.reply_text(f"🔄 Загружаю {url} (с куками X.com)...")
+    await update.message.reply_text(f"🔄 Загружаю {url} (глобальные куки X.com)...")
     
     try:
         browser = BrowserCDP()
@@ -727,11 +735,11 @@ async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- ЗАПУСК ----------
 def main():
     file_logger.log("="*50, "INFO")
-    file_logger.log("БОТ ЗАПУЩЕН (100% STEALTH + COOKIES)", "INFO")
+    file_logger.log("БОТ ЗАПУЩЕН (100% STEALTH + ГЛОБАЛЬНЫЕ КУКИ)", "INFO")
     file_logger.log(f"Chrome путь: {CHROME_PATH}", "INFO")
     file_logger.log(f"CDP порт: {CDP_PORT}", "INFO")
     file_logger.log("WebSocket лимит: 15 MB", "INFO")
-    file_logger.log(f"Загружено кук: {len(COOKIES)}", "INFO")
+    file_logger.log(f"Загружено кук: {len(COOKIES)} (глобально)", "INFO")
     
     if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "ВАШ_ТОКЕН":
         file_logger.log("TELEGRAM_BOT_TOKEN не указан!", "ERROR")
@@ -744,7 +752,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     
     print("🚀 Бот запущен в 100% STEALTH режиме!")
-    print(f"🍪 Загружено кук: {len(COOKIES)} (X.com)")
+    print(f"🍪 Загружено кук: {len(COOKIES)} (глобально, domain: .x.com)")
     print("📁 Команды: /start, /log")
     print("⚡ WebSocket лимит: 15 MB")
     
