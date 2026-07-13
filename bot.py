@@ -12,7 +12,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 # ---------- КОНФИГ ----------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "ВАШ_ТОКЕН")
-CHROME_PATH = os.getenv("CHROME_PATH", "/usr/bin/google-chrome")  # ← ОБЯЗАТЕЛЬНО!
+CHROME_PATH = os.getenv("CHROME_PATH", "/usr/bin/google-chrome")
 CDP_PORT = 9222
 WEBSOCKET_MAX_SIZE = 20 * 1024 * 1024
 PAGE_LOAD_TIMEOUT = 20
@@ -73,27 +73,23 @@ def get_random_webgl_renderer():
     return random.choice(renderers)
 
 def get_launch_args():
-    """Формирует аргументы запуска Chrome с маскировкой"""
     window = get_random_window_position()
     user_agent = get_random_user_agent()
     
     args = [
-        CHROME_PATH,  # ← Теперь CHROME_PATH доступен
+        CHROME_PATH,
         "--headless=new",
         "--no-sandbox",
         "--disable-dev-shm-usage",
         
-        # Скрываем автоматизацию
         "--disable-blink-features=AutomationControlled",
         "--disable-automation",
         
-        # GPU и WebGL
         "--use-gl=egl",
         "--ignore-gpu-blocklist",
         "--enable-gpu-rasterization",
         "--enable-zero-copy",
         
-        # Отключаем ненужное
         "--disable-features=AudioServiceOutOfProcess,IsolateOrigins,site-per-process",
         "--disable-site-isolation-trials",
         "--disable-default-apps",
@@ -112,11 +108,9 @@ def get_launch_args():
         "--disable-ipc-flooding-protection",
         "--disable-renderer-backgrounding",
         
-        # Настройки окна
         f"--window-position={window['left']},{window['top']}",
         f"--window-size={window['width']},{window['height']}",
         
-        # Дополнительно
         "--no-default-browser-check",
         "--no-first-run",
         "--force-color-profile=srgb",
@@ -127,7 +121,6 @@ def get_launch_args():
         "--enable-features=NetworkService,NetworkServiceInProcess",
         
         f"--user-agent={user_agent}",
-        
         f"--remote-debugging-port={CDP_PORT}"
     ]
     
@@ -151,8 +144,7 @@ def get_mask_js():
     
     return f"""
     (function() {{
-        // ========== 1. NAVIGATOR ==========
-        
+        // ========== NAVIGATOR ==========
         Object.defineProperty(navigator, 'webdriver', {{
             get: () => undefined,
             configurable: true,
@@ -176,21 +168,9 @@ def get_mask_js():
                 const plugins = new Array();
                 Object.setPrototypeOf(plugins, Plugin.prototype);
                 
-                plugins.push(new Plugin(
-                    'Chrome PDF Plugin',
-                    'internal-pdf-viewer',
-                    'Portable Document Format'
-                ));
-                plugins.push(new Plugin(
-                    'Chrome PDF Viewer',
-                    'mhjfbmdgcfjbbpaeojofohoefgiehjai',
-                    ''
-                ));
-                plugins.push(new Plugin(
-                    'Native Client',
-                    'internal-nacl-plugin',
-                    ''
-                ));
+                plugins.push(new Plugin('Chrome PDF Plugin', 'internal-pdf-viewer', 'Portable Document Format'));
+                plugins.push(new Plugin('Chrome PDF Viewer', 'mhjfbmdgcfjbbpaeojofohoefgiehjai', ''));
+                plugins.push(new Plugin('Native Client', 'internal-nacl-plugin', ''));
                 
                 plugins.length = 3;
                 return plugins;
@@ -294,8 +274,7 @@ def get_mask_js():
             }});
         }};
         
-        // ========== 2. WEBGL ==========
-        
+        // ========== WEBGL ==========
         const originalGetContext = HTMLCanvasElement.prototype.getContext;
         HTMLCanvasElement.prototype.getContext = function(contextId, attributes) {{
             if (contextId === 'webgl' || contextId === 'experimental-webgl') {{
@@ -303,18 +282,10 @@ def get_mask_js():
                 if (context) {{
                     const originalGetParameter = context.getParameter;
                     context.getParameter = function(parameter) {{
-                        if (parameter === 0x1F00) {{
-                            return '{webgl_vendor}';
-                        }}
-                        if (parameter === 0x1F01) {{
-                            return '{webgl_renderer}';
-                        }}
-                        if (parameter === 0x1F02) {{
-                            return 'WebGL 2.0 (OpenGL ES 3.0)';
-                        }}
-                        if (parameter === 0x8B8C) {{
-                            return 'WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0)';
-                        }}
+                        if (parameter === 0x1F00) return '{webgl_vendor}';
+                        if (parameter === 0x1F01) return '{webgl_renderer}';
+                        if (parameter === 0x1F02) return 'WebGL 2.0 (OpenGL ES 3.0)';
+                        if (parameter === 0x8B8C) return 'WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0)';
                         return originalGetParameter.call(this, parameter);
                     }};
                     
@@ -341,15 +312,13 @@ def get_mask_js():
             return originalGetContext.call(this, contextId, attributes);
         }};
         
-        // ========== 3. CANVAS ==========
-        
+        // ========== CANVAS ==========
         const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
         HTMLCanvasElement.prototype.toDataURL = function(type, quality) {{
             if (type === 'image/png' || type === undefined) {{
                 const ctx = this.getContext('2d');
                 const imageData = ctx.getImageData(0, 0, this.width, this.height);
                 const data = imageData.data;
-                
                 const noise = {noise};
                 if (noise > 0 && data.length > 100) {{
                     const idx = Math.floor(Math.random() * (data.length - 4));
@@ -360,8 +329,7 @@ def get_mask_js():
             return originalToDataURL.call(this, type, quality);
         }};
         
-        // ========== 4. AUDIO ==========
-        
+        // ========== AUDIO ==========
         const originalAudioCtx = window.AudioContext || window.webkitAudioContext;
         if (originalAudioCtx) {{
             const patchedAudioCtx = function() {{
@@ -384,8 +352,7 @@ def get_mask_js():
             window.webkitAudioContext = patchedAudioCtx;
         }}
         
-        // ========== 5. SCREEN ==========
-        
+        // ========== SCREEN ==========
         Object.defineProperty(window, 'screen', {{
             get: () => {{
                 const availHeight = {screen_height};
@@ -413,8 +380,7 @@ def get_mask_js():
             enumerable: true
         }});
         
-        // ========== 6. CHROME ==========
-        
+        // ========== CHROME ==========
         if (!window.chrome) {{
             window.chrome = {{}};
         }}
@@ -423,8 +389,7 @@ def get_mask_js():
         window.chrome.csi = function() {{}};
         window.chrome.app = {{}};
         
-        // ========== 7. TIMING ==========
-        
+        // ========== TIMING ==========
         const originalPerfNow = performance.now;
         performance.now = function() {{
             return originalPerfNow.call(this) + (Math.random() * 0.1);
@@ -435,8 +400,7 @@ def get_mask_js():
             return originalDateNow.call(this) + Math.floor(Math.random() * 5);
         }};
         
-        // ========== 8. DOCUMENT ==========
-        
+        // ========== DOCUMENT ==========
         Object.defineProperty(document, 'hidden', {{
             get: () => false,
             configurable: true,
@@ -459,9 +423,9 @@ class BrowserCDP:
         self.ws = None
         self.msg_id = 0
         self.target_id = None
+        self.snapshot = {}  # ← Храним snapshot
     
     def find_chrome(self):
-        """Ищет Chrome в разных местах"""
         chrome_paths = [
             "/usr/bin/google-chrome",
             "/usr/bin/chromium-browser",
@@ -482,18 +446,15 @@ class BrowserCDP:
                     return path
             except:
                 continue
-        
         return None
     
     def ensure_browser(self):
-        """Проверяет и запускает Chrome с маскировкой"""
         file_logger.log("🔍 Проверяю Chrome...", "INFO")
         
         try:
             resp = requests.get(f"http://localhost:{CDP_PORT}/json/version", timeout=2)
             if resp.status_code == 200:
                 file_logger.log("✅ Chrome уже запущен и отвечает", "INFO")
-                file_logger.log(f"📌 Версия: {resp.json().get('Browser', 'unknown')}", "INFO")
                 return True
         except Exception as e:
             file_logger.log(f"⚠️ Chrome не отвечает: {e}", "WARNING")
@@ -503,21 +464,17 @@ class BrowserCDP:
             file_logger.log("❌ Chrome не найден в системе!", "ERROR")
             return False
         
-        # Обновляем CHROME_PATH для запуска
         global CHROME_PATH
         CHROME_PATH = chrome_path
         
         file_logger.log(f"🔄 Запускаю Chrome с маскировкой", "INFO")
         
         try:
-            # Убиваем старые процессы
             subprocess.run(["pkill", "-f", "chrome"], capture_output=True)
             time.sleep(2)
             
-            # Получаем аргументы
             launch_args = get_launch_args()
             
-            # Запускаем Chrome
             subprocess.Popen(
                 launch_args,
                 stdout=subprocess.DEVNULL,
@@ -527,7 +484,6 @@ class BrowserCDP:
             file_logger.log("⏳ Жду запуска Chrome (5 сек)...", "INFO")
             time.sleep(5)
             
-            # Проверяем
             for i in range(5):
                 try:
                     resp = requests.get(f"http://localhost:{CDP_PORT}/json/version", timeout=2)
@@ -546,7 +502,6 @@ class BrowserCDP:
             return False
     
     def get_or_create_tab(self, url=None):
-        """Создает новую вкладку"""
         try:
             version_resp = requests.get(f"http://localhost:{CDP_PORT}/json/version", timeout=3)
             file_logger.log(f"✅ Chrome version: {version_resp.json().get('Browser', 'unknown')}", "INFO")
@@ -576,7 +531,6 @@ class BrowserCDP:
             raise
     
     async def connect(self):
-        """Подключение к вкладке"""
         if not self.ensure_browser():
             raise Exception("❌ Chrome не доступен")
         
@@ -603,7 +557,6 @@ class BrowserCDP:
             raise
     
     async def send(self, method, params=None):
-        """Отправка CDP команды"""
         self.msg_id += 1
         msg = {
             "id": self.msg_id,
@@ -628,7 +581,6 @@ class BrowserCDP:
                 raise Exception("Таймаут ожидания ответа")
     
     async def eval_js(self, script):
-        """Выполняет JavaScript в контексте страницы"""
         try:
             result = await self.send("Runtime.evaluate", {
                 "expression": script,
@@ -640,7 +592,6 @@ class BrowserCDP:
             return None
     
     async def apply_mask(self):
-        """Применяет 100% маскировку"""
         try:
             file_logger.log("🕵️ Применяю 100% маскировку...", "INFO")
             mask_js = get_mask_js()
@@ -651,12 +602,98 @@ class BrowserCDP:
             file_logger.log(f"❌ Ошибка маскировки: {e}", "ERROR")
             return False
     
+    async def get_snapshot(self):
+        """Получает структуру страницы (DOM) для AI"""
+        try:
+            file_logger.log("📸 Делаю слепок страницы...", "INFO")
+            
+            # Собираем ВСЕ элементы через JS
+            elements = await self.eval_js("""
+                (function() {
+                    const result = [];
+                    const all = document.querySelectorAll('*');
+                    
+                    all.forEach(el => {
+                        const tag = el.tagName.toLowerCase();
+                        const rect = el.getBoundingClientRect();
+                        const style = window.getComputedStyle(el);
+                        
+                        const visible = rect.width > 0 && rect.height > 0 && 
+                                       style.display !== 'none' && 
+                                       style.visibility !== 'hidden';
+                        
+                        const attrs = {};
+                        for (const attr of el.attributes) {
+                            attrs[attr.name] = attr.value;
+                        }
+                        
+                        const text = (el.textContent || '').trim().slice(0, 200);
+                        
+                        const isInteractive = (
+                            tag === 'button' ||
+                            tag === 'a' ||
+                            attrs.role === 'button' ||
+                            tag === 'input' ||
+                            tag === 'textarea' ||
+                            tag === 'select'
+                        );
+                        
+                        const important = ['button', 'a', 'input', 'textarea', 'select', 'form',
+                                          'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'img', 'video',
+                                          'iframe', 'div', 'span', 'section', 'article', 'nav',
+                                          'header', 'footer', 'main', 'aside', 'ul', 'ol', 'li'];
+                        
+                        if (important.includes(tag) || isInteractive || attrs['data-testid'] || attrs['aria-label']) {
+                            result.push({
+                                tag: tag,
+                                text: text,
+                                id: el.id || '',
+                                class: el.className || '',
+                                attrs: attrs,
+                                visible: visible,
+                                x: Math.round(rect.x),
+                                y: Math.round(rect.y),
+                                width: Math.round(rect.width),
+                                height: Math.round(rect.height),
+                                isInteractive: isInteractive
+                            });
+                        }
+                    });
+                    
+                    return result;
+                })()
+            """)
+            
+            if elements is None:
+                elements = []
+            
+            # Получаем заголовок и URL
+            title = await self.eval_js("document.title") or "Нет заголовка"
+            url = await self.eval_js("window.location.href") or "Нет URL"
+            
+            # Сортируем по видимости
+            elements.sort(key=lambda x: x.get('visible', False), reverse=True)
+            
+            # Сохраняем в snapshot
+            self.snapshot = {
+                "title": title,
+                "url": url,
+                "total": len(elements),
+                "elements": elements[:500]  # Ограничиваем 500 элементов
+            }
+            
+            file_logger.log(f"✅ Слепок: {len(elements)} элементов", "INFO")
+            return True
+            
+        except Exception as e:
+            file_logger.log(f"❌ Ошибка слепка: {e}", "ERROR")
+            self.snapshot = {"title": "Ошибка", "url": "Ошибка", "total": 0, "elements": []}
+            return False
+    
     async def navigate_and_screenshot(self, url):
-        """Навигация и скриншот с маскировкой"""
         file_logger.log(f"🌐 Навигация на {url}", "INFO")
         await self.connect()
         
-        # Маскировка всегда применяется
         await self.apply_mask()
         
         try:
@@ -668,6 +705,9 @@ class BrowserCDP:
         
         await self.wait_for_page_load()
         
+        # Делаем snapshot ДО скриншота
+        await self.get_snapshot()
+        
         screenshot_data = await self.screenshot()
         
         if not screenshot_data:
@@ -677,7 +717,6 @@ class BrowserCDP:
         return screenshot_data
     
     async def wait_for_page_load(self):
-        """Ожидание загрузки"""
         file_logger.log("⏳ Ожидаю загрузку...", "INFO")
         start_time = time.time()
         
@@ -702,7 +741,6 @@ class BrowserCDP:
         return False
     
     async def screenshot(self):
-        """Скриншот"""
         try:
             file_logger.log("📸 Делаю скриншот...", "INFO")
             
@@ -732,11 +770,11 @@ class BrowserCDP:
 
 # ---------- ОБРАБОТЧИКИ ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user.first_name
     await update.message.reply_text(
         "👋 Отправь URL и я сделаю скриншот\n"
         "Пример: https://google.com\n\n"
         "📁 /log — получить файл логов\n"
+        "📸 /snapshot — получить структуру страницы (DOM)\n"
         "🕵️ Маскировка: ВСЕГДА ВКЛЮЧЕНА"
     )
 
@@ -759,10 +797,63 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             caption=f"✅ {url}"
         )
         file_logger.log(f"✅ Скриншот отправлен {user}", "INFO")
+        
+        # Сохраняем snapshot в контекст для команды /snapshot
+        context.user_data['snapshot'] = browser.snapshot
+        
     except Exception as e:
         error_msg = str(e)
         file_logger.log(f"❌ Ошибка: {error_msg}", "ERROR")
         await update.message.reply_text(f"❌ Ошибка: {error_msg}")
+
+async def get_snapshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправляет структуру страницы (DOM)"""
+    snapshot = context.user_data.get('snapshot', {})
+    
+    if not snapshot or not snapshot.get('elements'):
+        await update.message.reply_text("📭 Сначала отправь URL, чтобы получить snapshot")
+        return
+    
+    # Формируем отчет
+    elements = snapshot.get('elements', [])[:50]  # Только первые 50 для Telegram
+    
+    # Считаем статистику
+    total = snapshot.get('total', 0)
+    visible = sum(1 for e in elements if e.get('visible', False))
+    interactive = sum(1 for e in elements if e.get('isInteractive', False))
+    
+    report = f"""📊 **Структура страницы**
+
+📌 **Название:** {snapshot.get('title', 'Нет заголовка')}
+🔗 **URL:** {snapshot.get('url', 'Нет URL')}
+
+📈 **Статистика:**
+• Всего элементов: {total}
+• Видимых: {visible}
+• Интерактивных: {interactive}
+
+📋 **Элементы (первые 50):**
+"""
+    
+    for i, el in enumerate(elements[:20], 1):  # Показываем 20 элементов
+        tag = el.get('tag', 'unknown')
+        text = el.get('text', '').replace('\n', ' ')[:50]
+        interactive = '🔘' if el.get('isInteractive') else '📄'
+        visible = '👁️' if el.get('visible') else '👻'
+        
+        report += f"\n{i}. {interactive} `<{tag}>` {visible}"
+        if text:
+            report += f"\n   📝 {text}"
+        if el.get('id'):
+            report += f"\n   🆔 #{el['id']}"
+    
+    if total > 20:
+        report += f"\n\n... и ещё {total - 20} элементов"
+    
+    await update.message.reply_text(
+        report,
+        parse_mode='Markdown'
+    )
 
 async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -781,10 +872,11 @@ async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- ЗАПУСК ----------
 def main():
     print("="*50)
-    print("🚀 ЗАПУСК БОТА С МАСКИРОВКОЙ")
+    print("🚀 ЗАПУСК БОТА С МАСКИРОВКОЙ И SNAPSHOT")
     print("="*50)
     print(f"📌 Chrome путь: {CHROME_PATH}")
     print("🕵️ Маскировка: ВСЕГДА ВКЛЮЧЕНА")
+    print("📸 Snapshot: ДОСТУПЕН")
     print("="*50)
     
     if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "ВАШ_ТОКЕН":
@@ -794,10 +886,11 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("log", get_log))
+    app.add_handler(CommandHandler("snapshot", get_snapshot_command))  # ← Новая команда
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     
     print("✅ Бот готов!")
-    print("📁 Команды: /start, /log")
+    print("📁 Команды: /start, /log, /snapshot")
     app.run_polling()
 
 if __name__ == "__main__":
