@@ -13,6 +13,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "ВАШ_ТОКЕН")
 CHROME_PATH = os.getenv("CHROME_PATH", "/usr/bin/google-chrome")
 CDP_PORT = 9222
+WEBSOCKET_MAX_SIZE = 20 * 1024 * 1024  # 20 МБ
 
 # ---------- ЛОГИРОВАНИЕ ----------
 LOG_FILE = "bot_logs.txt"
@@ -89,9 +90,12 @@ class BrowserCDP:
         # Получаем WS URL вкладки
         ws_url, self.target_id = self.get_or_create_tab()
         
-        # Подключаемся напрямую к вкладке
-        self.ws = await websockets.connect(ws_url)
-        file_logger.log(f"Подключен к вкладке: {self.target_id}", "INFO")
+        # Подключаемся напрямую к вкладке с увеличенным лимитом
+        self.ws = await websockets.connect(
+            ws_url,
+            max_size=WEBSOCKET_MAX_SIZE  # 20 МБ
+        )
+        file_logger.log(f"Подключен к вкладке: {self.target_id} (max_size: {WEBSOCKET_MAX_SIZE//1024//1024}MB)", "INFO")
         
         # Активируем домены (БЕЗ session_id!)
         await self.send("Page.enable")
@@ -144,7 +148,7 @@ class BrowserCDP:
             
             if "result" in result and "data" in result["result"]:
                 img_data = base64.b64decode(result["result"]["data"])
-                file_logger.log(f"✅ Скриншот 1280x720 ({len(img_data)} байт)", "INFO")
+                file_logger.log(f"✅ Скриншот 1280x720 ({len(img_data)} байт / {len(img_data)//1024} KB)", "INFO")
                 return img_data
             
             return None
@@ -286,6 +290,7 @@ def main():
     file_logger.log("БОТ ЗАПУЩЕН", "INFO")
     file_logger.log(f"Chrome путь: {CHROME_PATH}", "INFO")
     file_logger.log(f"CDP порт: {CDP_PORT}", "INFO")
+    file_logger.log(f"WebSocket max_size: {WEBSOCKET_MAX_SIZE//1024//1024}MB", "INFO")
     
     if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "ВАШ_ТОКЕН":
         file_logger.log("TELEGRAM_BOT_TOKEN не указан!", "ERROR")
@@ -300,6 +305,7 @@ def main():
     
     print("🚀 Бот запущен! Логи пишутся в bot_logs.txt")
     print("📁 Команды: /start, /log, /clear")
+    print(f"📦 WebSocket max_size: {WEBSOCKET_MAX_SIZE//1024//1024}MB")
     
     app.run_polling()
 
