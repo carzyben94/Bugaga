@@ -29,7 +29,7 @@ class FileLogger:
 
 file_logger = FileLogger()
 
-# ---------- МАСКИРОВКА ----------
+# ---------- МАСКИРОВКА (Pydoll style) ----------
 def get_random_window_position():
     """Генерирует случайную позицию окна"""
     return {
@@ -52,7 +52,7 @@ def get_random_user_agent():
     return random.choice(user_agents)
 
 def get_launch_args():
-    """Возвращает аргументы запуска Chrome с маскировкой"""
+    """Возвращает аргументы запуска Chrome с маскировкой (Pydoll style)"""
     window = get_random_window_position()
     
     args = [
@@ -63,21 +63,23 @@ def get_launch_args():
         "--disable-gpu",
         "--disable-software-rasterizer",
         
-        # Скрытие отпечатков GPU/WebGL
+        # Отключение автоматизации (основные флаги)
+        "--disable-blink-features=AutomationControlled",
+        "--disable-automation",
+        
+        # Скрытие отпечатков
         "--use-gl=swiftshader",
         "--disable-reading-from-canvas",
         "--disable-features=AudioServiceOutOfProcess",
         "--disable-accelerated-2d-canvas",
         "--disable-accelerated-video-decode",
-        
-        # Безопасность и скрытие автоматизации
-        "--disable-blink-features=AutomationControlled",
-        "--disable-features=IsolateOrigins,site-per-process",
-        "--disable-site-isolation-trials",
         "--disable-webgl",
         
-        # Скрываем автоматизацию
-        "--disable-automation",
+        # Безопасность
+        "--disable-features=IsolateOrigins,site-per-process",
+        "--disable-site-isolation-trials",
+        
+        # Отключаем ненужное
         "--disable-default-apps",
         "--disable-extensions",
         "--disable-component-extensions-with-background-pages",
@@ -181,48 +183,23 @@ class BrowserCDP:
         await self.send("Network.enable", session_id=self.session_id)
         file_logger.log("Домены активированы", "INFO")
         
-        # Устанавливаем эмуляцию через сессию
-        await self.set_emulation_settings()
-        
-        # Скрываем WebDriver через сессию
-        await self.hide_automation()
+        # Полная маскировка в стиле Pydoll
+        await self.apply_full_mask()
     
-    async def set_emulation_settings(self):
-        """Устанавливает настройки эмуляции через сессию"""
+    async def apply_full_mask(self):
+        """Полная маскировка в стиле Pydoll"""
         try:
-            # Эмуляция устройства через сессию
-            await self.send("Emulation.setDeviceMetricsOverride", {
-                "width": random.randint(1200, 1920),
-                "height": random.randint(800, 1080),
-                "deviceScaleFactor": 1,
-                "mobile": False,
-                "scale": 1
-            }, session_id=self.session_id)
-            
-            # Эмуляция геолокации через сессию
-            await self.send("Emulation.setGeolocationOverride", {
-                "latitude": 37.7749 + random.uniform(-1, 1),
-                "longitude": -122.4194 + random.uniform(-1, 1),
-                "accuracy": 100
-            }, session_id=self.session_id)
-            
-            file_logger.log("Настройки эмуляции установлены", "INFO")
-        except Exception as e:
-            file_logger.log(f"Ошибка при установке эмуляции: {e}", "WARNING")
-    
-    async def hide_automation(self):
-        """Скрывает следы автоматизации через сессию"""
-        try:
-            await self.send("Runtime.evaluate", {
-                "expression": """
-                    // Скрываем webdriver
+            # Комплексная маскировка через Runtime.evaluate
+            mask_script = """
+                (function() {
+                    // 1. Скрываем webdriver
                     Object.defineProperty(navigator, 'webdriver', {
                         get: () => undefined,
                         configurable: true,
                         enumerable: true
                     });
                     
-                    // Добавляем плагины
+                    // 2. Подмена plugins
                     Object.defineProperty(navigator, 'plugins', {
                         get: () => {
                             const plugins = [];
@@ -247,27 +224,96 @@ class BrowserCDP:
                         enumerable: true
                     });
                     
-                    // Устанавливаем языки
+                    // 3. Подмена languages
                     Object.defineProperty(navigator, 'languages', {
                         get: () => ['en-US', 'en', 'ru'],
                         configurable: true,
                         enumerable: true
                     });
                     
-                    // Скрываем chrome
-                    window.chrome = {
-                        runtime: {},
-                        loadTimes: function() {},
-                        csi: function() {},
-                        app: {}
+                    // 4. Скрываем chrome.runtime
+                    if (!window.chrome) {
+                        window.chrome = {};
+                    }
+                    window.chrome.runtime = {};
+                    
+                    // 5. Подмена permissions
+                    const originalQuery = window.navigator.permissions.query;
+                    window.navigator.permissions.query = function(parameters) {
+                        if (parameters.name === 'notifications') {
+                            return Promise.resolve({ state: Notification.permission });
+                        }
+                        return originalQuery(parameters);
                     };
                     
-                    console.log('✅ Следы автоматизации скрыты');
-                """
+                    // 6. Подмена window.navigator.platform
+                    Object.defineProperty(navigator, 'platform', {
+                        get: () => 'Win32',
+                        configurable: true,
+                        enumerable: true
+                    });
+                    
+                    // 7. Подмена window.navigator.userAgentData
+                    Object.defineProperty(navigator, 'userAgentData', {
+                        get: () => ({
+                            brands: [
+                                { brand: 'Google Chrome', version: '120' },
+                                { brand: 'Chromium', version: '120' },
+                                { brand: 'Not?A_Brand', version: '99' }
+                            ],
+                            platform: 'Windows',
+                            mobile: false,
+                            getHighEntropyValues: () => Promise.resolve({
+                                architecture: 'x86',
+                                bitness: '64',
+                                model: '',
+                                platform: 'Windows',
+                                platformVersion: '10.0',
+                                uaFullVersion: '120.0.0.0'
+                            })
+                        }),
+                        configurable: true,
+                        enumerable: true
+                    });
+                    
+                    // 8. Скрываем window.navigator.webdriver (дубль)
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => false,
+                        configurable: true,
+                        enumerable: true
+                    });
+                    
+                    // 9. Подмена document hidden
+                    Object.defineProperty(document, 'hidden', {
+                        get: () => false,
+                        configurable: true,
+                        enumerable: true
+                    });
+                    
+                    // 10. Подмена window.navigator.connection
+                    Object.defineProperty(navigator, 'connection', {
+                        get: () => ({
+                            rtt: 50,
+                            downlink: 10,
+                            effectiveType: '4g',
+                            saveData: false
+                        }),
+                        configurable: true,
+                        enumerable: true
+                    });
+                    
+                    console.log('✅ Полная маскировка применена (Pydoll style)');
+                })();
+            """
+            
+            await self.send("Runtime.evaluate", {
+                "expression": mask_script
             }, session_id=self.session_id)
-            file_logger.log("Скрыты следы автоматизации", "INFO")
+            
+            file_logger.log("Полная маскировка применена", "INFO")
+            
         except Exception as e:
-            file_logger.log(f"Ошибка при скрытии автоматизации: {e}", "WARNING")
+            file_logger.log(f"Ошибка при маскировке: {e}", "WARNING")
     
     async def send(self, method, params=None, session_id=None):
         """Отправка CDP команды с поддержкой сессий"""
@@ -295,7 +341,7 @@ class BrowserCDP:
                 return data
     
     async def wait_for_page_load(self, timeout=30):
-        """Ожидает загрузку страницы через несколько методов"""
+        """Ожидает загрузку страницы"""
         start_time = time.time()
         
         while time.time() - start_time < timeout:
@@ -308,20 +354,11 @@ class BrowserCDP:
                 if result.get("result", {}).get("result", {}).get("value") == True:
                     file_logger.log("Страница загружена (readyState complete)", "INFO")
                     return True
-                
-                # Проверяем наличие body
-                body_result = await self.send("Runtime.evaluate", {
-                    "expression": "document.body !== null && document.body.children.length > 0"
-                }, session_id=self.session_id)
-                
-                if body_result.get("result", {}).get("result", {}).get("value") == True:
-                    file_logger.log("Страница имеет содержимое", "INFO")
-                    return True
                     
             except Exception as e:
                 file_logger.log(f"Ошибка при проверке загрузки: {e}", "DEBUG")
             
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.5)
         
         file_logger.log("Таймаут ожидания загрузки страницы", "WARNING")
         return False
@@ -339,8 +376,8 @@ class BrowserCDP:
         loaded = await self.wait_for_page_load(timeout=30)
         
         if not loaded:
-            file_logger.log("Страница не загрузилась полностью, но пробуем сделать скриншот", "WARNING")
-            await asyncio.sleep(3)
+            file_logger.log("Страница не загрузилась полностью", "WARNING")
+            await asyncio.sleep(2)
         
         # Делаем скриншот с повторной попыткой
         screenshot_data = None
@@ -382,7 +419,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 Отправь URL и я сделаю скриншот\n"
         "Пример: https://google.com\n\n"
         "📁 /log — получить файл логов\n"
-        "🕵️ Маскировка включена (stealth mode)"
+        "🕵️ Маскировка: Pydoll stealth mode"
     )
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -442,7 +479,7 @@ async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- ЗАПУСК ----------
 def main():
     file_logger.log("="*50, "INFO")
-    file_logger.log("БОТ ЗАПУЩЕН (STEALTH MODE)", "INFO")
+    file_logger.log("БОТ ЗАПУЩЕН (Pydoll STEALTH MODE)", "INFO")
     file_logger.log(f"Chrome путь: {CHROME_PATH}", "INFO")
     file_logger.log(f"CDP порт: {CDP_PORT}", "INFO")
     
@@ -456,8 +493,8 @@ def main():
     app.add_handler(CommandHandler("log", get_log))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     
-    print("🚀 Бот запущен в STEALTH режиме!")
-    print("🕵️ Маскировка: headless=new, отключен webdriver, случайный User-Agent")
+    print("🚀 Бот запущен в Pydoll STEALTH режиме!")
+    print("🕵️ Маскировка: полная, включая webdriver, plugins, permissions, userAgentData")
     print("📁 Команды: /start, /log")
     
     app.run_polling()
