@@ -16,6 +16,21 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "ВАШ_ТОКЕН")
 CHROME_PATH = os.getenv("CHROME_PATH", "/usr/bin/google-chrome")
 CDP_PORT = 9222
 
+# ---------- КУКИ (упрощённый формат, без домена) ----------
+COOKIES = [
+    {"name": "__cuid", "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"},
+    {"name": "lang", "value": "ru"},
+    {"name": "dnt", "value": "1"},
+    {"name": "guest_id", "value": "v1%3A178267838599411411"},
+    {"name": "guest_id_marketing", "value": "v1%3A178267838599411411"},
+    {"name": "guest_id_ads", "value": "v1%3A178267838599411411"},
+    {"name": "personalization_id", "value": '"v1_DKrxLZAC902dMFdd1QrVYg=="'},
+    {"name": "twid", "value": "u%3D2067347503503052800"},
+    {"name": "auth_token", "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936"},
+    {"name": "ct0", "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb"},
+    {"name": "__cf_bm", "value": "DKjbDyjx2QirHfmkqVMEiM2Q9FZWkmQRWl7QI8XLKjs-1783962953.1855185-1.0.1.1-CjA58gOnYa62PucjDc.DLVoFW4q7encZTCVGJqwLMENwM3pLXQ2rLX6DdDuE_SFFjQRrFSk3LLEigrhGTLwrLN8RPyfLPBPiIGZZui7lAFIYEAd90bQLkdzLfWy827.2"}
+]
+
 # ---------- ЛОГИРОВАНИЕ ----------
 LOG_FILE = "bot_logs.txt"
 
@@ -30,7 +45,7 @@ class FileLogger:
 
 file_logger = FileLogger()
 
-# ---------- МАСКИРОВКА (100% Pydoll style) ----------
+# ---------- МАСКИРОВКА ----------
 def get_random_window_position():
     return {
         "left": random.randint(50, 300),
@@ -134,6 +149,7 @@ class BrowserCDP:
         self.target_id = None
         self.webgl_vendor = get_random_webgl_vendor()
         self.webgl_renderer = get_random_webgl_renderer()
+        self.cookies = COOKIES
     
     def ensure_browser(self):
         try:
@@ -165,10 +181,9 @@ class BrowserCDP:
         resp = requests.get(f"http://localhost:{CDP_PORT}/json/version")
         ws_url = resp.json()["webSocketDebuggerUrl"]
         
-        # Увеличиваем лимит WebSocket до 15 MB
         self.ws = await websockets.connect(
             ws_url,
-            max_size=15 * 1024 * 1024  # 15 MB
+            max_size=15 * 1024 * 1024
         )
         file_logger.log("Подключен к браузеру (лимит 15MB)", "INFO")
         
@@ -186,7 +201,31 @@ class BrowserCDP:
         await self.send("Runtime.enable", session_id=self.session_id)
         await self.send("Network.enable", session_id=self.session_id)
         
+        # Сначала переходим на домен X.com
+        await self.send("Page.navigate", {"url": "https://x.com"}, session_id=self.session_id)
+        await asyncio.sleep(3)
+        
+        # Устанавливаем куки
+        if self.cookies:
+            await self.set_cookies(self.cookies)
+        
         await self.apply_full_mask()
+    
+    async def set_cookies(self, cookies):
+        """Устанавливает куки без привязки к домену"""
+        try:
+            for cookie in cookies:
+                params = {
+                    "name": cookie["name"],
+                    "value": cookie["value"],
+                    "path": "/"
+                }
+                await self.send("Network.setCookie", params, session_id=self.session_id)
+                file_logger.log(f"Установлена кука: {cookie['name']}", "DEBUG")
+            
+            file_logger.log(f"✅ Установлено {len(cookies)} кук", "INFO")
+        except Exception as e:
+            file_logger.log(f"Ошибка при установке кук: {e}", "ERROR")
     
     async def apply_full_mask(self):
         try:
@@ -560,42 +599,27 @@ class BrowserCDP:
                 return data
     
     async def navigate_and_screenshot(self, url):
-        """Навигация и создание скриншота (принудительно через 7-10 секунд)"""
+        """Навигация и создание скриншота"""
         file_logger.log(f"Навигация на {url}", "INFO")
         await self.connect()
         
-        # Навигация
-        await self.send("Page.navigate", {"url": url}, session_id=self.session_id)
-        file_logger.log("Навигация инициирована", "INFO")
+        # Если URL не X.com, переходим на него
+        if "x.com" not in url and "twitter.com" not in url:
+            await self.send("Page.navigate", {"url": url}, session_id=self.session_id)
+            file_logger.log("Навигация на целевой URL", "INFO")
+        else:
+            file_logger.log("Уже на X.com, куки установлены", "INFO")
         
-        # Ждём 5 секунд для начальной загрузки
-        file_logger.log("Ожидание 5 секунд для загрузки страницы...", "INFO")
+        # Ждём загрузку
+        file_logger.log("Ожидание загрузки страницы...", "INFO")
         await asyncio.sleep(5)
         
-        # Быстрая проверка загрузки (не блокирующая)
-        for i in range(3):
-            try:
-                result = await self.send("Runtime.evaluate", {
-                    "expression": "document.readyState === 'complete' || document.body !== null"
-                }, session_id=self.session_id)
-                
-                if result.get("result", {}).get("result", {}).get("value") == True:
-                    file_logger.log("Страница частично загружена", "INFO")
-                    break
-            except:
-                pass
-            await asyncio.sleep(1)
-        
-        # Дополнительная задержка перед скриншотом
-        await asyncio.sleep(2)
-        
-        # Делаем скриншот (принудительно!)
-        file_logger.log("Делаю скриншот (принудительно)...", "INFO")
+        # Делаем скриншот
+        file_logger.log("Делаю скриншот...", "INFO")
         screenshot_data = None
         
         for attempt in range(3):
             try:
-                # Пробуем JPEG для больших страниц
                 result = await self.send("Page.captureScreenshot", {
                     "format": "jpeg",
                     "quality": 75,
@@ -607,11 +631,9 @@ class BrowserCDP:
                     file_logger.log(f"Скриншот создан для {url} (JPEG)", "INFO")
                     break
             except Exception as e:
-                file_logger.log(f"Попытка {attempt+1} скриншота не удалась: {e}", "WARNING")
-                # Если JPEG не работает, пробуем PNG без captureBeyondViewport
+                file_logger.log(f"Попытка {attempt+1} не удалась: {e}", "WARNING")
                 if attempt == 2:
                     try:
-                        file_logger.log("Пробую PNG без captureBeyondViewport...", "INFO")
                         result = await self.send("Page.captureScreenshot", {
                             "format": "png"
                         }, session_id=self.session_id)
@@ -626,7 +648,6 @@ class BrowserCDP:
         if not screenshot_data:
             raise Exception("Не удалось получить скриншот после 3 попыток")
         
-        # Закрываем вкладку
         try:
             await self.send("Target.closeTarget", {"targetId": self.target_id})
         except:
@@ -644,10 +665,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         "👋 Отправь URL и я сделаю скриншот\n"
-        "Пример: https://google.com\n\n"
+        "Пример: https://x.com\n\n"
         "📁 /log — получить файл логов\n"
-        "🕵️ 100% маскировка (Pydoll full stealth)\n"
-        "⚡ Лимит WebSocket: 15 MB"
+        "🕵️ 100% маскировка + куки X.com\n"
+        "⚡ WebSocket лимит: 15 MB"
     )
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -662,7 +683,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Добавь http:// или https://")
         return
     
-    await update.message.reply_text(f"🔄 Загружаю {url} (full stealth)...")
+    await update.message.reply_text(f"🔄 Загружаю {url} (с куками X.com)...")
     
     try:
         browser = BrowserCDP()
@@ -706,10 +727,11 @@ async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- ЗАПУСК ----------
 def main():
     file_logger.log("="*50, "INFO")
-    file_logger.log("БОТ ЗАПУЩЕН (100% STEALTH MODE)", "INFO")
+    file_logger.log("БОТ ЗАПУЩЕН (100% STEALTH + COOKIES)", "INFO")
     file_logger.log(f"Chrome путь: {CHROME_PATH}", "INFO")
     file_logger.log(f"CDP порт: {CDP_PORT}", "INFO")
     file_logger.log("WebSocket лимит: 15 MB", "INFO")
+    file_logger.log(f"Загружено кук: {len(COOKIES)}", "INFO")
     
     if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "ВАШ_ТОКЕН":
         file_logger.log("TELEGRAM_BOT_TOKEN не указан!", "ERROR")
@@ -722,10 +744,9 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     
     print("🚀 Бот запущен в 100% STEALTH режиме!")
-    print("🕵️ Полная маскировка: WebGL, Canvas, Audio, Navigator, Screen, Timing")
+    print(f"🍪 Загружено кук: {len(COOKIES)} (X.com)")
     print("📁 Команды: /start, /log")
     print("⚡ WebSocket лимит: 15 MB")
-    print("⚡ Скриншот делается принудительно через 7-10 секунд (JPEG)")
     
     app.run_polling()
 
