@@ -124,10 +124,7 @@ class BrowserCDP:
             return False
     
     def get_or_create_tab(self, url=None):
-        """
-        Создает новую вкладку через правильный HTTP-метод согласно документации CDP
-        Документация: PUT /json/new?{url} или POST /json/new
-        """
+        """Создает новую вкладку через правильный HTTP-метод согласно документации CDP"""
         try:
             # Сначала проверяем /json/version
             version_resp = requests.get(f"http://localhost:{CDP_PORT}/json/version", timeout=3)
@@ -147,9 +144,9 @@ class BrowserCDP:
                 file_logger.log("🔄 PUT вернул 405, пробую POST...", "INFO")
                 resp = requests.post(f"http://localhost:{CDP_PORT}/json/new", timeout=3)
             
-            # Способ 3: Если POST не работает, пробуем GET (некоторые старые версии)
+            # Способ 3: Если POST не работает, пробуем GET
             if resp.status_code == 405:
-                file_logger.log("🔄 POST вернул 405, пробую GET (старая версия)...", "INFO")
+                file_logger.log("🔄 POST вернул 405, пробую GET...", "INFO")
                 resp = requests.get(f"http://localhost:{CDP_PORT}/json/new", timeout=3)
             
             if resp.status_code != 200:
@@ -177,7 +174,7 @@ class BrowserCDP:
             raise
     
     async def connect(self):
-        """Подключение к вкладке"""
+        """Подключение к вкладке (без timeout параметра для совместимости)"""
         if not self.ensure_browser():
             raise Exception("❌ Chrome не доступен")
         
@@ -185,10 +182,10 @@ class BrowserCDP:
         file_logger.log(f"🔗 Подключаюсь к WebSocket...", "INFO")
         
         try:
+            # Убираем timeout, т.к. он не поддерживается в старой версии
             self.ws = await websockets.connect(
                 ws_url,
-                max_size=WEBSOCKET_MAX_SIZE,
-                timeout=10
+                max_size=WEBSOCKET_MAX_SIZE
             )
             file_logger.log(f"✅ WebSocket подключен", "INFO")
         except Exception as e:
@@ -219,6 +216,7 @@ class BrowserCDP:
         
         while True:
             try:
+                # Используем asyncio.wait_for для таймаута
                 response = await asyncio.wait_for(self.ws.recv(), timeout=10)
                 data = json.loads(response)
                 
