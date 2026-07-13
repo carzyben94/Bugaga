@@ -7,8 +7,10 @@ import requests
 import asyncio
 import websockets
 import random
+import re
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from datetime import datetime
 
 # ---------- КОНФИГ ----------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "ВАШ_ТОКЕН")
@@ -16,6 +18,12 @@ CHROME_PATH = os.getenv("CHROME_PATH", "/usr/bin/google-chrome")
 CDP_PORT = 9222
 WEBSOCKET_MAX_SIZE = 20 * 1024 * 1024
 PAGE_LOAD_TIMEOUT = 20
+MAX_HISTORY = 20
+
+# ---------- AI КОНФИГ ----------
+AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
+AGNES_API_URL = os.environ.get("AGNES_API_URL", "https://apihub.agnes-ai.com/v1/chat/completions")
+AI_MODEL = "agnes-2.0-flash"
 
 # ---------- ЛОГИРОВАНИЕ ----------
 LOG_FILE = "bot_logs.txt"
@@ -31,6 +39,220 @@ class FileLogger:
         print(f"[{timestamp}] [{level}] {message}")
 
 file_logger = FileLogger()
+
+# ---------- ПАМЯТЬ ----------
+class Memory:
+    def __init__(self, max_items=MAX_HISTORY):
+        self.max_items = max_items
+        self.history = []
+        self.current_snapshot = None
+        self.current_url = None
+        self.current_title = None
+        self.last_action = None
+    
+    def add_action(self, action_type, data=None):
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "type": action_type,
+            "data": data
+        }
+        self.history.append(entry)
+        self.last_action = entry
+        
+        if len(self.history) > self.max_items:
+            self.history = self.history[-self.max_items:]
+        
+        file_logger.log(f"📝 Добавлено в память: {action_type}", "DEBUG")
+    
+    def set_snapshot(self, snapshot, url, title):
+        self.current_snapshot = snapshot
+        self.current_url = url
+        self.current_title = title
+        self.add_action("snapshot", {"url": url, "title": title, "elements": len(snapshot.get('elements', []))})
+    
+    def get_last_url(self, index=0):
+        """Получает последний URL из истории"""
+        snapshots = [a for a in self.history if a['type'] == 'snapshot']
+        if snapshots and len(snapshots) > index:
+            return snapshots[-(index + 1)].get('data', {}).get('url')
+        return None
+    
+    def get_context_for_ai(self):
+        context = []
+        
+        if self.current_title:
+            context.append(f"Текущая страница: {self.current_title} ({self.current_url})")
+        
+        if self.current_snapshot and self.current_snapshot.get('elements'):
+            elements = self.current_snapshot.get('elements', [])[:30]
+            if elements:
+                context.append("\nСтруктура страницы:")
+                for el in elements[:15]:
+                    tag = el.get('tag', 'unknown')
+                    text = el.get('text', '').strip()[:50]
+                    if text:
+                        context.append(f"- <{tag}>: {text}")
+                    elif el.get('id'):
+                        context.append(f"- <{tag}>: id={el['id']}")
+                    else:
+                        context.append(f"- <{tag}>")
+        
+        if self.history:
+            context.append("\nПоследние действия:")
+            for action in self.history[-5:]:
+                action_type = action.get('type', 'unknown')
+                timestamp = action.get('timestamp', '')[:16]
+                if action_type == 'snapshot':
+                    url = action.get('data', {}).get('url', '')
+                    context.append(f"- {timestamp}: Переход на {url[:50]}")
+                elif action_type == 'question':
+                    question = action.get('data', {}).get('question', '')
+                    context.append(f"- {timestamp}: Вопрос: {question[:50]}")
+        
+        return "\n".join(context)
+    
+    def get_history_text(self):
+        if not self.history:
+            return "📭 История пуста"
+        
+        lines = []
+        for i, action in enumerate(self.history, 1):
+            timestamp = action.get('timestamp', '')[:16]
+            action_type = action.get('type', 'unknown')
+            data = action.get('data', {})
+            
+            if action_type == 'snapshot':
+                lines.append(f"{i}. 🔗 [{timestamp}] {data.get('title', '')} ({data.get('url', '')})")
+            elif action_type == 'question':
+                lines.append(f"{i}. ❓ [{timestamp}] {data.get('question', '')}")
+            elif action_type == 'screenshot':
+                lines.append(f"{i}. 📸 [{timestamp}] Скриншот")
+            else:
+                lines.append(f"{i}. ⚡ [{timestamp}] {action_type}")
+        
+        return "\n".join(lines)
+
+# ---------- ПАРСЕР КОМАНД ----------
+def parse_command(text):
+    """Распознает команды на естественном языке"""
+    text_lower = text.lower().strip()
+    text_clean = text_lower
+    
+    # ====== URL напрямую ======
+    if text.startswith(('http://', 'https://')):
+        return {'action': 'navigate', 'url': text}
+    
+    # ====== НАВИГАЦИЯ ======
+    # "зайди на x.com", "открой гугл", "перейди на ютуб"
+    nav_patterns = [
+        (r'зайди на\s+(.+)', 'зайди на'),
+        (r'зайди\s+(.+)', 'зайди'),
+        (r'открой\s+(.+)', 'открой'),
+        (r'перейди на\s+(.+)', 'перейди на'),
+        (r'перейди\s+(.+)', 'перейди'),
+        (r'покажи\s+(.+)', 'покажи'),
+        (r'открой сайт\s+(.+)', 'открой сайт'),
+        (r'навигация на\s+(.+)', 'навигация на'),
+        (r'перейти на\s+(.+)', 'перейти на'),
+        (r'загрузи\s+(.+)', 'загрузи'),
+        (r'открыть\s+(.+)', 'открыть'),
+    ]
+    
+    for pattern, _ in nav_patterns:
+        match = re.search(pattern, text_lower)
+        if match:
+            url = match.group(1).strip()
+            # Если это домен без протокола
+            if not url.startswith(('http://', 'https://')):
+                # Убираем пробелы и лишнее
+                url = url.split()[0] if ' ' in url else url
+                url = 'https://' + url
+            return {'action': 'navigate', 'url': url}
+    
+    # ====== ВОЗВРАТ НАЗАД ======
+    if any(word in text_lower for word in ['назад', 'вернись', 'вернуться', 'предыдущий']):
+        return {'action': 'back'}
+    
+    # ====== СКРИНШОТ ======
+    screenshot_keywords = ['скриншот', 'скрин', 'фото', 'сфоткай', 'покажи страницу', 'сделай фото', 'сделай скрин', 'сними']
+    if any(keyword in text_lower for keyword in screenshot_keywords):
+        return {'action': 'screenshot'}
+    
+    # ====== ВОПРОСЫ ======
+    question_keywords = ['какие', 'что', 'есть ли', 'где', 'когда', 'почему', 'сколько', 'какой', 'какая', 'какое']
+    if any(keyword in text_lower for keyword in question_keywords):
+        return {'action': 'ask', 'question': text}
+    
+    # ====== ИСТОРИЯ ======
+    history_keywords = ['история', 'что было', 'что я спрашивал', 'помнишь', 'покажи историю', 'список']
+    if any(keyword in text_lower for keyword in history_keywords):
+        return {'action': 'history'}
+    
+    # ====== ОЧИСТКА ======
+    clear_keywords = ['очисти', 'забудь', 'сбрось', 'удали память', 'стереть', 'очистить']
+    if any(keyword in text_lower for keyword in clear_keywords):
+        return {'action': 'clear'}
+    
+    # ====== ПРИВЕТСТВИЕ ======
+    if any(word in text_lower for word in ['привет', 'здравствуй', 'салам', 'hello', 'hi']):
+        return {'action': 'greeting'}
+    
+    return {'action': 'unknown'}
+
+# ---------- AI ФУНКЦИИ ----------
+def ask_ai(prompt, context=None, memory=None):
+    """Запрос к Agnes AI с памятью"""
+    try:
+        if not AGNES_API_KEY:
+            return "❌ AGNES_API_KEY не указан. Получите ключ на https://platform.agnes-ai.com/"
+        
+        messages = []
+        
+        system_prompt = "Ты - умный AI-ассистент для анализа веб-страниц. Отвечай кратко, понятно и по делу."
+        
+        if memory:
+            memory_context = memory.get_context_for_ai()
+            if memory_context:
+                system_prompt += f"\n\nКонтекст из памяти:\n{memory_context}"
+        
+        messages.append({"role": "system", "content": system_prompt})
+        
+        if context:
+            messages.append({"role": "user", "content": f"Контекст страницы:\n{context}"})
+        
+        messages.append({"role": "user", "content": prompt})
+        
+        headers = {
+            "Authorization": f"Bearer {AGNES_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        data = {
+            "model": AI_MODEL,
+            "messages": messages,
+            "temperature": 0.7,
+            "max_tokens": 1000
+        }
+        
+        file_logger.log(f"🤖 Отправляю запрос к Agnes AI...", "INFO")
+        
+        response = requests.post(AGNES_API_URL, headers=headers, json=data, timeout=30)
+        
+        if response.status_code == 200:
+            result = response.json()
+            answer = result.get("choices", [{}])[0].get("message", {}).get("content", "Нет ответа")
+            file_logger.log(f"✅ AI ответил ({len(answer)} символов)", "INFO")
+            return answer
+        elif response.status_code == 401:
+            return "❌ Ошибка: неверный API ключ"
+        elif response.status_code == 429:
+            return "❌ Превышен лимит запросов. Подождите минуту"
+        else:
+            return f"❌ Ошибка: HTTP {response.status_code}"
+            
+    except Exception as e:
+        file_logger.log(f"❌ Ошибка запроса к AI: {e}", "ERROR")
+        return f"❌ Ошибка: {e}"
 
 # ---------- МАСКИРОВКА ----------
 def get_random_window_position():
@@ -81,15 +303,12 @@ def get_launch_args():
         "--headless=new",
         "--no-sandbox",
         "--disable-dev-shm-usage",
-        
         "--disable-blink-features=AutomationControlled",
         "--disable-automation",
-        
         "--use-gl=egl",
         "--ignore-gpu-blocklist",
         "--enable-gpu-rasterization",
         "--enable-zero-copy",
-        
         "--disable-features=AudioServiceOutOfProcess,IsolateOrigins,site-per-process",
         "--disable-site-isolation-trials",
         "--disable-default-apps",
@@ -107,10 +326,8 @@ def get_launch_args():
         "--disable-breakpad",
         "--disable-ipc-flooding-protection",
         "--disable-renderer-backgrounding",
-        
         f"--window-position={window['left']},{window['top']}",
         f"--window-size={window['width']},{window['height']}",
-        
         "--no-default-browser-check",
         "--no-first-run",
         "--force-color-profile=srgb",
@@ -119,7 +336,6 @@ def get_launch_args():
         "--use-mock-keychain",
         "--export-tagged-pdf",
         "--enable-features=NetworkService,NetworkServiceInProcess",
-        
         f"--user-agent={user_agent}",
         f"--remote-debugging-port={CDP_PORT}"
     ]
@@ -127,7 +343,6 @@ def get_launch_args():
     return args
 
 def get_mask_js():
-    """Генерирует JavaScript для 100% маскировки"""
     webgl_vendor = get_random_webgl_vendor()
     webgl_renderer = get_random_webgl_renderer()
     chrome_version = random.randint(118, 120)
@@ -423,7 +638,7 @@ class BrowserCDP:
         self.ws = None
         self.msg_id = 0
         self.target_id = None
-        self.snapshot = {}  # ← Храним snapshot
+        self.snapshot = {}
     
     def find_chrome(self):
         chrome_paths = [
@@ -438,9 +653,7 @@ class BrowserCDP:
         
         for path in chrome_paths:
             try:
-                result = subprocess.run([path, "--version"], 
-                                      capture_output=True, 
-                                      timeout=2)
+                result = subprocess.run([path, "--version"], capture_output=True, timeout=2)
                 if result.returncode == 0:
                     file_logger.log(f"✅ Найден Chrome: {path}", "INFO")
                     return path
@@ -475,11 +688,7 @@ class BrowserCDP:
             
             launch_args = get_launch_args()
             
-            subprocess.Popen(
-                launch_args,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
+            subprocess.Popen(launch_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
             file_logger.log("⏳ Жду запуска Chrome (5 сек)...", "INFO")
             time.sleep(5)
@@ -538,10 +747,7 @@ class BrowserCDP:
         file_logger.log(f"🔗 Подключаюсь к WebSocket...", "INFO")
         
         try:
-            self.ws = await websockets.connect(
-                ws_url,
-                max_size=WEBSOCKET_MAX_SIZE
-            )
+            self.ws = await websockets.connect(ws_url, max_size=WEBSOCKET_MAX_SIZE)
             file_logger.log(f"✅ WebSocket подключен", "INFO")
         except Exception as e:
             file_logger.log(f"❌ Ошибка WebSocket: {e}", "ERROR")
@@ -603,11 +809,9 @@ class BrowserCDP:
             return False
     
     async def get_snapshot(self):
-        """Получает структуру страницы (DOM) для AI"""
         try:
             file_logger.log("📸 Делаю слепок страницы...", "INFO")
             
-            # Собираем ВСЕ элементы через JS
             elements = await self.eval_js("""
                 (function() {
                     const result = [];
@@ -667,19 +871,16 @@ class BrowserCDP:
             if elements is None:
                 elements = []
             
-            # Получаем заголовок и URL
             title = await self.eval_js("document.title") or "Нет заголовка"
             url = await self.eval_js("window.location.href") or "Нет URL"
             
-            # Сортируем по видимости
             elements.sort(key=lambda x: x.get('visible', False), reverse=True)
             
-            # Сохраняем в snapshot
             self.snapshot = {
                 "title": title,
                 "url": url,
                 "total": len(elements),
-                "elements": elements[:500]  # Ограничиваем 500 элементов
+                "elements": elements[:500]
             }
             
             file_logger.log(f"✅ Слепок: {len(elements)} элементов", "INFO")
@@ -704,8 +905,6 @@ class BrowserCDP:
             raise
         
         await self.wait_for_page_load()
-        
-        # Делаем snapshot ДО скриншота
         await self.get_snapshot()
         
         screenshot_data = await self.screenshot()
@@ -770,89 +969,230 @@ class BrowserCDP:
 
 # ---------- ОБРАБОТЧИКИ ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if 'memory' not in context.user_data:
+        context.user_data['memory'] = Memory()
+    
     await update.message.reply_text(
-        "👋 Отправь URL и я сделаю скриншот\n"
-        "Пример: https://google.com\n\n"
-        "📁 /log — получить файл логов\n"
-        "📸 /snapshot — получить структуру страницы (DOM)\n"
+        "👋 Привет! Я бот для скриншотов и анализа сайтов.\n\n"
+        "🗣️ Говори со мной как с человеком:\n"
+        "• зайди на google.com\n"
+        "• какие кнопки видишь?\n"
+        "• сделай скриншот\n"
+        "• вернись назад\n"
+        "• покажи историю\n\n"
+        "📁 Команды: /log, /clear\n"
         "🕵️ Маскировка: ВСЕГДА ВКЛЮЧЕНА"
     )
 
-async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = update.message.text.strip()
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
     user = update.effective_user.first_name
+    user_id = update.effective_user.id
     
-    if not url.startswith(('http://', 'https://')):
-        await update.message.reply_text("❌ Добавь http:// или https://")
-        return
+    if 'memory' not in context.user_data:
+        context.user_data['memory'] = Memory()
     
-    await update.message.reply_text(f"🔄 Загружаю {url}...")
+    memory = context.user_data['memory']
     
-    try:
-        browser = BrowserCDP()
-        screenshot = await browser.navigate_and_screenshot(url)
-        
-        await update.message.reply_photo(
-            screenshot, 
-            caption=f"✅ {url}"
+    # Парсим команду
+    command = parse_command(text)
+    file_logger.log(f"📝 Распознано: {command}", "DEBUG")
+    
+    # ====== ПРИВЕТСТВИЕ ======
+    if command['action'] == 'greeting':
+        await update.message.reply_text(
+            "👋 Привет! Я бот для скриншотов и анализа сайтов.\n\n"
+            "Скажи что-то вроде:\n"
+            "• зайди на google.com\n"
+            "• какие кнопки видишь?\n"
+            "• сделай скриншот\n"
+            "• вернись назад"
         )
-        file_logger.log(f"✅ Скриншот отправлен {user}", "INFO")
-        
-        # Сохраняем snapshot в контекст для команды /snapshot
-        context.user_data['snapshot'] = browser.snapshot
-        
-    except Exception as e:
-        error_msg = str(e)
-        file_logger.log(f"❌ Ошибка: {error_msg}", "ERROR")
-        await update.message.reply_text(f"❌ Ошибка: {error_msg}")
-
-async def get_snapshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отправляет структуру страницы (DOM)"""
-    snapshot = context.user_data.get('snapshot', {})
-    
-    if not snapshot or not snapshot.get('elements'):
-        await update.message.reply_text("📭 Сначала отправь URL, чтобы получить snapshot")
         return
     
-    # Формируем отчет
-    elements = snapshot.get('elements', [])[:50]  # Только первые 50 для Telegram
-    
-    # Считаем статистику
-    total = snapshot.get('total', 0)
-    visible = sum(1 for e in elements if e.get('visible', False))
-    interactive = sum(1 for e in elements if e.get('isInteractive', False))
-    
-    report = f"""📊 **Структура страницы**
-
-📌 **Название:** {snapshot.get('title', 'Нет заголовка')}
-🔗 **URL:** {snapshot.get('url', 'Нет URL')}
-
-📈 **Статистика:**
-• Всего элементов: {total}
-• Видимых: {visible}
-• Интерактивных: {interactive}
-
-📋 **Элементы (первые 50):**
-"""
-    
-    for i, el in enumerate(elements[:20], 1):  # Показываем 20 элементов
-        tag = el.get('tag', 'unknown')
-        text = el.get('text', '').replace('\n', ' ')[:50]
-        interactive = '🔘' if el.get('isInteractive') else '📄'
-        visible = '👁️' if el.get('visible') else '👻'
+    # ====== НАВИГАЦИЯ ======
+    if command['action'] == 'navigate':
+        url = command['url']
+        memory.add_action("url", {"url": url})
         
-        report += f"\n{i}. {interactive} `<{tag}>` {visible}"
-        if text:
-            report += f"\n   📝 {text}"
-        if el.get('id'):
-            report += f"\n   🆔 #{el['id']}"
+        await update.message.reply_text(f"🔄 Загружаю {url}...")
+        
+        try:
+            browser = BrowserCDP()
+            screenshot = await browser.navigate_and_screenshot(url)
+            
+            await update.message.reply_photo(
+                screenshot,
+                caption=f"✅ {url}"
+            )
+            file_logger.log(f"✅ Скриншот отправлен {user}", "INFO")
+            
+            memory.set_snapshot(browser.snapshot, url, browser.snapshot.get('title', 'Без названия'))
+            context.user_data['browser'] = browser
+            
+        except Exception as e:
+            error_msg = str(e)
+            file_logger.log(f"❌ Ошибка: {error_msg}", "ERROR")
+            await update.message.reply_text(f"❌ Ошибка: {error_msg}")
+        return
     
-    if total > 20:
-        report += f"\n\n... и ещё {total - 20} элементов"
+    # ====== ВОЗВРАТ НАЗАД ======
+    if command['action'] == 'back':
+        last_url = memory.get_last_url(1)  # Предпоследний
+        if last_url:
+            # Возвращаемся
+            await update.message.reply_text(f"🔄 Возвращаюсь на {last_url}...")
+            
+            try:
+                browser = BrowserCDP()
+                screenshot = await browser.navigate_and_screenshot(last_url)
+                
+                await update.message.reply_photo(
+                    screenshot,
+                    caption=f"✅ {last_url}"
+                )
+                
+                memory.set_snapshot(browser.snapshot, last_url, browser.snapshot.get('title', 'Без названия'))
+                context.user_data['browser'] = browser
+                
+            except Exception as e:
+                await update.message.reply_text(f"❌ Ошибка: {e}")
+        else:
+            await update.message.reply_text("📭 Нет предыдущей страницы")
+        return
     
+    # ====== СКРИНШОТ ======
+    if command['action'] == 'screenshot':
+        if memory.current_url:
+            await update.message.reply_text("📸 Делаю скриншот текущей страницы...")
+            
+            try:
+                browser = context.user_data.get('browser')
+                if browser and browser.ws:
+                    screenshot = await browser.screenshot()
+                    if screenshot:
+                        await update.message.reply_photo(
+                            screenshot,
+                            caption=f"✅ {memory.current_url}"
+                        )
+                        memory.add_action("screenshot", {"url": memory.current_url})
+                        return
+            
+                # Если нет активного браузера, перезагружаем
+                await update.message.reply_text("🔄 Перезагружаю страницу...")
+                browser = BrowserCDP()
+                screenshot = await browser.navigate_and_screenshot(memory.current_url)
+                
+                await update.message.reply_photo(
+                    screenshot,
+                    caption=f"✅ {memory.current_url}"
+                )
+                memory.add_action("screenshot", {"url": memory.current_url})
+                
+            except Exception as e:
+                await update.message.reply_text(f"❌ Ошибка: {e}")
+        else:
+            await update.message.reply_text("📭 Нет загруженной страницы. Сначала отправь URL или скажи 'зайди на google.com'")
+        return
+    
+    # ====== ВОПРОСЫ AI ======
+    if command['action'] == 'ask':
+        question = command['question']
+        
+        if not memory.current_snapshot:
+            await update.message.reply_text("📭 Сначала загрузи страницу (отправь URL или скажи 'зайди на сайт')")
+            return
+        
+        memory.add_action("question", {"question": question})
+        
+        await update.message.reply_text("🤖 Анализирую страницу...")
+        
+        try:
+            # Формируем контекст
+            snapshot = memory.current_snapshot
+            elements = snapshot.get('elements', [])[:30]
+            
+            elements_text = []
+            for el in elements[:20]:
+                tag = el.get('tag', 'unknown')
+                text = el.get('text', '').strip()[:100]
+                attrs = el.get('attrs', {})
+                is_interactive = '🔘' if el.get('isInteractive') else '📄'
+                visible = '👁️' if el.get('visible') else '👻'
+                
+                element_desc = f"{is_interactive} <{tag}> {visible}"
+                if text:
+                    element_desc += f" — «{text}»"
+                if attrs.get('id'):
+                    element_desc += f" (id: {attrs['id']})"
+                if attrs.get('href'):
+                    element_desc += f" (ссылка: {attrs['href'][:50]})"
+                
+                elements_text.append(element_desc)
+            
+            context_text = f"""
+📄 СТРАНИЦА: {snapshot.get('title', 'Без названия')}
+🔗 URL: {snapshot.get('url', 'Нет URL')}
+📊 ВСЕГО ЭЛЕМЕНТОВ: {snapshot.get('total', 0)}
+
+🔍 ОСНОВНЫЕ ЭЛЕМЕНТЫ:
+{chr(10).join(elements_text)}
+"""
+            
+            prompt = f"""
+На основе структуры страницы ответь на вопрос пользователя.
+
+Вопрос: {question}
+
+Инструкции:
+1. Отвечай кратко и по делу
+2. Ссылайся на конкретные элементы (кнопки, ссылки, поля)
+3. Если элемент не найден — скажи об этом
+4. Предложи действия, если нужно
+"""
+            
+            answer = ask_ai(prompt, context_text, memory)
+            await update.message.reply_text(f"🤖 **Ответ:**\n\n{answer}", parse_mode='Markdown')
+            
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+        return
+    
+    # ====== ИСТОРИЯ ======
+    if command['action'] == 'history':
+        history_text = memory.get_history_text()
+        
+        if len(history_text) > 4000:
+            with open('history_temp.txt', 'w', encoding='utf-8') as f:
+                f.write(history_text)
+            
+            with open('history_temp.txt', 'rb') as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename=f"history_{datetime.now().strftime('%Y-%m-%d')}.txt",
+                    caption="📜 История действий"
+                )
+            os.remove('history_temp.txt')
+        else:
+            await update.message.reply_text(f"📜 **История действий:**\n\n{history_text}", parse_mode='Markdown')
+        return
+    
+    # ====== ОЧИСТКА ======
+    if command['action'] == 'clear':
+        context.user_data['memory'] = Memory()
+        await update.message.reply_text("🧹 Память очищена!")
+        return
+    
+    # ====== НЕИЗВЕСТНО ======
     await update.message.reply_text(
-        report,
-        parse_mode='Markdown'
+        "❌ Не понял команду\n\n"
+        "Вот что я умею:\n"
+        "• зайди на google.com\n"
+        "• какие кнопки видишь?\n"
+        "• сделай скриншот\n"
+        "• вернись назад\n"
+        "• покажи историю\n"
+        "• очисти память"
     )
 
 async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -872,25 +1212,30 @@ async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- ЗАПУСК ----------
 def main():
     print("="*50)
-    print("🚀 ЗАПУСК БОТА С МАСКИРОВКОЙ И SNAPSHOT")
+    print("🚀 ЗАПУСК БОТА С ЕСТЕСТВЕННЫМ ЯЗЫКОМ")
     print("="*50)
     print(f"📌 Chrome путь: {CHROME_PATH}")
     print("🕵️ Маскировка: ВСЕГДА ВКЛЮЧЕНА")
-    print("📸 Snapshot: ДОСТУПЕН")
+    print("🧠 Память: ВКЛЮЧЕНА")
+    print("🗣️ Естественный язык: ВКЛЮЧЕН")
+    print(f"🤖 AI модель: {AI_MODEL}")
     print("="*50)
     
     if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "ВАШ_ТОКЕН":
         print("❌ Укажи TELEGRAM_BOT_TOKEN!")
         return
     
+    if not AGNES_API_KEY:
+        print("⚠️ AGNES_API_KEY не указан! AI-функции не будут работать")
+    
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("log", get_log))
-    app.add_handler(CommandHandler("snapshot", get_snapshot_command))  # ← Новая команда
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print("✅ Бот готов!")
-    print("📁 Команды: /start, /log, /snapshot")
+    print("📁 Команды: /start, /log")
+    print("🗣️ Говори как с человеком: 'зайди на google.com', 'какие кнопки?'")
     app.run_polling()
 
 if __name__ == "__main__":
