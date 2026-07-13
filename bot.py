@@ -64,14 +64,17 @@ class BrowserCDP:
     
     def ensure_browser(self):
         """Проверяет и запускает Chrome"""
+        file_logger.log("🔍 Проверяю Chrome...", "INFO")
+        
         # Проверяем, отвечает ли Chrome
         try:
             resp = requests.get(f"http://localhost:{CDP_PORT}/json/version", timeout=2)
             if resp.status_code == 200:
                 file_logger.log("✅ Chrome уже запущен и отвечает", "INFO")
+                file_logger.log(f"📌 Версия: {resp.json().get('Browser', 'unknown')}", "INFO")
                 return True
-        except:
-            pass
+        except Exception as e:
+            file_logger.log(f"⚠️ Chrome не отвечает: {e}", "WARNING")
         
         # Ищем Chrome
         chrome_path = self.find_chrome()
@@ -84,7 +87,7 @@ class BrowserCDP:
         try:
             # Убиваем старые процессы Chrome
             subprocess.run(["pkill", "-f", "chrome"], capture_output=True)
-            time.sleep(1)
+            time.sleep(2)
             
             # Запускаем с правильными флагами
             subprocess.Popen([
@@ -99,8 +102,7 @@ class BrowserCDP:
                 "--user-data-dir=/tmp/chrome-profile"
             ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
-            # Ждем запуска
-            file_logger.log("⏳ Жду запуска Chrome...", "INFO")
+            file_logger.log("⏳ Жду запуска Chrome (5 сек)...", "INFO")
             time.sleep(5)
             
             # Проверяем несколько раз
@@ -121,16 +123,34 @@ class BrowserCDP:
             file_logger.log(f"❌ Ошибка запуска Chrome: {e}", "ERROR")
             return False
     
-    def get_or_create_tab(self):
-        """Создает НОВУЮ вкладку"""
+    def get_or_create_tab(self, url=None):
+        """
+        Создает новую вкладку через правильный HTTP-метод согласно документации CDP
+        Документация: PUT /json/new?{url} или POST /json/new
+        """
         try:
             # Сначала проверяем /json/version
             version_resp = requests.get(f"http://localhost:{CDP_PORT}/json/version", timeout=3)
             file_logger.log(f"✅ Chrome version: {version_resp.json().get('Browser', 'unknown')}", "INFO")
             
-            # Создаем вкладку
-            file_logger.log("🔄 Создаю новую вкладку...", "INFO")
-            resp = requests.get(f"http://localhost:{CDP_PORT}/json/new", timeout=3)
+            # Способ 1: PUT с URL (как в документации)
+            if url:
+                full_url = f"http://localhost:{CDP_PORT}/json/new?{url}"
+            else:
+                full_url = f"http://localhost:{CDP_PORT}/json/new"
+            
+            file_logger.log(f"🔄 Пробую PUT: {full_url}", "INFO")
+            resp = requests.put(full_url, timeout=3)
+            
+            # Способ 2: Если PUT не работает, пробуем POST
+            if resp.status_code == 405:
+                file_logger.log("🔄 PUT вернул 405, пробую POST...", "INFO")
+                resp = requests.post(f"http://localhost:{CDP_PORT}/json/new", timeout=3)
+            
+            # Способ 3: Если POST не работает, пробуем GET (некоторые старые версии)
+            if resp.status_code == 405:
+                file_logger.log("🔄 POST вернул 405, пробую GET (старая версия)...", "INFO")
+                resp = requests.get(f"http://localhost:{CDP_PORT}/json/new", timeout=3)
             
             if resp.status_code != 200:
                 file_logger.log(f"❌ HTTP {resp.status_code}: {resp.text[:200]}", "ERROR")
@@ -142,6 +162,7 @@ class BrowserCDP:
             
             tab = resp.json()
             file_logger.log(f"✅ Вкладка создана: {tab.get('id', 'unknown')}", "INFO")
+            file_logger.log(f"🔗 WebSocket URL: {tab.get('webSocketDebuggerUrl', 'unknown')[:50]}...", "INFO")
             return tab["webSocketDebuggerUrl"], tab["id"]
             
         except requests.exceptions.ConnectionError:
@@ -161,7 +182,7 @@ class BrowserCDP:
             raise Exception("❌ Chrome не доступен")
         
         ws_url, self.target_id = self.get_or_create_tab()
-        file_logger.log(f"🔗 Подключаюсь к WebSocket", "INFO")
+        file_logger.log(f"🔗 Подключаюсь к WebSocket...", "INFO")
         
         try:
             self.ws = await websockets.connect(
@@ -175,10 +196,14 @@ class BrowserCDP:
             raise
         
         # Активируем домены
-        await self.send("Page.enable")
-        await self.send("Runtime.enable")
-        await self.send("Network.enable")
-        file_logger.log("✅ Домены активированы", "INFO")
+        try:
+            await self.send("Page.enable")
+            await self.send("Runtime.enable")
+            await self.send("Network.enable")
+            file_logger.log("✅ Домены активированы", "INFO")
+        except Exception as e:
+            file_logger.log(f"❌ Ошибка активации доменов: {e}", "ERROR")
+            raise
     
     async def send(self, method, params=None):
         """Отправка CDP команды"""
@@ -189,6 +214,7 @@ class BrowserCDP:
             "params": params or {}
         }
         
+        file_logger.log(f"📤 Отправляю: {method}", "DEBUG")
         await self.ws.send(json.dumps(msg))
         
         while True:
@@ -199,7 +225,9 @@ class BrowserCDP:
                 if data.get("id") == self.msg_id:
                     if "error" in data:
                         error_msg = data["error"].get("message", "Unknown CDP error")
-                        raise Exception(f"CDP Error: {error_msg}")
+                        error_code = data["error"].get("code", 0)
+                        raise Exception(f"CDP Error [{error_code}]: {error_msg}")
+                    file_logger.log(f"📥 Получен ответ для {method}", "DEBUG")
                     return data
             except asyncio.TimeoutError:
                 raise Exception("Таймаут ожидания ответа")
@@ -211,15 +239,15 @@ class BrowserCDP:
         
         # Навигация
         try:
-            await self.send("Page.navigate", {"url": url})
-            file_logger.log("✅ Навигация отправлена", "INFO")
+            result = await self.send("Page.navigate", {"url": url})
+            file_logger.log(f"✅ Навигация отправлена", "INFO")
+            
+            # Проверяем frameId
+            if "result" in result and "frameId" in result["result"]:
+                file_logger.log(f"📌 Frame ID: {result['result']['frameId']}", "INFO")
         except Exception as e:
             file_logger.log(f"❌ Ошибка навигации: {e}", "ERROR")
-            # Пробуем через evaluate
-            file_logger.log("🔄 Пробую через window.location", "INFO")
-            await self.send("Runtime.evaluate", {
-                "expression": f"window.location.href = '{url}'"
-            })
+            raise
         
         # Ждем загрузку
         await self.wait_for_page_load()
@@ -248,8 +276,16 @@ class BrowserCDP:
                 file_logger.log(f"📊 ReadyState: {ready_state}", "DEBUG")
                 
                 if ready_state in ["complete", "interactive"]:
-                    file_logger.log(f"✅ Страница загружена", "INFO")
+                    file_logger.log(f"✅ Страница загружена ({ready_state})", "INFO")
                     return True
+                
+                # Проверяем, есть ли body
+                body_result = await self.send("Runtime.evaluate", {
+                    "expression": "document.body !== null"
+                })
+                has_body = body_result.get("result", {}).get("result", {}).get("value", False)
+                if has_body and ready_state == "loading":
+                    file_logger.log("📄 Body загружен, продолжаем...", "DEBUG")
                 
             except Exception as e:
                 file_logger.log(f"⚠️ Ошибка проверки: {e}", "WARNING")
@@ -283,6 +319,7 @@ class BrowserCDP:
                 file_logger.log(f"✅ Скриншот {len(img_data)//1024} KB", "INFO")
                 return img_data
             
+            file_logger.log(f"❌ Нет данных в ответе", "ERROR")
             return None
         except Exception as e:
             file_logger.log(f"❌ Screenshot error: {e}", "ERROR")
@@ -315,8 +352,11 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             screenshot, 
             caption=f"✅ {url}"
         )
+        file_logger.log(f"✅ Скриншот отправлен {user}", "INFO")
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
+        error_msg = str(e)
+        file_logger.log(f"❌ Ошибка: {error_msg}", "ERROR")
+        await update.message.reply_text(f"❌ Ошибка: {error_msg}")
 
 async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
