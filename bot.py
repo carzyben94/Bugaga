@@ -49,6 +49,7 @@ class Memory:
         self.current_url = None
         self.current_title = None
         self.last_action = None
+        self.browser = None  # ← Сохраняем браузер
     
     def add_action(self, action_type, data=None):
         entry = {
@@ -64,14 +65,15 @@ class Memory:
         
         file_logger.log(f"📝 Добавлено в память: {action_type}", "DEBUG")
     
-    def set_snapshot(self, snapshot, url, title):
+    def set_snapshot(self, snapshot, url, title, browser=None):
         self.current_snapshot = snapshot
         self.current_url = url
         self.current_title = title
+        if browser:
+            self.browser = browser
         self.add_action("snapshot", {"url": url, "title": title, "elements": len(snapshot.get('elements', []))})
     
     def get_last_url(self, index=0):
-        """Получает последний URL из истории"""
         snapshots = [a for a in self.history if a['type'] == 'snapshot']
         if snapshots and len(snapshots) > index:
             return snapshots[-(index + 1)].get('data', {}).get('url')
@@ -108,6 +110,13 @@ class Memory:
                 elif action_type == 'question':
                     question = action.get('data', {}).get('question', '')
                     context.append(f"- {timestamp}: Вопрос: {question[:50]}")
+                elif action_type == 'click':
+                    target = action.get('data', {}).get('target', '')
+                    context.append(f"- {timestamp}: Клик по {target}")
+                elif action_type == 'type':
+                    text = action.get('data', {}).get('text', '')
+                    field = action.get('data', {}).get('field', '')
+                    context.append(f"- {timestamp}: Ввод '{text}' в {field}")
         
         return "\n".join(context)
     
@@ -127,6 +136,10 @@ class Memory:
                 lines.append(f"{i}. ❓ [{timestamp}] {data.get('question', '')}")
             elif action_type == 'screenshot':
                 lines.append(f"{i}. 📸 [{timestamp}] Скриншот")
+            elif action_type == 'click':
+                lines.append(f"{i}. 🔘 [{timestamp}] Клик по {data.get('target', '')}")
+            elif action_type == 'type':
+                lines.append(f"{i}. ✏️ [{timestamp}] Ввод '{data.get('text', '')}' в {data.get('field', '')}")
             else:
                 lines.append(f"{i}. ⚡ [{timestamp}] {action_type}")
         
@@ -150,12 +163,6 @@ def parse_command(text):
         (r'перейди\s+(.+)', 'перейди'),
         (r'покажи\s+(.+)', 'покажи'),
         (r'открой сайт\s+(.+)', 'открой сайт'),
-        (r'навигация на\s+(.+)', 'навигация на'),
-        (r'перейти на\s+(.+)', 'перейти на'),
-        (r'загрузи\s+(.+)', 'загрузи'),
-        (r'открыть\s+(.+)', 'открыть'),
-        (r'перейти\s+(.+)', 'перейти'),
-        (r'загрузить\s+(.+)', 'загрузить'),
         (r'сходи на\s+(.+)', 'сходи на'),
         (r'дай\s+(.+)', 'дай'),
     ]
@@ -169,48 +176,74 @@ def parse_command(text):
                 url = 'https://' + url
             return {'action': 'navigate', 'url': url}
     
+    # ====== КЛИК ======
+    click_patterns = [
+        r'нажми\s+на\s+(.+)',
+        r'кликни\s+на\s+(.+)',
+        r'нажми\s+(.+)',
+        r'кликни\s+(.+)',
+        r'тапни\s+(.+)',
+        r'нажать\s+(.+)',
+    ]
+    for pattern in click_patterns:
+        match = re.search(pattern, text_lower)
+        if match:
+            target = match.group(1).strip()
+            return {'action': 'click', 'target': target}
+    
+    # ====== ВВОД ТЕКСТА ======
+    type_patterns = [
+        r'введи\s+["\']?(.+?)["\']?\s+в\s+(.+)',
+        r'напиши\s+["\']?(.+?)["\']?\s+в\s+(.+)',
+        r'вставь\s+["\']?(.+?)["\']?\s+в\s+(.+)',
+        r'напечатай\s+["\']?(.+?)["\']?\s+в\s+(.+)',
+        r'ввести\s+["\']?(.+?)["\']?\s+в\s+(.+)',
+    ]
+    for pattern in type_patterns:
+        match = re.search(pattern, text_lower)
+        if match:
+            text_input = match.group(1).strip()
+            field = match.group(2).strip()
+            return {'action': 'type', 'text': text_input, 'field': field}
+    
+    # ====== ОТПРАВКА ФОРМЫ ======
+    submit_keywords = ['отправь форму', 'сабмит', 'отправить', 'submit', 'войти', 'залогиниться']
+    if any(keyword in text_lower for keyword in submit_keywords):
+        return {'action': 'submit'}
+    
     # ====== ВОЗВРАТ НАЗАД ======
-    if any(word in text_lower for word in ['назад', 'вернись', 'вернуться', 'предыдущий', 'возврат']):
+    if any(word in text_lower for word in ['назад', 'вернись', 'вернуться', 'предыдущий']):
         return {'action': 'back'}
     
     # ====== СКРИНШОТ ======
-    screenshot_keywords = ['скриншот', 'скрин', 'фото', 'сфоткай', 'покажи страницу', 'сделай фото', 
-                          'сделай скрин', 'сними', 'покажи скрин', 'сфотографируй', 'снимок']
+    screenshot_keywords = ['скриншот', 'скрин', 'фото', 'сфоткай', 'сделай скрин', 'сними']
     if any(keyword in text_lower for keyword in screenshot_keywords):
         return {'action': 'screenshot'}
     
-    # ====== ВОПРОСЫ (РАСШИРЕННЫЕ) ======
+    # ====== ВОПРОСЫ ======
     question_keywords = [
         'какие', 'что', 'есть ли', 'где', 'когда', 'почему', 'сколько',
         'какой', 'какая', 'какое', 'покажи', 'найди', 'расскажи', 'опиши',
         'поля', 'формы', 'инпуты', 'элементы', 'кнопки', 'ссылки', 'меню',
-        'картинки', 'видео', 'заголовки', 'списки', 'таблицы', 'параграфы'
+        'картинки', 'видео', 'заголовки'
     ]
     
-    if any(keyword in text_lower for keyword in question_keywords):
-        return {'action': 'ask', 'question': text}
-    
-    if '?' in text:
+    if any(keyword in text_lower for keyword in question_keywords) or '?' in text:
         return {'action': 'ask', 'question': text}
     
     # ====== ИСТОРИЯ ======
-    history_keywords = ['история', 'что было', 'что я спрашивал', 'помнишь', 'покажи историю', 
-                       'список', 'действия', 'что делал']
+    history_keywords = ['история', 'что было', 'помнишь', 'список', 'действия']
     if any(keyword in text_lower for keyword in history_keywords):
         return {'action': 'history'}
     
     # ====== ОЧИСТКА ======
-    clear_keywords = ['очисти', 'забудь', 'сбрось', 'удали память', 'стереть', 'очистить', 'сбросить']
+    clear_keywords = ['очисти', 'забудь', 'сбрось', 'удали']
     if any(keyword in text_lower for keyword in clear_keywords):
         return {'action': 'clear'}
     
     # ====== ПРИВЕТСТВИЕ ======
-    if any(word in text_lower for word in ['привет', 'здравствуй', 'салам', 'hello', 'hi', 'хай', 'здарова']):
+    if any(word in text_lower for word in ['привет', 'здравствуй', 'hello', 'hi']):
         return {'action': 'greeting'}
-    
-    # ====== ПОМОЩЬ ======
-    if any(word in text_lower for word in ['помоги', 'что умеешь', 'как работать', 'справка', 'help']):
-        return {'action': 'help'}
     
     return {'action': 'unknown'}
 
@@ -223,7 +256,7 @@ def ask_ai(prompt, context=None, memory=None):
         
         messages = []
         
-        system_prompt = "Ты - умный AI-ассистент для анализа веб-страниц. Отвечай кратко, понятно и по делу. Если спрашивают про элементы, перечисли их с пояснениями."
+        system_prompt = "Ты - умный AI-ассистент для анализа веб-страниц. Отвечай кратко, понятно и по делу."
         
         if memory:
             memory_context = memory.get_context_for_ai()
@@ -823,6 +856,134 @@ class BrowserCDP:
             file_logger.log(f"❌ Ошибка маскировки: {e}", "ERROR")
             return False
     
+    # ========== НОВЫЕ ФУНКЦИИ ДЛЯ ДЕЙСТВИЙ ==========
+    
+    async def click_element(self, target):
+        """Кликает по элементу"""
+        try:
+            # Ищем элемент по тексту или селектору
+            selectors = [
+                f"button:contains('{target}')",
+                f"a:contains('{target}')",
+                f"[aria-label*='{target}']",
+                f"[placeholder*='{target}']",
+                f"[class*='{target}']",
+                f"#{target}"
+            ]
+            
+            # Пробуем найти через JS
+            js = f"""
+                (function() {{
+                    const targets = ['{target}'];
+                    const elements = document.querySelectorAll('button, a, input, div[role="button"]');
+                    
+                    for (let el of elements) {{
+                        const text = (el.textContent || '').trim().toLowerCase();
+                        const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                        const placeholder = (el.getAttribute('placeholder') || '').toLowerCase();
+                        const id = (el.id || '').toLowerCase();
+                        const cls = (el.className || '').toLowerCase();
+                        
+                        const target_lower = '{target}'.toLowerCase();
+                        
+                        if (text.includes(target_lower) || 
+                            aria.includes(target_lower) || 
+                            placeholder.includes(target_lower) ||
+                            id.includes(target_lower) ||
+                            cls.includes(target_lower)) {{
+                            el.click();
+                            return true;
+                        }}
+                    }}
+                    return false;
+                }})()
+            """
+            
+            result = await self.eval_js(js)
+            
+            if result:
+                file_logger.log(f"✅ Кликнул по {target}", "INFO")
+                return True
+            else:
+                file_logger.log(f"❌ Элемент {target} не найден", "WARNING")
+                return False
+                
+        except Exception as e:
+            file_logger.log(f"❌ Ошибка клика: {e}", "ERROR")
+            return False
+    
+    async def type_text(self, text, field):
+        """Вводит текст в поле"""
+        try:
+            js = f"""
+                (function() {{
+                    const field_lower = '{field}'.toLowerCase();
+                    const elements = document.querySelectorAll('input, textarea, [contenteditable="true"]');
+                    
+                    for (let el of elements) {{
+                        const placeholder = (el.getAttribute('placeholder') || '').toLowerCase();
+                        const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                        const id = (el.id || '').toLowerCase();
+                        const cls = (el.className || '').toLowerCase();
+                        const name = (el.getAttribute('name') || '').toLowerCase();
+                        
+                        if (placeholder.includes(field_lower) || 
+                            aria.includes(field_lower) || 
+                            id.includes(field_lower) ||
+                            cls.includes(field_lower) ||
+                            name.includes(field_lower)) {{
+                            el.focus();
+                            el.value = '';
+                            el.value = '{text}';
+                            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                            return true;
+                        }}
+                    }}
+                    return false;
+                }})()
+            """
+            
+            result = await self.eval_js(js)
+            
+            if result:
+                file_logger.log(f"✅ Ввел '{text}' в поле {field}", "INFO")
+                return True
+            else:
+                file_logger.log(f"❌ Поле {field} не найдено", "WARNING")
+                return False
+                
+        except Exception as e:
+            file_logger.log(f"❌ Ошибка ввода: {e}", "ERROR")
+            return False
+    
+    async def submit_form(self):
+        """Отправляет форму (находит первую форму и сабмитит)"""
+        try:
+            js = """
+                (function() {
+                    const form = document.querySelector('form');
+                    if (form) {
+                        form.submit();
+                        return true;
+                    }
+                    return false;
+                })()
+            """
+            
+            result = await self.eval_js(js)
+            
+            if result:
+                file_logger.log("✅ Форма отправлена", "INFO")
+                return True
+            else:
+                file_logger.log("❌ Форма не найдена", "WARNING")
+                return False
+                
+        except Exception as e:
+            file_logger.log(f"❌ Ошибка отправки формы: {e}", "ERROR")
+            return False
+    
     async def get_snapshot(self):
         try:
             file_logger.log("📸 Делаю слепок страницы...", "INFO")
@@ -860,8 +1021,7 @@ class BrowserCDP:
                         const important = ['button', 'a', 'input', 'textarea', 'select', 'form',
                                           'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'img', 'video',
                                           'iframe', 'div', 'span', 'section', 'article', 'nav',
-                                          'header', 'footer', 'main', 'aside', 'ul', 'ol', 'li',
-                                          'table', 'tr', 'td'];
+                                          'header', 'footer', 'main', 'aside', 'ul', 'ol', 'li'];
                         
                         if (important.includes(tag) || isInteractive || attrs['data-testid'] || attrs['aria-label']) {
                             result.push({
@@ -928,7 +1088,6 @@ class BrowserCDP:
         if not screenshot_data:
             raise Exception("Не удалось получить скриншот")
         
-        await self.ws.close()
         return screenshot_data
     
     async def wait_for_page_load(self):
@@ -989,11 +1148,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['memory'] = Memory()
     
     await update.message.reply_text(
-        "👋 Привет! Я бот для скриншотов и анализа сайтов.\n\n"
+        "👋 Привет! Я бот для скриншотов, анализа и действий на сайтах.\n\n"
         "🗣️ Говори со мной как с человеком:\n"
         "• зайди на google.com\n"
         "• какие кнопки видишь?\n"
-        "• какие поля ввода?\n"
+        "• нажми на кнопку 'Поиск'\n"
+        "• введи 'погода' в поле поиска\n"
+        "• отправь форму\n"
         "• сделай скриншот\n"
         "• вернись назад\n"
         "• покажи историю\n\n"
@@ -1004,7 +1165,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     user = update.effective_user.first_name
-    user_id = update.effective_user.id
     
     if 'memory' not in context.user_data:
         context.user_data['memory'] = Memory()
@@ -1018,38 +1178,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ====== ПРИВЕТСТВИЕ ======
     if command['action'] == 'greeting':
         await update.message.reply_text(
-            "👋 Привет! Я бот для скриншотов и анализа сайтов.\n\n"
+            "👋 Привет! Я бот для скриншотов, анализа и действий на сайтах.\n\n"
             "Скажи что-то вроде:\n"
             "• зайди на google.com\n"
             "• какие кнопки видишь?\n"
-            "• сделай скриншот\n"
-            "• вернись назад"
-        )
-        return
-    
-    # ====== ПОМОЩЬ ======
-    if command['action'] == 'help':
-        await update.message.reply_text(
-            "🤖 **Что я умею:**\n\n"
-            "🌐 **Навигация:**\n"
-            "• зайди на google.com\n"
-            "• открой ютуб\n"
-            "• перейди на x.com\n\n"
-            
-            "❓ **Вопросы:**\n"
-            "• какие кнопки видишь?\n"
-            "• какие поля ввода?\n"
-            "• есть ли форма входа?\n"
-            "• что в меню?\n"
-            "• найди ссылку на вход\n\n"
-            
-            "📸 **Действия:**\n"
-            "• сделай скриншот\n"
-            "• вернись назад\n"
-            "• покажи историю\n"
-            "• очисти память\n\n"
-            
-            "🕵️ Маскировка: ВСЕГДА ВКЛЮЧЕНА"
+            "• нажми на кнопку 'Поиск'\n"
+            "• введи 'погода' в поле поиска"
         )
         return
     
@@ -1070,13 +1204,119 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             file_logger.log(f"✅ Скриншот отправлен {user}", "INFO")
             
-            memory.set_snapshot(browser.snapshot, url, browser.snapshot.get('title', 'Без названия'))
+            memory.set_snapshot(browser.snapshot, url, browser.snapshot.get('title', 'Без названия'), browser)
             context.user_data['browser'] = browser
             
         except Exception as e:
             error_msg = str(e)
             file_logger.log(f"❌ Ошибка: {error_msg}", "ERROR")
             await update.message.reply_text(f"❌ Ошибка: {error_msg}")
+        return
+    
+    # ====== КЛИК ======
+    if command['action'] == 'click':
+        target = command['target']
+        
+        if not memory.browser:
+            await update.message.reply_text("📭 Нет загруженной страницы. Сначала отправь URL")
+            return
+        
+        await update.message.reply_text(f"🔘 Ищу и кликаю по '{target}'...")
+        
+        try:
+            result = await memory.browser.click_element(target)
+            if result:
+                memory.add_action("click", {"target": target})
+                await update.message.reply_text(f"✅ Кликнул по '{target}'")
+                
+                # Обновляем snapshot после клика
+                await memory.browser.get_snapshot()
+                memory.set_snapshot(
+                    memory.browser.snapshot,
+                    memory.current_url,
+                    memory.browser.snapshot.get('title', 'Без названия'),
+                    memory.browser
+                )
+                
+                # Делаем скриншот после клика
+                screenshot = await memory.browser.screenshot()
+                if screenshot:
+                    await update.message.reply_photo(
+                        screenshot,
+                        caption=f"✅ После клика на '{target}'"
+                    )
+            else:
+                await update.message.reply_text(f"❌ Элемент '{target}' не найден")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+        return
+    
+    # ====== ВВОД ТЕКСТА ======
+    if command['action'] == 'type':
+        text_input = command['text']
+        field = command['field']
+        
+        if not memory.browser:
+            await update.message.reply_text("📭 Нет загруженной страницы. Сначала отправь URL")
+            return
+        
+        await update.message.reply_text(f"✏️ Ввожу '{text_input}' в поле '{field}'...")
+        
+        try:
+            result = await memory.browser.type_text(text_input, field)
+            if result:
+                memory.add_action("type", {"text": text_input, "field": field})
+                await update.message.reply_text(f"✅ Ввел '{text_input}' в поле '{field}'")
+                
+                # Обновляем snapshot
+                await memory.browser.get_snapshot()
+                memory.set_snapshot(
+                    memory.browser.snapshot,
+                    memory.current_url,
+                    memory.browser.snapshot.get('title', 'Без названия'),
+                    memory.browser
+                )
+            else:
+                await update.message.reply_text(f"❌ Поле '{field}' не найдено")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+        return
+    
+    # ====== ОТПРАВКА ФОРМЫ ======
+    if command['action'] == 'submit':
+        if not memory.browser:
+            await update.message.reply_text("📭 Нет загруженной страницы. Сначала отправь URL")
+            return
+        
+        await update.message.reply_text("📤 Отправляю форму...")
+        
+        try:
+            result = await memory.browser.submit_form()
+            if result:
+                memory.add_action("submit", {})
+                await update.message.reply_text("✅ Форма отправлена")
+                
+                # Ждем загрузки
+                await memory.browser.wait_for_page_load()
+                await memory.browser.get_snapshot()
+                memory.set_snapshot(
+                    memory.browser.snapshot,
+                    memory.current_url,
+                    memory.browser.snapshot.get('title', 'Без названия'),
+                    memory.browser
+                )
+                
+                # Делаем скриншот
+                screenshot = await memory.browser.screenshot()
+                if screenshot:
+                    await update.message.reply_photo(
+                        screenshot,
+                        caption="✅ После отправки формы"
+                    )
+            else:
+                await update.message.reply_text("❌ Форма не найдена")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка: {e}")
         return
     
     # ====== ВОЗВРАТ НАЗАД ======
@@ -1094,7 +1334,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     caption=f"✅ {last_url}"
                 )
                 
-                memory.set_snapshot(browser.snapshot, last_url, browser.snapshot.get('title', 'Без названия'))
+                memory.set_snapshot(browser.snapshot, last_url, browser.snapshot.get('title', 'Без названия'), browser)
                 context.user_data['browser'] = browser
                 
             except Exception as e:
@@ -1105,35 +1345,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ====== СКРИНШОТ ======
     if command['action'] == 'screenshot':
-        if memory.current_url:
+        if memory.current_url and memory.browser:
             await update.message.reply_text("📸 Делаю скриншот текущей страницы...")
             
             try:
-                browser = context.user_data.get('browser')
-                if browser and browser.ws:
-                    screenshot = await browser.screenshot()
-                    if screenshot:
-                        await update.message.reply_photo(
-                            screenshot,
-                            caption=f"✅ {memory.current_url}"
-                        )
-                        memory.add_action("screenshot", {"url": memory.current_url})
-                        return
-            
-                await update.message.reply_text("🔄 Перезагружаю страницу...")
-                browser = BrowserCDP()
-                screenshot = await browser.navigate_and_screenshot(memory.current_url)
-                
-                await update.message.reply_photo(
-                    screenshot,
-                    caption=f"✅ {memory.current_url}"
-                )
-                memory.add_action("screenshot", {"url": memory.current_url})
-                
+                screenshot = await memory.browser.screenshot()
+                if screenshot:
+                    await update.message.reply_photo(
+                        screenshot,
+                        caption=f"✅ {memory.current_url}"
+                    )
+                    memory.add_action("screenshot", {"url": memory.current_url})
+                else:
+                    await update.message.reply_text("❌ Не удалось сделать скриншот")
             except Exception as e:
                 await update.message.reply_text(f"❌ Ошибка: {e}")
         else:
-            await update.message.reply_text("📭 Нет загруженной страницы. Сначала отправь URL или скажи 'зайди на google.com'")
+            await update.message.reply_text("📭 Нет загруженной страницы. Сначала отправь URL")
         return
     
     # ====== ВОПРОСЫ AI ======
@@ -1141,7 +1369,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         question = command['question']
         
         if not memory.current_snapshot:
-            await update.message.reply_text("📭 Сначала загрузи страницу (отправь URL или скажи 'зайди на сайт')")
+            await update.message.reply_text("📭 Сначала загрузи страницу (отправь URL)")
             return
         
         memory.add_action("question", {"question": question})
@@ -1165,16 +1393,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     element_desc += f" — «{text}»"
                 if attrs.get('id'):
                     element_desc += f" (id: {attrs['id']})"
-                if attrs.get('class'):
-                    element_desc += f" (class: {attrs['class'][:30]})"
-                if attrs.get('href'):
-                    element_desc += f" (ссылка: {attrs['href'][:50]})"
                 if attrs.get('type'):
                     element_desc += f" (type: {attrs['type']})"
                 if attrs.get('placeholder'):
                     element_desc += f" (placeholder: {attrs['placeholder']})"
-                if attrs.get('role'):
-                    element_desc += f" (role: {attrs['role']})"
                 
                 elements_text.append(element_desc)
             
@@ -1194,11 +1416,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 Инструкции:
 1. Отвечай кратко и по делу
-2. Ссылайся на конкретные элементы (кнопки, ссылки, поля)
+2. Ссылайся на конкретные элементы
 3. Если элемент не найден — скажи об этом
-4. Перечисли все найденные элементы с пояснениями
-5. Если спрашивают про поля — покажи все input, textarea, select
-6. Если спрашивают про кнопки — покажи все button и a с role=button
 """
             
             answer = ask_ai(prompt, context_text, memory)
@@ -1234,17 +1453,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # ====== НЕИЗВЕСТНО ======
-    file_logger.log(f"⚠️ Неизвестная команда: {text[:50]}", "WARNING")
     await update.message.reply_text(
         "❌ Не понял команду\n\n"
         "Вот что я умею:\n"
         "• зайди на google.com\n"
         "• какие кнопки видишь?\n"
-        "• какие поля ввода?\n"
+        "• нажми на кнопку 'Поиск'\n"
+        "• введи 'погода' в поле поиска\n"
+        "• отправь форму\n"
         "• сделай скриншот\n"
         "• вернись назад\n"
-        "• покажи историю\n"
-        "• /start — справка"
+        "• покажи историю"
     )
 
 async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1264,12 +1483,15 @@ async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- ЗАПУСК ----------
 def main():
     print("="*50)
-    print("🚀 ЗАПУСК БОТА С ЕСТЕСТВЕННЫМ ЯЗЫКОМ")
+    print("🚀 ЗАПУСК БОТА С ДЕЙСТВИЯМИ")
     print("="*50)
     print(f"📌 Chrome путь: {CHROME_PATH}")
     print("🕵️ Маскировка: ВСЕГДА ВКЛЮЧЕНА")
     print("🧠 Память: ВКЛЮЧЕНА")
     print("🗣️ Естественный язык: ВКЛЮЧЕН")
+    print("🔘 Клики: ВКЛЮЧЕНЫ")
+    print("✏️ Ввод текста: ВКЛЮЧЕН")
+    print("📤 Отправка форм: ВКЛЮЧЕНА")
     print(f"🤖 AI модель: {AI_MODEL}")
     print("="*50)
     
@@ -1287,7 +1509,11 @@ def main():
     
     print("✅ Бот готов!")
     print("📁 Команды: /start, /log")
-    print("🗣️ Говори как с человеком: 'зайди на google.com', 'какие кнопки?'")
+    print("🗣️ Говори как с человеком:")
+    print("   • зайди на google.com")
+    print("   • нажми на кнопку 'Поиск'")
+    print("   • введи 'погода' в поле поиска")
+    print("   • отправь форму")
     app.run_polling()
 
 if __name__ == "__main__":
