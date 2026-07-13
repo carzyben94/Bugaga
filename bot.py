@@ -16,7 +16,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "ВАШ_ТОКЕН")
 CHROME_PATH = os.getenv("CHROME_PATH", "/usr/bin/google-chrome")
 CDP_PORT = 9222
 
-# ---------- КУКИ (глобальный формат) ----------
+# ---------- КУКИ ----------
 COOKIES = [
     {"name": "__cuid", "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"},
     {"name": "lang", "value": "ru"},
@@ -563,10 +563,173 @@ class BrowserCDP:
                     raise Exception(f"CDP Error [{error_code}]: {error_msg}")
                 return data
     
+    # ========== НОВЫЕ МЕТОДЫ ДЛЯ ДЕЙСТВИЙ НА САЙТЕ ==========
+    
+    async def click(self, selector, timeout=10):
+        """Кликает на элемент по CSS-селектору"""
+        file_logger.log(f"Клик на {selector}", "INFO")
+        
+        # Ждём появления элемента
+        result = await self.send("Runtime.evaluate", {
+            "expression": f"""
+                new Promise((resolve) => {{
+                    const start = Date.now();
+                    const check = () => {{
+                        const el = document.querySelector('{selector}');
+                        if (el) {{
+                            resolve(true);
+                        }} else if (Date.now() - start > {timeout * 1000}) {{
+                            resolve(false);
+                        }} else {{
+                            setTimeout(check, 100);
+                        }}
+                    }};
+                    check();
+                }});
+            """
+        }, session_id=self.session_id)
+        
+        if result.get("result", {}).get("value") != True:
+            file_logger.log(f"Элемент {selector} не найден", "WARNING")
+            return False
+        
+        # Кликаем
+        await self.send("Runtime.evaluate", {
+            "expression": f"document.querySelector('{selector}').click();"
+        }, session_id=self.session_id)
+        
+        file_logger.log(f"Клик на {selector} выполнен", "INFO")
+        return True
+    
+    async def type_text(self, selector, text, timeout=10):
+        """Вводит текст в поле по CSS-селектору"""
+        file_logger.log(f"Ввод текста в {selector}", "INFO")
+        
+        # Ждём появления элемента
+        result = await self.send("Runtime.evaluate", {
+            "expression": f"""
+                new Promise((resolve) => {{
+                    const start = Date.now();
+                    const check = () => {{
+                        const el = document.querySelector('{selector}');
+                        if (el) {{
+                            resolve(true);
+                        }} else if (Date.now() - start > {timeout * 1000}) {{
+                            resolve(false);
+                        }} else {{
+                            setTimeout(check, 100);
+                        }}
+                    }};
+                    check();
+                }});
+            """
+        }, session_id=self.session_id)
+        
+        if result.get("result", {}).get("value") != True:
+            file_logger.log(f"Элемент {selector} не найден", "WARNING")
+            return False
+        
+        # Вводим текст
+        escaped_text = text.replace("'", "\\'").replace('"', '\\"')
+        await self.send("Runtime.evaluate", {
+            "expression": f"""
+                const el = document.querySelector('{selector}');
+                el.value = '{escaped_text}';
+                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            """
+        }, session_id=self.session_id)
+        
+        file_logger.log(f"Текст введён в {selector}", "INFO")
+        return True
+    
+    async def get_text(self, selector, timeout=10):
+        """Получает текст элемента по CSS-селектору"""
+        file_logger.log(f"Получение текста из {selector}", "INFO")
+        
+        result = await self.send("Runtime.evaluate", {
+            "expression": f"""
+                (function() {{
+                    const start = Date.now();
+                    while (Date.now() - start < {timeout * 1000}) {{
+                        const el = document.querySelector('{selector}');
+                        if (el) {{
+                            return el.innerText || el.textContent || '';
+                        }}
+                        // Ждём 100ms
+                        const end = Date.now() + 100;
+                        while (Date.now() < end) {{}}
+                    }}
+                    return null;
+                }})();
+            """
+        }, session_id=self.session_id)
+        
+        text = result.get("result", {}).get("value")
+        if text:
+            file_logger.log(f"Текст получен: {text[:50]}...", "INFO")
+        else:
+            file_logger.log(f"Элемент {selector} не найден", "WARNING")
+        
+        return text
+    
+    async def scroll_to(self, selector=None, position="bottom"):
+        """Скроллит страницу"""
+        if selector:
+            # Скролл к элементу
+            await self.send("Runtime.evaluate", {
+                "expression": f"""
+                    const el = document.querySelector('{selector}');
+                    if (el) el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+                """
+            }, session_id=self.session_id)
+            file_logger.log(f"Скролл к {selector}", "INFO")
+        else:
+            # Скролл вниз или вверх
+            if position == "bottom":
+                await self.send("Runtime.evaluate", {
+                    "expression": "window.scrollTo(0, document.body.scrollHeight);"
+                }, session_id=self.session_id)
+            else:
+                await self.send("Runtime.evaluate", {
+                    "expression": "window.scrollTo(0, 0);"
+                }, session_id=self.session_id)
+            file_logger.log(f"Скролл {position}", "INFO")
+    
+    async def wait_for_element(self, selector, timeout=10):
+        """Ожидает появления элемента"""
+        result = await self.send("Runtime.evaluate", {
+            "expression": f"""
+                new Promise((resolve) => {{
+                    const start = Date.now();
+                    const check = () => {{
+                        const el = document.querySelector('{selector}');
+                        if (el) {{
+                            resolve(true);
+                        }} else if (Date.now() - start > {timeout * 1000}) {{
+                            resolve(false);
+                        }} else {{
+                            setTimeout(check, 100);
+                        }}
+                    }};
+                    check();
+                }});
+            """
+        }, session_id=self.session_id)
+        
+        found = result.get("result", {}).get("value") == True
+        if found:
+            file_logger.log(f"Элемент {selector} найден", "INFO")
+        else:
+            file_logger.log(f"Элемент {selector} не найден за {timeout}с", "WARNING")
+        
+        return found
+    
     async def navigate_and_screenshot(self, url):
+        """Навигация и создание скриншота с возможностью действий"""
         file_logger.log(f"Навигация на {url}", "INFO")
         await self.connect()
         
+        # Устанавливаем разрешение
         await self.send("Emulation.setDeviceMetricsOverride", {
             "width": 1280,
             "height": 720,
@@ -576,15 +739,18 @@ class BrowserCDP:
         }, session_id=self.session_id)
         file_logger.log("Установлено разрешение: 1280x720", "INFO")
         
+        # Переходим на целевой URL
         if "x.com" not in url and "twitter.com" not in url:
             await self.send("Page.navigate", {"url": url}, session_id=self.session_id)
             file_logger.log("Навигация на целевой URL", "INFO")
         else:
             file_logger.log("Уже на X.com", "INFO")
         
+        # Ждём загрузку
         await asyncio.sleep(5)
         
-        file_logger.log("Делаю скриншот (1280x720)...", "INFO")
+        # Делаем скриншот
+        file_logger.log("Делаю скриншот...", "INFO")
         screenshot_data = None
         
         for attempt in range(3):
@@ -596,14 +762,14 @@ class BrowserCDP:
                 
                 if "result" in result and "data" in result["result"]:
                     screenshot_data = result["result"]["data"]
-                    file_logger.log(f"Скриншот создан для {url} (JPEG, 1280x720)", "INFO")
+                    file_logger.log(f"Скриншот создан (JPEG, 1280x720)", "INFO")
                     break
             except Exception as e:
                 file_logger.log(f"Попытка {attempt+1} не удалась: {e}", "WARNING")
                 await asyncio.sleep(1)
         
         if not screenshot_data:
-            raise Exception("Не удалось получить скриншот после 3 попыток")
+            raise Exception("Не удалось получить скриншот")
         
         try:
             await self.send("Target.closeTarget", {"targetId": self.target_id})
@@ -621,7 +787,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_logger.log(f"Пользователь {user} (ID: {user_id}) запустил бота", "INFO")
     
     await update.message.reply_text(
-        "📁 /log — получить файл логов"
+        "📁 /log — получить файл логов\n\n"
+        "🔧 Бот умеет:\n"
+        "• Делать скриншоты (отправь URL)\n"
+        "• Кликать на элементы\n"
+        "• Вводить текст\n"
+        "• Парсить данные"
     )
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -647,6 +818,90 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         error_msg = str(e)
         file_logger.log(f"Ошибка для {user} ({url}): {error_msg}", "ERROR")
         await update.message.reply_text(f"❌ Ошибка: {error_msg}")
+
+# ========== НОВЫЕ КОМАНДЫ ДЛЯ ДЕЙСТВИЙ ==========
+
+async def click_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для клика по селектору: /click selector"""
+    user = update.effective_user.first_name
+    user_id = update.effective_user.id
+    
+    if not context.args:
+        await update.message.reply_text("❌ Укажи селектор: /click button#submit")
+        return
+    
+    selector = " ".join(context.args)
+    file_logger.log(f"Пользователь {user} (ID: {user_id}) кликает на {selector}", "INFO")
+    
+    await update.message.reply_text(f"🔄 Кликаю на {selector}...")
+    
+    try:
+        browser = BrowserCDP()
+        await browser.connect()
+        result = await browser.click(selector)
+        await browser.ws.close()
+        
+        if result:
+            await update.message.reply_text(f"✅ Клик на {selector} выполнен")
+        else:
+            await update.message.reply_text(f"❌ Элемент {selector} не найден")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+async def type_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для ввода текста: /type selector текст"""
+    user = update.effective_user.first_name
+    user_id = update.effective_user.id
+    
+    if len(context.args) < 2:
+        await update.message.reply_text("❌ Укажи селектор и текст: /type input#name Привет")
+        return
+    
+    selector = context.args[0]
+    text = " ".join(context.args[1:])
+    file_logger.log(f"Пользователь {user} (ID: {user_id}) вводит '{text}' в {selector}", "INFO")
+    
+    await update.message.reply_text(f"🔄 Ввожу текст в {selector}...")
+    
+    try:
+        browser = BrowserCDP()
+        await browser.connect()
+        result = await browser.type_text(selector, text)
+        await browser.ws.close()
+        
+        if result:
+            await update.message.reply_text(f"✅ Текст введён в {selector}")
+        else:
+            await update.message.reply_text(f"❌ Элемент {selector} не найден")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+async def get_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для получения текста: /get selector"""
+    user = update.effective_user.first_name
+    user_id = update.effective_user.id
+    
+    if not context.args:
+        await update.message.reply_text("❌ Укажи селектор: /get article")
+        return
+    
+    selector = " ".join(context.args)
+    file_logger.log(f"Пользователь {user} (ID: {user_id}) получает текст из {selector}", "INFO")
+    
+    await update.message.reply_text(f"🔄 Получаю текст из {selector}...")
+    
+    try:
+        browser = BrowserCDP()
+        await browser.connect()
+        text = await browser.get_text(selector)
+        await browser.ws.close()
+        
+        if text:
+            await update.message.reply_text(f"📝 Текст:\n{text[:1000]}")
+        else:
+            await update.message.reply_text(f"❌ Элемент {selector} не найден или пуст")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
 
 async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user.first_name
@@ -680,7 +935,7 @@ async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- ЗАПУСК ----------
 def main():
     file_logger.log("="*50, "INFO")
-    file_logger.log("БОТ ЗАПУЩЕН", "INFO")
+    file_logger.log("БОТ ЗАПУЩЕН (С DOM-ДЕЙСТВИЯМИ)", "INFO")
     file_logger.log(f"Chrome путь: {CHROME_PATH}", "INFO")
     file_logger.log(f"CDP порт: {CDP_PORT}", "INFO")
     file_logger.log("WebSocket лимит: 15 MB", "INFO")
@@ -695,12 +950,20 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("log", get_log))
+    app.add_handler(CommandHandler("click", click_command))
+    app.add_handler(CommandHandler("type", type_command))
+    app.add_handler(CommandHandler("get", get_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     
     print("🚀 Бот запущен!")
+    print("📁 Команды:")
+    print("  /start - меню")
+    print("  /log - получить логи")
+    print("  /click selector - кликнуть на элемент")
+    print("  /type selector текст - ввести текст")
+    print("  /get selector - получить текст")
+    print("  URL - сделать скриншот")
     print(f"🍪 Куки: {len(COOKIES)} (X.com)")
-    print("📁 Команды: /start, /log")
-    print("🖼️ Разрешение скриншотов: 1280x720")
     
     app.run_polling()
 
