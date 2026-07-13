@@ -25,6 +25,28 @@ AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
 AGNES_API_URL = os.environ.get("AGNES_API_URL", "https://apihub.agnes-ai.com/v1/chat/completions")
 AI_MODEL = "agnes-2.0-flash"
 
+# ---------- СЛОВАРИ СИНОНИМОВ ----------
+SYNONYMS = {
+    'поиск': ['поиск', 'search', 'найти', 'find', 'query', 'запрос', 'искать', 'поискать'],
+    'вход': ['вход', 'войти', 'login', 'sign in', 'log in', 'войдите', 'залогиниться'],
+    'регистрация': ['регистрация', 'зарегистрироваться', 'sign up', 'register', 'создать аккаунт'],
+    'отправить': ['отправить', 'send', 'submit', 'послать', 'отправить форму'],
+    'закрыть': ['закрыть', 'close', 'закрой', 'х', 'закрыть окно'],
+    'имя': ['имя', 'name', 'ваше имя', 'first name', 'last name'],
+    'email': ['email', 'e-mail', 'почта', 'эл. почта', 'электронная почта'],
+    'пароль': ['пароль', 'password', 'pass', 'пороль'],
+    'телефон': ['телефон', 'phone', 'номер', 'мобильный', 'tel'],
+    'сообщение': ['сообщение', 'message', 'текст', 'comment', 'комментарий'],
+}
+
+def get_meaning(text):
+    """Определяет смысл текста по словарю синонимов"""
+    text_lower = text.lower().strip()
+    for meaning, synonyms in SYNONYMS.items():
+        if any(synonym in text_lower for synonym in synonyms):
+            return meaning
+    return None
+
 # ---------- ЛОГИРОВАНИЕ ----------
 LOG_FILE = "bot_logs.txt"
 
@@ -92,12 +114,13 @@ class Memory:
                 for el in elements[:15]:
                     tag = el.get('tag', 'unknown')
                     text = el.get('text', '').strip()[:50]
+                    meaning = el.get('meaning', '')
                     if text:
-                        context.append(f"- <{tag}>: {text}")
+                        context.append(f"- <{tag}>: {text} {f'({meaning})' if meaning else ''}")
                     elif el.get('id'):
-                        context.append(f"- <{tag}>: id={el['id']}")
+                        context.append(f"- <{tag}>: id={el['id']} {f'({meaning})' if meaning else ''}")
                     else:
-                        context.append(f"- <{tag}>")
+                        context.append(f"- <{tag}> {f'({meaning})' if meaning else ''}")
         
         if self.history:
             context.append("\nПоследние действия:")
@@ -160,8 +183,8 @@ def ask_ai_for_command(text, memory=None):
 ДОСТУПНЫЕ ДЕЙСТВИЯ:
 1. navigate — перейти на сайт
 2. ask — задать вопрос о странице
-3. click — кликнуть на элемент
-4. type — ввести текст в поле
+3. click — кликнуть на элемент (используй target на РУССКОМ)
+4. type — ввести текст в поле (используй field на РУССКОМ)
 5. submit — отправить форму
 6. screenshot — сделать скриншот
 7. back — вернуться назад
@@ -175,21 +198,20 @@ def ask_ai_for_command(text, memory=None):
 Пользователь: "открой ютуб" → {"action": "navigate", "url": "https://youtube.com"}
 Пользователь: "какие кнопки видишь?" → {"action": "ask", "question": "какие кнопки видишь?"}
 Пользователь: "нажми на кнопку Войти" → {"action": "click", "target": "Войти"}
-Пользователь: "введи погоду в поле поиска" → {"action": "type", "text": "погода", "field": "поиска"}
+Пользователь: "введи погоду в поиск" → {"action": "type", "text": "погода", "field": "поиск"}
+Пользователь: "напиши Валера в строку поиска" → {"action": "type", "text": "Валера", "field": "поиск"}
 Пользователь: "отправь форму" → {"action": "submit"}
 Пользователь: "сделай скриншот" → {"action": "screenshot"}
 Пользователь: "вернись назад" → {"action": "back"}
 Пользователь: "покажи историю" → {"action": "history"}
 Пользователь: "очисти память" → {"action": "clear"}
-Пользователь: "привет" → {"action": "greeting"}
-Пользователь: "помоги" → {"action": "help"}
 
-Правила:
+ПРАВИЛА:
 1. Всегда возвращай ТОЛЬКО JSON
 2. Для navigate — всегда добавляй https:// если нет
-3. Если не понял — верни {"action": "unknown"}
-4. Для type — всегда указывай text и field
-5. Для click — всегда указывай target
+3. Для type — field пиши на РУССКОМ: "поиск", "логин", "пароль", "имя", "email", "телефон"
+4. Для click — target пиши на РУССКОМ: "Войти", "Отправить", "Закрыть"
+5. Если не понял — верни {"action": "unknown"}
 
 Сейчас пользователь написал: """
         
@@ -257,11 +279,11 @@ def ask_ai_for_answer(prompt, context=None, memory=None):
 3. Если не нашел — скажи честно
 4. Используй эмодзи: 🔘 кнопка, 📄 текст, 🔗 ссылка, ✏️ поле, 📊 таблица, 🖼️ изображение
 5. Не выдумывай то, чего нет
+6. Указывай смысл элемента (поиск, вход, регистрация и т.д.)
 
 ФОРМАТ:
 - Списки: • или 1.
-- Элементы: тип + текст + местоположение
-- Если можно кликнуть — скажи"""
+- Элементы: тип + текст + смысл + местоположение"""
         
         if memory:
             memory_context = memory.get_context_for_ai()
@@ -845,13 +867,45 @@ class BrowserCDP:
             file_logger.log(f"❌ Ошибка маскировки: {e}", "ERROR")
             return False
     
-    # ========== ДЕЙСТВИЯ ==========
+    async def ensure_connection(self):
+        """Проверяет живое ли WebSocket соединение"""
+        try:
+            if not self.ws:
+                file_logger.log("⚠️ Нет WebSocket соединения", "WARNING")
+                await self.connect()
+                await self.apply_mask()
+                return True
+            
+            await self.send("Runtime.evaluate", {
+                "expression": "1+1"
+            })
+            return True
+            
+        except Exception as e:
+            file_logger.log(f"🔄 WebSocket отвалился, переподключаюсь... ({e})", "WARNING")
+            try:
+                await self.ws.close()
+            except:
+                pass
+            self.ws = None
+            await self.connect()
+            await self.apply_mask()
+            return True
     
+    # ========== УНИВЕРСАЛЬНЫЙ КЛИК ==========
     async def click_element(self, target):
         try:
+            if not await self.ensure_connection():
+                return False
+            
+            # Определяем смысл цели
+            meaning = get_meaning(target)
+            
             js = f"""
                 (function() {{
                     const target = '{target}'.toLowerCase();
+                    const meaning = '{meaning}' if '{meaning}' else '';
+                    
                     const elements = document.querySelectorAll('button, a, input, div[role="button"], [role="link"], [role="menuitem"]');
                     
                     for (let el of elements) {{
@@ -861,9 +915,12 @@ class BrowserCDP:
                         const id = (el.id || '').toLowerCase();
                         const cls = (el.className || '').toLowerCase();
                         const title = (el.getAttribute('title') || '').toLowerCase();
+                        const value = (el.value || '').toLowerCase();
                         
-                        if (text.includes(target) || aria.includes(target) || placeholder.includes(target) ||
-                            id.includes(target) || cls.includes(target) || title.includes(target)) {{
+                        const allText = text + ' ' + aria + ' ' + placeholder + ' ' + id + ' ' + cls + ' ' + title + ' ' + value;
+                        
+                        // Проверяем по прямому совпадению или по смыслу
+                        if (allText.includes(target) || (meaning && allText.includes(meaning))) {{
                             el.click();
                             return true;
                         }}
@@ -882,11 +939,20 @@ class BrowserCDP:
             file_logger.log(f"❌ Ошибка клика: {e}", "ERROR")
             return False
     
+    # ========== УНИВЕРСАЛЬНЫЙ ВВОД ==========
     async def type_text(self, text, field):
         try:
+            if not await self.ensure_connection():
+                return False
+            
+            # Определяем смысл поля
+            meaning = get_meaning(field)
+            
             js = f"""
                 (function() {{
                     const field = '{field}'.toLowerCase();
+                    const meaning = '{meaning}' if '{meaning}' else '';
+                    
                     const elements = document.querySelectorAll('input, textarea, [contenteditable="true"]');
                     
                     for (let el of elements) {{
@@ -897,12 +963,11 @@ class BrowserCDP:
                         const name = (el.getAttribute('name') || '').toLowerCase();
                         const type = (el.getAttribute('type') || '').toLowerCase();
                         
-                        const isSearchField = (
-                            placeholder.includes(field) ||
-                            aria.includes(field) ||
-                            id.includes(field) ||
-                            cls.includes(field) ||
-                            name.includes(field) ||
+                        const allText = placeholder + ' ' + aria + ' ' + id + ' ' + cls + ' ' + name;
+                        
+                        const isMatch = (
+                            allText.includes(field) ||
+                            (meaning && allText.includes(meaning)) ||
                             type === 'search' ||
                             placeholder.includes('поиск') ||
                             placeholder.includes('search') ||
@@ -914,7 +979,7 @@ class BrowserCDP:
                             id.includes('query')
                         );
                         
-                        if (isSearchField) {{
+                        if (isMatch) {{
                             el.focus();
                             el.value = '';
                             el.value = '{text}';
@@ -927,12 +992,15 @@ class BrowserCDP:
                     // Если не нашли — берем первое видимое поле
                     for (let el of elements) {{
                         if (el.type !== 'hidden' && el.type !== 'submit' && el.type !== 'button') {{
-                            el.focus();
-                            el.value = '';
-                            el.value = '{text}';
-                            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                            return true;
+                            const rect = el.getBoundingClientRect();
+                            if (rect.width > 0 && rect.height > 0) {{
+                                el.focus();
+                                el.value = '';
+                                el.value = '{text}';
+                                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                return true;
+                            }}
                         }}
                     }}
                     
@@ -950,20 +1018,38 @@ class BrowserCDP:
             file_logger.log(f"❌ Ошибка ввода: {e}", "ERROR")
             return False
     
+    # ========== УНИВЕРСАЛЬНАЯ ОТПРАВКА ФОРМЫ ==========
     async def submit_form(self):
         try:
+            if not await self.ensure_connection():
+                return False
+            
             js = """
                 (function() {
+                    // Ищем форму
                     const form = document.querySelector('form');
                     if (form) {
                         form.submit();
                         return true;
                     }
                     
+                    // Ищем кнопку отправки
                     const submitBtn = document.querySelector('button[type="submit"], input[type="submit"]');
                     if (submitBtn) {
                         submitBtn.click();
                         return true;
+                    }
+                    
+                    // Ищем кнопку с текстом "Войти", "Отправить", "Search"
+                    const buttons = document.querySelectorAll('button, input[type="button"]');
+                    for (let btn of buttons) {
+                        const text = (btn.textContent || btn.value || '').toLowerCase();
+                        if (text.includes('войти') || text.includes('отправить') || 
+                            text.includes('submit') || text.includes('search') ||
+                            text.includes('login') || text.includes('sign in')) {
+                            btn.click();
+                            return true;
+                        }
                     }
                     
                     return false;
@@ -980,15 +1066,42 @@ class BrowserCDP:
             file_logger.log(f"❌ Ошибка отправки формы: {e}", "ERROR")
             return False
     
-    # ========== SNAPSHOT (РАСШИРЕННЫЙ) ==========
+    # ========== SNAPSHOT СО СМЫСЛОВЫМИ ТЕГАМИ ==========
     async def get_snapshot(self):
         try:
             file_logger.log("📸 Делаю слепок страницы...", "INFO")
             
+            # Получаем элементы со смысловыми тегами
             elements = await self.eval_js("""
                 (function() {
                     const result = [];
                     const all = document.querySelectorAll('*');
+                    
+                    // Словари для определения смысла
+                    const meaningMap = {
+                        'search': ['поиск', 'search', 'найти', 'find', 'query', 'запрос'],
+                        'login': ['вход', 'войти', 'login', 'sign in', 'log in'],
+                        'register': ['регистрация', 'зарегистрироваться', 'sign up', 'register'],
+                        'submit': ['отправить', 'send', 'submit', 'послать'],
+                        'close': ['закрыть', 'close', 'закрой'],
+                        'name': ['имя', 'name', 'ваше имя'],
+                        'email': ['email', 'e-mail', 'почта'],
+                        'password': ['пароль', 'password', 'pass'],
+                        'phone': ['телефон', 'phone', 'номер'],
+                        'message': ['сообщение', 'message', 'комментарий']
+                    };
+                    
+                    function getMeaning(text) {
+                        text = text.toLowerCase();
+                        for (let [key, synonyms] of Object.entries(meaningMap)) {
+                            for (let syn of synonyms) {
+                                if (text.includes(syn)) {
+                                    return key;
+                                }
+                            }
+                        }
+                        return '';
+                    }
                     
                     all.forEach(el => {
                         const tag = el.tagName.toLowerCase();
@@ -1005,6 +1118,14 @@ class BrowserCDP:
                         }
                         
                         const text = (el.textContent || '').trim().slice(0, 200);
+                        const placeholder = el.getAttribute('placeholder') || '';
+                        const ariaLabel = el.getAttribute('aria-label') || '';
+                        const id = el.id || '';
+                        const cls = el.className || '';
+                        
+                        // Определяем смысл
+                        const allText = text + ' ' + placeholder + ' ' + ariaLabel + ' ' + id + ' ' + cls;
+                        const meaning = getMeaning(allText);
                         
                         const isInteractive = (
                             tag === 'button' ||
@@ -1017,25 +1138,21 @@ class BrowserCDP:
                             tag === 'select'
                         );
                         
-                        // 🔥 РАСШИРЕННЫЙ СПИСОК ПОЛЕЗНЫХ ТЕГОВ
                         const important = [
                             'button', 'a', 'input', 'textarea', 'select', 'form',
                             'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'img', 'video',
                             'iframe', 'div', 'span', 'section', 'article', 'nav',
                             'header', 'footer', 'main', 'aside', 'ul', 'ol', 'li',
-                            // 🔥 НОВЫЕ ПОЛЕЗНЫЕ ТЕГИ
-                            'table', 'tr', 'td', 'th',
-                            'label', 'figure', 'figcaption',
-                            'details', 'summary', 'dialog',
-                            'menu', 'menuitem', 'time',
-                            'code', 'pre', 'blockquote', 'cite',
-                            'strong', 'em', 'b', 'i', 'mark', 'small'
+                            'table', 'tr', 'td', 'th', 'label', 'figure', 'figcaption',
+                            'details', 'summary', 'dialog', 'menu', 'menuitem', 'time',
+                            'code', 'pre', 'blockquote', 'cite', 'strong', 'em', 'b', 'i', 'mark', 'small'
                         ];
                         
                         if (important.includes(tag) || isInteractive || attrs['data-testid'] || attrs['aria-label']) {
                             result.push({
                                 tag: tag,
                                 text: text,
+                                meaning: meaning,
                                 id: el.id || '',
                                 class: el.className || '',
                                 attrs: attrs,
@@ -1124,6 +1241,9 @@ class BrowserCDP:
     
     async def screenshot(self):
         try:
+            if not await self.ensure_connection():
+                return None
+            
             file_logger.log("📸 Делаю скриншот...", "INFO")
             
             await self.send("Emulation.setDeviceMetricsOverride", {
@@ -1165,7 +1285,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• введи погоду в поиск\n"
         "• сделай скрин\n"
         "• вернись назад\n\n"
-        "🧠 Всё понимает ИИ, говори свободно!"
+        "🧠 Понимаю смысл, а не просто слова!"
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1197,7 +1317,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• сделать скриншот\n"
             "• вернуться назад\n"
             "• показать историю\n\n"
-            "Говори как с человеком!"
+            "Понимаю смысл, а не просто слова!"
         )
         return
     
@@ -1253,6 +1373,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for el in elements[:30]:
                 tag = el.get('tag', 'unknown')
                 text_el = el.get('text', '').strip()[:100]
+                meaning = el.get('meaning', '')
                 attrs = el.get('attrs', {})
                 is_interactive = '🔘' if el.get('isInteractive') else '📄'
                 visible = '👁️' if el.get('visible') else '👻'
@@ -1260,6 +1381,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 desc = f"{is_interactive} <{tag}> {visible}"
                 if text_el:
                     desc += f" — «{text_el}»"
+                if meaning:
+                    desc += f" [смысл: {meaning}]"
                 if attrs.get('id'):
                     desc += f" (id: {attrs['id']})"
                 if attrs.get('type'):
@@ -1522,7 +1645,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• отправь форму\n"
             "• сделай скриншот\n"
             "• вернись назад\n"
-            "• покажи историю"
+            "• покажи историю\n\n"
+            "Понимаю смысл, а не просто слова!"
         )
         return
     
@@ -1563,13 +1687,14 @@ async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- ЗАПУСК ----------
 def main():
     print("="*50)
-    print("🚀 ЗАПУСК БОТА (РАСШИРЕННЫЙ SNAPSHOT)")
+    print("🚀 ЗАПУСК БОТА (УНИВЕРСАЛЬНОЕ ПОНИМАНИЕ)")
     print("="*50)
     print(f"📌 Chrome путь: {CHROME_PATH}")
     print("🕵️ Маскировка: ВСЕГДА ВКЛЮЧЕНА")
     print("🧠 Память: ВКЛЮЧЕНА")
     print("🤖 AI-понимание: ВКЛЮЧЕНО")
-    print("📊 Snapshot: РАСШИРЕННЫЙ (35+ тегов)")
+    print("🎯 Универсальный поиск: ВКЛЮЧЕН")
+    print("📊 Snapshot: РАСШИРЕННЫЙ (со смысловыми тегами)")
     print(f"🤖 AI модель: {AI_MODEL}")
     print("="*50)
     
@@ -1593,6 +1718,7 @@ def main():
     print("   • какие кнопки?")
     print("   • нажми на Войти")
     print("   • введи погоду в поиск")
+    print("🎯 Теперь понимает смысл, а не просто слова!")
     app.run_polling()
 
 if __name__ == "__main__":
