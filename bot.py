@@ -7,6 +7,7 @@ import requests
 import asyncio
 import websockets
 import random
+import hashlib
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -29,9 +30,8 @@ class FileLogger:
 
 file_logger = FileLogger()
 
-# ---------- МАСКИРОВКА (Pydoll style) ----------
+# ---------- МАСКИРОВКА (100% Pydoll style) ----------
 def get_random_window_position():
-    """Генерирует случайную позицию окна"""
     return {
         "left": random.randint(50, 300),
         "top": random.randint(50, 200),
@@ -40,19 +40,40 @@ def get_random_window_position():
     }
 
 def get_random_user_agent():
-    """Генерирует реалистичный User-Agent"""
     user_agents = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
     ]
     return random.choice(user_agents)
 
+def get_random_webgl_vendor():
+    """Генерирует реалистичный WebGL vendor"""
+    vendors = [
+        "Google Inc. (NVIDIA)",
+        "Google Inc. (AMD)",
+        "Google Inc. (Intel)",
+        "NVIDIA Corporation",
+        "Advanced Micro Devices, Inc.",
+        "Intel Corporation"
+    ]
+    return random.choice(vendors)
+
+def get_random_webgl_renderer():
+    """Генерирует реалистичный WebGL renderer"""
+    renderers = [
+        "ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "ANGLE (AMD, AMD Radeon RX 6800 XT Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "ANGLE (NVIDIA, NVIDIA GeForce RTX 3070 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 Direct3D11 vs_5_0 ps_5_0, D3D11)"
+    ]
+    return random.choice(renderers)
+
 def get_launch_args():
-    """Возвращает аргументы запуска Chrome с маскировкой (Pydoll style)"""
+    """Возвращает аргументы запуска Chrome с полной маскировкой"""
     window = get_random_window_position()
     
     args = [
@@ -60,26 +81,22 @@ def get_launch_args():
         "--headless=new",
         "--no-sandbox",
         "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--disable-software-rasterizer",
         
-        # Отключение автоматизации (основные флаги)
+        # Отключение автоматизации
         "--disable-blink-features=AutomationControlled",
         "--disable-automation",
         
-        # Скрытие отпечатков
-        "--use-gl=swiftshader",
-        "--disable-reading-from-canvas",
-        "--disable-features=AudioServiceOutOfProcess",
-        "--disable-accelerated-2d-canvas",
-        "--disable-accelerated-video-decode",
-        "--disable-webgl",
+        # GPU эмуляция (не отключаем!)
+        "--use-gl=egl",  # Вместо swiftshader, для лучшей эмуляции
+        "--ignore-gpu-blocklist",
+        "--enable-gpu-rasterization",
+        "--enable-zero-copy",
         
-        # Безопасность
-        "--disable-features=IsolateOrigins,site-per-process",
+        # Отключаем только проблемные фичи
+        "--disable-features=AudioServiceOutOfProcess,IsolateOrigins,site-per-process",
         "--disable-site-isolation-trials",
         
-        # Отключаем ненужное
+        # Безопасность и скрытие
         "--disable-default-apps",
         "--disable-extensions",
         "--disable-component-extensions-with-background-pages",
@@ -89,6 +106,12 @@ def get_launch_args():
         "--disable-logging",
         "--disable-prompt-on-repost",
         "--disable-sync",
+        "--disable-background-networking",
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-breakpad",
+        "--disable-ipc-flooding-protection",
+        "--disable-renderer-backgrounding",
         
         # Настройки окна
         f"--window-position={window['left']},{window['top']}",
@@ -102,14 +125,6 @@ def get_launch_args():
         "--password-store=basic",
         "--use-mock-keychain",
         "--export-tagged-pdf",
-        "--disable-background-networking",
-        "--disable-background-timer-throttling",
-        "--disable-backgrounding-occluded-windows",
-        "--disable-breakpad",
-        "--disable-ipc-flooding-protection",
-        "--disable-renderer-backgrounding",
-        
-        # Убираем следы headless
         "--enable-features=NetworkService,NetworkServiceInProcess",
         
         # User-Agent подмена
@@ -127,18 +142,18 @@ class BrowserCDP:
         self.msg_id = 0
         self.session_id = None
         self.target_id = None
+        self.webgl_vendor = get_random_webgl_vendor()
+        self.webgl_renderer = get_random_webgl_renderer()
     
     def ensure_browser(self):
-        """Проверяет и запускает Chrome с маскировкой если не запущен"""
         try:
             requests.get(f"http://localhost:{CDP_PORT}/json/version", timeout=2)
             file_logger.log("Chrome уже запущен", "INFO")
             return True
         except:
-            file_logger.log("Запускаю Chrome с маскировкой...", "INFO")
+            file_logger.log("Запускаю Chrome с полной маскировкой...", "INFO")
             try:
                 args = get_launch_args()
-                file_logger.log(f"Аргументы Chrome: {' '.join(args[:5])}...", "DEBUG")
                 
                 subprocess.Popen(
                     args,
@@ -147,14 +162,13 @@ class BrowserCDP:
                     env={**os.environ, "LANG": "en_US.UTF-8"}
                 )
                 time.sleep(5)
-                file_logger.log("Chrome запущен успешно с маскировкой", "INFO")
+                file_logger.log("Chrome запущен успешно", "INFO")
                 return True
             except Exception as e:
                 file_logger.log(f"Не удалось запустить Chrome: {e}", "ERROR")
                 return False
     
     async def connect(self):
-        """Подключение к браузеру и создание новой вкладки"""
         if not self.ensure_browser():
             raise Exception("Chrome не доступен")
         
@@ -167,7 +181,6 @@ class BrowserCDP:
         # Создаём новую вкладку
         result = await self.send("Target.createTarget", {"url": "about:blank"})
         self.target_id = result["result"]["targetId"]
-        file_logger.log(f"Создана вкладка: {self.target_id}", "INFO")
         
         # Прикрепляемся к вкладке
         attach_result = await self.send("Target.attachToTarget", {
@@ -177,146 +190,396 @@ class BrowserCDP:
         self.session_id = attach_result["result"]["sessionId"]
         file_logger.log("Прикреплен к вкладке", "INFO")
         
-        # Активируем домены через сессию
+        # Активируем домены
         await self.send("Page.enable", session_id=self.session_id)
         await self.send("Runtime.enable", session_id=self.session_id)
         await self.send("Network.enable", session_id=self.session_id)
-        file_logger.log("Домены активированы", "INFO")
         
-        # Полная маскировка в стиле Pydoll
+        # 100% маскировка
         await self.apply_full_mask()
     
     async def apply_full_mask(self):
-        """Полная маскировка в стиле Pydoll"""
+        """100% маскировка в стиле Pydoll"""
         try:
-            # Комплексная маскировка через Runtime.evaluate
-            mask_script = """
-                (function() {
-                    // 1. Скрываем webdriver
-                    Object.defineProperty(navigator, 'webdriver', {
+            # Генерируем случайные отпечатки
+            canvas_fingerprint = hashlib.md5(str(random.random()).encode()).hexdigest()[:16]
+            webgl_fingerprint = hashlib.md5(str(random.random()).encode()).hexdigest()[:16]
+            
+            mask_script = f"""
+                (function() {{
+                    // ============================================
+                    // 1. БАЗОВАЯ МАСКИРОВКА
+                    // ============================================
+                    
+                    // Скрываем webdriver (основной флаг)
+                    Object.defineProperty(navigator, 'webdriver', {{
                         get: () => undefined,
                         configurable: true,
                         enumerable: true
-                    });
+                    }});
                     
-                    // 2. Подмена plugins
-                    Object.defineProperty(navigator, 'plugins', {
-                        get: () => {
-                            const plugins = [];
-                            plugins.push({
-                                name: 'Chrome PDF Plugin',
-                                filename: 'internal-pdf-viewer',
-                                description: 'Portable Document Format'
-                            });
-                            plugins.push({
-                                name: 'Chrome PDF Viewer',
-                                filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai',
-                                description: ''
-                            });
-                            plugins.push({
-                                name: 'Native Client',
-                                filename: 'internal-nacl-plugin',
-                                description: ''
-                            });
+                    // ============================================
+                    // 2. ПОДМЕНА NAVIGATOR
+                    // ============================================
+                    
+                    // Подмена plugins с реальными объектами
+                    Object.defineProperty(navigator, 'plugins', {{
+                        get: () => {{
+                            function Plugin(name, filename, description) {{
+                                this.name = name;
+                                this.filename = filename;
+                                this.description = description;
+                            }}
+                            Plugin.prototype.item = function(index) {{
+                                return this[index] || null;
+                            }};
+                            Plugin.prototype.namedItem = function(name) {{
+                                return this[name] || null;
+                            }};
+                            
+                            const plugins = new Array();
+                            Object.setPrototypeOf(plugins, Plugin.prototype);
+                            
+                            plugins.push(new Plugin(
+                                'Chrome PDF Plugin',
+                                'internal-pdf-viewer',
+                                'Portable Document Format'
+                            ));
+                            plugins.push(new Plugin(
+                                'Chrome PDF Viewer',
+                                'mhjfbmdgcfjbbpaeojofohoefgiehjai',
+                                ''
+                            ));
+                            plugins.push(new Plugin(
+                                'Native Client',
+                                'internal-nacl-plugin',
+                                ''
+                            ));
+                            
+                            plugins.length = 3;
                             return plugins;
-                        },
+                        }},
                         configurable: true,
                         enumerable: true
-                    });
+                    }});
                     
-                    // 3. Подмена languages
-                    Object.defineProperty(navigator, 'languages', {
+                    // Подмена languages
+                    Object.defineProperty(navigator, 'languages', {{
                         get: () => ['en-US', 'en', 'ru'],
                         configurable: true,
                         enumerable: true
-                    });
+                    }});
                     
-                    // 4. Скрываем chrome.runtime
-                    if (!window.chrome) {
-                        window.chrome = {};
-                    }
-                    window.chrome.runtime = {};
-                    
-                    // 5. Подмена permissions
-                    const originalQuery = window.navigator.permissions.query;
-                    window.navigator.permissions.query = function(parameters) {
-                        if (parameters.name === 'notifications') {
-                            return Promise.resolve({ state: Notification.permission });
-                        }
-                        return originalQuery(parameters);
-                    };
-                    
-                    // 6. Подмена window.navigator.platform
-                    Object.defineProperty(navigator, 'platform', {
+                    // Подмена platform
+                    Object.defineProperty(navigator, 'platform', {{
                         get: () => 'Win32',
                         configurable: true,
                         enumerable: true
-                    });
+                    }});
                     
-                    // 7. Подмена window.navigator.userAgentData
-                    Object.defineProperty(navigator, 'userAgentData', {
-                        get: () => ({
-                            brands: [
-                                { brand: 'Google Chrome', version: '120' },
-                                { brand: 'Chromium', version: '120' },
-                                { brand: 'Not?A_Brand', version: '99' }
-                            ],
-                            platform: 'Windows',
-                            mobile: false,
-                            getHighEntropyValues: () => Promise.resolve({
-                                architecture: 'x86',
-                                bitness: '64',
-                                model: '',
+                    // Подмена hardwareConcurrency
+                    Object.defineProperty(navigator, 'hardwareConcurrency', {{
+                        get: () => {random.randint(4, 16)},
+                        configurable: true,
+                        enumerable: true
+                    }});
+                    
+                    // Подмена deviceMemory
+                    Object.defineProperty(navigator, 'deviceMemory', {{
+                        get: () => {random.choice([4, 8, 16, 32])},
+                        configurable: true,
+                        enumerable: true
+                    }});
+                    
+                    // Подмена userAgentData
+                    Object.defineProperty(navigator, 'userAgentData', {{
+                        get: () => {{
+                            return {{
+                                brands: [
+                                    {{ brand: 'Google Chrome', version: '{random.randint(118, 120)}' }},
+                                    {{ brand: 'Chromium', version: '{random.randint(118, 120)}' }},
+                                    {{ brand: 'Not?A_Brand', version: '99' }}
+                                ],
                                 platform: 'Windows',
-                                platformVersion: '10.0',
-                                uaFullVersion: '120.0.0.0'
-                            })
-                        }),
+                                mobile: false,
+                                getHighEntropyValues: function(hints) {{
+                                    return Promise.resolve({{
+                                        architecture: 'x86',
+                                        bitness: '64',
+                                        model: '',
+                                        platform: 'Windows',
+                                        platformVersion: '10.0',
+                                        uaFullVersion: '{random.randint(118, 120)}.0.0.0'
+                                    }});
+                                }},
+                                toJSON: function() {{
+                                    return {{
+                                        brands: [
+                                            {{ brand: 'Google Chrome', version: '{random.randint(118, 120)}' }},
+                                            {{ brand: 'Chromium', version: '{random.randint(118, 120)}' }}
+                                        ],
+                                        platform: 'Windows',
+                                        mobile: false
+                                    }};
+                                }}
+                            }};
+                        }},
                         configurable: true,
                         enumerable: true
-                    });
+                    }});
                     
-                    // 8. Скрываем window.navigator.webdriver (дубль)
-                    Object.defineProperty(navigator, 'webdriver', {
+                    // Подмена connection
+                    Object.defineProperty(navigator, 'connection', {{
+                        get: () => {{
+                            const types = ['4g', '3g', '2g'];
+                            return {{
+                                rtt: {random.randint(20, 100)},
+                                downlink: {round(random.uniform(5, 20), 1)},
+                                effectiveType: '{random.choice(['4g', '3g'])}',
+                                saveData: false,
+                                type: '{random.choice(['wifi', 'ethernet'])}'
+                            }};
+                        }},
+                        configurable: true,
+                        enumerable: true
+                    }});
+                    
+                    // Подмена permissions
+                    const originalQuery = window.navigator.permissions.query;
+                    window.navigator.permissions.query = function(parameters) {{
+                        const permissions = {{
+                            'geolocation': 'prompt',
+                            'notifications': Notification.permission,
+                            'midi': 'prompt',
+                            'camera': 'prompt',
+                            'microphone': 'prompt',
+                            'background-fetch': 'prompt',
+                            'background-sync': 'granted',
+                            'periodic-background-sync': 'prompt',
+                            'persistent-storage': 'prompt',
+                            'push': Notification.permission,
+                            'speaker-selection': 'prompt'
+                        }};
+                        return Promise.resolve({{
+                            state: permissions[parameters.name] || 'prompt',
+                            onchange: null
+                        }});
+                    }};
+                    
+                    // ============================================
+                    // 3. ПОДМЕНА WEBGL (ключевая часть!)
+                    // ============================================
+                    
+                    // Подменяем WebGL контекст
+                    const originalGetContext = HTMLCanvasElement.prototype.getContext;
+                    HTMLCanvasElement.prototype.getContext = function(contextId, attributes) {{
+                        if (contextId === 'webgl' || contextId === 'experimental-webgl') {{
+                            const context = originalGetContext.call(this, contextId, attributes);
+                            if (context) {{
+                                // Подмена getParameter для WebGL
+                                const originalGetParameter = context.getParameter;
+                                context.getParameter = function(parameter) {{
+                                    const vendor = context.getParameter(0x1F00);
+                                    const renderer = context.getParameter(0x1F01);
+                                    
+                                    // Подмена vendor
+                                    if (parameter === 0x1F00) {{
+                                        return '{self.webgl_vendor}';
+                                    }}
+                                    // Подмена renderer
+                                    if (parameter === 0x1F01) {{
+                                        return '{self.webgl_renderer}';
+                                    }}
+                                    // Подмена версии
+                                    if (parameter === 0x1F02) {{
+                                        return 'WebGL 2.0 (OpenGL ES 3.0)';
+                                    }}
+                                    // Подмена shading language
+                                    if (parameter === 0x8B8C) {{
+                                        return 'WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0)';
+                                    }}
+                                    return originalGetParameter.call(this, parameter);
+                                }};
+                                
+                                // Подмена getExtension для WebGL
+                                const originalGetExtension = context.getExtension;
+                                context.getExtension = function(name) {{
+                                    const ext = originalGetExtension.call(this, name);
+                                    if (ext && name === 'WEBGL_debug_renderer_info') {{
+                                        // Подмена UNMASKED_VENDOR_WEBGL и UNMASKED_RENDERER_WEBGL
+                                        Object.defineProperty(ext, 'UNMASKED_VENDOR_WEBGL', {{
+                                            get: () => 0x9245,
+                                            configurable: true,
+                                            enumerable: true
+                                        }});
+                                        Object.defineProperty(ext, 'UNMASKED_RENDERER_WEBGL', {{
+                                            get: () => 0x9246,
+                                            configurable: true,
+                                            enumerable: true
+                                        }});
+                                    }}
+                                    return ext;
+                                }};
+                            }}
+                            return context;
+                        }}
+                        return originalGetContext.call(this, contextId, attributes);
+                    }};
+                    
+                    // ============================================
+                    // 4. ПОДМЕНА CANVAS (отпечаток)
+                    // ============================================
+                    
+                    // Добавляем небольшой шум в Canvas
+                    const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
+                    HTMLCanvasElement.prototype.toDataURL = function(type, quality) {{
+                        if (type === 'image/png' || type === undefined) {{
+                            const ctx = this.getContext('2d');
+                            const imageData = ctx.getImageData(0, 0, this.width, this.height);
+                            const data = imageData.data;
+                            
+                            // Добавляем небольшой случайный шум
+                            const noise = {random.randint(0, 2)};
+                            if (noise > 0 && data.length > 100) {{
+                                const idx = Math.floor(Math.random() * (data.length - 4));
+                                data[idx] = Math.min(255, data[idx] + (Math.random() > 0.5 ? 1 : -1));
+                                ctx.putImageData(imageData, 0, 0);
+                            }}
+                        }}
+                        return originalToDataURL.call(this, type, quality);
+                    }};
+                    
+                    // ============================================
+                    // 5. ПОДМЕНА AUDIO
+                    // ============================================
+                    
+                    // Подмена AudioContext
+                    const originalAudioCtx = window.AudioContext || window.webkitAudioContext;
+                    if (originalAudioCtx) {{
+                        const patchedAudioCtx = function() {{
+                            const ctx = new originalAudioCtx();
+                            const originalGetChannelData = ctx.createBuffer;
+                            ctx.createBuffer = function(numChannels, length, sampleRate) {{
+                                const buffer = originalGetChannelData.call(this, numChannels, length, sampleRate);
+                                // Добавляем небольшой шум в аудиоотпечаток
+                                for (let i = 0; i < numChannels; i++) {{
+                                    const channelData = buffer.getChannelData(i);
+                                    for (let j = 0; j < channelData.length; j += 10) {{
+                                        channelData[j] += (Math.random() - 0.5) * 0.0001;
+                                    }}
+                                }}
+                                return buffer;
+                            }};
+                            return ctx;
+                        }};
+                        patchedAudioCtx.prototype = originalAudioCtx.prototype;
+                        window.AudioContext = patchedAudioCtx;
+                        window.webkitAudioContext = patchedAudioCtx;
+                    }}
+                    
+                    // ============================================
+                    // 6. ПОДМЕНА SCREEN
+                    // ============================================
+                    
+                    Object.defineProperty(window, 'screen', {{
+                        get: () => {{
+                            const availHeight = {random.randint(800, 1080)};
+                            const height = availHeight + {random.randint(40, 60)};
+                            const availWidth = {random.randint(1200, 1920)};
+                            const width = availWidth;
+                            return {{
+                                width: width,
+                                height: height,
+                                availWidth: availWidth,
+                                availHeight: availHeight,
+                                colorDepth: 24,
+                                pixelDepth: 24,
+                                availLeft: 0,
+                                availTop: 0,
+                                left: 0,
+                                top: 0,
+                                orientation: {{
+                                    type: 'landscape-primary',
+                                    angle: 0
+                                }}
+                            }};
+                        }},
+                        configurable: true,
+                        enumerable: true
+                    }});
+                    
+                    // ============================================
+                    // 7. СКРЫТИЕ CHROME
+                    // ============================================
+                    
+                    // Скрываем chrome.runtime
+                    if (!window.chrome) {{
+                        window.chrome = {{}};
+                    }}
+                    window.chrome.runtime = {{}};
+                    window.chrome.loadTimes = function() {{}};
+                    window.chrome.csi = function() {{}};
+                    window.chrome.app = {{}};
+                    
+                    // ============================================
+                    // 8. ПОДМЕНА ТАЙМИНГОВ
+                    // ============================================
+                    
+                    // Подмена performance.now()
+                    const originalPerfNow = performance.now;
+                    performance.now = function() {{
+                        return originalPerfNow.call(this) + (Math.random() * 0.1);
+                    }};
+                    
+                    // Подмена Date.now()
+                    const originalDateNow = Date.now;
+                    Date.now = function() {{
+                        return originalDateNow.call(this) + Math.floor(Math.random() * 5);
+                    }};
+                    
+                    // ============================================
+                    // 9. ПОДМЕНА DOCUMENT
+                    // ============================================
+                    
+                    Object.defineProperty(document, 'hidden', {{
                         get: () => false,
                         configurable: true,
                         enumerable: true
-                    });
+                    }});
                     
-                    // 9. Подмена document hidden
-                    Object.defineProperty(document, 'hidden', {
-                        get: () => false,
+                    Object.defineProperty(document, 'visibilityState', {{
+                        get: () => 'visible',
                         configurable: true,
                         enumerable: true
-                    });
+                    }});
                     
-                    // 10. Подмена window.navigator.connection
-                    Object.defineProperty(navigator, 'connection', {
-                        get: () => ({
-                            rtt: 50,
-                            downlink: 10,
-                            effectiveType: '4g',
-                            saveData: false
-                        }),
-                        configurable: true,
-                        enumerable: true
-                    });
+                    // ============================================
+                    // 10. УНИКАЛЬНЫЙ ОТПЕЧАТОК
+                    // ============================================
                     
-                    console.log('✅ Полная маскировка применена (Pydoll style)');
-                })();
+                    // Добавляем уникальный идентификатор сессии
+                    window._pydoll_session = {{
+                        id: '{hashlib.md5(str(time.time()).encode()).hexdigest()[:16]}',
+                        fingerprint: '{canvas_fingerprint}',
+                        webgl: '{webgl_fingerprint}'
+                    }};
+                    
+                    console.log('✅ 100% маскировка применена (Pydoll full stealth)');
+                }})();
             """
             
             await self.send("Runtime.evaluate", {
                 "expression": mask_script
             }, session_id=self.session_id)
             
-            file_logger.log("Полная маскировка применена", "INFO")
+            file_logger.log("100% маскировка применена", "INFO")
+            file_logger.log(f"WebGL Vendor: {self.webgl_vendor}", "DEBUG")
+            file_logger.log(f"WebGL Renderer: {self.webgl_renderer}", "DEBUG")
             
         except Exception as e:
-            file_logger.log(f"Ошибка при маскировке: {e}", "WARNING")
+            file_logger.log(f"Ошибка при маскировке: {e}", "ERROR")
     
     async def send(self, method, params=None, session_id=None):
-        """Отправка CDP команды с поддержкой сессий"""
         self.msg_id += 1
         msg = {
             "id": self.msg_id,
@@ -341,18 +604,16 @@ class BrowserCDP:
                 return data
     
     async def wait_for_page_load(self, timeout=30):
-        """Ожидает загрузку страницы"""
         start_time = time.time()
         
         while time.time() - start_time < timeout:
             try:
-                # Проверяем readyState
                 result = await self.send("Runtime.evaluate", {
                     "expression": "document.readyState === 'complete'"
                 }, session_id=self.session_id)
                 
                 if result.get("result", {}).get("result", {}).get("value") == True:
-                    file_logger.log("Страница загружена (readyState complete)", "INFO")
+                    file_logger.log("Страница загружена", "INFO")
                     return True
                     
             except Exception as e:
@@ -364,22 +625,17 @@ class BrowserCDP:
         return False
     
     async def navigate_and_screenshot(self, url):
-        """Навигация и создание скриншота с маскировкой"""
         file_logger.log(f"Навигация на {url}", "INFO")
         await self.connect()
         
-        # Навигация
         await self.send("Page.navigate", {"url": url}, session_id=self.session_id)
         file_logger.log("Навигация инициирована", "INFO")
         
-        # Ждём загрузку
         loaded = await self.wait_for_page_load(timeout=30)
         
         if not loaded:
-            file_logger.log("Страница не загрузилась полностью", "WARNING")
             await asyncio.sleep(2)
         
-        # Делаем скриншот с повторной попыткой
         screenshot_data = None
         for attempt in range(3):
             try:
@@ -399,7 +655,6 @@ class BrowserCDP:
         if not screenshot_data:
             raise Exception("Не удалось получить скриншот после 3 попыток")
         
-        # Закрываем вкладку
         try:
             await self.send("Target.closeTarget", {"targetId": self.target_id})
         except:
@@ -419,7 +674,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 Отправь URL и я сделаю скриншот\n"
         "Пример: https://google.com\n\n"
         "📁 /log — получить файл логов\n"
-        "🕵️ Маскировка: Pydoll stealth mode"
+        "🕵️ 100% маскировка (Pydoll full stealth)"
     )
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -434,7 +689,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Добавь http:// или https://")
         return
     
-    await update.message.reply_text(f"🔄 Загружаю {url} (stealth mode)...")
+    await update.message.reply_text(f"🔄 Загружаю {url} (full stealth)...")
     
     try:
         browser = BrowserCDP()
@@ -447,7 +702,6 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {error_msg}")
 
 async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отправляет файл логов в Telegram"""
     user = update.effective_user.first_name
     user_id = update.effective_user.id
     
@@ -479,7 +733,7 @@ async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- ЗАПУСК ----------
 def main():
     file_logger.log("="*50, "INFO")
-    file_logger.log("БОТ ЗАПУЩЕН (Pydoll STEALTH MODE)", "INFO")
+    file_logger.log("БОТ ЗАПУЩЕН (100% STEALTH MODE)", "INFO")
     file_logger.log(f"Chrome путь: {CHROME_PATH}", "INFO")
     file_logger.log(f"CDP порт: {CDP_PORT}", "INFO")
     
@@ -493,8 +747,8 @@ def main():
     app.add_handler(CommandHandler("log", get_log))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     
-    print("🚀 Бот запущен в Pydoll STEALTH режиме!")
-    print("🕵️ Маскировка: полная, включая webdriver, plugins, permissions, userAgentData")
+    print("🚀 Бот запущен в 100% STEALTH режиме!")
+    print("🕵️ Полная маскировка: WebGL, Canvas, Audio, Navigator, Screen, Timing")
     print("📁 Команды: /start, /log")
     
     app.run_polling()
