@@ -1,5 +1,5 @@
 import os
-import json 
+import json
 import time
 import subprocess
 import base64
@@ -30,7 +30,7 @@ class FileLogger:
 
 file_logger = FileLogger()
 
-# ---------- МАСКИРОВКА (100% Pydoll style) ----------
+# ---------- МАСКИРОВКА ----------
 def get_random_window_position():
     return {
         "left": random.randint(50, 300),
@@ -50,7 +50,6 @@ def get_random_user_agent():
     return random.choice(user_agents)
 
 def get_random_webgl_vendor():
-    """Генерирует реалистичный WebGL vendor"""
     vendors = [
         "Google Inc. (NVIDIA)",
         "Google Inc. (AMD)",
@@ -62,7 +61,6 @@ def get_random_webgl_vendor():
     return random.choice(vendors)
 
 def get_random_webgl_renderer():
-    """Генерирует реалистичный WebGL renderer"""
     renderers = [
         "ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Direct3D11 vs_5_0 ps_5_0, D3D11)",
         "ANGLE (AMD, AMD Radeon RX 6800 XT Direct3D11 vs_5_0 ps_5_0, D3D11)",
@@ -73,7 +71,6 @@ def get_random_webgl_renderer():
     return random.choice(renderers)
 
 def get_launch_args():
-    """Возвращает аргументы запуска Chrome с полной маскировкой"""
     window = get_random_window_position()
     
     args = [
@@ -82,21 +79,17 @@ def get_launch_args():
         "--no-sandbox",
         "--disable-dev-shm-usage",
         
-        # Отключение автоматизации
         "--disable-blink-features=AutomationControlled",
         "--disable-automation",
         
-        # GPU эмуляция (не отключаем!)
-        "--use-gl=egl",  # Вместо swiftshader, для лучшей эмуляции
+        "--use-gl=egl",
         "--ignore-gpu-blocklist",
         "--enable-gpu-rasterization",
         "--enable-zero-copy",
         
-        # Отключаем только проблемные фичи
         "--disable-features=AudioServiceOutOfProcess,IsolateOrigins,site-per-process",
         "--disable-site-isolation-trials",
         
-        # Безопасность и скрытие
         "--disable-default-apps",
         "--disable-extensions",
         "--disable-component-extensions-with-background-pages",
@@ -113,11 +106,9 @@ def get_launch_args():
         "--disable-ipc-flooding-protection",
         "--disable-renderer-backgrounding",
         
-        # Настройки окна
         f"--window-position={window['left']},{window['top']}",
         f"--window-size={window['width']},{window['height']}",
         
-        # Дополнительно
         "--no-default-browser-check",
         "--no-first-run",
         "--force-color-profile=srgb",
@@ -127,7 +118,6 @@ def get_launch_args():
         "--export-tagged-pdf",
         "--enable-features=NetworkService,NetworkServiceInProcess",
         
-        # User-Agent подмена
         f"--user-agent={get_random_user_agent()}",
         
         f"--remote-debugging-port={CDP_PORT}"
@@ -178,11 +168,9 @@ class BrowserCDP:
         self.ws = await websockets.connect(ws_url)
         file_logger.log("Подключен к браузеру", "INFO")
         
-        # Создаём новую вкладку
         result = await self.send("Target.createTarget", {"url": "about:blank"})
         self.target_id = result["result"]["targetId"]
         
-        # Прикрепляемся к вкладке
         attach_result = await self.send("Target.attachToTarget", {
             "targetId": self.target_id,
             "flatten": True
@@ -190,39 +178,27 @@ class BrowserCDP:
         self.session_id = attach_result["result"]["sessionId"]
         file_logger.log("Прикреплен к вкладке", "INFO")
         
-        # Активируем домены
         await self.send("Page.enable", session_id=self.session_id)
         await self.send("Runtime.enable", session_id=self.session_id)
         await self.send("Network.enable", session_id=self.session_id)
         
-        # 100% маскировка
         await self.apply_full_mask()
     
     async def apply_full_mask(self):
-        """100% маскировка в стиле Pydoll"""
         try:
-            # Генерируем случайные отпечатки
             canvas_fingerprint = hashlib.md5(str(random.random()).encode()).hexdigest()[:16]
             webgl_fingerprint = hashlib.md5(str(random.random()).encode()).hexdigest()[:16]
             
             mask_script = f"""
                 (function() {{
-                    // ============================================
-                    // 1. БАЗОВАЯ МАСКИРОВКА
-                    // ============================================
-                    
-                    // Скрываем webdriver (основной флаг)
+                    // Скрываем webdriver
                     Object.defineProperty(navigator, 'webdriver', {{
                         get: () => undefined,
                         configurable: true,
                         enumerable: true
                     }});
                     
-                    // ============================================
-                    // 2. ПОДМЕНА NAVIGATOR
-                    // ============================================
-                    
-                    // Подмена plugins с реальными объектами
+                    // Подмена plugins
                     Object.defineProperty(navigator, 'plugins', {{
                         get: () => {{
                             function Plugin(name, filename, description) {{
@@ -367,46 +343,35 @@ class BrowserCDP:
                     }};
                     
                     // ============================================
-                    // 3. ПОДМЕНА WEBGL (ключевая часть!)
+                    // ПОДМЕНА WEBGL
                     // ============================================
                     
-                    // Подменяем WebGL контекст
                     const originalGetContext = HTMLCanvasElement.prototype.getContext;
                     HTMLCanvasElement.prototype.getContext = function(contextId, attributes) {{
                         if (contextId === 'webgl' || contextId === 'experimental-webgl') {{
                             const context = originalGetContext.call(this, contextId, attributes);
                             if (context) {{
-                                // Подмена getParameter для WebGL
                                 const originalGetParameter = context.getParameter;
                                 context.getParameter = function(parameter) {{
-                                    const vendor = context.getParameter(0x1F00);
-                                    const renderer = context.getParameter(0x1F01);
-                                    
-                                    // Подмена vendor
                                     if (parameter === 0x1F00) {{
                                         return '{self.webgl_vendor}';
                                     }}
-                                    // Подмена renderer
                                     if (parameter === 0x1F01) {{
                                         return '{self.webgl_renderer}';
                                     }}
-                                    // Подмена версии
                                     if (parameter === 0x1F02) {{
                                         return 'WebGL 2.0 (OpenGL ES 3.0)';
                                     }}
-                                    // Подмена shading language
                                     if (parameter === 0x8B8C) {{
                                         return 'WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0)';
                                     }}
                                     return originalGetParameter.call(this, parameter);
                                 }};
                                 
-                                // Подмена getExtension для WebGL
                                 const originalGetExtension = context.getExtension;
                                 context.getExtension = function(name) {{
                                     const ext = originalGetExtension.call(this, name);
                                     if (ext && name === 'WEBGL_debug_renderer_info') {{
-                                        // Подмена UNMASKED_VENDOR_WEBGL и UNMASKED_RENDERER_WEBGL
                                         Object.defineProperty(ext, 'UNMASKED_VENDOR_WEBGL', {{
                                             get: () => 0x9245,
                                             configurable: true,
@@ -427,10 +392,9 @@ class BrowserCDP:
                     }};
                     
                     // ============================================
-                    // 4. ПОДМЕНА CANVAS (отпечаток)
+                    // ПОДМЕНА CANVAS
                     // ============================================
                     
-                    // Добавляем небольшой шум в Canvas
                     const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
                     HTMLCanvasElement.prototype.toDataURL = function(type, quality) {{
                         if (type === 'image/png' || type === undefined) {{
@@ -438,7 +402,6 @@ class BrowserCDP:
                             const imageData = ctx.getImageData(0, 0, this.width, this.height);
                             const data = imageData.data;
                             
-                            // Добавляем небольшой случайный шум
                             const noise = {random.randint(0, 2)};
                             if (noise > 0 && data.length > 100) {{
                                 const idx = Math.floor(Math.random() * (data.length - 4));
@@ -450,10 +413,9 @@ class BrowserCDP:
                     }};
                     
                     // ============================================
-                    // 5. ПОДМЕНА AUDIO
+                    // ПОДМЕНА AUDIO
                     // ============================================
                     
-                    // Подмена AudioContext
                     const originalAudioCtx = window.AudioContext || window.webkitAudioContext;
                     if (originalAudioCtx) {{
                         const patchedAudioCtx = function() {{
@@ -461,7 +423,6 @@ class BrowserCDP:
                             const originalGetChannelData = ctx.createBuffer;
                             ctx.createBuffer = function(numChannels, length, sampleRate) {{
                                 const buffer = originalGetChannelData.call(this, numChannels, length, sampleRate);
-                                // Добавляем небольшой шум в аудиоотпечаток
                                 for (let i = 0; i < numChannels; i++) {{
                                     const channelData = buffer.getChannelData(i);
                                     for (let j = 0; j < channelData.length; j += 10) {{
@@ -478,7 +439,7 @@ class BrowserCDP:
                     }}
                     
                     // ============================================
-                    // 6. ПОДМЕНА SCREEN
+                    // ПОДМЕНА SCREEN
                     // ============================================
                     
                     Object.defineProperty(window, 'screen', {{
@@ -509,10 +470,9 @@ class BrowserCDP:
                     }});
                     
                     // ============================================
-                    // 7. СКРЫТИЕ CHROME
+                    // СКРЫТИЕ CHROME
                     // ============================================
                     
-                    // Скрываем chrome.runtime
                     if (!window.chrome) {{
                         window.chrome = {{}};
                     }}
@@ -522,23 +482,21 @@ class BrowserCDP:
                     window.chrome.app = {{}};
                     
                     // ============================================
-                    // 8. ПОДМЕНА ТАЙМИНГОВ
+                    // ПОДМЕНА ТАЙМИНГОВ
                     // ============================================
                     
-                    // Подмена performance.now()
                     const originalPerfNow = performance.now;
                     performance.now = function() {{
                         return originalPerfNow.call(this) + (Math.random() * 0.1);
                     }};
                     
-                    // Подмена Date.now()
                     const originalDateNow = Date.now;
                     Date.now = function() {{
                         return originalDateNow.call(this) + Math.floor(Math.random() * 5);
                     }};
                     
                     // ============================================
-                    // 9. ПОДМЕНА DOCUMENT
+                    // ПОДМЕНА DOCUMENT
                     // ============================================
                     
                     Object.defineProperty(document, 'hidden', {{
@@ -553,18 +511,14 @@ class BrowserCDP:
                         enumerable: true
                     }});
                     
-                    // ============================================
-                    // 10. УНИКАЛЬНЫЙ ОТПЕЧАТОК
-                    // ============================================
-                    
-                    // Добавляем уникальный идентификатор сессии
+                    // Уникальный отпечаток
                     window._pydoll_session = {{
                         id: '{hashlib.md5(str(time.time()).encode()).hexdigest()[:16]}',
                         fingerprint: '{canvas_fingerprint}',
                         webgl: '{webgl_fingerprint}'
                     }};
                     
-                    console.log('✅ 100% маскировка применена (Pydoll full stealth)');
+                    console.log('✅ 100% маскировка применена');
                 }})();
             """
             
@@ -573,8 +527,6 @@ class BrowserCDP:
             }, session_id=self.session_id)
             
             file_logger.log("100% маскировка применена", "INFO")
-            file_logger.log(f"WebGL Vendor: {self.webgl_vendor}", "DEBUG")
-            file_logger.log(f"WebGL Renderer: {self.webgl_renderer}", "DEBUG")
             
         except Exception as e:
             file_logger.log(f"Ошибка при маскировке: {e}", "ERROR")
@@ -603,40 +555,40 @@ class BrowserCDP:
                     raise Exception(f"CDP Error [{error_code}]: {error_msg}")
                 return data
     
-    async def wait_for_page_load(self, timeout=30):
-        start_time = time.time()
-        
-        while time.time() - start_time < timeout:
-            try:
-                result = await self.send("Runtime.evaluate", {
-                    "expression": "document.readyState === 'complete'"
-                }, session_id=self.session_id)
-                
-                if result.get("result", {}).get("result", {}).get("value") == True:
-                    file_logger.log("Страница загружена", "INFO")
-                    return True
-                    
-            except Exception as e:
-                file_logger.log(f"Ошибка при проверке загрузки: {e}", "DEBUG")
-            
-            await asyncio.sleep(0.5)
-        
-        file_logger.log("Таймаут ожидания загрузки страницы", "WARNING")
-        return False
-    
     async def navigate_and_screenshot(self, url):
+        """Навигация и создание скриншота (принудительно через 7-10 секунд)"""
         file_logger.log(f"Навигация на {url}", "INFO")
         await self.connect()
         
+        # Навигация
         await self.send("Page.navigate", {"url": url}, session_id=self.session_id)
         file_logger.log("Навигация инициирована", "INFO")
         
-        loaded = await self.wait_for_page_load(timeout=30)
+        # Ждём 5 секунд для начальной загрузки
+        file_logger.log("Ожидание 5 секунд для загрузки страницы...", "INFO")
+        await asyncio.sleep(5)
         
-        if not loaded:
-            await asyncio.sleep(2)
+        # Быстрая проверка загрузки (не блокирующая)
+        for i in range(3):
+            try:
+                result = await self.send("Runtime.evaluate", {
+                    "expression": "document.readyState === 'complete' || document.body !== null"
+                }, session_id=self.session_id)
+                
+                if result.get("result", {}).get("result", {}).get("value") == True:
+                    file_logger.log("Страница частично загружена", "INFO")
+                    break
+            except:
+                pass
+            await asyncio.sleep(1)
         
+        # Дополнительная задержка перед скриншотом
+        await asyncio.sleep(2)
+        
+        # Делаем скриншот (принудительно!)
+        file_logger.log("Делаю скриншот (принудительно)...", "INFO")
         screenshot_data = None
+        
         for attempt in range(3):
             try:
                 result = await self.send("Page.captureScreenshot", {
@@ -655,6 +607,7 @@ class BrowserCDP:
         if not screenshot_data:
             raise Exception("Не удалось получить скриншот после 3 попыток")
         
+        # Закрываем вкладку
         try:
             await self.send("Target.closeTarget", {"targetId": self.target_id})
         except:
@@ -750,6 +703,7 @@ def main():
     print("🚀 Бот запущен в 100% STEALTH режиме!")
     print("🕵️ Полная маскировка: WebGL, Canvas, Audio, Navigator, Screen, Timing")
     print("📁 Команды: /start, /log")
+    print("⚡ Скриншот делается принудительно через 7-10 секунд")
     
     app.run_polling()
 
