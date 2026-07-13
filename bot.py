@@ -71,7 +71,7 @@ class FileLogger:
 
 file_logger = FileLogger()
 
-# ==================== CHROME MANAGER (СТЕЛС) ====================
+# ==================== CHROME MANAGER (STEALTH) ====================
 class ChromeManager:
     def __init__(self):
         self.process = None
@@ -85,21 +85,31 @@ class ChromeManager:
     def start(self):
         file_logger.info(f"🚀 Запуск Chrome на порту {self.port}")
         
-        # ============ СТЕЛС-НАСТРОЙКИ CHROME ============
+        # ============ МАКСИМАЛЬНЫЙ СТЕЛС (КАК В Pydoll) ============
         cmd = [
             CHROME_PATH,
-            "--headless",
+            
+            # ----- Режим headless (новый) -----
+            "--headless=new",
+            
+            # ----- Отключаем GPU -----
             "--disable-gpu",
+            
+            # ----- Безопасность для контейнеров -----
             "--no-sandbox",
             "--disable-dev-shm-usage",
             "--disable-setuid-sandbox",
+            
+            # ----- Отключаем software-рендеринг -----
             "--disable-software-rasterizer",
+            
+            # ----- Размер окна -----
             "--window-size=1920,1080",
             
-            # User-Agent
+            # ----- User-Agent -----
             f"--user-agent={self.user_agent}",
             
-            # Отключаем признаки автоматизации
+            # ----- Отключаем признаки автоматизации -----
             "--disable-blink-features=AutomationControlled",
             "--disable-features=IsolateOrigins,site-per-process",
             "--disable-features=BlockInsecurePrivateNetworkRequests",
@@ -107,14 +117,17 @@ class ChromeManager:
             "--disable-features=OptimizationHints",
             "--disable-features=MediaRouter",
             
-            # WebRTC защита
+            # ----- WebRTC защита -----
             "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
             "--enable-features=NetworkService,NetworkServiceInProcess",
             
-            # Профиль
+            # ----- Язык -----
             "--lang=en-US",
             
-            # Отключаем лишние функции
+            # ----- Профиль пользователя -----
+            "--user-data-dir=/tmp/chrome-profile",
+            
+            # ----- Отключаем лишние функции -----
             "--disable-background-networking",
             "--disable-background-timer-throttling",
             "--disable-backgrounding-occluded-windows",
@@ -133,7 +146,6 @@ class ChromeManager:
             "--disable-print-preview",
             "--disable-prompt-on-repost",
             "--disable-renderer-backgrounding",
-            "--disable-setuid-sandbox",
             "--disable-speech-api",
             "--disable-sync",
             "--disable-translate",
@@ -171,7 +183,7 @@ class ChromeManager:
         else:
             file_logger.warning("⚠️ Chrome не был запущен")
 
-# ==================== CDP CONTROLLER (СТЕЛС) ====================
+# ==================== CDP CONTROLLER (STEALTH) ====================
 class CDPController:
     def __init__(self, port=CDP_PORT):
         self.port = port
@@ -234,10 +246,10 @@ class CDPController:
             file_logger.error(f"❌ Ошибка создания вкладки: {str(e)}")
             raise
     
-    # ============ СТЕЛС-НАСТРОЙКИ CDP ============
+    # ============ МАКСИМАЛЬНЫЙ СТЕЛС (КАК В Pydoll) ============
     async def apply_stealth(self, session_id):
-        """Применяет все стелс-настройки к странице"""
-        file_logger.debug("🛡️ Применение стелс-настроек...")
+        """Применяет все стелс-настройки как в Pydoll"""
+        file_logger.debug("🛡️ Применение стелс-настроек (как в Pydoll)...")
         
         # 1. Скрываем webdriver
         await self.evaluate("""
@@ -248,9 +260,9 @@ class CDPController:
             });
         """, session_id)
         
-        # 2. Эмулируем реальный Chrome
+        # 2. Эмулируем реальный Chrome (как в Pydoll)
         await self.evaluate("""
-            // Плагины
+            // ===== Плагины =====
             Object.defineProperty(navigator, 'plugins', {
                 get: () => {
                     const plugins = [];
@@ -267,27 +279,26 @@ class CDPController:
                 }
             });
             
-            // Языки
+            // ===== Языки =====
             Object.defineProperty(navigator, 'languages', {
                 get: () => ['en-US', 'en', 'ru']
             });
             
-            // Platform
+            // ===== Platform =====
             Object.defineProperty(navigator, 'platform', {
                 get: () => 'Win32'
             });
             
-            // Hardware concurrency
+            // ===== Hardware =====
             Object.defineProperty(navigator, 'hardwareConcurrency', {
                 get: () => 8
             });
             
-            // Device memory
             Object.defineProperty(navigator, 'deviceMemory', {
                 get: () => 8
             });
             
-            // WebGL vendor
+            // ===== WebGL Vendor (как в Pydoll) =====
             const getParameter = WebGLRenderingContext.prototype.getParameter;
             WebGLRenderingContext.prototype.getParameter = function(parameter) {
                 if (parameter === 37445) return 'Intel Inc.';
@@ -295,7 +306,7 @@ class CDPController:
                 return getParameter.call(this, parameter);
             };
             
-            // Canvas fingerprinting
+            // ===== Canvas Fingerprinting (как в Pydoll) =====
             const toDataURL = HTMLCanvasElement.prototype.toDataURL;
             HTMLCanvasElement.prototype.toDataURL = function(type, quality) {
                 if (this.width === 224 && this.height === 224) {
@@ -304,7 +315,7 @@ class CDPController:
                 return toDataURL.call(this, type, quality);
             };
             
-            // AudioContext fingerprinting
+            // ===== AudioContext (как в Pydoll) =====
             const createOscillator = AudioContext.prototype.createOscillator;
             AudioContext.prototype.createOscillator = function() {
                 const osc = createOscillator.call(this);
@@ -315,7 +326,7 @@ class CDPController:
                 return osc;
             };
             
-            // Battery API
+            // ===== Battery API (как в Pydoll) =====
             Object.defineProperty(navigator, 'getBattery', {
                 get: () => function() {
                     return Promise.resolve({
@@ -327,7 +338,7 @@ class CDPController:
                 }
             });
             
-            // Permissions
+            // ===== Permissions (как в Pydoll) =====
             const originalQuery = navigator.permissions.query;
             navigator.permissions.query = function(parameters) {
                 if (parameters.name === 'notifications') {
@@ -339,7 +350,7 @@ class CDPController:
                 return originalQuery.call(this, parameters);
             };
             
-            // Connection
+            // ===== Connection (как в Pydoll) =====
             Object.defineProperty(navigator, 'connection', {
                 get: () => ({
                     effectiveType: '4g',
@@ -349,7 +360,7 @@ class CDPController:
                 })
             });
             
-            // Chrome object
+            // ===== window.chrome (как в Pydoll) =====
             if (!window.chrome) {
                 window.chrome = {
                     app: {
@@ -379,14 +390,14 @@ class CDPController:
             }
         """, session_id)
         
-        # 3. Удаляем CDP-следы
+        # 3. Удаляем CDP-следы (как в Pydoll)
         await self.evaluate("""
             delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
             delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
             delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
         """, session_id)
         
-        file_logger.debug("✅ Стелс-настройки применены")
+        file_logger.debug("✅ Стелс-настройки применены (как в Pydoll)")
         return True
     
     async def attach_to_tab(self, target_id=None):
@@ -407,7 +418,7 @@ class CDPController:
             await self.send("Network.enable", session_id=session_id)
             await self.send("Log.enable", session_id=session_id)
             
-            # 👇 ПРИМЕНЯЕМ СТЕЛС-НАСТРОЙКИ
+            # 👇 ПРИМЕНЯЕМ МАКСИМАЛЬНЫЙ СТЕЛС
             await self.apply_stealth(session_id)
             
             file_logger.info(f"✅ Прикреплён к вкладке: {session_id}")
@@ -416,9 +427,9 @@ class CDPController:
             file_logger.error(f"❌ Ошибка прикрепления к вкладке: {str(e)}")
             raise
     
-    # ============ HUMANIZED INTERACTIONS ============
+    # ============ HUMANIZED INTERACTIONS (КАК В Pydoll) ============
     async def human_click(self, selector, session_id, wait_for_navigation=False):
-        """Клик с человеческой траекторией"""
+        """Humanized клик с кривой Безье (как в Pydoll)"""
         file_logger.debug(f"🖱️ Human клик по {selector}")
         
         # Получаем координаты элемента
@@ -445,28 +456,23 @@ class CDPController:
         target_x = coords['x'] + random.uniform(-15, 15)
         target_y = coords['y'] + random.uniform(-8, 8)
         
-        # Случайное количество точек
         num_points = random.randint(8, 15)
         points = []
         
-        # Стартуем от случайной позиции
         start_x = target_x + random.uniform(-100, -50)
         start_y = target_y + random.uniform(-50, 50)
         
         for i in range(num_points):
             t = i / num_points
-            # Кривая с овершутом
             overshoot = 1 + 0.1 * math.sin(t * math.pi * 3)
             x = start_x + (target_x - start_x) * t * overshoot
             y = start_y + (target_y - start_y) * t * overshoot
             
-            # Добавляем тремор
             x += math.sin(t * math.pi * 5) * random.uniform(-3, 3)
             y += math.cos(t * math.pi * 4) * random.uniform(-2, 2)
             
             points.append((int(x), int(y)))
         
-        # Добавляем финальную точку с овершутом
         final_x = target_x + random.uniform(-5, 5)
         final_y = target_y + random.uniform(-3, 3)
         points.append((int(final_x), int(final_y)))
@@ -480,7 +486,6 @@ class CDPController:
             }, session_id)
             await asyncio.sleep(random.uniform(0.01, 0.04))
         
-        # Случайная пауза перед кликом
         await asyncio.sleep(random.uniform(0.05, 0.2))
         
         # Нажатие
@@ -503,17 +508,15 @@ class CDPController:
             "clickCount": 1
         }, session_id)
         
-        # Если ожидаем навигацию
         if wait_for_navigation:
             await self.wait_for_load(session_id, timeout=15)
         
         return True
     
     async def human_type(self, selector, text, session_id, clear_first=True):
-        """Ввод с человеческой скоростью и опечатками"""
+        """Humanized ввод с опечатками (как в Pydoll)"""
         file_logger.debug(f"⌨️ Human ввод в {selector}: {text[:20]}...")
         
-        # Скроллим к элементу и фокусируемся
         await self.evaluate(f"""
             const el = document.querySelector('{selector}');
             if (el) {{
@@ -527,11 +530,9 @@ class CDPController:
         
         await asyncio.sleep(random.uniform(0.1, 0.3))
         
-        # Вводим посимвольно
         for i, char in enumerate(text):
-            # 2% шанс опечатки и исправления
+            # 2% шанс опечатки (как в Pydoll)
             if random.random() < 0.02 and len(text) > 3 and i > 1:
-                # Вводим неправильный символ
                 wrong_char = random.choice('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
                 await self.send("Input.dispatchKeyEvent", {
                     "type": "keyDown",
@@ -543,10 +544,8 @@ class CDPController:
                     "text": wrong_char
                 }, session_id)
                 
-                # Пауза перед исправлением
                 await asyncio.sleep(random.uniform(0.1, 0.3))
                 
-                # Жмём Backspace
                 await self.send("Input.dispatchKeyEvent", {
                     "type": "keyDown",
                     "text": "\b"
@@ -570,10 +569,9 @@ class CDPController:
                 "text": char
             }, session_id)
             
-            # Случайная пауза между символами (30-120ms)
             await asyncio.sleep(random.uniform(0.03, 0.12))
         
-        # Триггерим события для React/Vue
+        # Триггерим события
         await self.evaluate(f"""
             const el = document.querySelector('{selector}');
             if (el) {{
@@ -887,6 +885,19 @@ class CDPController:
         """
         return await self.evaluate(js, session_id)
     
+    async def select_option(self, selector, value, session_id):
+        file_logger.debug(f"📋 Выбор опции: {value} в {selector}")
+        js = f"""
+            (function() {{
+                const el = document.querySelector('{selector}');
+                if (!el) return false;
+                el.value = '{value}';
+                el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                return true;
+            }})()
+        """
+        return await self.evaluate(js, session_id)
+    
     async def close_tab(self, target_id=None):
         tid = target_id or self.target_id
         if tid:
@@ -943,13 +954,15 @@ class BotHandler:
         
         await update.message.reply_text(
             "🤖 *CDP Snapshot Bot (Stealth Mode)*\n\n"
-            "🛡️ *Стелс-настройки:*\n"
+            "🛡️ *Максимальный стелс (как в Pydoll):*\n"
+            "✅ `--headless=new` (современный headless)\n"
             "✅ Скрыт `navigator.webdriver`\n"
             "✅ Реалистичный User-Agent\n"
             "✅ Эмуляция плагинов и API\n"
             "✅ Humanized клики и ввод\n"
             "✅ WebRTC защита\n"
-            "✅ Canvas/WebGL fingerprinting\n\n"
+            "✅ Canvas/WebGL fingerprinting\n"
+            "✅ Профиль пользователя\n\n"
             "📸 Делаю полные снэпшоты\n"
             "🎬 Выполняю интерактивные сценарии\n"
             "📊 Сравниваю страницы\n\n"
@@ -1067,15 +1080,24 @@ class BotHandler:
             session_id = await self.cdp.attach_to_tab()
             file_logger.info(f"📑 Вкладка создана для {url}")
             
+            # Случайная задержка перед навигацией (имитация человека)
+            delay = random.uniform(1, 3)
+            await update.message.reply_text(f"⏳ Пауза {delay:.1f}с...")
+            await asyncio.sleep(delay)
+            
             await self.cdp.navigate(url, session_id)
             await update.message.reply_text("⏳ Загрузка страницы...")
             
-            if await self.cdp.wait_for_load(session_id, timeout=30):
+            # Увеличенный таймаут для Google
+            if await self.cdp.wait_for_load(session_id, timeout=45):
                 await update.message.reply_text("✅ Страница загружена!")
                 file_logger.info(f"✅ Страница {url} загружена")
             else:
                 await update.message.reply_text("⚠️ Частичная загрузка")
                 file_logger.warning(f"⚠️ Частичная загрузка {url}")
+            
+            # Дополнительная задержка перед сбором
+            await asyncio.sleep(random.uniform(0.5, 1.5))
             
             # ============ СОБИРАЕМ ВСЁ ============
             await update.message.reply_text("📊 Собираю все данные...")
@@ -1298,7 +1320,7 @@ class BotHandler:
             session_id = await self.cdp.attach_to_tab()
             
             await self.cdp.navigate(url, session_id)
-            await self.cdp.wait_for_load(session_id, timeout=30)
+            await self.cdp.wait_for_load(session_id, timeout=45)
             
             for action_str in actions:
                 await self._parse_and_execute(update, action_str, session_id)
@@ -1450,7 +1472,7 @@ class BotHandler:
             session_id = await self.cdp.attach_to_tab()
             
             await self.cdp.navigate(url, session_id)
-            await self.cdp.wait_for_load(session_id, timeout=30)
+            await self.cdp.wait_for_load(session_id, timeout=45)
             
             html = await self.cdp.evaluate("document.documentElement.outerHTML", session_id)
             text = await self.cdp.get_page_text(session_id)
@@ -1572,10 +1594,18 @@ class BotHandler:
 # ==================== MAIN ====================
 def main():
     """Точка входа с правильным управлением event loop"""
-    file_logger.info("🚀 ЗАПУСК БОТА (STEALTH MODE)")
+    file_logger.info("🚀 ЗАПУСК БОТА (STEALTH MODE - КАК В Pydoll)")
     file_logger.info("📁 Папка снэпшотов: snapshots")
     file_logger.info("📁 Лог-файл: bot_logs.txt")
     file_logger.info("🔑 TELEGRAM_TOKEN: Установлен" if TELEGRAM_TOKEN != 'ВАШ_ТОКЕН' else "🔑 TELEGRAM_TOKEN: НЕ УСТАНОВЛЕН")
+    file_logger.info("🛡️ Максимальный стелс:")
+    file_logger.info("   ✅ --headless=new")
+    file_logger.info("   ✅ navigator.webdriver = undefined")
+    file_logger.info("   ✅ Эмуляция плагинов, языков, Platform")
+    file_logger.info("   ✅ WebGL, Canvas, AudioContext")
+    file_logger.info("   ✅ Humanized клики и ввод")
+    file_logger.info("   ✅ WebRTC защита")
+    file_logger.info("   ✅ Профиль пользователя")
     
     bot = BotHandler()
     
