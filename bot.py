@@ -28,6 +28,94 @@ AI_MODEL = "agnes-2.0-flash"
 # ---------- СПИСОК ID GOOGLE ----------
 GOOGLE_SEARCH_IDS = ['APjFqb', 'gbqfq', 'lst-ib', 'searchbox', 'q']
 
+# ---------- СИСТЕМНЫЙ ПРОМТ (УЛУЧШЕННЫЙ) ----------
+SYSTEM_PROMPT = """Ты — AI-ассистент для анализа веб-страниц.
+
+ТВОЯ РОЛЬ:
+- Помогаешь пользователю понимать структуру страницы
+- Отвечаешь на вопросы об элементах
+- Даешь рекомендации по действиям
+
+🔥 ПРАВИЛА СОРТИРОВКИ (ОТ ВАЖНОГО К МЕНЕЕ ВАЖНОМУ):
+1. ВИДИМЫЕ интерактивные элементы (кнопки, ссылки, поля) — САМЫЕ ВАЖНЫЕ
+2. ВИДИМЫЕ структурные элементы (заголовки, текст, таблицы)
+3. СКРЫТЫЕ интерактивные элементы
+4. СКРЫТЫЕ структурные элементы
+
+🔥 ЭМОДЗИ ДЛЯ ТИПОВ:
+🔘 — кнопка (можно кликнуть)
+✏️ — поле ввода (можно ввести текст)
+🔗 — ссылка (можно перейти)
+📄 — текст/параграф
+📊 — таблица
+🖼️ — изображение
+🧩 — структурный элемент (div, section)
+👁️ — видимый
+👻 — скрытый
+
+🔥 ФОРМАТ ОТВЕТА:
+Если спрашивают про элементы — показывай их в порядке важности.
+Всегда указывай:
+- статус видимости (👁️ видимый / 👻 скрытый)
+- можно ли взаимодействовать (кликнуть, ввести текст)
+
+ПРИМЕР ОТВЕТА:
+Вопрос: "какие кнопки видишь?"
+
+Ответ:
+🔘 **Видимые кнопки:**
+1. 'Поиск' — в центре, можно кликнуть 👁️
+2. 'Мне повезёт' — справа, можно кликнуть 👁️
+
+🔘 **Скрытые кнопки:**
+3. 'Настройки' — в меню, скрыта 👻
+
+Вопрос: "что есть на странице?"
+
+Ответ:
+🔘 **Интерактивные:**
+1. 'Поиск' — поле ввода, можно ввести текст 👁️
+2. 'Войти' — кнопка, можно кликнуть 👁️
+
+📄 **Контент:**
+3. Заголовок: "Google" 👁️
+4. Текст: "Поиск в Google" 👁️
+
+👻 **Скрытые:**
+5. Меню навигации — скрыто 👻
+
+🔥 ПРАВИЛА ОТВЕТОВ:
+1. Отвечай кратко (3-5 предложений)
+2. Всегда указывай статус видимости
+3. Если элемент можно кликнуть — скажи
+4. Если можно ввести текст — скажи
+5. Не выдумывай то, чего нет
+6. Сначала показывай самое важное (видимое и интерактивное)
+
+🔥 ВАЖНО: Различай ВОПРОСЫ и КОМАНДЫ!
+
+ВОПРОСЫ (ask) — пользователь спрашивает о странице:
+• "какие кнопки?"
+• "есть ли поле?"
+• "что видишь?"
+• "ты можешь ввести текст?" → это ВОПРОС, а не команда!
+
+КОМАНДЫ (type, click, submit) — пользователь просит СДЕЛАТЬ действие:
+• "введи текст в поле"
+• "нажми на кнопку"
+• "отправь форму"
+• "сделай скриншот"
+
+ПРАВИЛО:
+- Если пользователь СПРАШИВАЕТ — используй "ask"
+- Если пользователь ПРОСИТ СДЕЛАТЬ — используй действие (type, click, submit)
+
+ПРИМЕРЫ:
+Пользователь: "ты можешь ввести текст?" → {"action": "ask", "question": "ты можешь ввести текст?"}
+Пользователь: "введи привет в поиск" → {"action": "type", "text": "привет", "field": "поиск"}
+Пользователь: "проверь поле" → {"action": "ask", "question": "проверь поле"}
+Пользователь: "напиши туда текст" → {"action": "type", "text": "текст", "field": "поле"}"""
+
 # ---------- СЛОВАРИ СИНОНИМОВ ----------
 SYNONYMS = {
     'поиск': ['поиск', 'search', 'найти', 'find', 'query', 'запрос', 'искать', 'поискать'],
@@ -172,6 +260,15 @@ class Memory:
         
         return "\n".join(lines)
 
+def get_system_prompt_with_context(memory=None):
+    """Возвращает системный промпт с контекстом из памяти"""
+    prompt = SYSTEM_PROMPT
+    if memory:
+        context = memory.get_context_for_ai()
+        if context:
+            prompt += f"\n\nКОНТЕКСТ ИЗ ПАМЯТИ:\n{context}"
+    return prompt
+
 # ---------- AI ДЛЯ РАСПОЗНАВАНИЯ КОМАНД ----------
 def ask_ai_for_command(text, memory=None):
     try:
@@ -197,25 +294,24 @@ def ask_ai_for_command(text, memory=None):
 10. greeting — приветствие
 11. help — помощь
 
-ПРИМЕРЫ:
-Пользователь: "зайди в гугл" → {"action": "navigate", "url": "https://google.com"}
-Пользователь: "открой ютуб" → {"action": "navigate", "url": "https://youtube.com"}
-Пользователь: "какие кнопки видишь?" → {"action": "ask", "question": "какие кнопки видишь?"}
-Пользователь: "нажми на кнопку Войти" → {"action": "click", "target": "Войти"}
-Пользователь: "введи погоду в поиск" → {"action": "type", "text": "погода", "field": "поиск"}
-Пользователь: "напиши Валера в строку поиска" → {"action": "type", "text": "Валера", "field": "поиск"}
-Пользователь: "отправь форму" → {"action": "submit"}
-Пользователь: "сделай скриншот" → {"action": "screenshot"}
-Пользователь: "вернись назад" → {"action": "back"}
-Пользователь: "покажи историю" → {"action": "history"}
-Пользователь: "очисти память" → {"action": "clear"}
+🔥 ВАЖНО: Различай ВОПРОСЫ и КОМАНДЫ!
 
-ПРАВИЛА:
-1. Всегда возвращай ТОЛЬКО JSON
-2. Для navigate — всегда добавляй https:// если нет
-3. Для type — field пиши на РУССКОМ: "поиск", "логин", "пароль", "имя", "email", "телефон"
-4. Для click — target пиши на РУССКОМ: "Войти", "Отправить", "Закрыть"
-5. Если не понял — верни {"action": "unknown"}
+ВОПРОСЫ (ask) — пользователь СПРАШИВАЕТ о странице:
+• "какие кнопки?"
+• "есть ли поле?"
+• "что видишь?"
+• "ты можешь ввести текст?" → это ВОПРОС
+
+КОМАНДЫ (type, click, submit) — пользователь ПРОСИТ СДЕЛАТЬ:
+• "введи текст в поле"
+• "нажми на кнопку"
+• "отправь форму"
+
+ПРИМЕРЫ:
+Пользователь: "ты можешь ввести текст?" → {"action": "ask", "question": "ты можешь ввести текст?"}
+Пользователь: "введи привет в поиск" → {"action": "type", "text": "привет", "field": "поиск"}
+Пользователь: "нажми на Войти" → {"action": "click", "target": "Войти"}
+Пользователь: "отправь форму" → {"action": "submit"}
 
 Сейчас пользователь написал: """
         
@@ -270,29 +366,7 @@ def ask_ai_for_answer(prompt, context=None, memory=None):
         
         messages = []
         
-        system_prompt = """Ты — AI-ассистент для анализа веб-страниц.
-
-ТВОЯ РОЛЬ:
-- Помогаешь пользователю понимать структуру страницы
-- Отвечаешь на вопросы об элементах
-- Даешь рекомендации по действиям
-
-ПРАВИЛА:
-1. Отвечай кратко (3-5 предложений)
-2. Перечисляй элементы с пояснениями
-3. Если не нашел — скажи честно
-4. Используй эмодзи: 🔘 кнопка, 📄 текст, 🔗 ссылка, ✏️ поле, 📊 таблица, 🖼️ изображение
-5. Не выдумывай то, чего нет
-6. Указывай смысл элемента (поиск, вход, регистрация и т.д.)
-
-ФОРМАТ:
-- Списки: • или 1.
-- Элементы: тип + текст + смысл + местоположение"""
-        
-        if memory:
-            memory_context = memory.get_context_for_ai()
-            if memory_context:
-                system_prompt += f"\n\nКОНТЕКСТ ИЗ ПАМЯТИ:\n{memory_context}"
+        system_prompt = get_system_prompt_with_context(memory)
         
         messages.append({"role": "system", "content": system_prompt})
         
@@ -873,7 +947,6 @@ class BrowserCDP:
             return False
     
     async def ensure_connection(self):
-        """Проверяет живое ли WebSocket соединение"""
         try:
             if not self.ws:
                 file_logger.log("⚠️ Нет WebSocket соединения", "WARNING")
@@ -897,7 +970,7 @@ class BrowserCDP:
             await self.apply_mask()
             return True
 
-    # ========== УНИВЕРСАЛЬНЫЙ КЛИК ==========
+    # ========== КЛИК ==========
     async def click_element(self, target):
         try:
             if not await self.ensure_connection():
@@ -942,13 +1015,13 @@ class BrowserCDP:
             file_logger.log(f"❌ Ошибка клика: {e}", "ERROR")
             return False
 
-    # ========== УНИВЕРСАЛЬНЫЙ ВВОД (С ФИКСОМ) ==========
+    # ========== ВВОД ТЕКСТА ==========
     async def type_text(self, text, field):
         try:
             if not await self.ensure_connection():
                 return False
             
-            # 🔥 1. ПРЯМОЙ ПОИСК ПО ID GOOGLE
+            # 🔥 1. ПРЯМОЙ ПОИСК ПО ID (САМЫЙ НАДЕЖНЫЙ)
             for field_id in GOOGLE_SEARCH_IDS:
                 js = f"""
                     (function() {{
@@ -978,7 +1051,7 @@ class BrowserCDP:
                     const meaning = '{meaning}' if '{meaning}' else '';
                     const elements = document.querySelectorAll('input, textarea, [contenteditable="true"]');
                     
-                    // 🔥 КЛЮЧЕВЫЕ СЛОВА
+                    const searchIds = ['apjfqb', 'gbqfq', 'lst-ib', 'searchbox', 'q'];
                     const searchTerms = ['поиск', 'search', 'найти', 'find', 'query', 'запрос', 'q', 'text'];
                     
                     for (let el of elements) {{
@@ -999,11 +1072,9 @@ class BrowserCDP:
                             type === 'search' ||
                             name === 'q' ||
                             (meaning && (placeholder.includes(meaning) || aria.includes(meaning))) ||
-                            // 🔥 ДЛЯ GOOGLE
-                            id === 'apjfqb' ||
+                            searchIds.some(id => id === id) ||
                             cls.includes('glfyf') ||
                             (tag === 'textarea' && el.closest('form[role="search"]')) ||
-                            // 🔥 ПО КЛЮЧЕВЫМ СЛОВАМ
                             searchTerms.some(term => 
                                 placeholder.includes(term) || 
                                 aria.includes(term) || 
@@ -1023,7 +1094,7 @@ class BrowserCDP:
                         }}
                     }}
                     
-                    // 🔥 3. ЕСЛИ НЕ НАШЛИ — ПЕРВОЕ ВИДИМОЕ ПОЛЕ
+                    // 🔥 3. ПЕРВОЕ ВИДИМОЕ ПОЛЕ
                     for (let el of elements) {{
                         if (el.type !== 'hidden' && el.type !== 'submit' && el.type !== 'button') {{
                             const rect = el.getBoundingClientRect();
@@ -1047,7 +1118,7 @@ class BrowserCDP:
                 file_logger.log(f"✅ Ввел '{text}' в поле", "INFO")
                 return True
             
-            # 🔥 4. ПОКАЗЫВАЕМ ВСЕ ПОЛЯ
+            # 🔥 4. ПОКАЗЫВАЕМ ПОЛЯ
             fields_js = """
                 (function() {
                     const inputs = document.querySelectorAll('input, textarea, [contenteditable="true"]');
@@ -1084,7 +1155,7 @@ class BrowserCDP:
             file_logger.log(f"❌ Ошибка ввода: {e}", "ERROR")
             return False
 
-    # ========== УНИВЕРСАЛЬНАЯ ОТПРАВКА ФОРМЫ ==========
+    # ========== ОТПРАВКА ФОРМЫ ==========
     async def submit_form(self):
         try:
             if not await self.ensure_connection():
@@ -1129,7 +1200,7 @@ class BrowserCDP:
             file_logger.log(f"❌ Ошибка отправки формы: {e}", "ERROR")
             return False
 
-    # ========== SNAPSHOT СО СМЫСЛОВЫМИ ТЕГАМИ ==========
+    # ========== SNAPSHOT ==========
     async def get_snapshot(self):
         try:
             file_logger.log("📸 Делаю слепок страницы...", "INFO")
@@ -1346,7 +1417,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• сделай скрин\n"
         "• вернись назад\n\n"
         "🧠 Понимаю смысл, а не просто слова!\n"
-        "🔍 Умею находить поля Google по ID!"
+        "🔍 Нахожу поля Google по ID!\n"
+        "📊 Сортирую элементы по важности!"
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1378,8 +1450,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• сделать скриншот\n"
             "• вернуться назад\n"
             "• показать историю\n\n"
-            "Понимаю смысл, а не просто слова!\n"
-            "🔍 Нахожу поля Google по ID!"
+            "📊 Сортирую элементы по важности (сначала видимые и интерактивные)!"
         )
         return
     
@@ -1683,7 +1754,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• сделай скриншот\n"
             "• вернись назад\n"
             "• покажи историю\n\n"
-            "🔍 Нахожу поля Google по ID!"
+            "📊 Сортирую элементы по важности!"
         )
         return
     
@@ -1724,7 +1795,7 @@ async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- ЗАПУСК ----------
 def main():
     print("="*50)
-    print("🚀 ЗАПУСК БОТА (С ФИКСОМ ПОИСКА)")
+    print("🚀 ЗАПУСК БОТА (УЛУЧШЕННЫЙ ПРОМТ + СОРТИРОВКА)")
     print("="*50)
     print(f"📌 Chrome путь: {CHROME_PATH}")
     print("🕵️ Маскировка: ВСЕГДА ВКЛЮЧЕНА")
@@ -1732,6 +1803,7 @@ def main():
     print("🤖 AI-понимание: ВКЛЮЧЕНО")
     print("🎯 Универсальный поиск: ВКЛЮЧЕН")
     print("✅ Google ID: APjFqb, gbqfq, lst-ib, searchbox, q")
+    print("📊 Сортировка: ВКЛЮЧЕНА (видимые → интерактивные → структурные)")
     print(f"🤖 AI модель: {AI_MODEL}")
     print("="*50)
     
@@ -1754,7 +1826,9 @@ def main():
     print("   • зайди в гугл")
     print("   • введи валера в поиск")
     print("   • нажми на Войти")
+    print("   • какие кнопки? (отсортирует по важности)")
     print("🔍 Теперь ищет поля Google по ID APjFqb!")
+    print("📊 Сортирует элементы: видимые → интерактивные → структурные")
     app.run_polling()
 
 if __name__ == "__main__":
