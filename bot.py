@@ -33,6 +33,7 @@ class BrowserCDP:
     def __init__(self):
         self.ws = None
         self.msg_id = 0
+        self.load_event_received = asyncio.Event()
     
     def ensure_browser(self):
         """Проверяет и запускает Chrome если не запущен"""
@@ -67,8 +68,10 @@ class BrowserCDP:
         ws_url = resp.json()["webSocketDebuggerUrl"]
         
         self.ws = await websockets.connect(ws_url)
+        file_logger.log("Подключен к Chrome CDP", "INFO")
+        
+        # Включаем Page domain для получения событий
         await self.send("Page.enable")
-        file_logger.log(f"Подключен к Chrome CDP", "INFO")
     
     async def send(self, method, params=None):
         """Отправка CDP команды (асинхронно)"""
@@ -80,17 +83,73 @@ class BrowserCDP:
         }
         await self.ws.send(json.dumps(msg))
         response = await self.ws.recv()
-        return json.loads(response)
+        data = json.loads(response)
+        
+        if "error" in data:
+            error_msg = data["error"].get("message", "Unknown CDP error")
+            raise Exception(f"CDP Error: {error_msg}")
+        
+        return data
+    
+    async def listen_for_events(self):
+        """Слушает события от браузера"""
+        while True:
+            try:
+                response = await self.ws.recv()
+                data = json.loads(response)
+                
+                # Проверяем событие загрузки
+                if "method" in data and data["method"] == "Page.loadEventFired":
+                    file_logger.log("Страница загружена (событие получено)", "INFO")
+                    self.load_event_received.set()
+                    break
+                    
+            except websockets.exceptions.ConnectionClosed:
+                file_logger.log("WebSocket соединение закрыто", "WARNING")
+                break
+            except Exception as e:
+                file_logger.log(f"Ошибка при прослушивании событий: {e}", "ERROR")
+                break
+    
+    async def wait_for_load(self, timeout=30):
+        """Ожидает событие загрузки страницы"""
+        try:
+            await asyncio.wait_for(self.load_event_received.wait(), timeout=timeout)
+            file_logger.log("Страница загружена успешно", "INFO")
+            return True
+        except asyncio.TimeoutError:
+            file_logger.log("Таймаут ожидания загрузки страницы", "WARNING")
+            return False
     
     async def navigate_and_screenshot(self, url):
-        """Навигация и создание скриншота (асинхронно)"""
+        """Навигация и создание скриншота с ожиданием загрузки"""
         file_logger.log(f"Навигация на {url}", "INFO")
         await self.connect()
         
-        await self.send("Page.navigate", {"url": url})
-        await asyncio.sleep(2)
+        # Сбрасываем событие перед навигацией
+        self.load_event_received.clear()
         
+        # Запускаем прослушивание событий в фоне
+        asyncio.create_task(self.listen_for_events())
+        
+        # Навигация
+        nav_result = await self.send("Page.navigate", {"url": url})
+        file_logger.log(f"Навигация инициирована", "INFO")
+        
+        # Ждём загрузку страницы
+        loaded = await self.wait_for_load(timeout=30)
+        
+        if not loaded:
+            file_logger.log("Страница не загрузилась за 30 секунд, делаем скриншот принудительно", "WARNING")
+            await asyncio.sleep(2)  # Дополнительная задержка на всякий случай
+        
+        # Скриншот
         result = await self.send("Page.captureScreenshot", {"format": "png"})
+        
+        if "result" not in result or "data" not in result["result"]:
+            file_logger.log(f"Неожиданный ответ от CDP: {result}", "ERROR")
+            raise Exception("Не удалось получить скриншот")
+        
         file_logger.log(f"Скриншот создан для {url}", "INFO")
         
         await self.ws.close()
