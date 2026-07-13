@@ -8,6 +8,8 @@ import asyncio
 import websockets
 import random
 import hashlib
+import io
+from PIL import Image
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -219,14 +221,13 @@ class BrowserCDP:
                 cookies_list.append({
                     "name": cookie["name"],
                     "value": cookie["value"],
-                    "domain": ".x.com",  # Глобально для всех поддоменов
+                    "domain": ".x.com",
                     "path": "/",
                     "secure": True,
                     "httpOnly": cookie.get("httpOnly", False),
                     "sameSite": "Lax"
                 })
             
-            # Отправляем все куки одной командой
             await self.send("Network.setCookies", {
                 "cookies": cookies_list
             }, session_id=self.session_id)
@@ -242,14 +243,12 @@ class BrowserCDP:
             
             mask_script = f"""
                 (function() {{
-                    // Скрываем webdriver
                     Object.defineProperty(navigator, 'webdriver', {{
                         get: () => undefined,
                         configurable: true,
                         enumerable: true
                     }});
                     
-                    // Подмена plugins
                     Object.defineProperty(navigator, 'plugins', {{
                         get: () => {{
                             function Plugin(name, filename, description) {{
@@ -290,35 +289,30 @@ class BrowserCDP:
                         enumerable: true
                     }});
                     
-                    // Подмена languages
                     Object.defineProperty(navigator, 'languages', {{
                         get: () => ['en-US', 'en', 'ru'],
                         configurable: true,
                         enumerable: true
                     }});
                     
-                    // Подмена platform
                     Object.defineProperty(navigator, 'platform', {{
                         get: () => 'Win32',
                         configurable: true,
                         enumerable: true
                     }});
                     
-                    // Подмена hardwareConcurrency
                     Object.defineProperty(navigator, 'hardwareConcurrency', {{
                         get: () => {random.randint(4, 16)},
                         configurable: true,
                         enumerable: true
                     }});
                     
-                    // Подмена deviceMemory
                     Object.defineProperty(navigator, 'deviceMemory', {{
                         get: () => {random.choice([4, 8, 16, 32])},
                         configurable: true,
                         enumerable: true
                     }});
                     
-                    // Подмена userAgentData
                     Object.defineProperty(navigator, 'userAgentData', {{
                         get: () => {{
                             return {{
@@ -355,10 +349,8 @@ class BrowserCDP:
                         enumerable: true
                     }});
                     
-                    // Подмена connection
                     Object.defineProperty(navigator, 'connection', {{
                         get: () => {{
-                            const types = ['4g', '3g', '2g'];
                             return {{
                                 rtt: {random.randint(20, 100)},
                                 downlink: {round(random.uniform(5, 20), 1)},
@@ -371,7 +363,6 @@ class BrowserCDP:
                         enumerable: true
                     }});
                     
-                    // Подмена permissions
                     const originalQuery = window.navigator.permissions.query;
                     window.navigator.permissions.query = function(parameters) {{
                         const permissions = {{
@@ -392,10 +383,6 @@ class BrowserCDP:
                             onchange: null
                         }});
                     }};
-                    
-                    // ============================================
-                    // ПОДМЕНА WEBGL
-                    // ============================================
                     
                     const originalGetContext = HTMLCanvasElement.prototype.getContext;
                     HTMLCanvasElement.prototype.getContext = function(contextId, attributes) {{
@@ -442,10 +429,6 @@ class BrowserCDP:
                         return originalGetContext.call(this, contextId, attributes);
                     }};
                     
-                    // ============================================
-                    // ПОДМЕНА CANVAS
-                    // ============================================
-                    
                     const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
                     HTMLCanvasElement.prototype.toDataURL = function(type, quality) {{
                         if (type === 'image/png' || type === undefined) {{
@@ -462,10 +445,6 @@ class BrowserCDP:
                         }}
                         return originalToDataURL.call(this, type, quality);
                     }};
-                    
-                    // ============================================
-                    // ПОДМЕНА AUDIO
-                    // ============================================
                     
                     const originalAudioCtx = window.AudioContext || window.webkitAudioContext;
                     if (originalAudioCtx) {{
@@ -488,10 +467,6 @@ class BrowserCDP:
                         window.AudioContext = patchedAudioCtx;
                         window.webkitAudioContext = patchedAudioCtx;
                     }}
-                    
-                    // ============================================
-                    // ПОДМЕНА SCREEN
-                    // ============================================
                     
                     Object.defineProperty(window, 'screen', {{
                         get: () => {{
@@ -520,10 +495,6 @@ class BrowserCDP:
                         enumerable: true
                     }});
                     
-                    // ============================================
-                    // СКРЫТИЕ CHROME
-                    // ============================================
-                    
                     if (!window.chrome) {{
                         window.chrome = {{}};
                     }}
@@ -531,10 +502,6 @@ class BrowserCDP:
                     window.chrome.loadTimes = function() {{}};
                     window.chrome.csi = function() {{}};
                     window.chrome.app = {{}};
-                    
-                    // ============================================
-                    // ПОДМЕНА ТАЙМИНГОВ
-                    // ============================================
                     
                     const originalPerfNow = performance.now;
                     performance.now = function() {{
@@ -545,10 +512,6 @@ class BrowserCDP:
                     Date.now = function() {{
                         return originalDateNow.call(this) + Math.floor(Math.random() * 5);
                     }};
-                    
-                    // ============================================
-                    // ПОДМЕНА DOCUMENT
-                    // ============================================
                     
                     Object.defineProperty(document, 'hidden', {{
                         get: () => false,
@@ -562,7 +525,6 @@ class BrowserCDP:
                         enumerable: true
                     }});
                     
-                    // Уникальный отпечаток
                     window._pydoll_session = {{
                         id: '{hashlib.md5(str(time.time()).encode()).hexdigest()[:16]}',
                         fingerprint: '{canvas_fingerprint}',
@@ -606,23 +568,89 @@ class BrowserCDP:
                     raise Exception(f"CDP Error [{error_code}]: {error_msg}")
                 return data
     
+    def prepare_photo_for_telegram(self, image_bytes: bytes) -> bytes:
+        """Проверяет и исправляет размеры фото для Telegram"""
+        try:
+            image = Image.open(io.BytesIO(image_bytes))
+            width, height = image.size
+            
+            file_logger.log(f"Оригинальный размер: {width}x{height}", "DEBUG")
+            
+            # 1. Проверяем пропорции (Telegram: не более 20:1)
+            aspect_ratio = max(width, height) / min(width, height)
+            if aspect_ratio > 20:
+                file_logger.log(f"Соотношение {aspect_ratio:.1f}:1 > 20:1, изменяем", "WARNING")
+                
+                if width > height:
+                    new_width = int(height * 19.5)
+                    new_height = height
+                else:
+                    new_width = width
+                    new_height = int(width * 19.5)
+                
+                new_width = max(new_width, 100)
+                new_height = max(new_height, 100)
+                
+                image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                width, height = image.size
+                file_logger.log(f"Новый размер после коррекции: {width}x{height}", "INFO")
+            
+            # 2. Проверяем сумму сторон (Telegram: не более 10000)
+            if width + height > 10000:
+                file_logger.log(f"Сумма сторон {width + height} > 10000, уменьшаем", "WARNING")
+                
+                scale = 9000 / (width + height)
+                new_width = int(width * scale)
+                new_height = int(height * scale)
+                
+                new_width = max(new_width, 100)
+                new_height = max(new_height, 100)
+                
+                image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                width, height = image.size
+                file_logger.log(f"Новый размер: {width}x{height}", "INFO")
+            
+            # 3. Сохраняем в JPEG с хорошим качеством
+            buffer = io.BytesIO()
+            image.save(buffer, format='JPEG', quality=80)
+            result = buffer.getvalue()
+            
+            # 4. Проверяем размер файла (Telegram: не более 10 MB)
+            if len(result) > 10 * 1024 * 1024:
+                file_logger.log(f"Файл {len(result) // 1024 // 1024}MB > 10MB, сжимаем", "WARNING")
+                
+                for quality in [70, 60, 50, 40]:
+                    buffer = io.BytesIO()
+                    image.save(buffer, format='JPEG', quality=quality)
+                    result = buffer.getvalue()
+                    if len(result) < 10 * 1024 * 1024:
+                        file_logger.log(f"Сжато до {len(result) // 1024 // 1024}MB (quality {quality})", "INFO")
+                        break
+            
+            file_logger.log(f"Фото готово: {width}x{height}, {len(result) // 1024}KB", "INFO")
+            return result
+            
+        except ImportError:
+            file_logger.log("PIL не установлен, пропускаем обработку", "WARNING")
+            return image_bytes
+        except Exception as e:
+            file_logger.log(f"Ошибка при обработке фото: {e}", "WARNING")
+            return image_bytes
+    
     async def navigate_and_screenshot(self, url):
         """Навигация и создание скриншота"""
         file_logger.log(f"Навигация на {url}", "INFO")
         await self.connect()
         
-        # Если URL не X.com, переходим на него после установки кук
         if "x.com" not in url and "twitter.com" not in url:
             await self.send("Page.navigate", {"url": url}, session_id=self.session_id)
             file_logger.log("Навигация на целевой URL", "INFO")
         else:
             file_logger.log("Уже на X.com, куки установлены", "INFO")
         
-        # Ждём загрузку
         file_logger.log("Ожидание загрузки страницы...", "INFO")
         await asyncio.sleep(5)
         
-        # Делаем скриншот
         file_logger.log("Делаю скриншот...", "INFO")
         screenshot_data = None
         
@@ -663,6 +691,7 @@ class BrowserCDP:
         
         await self.ws.close()
         
+        # Возвращаем байты скриншота (ещё без обработки)
         return base64.b64decode(screenshot_data)
 
 # ---------- ОБРАБОТЧИКИ ----------
@@ -696,6 +725,10 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         browser = BrowserCDP()
         screenshot = await browser.navigate_and_screenshot(url)
+        
+        # 🔥 Обрабатываем фото перед отправкой
+        screenshot = browser.prepare_photo_for_telegram(screenshot)
+        
         await update.message.reply_photo(screenshot, caption=f"✅ {url}")
         file_logger.log(f"Скриншот отправлен пользователю {user}", "INFO")
     except Exception as e:
@@ -755,6 +788,7 @@ def main():
     print(f"🍪 Загружено кук: {len(COOKIES)} (глобально, domain: .x.com)")
     print("📁 Команды: /start, /log")
     print("⚡ WebSocket лимит: 15 MB")
+    print("🖼️ Автоматическая обработка размеров фото для Telegram")
     
     app.run_polling()
 
