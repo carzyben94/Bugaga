@@ -25,6 +25,9 @@ AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
 AGNES_API_URL = os.environ.get("AGNES_API_URL", "https://apihub.agnes-ai.com/v1/chat/completions")
 AI_MODEL = "agnes-2.0-flash"
 
+# ---------- СПИСОК ID GOOGLE ----------
+GOOGLE_SEARCH_IDS = ['APjFqb', 'gbqfq', 'lst-ib', 'searchbox', 'q']
+
 # ---------- СЛОВАРИ СИНОНИМОВ ----------
 SYNONYMS = {
     'поиск': ['поиск', 'search', 'найти', 'find', 'query', 'запрос', 'искать', 'поискать'],
@@ -72,6 +75,7 @@ class Memory:
         self.current_title = None
         self.last_action = None
         self.browser = None
+        self.last_fields = None
     
     def add_action(self, action_type, data=None):
         entry = {
@@ -698,6 +702,7 @@ class BrowserCDP:
         self.msg_id = 0
         self.target_id = None
         self.snapshot = {}
+        self.last_fields = None
     
     def find_chrome(self):
         chrome_paths = [
@@ -891,7 +896,7 @@ class BrowserCDP:
             await self.connect()
             await self.apply_mask()
             return True
-    
+
     # ========== УНИВЕРСАЛЬНЫЙ КЛИК ==========
     async def click_element(self, target):
         try:
@@ -936,13 +941,35 @@ class BrowserCDP:
         except Exception as e:
             file_logger.log(f"❌ Ошибка клика: {e}", "ERROR")
             return False
-    
-    # ========== УНИВЕРСАЛЬНЫЙ ВВОД (ИСПРАВЛЕННЫЙ) ==========
+
+    # ========== УНИВЕРСАЛЬНЫЙ ВВОД (С ФИКСОМ) ==========
     async def type_text(self, text, field):
         try:
             if not await self.ensure_connection():
                 return False
             
+            # 🔥 1. ПРЯМОЙ ПОИСК ПО ID GOOGLE
+            for field_id in GOOGLE_SEARCH_IDS:
+                js = f"""
+                    (function() {{
+                        const el = document.getElementById('{field_id}');
+                        if (el) {{
+                            el.focus();
+                            el.value = '';
+                            el.value = '{text}';
+                            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                            return true;
+                        }}
+                        return false;
+                    }})()
+                """
+                result = await self.eval_js(js)
+                if result:
+                    file_logger.log(f"✅ Ввел '{text}' в поле по ID: {field_id}", "INFO")
+                    return True
+            
+            # 🔥 2. ПОИСК ПО АТРИБУТАМ
             meaning = get_meaning(field)
             
             js = f"""
@@ -950,6 +977,9 @@ class BrowserCDP:
                     const field = '{field}'.toLowerCase();
                     const meaning = '{meaning}' if '{meaning}' else '';
                     const elements = document.querySelectorAll('input, textarea, [contenteditable="true"]');
+                    
+                    // 🔥 КЛЮЧЕВЫЕ СЛОВА
+                    const searchTerms = ['поиск', 'search', 'найти', 'find', 'query', 'запрос', 'q', 'text'];
                     
                     for (let el of elements) {{
                         const placeholder = (el.getAttribute('placeholder') || '').toLowerCase();
@@ -960,14 +990,6 @@ class BrowserCDP:
                         const type = (el.getAttribute('type') || '').toLowerCase();
                         const tag = el.tagName.toLowerCase();
                         
-                        // 🔥 СПЕЦИАЛЬНАЯ ПРОВЕРКА ДЛЯ GOOGLE
-                        const isGoogle = (
-                            id === 'apjfqb' ||
-                            cls.includes('glfyf') ||
-                            (tag === 'textarea' && el.closest('form[role="search"]'))
-                        );
-                        
-                        // 🔥 ОСНОВНАЯ ПРОВЕРКА
                         const isMatch = (
                             placeholder.includes(field) ||
                             aria.includes(field) ||
@@ -975,19 +997,20 @@ class BrowserCDP:
                             cls.includes(field) ||
                             name.includes(field) ||
                             type === 'search' ||
-                            isGoogle ||
+                            name === 'q' ||
                             (meaning && (placeholder.includes(meaning) || aria.includes(meaning))) ||
-                            placeholder.includes('поиск') ||
-                            placeholder.includes('search') ||
-                            aria.includes('поиск') ||
-                            aria.includes('search') ||
+                            // 🔥 ДЛЯ GOOGLE
+                            id === 'apjfqb' ||
                             cls.includes('glfyf') ||
-                            cls.includes('search') ||
-                            id.includes('search') ||
-                            id.includes('query') ||
-                            id.includes('apjfqb') ||
-                            name.includes('q') ||
-                            name.includes('s')
+                            (tag === 'textarea' && el.closest('form[role="search"]')) ||
+                            // 🔥 ПО КЛЮЧЕВЫМ СЛОВАМ
+                            searchTerms.some(term => 
+                                placeholder.includes(term) || 
+                                aria.includes(term) || 
+                                id.includes(term) || 
+                                cls.includes(term) ||
+                                name.includes(term)
+                            )
                         );
                         
                         if (isMatch) {{
@@ -996,23 +1019,11 @@ class BrowserCDP:
                             el.value = '{text}';
                             el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                             el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                            
-                            // 🔥 ДЛЯ GOOGLE — ОТПРАВЛЯЕМ ENTER
-                            if (isGoogle) {{
-                                const enterEvent = new KeyboardEvent('keydown', {{
-                                    key: 'Enter',
-                                    code: 'Enter',
-                                    keyCode: 13,
-                                    bubbles: true
-                                }});
-                                el.dispatchEvent(enterEvent);
-                            }}
-                            
                             return true;
                         }}
                     }}
                     
-                    // Если не нашли — берем первое видимое поле
+                    // 🔥 3. ЕСЛИ НЕ НАШЛИ — ПЕРВОЕ ВИДИМОЕ ПОЛЕ
                     for (let el of elements) {{
                         if (el.type !== 'hidden' && el.type !== 'submit' && el.type !== 'button') {{
                             const rect = el.getBoundingClientRect();
@@ -1031,16 +1042,48 @@ class BrowserCDP:
                 }})()
             """
             result = await self.eval_js(js)
+            
             if result:
                 file_logger.log(f"✅ Ввел '{text}' в поле", "INFO")
                 return True
-            else:
-                file_logger.log(f"❌ Поле не найдено", "WARNING")
-                return False
+            
+            # 🔥 4. ПОКАЗЫВАЕМ ВСЕ ПОЛЯ
+            fields_js = """
+                (function() {
+                    const inputs = document.querySelectorAll('input, textarea, [contenteditable="true"]');
+                    const result = [];
+                    inputs.forEach(el => {
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0) {
+                            result.push({
+                                tag: el.tagName.toLowerCase(),
+                                id: el.id || '',
+                                class: el.className || '',
+                                placeholder: el.placeholder || '',
+                                ariaLabel: el.getAttribute('aria-label') || '',
+                                name: el.name || '',
+                                type: el.type || ''
+                            });
+                        }
+                    });
+                    return result;
+                })()
+            """
+            fields = await self.eval_js(fields_js)
+            
+            if fields and len(fields) > 0:
+                self.last_fields = "\n".join([
+                    f"• {f.get('tag', 'unknown')}: id='{f.get('id', '')}', placeholder='{f.get('placeholder', '')}'"
+                    for f in fields[:10]
+                ])
+            
+            file_logger.log(f"❌ Поле не найдено", "WARNING")
+            return False
+            
         except Exception as e:
             file_logger.log(f"❌ Ошибка ввода: {e}", "ERROR")
             return False
-    
+
     # ========== УНИВЕРСАЛЬНАЯ ОТПРАВКА ФОРМЫ ==========
     async def submit_form(self):
         try:
@@ -1085,7 +1128,7 @@ class BrowserCDP:
         except Exception as e:
             file_logger.log(f"❌ Ошибка отправки формы: {e}", "ERROR")
             return False
-    
+
     # ========== SNAPSHOT СО СМЫСЛОВЫМИ ТЕГАМИ ==========
     async def get_snapshot(self):
         try:
@@ -1209,7 +1252,7 @@ class BrowserCDP:
             file_logger.log(f"❌ Ошибка слепка: {e}", "ERROR")
             self.snapshot = {"title": "Ошибка", "url": "Ошибка", "total": 0, "elements": []}
             return False
-    
+
     async def navigate_and_screenshot(self, url):
         file_logger.log(f"🌐 Навигация на {url}", "INFO")
         await self.connect()
@@ -1231,7 +1274,7 @@ class BrowserCDP:
             raise Exception("Не удалось получить скриншот")
         
         return screenshot_data
-    
+
     async def wait_for_page_load(self):
         file_logger.log("⏳ Ожидаю загрузку...", "INFO")
         start_time = time.time()
@@ -1255,7 +1298,7 @@ class BrowserCDP:
         
         file_logger.log("⏰ Таймаут загрузки", "WARNING")
         return False
-    
+
     async def screenshot(self):
         try:
             if not await self.ensure_connection():
@@ -1302,7 +1345,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• введи погоду в поиск\n"
         "• сделай скрин\n"
         "• вернись назад\n\n"
-        "🧠 Понимаю смысл, а не просто слова!"
+        "🧠 Понимаю смысл, а не просто слова!\n"
+        "🔍 Умею находить поля Google по ID!"
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1334,7 +1378,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• сделать скриншот\n"
             "• вернуться назад\n"
             "• показать историю\n\n"
-            "Понимаю смысл, а не просто слова!"
+            "Понимаю смысл, а не просто слова!\n"
+            "🔍 Нахожу поля Google по ID!"
         )
         return
     
@@ -1493,37 +1538,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     memory.browser
                 )
             else:
-                # Показываем список полей
-                fields = await memory.browser.eval_js("""
-                    (function() {
-                        const inputs = document.querySelectorAll('input, textarea');
-                        const result = [];
-                        inputs.forEach(el => {
-                            if (el.type !== 'hidden') {
-                                result.push({
-                                    type: el.type || 'text',
-                                    placeholder: el.placeholder || '',
-                                    aria: el.getAttribute('aria-label') || '',
-                                    id: el.id || '',
-                                    class: el.className || '',
-                                    name: el.name || ''
-                                });
-                            }
-                        });
-                        return result;
-                    })()
-                """)
-                
-                if fields and len(fields) > 0:
-                    fields_text = "\n".join([
-                        f"• {f.get('type', 'text')}: placeholder='{f.get('placeholder', '')}', id='{f.get('id', '')}'"
-                        for f in fields[:10]
-                    ])
-                    
+                fields = memory.browser.last_fields
+                if fields:
                     await thinking_msg.edit_text(
                         f"❌ Не нашел поле '{field}'\n\n"
-                        f"🔍 На странице есть поля:\n{fields_text}\n\n"
-                        "Попробуй уточнить: например, 'введи Валера в строку поиска'"
+                        f"🔍 На странице есть поля:\n{fields}\n\n"
+                        "Попробуй уточнить: 'введи Валера в строку поиска'"
                     )
                 else:
                     await thinking_msg.edit_text("❌ На странице нет полей ввода")
@@ -1663,7 +1683,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• сделай скриншот\n"
             "• вернись назад\n"
             "• покажи историю\n\n"
-            "Понимаю смысл, а не просто слова!"
+            "🔍 Нахожу поля Google по ID!"
         )
         return
     
@@ -1704,14 +1724,14 @@ async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- ЗАПУСК ----------
 def main():
     print("="*50)
-    print("🚀 ЗАПУСК БОТА (ИСПРАВЛЕННАЯ ВЕРСИЯ)")
+    print("🚀 ЗАПУСК БОТА (С ФИКСОМ ПОИСКА)")
     print("="*50)
     print(f"📌 Chrome путь: {CHROME_PATH}")
     print("🕵️ Маскировка: ВСЕГДА ВКЛЮЧЕНА")
     print("🧠 Память: ВКЛЮЧЕНА")
     print("🤖 AI-понимание: ВКЛЮЧЕНО")
     print("🎯 Универсальный поиск: ВКЛЮЧЕН")
-    print("✅ Google фикс: ВКЛЮЧЕН")
+    print("✅ Google ID: APjFqb, gbqfq, lst-ib, searchbox, q")
     print(f"🤖 AI модель: {AI_MODEL}")
     print("="*50)
     
@@ -1734,7 +1754,7 @@ def main():
     print("   • зайди в гугл")
     print("   • введи валера в поиск")
     print("   • нажми на Войти")
-    print("🎯 Теперь бот находит поле поиска Google!")
+    print("🔍 Теперь ищет поля Google по ID APjFqb!")
     app.run_polling()
 
 if __name__ == "__main__":
