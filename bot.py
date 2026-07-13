@@ -12,10 +12,10 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 # ---------- КОНФИГ ----------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "ВАШ_ТОКЕН")
+CHROME_PATH = os.getenv("CHROME_PATH", "/usr/bin/google-chrome")  # ← ОБЯЗАТЕЛЬНО!
 CDP_PORT = 9222
 WEBSOCKET_MAX_SIZE = 20 * 1024 * 1024
 PAGE_LOAD_TIMEOUT = 20
-# Маскировка ВСЕГДА включена
 
 # ---------- ЛОГИРОВАНИЕ ----------
 LOG_FILE = "bot_logs.txt"
@@ -73,11 +73,12 @@ def get_random_webgl_renderer():
     return random.choice(renderers)
 
 def get_launch_args():
+    """Формирует аргументы запуска Chrome с маскировкой"""
     window = get_random_window_position()
     user_agent = get_random_user_agent()
     
     args = [
-        CHROME_PATH,
+        CHROME_PATH,  # ← Теперь CHROME_PATH доступен
         "--headless=new",
         "--no-sandbox",
         "--disable-dev-shm-usage",
@@ -146,6 +147,7 @@ def get_mask_js():
     screen_height = random.randint(800, 1080)
     screen_width = random.randint(1200, 1920)
     noise = random.randint(0, 2)
+    extra_height = random.randint(40, 60)
     
     return f"""
     (function() {{
@@ -387,7 +389,7 @@ def get_mask_js():
         Object.defineProperty(window, 'screen', {{
             get: () => {{
                 const availHeight = {screen_height};
-                const height = availHeight + {random.randint(40, 60)};
+                const height = availHeight + {extra_height};
                 const availWidth = {screen_width};
                 const width = availWidth;
                 return {{
@@ -501,14 +503,21 @@ class BrowserCDP:
             file_logger.log("❌ Chrome не найден в системе!", "ERROR")
             return False
         
+        # Обновляем CHROME_PATH для запуска
+        global CHROME_PATH
+        CHROME_PATH = chrome_path
+        
         file_logger.log(f"🔄 Запускаю Chrome с маскировкой", "INFO")
         
         try:
+            # Убиваем старые процессы
             subprocess.run(["pkill", "-f", "chrome"], capture_output=True)
             time.sleep(2)
             
+            # Получаем аргументы
             launch_args = get_launch_args()
             
+            # Запускаем Chrome
             subprocess.Popen(
                 launch_args,
                 stdout=subprocess.DEVNULL,
@@ -518,6 +527,7 @@ class BrowserCDP:
             file_logger.log("⏳ Жду запуска Chrome (5 сек)...", "INFO")
             time.sleep(5)
             
+            # Проверяем
             for i in range(5):
                 try:
                     resp = requests.get(f"http://localhost:{CDP_PORT}/json/version", timeout=2)
@@ -630,7 +640,7 @@ class BrowserCDP:
             return None
     
     async def apply_mask(self):
-        """Применяет 100% маскировку (всегда включена)"""
+        """Применяет 100% маскировку"""
         try:
             file_logger.log("🕵️ Применяю 100% маскировку...", "INFO")
             mask_js = get_mask_js()
@@ -646,11 +656,11 @@ class BrowserCDP:
         file_logger.log(f"🌐 Навигация на {url}", "INFO")
         await self.connect()
         
-        # Маскировка ВСЕГДА применяется
+        # Маскировка всегда применяется
         await self.apply_mask()
         
         try:
-            result = await self.send("Page.navigate", {"url": url})
+            await self.send("Page.navigate", {"url": url})
             file_logger.log(f"✅ Навигация отправлена", "INFO")
         except Exception as e:
             file_logger.log(f"❌ Ошибка навигации: {e}", "ERROR")
@@ -773,6 +783,7 @@ def main():
     print("="*50)
     print("🚀 ЗАПУСК БОТА С МАСКИРОВКОЙ")
     print("="*50)
+    print(f"📌 Chrome путь: {CHROME_PATH}")
     print("🕵️ Маскировка: ВСЕГДА ВКЛЮЧЕНА")
     print("="*50)
     
