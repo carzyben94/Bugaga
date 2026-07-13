@@ -1,4 +1,4 @@
- # bot.py
+# bot.py
 import asyncio
 import json
 import os
@@ -184,7 +184,7 @@ class ChromeManager:
         else:
             file_logger.warning("⚠️ Chrome не был запущен")
 
-# ==================== CDP CONTROLLER ====================
+# ==================== CDP CONTROLLER (С ЛОГИКОЙ PYDOLL) ====================
 class CDPController:
     def __init__(self, port=CDP_PORT):
         self.port = port
@@ -614,7 +614,8 @@ class CDPController:
         
         return True
     
-    async def wait_for_load(self, session_id, timeout=30):
+    # ============ ОЖИДАНИЕ ЗАГРУЗКИ (УЛУЧШЕННОЕ) ============
+    async def wait_for_load(self, session_id, timeout=45):
         file_logger.info(f"⏳ Ожидание загрузки страницы (таймаут: {timeout}с)")
         start = time.time()
         loaded = False
@@ -641,13 +642,16 @@ class CDPController:
                         content_detected = True
                         file_logger.debug(f"✅ Заголовок страницы: {title}")
                     
+                    # Проверка капчи
                     has_captcha = await self.evaluate(
                         "document.body?.innerText?.includes('captcha') || document.body?.innerText?.includes('CAPTCHA') || document.querySelector('[id*=\"captcha\"]') !== null",
                         session_id
                     )
                     if has_captcha:
                         file_logger.warning("⚠️ Обнаружена капча!")
-                        return False
+                        # Пробуем обойти
+                        await self.bypass_cloudflare(session_id)
+                        continue
                 
                 if loaded and network_idle and content_detected:
                     await self.wait_for_js_frameworks(session_id, timeout=5)
@@ -766,45 +770,205 @@ class CDPController:
             file_logger.error(f"❌ Ошибка выполнения JS: {str(e)}")
             raise
     
-    # ============ ИСПРАВЛЕННЫЙ СКРИНШОТ (КАК В PYDOLL) ============
-    async def take_screenshot(self, session_id, full_page=False):
-        """Скриншот как в Pydoll с параметрами capture_beyond_viewport"""
-        file_logger.info("📸 Делаю скриншот...")
+    # ============ ОБХОД CLOUDFLARE (КАК В PYDOLL) ============
+    async def detect_cloudflare(self, session_id):
+        """Обнаружение Cloudflare"""
         try:
+            # Проверяем по заголовку
+            title = await self.evaluate("document.title", session_id)
+            if title and ("cloudflare" in title.lower() or "security" in title.lower()):
+                return True
+            
+            # Проверяем по тексту
+            body = await self.evaluate("document.body?.innerText || ''", session_id)
+            cloudflare_keywords = [
+                "cloudflare", "security check", "проверка", 
+                "waiting", "пожалуйста", "please wait", "проверка безопасности"
+            ]
+            for word in cloudflare_keywords:
+                if word in body.lower():
+                    return True
+            
+            # Проверяем по iframe
+            iframes = await self.evaluate(
+                "document.querySelectorAll('iframe[src*=\"cloudflare\"]').length",
+                session_id
+            )
+            if iframes > 0:
+                return True
+            
+            return False
+        except:
+            return False
+
+    async def bypass_cloudflare(self, session_id, timeout=30):
+        """Обход Cloudflare (как в Pydoll)"""
+        file_logger.info("🔄 Обход Cloudflare...")
+        
+        # 1. Скроллы как человек
+        for _ in range(random.randint(3, 6)):
+            await self.evaluate(f"window.scrollBy(0, {random.randint(200, 700)})", session_id)
+            await asyncio.sleep(random.uniform(0.5, 1.5))
+        
+        # 2. Движения мыши
+        for _ in range(random.randint(5, 10)):
+            x = random.randint(100, 1800)
+            y = random.randint(100, 900)
+            await self.send("Input.dispatchMouseEvent", {
+                "type": "mouseMoved",
+                "x": x,
+                "y": y
+            }, session_id)
+            await asyncio.sleep(random.uniform(0.1, 0.3))
+        
+        # 3. Ждём
+        await asyncio.sleep(random.uniform(2, 5))
+        
+        # 4. Проверяем результат
+        has_cloudflare = await self.detect_cloudflare(session_id)
+        if not has_cloudflare:
+            file_logger.info("✅ Cloudflare обойдён")
+            return True
+        
+        # 5. Пробуем перезагрузить
+        await self.send("Page.reload", {}, session_id)
+        await asyncio.sleep(random.uniform(2, 4))
+        
+        # 6. Ещё раз проверяем
+        has_cloudflare = await self.detect_cloudflare(session_id)
+        if not has_cloudflare:
+            file_logger.info("✅ Cloudflare обойдён после перезагрузки")
+            return True
+        
+        file_logger.warning("⚠️ Не удалось обойти Cloudflare")
+        return False
+
+    # ============ СКРИНШОТ С ЛОГИКОЙ PYDOLL ============
+    async def take_screenshot(self, session_id, full_page=False, timeout=30):
+        """
+        Скриншот как в Pydoll:
+        1. Проверка готовности страницы
+        2. Ожидание стабильности DOM
+        3. Обход блокировок
+        4. Корректный захват
+        """
+        file_logger.info("📸 Делаю скриншот...")
+        
+        try:
+            # ============ 1. ПРОВЕРКА ГОТОВНОСТИ ============
+            ready_state = await self.evaluate("document.readyState", session_id)
+            if ready_state != "complete":
+                file_logger.warning(f"⚠️ Страница не полностью загружена: {ready_state}")
+                for _ in range(5):
+                    await asyncio.sleep(1)
+                    ready_state = await self.evaluate("document.readyState", session_id)
+                    if ready_state == "complete":
+                        break
+            
             title = await self.evaluate("document.title", session_id)
             if not title or title == "":
-                file_logger.warning("⚠️ Страница не загружена, пробую обновить...")
+                file_logger.warning("⚠️ Пустой заголовок, страница возможно заблокирована")
                 await self.send("Page.reload", {}, session_id)
-                await asyncio.sleep(2)
+                await asyncio.sleep(3)
                 title = await self.evaluate("document.title", session_id)
                 if not title:
-                    file_logger.error("❌ Не удалось загрузить страницу")
+                    file_logger.error("❌ Страница не отвечает")
                     return None
             
             file_logger.info(f"📄 Заголовок: {title}")
             
-            # 👇 ПАРАМЕТРЫ КАК В PYDOLL
+            # ============ 2. ОЖИДАНИЕ СТАБИЛЬНОСТИ DOM ============
+            file_logger.debug("⏳ Ожидание стабильности DOM...")
+            stable = False
+            for _ in range(10):
+                count1 = await self.evaluate("document.querySelectorAll('*').length", session_id)
+                await asyncio.sleep(0.5)
+                count2 = await self.evaluate("document.querySelectorAll('*').length", session_id)
+                
+                if count1 == count2:
+                    stable = True
+                    file_logger.debug("✅ DOM стабилен")
+                    break
+            
+            if not stable:
+                file_logger.warning("⚠️ DOM не стабилизировался, но продолжаем")
+            
+            # ============ 3. ОБХОД CLOUDFLARE ============
+            has_cloudflare = await self.detect_cloudflare(session_id)
+            if has_cloudflare:
+                file_logger.info("🔄 Обнаружен Cloudflare, обхожу...")
+                await self.bypass_cloudflare(session_id)
+            
+            # Проверяем капчу
+            has_captcha = await self.evaluate("""
+                (function() {
+                    const body = document.body?.innerText || '';
+                    const captcha_keywords = ['captcha', 'CAPTCHA', 'проверка', 'бот', 'verify', 'security'];
+                    for (const word of captcha_keywords) {
+                        if (body.includes(word)) return true;
+                    }
+                    const elements = document.querySelectorAll('[id*="captcha"], [class*="captcha"], iframe[src*="captcha"]');
+                    return elements.length > 0;
+                })()
+            """, session_id)
+            
+            if has_captcha:
+                file_logger.warning("⚠️ Обнаружена капча! Пробую обойти...")
+                
+                for _ in range(3):
+                    await self.evaluate(f"window.scrollBy(0, {random.randint(200, 600)})", session_id)
+                    await asyncio.sleep(random.uniform(0.5, 1))
+                
+                await asyncio.sleep(random.uniform(3, 5))
+                
+                has_captcha = await self.evaluate("""
+                    (function() {
+                        const body = document.body?.innerText || '';
+                        return body.includes('captcha') || body.includes('CAPTCHA');
+                    })()
+                """, session_id)
+                
+                if has_captcha:
+                    file_logger.warning("⚠️ Капча не обойдена, скриншот может быть пустым")
+            
+            # ============ 4. ПОДГОТОВКА ПАРАМЕТРОВ ============
             params = {
                 "format": "jpeg",
                 "quality": 70,
                 "fromSurface": True,
-                "optimizeForSpeed": True,
-                "capture_beyond_viewport": full_page  # 👈 КЛЮЧЕВОЙ ПАРАМЕТР
+                "optimizeForSpeed": True
             }
             
+            if full_page:
+                params["captureBeyondViewport"] = True
+            else:
+                params["captureBeyondViewport"] = False
+            
+            file_logger.debug(f"📐 Параметры скриншота: {params}")
+            
+            # ============ 5. ЗАХВАТ СКРИНШОТА ============
             result = await self.send("Page.captureScreenshot", params, session_id)
             
             if "error" in result:
                 file_logger.error(f"❌ Ошибка скриншота: {result['error']}")
-                return None
+                file_logger.info("🔄 Пробую с минимальными параметрами...")
+                result = await self.send("Page.captureScreenshot", {
+                    "format": "jpeg",
+                    "quality": 50
+                }, session_id)
+                
+                if "error" in result:
+                    return None
             
+            # ============ 6. ОБРАБОТКА РЕЗУЛЬТАТА ============
             if "result" in result and "data" in result["result"]:
                 img_data = base64.b64decode(result["result"]["data"])
+                
                 if len(img_data) > 100:
                     file_logger.info(f"✅ Скриншот сделан ({len(img_data)} байт)")
                     return img_data
                 else:
-                    file_logger.warning(f"⚠️ Слишком маленький: {len(img_data)} байт")
+                    file_logger.warning(f"⚠️ Слишком маленький скриншот: {len(img_data)} байт")
                     return img_data if len(img_data) > 0 else None
             
             file_logger.error("❌ Не удалось получить скриншот")
@@ -1030,7 +1194,8 @@ class BotHandler:
             f"✅ Canvas/WebGL fingerprinting\n"
             f"✅ Профиль пользователя\n"
             f"🍪 Куки X/Twitter: установлены для всех сайтов\n"
-            f"🖼️ Pillow: {pillow_status}\n\n"
+            f"🖼️ Pillow: {pillow_status}\n"
+            f"🛡️ Обход Cloudflare: ✅\n\n"
             f"📸 Делаю полные снэпшоты\n"
             f"🎬 Выполняю интерактивные сценарии\n"
             f"📊 Сравниваю страницы\n\n"
@@ -1136,9 +1301,9 @@ class BotHandler:
         else:
             await self._handle_snapshot(update, url)
     
-    # ============ ИСПРАВЛЕННЫЙ _handle_snapshot (НЕ ОБРЫВАЕТ СБОР) ============
+    # ============ ОСНОВНОЙ МЕТОД СБОРА СНЭПШОТА ============
     async def _handle_snapshot(self, update, url):
-        """Создание ПОЛНОГО снэпшота (ДАЖЕ ЕСЛИ СКРИНШОТ НЕ УДАЛСЯ)"""
+        """Создание ПОЛНОГО снэпшота с обходом Cloudflare"""
         user = update.effective_user
         file_logger.info(f"📸 Начало снэпшота для {url} от {user.username or user.id}")
         
@@ -1172,10 +1337,44 @@ class BotHandler:
             
             await asyncio.sleep(random.uniform(0.5, 1.5))
             
+            # ============ ОБХОД CLOUDFLARE ============
+            await update.message.reply_text("🔄 Проверяю защиту Cloudflare...")
+            
+            has_cloudflare = await self.cdp.detect_cloudflare(session_id)
+            if has_cloudflare:
+                await update.message.reply_text("🔄 Обнаружен Cloudflare, обхожу...")
+                await self.cdp.bypass_cloudflare(session_id)
+                await update.message.reply_text("✅ Cloudflare обойдён!")
+            
+            # ============ ЭМУЛЯЦИЯ ЧЕЛОВЕКА ============
+            await update.message.reply_text("🔄 Эмулирую поведение человека...")
+            
+            # Скроллы
+            scroll_count = random.randint(2, 4)
+            for _ in range(scroll_count):
+                await self.cdp.evaluate(f"window.scrollBy(0, {random.randint(300, 800)})", session_id)
+                await asyncio.sleep(random.uniform(0.5, 1.5))
+            
+            # Движения мыши
+            for _ in range(random.randint(3, 6)):
+                x = random.randint(100, 1800)
+                y = random.randint(100, 900)
+                await self.cdp.send("Input.dispatchMouseEvent", {
+                    "type": "mouseMoved",
+                    "x": x,
+                    "y": y
+                }, session_id)
+                await asyncio.sleep(random.uniform(0.1, 0.3))
+            
+            # Пауза
+            pause = random.uniform(2, 4)
+            await update.message.reply_text(f"⏳ Пауза {pause:.1f}с...")
+            await asyncio.sleep(pause)
+            
             await update.message.reply_text("📊 Собираю все данные...")
             file_logger.info(f"📊 Сбор данных для {url}")
             
-            # ============ ПЫТАЕМСЯ СДЕЛАТЬ СКРИНШОТ (НО НЕ ОБРЫВАЕМ) ============
+            # ============ ПЫТАЕМСЯ СДЕЛАТЬ СКРИНШОТ ============
             try:
                 screenshot = await self.cdp.take_screenshot(session_id, full_page=False)
                 if screenshot:
@@ -1696,12 +1895,13 @@ class BotHandler:
 # ==================== MAIN ====================
 def main():
     """Точка входа"""
-    file_logger.info("🚀 ЗАПУСК БОТА (STEALTH MODE)")
+    file_logger.info("🚀 ЗАПУСК БОТА (STEALTH MODE + CLOUDFLARE BYPASS)")
     file_logger.info("📁 Папка снэпшотов: snapshots")
     file_logger.info("📁 Лог-файл: bot_logs.txt")
     file_logger.info("🔑 TELEGRAM_TOKEN: Установлен" if TELEGRAM_TOKEN != 'ВАШ_ТОКЕН' else "🔑 TELEGRAM_TOKEN: НЕ УСТАНОВЛЕН")
     file_logger.info(f"🍪 Куки X/Twitter: {len(X_COOKIES)} шт")
     file_logger.info(f"🖼️ Pillow: {'✅ Доступен' if PILLOW_AVAILABLE else '❌ НЕ УСТАНОВЛЕН'}")
+    file_logger.info("🛡️ Обход Cloudflare: ✅ ВКЛЮЧЁН")
     
     bot = BotHandler()
     
@@ -1736,4 +1936,4 @@ def main():
         file_logger.info("✅ Бот остановлен")
 
 if __name__ == "__main__":
-    main() 
+    main()
