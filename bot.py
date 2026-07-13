@@ -33,7 +33,7 @@ class BrowserCDP:
     def __init__(self):
         self.ws = None
         self.msg_id = 0
-        self.load_event_received = asyncio.Event()
+        self.session_id = None
     
     def ensure_browser(self):
         """Проверяет и запускает Chrome если не запущен"""
@@ -50,6 +50,7 @@ class BrowserCDP:
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
                     "--disable-gpu",
+                    "--disable-software-rasterizer",
                     f"--remote-debugging-port={CDP_PORT}"
                 ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 time.sleep(3)
@@ -60,36 +61,38 @@ class BrowserCDP:
                 return False
     
     async def connect(self):
-        """Подключение к конкретной вкладке браузера через WebSocket"""
+        """Подключение к браузеру и создание новой вкладки"""
         if not self.ensure_browser():
             raise Exception("Chrome не доступен")
         
-        # Получаем список вкладок, а не версию браузера
-        resp = requests.get(f"http://localhost:{CDP_PORT}/json/list")
-        targets = resp.json()
-        
-        # Находим первую страницу (type = "page")
-        ws_url = None
-        for target in targets:
-            if target.get("type") == "page":
-                ws_url = target.get("webSocketDebuggerUrl")
-                file_logger.log(f"Найдена вкладка: {target.get('url', 'unknown')}", "INFO")
-                break
-        
-        if not ws_url:
-            raise Exception("Не найдена активная вкладка")
+        # Подключаемся к браузеру
+        resp = requests.get(f"http://localhost:{CDP_PORT}/json/version")
+        ws_url = resp.json()["webSocketDebuggerUrl"]
         
         self.ws = await websockets.connect(ws_url)
-        file_logger.log("Подключен к Chrome CDP (вкладка)", "INFO")
+        file_logger.log("Подключен к браузеру", "INFO")
         
-        # Активируем домены после подключения к вкладке
-        await self.send("Page.enable")
-        await self.send("Runtime.enable")
-        await self.send("Network.enable")
+        # Создаём новую вкладку
+        result = await self.send("Target.createTarget", {"url": "about:blank"})
+        target_id = result["result"]["targetId"]
+        file_logger.log(f"Создана вкладка: {target_id}", "INFO")
+        
+        # Прикрепляемся к вкладке
+        attach_result = await self.send("Target.attachToTarget", {
+            "targetId": target_id,
+            "flatten": True
+        })
+        self.session_id = attach_result["result"]["sessionId"]
+        file_logger.log(f"Прикреплен к вкладке, sessionId: {self.session_id}", "INFO")
+        
+        # Активируем домены через сессию
+        await self.send("Page.enable", session_id=self.session_id)
+        await self.send("Runtime.enable", session_id=self.session_id)
+        await self.send("Network.enable", session_id=self.session_id)
         file_logger.log("Домены активированы", "INFO")
     
-    async def send(self, method, params=None):
-        """Отправка CDP команды (асинхронно)"""
+    async def send(self, method, params=None, session_id=None):
+        """Отправка CDP команды с поддержкой сессий"""
         self.msg_id += 1
         msg = {
             "id": self.msg_id,
@@ -97,68 +100,56 @@ class BrowserCDP:
             "params": params or {}
         }
         
+        # Если указана сессия, добавляем её
+        if session_id:
+            msg["sessionId"] = session_id
+        
         await self.ws.send(json.dumps(msg))
-        response = await self.ws.recv()
-        data = json.loads(response)
         
-        if "error" in data:
-            error_msg = data["error"].get("message", "Unknown CDP error")
-            error_code = data["error"].get("code", 0)
-            raise Exception(f"CDP Error [{error_code}]: {error_msg}")
-        
-        return data
-    
-    async def listen_for_events(self):
-        """Слушает события от браузера"""
-        try:
-            while True:
-                response = await self.ws.recv()
-                data = json.loads(response)
-                
-                if "method" in data:
-                    if data["method"] == "Page.loadEventFired":
-                        file_logger.log("Страница загружена (событие получено)", "INFO")
-                        self.load_event_received.set()
-                        break
-                    elif data["method"] == "Page.domContentEventFired":
-                        file_logger.log("DOM загружен", "DEBUG")
-                        
-        except websockets.exceptions.ConnectionClosed:
-            file_logger.log("WebSocket соединение закрыто", "WARNING")
-        except Exception as e:
-            file_logger.log(f"Ошибка при прослушивании событий: {e}", "ERROR")
-    
-    async def wait_for_load(self, timeout=30):
-        """Ожидает событие загрузки страницы"""
-        try:
-            await asyncio.wait_for(self.load_event_received.wait(), timeout=timeout)
-            file_logger.log("Страница загружена успешно", "INFO")
-            return True
-        except asyncio.TimeoutError:
-            file_logger.log("Таймаут ожидания загрузки страницы", "WARNING")
-            return False
+        # Ждём ответ
+        while True:
+            response = await self.ws.recv()
+            data = json.loads(response)
+            
+            # Проверяем, что это ответ на нашу команду
+            if data.get("id") == self.msg_id:
+                if "error" in data:
+                    error_msg = data["error"].get("message", "Unknown CDP error")
+                    error_code = data["error"].get("code", 0)
+                    raise Exception(f"CDP Error [{error_code}]: {error_msg}")
+                return data
     
     async def navigate_and_screenshot(self, url):
-        """Навигация и создание скриншота с ожиданием загрузки"""
+        """Навигация и создание скриншота"""
         file_logger.log(f"Навигация на {url}", "INFO")
         await self.connect()
         
-        self.load_event_received.clear()
-        asyncio.create_task(self.listen_for_events())
-        
-        # Навигация
-        await self.send("Page.navigate", {"url": url})
+        # Навигация через сессию
+        await self.send("Page.navigate", {"url": url}, session_id=self.session_id)
         file_logger.log("Навигация инициирована", "INFO")
         
-        # Ждём загрузку
-        loaded = await self.wait_for_load(timeout=30)
+        # Ждём загрузку через Runtime.evaluate
+        start_time = time.time()
+        while time.time() - start_time < 30:
+            try:
+                result = await self.send("Runtime.evaluate", {
+                    "expression": "document.readyState === 'complete'"
+                }, session_id=self.session_id)
+                
+                if result.get("result", {}).get("result", {}).get("value") == True:
+                    file_logger.log("Страница загружена (readyState complete)", "INFO")
+                    break
+            except:
+                pass
+            await asyncio.sleep(0.5)
+        else:
+            file_logger.log("Таймаут ожидания загрузки страницы", "WARNING")
         
-        if not loaded:
-            file_logger.log("Страница не загрузилась за 30 секунд, делаем скриншот принудительно", "WARNING")
-            await asyncio.sleep(2)
-        
-        # Скриншот
-        result = await self.send("Page.captureScreenshot", {"format": "png"})
+        # Скриншот через сессию
+        result = await self.send("Page.captureScreenshot", {
+            "format": "png",
+            "captureBeyondViewport": True
+        }, session_id=self.session_id)
         
         if "result" not in result or "data" not in result["result"]:
             file_logger.log(f"Неожиданный ответ от CDP: {result}", "ERROR")
@@ -166,7 +157,10 @@ class BrowserCDP:
         
         file_logger.log(f"Скриншот создан для {url}", "INFO")
         
+        # Закрываем вкладку
+        await self.send("Target.closeTarget", {"targetId": target_id})
         await self.ws.close()
+        
         return base64.b64decode(result["result"]["data"])
 
 # ---------- ОБРАБОТЧИКИ ----------
