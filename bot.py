@@ -26,6 +26,21 @@ LOG_FILE = "bot_logs.txt"
 os.makedirs(SNAPSHOT_DIR, exist_ok=True)
 os.makedirs(COMPARE_DIR, exist_ok=True)
 
+# ==================== КУКИ ДЛЯ X/TWITTER (СТАВЯТСЯ ДЛЯ ВСЕХ САЙТОВ) ====================
+X_COOKIES = [
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "__cuid", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "lang", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "ru"},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "dnt", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "1"},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "guest_id", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "v1%3A178267838599411411"},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "guest_id_marketing", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "v1%3A178267838599411411"},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "guest_id_ads", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "v1%3A178267838599411411"},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "personalization_id", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "\"v1_DKrxLZAC902dMFdd1QrVYg==\""},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "twid", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "u%3D2067347503503052800"},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "auth_token", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936"},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "ct0", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb"},
+    {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "__cf_bm", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "Eb4nVvazwJ5mDp0c.6Ye5ub0rukgdQkcFzPf8.wdbIQ-1783798267.7075489-1.0.1.1-59IptPdWY9w0zyKvebR59I.8iB4M1DWfNNZQW0.c.E4lDCU3wTfEcds69RVBkOeQ9LUDZNLGRv6z8InGbCsH1RaTCKaqehL94yq0FgvU7QB9cbE8BO4.2Y8BMRnN_Nks"}
+]
+
 # ==================== ЛОГИРОВАНИЕ ====================
 class FileLogger:
     def __init__(self, filename=LOG_FILE):
@@ -183,7 +198,7 @@ class ChromeManager:
         else:
             file_logger.warning("⚠️ Chrome не был запущен")
 
-# ==================== CDP CONTROLLER (STEALTH) ====================
+# ==================== CDP CONTROLLER (STEALTH + COOKIES) ====================
 class CDPController:
     def __init__(self, port=CDP_PORT):
         self.port = port
@@ -191,6 +206,7 @@ class CDPController:
         self.target_id = None
         self.msg_id = 0
         self._session_id = None
+        self.cookies_set = False
         
     async def connect(self):
         file_logger.info("🔌 Подключение к CDP...")
@@ -245,6 +261,68 @@ class CDPController:
         except Exception as e:
             file_logger.error(f"❌ Ошибка создания вкладки: {str(e)}")
             raise
+    
+    # ============ РАБОТА С КУКАМИ (КАК В "БАТЯ КОД") ============
+    async def set_cookies(self, cookies, session_id=None):
+        """Устанавливает куки на страницу (как в Батя код)"""
+        file_logger.info(f"🍪 Установка {len(cookies)} кук...")
+        try:
+            cdp_cookies = []
+            for cookie in cookies:
+                cdp_cookies.append({
+                    "name": cookie.get("name"),
+                    "value": cookie.get("value"),
+                    "domain": cookie.get("domain"),
+                    "path": cookie.get("path", "/"),
+                    "secure": cookie.get("secure", False),
+                    "httpOnly": cookie.get("httpOnly", False),
+                    "sameSite": cookie.get("sameSite", "unspecified"),
+                    "session": cookie.get("session", True)
+                })
+            
+            sid = session_id or self._session_id
+            result = await self.send("Network.setCookies", {
+                "cookies": cdp_cookies
+            }, session_id=sid)
+            
+            if "error" not in result:
+                self.cookies_set = True
+                file_logger.info(f"✅ Установлено {len(cookies)} кук")
+                return True
+            
+            file_logger.error(f"❌ Ошибка установки кук: {result.get('error')}")
+            return False
+        except Exception as e:
+            file_logger.error(f"❌ Ошибка установки кук: {str(e)}")
+            return False
+    
+    async def get_cookies(self, session_id=None):
+        """Получает все куки со страницы"""
+        file_logger.debug("🍪 Получение кук...")
+        try:
+            sid = session_id or self._session_id
+            result = await self.send("Network.getAllCookies", {}, session_id=sid)
+            if "error" not in result:
+                cookies = result.get("cookies", [])
+                file_logger.debug(f"🍪 Получено {len(cookies)} кук")
+                return cookies
+            return []
+        except Exception as e:
+            file_logger.error(f"❌ Ошибка получения кук: {str(e)}")
+            return []
+    
+    async def clear_cookies(self, session_id=None):
+        """Очищает все куки"""
+        file_logger.info("🗑️ Очистка кук...")
+        try:
+            sid = session_id or self._session_id
+            await self.send("Network.clearBrowserCookies", {}, session_id=sid)
+            self.cookies_set = False
+            file_logger.info("✅ Куки очищены")
+            return True
+        except Exception as e:
+            file_logger.error(f"❌ Ошибка очистки кук: {str(e)}")
+            return False
     
     # ============ МАКСИМАЛЬНЫЙ СТЕЛС (КАК В Pydoll) ============
     async def apply_stealth(self, session_id):
@@ -962,7 +1040,8 @@ class BotHandler:
             "✅ Humanized клики и ввод\n"
             "✅ WebRTC защита\n"
             "✅ Canvas/WebGL fingerprinting\n"
-            "✅ Профиль пользователя\n\n"
+            "✅ Профиль пользователя\n"
+            "🍪 Куки X/Twitter: установлены для всех сайтов\n\n"
             "📸 Делаю полные снэпшоты\n"
             "🎬 Выполняю интерактивные сценарии\n"
             "📊 Сравниваю страницы\n\n"
@@ -1069,7 +1148,7 @@ class BotHandler:
             await self._handle_snapshot(update, url)
     
     async def _handle_snapshot(self, update, url):
-        """Создание ПОЛНОГО снэпшота со всеми данными"""
+        """Создание ПОЛНОГО снэпшота с установкой кук для всех сайтов"""
         user = update.effective_user
         file_logger.info(f"📸 Начало снэпшота для {url} от {user.username or user.id}")
         
@@ -1080,7 +1159,12 @@ class BotHandler:
             session_id = await self.cdp.attach_to_tab()
             file_logger.info(f"📑 Вкладка создана для {url}")
             
-            # Случайная задержка перед навигацией (имитация человека)
+            # ============ СТАВИМ КУКИ ДЛЯ ВСЕХ САЙТОВ (КАК В "БАТЯ КОД") ============
+            await update.message.reply_text(f"🍪 Устанавливаю куки ({len(X_COOKIES)} шт)...")
+            await self.cdp.set_cookies(X_COOKIES, session_id)
+            file_logger.info(f"🍪 Установлено {len(X_COOKIES)} кук для {url}")
+            
+            # Случайная задержка перед навигацией
             delay = random.uniform(1, 3)
             await update.message.reply_text(f"⏳ Пауза {delay:.1f}с...")
             await asyncio.sleep(delay)
@@ -1088,7 +1172,7 @@ class BotHandler:
             await self.cdp.navigate(url, session_id)
             await update.message.reply_text("⏳ Загрузка страницы...")
             
-            # Увеличенный таймаут для Google
+            # Увеличенный таймаут для Google и X
             if await self.cdp.wait_for_load(session_id, timeout=45):
                 await update.message.reply_text("✅ Страница загружена!")
                 file_logger.info(f"✅ Страница {url} загружена")
@@ -1201,9 +1285,9 @@ class BotHandler:
             text = await self.cdp.get_page_text(session_id)
             file_logger.info(f"📝 Текст: {len(text)} символов")
             
-            # 11. Cookies
-            cookies = await self.cdp.evaluate("document.cookie", session_id)
-            file_logger.info(f"🍪 Cookies: {len(cookies)} символов")
+            # 11. Cookies (получаем установленные куки)
+            cookies = await self.cdp.get_cookies(session_id)
+            file_logger.info(f"🍪 Получено кук: {len(cookies)}")
             
             # 12. localStorage
             localStorage = await self.cdp.evaluate("""
@@ -1234,6 +1318,7 @@ class BotHandler:
             data = {
                 "timestamp": timestamp,
                 "url": url,
+                "cookies_set": len(X_COOKIES),
                 "metadata": meta,
                 "links": links,
                 "images": images,
@@ -1242,6 +1327,7 @@ class BotHandler:
                 "styles": styles,
                 "forms": forms,
                 "text_length": len(text),
+                "cookies_count": len(cookies),
                 "cookies": cookies,
                 "localStorage": localStorage,
                 "performance": perf,
@@ -1263,6 +1349,8 @@ class BotHandler:
                     caption=f"✅ Снэпшот готов!\n{url}"
                 )
             
+            cookies_info = f"🍪 Установлено: {len(X_COOKIES)}, получено: {len(cookies)}"
+            
             message = (
                 f"📊 *Собрано данных:*\n\n"
                 f"📄 HTML: `{len(html):,}` символов\n"
@@ -1273,7 +1361,7 @@ class BotHandler:
                 f"📜 Скриптов: {len(scripts)}\n"
                 f"🎨 Стилей: {len(styles)}\n"
                 f"📋 Форм: {len(forms)}\n"
-                f"🍪 Cookies: `{len(cookies)}`\n\n"
+                f"{cookies_info}\n\n"
                 f"📌 Title: {meta.get('title', 'Нет')}\n"
                 f"📝 Description: {meta.get('description', 'Нет')[:100]}\n\n"
                 f"⚡ DOMContentLoaded: {perf.get('domContentLoaded', 0):.0f}ms\n"
@@ -1318,6 +1406,9 @@ class BotHandler:
         try:
             await self.cdp.create_tab()
             session_id = await self.cdp.attach_to_tab()
+            
+            # Устанавливаем куки для всех сайтов
+            await self.cdp.set_cookies(X_COOKIES, session_id)
             
             await self.cdp.navigate(url, session_id)
             await self.cdp.wait_for_load(session_id, timeout=45)
@@ -1471,6 +1562,9 @@ class BotHandler:
             await self.cdp.create_tab()
             session_id = await self.cdp.attach_to_tab()
             
+            # Устанавливаем куки для всех сайтов
+            await self.cdp.set_cookies(X_COOKIES, session_id)
+            
             await self.cdp.navigate(url, session_id)
             await self.cdp.wait_for_load(session_id, timeout=45)
             
@@ -1606,6 +1700,7 @@ def main():
     file_logger.info("   ✅ Humanized клики и ввод")
     file_logger.info("   ✅ WebRTC защита")
     file_logger.info("   ✅ Профиль пользователя")
+    file_logger.info(f"🍪 Куки X/Twitter: {len(X_COOKIES)} шт (устанавливаются для всех сайтов)")
     
     bot = BotHandler()
     
