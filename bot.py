@@ -49,7 +49,7 @@ class Memory:
         self.current_url = None
         self.current_title = None
         self.last_action = None
-        self.browser = None  # ← Сохраняем браузер
+        self.browser = None
     
     def add_action(self, action_type, data=None):
         entry = {
@@ -145,6 +145,62 @@ class Memory:
         
         return "\n".join(lines)
 
+# ---------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ----------
+def is_valid_url(url):
+    """Проверяет, является ли строка валидным URL"""
+    if not url or len(url.strip()) == 0:
+        return False
+    
+    url = url.strip()
+    
+    # Если URL уже с протоколом
+    if url.startswith(('http://', 'https://')):
+        # Проверяем что после протокола есть домен
+        parts = url.split('://')
+        if len(parts) == 2 and len(parts[1]) > 0:
+            return True
+        return False
+    
+    # Проверяем что это похоже на домен
+    if '.' not in url:
+        return False
+    
+    # Не должен состоять из 1-2 букв без точки
+    if len(url) <= 2 and '.' not in url:
+        return False
+    
+    # Должен содержать хотя бы одну букву после точки
+    parts = url.split('.')
+    if len(parts) < 2 or len(parts[-1]) < 2:
+        return False
+    
+    return True
+
+def clean_url(url):
+    """Очищает и нормализует URL"""
+    url = url.strip()
+    
+    # Убираем лишние пробелы
+    url = ' '.join(url.split())
+    
+    # Если нет протокола — добавляем
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+    
+    return url
+
+def extract_domain(text):
+    """Извлекает домен из текста (для обработки "зайди в google")"""
+    # Убираем предлоги и лишнее
+    text = re.sub(r'^(зайди|открой|перейди|покажи)\s+(в\s+|на\s+)?', '', text)
+    text = text.strip()
+    
+    # Если это просто слово — добавляем .com
+    if text and '.' not in text and ' ' not in text:
+        return text + '.com'
+    
+    return text
+
 # ---------- ПАРСЕР КОМАНД ----------
 def parse_command(text):
     """Распознает команды на естественном языке"""
@@ -158,6 +214,7 @@ def parse_command(text):
     nav_patterns = [
         (r'зайди на\s+(.+)', 'зайди на'),
         (r'зайди\s+(.+)', 'зайди'),
+        (r'зайди в\s+(.+)', 'зайди в'),
         (r'открой\s+(.+)', 'открой'),
         (r'перейди на\s+(.+)', 'перейди на'),
         (r'перейди\s+(.+)', 'перейди'),
@@ -171,19 +228,24 @@ def parse_command(text):
         match = re.search(pattern, text_lower)
         if match:
             url = match.group(1).strip()
-            if not url.startswith(('http://', 'https://')):
-                url = url.split()[0] if ' ' in url else url
-                url = 'https://' + url
+            
+            # Проверяем валидность URL
+            if not is_valid_url(url):
+                # Пробуем извлечь домен
+                url = extract_domain(url)
+                if not is_valid_url(url):
+                    return {'action': 'invalid_url', 'url': url}
+            
+            url = clean_url(url)
             return {'action': 'navigate', 'url': url}
     
     # ====== КЛИК ======
     click_patterns = [
-        r'нажми\s+на\s+(.+)',
-        r'кликни\s+на\s+(.+)',
+        r'нажми на\s+(.+)',
         r'нажми\s+(.+)',
+        r'кликни на\s+(.+)',
         r'кликни\s+(.+)',
         r'тапни\s+(.+)',
-        r'нажать\s+(.+)',
     ]
     for pattern in click_patterns:
         match = re.search(pattern, text_lower)
@@ -196,8 +258,6 @@ def parse_command(text):
         r'введи\s+["\']?(.+?)["\']?\s+в\s+(.+)',
         r'напиши\s+["\']?(.+?)["\']?\s+в\s+(.+)',
         r'вставь\s+["\']?(.+?)["\']?\s+в\s+(.+)',
-        r'напечатай\s+["\']?(.+?)["\']?\s+в\s+(.+)',
-        r'ввести\s+["\']?(.+?)["\']?\s+в\s+(.+)',
     ]
     for pattern in type_patterns:
         match = re.search(pattern, text_lower)
@@ -856,25 +916,14 @@ class BrowserCDP:
             file_logger.log(f"❌ Ошибка маскировки: {e}", "ERROR")
             return False
     
-    # ========== НОВЫЕ ФУНКЦИИ ДЛЯ ДЕЙСТВИЙ ==========
+    # ========== ДЕЙСТВИЯ ==========
     
     async def click_element(self, target):
         """Кликает по элементу"""
         try:
-            # Ищем элемент по тексту или селектору
-            selectors = [
-                f"button:contains('{target}')",
-                f"a:contains('{target}')",
-                f"[aria-label*='{target}']",
-                f"[placeholder*='{target}']",
-                f"[class*='{target}']",
-                f"#{target}"
-            ]
-            
-            # Пробуем найти через JS
             js = f"""
                 (function() {{
-                    const targets = ['{target}'];
+                    const target = '{target}'.toLowerCase();
                     const elements = document.querySelectorAll('button, a, input, div[role="button"]');
                     
                     for (let el of elements) {{
@@ -884,13 +933,11 @@ class BrowserCDP:
                         const id = (el.id || '').toLowerCase();
                         const cls = (el.className || '').toLowerCase();
                         
-                        const target_lower = '{target}'.toLowerCase();
-                        
-                        if (text.includes(target_lower) || 
-                            aria.includes(target_lower) || 
-                            placeholder.includes(target_lower) ||
-                            id.includes(target_lower) ||
-                            cls.includes(target_lower)) {{
+                        if (text.includes(target) || 
+                            aria.includes(target) || 
+                            placeholder.includes(target) ||
+                            id.includes(target) ||
+                            cls.includes(target)) {{
                             el.click();
                             return true;
                         }}
@@ -917,7 +964,7 @@ class BrowserCDP:
         try:
             js = f"""
                 (function() {{
-                    const field_lower = '{field}'.toLowerCase();
+                    const field = '{field}'.toLowerCase();
                     const elements = document.querySelectorAll('input, textarea, [contenteditable="true"]');
                     
                     for (let el of elements) {{
@@ -927,11 +974,11 @@ class BrowserCDP:
                         const cls = (el.className || '').toLowerCase();
                         const name = (el.getAttribute('name') || '').toLowerCase();
                         
-                        if (placeholder.includes(field_lower) || 
-                            aria.includes(field_lower) || 
-                            id.includes(field_lower) ||
-                            cls.includes(field_lower) ||
-                            name.includes(field_lower)) {{
+                        if (placeholder.includes(field) || 
+                            aria.includes(field) || 
+                            id.includes(field) ||
+                            cls.includes(field) ||
+                            name.includes(field)) {{
                             el.focus();
                             el.value = '';
                             el.value = '{text}';
@@ -958,7 +1005,7 @@ class BrowserCDP:
             return False
     
     async def submit_form(self):
-        """Отправляет форму (находит первую форму и сабмитит)"""
+        """Отправляет форму"""
         try:
             js = """
                 (function() {
@@ -1151,6 +1198,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 Привет! Я бот для скриншотов, анализа и действий на сайтах.\n\n"
         "🗣️ Говори со мной как с человеком:\n"
         "• зайди на google.com\n"
+        "• зайди в google.com\n"
         "• какие кнопки видишь?\n"
         "• нажми на кнопку 'Поиск'\n"
         "• введи 'погода' в поле поиска\n"
@@ -1175,12 +1223,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     command = parse_command(text)
     file_logger.log(f"📝 Распознано: {command}", "DEBUG")
     
+    # ====== НЕВАЛИДНЫЙ URL ======
+    if command['action'] == 'invalid_url':
+        bad_url = command.get('url', '')
+        await update.message.reply_text(
+            f"❌ Некорректный URL: '{bad_url}'\n\n"
+            "Правильные примеры:\n"
+            "• зайди на google.com\n"
+            "• зайди в google.com\n"
+            "• открой youtube.com\n"
+            "• x.com\n"
+            "• https://github.com"
+        )
+        return
+    
     # ====== ПРИВЕТСТВИЕ ======
     if command['action'] == 'greeting':
         await update.message.reply_text(
             "👋 Привет! Я бот для скриншотов, анализа и действий на сайтах.\n\n"
             "Скажи что-то вроде:\n"
             "• зайди на google.com\n"
+            "• зайди в google.com\n"
             "• какие кнопки видишь?\n"
             "• нажми на кнопку 'Поиск'\n"
             "• введи 'погода' в поле поиска"
@@ -1229,7 +1292,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 memory.add_action("click", {"target": target})
                 await update.message.reply_text(f"✅ Кликнул по '{target}'")
                 
-                # Обновляем snapshot после клика
                 await memory.browser.get_snapshot()
                 memory.set_snapshot(
                     memory.browser.snapshot,
@@ -1238,7 +1300,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     memory.browser
                 )
                 
-                # Делаем скриншот после клика
                 screenshot = await memory.browser.screenshot()
                 if screenshot:
                     await update.message.reply_photo(
@@ -1268,7 +1329,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 memory.add_action("type", {"text": text_input, "field": field})
                 await update.message.reply_text(f"✅ Ввел '{text_input}' в поле '{field}'")
                 
-                # Обновляем snapshot
                 await memory.browser.get_snapshot()
                 memory.set_snapshot(
                     memory.browser.snapshot,
@@ -1296,7 +1356,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 memory.add_action("submit", {})
                 await update.message.reply_text("✅ Форма отправлена")
                 
-                # Ждем загрузки
                 await memory.browser.wait_for_page_load()
                 await memory.browser.get_snapshot()
                 memory.set_snapshot(
@@ -1306,7 +1365,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     memory.browser
                 )
                 
-                # Делаем скриншот
                 screenshot = await memory.browser.screenshot()
                 if screenshot:
                     await update.message.reply_photo(
@@ -1457,6 +1515,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "❌ Не понял команду\n\n"
         "Вот что я умею:\n"
         "• зайди на google.com\n"
+        "• зайди в google.com\n"
         "• какие кнопки видишь?\n"
         "• нажми на кнопку 'Поиск'\n"
         "• введи 'погода' в поле поиска\n"
@@ -1483,7 +1542,7 @@ async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- ЗАПУСК ----------
 def main():
     print("="*50)
-    print("🚀 ЗАПУСК БОТА С ДЕЙСТВИЯМИ")
+    print("🚀 ЗАПУСК БОТА (ИСПРАВЛЕННАЯ ВЕРСИЯ)")
     print("="*50)
     print(f"📌 Chrome путь: {CHROME_PATH}")
     print("🕵️ Маскировка: ВСЕГДА ВКЛЮЧЕНА")
@@ -1492,7 +1551,7 @@ def main():
     print("🔘 Клики: ВКЛЮЧЕНЫ")
     print("✏️ Ввод текста: ВКЛЮЧЕН")
     print("📤 Отправка форм: ВКЛЮЧЕНА")
-    print(f"🤖 AI модель: {AI_MODEL}")
+    print("✅ Проверка URL: ВКЛЮЧЕНА")
     print("="*50)
     
     if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "ВАШ_ТОКЕН":
@@ -1511,6 +1570,7 @@ def main():
     print("📁 Команды: /start, /log")
     print("🗣️ Говори как с человеком:")
     print("   • зайди на google.com")
+    print("   • зайди в google.com  ← ИСПРАВЛЕНО!")
     print("   • нажми на кнопку 'Поиск'")
     print("   • введи 'погода' в поле поиска")
     print("   • отправь форму")
