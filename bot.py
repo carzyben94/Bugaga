@@ -70,8 +70,16 @@ class BrowserCDP:
         self.ws = await websockets.connect(ws_url)
         file_logger.log("Подключен к Chrome CDP", "INFO")
         
-        # Включаем Page domain для получения событий
+        # Проверяем соединение
+        version = await self.send("Browser.getVersion")
+        browser_name = version.get('result', {}).get('product', 'Unknown')
+        file_logger.log(f"Браузер: {browser_name}", "INFO")
+        
+        # Активируем домены
         await self.send("Page.enable")
+        await self.send("Runtime.enable")
+        await self.send("Network.enable")
+        file_logger.log("Домены активированы", "INFO")
     
     async def send(self, method, params=None):
         """Отправка CDP команды (асинхронно)"""
@@ -81,35 +89,37 @@ class BrowserCDP:
             "method": method,
             "params": params or {}
         }
+        
         await self.ws.send(json.dumps(msg))
         response = await self.ws.recv()
         data = json.loads(response)
         
         if "error" in data:
             error_msg = data["error"].get("message", "Unknown CDP error")
-            raise Exception(f"CDP Error: {error_msg}")
+            error_code = data["error"].get("code", 0)
+            raise Exception(f"CDP Error [{error_code}]: {error_msg}")
         
         return data
     
     async def listen_for_events(self):
         """Слушает события от браузера"""
-        while True:
-            try:
+        try:
+            while True:
                 response = await self.ws.recv()
                 data = json.loads(response)
                 
-                # Проверяем событие загрузки
-                if "method" in data and data["method"] == "Page.loadEventFired":
-                    file_logger.log("Страница загружена (событие получено)", "INFO")
-                    self.load_event_received.set()
-                    break
-                    
-            except websockets.exceptions.ConnectionClosed:
-                file_logger.log("WebSocket соединение закрыто", "WARNING")
-                break
-            except Exception as e:
-                file_logger.log(f"Ошибка при прослушивании событий: {e}", "ERROR")
-                break
+                if "method" in data:
+                    if data["method"] == "Page.loadEventFired":
+                        file_logger.log("Страница загружена (событие получено)", "INFO")
+                        self.load_event_received.set()
+                        break
+                    elif data["method"] == "Page.domContentEventFired":
+                        file_logger.log("DOM загружен", "DEBUG")
+                        
+        except websockets.exceptions.ConnectionClosed:
+            file_logger.log("WebSocket соединение закрыто", "WARNING")
+        except Exception as e:
+            file_logger.log(f"Ошибка при прослушивании событий: {e}", "ERROR")
     
     async def wait_for_load(self, timeout=30):
         """Ожидает событие загрузки страницы"""
@@ -126,22 +136,19 @@ class BrowserCDP:
         file_logger.log(f"Навигация на {url}", "INFO")
         await self.connect()
         
-        # Сбрасываем событие перед навигацией
         self.load_event_received.clear()
-        
-        # Запускаем прослушивание событий в фоне
         asyncio.create_task(self.listen_for_events())
         
         # Навигация
-        nav_result = await self.send("Page.navigate", {"url": url})
-        file_logger.log(f"Навигация инициирована", "INFO")
+        await self.send("Page.navigate", {"url": url})
+        file_logger.log("Навигация инициирована", "INFO")
         
-        # Ждём загрузку страницы
+        # Ждём загрузку
         loaded = await self.wait_for_load(timeout=30)
         
         if not loaded:
             file_logger.log("Страница не загрузилась за 30 секунд, делаем скриншот принудительно", "WARNING")
-            await asyncio.sleep(2)  # Дополнительная задержка на всякий случай
+            await asyncio.sleep(2)
         
         # Скриншот
         result = await self.send("Page.captureScreenshot", {"format": "png"})
@@ -158,7 +165,9 @@ class BrowserCDP:
 # ---------- ОБРАБОТЧИКИ ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user.first_name
-    file_logger.log(f"Пользователь {user} (ID: {update.effective_user.id}) запустил бота", "INFO")
+    user_id = update.effective_user.id
+    file_logger.log(f"Пользователь {user} (ID: {user_id}) запустил бота", "INFO")
+    
     await update.message.reply_text(
         "👋 Отправь URL и я сделаю скриншот\n"
         "Пример: https://google.com\n\n"
