@@ -18,9 +18,58 @@ CHROME_PATH = os.getenv("CHROME_PATH", "/usr/bin/google-chrome")
 CDP_PORT = 9222
 SNAPSHOT_DIR = "snapshots"
 COMPARE_DIR = "comparisons"
+LOG_FILE = "bot_logs.txt"
 
 os.makedirs(SNAPSHOT_DIR, exist_ok=True)
 os.makedirs(COMPARE_DIR, exist_ok=True)
+
+# ==================== ЛОГИРОВАНИЕ ====================
+class FileLogger:
+    def __init__(self, filename=LOG_FILE):
+        self.filename = filename
+    
+    def log(self, message, level="INFO"):
+        """Запись лога в файл"""
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            with open(self.filename, 'a', encoding='utf-8') as f:
+                f.write(f"[{timestamp}] [{level}] {message}\n")
+        except Exception as e:
+            print(f"Ошибка записи лога: {e}")
+    
+    def info(self, message):
+        self.log(message, "INFO")
+    
+    def error(self, message):
+        self.log(message, "ERROR")
+    
+    def warning(self, message):
+        self.log(message, "WARNING")
+    
+    def debug(self, message):
+        self.log(message, "DEBUG")
+    
+    def get_logs(self, lines=100):
+        """Получить последние N строк лога"""
+        try:
+            with open(self.filename, 'r', encoding='utf-8') as f:
+                all_lines = f.readlines()
+                return ''.join(all_lines[-lines:])
+        except FileNotFoundError:
+            return "Лог-файл пока не создан."
+        except Exception as e:
+            return f"Ошибка чтения лога: {e}"
+    
+    def clear_logs(self):
+        """Очистить лог-файл"""
+        try:
+            with open(self.filename, 'w', encoding='utf-8') as f:
+                f.write("")
+            return True
+        except Exception as e:
+            return False
+
+file_logger = FileLogger()
 
 # ==================== CHROME MANAGER ====================
 class ChromeManager:
@@ -29,6 +78,7 @@ class ChromeManager:
         self.port = CDP_PORT
     
     def start(self):
+        file_logger.info(f"🚀 Запуск Chrome на порту {self.port}")
         cmd = [
             CHROME_PATH,
             "--headless",
@@ -38,25 +88,39 @@ class ChromeManager:
             "--disable-setuid-sandbox",
             "--disable-software-rasterizer",
             "--window-size=1920,1080",
+            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "--disable-blink-features=AutomationControlled",
+            "--disable-features=IsolateOrigins,site-per-process",
             f"--remote-debugging-port={self.port}"
         ]
         
-        print(f"🚀 Запускаю Chrome")
-        self.process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True
-        )
+        file_logger.debug(f"Команда Chrome: {' '.join(cmd)}")
         
-        time.sleep(3)
-        return self.port
+        try:
+            self.process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True
+            )
+            time.sleep(3)
+            file_logger.info(f"✅ Chrome запущен (PID: {self.process.pid})")
+            return self.port
+        except Exception as e:
+            file_logger.error(f"❌ Ошибка запуска Chrome: {str(e)}")
+            raise
     
     def stop(self):
         if self.process:
-            self.process.terminate()
-            self.process.wait()
-            print("🛑 Chrome остановлен")
+            file_logger.info(f"🛑 Остановка Chrome (PID: {self.process.pid})")
+            try:
+                self.process.terminate()
+                self.process.wait()
+                file_logger.info("✅ Chrome остановлен")
+            except Exception as e:
+                file_logger.error(f"❌ Ошибка остановки Chrome: {str(e)}")
+        else:
+            file_logger.warning("⚠️ Chrome не был запущен")
 
 # ==================== CDP CONTROLLER ====================
 class CDPController:
@@ -68,14 +132,20 @@ class CDPController:
         self._session_id = None
         
     async def connect(self):
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"http://localhost:{self.port}/json/version") as resp:
-                data = await resp.json()
-                ws_url = data["webSocketDebuggerUrl"]
-        
-        self.ws = await websockets.connect(ws_url)
-        print(f"✅ CDP подключен")
-        return self
+        file_logger.info("🔌 Подключение к CDP...")
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"http://localhost:{self.port}/json/version") as resp:
+                    data = await resp.json()
+                    ws_url = data["webSocketDebuggerUrl"]
+                    file_logger.debug(f"WebSocket URL: {ws_url}")
+            
+            self.ws = await websockets.connect(ws_url)
+            file_logger.info("✅ CDP подключен")
+            return self
+        except Exception as e:
+            file_logger.error(f"❌ Ошибка подключения CDP: {str(e)}")
+            raise
     
     async def send(self, method, params=None, session_id=None):
         self.msg_id += 1
@@ -83,43 +153,74 @@ class CDPController:
         if session_id:
             msg["sessionId"] = session_id
         
-        await self.ws.send(json.dumps(msg))
+        file_logger.debug(f"📤 CDP отправка: {method} (ID: {self.msg_id})")
+        
+        try:
+            await self.ws.send(json.dumps(msg))
+        except Exception as e:
+            file_logger.error(f"❌ Ошибка отправки CDP: {str(e)}")
+            raise
         
         while True:
-            response = json.loads(await self.ws.recv())
-            if response.get("id") == self.msg_id:
-                if "error" in response:
-                    raise RuntimeError(f"CDP error: {response['error']}")
-                return response.get("result")
+            try:
+                response = json.loads(await self.ws.recv())
+                if response.get("id") == self.msg_id:
+                    if "error" in response:
+                        file_logger.error(f"❌ CDP ошибка: {response['error']}")
+                        raise RuntimeError(f"CDP error: {response['error']}")
+                    file_logger.debug(f"📥 CDP ответ: {method} OK")
+                    return response.get("result")
+            except Exception as e:
+                file_logger.error(f"❌ Ошибка получения ответа CDP: {str(e)}")
+                raise
     
     async def create_tab(self, url="about:blank"):
-        result = await self.send("Target.createTarget", {"url": url})
-        self.target_id = result["targetId"]
-        print(f"📑 Создана вкладка: {self.target_id}")
-        return self.target_id
+        file_logger.info(f"📑 Создание вкладки: {url}")
+        try:
+            result = await self.send("Target.createTarget", {"url": url})
+            self.target_id = result["targetId"]
+            file_logger.info(f"✅ Вкладка создана: {self.target_id}")
+            return self.target_id
+        except Exception as e:
+            file_logger.error(f"❌ Ошибка создания вкладки: {str(e)}")
+            raise
     
     async def attach_to_tab(self, target_id=None):
         tid = target_id or self.target_id
-        result = await self.send("Target.attachToTarget", {
-            "targetId": tid,
-            "flatten": True
-        })
-        session_id = result["sessionId"]
-        self._session_id = session_id
-        
-        await self.send("Page.enable", session_id=session_id)
-        await self.send("Runtime.enable", session_id=session_id)
-        await self.send("DOM.enable", session_id=session_id)
-        await self.send("Network.enable", session_id=session_id)
-        await self.send("Log.enable", session_id=session_id)
-        
-        return session_id
+        file_logger.info(f"🔗 Прикрепление к вкладке: {tid}")
+        try:
+            result = await self.send("Target.attachToTarget", {
+                "targetId": tid,
+                "flatten": True
+            })
+            session_id = result["sessionId"]
+            self._session_id = session_id
+            
+            file_logger.debug("Включение доменов...")
+            await self.send("Page.enable", session_id=session_id)
+            await self.send("Runtime.enable", session_id=session_id)
+            await self.send("DOM.enable", session_id=session_id)
+            await self.send("Network.enable", session_id=session_id)
+            await self.send("Log.enable", session_id=session_id)
+            
+            # Отключаем webdriver
+            await self.evaluate(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})",
+                session_id
+            )
+            
+            file_logger.info(f"✅ Прикреплён к вкладке: {session_id}")
+            return session_id
+        except Exception as e:
+            file_logger.error(f"❌ Ошибка прикрепления к вкладке: {str(e)}")
+            raise
     
     async def wait_for_load(self, session_id, timeout=30):
-        """Ожидание загрузки страницы (включая SPA)"""
+        file_logger.info(f"⏳ Ожидание загрузки страницы (таймаут: {timeout}с)")
         start = time.time()
         loaded = False
         network_idle = False
+        content_detected = False
         
         while time.time() - start < timeout:
             try:
@@ -128,19 +229,39 @@ class CDPController:
                 
                 if method == "Page.loadEventFired":
                     loaded = True
+                    file_logger.debug("✅ Событие Page.loadEventFired получено")
                 
                 if method == "Network.loadingFinished":
                     if await self.is_network_idle(session_id):
                         network_idle = True
+                        file_logger.debug("✅ Сеть бездействует")
                 
-                if loaded and network_idle:
+                if loaded:
+                    title = await self.evaluate("document.title", session_id)
+                    if title and len(title) > 0:
+                        content_detected = True
+                        file_logger.debug(f"✅ Заголовок страницы: {title}")
+                    
+                    has_captcha = await self.evaluate(
+                        "document.body?.innerText?.includes('captcha') || document.body?.innerText?.includes('CAPTCHA') || document.querySelector('[id*=\"captcha\"]') !== null",
+                        session_id
+                    )
+                    if has_captcha:
+                        file_logger.warning("⚠️ Обнаружена капча!")
+                        return False
+                
+                if loaded and network_idle and content_detected:
                     await self.wait_for_js_frameworks(session_id, timeout=5)
+                    file_logger.info(f"✅ Страница загружена за {time.time() - start:.1f}с")
                     return True
                     
             except asyncio.TimeoutError:
                 continue
+            except Exception as e:
+                file_logger.error(f"❌ Ошибка ожидания загрузки: {str(e)}")
         
-        return loaded
+        file_logger.warning(f"⚠️ Частичная загрузка после {timeout}с")
+        return loaded and content_detected
     
     async def is_network_idle(self, session_id):
         js = """
@@ -157,6 +278,7 @@ class CDPController:
         return await self.evaluate(js, session_id)
     
     async def wait_for_js_frameworks(self, session_id, timeout=5):
+        file_logger.debug("⏳ Ожидание JS-фреймворков...")
         js = """
             (function() {
                 return new Promise((resolve) => {
@@ -202,12 +324,22 @@ class CDPController:
                 });
             })()
         """
-        return await self.evaluate(js, session_id)
+        result = await self.evaluate(js, session_id)
+        file_logger.debug(f"✅ Фреймворки: {result}")
+        return result
     
     async def navigate(self, url, session_id):
-        return await self.send("Page.navigate", {"url": url}, session_id)
+        file_logger.info(f"🌐 Переход по URL: {url}")
+        try:
+            result = await self.send("Page.navigate", {"url": url}, session_id)
+            file_logger.info(f"✅ Навигация завершена")
+            return result
+        except Exception as e:
+            file_logger.error(f"❌ Ошибка навигации: {str(e)}")
+            raise
     
     async def evaluate(self, expression, session_id, timeout=10):
+        file_logger.debug(f"📝 Выполнение JS: {expression[:50]}...")
         try:
             result = await asyncio.wait_for(
                 self.send("Runtime.evaluate", {
@@ -216,205 +348,83 @@ class CDPController:
                 }, session_id),
                 timeout=timeout
             )
+            
+            if "exceptionDetails" in result:
+                file_logger.error(f"❌ JS ошибка: {result['exceptionDetails']}")
+                raise RuntimeError(f"JS error: {result['exceptionDetails']}")
+            
+            return result.get("result", {}).get("value")
         except asyncio.TimeoutError:
+            file_logger.error(f"❌ Таймаут JS: {expression[:50]}")
             raise TimeoutError(f"JS timeout: {expression[:50]}")
-        
-        if "exceptionDetails" in result:
-            raise RuntimeError(f"JS error: {result['exceptionDetails']}")
-        
-        return result.get("result", {}).get("value")
-    
-    async def click(self, selector, session_id, wait_for_navigation=False):
-        js = f"""
-            (function() {{
-                const el = document.querySelector('{selector}');
-                if (!el) return false;
-                
-                const rect = el.getBoundingClientRect();
-                if (rect.width === 0 || rect.height === 0) return false;
-                
-                el.scrollIntoView({{block: 'center'}});
-                
-                const clickEvent = new MouseEvent('click', {{
-                    view: window,
-                    bubbles: true,
-                    cancelable: true,
-                    clientX: rect.x + rect.width/2,
-                    clientY: rect.y + rect.height/2
-                }});
-                el.dispatchEvent(clickEvent);
-                el.click();
-                
-                return true;
-            }})()
-        """
-        result = await self.evaluate(js, session_id)
-        
-        if wait_for_navigation and result:
-            await self.wait_for_load(session_id, timeout=15)
-        
-        return result
-    
-    async def type_text(self, selector, text, session_id, clear_first=True):
-        js = f"""
-            (function() {{
-                const el = document.querySelector('{selector}');
-                if (!el) return false;
-                
-                el.scrollIntoView({{block: 'center'}});
-                el.focus();
-                
-                if ({str(clear_first).lower()}) {{
-                    el.value = '';
-                }}
-                
-                const chars = '{text}'.split('');
-                for (let i = 0; i < chars.length; i++) {{
-                    el.value += chars[i];
-                    
-                    const inputEvent = new Event('input', {{bubbles: true}});
-                    el.dispatchEvent(inputEvent);
-                    
-                    const changeEvent = new Event('change', {{bubbles: true}});
-                    el.dispatchEvent(changeEvent);
-                }}
-                
-                return true;
-            }})()
-        """
-        return await self.evaluate(js, session_id)
-    
-    async def select_option(self, selector, value, session_id):
-        js = f"""
-            (function() {{
-                const el = document.querySelector('{selector}');
-                if (!el) return false;
-                
-                el.value = '{value}';
-                const event = new Event('change', {{bubbles: true}});
-                el.dispatchEvent(event);
-                
-                return true;
-            }})()
-        """
-        return await self.evaluate(js, session_id)
-    
-    async def scroll_to(self, selector, session_id):
-        js = f"""
-            (function() {{
-                const el = document.querySelector('{selector}');
-                if (!el) return false;
-                el.scrollIntoView({{block: 'center', behavior: 'smooth'}});
-                return true;
-            }})()
-        """
-        return await self.evaluate(js, session_id)
-    
-    async def wait_for_element(self, selector, session_id, timeout=10, visible=True):
-        js = f"""
-            new Promise((resolve) => {{
-                const start = Date.now();
-                const check = () => {{
-                    const el = document.querySelector('{selector}');
-                    if (el) {{
-                        if ({str(visible).lower()}) {{
-                            const rect = el.getBoundingClientRect();
-                            if (rect.width > 0 && rect.height > 0) {{
-                                resolve(true);
-                                return;
-                            }}
-                        }} else {{
-                            resolve(true);
-                            return;
-                        }}
-                    }}
-                    if (Date.now() - start > {timeout * 1000}) {{
-                        resolve(false);
-                        return;
-                    }}
-                    setTimeout(check, 200);
-                }};
-                check();
-            }})
-        """
-        return await self.evaluate(js, session_id)
-    
-    async def wait_for_text(self, selector, text, session_id, timeout=10):
-        js = f"""
-            new Promise((resolve) => {{
-                const start = Date.now();
-                const check = () => {{
-                    const el = document.querySelector('{selector}');
-                    if (el && el.innerText && el.innerText.includes('{text}')) {{
-                        resolve(true);
-                        return;
-                    }}
-                    if (Date.now() - start > {timeout * 1000}) {{
-                        resolve(false);
-                        return;
-                    }}
-                    setTimeout(check, 200);
-                }};
-                check();
-            }})
-        """
-        return await self.evaluate(js, session_id)
-    
-    async def wait_for_url(self, expected_url_part, session_id, timeout=10):
-        js = f"""
-            new Promise((resolve) => {{
-                const start = Date.now();
-                const check = () => {{
-                    const current = window.location.href;
-                    if (current.includes('{expected_url_part}')) {{
-                        resolve(true);
-                        return;
-                    }}
-                    if (Date.now() - start > {timeout * 1000}) {{
-                        resolve(false);
-                        return;
-                    }}
-                    setTimeout(check, 200);
-                }};
-                check();
-            }})
-        """
-        return await self.evaluate(js, session_id)
+        except Exception as e:
+            file_logger.error(f"❌ Ошибка выполнения JS: {str(e)}")
+            raise
     
     async def take_screenshot(self, session_id, full_page=True):
-        params = {
-            "format": "png",
-            "fromSurface": True,
-            "captureBeyondViewport": full_page
-        }
-        result = await self.send("Page.captureScreenshot", params, session_id)
-        return base64.b64decode(result["data"])
+        file_logger.info(f"📸 Создание скриншота (full_page: {full_page})")
+        try:
+            params = {
+                "format": "png",
+                "fromSurface": True,
+                "captureBeyondViewport": full_page
+            }
+            result = await self.send("Page.captureScreenshot", params, session_id)
+            file_logger.info(f"✅ Скриншот создан (размер: {len(result['data'])} байт)")
+            return base64.b64decode(result["data"])
+        except Exception as e:
+            file_logger.error(f"❌ Ошибка создания скриншота: {str(e)}")
+            raise
     
     async def get_page_text(self, session_id):
-        js = "document.body.innerText"
-        return await self.evaluate(js, session_id)
+        file_logger.debug("📝 Получение текста страницы")
+        try:
+            js = "document.body.innerText"
+            result = await self.evaluate(js, session_id)
+            file_logger.debug(f"✅ Получено {len(result)} символов текста")
+            return result
+        except Exception as e:
+            file_logger.error(f"❌ Ошибка получения текста: {str(e)}")
+            return ""
     
     async def get_meta(self, session_id):
-        js = """
-            (function() {
-                return {
-                    title: document.title,
-                    url: window.location.href,
-                    description: document.querySelector('meta[name="description"]')?.content || '',
-                    keywords: document.querySelector('meta[name="keywords"]')?.content || ''
-                }
-            })()
-        """
-        return await self.evaluate(js, session_id)
+        file_logger.debug("📊 Получение метаданных")
+        try:
+            js = """
+                (function() {
+                    return {
+                        title: document.title,
+                        url: window.location.href,
+                        description: document.querySelector('meta[name="description"]')?.content || '',
+                        keywords: document.querySelector('meta[name="keywords"]')?.content || ''
+                    }
+                })()
+            """
+            result = await self.evaluate(js, session_id)
+            file_logger.info(f"✅ Метаданные: Title: {result.get('title', 'Нет')}")
+            return result
+        except Exception as e:
+            file_logger.error(f"❌ Ошибка получения метаданных: {str(e)}")
+            return {}
     
     async def close_tab(self, target_id=None):
         tid = target_id or self.target_id
         if tid:
-            await self.send("Target.closeTarget", {"targetId": tid})
+            file_logger.info(f"🔒 Закрытие вкладки: {tid}")
+            try:
+                await self.send("Target.closeTarget", {"targetId": tid})
+                file_logger.info(f"✅ Вкладка закрыта")
+            except Exception as e:
+                file_logger.error(f"❌ Ошибка закрытия вкладки: {str(e)}")
     
     async def disconnect(self):
-        if self.ws:
-            await self.ws.close()
+        file_logger.info("🔌 Отключение CDP...")
+        try:
+            if self.ws:
+                await self.ws.close()
+            file_logger.info("✅ CDP отключён")
+        except Exception as e:
+            file_logger.error(f"❌ Ошибка отключения CDP: {str(e)}")
 
 # ==================== TELEGRAM BOT ====================
 class BotHandler:
@@ -423,20 +433,31 @@ class BotHandler:
         self.cdp = None
         self.session_id = None
         self.current_url = None
+        file_logger.info("🤖 Инициализация бота")
         
     async def init_chrome(self):
-        self.chrome = ChromeManager()
-        self.chrome.start()
-        
-        self.cdp = CDPController()
-        await self.cdp.connect()
-        print("✅ Бот готов")
+        file_logger.info("🚀 Инициализация Chrome...")
+        try:
+            self.chrome = ChromeManager()
+            self.chrome.start()
+            
+            self.cdp = CDPController()
+            await self.cdp.connect()
+            file_logger.info("✅ Бот готов к работе")
+        except Exception as e:
+            file_logger.error(f"❌ Ошибка инициализации Chrome: {str(e)}")
+            raise
     
     async def start_command(self, update, context):
+        user = update.effective_user
+        file_logger.info(f"📩 Команда /start от {user.username or user.id}")
+        
         keyboard = [
             [InlineKeyboardButton("📸 Сделать снэпшот", callback_data="snapshot")],
             [InlineKeyboardButton("🎬 Запустить сценарий", callback_data="script")],
             [InlineKeyboardButton("📊 Проверить изменения", callback_data="compare")],
+            [InlineKeyboardButton("📋 Скачать логи", callback_data="logs")],
+            [InlineKeyboardButton("🗑️ Очистить логи", callback_data="clear_logs")],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -446,15 +467,20 @@ class BotHandler:
             "📸 Делать полные снэпшоты страниц\n"
             "🎬 Выполнять интерактивные сценарии (клики, ввод)\n"
             "📊 Сравнивать снэпшоты и находить изменения\n"
-            "⚡ Поддерживаю SPA (React, Vue, Angular)\n\n"
+            "⚡ Поддерживаю SPA (React, Vue, Angular)\n"
+            "📋 Веду лог всех действий\n\n"
             "Просто отправь ссылку или выбери действие:",
             parse_mode="Markdown",
             reply_markup=reply_markup
         )
+        file_logger.info("✅ Главное меню отправлено")
     
     async def button_handler(self, update, context):
         query = update.callback_query
+        user = update.effective_user
         await query.answer()
+        
+        file_logger.info(f"📩 Кнопка '{query.data}' от {user.username or user.id}")
         
         if query.data == "snapshot":
             await query.edit_message_text(
@@ -463,6 +489,7 @@ class BotHandler:
                 parse_mode="Markdown"
             )
             context.user_data['mode'] = 'snapshot'
+            file_logger.info("📸 Режим снэпшота активирован")
         
         elif query.data == "script":
             await query.edit_message_text(
@@ -481,6 +508,7 @@ class BotHandler:
                 parse_mode="Markdown"
             )
             context.user_data['mode'] = 'script'
+            file_logger.info("🎬 Режим сценария активирован")
         
         elif query.data == "compare":
             await query.edit_message_text(
@@ -492,12 +520,50 @@ class BotHandler:
                 parse_mode="Markdown"
             )
             context.user_data['mode'] = 'compare'
+            file_logger.info("📊 Режим сравнения активирован")
+        
+        elif query.data == "logs":
+            await query.edit_message_text("📋 Загружаю логи...")
+            await self._send_logs(update, context)
+        
+        elif query.data == "clear_logs":
+            if file_logger.clear_logs():
+                await query.edit_message_text("🗑️ Логи очищены!")
+                file_logger.info("🗑️ Логи очищены пользователем")
+            else:
+                await query.edit_message_text("❌ Ошибка очистки логов")
+    
+    async def _send_logs(self, update, context):
+        """Отправляет лог-файл пользователю"""
+        try:
+            log_content = file_logger.get_logs(500)  # Последние 500 строк
+            
+            if not log_content or log_content == "Лог-файл пока не создан.":
+                await update.callback_query.message.reply_text("📋 Лог-файл пока пуст.")
+                return
+            
+            # Отправляем как файл
+            with open(LOG_FILE, 'rb') as f:
+                await update.callback_query.message.reply_document(
+                    document=f,
+                    filename=f"bot_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                    caption=f"📋 Логи бота ({time.strftime('%Y-%m-%d %H:%M:%S')})"
+                )
+            file_logger.info(f"📋 Логи отправлены пользователю {update.effective_user.username or update.effective_user.id}")
+            
+        except Exception as e:
+            file_logger.error(f"❌ Ошибка отправки логов: {str(e)}")
+            await update.callback_query.message.reply_text(f"❌ Ошибка: {str(e)}")
     
     async def handle_url(self, update, context):
         url = update.message.text.strip()
         mode = context.user_data.get('mode', 'snapshot')
+        user = update.effective_user
+        
+        file_logger.info(f"📩 Получен URL от {user.username or user.id}: {url} (режим: {mode})")
         
         if not url.startswith(('http://', 'https://')):
+            file_logger.warning(f"❌ Неверный URL: {url}")
             await update.message.reply_text("❌ Отправь корректную ссылку (с http:// или https://)")
             return
         
@@ -509,51 +575,226 @@ class BotHandler:
             await self._handle_snapshot(update, url)
     
     async def _handle_snapshot(self, update, url):
-        """Создание снэпшота"""
+        """Создание ПОЛНОГО снэпшота со всеми данными"""
+        user = update.effective_user
+        file_logger.info(f"📸 Начало снэпшота для {url} от {user.username or user.id}")
+        
         await update.message.reply_text(f"🌐 Делаю снэпшот `{url}`...", parse_mode="Markdown")
         
         try:
             await self.cdp.create_tab()
             session_id = await self.cdp.attach_to_tab()
+            file_logger.info(f"📑 Вкладка создана для {url}")
             
             await self.cdp.navigate(url, session_id)
-            await update.message.reply_text("⏳ Загрузка страницы (включая SPA)...")
+            await update.message.reply_text("⏳ Загрузка страницы...")
             
             if await self.cdp.wait_for_load(session_id, timeout=30):
                 await update.message.reply_text("✅ Страница загружена!")
+                file_logger.info(f"✅ Страница {url} загружена")
             else:
                 await update.message.reply_text("⚠️ Частичная загрузка")
+                file_logger.warning(f"⚠️ Частичная загрузка {url}")
             
+            # ============ СОБИРАЕМ ВСЁ ============
+            await update.message.reply_text("📊 Собираю все данные...")
+            file_logger.info(f"📊 Сбор данных для {url}")
+            
+            # 1. Скриншот
             screenshot = await self.cdp.take_screenshot(session_id, full_page=True)
-            
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             screenshot_path = f"{SNAPSHOT_DIR}/snapshot_{timestamp}.png"
             with open(screenshot_path, "wb") as f:
                 f.write(screenshot)
+            file_logger.info(f"📸 Скриншот сохранён: {screenshot_path}")
             
+            # 2. Метаданные
+            meta = await self.cdp.get_meta(session_id)
+            file_logger.info(f"📊 Метаданные: {meta.get('title', 'Нет')}")
+            
+            # 3. HTML
+            html = await self.cdp.evaluate("document.documentElement.outerHTML", session_id)
+            html_path = f"{SNAPSHOT_DIR}/snapshot_{timestamp}.html"
+            with open(html_path, "w", encoding="utf-8") as f:
+                f.write(html)
+            file_logger.info(f"📄 HTML сохранён: {len(html)} символов")
+            
+            # 4. Все ссылки
+            links = await self.cdp.evaluate("""
+                Array.from(document.querySelectorAll('a')).map(a => ({
+                    href: a.href,
+                    text: a.innerText.trim(),
+                    target: a.target,
+                    rel: a.rel
+                })).filter(l => l.href)
+            """, session_id)
+            file_logger.info(f"🔗 Найдено ссылок: {len(links)}")
+            
+            # 5. Все изображения
+            images = await self.cdp.evaluate("""
+                Array.from(document.querySelectorAll('img')).map(img => ({
+                    src: img.src,
+                    alt: img.alt || '',
+                    width: img.width,
+                    height: img.height
+                })).filter(i => i.src)
+            """, session_id)
+            file_logger.info(f"🖼️ Найдено изображений: {len(images)}")
+            
+            # 6. Заголовки
+            headings = await self.cdp.evaluate("""
+                (function() {
+                    const result = {};
+                    for (let i = 1; i <= 6; i++) {
+                        const tag = 'H' + i;
+                        result[tag] = Array.from(document.querySelectorAll(tag))
+                            .map(el => el.innerText.trim())
+                            .filter(t => t);
+                    }
+                    return result;
+                })()
+            """, session_id)
+            total_headings = sum(len(v) for v in headings.values())
+            file_logger.info(f"📑 Найдено заголовков: {total_headings}")
+            
+            # 7. Скрипты
+            scripts = await self.cdp.evaluate("""
+                Array.from(document.querySelectorAll('script')).map(s => ({
+                    src: s.src || '',
+                    type: s.type || '',
+                    async: s.async,
+                    defer: s.defer,
+                    content: s.src ? '' : s.innerText.slice(0, 200)
+                }))
+            """, session_id)
+            file_logger.info(f"📜 Найдено скриптов: {len(scripts)}")
+            
+            # 8. Стили
+            styles = await self.cdp.evaluate("""
+                Array.from(document.querySelectorAll('link[rel="stylesheet"], style')).map(s => ({
+                    type: s.tagName === 'LINK' ? 'external' : 'inline',
+                    href: s.href || '',
+                    content: s.tagName === 'STYLE' ? s.innerText.slice(0, 200) : ''
+                }))
+            """, session_id)
+            file_logger.info(f"🎨 Найдено стилей: {len(styles)}")
+            
+            # 9. Формы
+            forms = await self.cdp.evaluate("""
+                Array.from(document.querySelectorAll('form')).map(f => ({
+                    action: f.action || '',
+                    method: f.method || 'GET',
+                    inputs: Array.from(f.querySelectorAll('input, textarea, select')).map(inp => ({
+                        name: inp.name || '',
+                        type: inp.type || '',
+                        placeholder: inp.placeholder || '',
+                        required: inp.required || false
+                    }))
+                }))
+            """, session_id)
+            file_logger.info(f"📋 Найдено форм: {len(forms)}")
+            
+            # 10. Текст
+            text = await self.cdp.get_page_text(session_id)
+            file_logger.info(f"📝 Текст: {len(text)} символов")
+            
+            # 11. Cookies
+            cookies = await self.cdp.evaluate("document.cookie", session_id)
+            file_logger.info(f"🍪 Cookies: {len(cookies)} символов")
+            
+            # 12. localStorage
+            localStorage = await self.cdp.evaluate("""
+                JSON.stringify(
+                    Object.fromEntries(
+                        Object.entries(localStorage)
+                    )
+                )
+            """, session_id)
+            file_logger.info(f"💾 localStorage: {len(localStorage)} байт")
+            
+            # 13. Performance метрики
+            perf = await self.cdp.evaluate("""
+                (function() {
+                    const perf = performance.getEntriesByType('navigation')[0];
+                    if (!perf) return {};
+                    return {
+                        domContentLoaded: perf.domContentLoadedEventEnd - perf.domContentLoadedEventStart,
+                        load: perf.loadEventEnd - perf.loadEventStart,
+                        domInteractive: perf.domInteractive,
+                        domComplete: perf.domComplete
+                    };
+                })()
+            """, session_id)
+            file_logger.info(f"⚡ Performance: {perf}")
+            
+            # 14. Сохраняем JSON
+            data = {
+                "timestamp": timestamp,
+                "url": url,
+                "metadata": meta,
+                "links": links,
+                "images": images,
+                "headings": headings,
+                "scripts": scripts,
+                "styles": styles,
+                "forms": forms,
+                "text_length": len(text),
+                "cookies": cookies,
+                "localStorage": localStorage,
+                "performance": perf,
+                "files": {
+                    "screenshot": screenshot_path,
+                    "html": html_path
+                }
+            }
+            
+            json_path = f"{SNAPSHOT_DIR}/snapshot_{timestamp}.json"
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            file_logger.info(f"💾 JSON сохранён: {json_path}")
+            
+            # ============ ОТПРАВЛЯЕМ ============
             with open(screenshot_path, "rb") as f:
                 await update.message.reply_photo(
                     photo=f,
-                    caption=f"✅ Снэпшот готов!\n{url}\n📁 {screenshot_path}"
+                    caption=f"✅ Снэпшот готов!\n{url}"
                 )
             
-            meta = await self.cdp.get_meta(session_id)
-            await update.message.reply_text(
-                f"📊 *Метаданные:*\n"
-                f"📌 Title: {meta.get('title', 'Неизвестно')}\n"
-                f"🔗 URL: {meta.get('url', url)}\n"
-                f"📝 Description: {meta.get('description', 'Нет')[:100]}",
-                parse_mode="Markdown"
+            message = (
+                f"📊 *Собрано данных:*\n\n"
+                f"📄 HTML: `{len(html):,}` символов\n"
+                f"🔗 Ссылок: {len(links)}\n"
+                f"🖼️ Изображений: {len(images)}\n"
+                f"📝 Текст: `{len(text):,}` символов\n"
+                f"📑 Заголовков: {total_headings}\n"
+                f"📜 Скриптов: {len(scripts)}\n"
+                f"🎨 Стилей: {len(styles)}\n"
+                f"📋 Форм: {len(forms)}\n"
+                f"🍪 Cookies: `{len(cookies)}`\n\n"
+                f"📌 Title: {meta.get('title', 'Нет')}\n"
+                f"📝 Description: {meta.get('description', 'Нет')[:100]}\n\n"
+                f"⚡ DOMContentLoaded: {perf.get('domContentLoaded', 0):.0f}ms\n"
+                f"🚀 Полная загрузка: {perf.get('load', 0):.0f}ms\n\n"
+                f"💾 Сохранено:\n"
+                f"`{screenshot_path}`\n"
+                f"`{html_path}`\n"
+                f"`{json_path}`"
             )
+            await update.message.reply_text(message, parse_mode="Markdown")
             
             await self.cdp.close_tab()
+            file_logger.info(f"✅ Снэпшот {url} завершён")
             
         except Exception as e:
+            file_logger.error(f"❌ Ошибка снэпшота {url}: {str(e)}")
             await update.message.reply_text(f"❌ Ошибка: `{str(e)}`", parse_mode="Markdown")
     
     async def script_command(self, update, context):
         """Обработка интерактивного сценария"""
+        user = update.effective_user
         text = update.message.text
+        file_logger.info(f"🎬 Команда /script от {user.username or user.id}: {text[:50]}...")
+        
         parts = text.split('|')
         
         if len(parts) < 2:
@@ -568,6 +809,7 @@ class BotHandler:
         url = parts[0].replace('/script', '').strip()
         actions = [a.strip() for a in parts[1:] if a.strip()]
         
+        file_logger.info(f"🎬 Сценарий для {url}, действий: {len(actions)}")
         await update.message.reply_text(f"🎬 Запускаю сценарий для `{url}`", parse_mode="Markdown")
         
         try:
@@ -594,12 +836,15 @@ class BotHandler:
                 )
             
             await self.cdp.close_tab()
+            file_logger.info(f"✅ Сценарий {url} завершён")
             
         except Exception as e:
+            file_logger.error(f"❌ Ошибка сценария: {str(e)}")
             await update.message.reply_text(f"❌ Ошибка сценария: `{str(e)}`", parse_mode="Markdown")
     
     async def _parse_and_execute(self, update, action_str, session_id):
         """Парсит и выполняет действие"""
+        file_logger.debug(f"🎬 Выполнение действия: {action_str}")
         try:
             if '(' in action_str and action_str.endswith(')'):
                 action_name = action_str[:action_str.index('(')]
@@ -623,12 +868,14 @@ class BotHandler:
                     selector = params[0].strip('"\'')
                     await self.cdp.click(selector, session_id, wait_for_navigation=True)
                     await update.message.reply_text(f"🖱️ Клик по `{selector}`", parse_mode="Markdown")
+                    file_logger.info(f"🖱️ Клик по {selector}")
                 
                 elif action_name == "type":
                     selector = params[0].strip('"\'')
                     text = params[1].strip('"\'')
                     await self.cdp.type_text(selector, text, session_id)
                     await update.message.reply_text(f"⌨️ Ввод `{text}` в `{selector}`", parse_mode="Markdown")
+                    file_logger.info(f"⌨️ Ввод в {selector}")
                 
                 elif action_name == "select":
                     selector = params[0].strip('"\'')
@@ -654,17 +901,23 @@ class BotHandler:
                         f.write(screenshot)
                     with open(path, "rb") as f:
                         await update.message.reply_photo(photo=f, caption="📸 Промежуточный скриншот")
+                    file_logger.info("📸 Промежуточный скриншот")
             
             else:
+                file_logger.warning(f"⚠️ Неизвестное действие: {action_str}")
                 await update.message.reply_text(f"⚠️ Неизвестное действие: {action_str}")
                 
         except Exception as e:
+            file_logger.error(f"❌ Ошибка в действии {action_str}: {str(e)}")
             await update.message.reply_text(f"❌ Ошибка в действии `{action_str}`: {str(e)}", parse_mode="Markdown")
             raise
     
     async def compare_command(self, update, context):
         """Сравнение двух снэпшотов"""
+        user = update.effective_user
         args = context.args
+        file_logger.info(f"📊 Команда /compare от {user.username or user.id}: {args}")
+        
         if len(args) < 2:
             await update.message.reply_text(
                 "❌ Используй: `/compare https://site.com/v1 https://site.com/v2`\n"
@@ -682,6 +935,9 @@ class BotHandler:
     
     async def _compare_two(self, update, url1, url2):
         """Сравнивает две страницы"""
+        user = update.effective_user
+        file_logger.info(f"📊 Сравнение {url1} vs {url2} от {user.username or user.id}")
+        
         await update.message.reply_text(f"📊 Сравниваю `{url1}` и `{url2}`...", parse_mode="Markdown")
         
         snap1 = await self._make_snapshot_data(url1)
@@ -703,9 +959,11 @@ class BotHandler:
             f"⚠️ *Основные изменения:*\n{diff['summary']}"
         )
         await update.message.reply_text(message, parse_mode="Markdown")
+        file_logger.info(f"📊 Сравнение завершено")
     
     async def _make_snapshot_data(self, url):
         """Делает снэпшот и возвращает данные"""
+        file_logger.info(f"📸 Создание данных для сравнения: {url}")
         try:
             await self.cdp.create_tab()
             session_id = await self.cdp.attach_to_tab()
@@ -726,6 +984,7 @@ class BotHandler:
             
             await self.cdp.close_tab()
             
+            file_logger.info(f"✅ Данные для {url} созданы")
             return {
                 "html": html,
                 "text": text,
@@ -733,7 +992,7 @@ class BotHandler:
                 "images": images or []
             }
         except Exception as e:
-            print(f"Error making snapshot: {e}")
+            file_logger.error(f"❌ Ошибка создания данных для {url}: {str(e)}")
             return None
     
     def _compare_snapshots(self, snap1, snap2):
@@ -773,46 +1032,104 @@ class BotHandler:
             "summary": "\n".join(changes)
         }
     
+    async def compare_with_last(self, update, url):
+        """Сравнивает с предыдущим снэпшотом"""
+        # Находим последний снэпшот
+        try:
+            files = [f for f in os.listdir(SNAPSHOT_DIR) if f.startswith('snapshot_') and f.endswith('.json')]
+            if not files:
+                await update.message.reply_text("❌ Нет сохранённых снэпшотов")
+                return
+            
+            latest = sorted(files)[-1]
+            with open(os.path.join(SNAPSHOT_DIR, latest), 'r', encoding='utf-8') as f:
+                old_data = json.load(f)
+            
+            await update.message.reply_text(f"📊 Сравниваю с предыдущим снэпшотом: {latest}")
+            
+            # Делаем новый снэпшот
+            new_data = await self._make_snapshot_data(url)
+            if not new_data:
+                await update.message.reply_text("❌ Не удалось загрузить страницу")
+                return
+            
+            # Сравниваем
+            diff = self._compare_snapshots(
+                {
+                    "html": old_data.get("html", ""),
+                    "text": old_data.get("text", ""),
+                    "links": old_data.get("links", []),
+                    "images": old_data.get("images", [])
+                },
+                new_data
+            )
+            
+            message = (
+                f"📊 *Сравнение с предыдущим снэпшотом*\n\n"
+                f"🆚 {old_data.get('url', 'Неизвестно')} vs {url}\n"
+                f"📏 Разница HTML: {diff['html_diff']:.1%}\n"
+                f"🔗 Ссылки: {diff['links_changed']} изменений\n"
+                f"🖼️ Изображения: {diff['images_changed']} изменений\n"
+                f"📝 Текст: {diff['text_changed']} изменений\n\n"
+                f"⚠️ *Основные изменения:*\n{diff['summary']}"
+            )
+            await update.message.reply_text(message, parse_mode="Markdown")
+            file_logger.info(f"📊 Сравнение с предыдущим завершено")
+            
+        except Exception as e:
+            file_logger.error(f"❌ Ошибка сравнения: {str(e)}")
+            await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+    
     async def shutdown(self):
-        if self.cdp:
-            await self.cdp.disconnect()
-        if self.chrome:
-            self.chrome.stop()
+        file_logger.info("🛑 Завершение работы бота...")
+        try:
+            if self.cdp:
+                await self.cdp.disconnect()
+            if self.chrome:
+                self.chrome.stop()
+            file_logger.info("✅ Бот остановлен")
+        except Exception as e:
+            file_logger.error(f"❌ Ошибка завершения: {str(e)}")
 
-# ==================== MAIN (ИСПРАВЛЕННЫЙ) ====================
+# ==================== MAIN ====================
 def main():
     """Точка входа с правильным управлением event loop"""
+    file_logger.info("🚀 ЗАПУСК БОТА")
+    file_logger.info(f"📁 Папка снэпшотов: {SNAPSHOT_DIR}")
+    file_logger.info(f"📁 Лог-файл: {LOG_FILE}")
+    file_logger.info(f"🔑 TELEGRAM_TOKEN: {'Установлен' if TELEGRAM_TOKEN != 'ВАШ_ТОКЕН' else 'НЕ УСТАНОВЛЕН'}")
+    
     bot = BotHandler()
     
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", bot.start_command))
     app.add_handler(CommandHandler("script", bot.script_command))
     app.add_handler(CommandHandler("compare", bot.compare_command))
+    app.add_handler(CommandHandler("compare_last", bot.compare_with_last))
     app.add_handler(CallbackQueryHandler(bot.button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_url))
     
-    # Создаём новый event loop
+    file_logger.info("✅ Обработчики зарегистрированы")
+    
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
     try:
-        # Инициализируем Chrome
         loop.run_until_complete(bot.init_chrome())
-        print("🚀 Бот запущен")
-        
-        # Запускаем polling
+        file_logger.info("🚀 Бот запущен и готов к работе!")
         loop.run_until_complete(app.run_polling())
         
     except KeyboardInterrupt:
-        print("🛑 Остановка бота...")
+        file_logger.info("🛑 Остановка бота (Ctrl+C)...")
+    except Exception as e:
+        file_logger.error(f"❌ Критическая ошибка: {str(e)}")
     finally:
-        # Корректно завершаем
         try:
             loop.run_until_complete(bot.shutdown())
         except:
             pass
         loop.close()
-        print("✅ Бот остановлен")
+        file_logger.info("✅ Бот остановлен")
 
 if __name__ == "__main__":
     main()
