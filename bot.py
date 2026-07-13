@@ -107,7 +107,7 @@ class AgnesAI:
                 "max_tokens": 500
             }
             
-            response = requests.post(self.api_url, headers=headers, json=payload, timeout=30)
+            response = requests.post(self.api_url, headers=headers, json=payload, timeout=60)
             
             if response.status_code == 200:
                 result = response.json()
@@ -245,7 +245,6 @@ class BrowserCDP:
                 args = get_launch_args()
                 subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 
-                # Ждём, пока Chrome запустится
                 for attempt in range(15):
                     try:
                         resp = requests.get(f"http://localhost:{CDP_PORT}/json/version", timeout=2)
@@ -301,7 +300,7 @@ class BrowserCDP:
         
         file_logger.log("Подключение к браузеру...", "INFO")
         
-        # 1. Получаем список вкладок через /json/list
+        # Получаем список вкладок через /json/list
         try:
             resp = requests.get(f"http://localhost:{CDP_PORT}/json/list")
             pages = resp.json()
@@ -313,7 +312,6 @@ class BrowserCDP:
                     file_logger.log(f"Найдена вкладка: {page.get('url', 'blank')}", "INFO")
                     break
             
-            # Если нет вкладок - создаём новую
             if not ws_url:
                 file_logger.log("Нет вкладок, создаю новую...", "INFO")
                 resp = requests.get(f"http://localhost:{CDP_PORT}/json/new?about:blank")
@@ -340,16 +338,13 @@ class BrowserCDP:
             self.connected = True
             file_logger.log("✅ WebSocket подключен (вкладка)", "INFO")
             
-            # Теперь команды работают!
             await self.send("Page.enable")
             await self.send("Runtime.enable")
             await self.send("Network.enable")
             file_logger.log("✅ Домены включены", "INFO")
             
-            # Применяем маскировку
             await self.apply_mask()
             
-            # Устанавливаем куки
             if self.cookies:
                 await self.set_cookies(self.cookies)
             
@@ -463,7 +458,6 @@ class BrowserCDP:
                             file_logger.log(f"❌ {method}: {data['error']}", "ERROR")
                         return data
                     
-                    # Обрабатываем события
                     if "method" in data:
                         if data["method"] == "Page.loadEventFired":
                             file_logger.log("✅ Page.loadEventFired", "INFO")
@@ -521,7 +515,6 @@ class BrowserCDP:
             file_logger.log(f"❌ Ошибка навигации: {result['error']}", "ERROR")
             return False
         
-        # Ждём появления заголовка (простой и надёжный способ)
         for i in range(15):
             await asyncio.sleep(1)
             title = await self.eval_js("document.title")
@@ -538,7 +531,6 @@ class BrowserCDP:
         try:
             file_logger.log("📸 Делаю слепок страницы...", "INFO")
             
-            # Получаем все элементы
             elements = await self.eval_js("""
                 (function() {
                     const result = [];
@@ -598,14 +590,13 @@ class BrowserCDP:
             title = await self.eval_js("document.title") or "Нет заголовка"
             url = await self.eval_js("window.location.href") or "Нет URL"
             
-            # Сортируем по видимости
             elements.sort(key=lambda x: x.get('visible', False), reverse=True)
             
             self.snapshot = {
                 "title": title,
                 "url": url,
                 "total": len(elements),
-                "elements": elements[:500]  # Ограничиваем для AI
+                "elements": elements[:500]
             }
             
             file_logger.log(f"✅ Слепок: {len(elements)} элементов", "INFO")
@@ -617,20 +608,24 @@ class BrowserCDP:
             return False
     
     async def click(self, selector, timeout=10):
-        """Клик по элементу"""
+        """Клик по элементу с экранированием кавычек"""
         file_logger.log(f"🖱️ Клик на {selector}", "INFO")
+        
+        escaped_selector = selector.replace("'", "\\'").replace('"', '\\"')
         
         result = await self.eval_js(f"""
             (function() {{
-                const el = document.querySelector('{selector}');
-                if (el) {{
-                    el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
-                    setTimeout(function() {{
+                try {{
+                    const el = document.querySelector("{escaped_selector}");
+                    if (el) {{
+                        el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
                         el.click();
-                    }}, 300);
-                    return {{ success: true }};
+                        return {{ success: true }};
+                    }}
+                    return {{ success: false, error: 'Element not found' }};
+                }} catch(e) {{
+                    return {{ success: false, error: e.toString() }};
                 }}
-                return {{ success: false }};
             }})()
         """)
         
@@ -647,16 +642,23 @@ class BrowserCDP:
         """Ввод текста в поле"""
         file_logger.log(f"⌨️ Ввод текста в {selector}", "INFO")
         
+        escaped_selector = selector.replace("'", "\\'").replace('"', '\\"')
+        escaped_text = text.replace("'", "\\'").replace('"', '\\"')
+        
         result = await self.eval_js(f"""
             (function() {{
-                const el = document.querySelector('{selector}');
-                if (el) {{
-                    el.value = '{text}';
-                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    return {{ success: true }};
+                try {{
+                    const el = document.querySelector("{escaped_selector}");
+                    if (el) {{
+                        el.value = '{escaped_text}';
+                        el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        return {{ success: true }};
+                    }}
+                    return {{ success: false, error: 'Element not found' }};
+                }} catch(e) {{
+                    return {{ success: false, error: e.toString() }};
                 }}
-                return {{ success: false }};
             }})()
         """)
         
@@ -669,19 +671,29 @@ class BrowserCDP:
         return False
     
     async def screenshot(self):
-        """Скриншот страницы"""
+        """Скриншот страницы (1280x720)"""
         try:
             file_logger.log("📸 Делаю скриншот...", "INFO")
             
+            # Устанавливаем разрешение 1280x720
+            await self.send("Emulation.setDeviceMetricsOverride", {
+                "width": 1280,
+                "height": 720,
+                "deviceScaleFactor": 1,
+                "mobile": False,
+                "scale": 1
+            })
+            
+            # Делаем скриншот только видимой области
             result = await self.send("Page.captureScreenshot", {
                 "format": "jpeg",
                 "quality": 80,
-                "captureBeyondViewport": True
+                "captureBeyondViewport": False
             })
             
             if "result" in result and "data" in result["result"]:
                 img_data = base64.b64decode(result["result"]["data"])
-                file_logger.log(f"✅ Скриншот сделан ({len(img_data)} байт)", "INFO")
+                file_logger.log(f"✅ Скриншот 1280x720 ({len(img_data)} байт)", "INFO")
                 return img_data
             
             return None
@@ -720,7 +732,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик AI-агента"""
     user = update.effective_user.first_name
     user_id = update.effective_user.id
     
@@ -769,7 +780,6 @@ async def handle_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         browser = BrowserCDP()
         
-        # Подключаемся
         if not await browser.connect_with_retry():
             await update.message.reply_text("❌ Не удалось подключиться к браузеру")
             return
@@ -779,16 +789,13 @@ async def handle_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         browser.current_url = url
         browser.action_history = []
         
-        # Навигация
         if not await browser.navigate(url):
             await update.message.reply_text("❌ Не удалось загрузить страницу")
             await browser.close()
             return
         
-        # Получаем контекст
         context_data = json.dumps(browser.snapshot, ensure_ascii=False, indent=2)
         
-        # Спрашиваем AI
         ai = AgnesAI()
         ai_response = await ai.ask(task, context_data)
         
@@ -837,7 +844,6 @@ async def handle_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             await asyncio.sleep(2)
             
-            # Обновляем контекст
             await browser.get_snapshot()
             context_data = json.dumps(browser.snapshot, ensure_ascii=False, indent=2)
             history_text = "\n".join([f"- {h.get('action')} на {h.get('selector', '')}" for h in browser.action_history[-3:]])
@@ -882,7 +888,6 @@ async def handle_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {error_msg}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает обычные сообщения (продолжение сессии агента)"""
     user = update.effective_user.first_name
     user_id = update.effective_user.id
     text = update.message.text.strip()
@@ -911,7 +916,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ У тебя нет активной сессии. Начни заново: /agent")
         return
     
-    # Проверяем вопросы про кнопки
     if any(word in text.lower() for word in ['какие кнопки', 'кнопки видишь', 'что видишь', 'что на странице', 'есть ли']):
         await browser.get_snapshot()
         snapshot = browser.snapshot
@@ -943,12 +947,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_logger.log(f"Продолжение сессии для {user}: {text}", "INFO")
     
     try:
-        # Проверяем соединение
         if not await browser.ensure_connection():
             await update.message.reply_text("❌ Потеряно соединение с браузером")
             return
         
-        # Обновляем snapshot
         await browser.get_snapshot()
         context_data = json.dumps(browser.snapshot, ensure_ascii=False, indent=2)
         
@@ -1021,7 +1023,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if screenshot:
             await update.message.reply_photo(screenshot, caption=f"📸 После действия: {action}")
         
-        # Следующий шаг
         await browser.get_snapshot()
         context_data = json.dumps(browser.snapshot, ensure_ascii=False, indent=2)
         next_response = await ai.ask(
@@ -1139,6 +1140,7 @@ def main():
     print("📁 Логи: /log")
     print("🔍 Статус: /status")
     print("⏹️ /end - завершить")
+    print("🖼️ Скриншоты: 1280x720")
     print("💡 Просто пиши команды после запуска агента!")
     
     app.run_polling()
