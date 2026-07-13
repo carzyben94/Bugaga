@@ -201,18 +201,15 @@ class BrowserCDP:
         await self.send("Runtime.enable", session_id=self.session_id)
         await self.send("Network.enable", session_id=self.session_id)
         
-        # Устанавливаем куки глобально
         if self.cookies:
             await self.set_cookies_global(self.cookies)
         
-        # Переходим на X.com
         await self.send("Page.navigate", {"url": "https://x.com"}, session_id=self.session_id)
         await asyncio.sleep(2)
         
         await self.apply_full_mask()
     
     async def set_cookies_global(self, cookies):
-        """Устанавливает куки глобально через Network.setCookies"""
         try:
             cookies_list = []
             for cookie in cookies:
@@ -567,12 +564,9 @@ class BrowserCDP:
                 return data
     
     async def navigate_and_screenshot(self, url):
-        """Навигация и создание скриншота с фиксированным разрешением"""
         file_logger.log(f"Навигация на {url}", "INFO")
         await self.connect()
         
-        # ===== УСТАНАВЛИВАЕМ ФИКСИРОВАННОЕ РАЗРЕШЕНИЕ =====
-        # 1280x720 - идеально для Telegram
         await self.send("Emulation.setDeviceMetricsOverride", {
             "width": 1280,
             "height": 720,
@@ -582,18 +576,14 @@ class BrowserCDP:
         }, session_id=self.session_id)
         file_logger.log("Установлено разрешение: 1280x720", "INFO")
         
-        # Переходим на целевой URL
         if "x.com" not in url and "twitter.com" not in url:
             await self.send("Page.navigate", {"url": url}, session_id=self.session_id)
             file_logger.log("Навигация на целевой URL", "INFO")
         else:
             file_logger.log("Уже на X.com", "INFO")
         
-        # Ждём загрузку
-        file_logger.log("Ожидание загрузки страницы...", "INFO")
         await asyncio.sleep(5)
         
-        # Делаем скриншот (уже в нужном разрешении)
         file_logger.log("Делаю скриншот (1280x720)...", "INFO")
         screenshot_data = None
         
@@ -631,11 +621,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_logger.log(f"Пользователь {user} (ID: {user_id}) запустил бота", "INFO")
     
     await update.message.reply_text(
-        "👋 Отправь URL и я сделаю скриншот\n"
-        "Пример: https://x.com\n\n"
-        "📁 /log — получить файл логов\n"
-        "🕵️ 100% маскировка + глобальные куки X.com\n"
-        "🖼️ Разрешение скриншотов: 1280x720"
+        "📁 /log — получить файл логов"
     )
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -650,7 +636,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Добавь http:// или https://")
         return
     
-    await update.message.reply_text(f"🔄 Загружаю {url} (1280x720)...")
+    await update.message.reply_text(f"🔄 Загружаю {url}...")
     
     try:
         browser = BrowserCDP()
@@ -694,7 +680,7 @@ async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- ЗАПУСК ----------
 def main():
     file_logger.log("="*50, "INFO")
-    file_logger.log("БОТ ЗАПУЩЕН (1280x720)", "INFO")
+    file_logger.log("БОТ ЗАПУЩЕН", "INFO")
     file_logger.log(f"Chrome путь: {CHROME_PATH}", "INFO")
     file_logger.log(f"CDP порт: {CDP_PORT}", "INFO")
     file_logger.log("WebSocket лимит: 15 MB", "INFO")
