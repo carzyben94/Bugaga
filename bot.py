@@ -162,9 +162,6 @@ class BrowserCDP:
         self.ws = await websockets.connect(ws_url)
         file_logger.log("Подключен к браузеру", "INFO")
         
-        # Устанавливаем настройки эмуляции
-        await self.set_emulation_settings()
-        
         # Создаём новую вкладку
         result = await self.send("Target.createTarget", {"url": "about:blank"})
         self.target_id = result["result"]["targetId"]
@@ -178,56 +175,99 @@ class BrowserCDP:
         self.session_id = attach_result["result"]["sessionId"]
         file_logger.log("Прикреплен к вкладке", "INFO")
         
-        # Активируем домены
+        # Активируем домены через сессию
         await self.send("Page.enable", session_id=self.session_id)
         await self.send("Runtime.enable", session_id=self.session_id)
         await self.send("Network.enable", session_id=self.session_id)
         file_logger.log("Домены активированы", "INFO")
         
-        # Скрываем WebDriver
-        await self.send("Runtime.evaluate", {
-            "expression": """
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => undefined,
-                    configurable: true,
-                    enumerable: true
-                });
-                Object.defineProperty(navigator, 'plugins', {
-                    get: () => [1, 2, 3, 4, 5],
-                    configurable: true,
-                    enumerable: true
-                });
-                Object.defineProperty(navigator, 'languages', {
-                    get: () => ['en-US', 'en'],
-                    configurable: true,
-                    enumerable: true
-                });
-                console.log('✅ WebDriver скрыт');
-            """
-        }, session_id=self.session_id)
-        file_logger.log("Скрыты следы автоматизации", "INFO")
+        # Устанавливаем эмуляцию через сессию
+        await self.set_emulation_settings()
+        
+        # Скрываем WebDriver через сессию
+        await self.hide_automation()
     
     async def set_emulation_settings(self):
-        """Устанавливает настройки эмуляции для маскировки"""
+        """Устанавливает настройки эмуляции через сессию"""
         try:
-            # Эмуляция устройства
+            # Эмуляция устройства через сессию
             await self.send("Emulation.setDeviceMetricsOverride", {
                 "width": random.randint(1200, 1920),
                 "height": random.randint(800, 1080),
                 "deviceScaleFactor": 1,
                 "mobile": False,
                 "scale": 1
-            })
+            }, session_id=self.session_id)
             
-            # Эмуляция геолокации (США)
+            # Эмуляция геолокации через сессию
             await self.send("Emulation.setGeolocationOverride", {
                 "latitude": 37.7749 + random.uniform(-1, 1),
                 "longitude": -122.4194 + random.uniform(-1, 1),
                 "accuracy": 100
-            })
+            }, session_id=self.session_id)
+            
             file_logger.log("Настройки эмуляции установлены", "INFO")
         except Exception as e:
             file_logger.log(f"Ошибка при установке эмуляции: {e}", "WARNING")
+    
+    async def hide_automation(self):
+        """Скрывает следы автоматизации через сессию"""
+        try:
+            await self.send("Runtime.evaluate", {
+                "expression": """
+                    // Скрываем webdriver
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined,
+                        configurable: true,
+                        enumerable: true
+                    });
+                    
+                    // Добавляем плагины
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => {
+                            const plugins = [];
+                            plugins.push({
+                                name: 'Chrome PDF Plugin',
+                                filename: 'internal-pdf-viewer',
+                                description: 'Portable Document Format'
+                            });
+                            plugins.push({
+                                name: 'Chrome PDF Viewer',
+                                filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai',
+                                description: ''
+                            });
+                            plugins.push({
+                                name: 'Native Client',
+                                filename: 'internal-nacl-plugin',
+                                description: ''
+                            });
+                            return plugins;
+                        },
+                        configurable: true,
+                        enumerable: true
+                    });
+                    
+                    // Устанавливаем языки
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['en-US', 'en', 'ru'],
+                        configurable: true,
+                        enumerable: true
+                    });
+                    
+                    // Скрываем chrome
+                    window.chrome = {
+                        runtime: {},
+                        loadTimes: function() {},
+                        csi: function() {},
+                        app: {}
+                    };
+                    
+                    console.log('✅ Следы автоматизации скрыты');
+                """
+            }, session_id=self.session_id)
+            file_logger.log("Скрыты следы автоматизации", "INFO")
+        except Exception as e:
+            file_logger.log(f"Ошибка при скрытии автоматизации: {e}", "WARNING")
     
     async def send(self, method, params=None, session_id=None):
         """Отправка CDP команды с поддержкой сессий"""
@@ -254,6 +294,38 @@ class BrowserCDP:
                     raise Exception(f"CDP Error [{error_code}]: {error_msg}")
                 return data
     
+    async def wait_for_page_load(self, timeout=30):
+        """Ожидает загрузку страницы через несколько методов"""
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            try:
+                # Проверяем readyState
+                result = await self.send("Runtime.evaluate", {
+                    "expression": "document.readyState === 'complete'"
+                }, session_id=self.session_id)
+                
+                if result.get("result", {}).get("result", {}).get("value") == True:
+                    file_logger.log("Страница загружена (readyState complete)", "INFO")
+                    return True
+                
+                # Проверяем наличие body
+                body_result = await self.send("Runtime.evaluate", {
+                    "expression": "document.body !== null && document.body.children.length > 0"
+                }, session_id=self.session_id)
+                
+                if body_result.get("result", {}).get("result", {}).get("value") == True:
+                    file_logger.log("Страница имеет содержимое", "INFO")
+                    return True
+                    
+            except Exception as e:
+                file_logger.log(f"Ошибка при проверке загрузки: {e}", "DEBUG")
+            
+            await asyncio.sleep(1)
+        
+        file_logger.log("Таймаут ожидания загрузки страницы", "WARNING")
+        return False
+    
     async def navigate_and_screenshot(self, url):
         """Навигация и создание скриншота с маскировкой"""
         file_logger.log(f"Навигация на {url}", "INFO")
@@ -264,39 +336,41 @@ class BrowserCDP:
         file_logger.log("Навигация инициирована", "INFO")
         
         # Ждём загрузку
-        start_time = time.time()
-        while time.time() - start_time < 30:
+        loaded = await self.wait_for_page_load(timeout=30)
+        
+        if not loaded:
+            file_logger.log("Страница не загрузилась полностью, но пробуем сделать скриншот", "WARNING")
+            await asyncio.sleep(3)
+        
+        # Делаем скриншот с повторной попыткой
+        screenshot_data = None
+        for attempt in range(3):
             try:
-                result = await self.send("Runtime.evaluate", {
-                    "expression": "document.readyState === 'complete'"
+                result = await self.send("Page.captureScreenshot", {
+                    "format": "png",
+                    "captureBeyondViewport": True
                 }, session_id=self.session_id)
                 
-                if result.get("result", {}).get("result", {}).get("value") == True:
-                    file_logger.log("Страница загружена", "INFO")
+                if "result" in result and "data" in result["result"]:
+                    screenshot_data = result["result"]["data"]
+                    file_logger.log(f"Скриншот создан для {url}", "INFO")
                     break
-            except:
-                pass
-            await asyncio.sleep(0.5)
-        else:
-            file_logger.log("Таймаут ожидания загрузки страницы", "WARNING")
+            except Exception as e:
+                file_logger.log(f"Попытка {attempt+1} скриншота не удалась: {e}", "WARNING")
+                await asyncio.sleep(1)
         
-        # Скриншот
-        result = await self.send("Page.captureScreenshot", {
-            "format": "png",
-            "captureBeyondViewport": True
-        }, session_id=self.session_id)
-        
-        if "result" not in result or "data" not in result["result"]:
-            file_logger.log(f"Неожиданный ответ от CDP: {result}", "ERROR")
-            raise Exception("Не удалось получить скриншот")
-        
-        file_logger.log(f"Скриншот создан для {url}", "INFO")
+        if not screenshot_data:
+            raise Exception("Не удалось получить скриншот после 3 попыток")
         
         # Закрываем вкладку
-        await self.send("Target.closeTarget", {"targetId": self.target_id})
+        try:
+            await self.send("Target.closeTarget", {"targetId": self.target_id})
+        except:
+            pass
+        
         await self.ws.close()
         
-        return base64.b64decode(result["result"]["data"])
+        return base64.b64decode(screenshot_data)
 
 # ---------- ОБРАБОТЧИКИ ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
