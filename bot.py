@@ -898,7 +898,6 @@ class BrowserCDP:
             if not await self.ensure_connection():
                 return False
             
-            # Определяем смысл цели
             meaning = get_meaning(target)
             
             js = f"""
@@ -919,7 +918,6 @@ class BrowserCDP:
                         
                         const allText = text + ' ' + aria + ' ' + placeholder + ' ' + id + ' ' + cls + ' ' + title + ' ' + value;
                         
-                        // Проверяем по прямому совпадению или по смыслу
                         if (allText.includes(target) || (meaning && allText.includes(meaning))) {{
                             el.click();
                             return true;
@@ -939,20 +937,18 @@ class BrowserCDP:
             file_logger.log(f"❌ Ошибка клика: {e}", "ERROR")
             return False
     
-    # ========== УНИВЕРСАЛЬНЫЙ ВВОД ==========
+    # ========== УНИВЕРСАЛЬНЫЙ ВВОД (ИСПРАВЛЕННЫЙ) ==========
     async def type_text(self, text, field):
         try:
             if not await self.ensure_connection():
                 return False
             
-            # Определяем смысл поля
             meaning = get_meaning(field)
             
             js = f"""
                 (function() {{
                     const field = '{field}'.toLowerCase();
                     const meaning = '{meaning}' if '{meaning}' else '';
-                    
                     const elements = document.querySelectorAll('input, textarea, [contenteditable="true"]');
                     
                     for (let el of elements) {{
@@ -962,21 +958,36 @@ class BrowserCDP:
                         const cls = (el.className || '').toLowerCase();
                         const name = (el.getAttribute('name') || '').toLowerCase();
                         const type = (el.getAttribute('type') || '').toLowerCase();
+                        const tag = el.tagName.toLowerCase();
                         
-                        const allText = placeholder + ' ' + aria + ' ' + id + ' ' + cls + ' ' + name;
+                        // 🔥 СПЕЦИАЛЬНАЯ ПРОВЕРКА ДЛЯ GOOGLE
+                        const isGoogle = (
+                            id === 'apjfqb' ||
+                            cls.includes('glfyf') ||
+                            (tag === 'textarea' && el.closest('form[role="search"]'))
+                        );
                         
+                        // 🔥 ОСНОВНАЯ ПРОВЕРКА
                         const isMatch = (
-                            allText.includes(field) ||
-                            (meaning && allText.includes(meaning)) ||
+                            placeholder.includes(field) ||
+                            aria.includes(field) ||
+                            id.includes(field) ||
+                            cls.includes(field) ||
+                            name.includes(field) ||
                             type === 'search' ||
+                            isGoogle ||
+                            (meaning && (placeholder.includes(meaning) || aria.includes(meaning))) ||
                             placeholder.includes('поиск') ||
                             placeholder.includes('search') ||
                             aria.includes('поиск') ||
                             aria.includes('search') ||
-                            cls.includes('gLFyf') ||
+                            cls.includes('glfyf') ||
                             cls.includes('search') ||
                             id.includes('search') ||
-                            id.includes('query')
+                            id.includes('query') ||
+                            id.includes('apjfqb') ||
+                            name.includes('q') ||
+                            name.includes('s')
                         );
                         
                         if (isMatch) {{
@@ -985,6 +996,18 @@ class BrowserCDP:
                             el.value = '{text}';
                             el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                             el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                            
+                            // 🔥 ДЛЯ GOOGLE — ОТПРАВЛЯЕМ ENTER
+                            if (isGoogle) {{
+                                const enterEvent = new KeyboardEvent('keydown', {{
+                                    key: 'Enter',
+                                    code: 'Enter',
+                                    keyCode: 13,
+                                    bubbles: true
+                                }});
+                                el.dispatchEvent(enterEvent);
+                            }}
+                            
                             return true;
                         }}
                     }}
@@ -1026,21 +1049,18 @@ class BrowserCDP:
             
             js = """
                 (function() {
-                    // Ищем форму
                     const form = document.querySelector('form');
                     if (form) {
                         form.submit();
                         return true;
                     }
                     
-                    // Ищем кнопку отправки
                     const submitBtn = document.querySelector('button[type="submit"], input[type="submit"]');
                     if (submitBtn) {
                         submitBtn.click();
                         return true;
                     }
                     
-                    // Ищем кнопку с текстом "Войти", "Отправить", "Search"
                     const buttons = document.querySelectorAll('button, input[type="button"]');
                     for (let btn of buttons) {
                         const text = (btn.textContent || btn.value || '').toLowerCase();
@@ -1071,13 +1091,11 @@ class BrowserCDP:
         try:
             file_logger.log("📸 Делаю слепок страницы...", "INFO")
             
-            # Получаем элементы со смысловыми тегами
             elements = await self.eval_js("""
                 (function() {
                     const result = [];
                     const all = document.querySelectorAll('*');
                     
-                    // Словари для определения смысла
                     const meaningMap = {
                         'search': ['поиск', 'search', 'найти', 'find', 'query', 'запрос'],
                         'login': ['вход', 'войти', 'login', 'sign in', 'log in'],
@@ -1123,7 +1141,6 @@ class BrowserCDP:
                         const id = el.id || '';
                         const cls = el.className || '';
                         
-                        // Определяем смысл
                         const allText = text + ' ' + placeholder + ' ' + ariaLabel + ' ' + id + ' ' + cls;
                         const meaning = getMeaning(allText);
                         
@@ -1687,14 +1704,14 @@ async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- ЗАПУСК ----------
 def main():
     print("="*50)
-    print("🚀 ЗАПУСК БОТА (УНИВЕРСАЛЬНОЕ ПОНИМАНИЕ)")
+    print("🚀 ЗАПУСК БОТА (ИСПРАВЛЕННАЯ ВЕРСИЯ)")
     print("="*50)
     print(f"📌 Chrome путь: {CHROME_PATH}")
     print("🕵️ Маскировка: ВСЕГДА ВКЛЮЧЕНА")
     print("🧠 Память: ВКЛЮЧЕНА")
     print("🤖 AI-понимание: ВКЛЮЧЕНО")
     print("🎯 Универсальный поиск: ВКЛЮЧЕН")
-    print("📊 Snapshot: РАСШИРЕННЫЙ (со смысловыми тегами)")
+    print("✅ Google фикс: ВКЛЮЧЕН")
     print(f"🤖 AI модель: {AI_MODEL}")
     print("="*50)
     
@@ -1715,10 +1732,9 @@ def main():
     print("✅ Бот готов!")
     print("🗣️ Говори как с человеком:")
     print("   • зайди в гугл")
-    print("   • какие кнопки?")
+    print("   • введи валера в поиск")
     print("   • нажми на Войти")
-    print("   • введи погоду в поиск")
-    print("🎯 Теперь понимает смысл, а не просто слова!")
+    print("🎯 Теперь бот находит поле поиска Google!")
     app.run_polling()
 
 if __name__ == "__main__":
