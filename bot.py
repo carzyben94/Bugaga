@@ -147,9 +147,6 @@ class Memory:
 
 # ---------- AI ДЛЯ РАСПОЗНАВАНИЯ КОМАНД ----------
 def ask_ai_for_command(text, memory=None):
-    """
-    AI сам понимает, что хочет пользователь
-    """
     try:
         if not AGNES_API_KEY:
             return {'action': 'error', 'message': 'AGNES_API_KEY не указан'}
@@ -174,71 +171,18 @@ def ask_ai_for_command(text, memory=None):
 11. help — помощь
 
 ПРИМЕРЫ:
-Пользователь: "зайди в гугл"
-Ответ: {"action": "navigate", "url": "https://google.com"}
-
-Пользователь: "открой ютуб"
-Ответ: {"action": "navigate", "url": "https://youtube.com"}
-
-Пользователь: "перейди на сайт вк"
-Ответ: {"action": "navigate", "url": "https://vk.com"}
-
-Пользователь: "зайди на х"
-Ответ: {"action": "navigate", "url": "https://x.com"}
-
-Пользователь: "какие кнопки видишь?"
-Ответ: {"action": "ask", "question": "какие кнопки видишь?"}
-
-Пользователь: "что есть на странице?"
-Ответ: {"action": "ask", "question": "что есть на странице?"}
-
-Пользователь: "нажми на кнопку Войти"
-Ответ: {"action": "click", "target": "Войти"}
-
-Пользователь: "кликни по ссылке Регистрация"
-Ответ: {"action": "click", "target": "Регистрация"}
-
-Пользователь: "введи погоду в поле поиска"
-Ответ: {"action": "type", "text": "погода", "field": "поиска"}
-
-Пользователь: "напиши hello в поле ввода"
-Ответ: {"action": "type", "text": "hello", "field": "ввода"}
-
-Пользователь: "отправь форму"
-Ответ: {"action": "submit"}
-
-Пользователь: "войти"
-Ответ: {"action": "submit"}
-
-Пользователь: "сделай скриншот"
-Ответ: {"action": "screenshot"}
-
-Пользователь: "скрин"
-Ответ: {"action": "screenshot"}
-
-Пользователь: "вернись назад"
-Ответ: {"action": "back"}
-
-Пользователь: "назад"
-Ответ: {"action": "back"}
-
-Пользователь: "покажи историю"
-Ответ: {"action": "history"}
-
-Пользователь: "что я делал"
-Ответ: {"action": "history"}
-
-Пользователь: "очисти память"
-Ответ: {"action": "clear"}
-
-Пользователь: "забудь всё"
-Ответ: {"action": "clear"}
-
-Пользователь: "привет"
-Ответ: {"action": "greeting"}
-
-Пользователь: "помоги"
-Ответ: {"action": "help"}
+Пользователь: "зайди в гугл" → {"action": "navigate", "url": "https://google.com"}
+Пользователь: "открой ютуб" → {"action": "navigate", "url": "https://youtube.com"}
+Пользователь: "какие кнопки видишь?" → {"action": "ask", "question": "какие кнопки видишь?"}
+Пользователь: "нажми на кнопку Войти" → {"action": "click", "target": "Войти"}
+Пользователь: "введи погоду в поле поиска" → {"action": "type", "text": "погода", "field": "поиска"}
+Пользователь: "отправь форму" → {"action": "submit"}
+Пользователь: "сделай скриншот" → {"action": "screenshot"}
+Пользователь: "вернись назад" → {"action": "back"}
+Пользователь: "покажи историю" → {"action": "history"}
+Пользователь: "очисти память" → {"action": "clear"}
+Пользователь: "привет" → {"action": "greeting"}
+Пользователь: "помоги" → {"action": "help"}
 
 Правила:
 1. Всегда возвращай ТОЛЬКО JSON
@@ -292,9 +236,8 @@ def ask_ai_for_command(text, memory=None):
         file_logger.log(f"❌ Ошибка AI: {e}", "ERROR")
         return {'action': 'error', 'message': str(e)}
 
-# ---------- AI ДЛЯ ОТВЕТОВ НА ВОПРОСЫ ----------
+# ---------- AI ДЛЯ ОТВЕТОВ ----------
 def ask_ai_for_answer(prompt, context=None, memory=None):
-    """Запрос к Agnes AI для ответов на вопросы"""
     try:
         if not AGNES_API_KEY:
             return "❌ AGNES_API_KEY не указан"
@@ -312,7 +255,7 @@ def ask_ai_for_answer(prompt, context=None, memory=None):
 1. Отвечай кратко (3-5 предложений)
 2. Перечисляй элементы с пояснениями
 3. Если не нашел — скажи честно
-4. Используй эмодзи: 🔘 кнопка, 📄 текст, 🔗 ссылка, ✏️ поле
+4. Используй эмодзи: 🔘 кнопка, 📄 текст, 🔗 ссылка, ✏️ поле, 📊 таблица, 🖼️ изображение
 5. Не выдумывай то, чего нет
 
 ФОРМАТ:
@@ -461,7 +404,6 @@ def get_mask_js():
     
     return f"""
     (function() {{
-        // ========== NAVIGATOR ==========
         Object.defineProperty(navigator, 'webdriver', {{
             get: () => undefined,
             configurable: true,
@@ -591,7 +533,6 @@ def get_mask_js():
             }});
         }};
         
-        // ========== WEBGL ==========
         const originalGetContext = HTMLCanvasElement.prototype.getContext;
         HTMLCanvasElement.prototype.getContext = function(contextId, attributes) {{
             if (contextId === 'webgl' || contextId === 'experimental-webgl') {{
@@ -629,7 +570,6 @@ def get_mask_js():
             return originalGetContext.call(this, contextId, attributes);
         }};
         
-        // ========== CANVAS ==========
         const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
         HTMLCanvasElement.prototype.toDataURL = function(type, quality) {{
             if (type === 'image/png' || type === undefined) {{
@@ -646,7 +586,6 @@ def get_mask_js():
             return originalToDataURL.call(this, type, quality);
         }};
         
-        // ========== AUDIO ==========
         const originalAudioCtx = window.AudioContext || window.webkitAudioContext;
         if (originalAudioCtx) {{
             const patchedAudioCtx = function() {{
@@ -669,7 +608,6 @@ def get_mask_js():
             window.webkitAudioContext = patchedAudioCtx;
         }}
         
-        // ========== SCREEN ==========
         Object.defineProperty(window, 'screen', {{
             get: () => {{
                 const availHeight = {screen_height};
@@ -697,7 +635,6 @@ def get_mask_js():
             enumerable: true
         }});
         
-        // ========== CHROME ==========
         if (!window.chrome) {{
             window.chrome = {{}};
         }}
@@ -706,7 +643,6 @@ def get_mask_js():
         window.chrome.csi = function() {{}};
         window.chrome.app = {{}};
         
-        // ========== TIMING ==========
         const originalPerfNow = performance.now;
         performance.now = function() {{
             return originalPerfNow.call(this) + (Math.random() * 0.1);
@@ -717,7 +653,6 @@ def get_mask_js():
             return originalDateNow.call(this) + Math.floor(Math.random() * 5);
         }};
         
-        // ========== DOCUMENT ==========
         Object.defineProperty(document, 'hidden', {{
             get: () => false,
             configurable: true,
@@ -917,7 +852,7 @@ class BrowserCDP:
             js = f"""
                 (function() {{
                     const target = '{target}'.toLowerCase();
-                    const elements = document.querySelectorAll('button, a, input, div[role="button"]');
+                    const elements = document.querySelectorAll('button, a, input, div[role="button"], [role="link"], [role="menuitem"]');
                     
                     for (let el of elements) {{
                         const text = (el.textContent || '').trim().toLowerCase();
@@ -925,9 +860,10 @@ class BrowserCDP:
                         const placeholder = (el.getAttribute('placeholder') || '').toLowerCase();
                         const id = (el.id || '').toLowerCase();
                         const cls = (el.className || '').toLowerCase();
+                        const title = (el.getAttribute('title') || '').toLowerCase();
                         
                         if (text.includes(target) || aria.includes(target) || placeholder.includes(target) ||
-                            id.includes(target) || cls.includes(target)) {{
+                            id.includes(target) || cls.includes(target) || title.includes(target)) {{
                             el.click();
                             return true;
                         }}
@@ -959,9 +895,26 @@ class BrowserCDP:
                         const id = (el.id || '').toLowerCase();
                         const cls = (el.className || '').toLowerCase();
                         const name = (el.getAttribute('name') || '').toLowerCase();
+                        const type = (el.getAttribute('type') || '').toLowerCase();
                         
-                        if (placeholder.includes(field) || aria.includes(field) || id.includes(field) ||
-                            cls.includes(field) || name.includes(field)) {{
+                        const isSearchField = (
+                            placeholder.includes(field) ||
+                            aria.includes(field) ||
+                            id.includes(field) ||
+                            cls.includes(field) ||
+                            name.includes(field) ||
+                            type === 'search' ||
+                            placeholder.includes('поиск') ||
+                            placeholder.includes('search') ||
+                            aria.includes('поиск') ||
+                            aria.includes('search') ||
+                            cls.includes('gLFyf') ||
+                            cls.includes('search') ||
+                            id.includes('search') ||
+                            id.includes('query')
+                        );
+                        
+                        if (isSearchField) {{
                             el.focus();
                             el.value = '';
                             el.value = '{text}';
@@ -970,15 +923,28 @@ class BrowserCDP:
                             return true;
                         }}
                     }}
+                    
+                    // Если не нашли — берем первое видимое поле
+                    for (let el of elements) {{
+                        if (el.type !== 'hidden' && el.type !== 'submit' && el.type !== 'button') {{
+                            el.focus();
+                            el.value = '';
+                            el.value = '{text}';
+                            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                            return true;
+                        }}
+                    }}
+                    
                     return false;
                 }})()
             """
             result = await self.eval_js(js)
             if result:
-                file_logger.log(f"✅ Ввел '{text}' в поле {field}", "INFO")
+                file_logger.log(f"✅ Ввел '{text}' в поле", "INFO")
                 return True
             else:
-                file_logger.log(f"❌ Поле {field} не найдено", "WARNING")
+                file_logger.log(f"❌ Поле не найдено", "WARNING")
                 return False
         except Exception as e:
             file_logger.log(f"❌ Ошибка ввода: {e}", "ERROR")
@@ -993,6 +959,13 @@ class BrowserCDP:
                         form.submit();
                         return true;
                     }
+                    
+                    const submitBtn = document.querySelector('button[type="submit"], input[type="submit"]');
+                    if (submitBtn) {
+                        submitBtn.click();
+                        return true;
+                    }
+                    
                     return false;
                 })()
             """
@@ -1007,6 +980,7 @@ class BrowserCDP:
             file_logger.log(f"❌ Ошибка отправки формы: {e}", "ERROR")
             return False
     
+    # ========== SNAPSHOT (РАСШИРЕННЫЙ) ==========
     async def get_snapshot(self):
         try:
             file_logger.log("📸 Делаю слепок страницы...", "INFO")
@@ -1036,15 +1010,27 @@ class BrowserCDP:
                             tag === 'button' ||
                             tag === 'a' ||
                             attrs.role === 'button' ||
+                            attrs.role === 'link' ||
+                            attrs.role === 'menuitem' ||
                             tag === 'input' ||
                             tag === 'textarea' ||
                             tag === 'select'
                         );
                         
-                        const important = ['button', 'a', 'input', 'textarea', 'select', 'form',
-                                          'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'img', 'video',
-                                          'iframe', 'div', 'span', 'section', 'article', 'nav',
-                                          'header', 'footer', 'main', 'aside', 'ul', 'ol', 'li'];
+                        // 🔥 РАСШИРЕННЫЙ СПИСОК ПОЛЕЗНЫХ ТЕГОВ
+                        const important = [
+                            'button', 'a', 'input', 'textarea', 'select', 'form',
+                            'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'img', 'video',
+                            'iframe', 'div', 'span', 'section', 'article', 'nav',
+                            'header', 'footer', 'main', 'aside', 'ul', 'ol', 'li',
+                            // 🔥 НОВЫЕ ПОЛЕЗНЫЕ ТЕГИ
+                            'table', 'tr', 'td', 'th',
+                            'label', 'figure', 'figcaption',
+                            'details', 'summary', 'dialog',
+                            'menu', 'menuitem', 'time',
+                            'code', 'pre', 'blockquote', 'cite',
+                            'strong', 'em', 'b', 'i', 'mark', 'small'
+                        ];
                         
                         if (important.includes(tag) || isInteractive || attrs['data-testid'] || attrs['aria-label']) {
                             result.push({
@@ -1164,7 +1150,7 @@ class BrowserCDP:
             file_logger.log(f"❌ Screenshot error: {e}", "ERROR")
             return None
 
-# ---------- ОСНОВНОЙ ОБРАБОТЧИК ----------
+# ---------- ОБРАБОТЧИКИ ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if 'memory' not in context.user_data:
         context.user_data['memory'] = Memory()
@@ -1191,7 +1177,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     memory = context.user_data['memory']
     
-    # ====== ПРИВЕТСТВИЕ ======
+    # Приветствие
     if text.lower() in ['привет', 'здравствуй', 'hello', 'hi', 'хай']:
         await update.message.reply_text(
             "👋 Привет! Спрашивай что хочешь.\n"
@@ -1199,7 +1185,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # ====== ПОМОЩЬ ======
+    # Помощь
     if text.lower() in ['помоги', 'что умеешь', 'help', '/help']:
         await update.message.reply_text(
             "🤖 Я умею:\n"
@@ -1215,11 +1201,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # ====== ОТПРАВЛЯЕМ ВСЁ В AI ======
+    # ====== ОТПРАВЛЯЕМ В AI ======
     thinking_msg = await update.message.reply_text("🤔 Думаю...")
     
     command = ask_ai_for_command(text, memory)
-    
     action = command.get('action', 'unknown')
     
     # ====== НАВИГАЦИЯ ======
@@ -1230,7 +1215,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         memory.add_action("url", {"url": url})
-        
         await thinking_msg.edit_text(f"🔄 Загружаю {url}...")
         
         try:
@@ -1259,7 +1243,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         memory.add_action("question", {"question": question})
-        
         await thinking_msg.edit_text("🤖 Анализирую страницу...")
         
         try:
@@ -1353,13 +1336,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await thinking_msg.edit_text("📭 Сначала загрузи страницу")
             return
         
-        await thinking_msg.edit_text(f"✏️ Ввожу '{text_input}' в поле '{field}'...")
+        await thinking_msg.edit_text(f"✏️ Ищу поле '{field}'...")
         
         try:
             result = await memory.browser.type_text(text_input, field)
+            
             if result:
                 memory.add_action("type", {"text": text_input, "field": field})
-                await thinking_msg.edit_text(f"✅ Ввел '{text_input}' в поле '{field}'")
+                await thinking_msg.edit_text(f"✅ Ввел '{text_input}'")
                 
                 await memory.browser.get_snapshot()
                 memory.set_snapshot(
@@ -1369,7 +1353,41 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     memory.browser
                 )
             else:
-                await thinking_msg.edit_text(f"❌ Поле '{field}' не найдено")
+                # Показываем список полей
+                fields = await memory.browser.eval_js("""
+                    (function() {
+                        const inputs = document.querySelectorAll('input, textarea');
+                        const result = [];
+                        inputs.forEach(el => {
+                            if (el.type !== 'hidden') {
+                                result.push({
+                                    type: el.type || 'text',
+                                    placeholder: el.placeholder || '',
+                                    aria: el.getAttribute('aria-label') || '',
+                                    id: el.id || '',
+                                    class: el.className || '',
+                                    name: el.name || ''
+                                });
+                            }
+                        });
+                        return result;
+                    })()
+                """)
+                
+                if fields and len(fields) > 0:
+                    fields_text = "\n".join([
+                        f"• {f.get('type', 'text')}: placeholder='{f.get('placeholder', '')}', id='{f.get('id', '')}'"
+                        for f in fields[:10]
+                    ])
+                    
+                    await thinking_msg.edit_text(
+                        f"❌ Не нашел поле '{field}'\n\n"
+                        f"🔍 На странице есть поля:\n{fields_text}\n\n"
+                        "Попробуй уточнить: например, 'введи Валера в строку поиска'"
+                    )
+                else:
+                    await thinking_msg.edit_text("❌ На странице нет полей ввода")
+                
         except Exception as e:
             await thinking_msg.edit_text(f"❌ Ошибка: {e}")
         return
@@ -1483,7 +1501,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await thinking_msg.edit_text("🧹 Память очищена!")
         return
     
-    # ====== ПРИВЕТСТВИЕ (если AI вернул) ======
+    # ====== ПРИВЕТСТВИЕ ======
     if action == 'greeting':
         await thinking_msg.edit_text(
             "👋 Привет! Говори что хочешь:\n"
@@ -1545,12 +1563,13 @@ async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- ЗАПУСК ----------
 def main():
     print("="*50)
-    print("🚀 ЗАПУСК БОТА С AI-ПОНИМАНИЕМ")
+    print("🚀 ЗАПУСК БОТА (РАСШИРЕННЫЙ SNAPSHOT)")
     print("="*50)
     print(f"📌 Chrome путь: {CHROME_PATH}")
     print("🕵️ Маскировка: ВСЕГДА ВКЛЮЧЕНА")
     print("🧠 Память: ВКЛЮЧЕНА")
     print("🤖 AI-понимание: ВКЛЮЧЕНО")
+    print("📊 Snapshot: РАСШИРЕННЫЙ (35+ тегов)")
     print(f"🤖 AI модель: {AI_MODEL}")
     print("="*50)
     
