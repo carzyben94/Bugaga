@@ -6,6 +6,7 @@ import subprocess
 import time
 import base64
 import hashlib
+import difflib
 import websockets
 import aiohttp
 from datetime import datetime
@@ -16,8 +17,10 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "ВАШ_ТОКЕН")
 CHROME_PATH = os.getenv("CHROME_PATH", "/usr/bin/google-chrome")
 CDP_PORT = 9222
 SNAPSHOT_DIR = "snapshots"
+COMPARE_DIR = "comparisons"
 
 os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+os.makedirs(COMPARE_DIR, exist_ok=True)
 
 # ==================== CHROME MANAGER ====================
 class ChromeManager:
@@ -53,6 +56,7 @@ class ChromeManager:
         if self.process:
             self.process.terminate()
             self.process.wait()
+            print("🛑 Chrome остановлен")
 
 # ==================== CDP CONTROLLER ====================
 class CDPController:
@@ -70,6 +74,7 @@ class CDPController:
                 ws_url = data["webSocketDebuggerUrl"]
         
         self.ws = await websockets.connect(ws_url)
+        print(f"✅ CDP подключен")
         return self
     
     async def send(self, method, params=None, session_id=None):
@@ -90,6 +95,7 @@ class CDPController:
     async def create_tab(self, url="about:blank"):
         result = await self.send("Target.createTarget", {"url": url})
         self.target_id = result["targetId"]
+        print(f"📑 Создана вкладка: {self.target_id}")
         return self.target_id
     
     async def attach_to_tab(self, target_id=None):
@@ -101,7 +107,6 @@ class CDPController:
         session_id = result["sessionId"]
         self._session_id = session_id
         
-        # Включаем все нужные домены
         await self.send("Page.enable", session_id=session_id)
         await self.send("Runtime.enable", session_id=session_id)
         await self.send("DOM.enable", session_id=session_id)
@@ -121,34 +126,26 @@ class CDPController:
                 response = json.loads(await asyncio.wait_for(self.ws.recv(), timeout=1))
                 method = response.get("method")
                 
-                # Ждём событие загрузки
                 if method == "Page.loadEventFired":
                     loaded = True
                 
-                # SPA: ждём, когда сеть станет бездействовать
                 if method == "Network.loadingFinished":
-                    # Проверяем, есть ли активные запросы
                     if await self.is_network_idle(session_id):
                         network_idle = True
                 
-                # Если и загрузка, и сеть бездействуют — страница готова
                 if loaded and network_idle:
-                    # Дополнительно ждём выполнения JS-фреймворков
                     await self.wait_for_js_frameworks(session_id, timeout=5)
                     return True
                     
             except asyncio.TimeoutError:
                 continue
         
-        # Если не дождались, но страница хоть как-то загрузилась
         return loaded
     
     async def is_network_idle(self, session_id):
-        """Проверяет, есть ли активные сетевые запросы"""
         js = """
             (function() {
                 return new Promise((resolve) => {
-                    // Проверяем через Performance API
                     const entries = performance.getEntriesByType('resource');
                     const pending = entries.filter(e => 
                         e.responseEnd === 0 || e.responseStart === 0
@@ -160,24 +157,16 @@ class CDPController:
         return await self.evaluate(js, session_id)
     
     async def wait_for_js_frameworks(self, session_id, timeout=5):
-        """Ожидание выполнения JS-фреймворков (React, Vue, Angular, etc.)"""
         js = """
             (function() {
                 return new Promise((resolve) => {
                     const checkFrameworks = () => {
-                        // Проверяем React
                         const hasReact = window.__REACT_DEVTOOLS_GLOBAL_HOOK__ !== undefined;
-                        
-                        // Проверяем Vue
                         const hasVue = window.__VUE_DEVTOOLS_GLOBAL_HOOK__ !== undefined;
-                        
-                        // Проверяем Angular
                         const hasAngular = window.ng !== undefined;
                         
-                        // Проверяем, что DOM стабилен (нет мутаций)
                         let stable = true;
                         const observer = new MutationObserver(() => {
-                            // Сбрасываем таймер при мутациях
                             clearTimeout(timeoutId);
                             stable = false;
                             setTimeout(() => {
@@ -197,7 +186,6 @@ class CDPController:
                             resolve({hasReact, hasVue, hasAngular, stable: true});
                         }, 2000);
                         
-                        // Если нет фреймворков, просто ждём стабильности
                         if (!hasReact && !hasVue && !hasAngular) {
                             setTimeout(() => {
                                 observer.disconnect();
@@ -236,11 +224,7 @@ class CDPController:
         
         return result.get("result", {}).get("value")
     
-    # ==================== ИНТЕРАКТИВНЫЕ МЕТОДЫ ====================
-    
     async def click(self, selector, session_id, wait_for_navigation=False):
-        """Клик по элементу с опцией ожидания навигации"""
-        # Проверяем видимость и кликаем
         js = f"""
             (function() {{
                 const el = document.querySelector('{selector}');
@@ -251,7 +235,6 @@ class CDPController:
                 
                 el.scrollIntoView({{block: 'center'}});
                 
-                // Эмулируем реальный клик
                 const clickEvent = new MouseEvent('click', {{
                     view: window,
                     bubbles: true,
@@ -260,21 +243,19 @@ class CDPController:
                     clientY: rect.y + rect.height/2
                 }});
                 el.dispatchEvent(clickEvent);
-                el.click(); // На всякий случай
+                el.click();
                 
                 return true;
             }})()
         """
         result = await self.evaluate(js, session_id)
         
-        # Если ожидаем навигацию после клика
         if wait_for_navigation and result:
             await self.wait_for_load(session_id, timeout=15)
         
         return result
     
     async def type_text(self, selector, text, session_id, clear_first=True):
-        """Ввод текста в поле"""
         js = f"""
             (function() {{
                 const el = document.querySelector('{selector}');
@@ -287,12 +268,10 @@ class CDPController:
                     el.value = '';
                 }}
                 
-                // Вводим текст посимвольно для эмуляции реального ввода
                 const chars = '{text}'.split('');
                 for (let i = 0; i < chars.length; i++) {{
                     el.value += chars[i];
                     
-                    // Триггерим события для React/Vue
                     const inputEvent = new Event('input', {{bubbles: true}});
                     el.dispatchEvent(inputEvent);
                     
@@ -306,7 +285,6 @@ class CDPController:
         return await self.evaluate(js, session_id)
     
     async def select_option(self, selector, value, session_id):
-        """Выбор опции в select"""
         js = f"""
             (function() {{
                 const el = document.querySelector('{selector}');
@@ -322,7 +300,6 @@ class CDPController:
         return await self.evaluate(js, session_id)
     
     async def scroll_to(self, selector, session_id):
-        """Скролл до элемента"""
         js = f"""
             (function() {{
                 const el = document.querySelector('{selector}');
@@ -334,7 +311,6 @@ class CDPController:
         return await self.evaluate(js, session_id)
     
     async def wait_for_element(self, selector, session_id, timeout=10, visible=True):
-        """Ожидание появления элемента"""
         js = f"""
             new Promise((resolve) => {{
                 const start = Date.now();
@@ -364,7 +340,6 @@ class CDPController:
         return await self.evaluate(js, session_id)
     
     async def wait_for_text(self, selector, text, session_id, timeout=10):
-        """Ожидание появления текста в элементе"""
         js = f"""
             new Promise((resolve) => {{
                 const start = Date.now();
@@ -386,7 +361,6 @@ class CDPController:
         return await self.evaluate(js, session_id)
     
     async def wait_for_url(self, expected_url_part, session_id, timeout=10):
-        """Ожидание изменения URL (для SPA)"""
         js = f"""
             new Promise((resolve) => {{
                 const start = Date.now();
@@ -408,7 +382,6 @@ class CDPController:
         return await self.evaluate(js, session_id)
     
     async def take_screenshot(self, session_id, full_page=True):
-        """Скриншот"""
         params = {
             "format": "png",
             "fromSurface": True,
@@ -418,12 +391,10 @@ class CDPController:
         return base64.b64decode(result["data"])
     
     async def get_page_text(self, session_id):
-        """Весь текст страницы"""
         js = "document.body.innerText"
         return await self.evaluate(js, session_id)
     
     async def get_meta(self, session_id):
-        """Метаданные страницы"""
         js = """
             (function() {
                 return {
@@ -435,78 +406,15 @@ class CDPController:
             })()
         """
         return await self.evaluate(js, session_id)
-
-# ==================== СЦЕНАРИИ ====================
-class ScriptEngine:
-    def __init__(self, cdp, session_id):
-        self.cdp = cdp
-        self.session_id = session_id
-        self.steps = []
-        self.results = []
     
-    def add_step(self, action, **kwargs):
-        """Добавляет шаг в сценарий"""
-        self.steps.append({"action": action, **kwargs})
-        return self
+    async def close_tab(self, target_id=None):
+        tid = target_id or self.target_id
+        if tid:
+            await self.send("Target.closeTarget", {"targetId": tid})
     
-    async def run(self):
-        """Выполняет сценарий"""
-        for i, step in enumerate(self.steps):
-            action = step.pop("action")
-            result = await self._execute_action(action, step)
-            self.results.append({"step": i, "action": action, "result": result})
-        return self.results
-    
-    async def _execute_action(self, action, params):
-        """Выполняет конкретное действие"""
-        actions_map = {
-            "click": self._action_click,
-            "type": self._action_type,
-            "select": self._action_select,
-            "scroll": self._action_scroll,
-            "wait_element": self._action_wait_element,
-            "wait_text": self._action_wait_text,
-            "wait_url": self._action_wait_url,
-            "navigate": self._action_navigate,
-            "screenshot": self._action_screenshot,
-            "evaluate": self._action_evaluate,
-        }
-        
-        func = actions_map.get(action)
-        if not func:
-            raise ValueError(f"Unknown action: {action}")
-        
-        return await func(**params)
-    
-    async def _action_click(self, selector, wait_for_navigation=False):
-        return await self.cdp.click(selector, self.session_id, wait_for_navigation)
-    
-    async def _action_type(self, selector, text, clear_first=True):
-        return await self.cdp.type_text(selector, text, self.session_id, clear_first)
-    
-    async def _action_select(self, selector, value):
-        return await self.cdp.select_option(selector, value, self.session_id)
-    
-    async def _action_scroll(self, selector):
-        return await self.cdp.scroll_to(selector, self.session_id)
-    
-    async def _action_wait_element(self, selector, timeout=10, visible=True):
-        return await self.cdp.wait_for_element(selector, self.session_id, timeout, visible)
-    
-    async def _action_wait_text(self, selector, text, timeout=10):
-        return await self.cdp.wait_for_text(selector, text, self.session_id, timeout)
-    
-    async def _action_wait_url(self, url_part, timeout=10):
-        return await self.cdp.wait_for_url(url_part, self.session_id, timeout)
-    
-    async def _action_navigate(self, url):
-        return await self.cdp.navigate(url, self.session_id)
-    
-    async def _action_screenshot(self, full_page=True):
-        return await self.cdp.take_screenshot(self.session_id, full_page)
-    
-    async def _action_evaluate(self, js):
-        return await self.cdp.evaluate(js, self.session_id)
+    async def disconnect(self):
+        if self.ws:
+            await self.ws.close()
 
 # ==================== TELEGRAM BOT ====================
 class BotHandler:
@@ -515,7 +423,6 @@ class BotHandler:
         self.cdp = None
         self.session_id = None
         self.current_url = None
-        self.user_sessions = {}  # Храним сценарии пользователей
         
     async def init_chrome(self):
         self.chrome = ChromeManager()
@@ -606,37 +513,30 @@ class BotHandler:
         await update.message.reply_text(f"🌐 Делаю снэпшот `{url}`...", parse_mode="Markdown")
         
         try:
-            # Создаём вкладку
             await self.cdp.create_tab()
             session_id = await self.cdp.attach_to_tab()
             
-            # Навигация
             await self.cdp.navigate(url, session_id)
             await update.message.reply_text("⏳ Загрузка страницы (включая SPA)...")
             
-            # Ждём загрузку с поддержкой SPA
             if await self.cdp.wait_for_load(session_id, timeout=30):
                 await update.message.reply_text("✅ Страница загружена!")
             else:
                 await update.message.reply_text("⚠️ Частичная загрузка")
             
-            # Делаем скриншот
             screenshot = await self.cdp.take_screenshot(session_id, full_page=True)
             
-            # Сохраняем
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             screenshot_path = f"{SNAPSHOT_DIR}/snapshot_{timestamp}.png"
             with open(screenshot_path, "wb") as f:
                 f.write(screenshot)
             
-            # Отправляем скриншот
             with open(screenshot_path, "rb") as f:
                 await update.message.reply_photo(
                     photo=f,
                     caption=f"✅ Снэпшот готов!\n{url}\n📁 {screenshot_path}"
                 )
             
-            # Отправляем метаданные
             meta = await self.cdp.get_meta(session_id)
             await update.message.reply_text(
                 f"📊 *Метаданные:*\n"
@@ -646,8 +546,7 @@ class BotHandler:
                 parse_mode="Markdown"
             )
             
-            # Закрываем вкладку
-            await self.cdp.send("Target.closeTarget", {"targetId": self.cdp.target_id})
+            await self.cdp.close_tab()
             
         except Exception as e:
             await update.message.reply_text(f"❌ Ошибка: `{str(e)}`", parse_mode="Markdown")
@@ -666,29 +565,21 @@ class BotHandler:
             )
             return
         
-        # Парсим URL и действия
         url = parts[0].replace('/script', '').strip()
         actions = [a.strip() for a in parts[1:] if a.strip()]
         
         await update.message.reply_text(f"🎬 Запускаю сценарий для `{url}`", parse_mode="Markdown")
         
         try:
-            # Создаём вкладку
             await self.cdp.create_tab()
             session_id = await self.cdp.attach_to_tab()
             
-            # Навигация
             await self.cdp.navigate(url, session_id)
             await self.cdp.wait_for_load(session_id, timeout=30)
             
-            # Создаём движок сценариев
-            engine = ScriptEngine(self.cdp, session_id)
-            
-            # Разбираем действия
             for action_str in actions:
-                await self._parse_and_execute(update, engine, action_str)
+                await self._parse_and_execute(update, action_str, session_id)
             
-            # Финальный скриншот
             screenshot = await self.cdp.take_screenshot(session_id, full_page=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             screenshot_path = f"{SNAPSHOT_DIR}/script_result_{timestamp}.png"
@@ -702,21 +593,18 @@ class BotHandler:
                     parse_mode="Markdown"
                 )
             
-            # Закрываем вкладку
-            await self.cdp.send("Target.closeTarget", {"targetId": self.cdp.target_id})
+            await self.cdp.close_tab()
             
         except Exception as e:
             await update.message.reply_text(f"❌ Ошибка сценария: `{str(e)}`", parse_mode="Markdown")
     
-    async def _parse_and_execute(self, update, engine, action_str):
+    async def _parse_and_execute(self, update, action_str, session_id):
         """Парсит и выполняет действие"""
         try:
-            # Парсим действие (click(selector) или type(selector, text))
             if '(' in action_str and action_str.endswith(')'):
                 action_name = action_str[:action_str.index('(')]
                 params_str = action_str[action_str.index('(')+1:-1]
                 
-                # Разбираем параметры
                 params = []
                 current = ''
                 in_quotes = False
@@ -731,37 +619,36 @@ class BotHandler:
                 if current:
                     params.append(current.strip())
                 
-                # Выполняем
                 if action_name == "click":
                     selector = params[0].strip('"\'')
-                    await engine.cdp.click(selector, engine.session_id, wait_for_navigation=True)
+                    await self.cdp.click(selector, session_id, wait_for_navigation=True)
                     await update.message.reply_text(f"🖱️ Клик по `{selector}`", parse_mode="Markdown")
                 
                 elif action_name == "type":
                     selector = params[0].strip('"\'')
                     text = params[1].strip('"\'')
-                    await engine.cdp.type_text(selector, text, engine.session_id)
+                    await self.cdp.type_text(selector, text, session_id)
                     await update.message.reply_text(f"⌨️ Ввод `{text}` в `{selector}`", parse_mode="Markdown")
                 
                 elif action_name == "select":
                     selector = params[0].strip('"\'')
                     value = params[1].strip('"\'')
-                    await engine.cdp.select_option(selector, value, engine.session_id)
+                    await self.cdp.select_option(selector, value, session_id)
                     await update.message.reply_text(f"📋 Выбор `{value}` в `{selector}`", parse_mode="Markdown")
                 
                 elif action_name == "wait":
                     selector = params[0].strip('"\'')
-                    await engine.cdp.wait_for_element(selector, engine.session_id)
+                    await self.cdp.wait_for_element(selector, session_id)
                     await update.message.reply_text(f"⏳ Элемент `{selector}` появился", parse_mode="Markdown")
                 
                 elif action_name == "wait_text":
                     selector = params[0].strip('"\'')
                     text = params[1].strip('"\'')
-                    await engine.cdp.wait_for_text(selector, text, engine.session_id)
+                    await self.cdp.wait_for_text(selector, text, session_id)
                     await update.message.reply_text(f"📝 Текст `{text}` появился", parse_mode="Markdown")
                 
                 elif action_name == "screenshot":
-                    screenshot = await engine.cdp.take_screenshot(engine.session_id, full_page=True)
+                    screenshot = await self.cdp.take_screenshot(session_id, full_page=True)
                     path = f"{SNAPSHOT_DIR}/step_screenshot.png"
                     with open(path, "wb") as f:
                         f.write(screenshot)
@@ -797,7 +684,6 @@ class BotHandler:
         """Сравнивает две страницы"""
         await update.message.reply_text(f"📊 Сравниваю `{url1}` и `{url2}`...", parse_mode="Markdown")
         
-        # Делаем снэпшоты
         snap1 = await self._make_snapshot_data(url1)
         snap2 = await self._make_snapshot_data(url2)
         
@@ -805,10 +691,8 @@ class BotHandler:
             await update.message.reply_text("❌ Не удалось загрузить страницы")
             return
         
-        # Сравниваем
         diff = self._compare_snapshots(snap1, snap2)
         
-        # Формируем отчёт
         message = (
             f"📊 *Сравнение снэпшотов*\n\n"
             f"🆚 {url1} vs {url2}\n"
@@ -840,7 +724,7 @@ class BotHandler:
                 session_id
             )
             
-            await self.cdp.send("Target.closeTarget", {"targetId": self.cdp.target_id})
+            await self.cdp.close_tab()
             
             return {
                 "html": html,
@@ -854,25 +738,20 @@ class BotHandler:
     
     def _compare_snapshots(self, snap1, snap2):
         """Сравнивает два снэпшота"""
-        # Сравнение HTML
         html_diff = difflib.SequenceMatcher(None, snap1['html'], snap2['html']).ratio()
         
-        # Сравнение ссылок
         links1 = set(snap1['links'])
         links2 = set(snap2['links'])
         links_changed = len(links1.symmetric_difference(links2))
         
-        # Сравнение изображений
         images1 = set(snap1['images'])
         images2 = set(snap2['images'])
         images_changed = len(images1.symmetric_difference(images2))
         
-        # Сравнение текста
         text1 = snap1['text'].split()
         text2 = snap2['text'].split()
         text_diff = 1 - difflib.SequenceMatcher(None, text1, text2).ratio()
         
-        # Формируем суммарное изменение
         changes = []
         if html_diff < 0.9:
             changes.append("📄 Изменён HTML")
@@ -895,32 +774,45 @@ class BotHandler:
         }
     
     async def shutdown(self):
-        if self.cdp and self.cdp.ws:
-            await self.cdp.ws.close()
+        if self.cdp:
+            await self.cdp.disconnect()
         if self.chrome:
             self.chrome.stop()
 
-# ==================== MAIN ====================
-async def main():
+# ==================== MAIN (ИСПРАВЛЕННЫЙ) ====================
+def main():
+    """Точка входа с правильным управлением event loop"""
     bot = BotHandler()
-    await bot.init_chrome()
     
     app = Application.builder().token(TELEGRAM_TOKEN).build()
-    
-    # Команды
     app.add_handler(CommandHandler("start", bot.start_command))
     app.add_handler(CommandHandler("script", bot.script_command))
     app.add_handler(CommandHandler("compare", bot.compare_command))
-    
-    # Обработчики
     app.add_handler(CallbackQueryHandler(bot.button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_url))
     
-    print("🚀 Бот запущен")
+    # Создаём новый event loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
     try:
-        await app.run_polling()
+        # Инициализируем Chrome
+        loop.run_until_complete(bot.init_chrome())
+        print("🚀 Бот запущен")
+        
+        # Запускаем polling
+        loop.run_until_complete(app.run_polling())
+        
+    except KeyboardInterrupt:
+        print("🛑 Остановка бота...")
     finally:
-        await bot.shutdown()
+        # Корректно завершаем
+        try:
+            loop.run_until_complete(bot.shutdown())
+        except:
+            pass
+        loop.close()
+        print("✅ Бот остановлен")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
