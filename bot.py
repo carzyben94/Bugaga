@@ -30,7 +30,7 @@ class FileLogger:
 
 file_logger = FileLogger()
 
-# ---------- МАСКИРОВКА ----------
+# ---------- МАСКИРОВКА (100% Pydoll style) ----------
 def get_random_window_position():
     return {
         "left": random.randint(50, 300),
@@ -165,8 +165,12 @@ class BrowserCDP:
         resp = requests.get(f"http://localhost:{CDP_PORT}/json/version")
         ws_url = resp.json()["webSocketDebuggerUrl"]
         
-        self.ws = await websockets.connect(ws_url)
-        file_logger.log("Подключен к браузеру", "INFO")
+        # Увеличиваем лимит WebSocket до 15 MB
+        self.ws = await websockets.connect(
+            ws_url,
+            max_size=15 * 1024 * 1024  # 15 MB
+        )
+        file_logger.log("Подключен к браузеру (лимит 15MB)", "INFO")
         
         result = await self.send("Target.createTarget", {"url": "about:blank"})
         self.target_id = result["result"]["targetId"]
@@ -591,17 +595,32 @@ class BrowserCDP:
         
         for attempt in range(3):
             try:
+                # Пробуем JPEG для больших страниц
                 result = await self.send("Page.captureScreenshot", {
-                    "format": "png",
+                    "format": "jpeg",
+                    "quality": 75,
                     "captureBeyondViewport": True
                 }, session_id=self.session_id)
                 
                 if "result" in result and "data" in result["result"]:
                     screenshot_data = result["result"]["data"]
-                    file_logger.log(f"Скриншот создан для {url}", "INFO")
+                    file_logger.log(f"Скриншот создан для {url} (JPEG)", "INFO")
                     break
             except Exception as e:
                 file_logger.log(f"Попытка {attempt+1} скриншота не удалась: {e}", "WARNING")
+                # Если JPEG не работает, пробуем PNG без captureBeyondViewport
+                if attempt == 2:
+                    try:
+                        file_logger.log("Пробую PNG без captureBeyondViewport...", "INFO")
+                        result = await self.send("Page.captureScreenshot", {
+                            "format": "png"
+                        }, session_id=self.session_id)
+                        if "result" in result and "data" in result["result"]:
+                            screenshot_data = result["result"]["data"]
+                            file_logger.log(f"Скриншот создан для {url} (PNG)", "INFO")
+                            break
+                    except Exception as e2:
+                        file_logger.log(f"PNG тоже не удался: {e2}", "ERROR")
                 await asyncio.sleep(1)
         
         if not screenshot_data:
@@ -627,7 +646,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 Отправь URL и я сделаю скриншот\n"
         "Пример: https://google.com\n\n"
         "📁 /log — получить файл логов\n"
-        "🕵️ 100% маскировка (Pydoll full stealth)"
+        "🕵️ 100% маскировка (Pydoll full stealth)\n"
+        "⚡ Лимит WebSocket: 15 MB"
     )
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -689,6 +709,7 @@ def main():
     file_logger.log("БОТ ЗАПУЩЕН (100% STEALTH MODE)", "INFO")
     file_logger.log(f"Chrome путь: {CHROME_PATH}", "INFO")
     file_logger.log(f"CDP порт: {CDP_PORT}", "INFO")
+    file_logger.log("WebSocket лимит: 15 MB", "INFO")
     
     if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "ВАШ_ТОКЕН":
         file_logger.log("TELEGRAM_BOT_TOKEN не указан!", "ERROR")
@@ -703,7 +724,8 @@ def main():
     print("🚀 Бот запущен в 100% STEALTH режиме!")
     print("🕵️ Полная маскировка: WebGL, Canvas, Audio, Navigator, Screen, Timing")
     print("📁 Команды: /start, /log")
-    print("⚡ Скриншот делается принудительно через 7-10 секунд")
+    print("⚡ WebSocket лимит: 15 MB")
+    print("⚡ Скриншот делается принудительно через 7-10 секунд (JPEG)")
     
     app.run_polling()
 
