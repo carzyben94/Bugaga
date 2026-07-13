@@ -4,7 +4,8 @@ import time
 import subprocess
 import base64
 import requests
-import websocket
+import asyncio
+import websockets
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
@@ -30,7 +31,7 @@ class FileLogger:
 
 file_logger = FileLogger()
 
-# ---------- БРАУЗЕР ----------
+# ---------- БРАУЗЕР (АСИНХРОННЫЙ) ----------
 class BrowserCDP:
     def __init__(self):
         self.ws = None
@@ -60,44 +61,49 @@ class BrowserCDP:
                 file_logger.log(f"Не удалось запустить Chrome: {e}", "ERROR")
                 return False
     
-    def connect(self):
-        """Подключение к браузеру через WebSocket"""
+    async def connect(self):
+        """Подключение к браузеру через WebSocket (асинхронно)"""
         if not self.ensure_browser():
             raise Exception("Chrome не доступен")
         
         resp = requests.get(f"http://localhost:{CDP_PORT}/json/version")
         ws_url = resp.json()["webSocketDebuggerUrl"]
         
-        self.ws = websocket.create_connection(ws_url)
-        self.send("Page.enable")
+        # Асинхронное подключение через websockets
+        self.ws = await websockets.connect(ws_url)
+        await self.send("Page.enable")
         file_logger.log(f"Подключен к Chrome CDP", "INFO")
     
-    def send(self, method, params=None):
-        """Отправка CDP команды"""
+    async def send(self, method, params=None):
+        """Отправка CDP команды (асинхронно)"""
         self.msg_id += 1
         msg = {
             "id": self.msg_id,
             "method": method,
             "params": params or {}
         }
-        self.ws.send(json.dumps(msg))
-        response = self.ws.recv()
+        await self.ws.send(json.dumps(msg))
+        response = await self.ws.recv()
         return json.loads(response)
     
-    def navigate_and_screenshot(self, url):
-        """Навигация и создание скриншота"""
+    async def navigate_and_screenshot(self, url):
+        """Навигация и создание скриншота (асинхронно)"""
         file_logger.log(f"Навигация на {url}", "INFO")
-        self.connect()
+        await self.connect()
         
         # Навигация
-        self.send("Page.navigate", {"url": url})
+        await self.send("Page.navigate", {"url": url})
         
         # Ждём загрузку страницы
-        time.sleep(2)
+        await asyncio.sleep(2)
         
         # Скриншот
-        result = self.send("Page.captureScreenshot", {"format": "png"})
+        result = await self.send("Page.captureScreenshot", {"format": "png"})
         file_logger.log(f"Скриншот создан для {url}", "INFO")
+        
+        # Закрываем соединение
+        await self.ws.close()
+        
         return base64.b64decode(result["result"]["data"])
 
 # ---------- ОБРАБОТЧИКИ ----------
@@ -125,7 +131,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         browser = BrowserCDP()
-        screenshot = browser.navigate_and_screenshot(url)
+        screenshot = await browser.navigate_and_screenshot(url)
         await update.message.reply_photo(screenshot, caption=f"✅ {url}")
         file_logger.log(f"Скриншот отправлен пользователю {user}", "INFO")
     except Exception as e:
@@ -150,6 +156,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     
     print("🚀 Бот запущен! Логи пишутся в bot_logs.txt")
+    print(f"📦 Используется библиотека: websockets (асинхронная)")
     app.run_polling()
 
 if __name__ == "__main__":
