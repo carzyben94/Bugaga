@@ -145,190 +145,192 @@ class Memory:
         
         return "\n".join(lines)
 
-# ---------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ----------
-def is_valid_url(url):
-    """Проверяет, является ли строка валидным URL"""
-    if not url or len(url.strip()) == 0:
-        return False
-    
-    url = url.strip()
-    
-    # Если URL уже с протоколом
-    if url.startswith(('http://', 'https://')):
-        # Проверяем что после протокола есть домен
-        parts = url.split('://')
-        if len(parts) == 2 and len(parts[1]) > 0:
-            return True
-        return False
-    
-    # Проверяем что это похоже на домен
-    if '.' not in url:
-        return False
-    
-    # Не должен состоять из 1-2 букв без точки
-    if len(url) <= 2 and '.' not in url:
-        return False
-    
-    # Должен содержать хотя бы одну букву после точки
-    parts = url.split('.')
-    if len(parts) < 2 or len(parts[-1]) < 2:
-        return False
-    
-    return True
-
-def clean_url(url):
-    """Очищает и нормализует URL"""
-    url = url.strip()
-    
-    # Убираем лишние пробелы
-    url = ' '.join(url.split())
-    
-    # Если нет протокола — добавляем
-    if not url.startswith(('http://', 'https://')):
-        url = 'https://' + url
-    
-    return url
-
-def extract_domain(text):
-    """Извлекает домен из текста (для обработки "зайди в google")"""
-    # Убираем предлоги и лишнее
-    text = re.sub(r'^(зайди|открой|перейди|покажи)\s+(в\s+|на\s+)?', '', text)
-    text = text.strip()
-    
-    # Если это просто слово — добавляем .com
-    if text and '.' not in text and ' ' not in text:
-        return text + '.com'
-    
-    return text
-
-# ---------- ПАРСЕР КОМАНД ----------
-def parse_command(text):
-    """Распознает команды на естественном языке"""
-    text_lower = text.lower().strip()
-    
-    # ====== URL напрямую ======
-    if text.startswith(('http://', 'https://')):
-        return {'action': 'navigate', 'url': text}
-    
-    # ====== НАВИГАЦИЯ ======
-    nav_patterns = [
-        (r'зайди на\s+(.+)', 'зайди на'),
-        (r'зайди\s+(.+)', 'зайди'),
-        (r'зайди в\s+(.+)', 'зайди в'),
-        (r'открой\s+(.+)', 'открой'),
-        (r'перейди на\s+(.+)', 'перейди на'),
-        (r'перейди\s+(.+)', 'перейди'),
-        (r'покажи\s+(.+)', 'покажи'),
-        (r'открой сайт\s+(.+)', 'открой сайт'),
-        (r'сходи на\s+(.+)', 'сходи на'),
-        (r'дай\s+(.+)', 'дай'),
-    ]
-    
-    for pattern, _ in nav_patterns:
-        match = re.search(pattern, text_lower)
-        if match:
-            url = match.group(1).strip()
-            
-            # Проверяем валидность URL
-            if not is_valid_url(url):
-                # Пробуем извлечь домен
-                url = extract_domain(url)
-                if not is_valid_url(url):
-                    return {'action': 'invalid_url', 'url': url}
-            
-            url = clean_url(url)
-            return {'action': 'navigate', 'url': url}
-    
-    # ====== КЛИК ======
-    click_patterns = [
-        r'нажми на\s+(.+)',
-        r'нажми\s+(.+)',
-        r'кликни на\s+(.+)',
-        r'кликни\s+(.+)',
-        r'тапни\s+(.+)',
-    ]
-    for pattern in click_patterns:
-        match = re.search(pattern, text_lower)
-        if match:
-            target = match.group(1).strip()
-            return {'action': 'click', 'target': target}
-    
-    # ====== ВВОД ТЕКСТА ======
-    type_patterns = [
-        r'введи\s+["\']?(.+?)["\']?\s+в\s+(.+)',
-        r'напиши\s+["\']?(.+?)["\']?\s+в\s+(.+)',
-        r'вставь\s+["\']?(.+?)["\']?\s+в\s+(.+)',
-    ]
-    for pattern in type_patterns:
-        match = re.search(pattern, text_lower)
-        if match:
-            text_input = match.group(1).strip()
-            field = match.group(2).strip()
-            return {'action': 'type', 'text': text_input, 'field': field}
-    
-    # ====== ОТПРАВКА ФОРМЫ ======
-    submit_keywords = ['отправь форму', 'сабмит', 'отправить', 'submit', 'войти', 'залогиниться']
-    if any(keyword in text_lower for keyword in submit_keywords):
-        return {'action': 'submit'}
-    
-    # ====== ВОЗВРАТ НАЗАД ======
-    if any(word in text_lower for word in ['назад', 'вернись', 'вернуться', 'предыдущий']):
-        return {'action': 'back'}
-    
-    # ====== СКРИНШОТ ======
-    screenshot_keywords = ['скриншот', 'скрин', 'фото', 'сфоткай', 'сделай скрин', 'сними']
-    if any(keyword in text_lower for keyword in screenshot_keywords):
-        return {'action': 'screenshot'}
-    
-    # ====== ВОПРОСЫ ======
-    question_keywords = [
-        'какие', 'что', 'есть ли', 'где', 'когда', 'почему', 'сколько',
-        'какой', 'какая', 'какое', 'покажи', 'найди', 'расскажи', 'опиши',
-        'поля', 'формы', 'инпуты', 'элементы', 'кнопки', 'ссылки', 'меню',
-        'картинки', 'видео', 'заголовки'
-    ]
-    
-    if any(keyword in text_lower for keyword in question_keywords) or '?' in text:
-        return {'action': 'ask', 'question': text}
-    
-    # ====== ИСТОРИЯ ======
-    history_keywords = ['история', 'что было', 'помнишь', 'список', 'действия']
-    if any(keyword in text_lower for keyword in history_keywords):
-        return {'action': 'history'}
-    
-    # ====== ОЧИСТКА ======
-    clear_keywords = ['очисти', 'забудь', 'сбрось', 'удали']
-    if any(keyword in text_lower for keyword in clear_keywords):
-        return {'action': 'clear'}
-    
-    # ====== ПРИВЕТСТВИЕ ======
-    if any(word in text_lower for word in ['привет', 'здравствуй', 'hello', 'hi']):
-        return {'action': 'greeting'}
-    
-    return {'action': 'unknown'}
-
-# ---------- AI ФУНКЦИИ ----------
-def ask_ai(prompt, context=None, memory=None):
-    """Запрос к Agnes AI с памятью"""
+# ---------- AI ДЛЯ РАСПОЗНАВАНИЯ КОМАНД ----------
+def ask_ai_for_command(text, memory=None):
+    """
+    AI сам понимает, что хочет пользователь
+    """
     try:
         if not AGNES_API_KEY:
-            return "❌ AGNES_API_KEY не указан. Получите ключ на https://platform.agnes-ai.com/"
+            return {'action': 'error', 'message': 'AGNES_API_KEY не указан'}
         
         messages = []
         
-        system_prompt = "Ты - умный AI-ассистент для анализа веб-страниц. Отвечай кратко, понятно и по делу."
+        system_prompt = """Ты — умный AI-помощник, который понимает команды пользователя.
+
+Твоя задача — понять, что хочет пользователь, и вернуть JSON с действием.
+
+ДОСТУПНЫЕ ДЕЙСТВИЯ:
+1. navigate — перейти на сайт
+2. ask — задать вопрос о странице
+3. click — кликнуть на элемент
+4. type — ввести текст в поле
+5. submit — отправить форму
+6. screenshot — сделать скриншот
+7. back — вернуться назад
+8. history — показать историю
+9. clear — очистить память
+10. greeting — приветствие
+11. help — помощь
+
+ПРИМЕРЫ:
+Пользователь: "зайди в гугл"
+Ответ: {"action": "navigate", "url": "https://google.com"}
+
+Пользователь: "открой ютуб"
+Ответ: {"action": "navigate", "url": "https://youtube.com"}
+
+Пользователь: "перейди на сайт вк"
+Ответ: {"action": "navigate", "url": "https://vk.com"}
+
+Пользователь: "зайди на х"
+Ответ: {"action": "navigate", "url": "https://x.com"}
+
+Пользователь: "какие кнопки видишь?"
+Ответ: {"action": "ask", "question": "какие кнопки видишь?"}
+
+Пользователь: "что есть на странице?"
+Ответ: {"action": "ask", "question": "что есть на странице?"}
+
+Пользователь: "нажми на кнопку Войти"
+Ответ: {"action": "click", "target": "Войти"}
+
+Пользователь: "кликни по ссылке Регистрация"
+Ответ: {"action": "click", "target": "Регистрация"}
+
+Пользователь: "введи погоду в поле поиска"
+Ответ: {"action": "type", "text": "погода", "field": "поиска"}
+
+Пользователь: "напиши hello в поле ввода"
+Ответ: {"action": "type", "text": "hello", "field": "ввода"}
+
+Пользователь: "отправь форму"
+Ответ: {"action": "submit"}
+
+Пользователь: "войти"
+Ответ: {"action": "submit"}
+
+Пользователь: "сделай скриншот"
+Ответ: {"action": "screenshot"}
+
+Пользователь: "скрин"
+Ответ: {"action": "screenshot"}
+
+Пользователь: "вернись назад"
+Ответ: {"action": "back"}
+
+Пользователь: "назад"
+Ответ: {"action": "back"}
+
+Пользователь: "покажи историю"
+Ответ: {"action": "history"}
+
+Пользователь: "что я делал"
+Ответ: {"action": "history"}
+
+Пользователь: "очисти память"
+Ответ: {"action": "clear"}
+
+Пользователь: "забудь всё"
+Ответ: {"action": "clear"}
+
+Пользователь: "привет"
+Ответ: {"action": "greeting"}
+
+Пользователь: "помоги"
+Ответ: {"action": "help"}
+
+Правила:
+1. Всегда возвращай ТОЛЬКО JSON
+2. Для navigate — всегда добавляй https:// если нет
+3. Если не понял — верни {"action": "unknown"}
+4. Для type — всегда указывай text и field
+5. Для click — всегда указывай target
+
+Сейчас пользователь написал: """
+        
+        if memory:
+            context = memory.get_context_for_ai()
+            if context:
+                system_prompt += f"\n\nКонтекст:\n{context}"
+        
+        messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": text})
+        
+        headers = {
+            "Authorization": f"Bearer {AGNES_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        data = {
+            "model": AI_MODEL,
+            "messages": messages,
+            "temperature": 0.1,
+            "max_tokens": 200
+        }
+        
+        file_logger.log(f"🤖 AI распознает команду...", "INFO")
+        
+        response = requests.post(AGNES_API_URL, headers=headers, json=data, timeout=30)
+        
+        if response.status_code == 200:
+            result = response.json()
+            answer = result.get("choices", [{}])[0].get("message", {}).get("content", "{}")
+            
+            try:
+                command = json.loads(answer)
+                file_logger.log(f"✅ AI распознал: {command}", "INFO")
+                return command
+            except:
+                file_logger.log(f"❌ AI вернул не JSON: {answer}", "ERROR")
+                return {'action': 'unknown'}
+        else:
+            file_logger.log(f"❌ Ошибка AI: {response.status_code}", "ERROR")
+            return {'action': 'error', 'message': f"HTTP {response.status_code}"}
+            
+    except Exception as e:
+        file_logger.log(f"❌ Ошибка AI: {e}", "ERROR")
+        return {'action': 'error', 'message': str(e)}
+
+# ---------- AI ДЛЯ ОТВЕТОВ НА ВОПРОСЫ ----------
+def ask_ai_for_answer(prompt, context=None, memory=None):
+    """Запрос к Agnes AI для ответов на вопросы"""
+    try:
+        if not AGNES_API_KEY:
+            return "❌ AGNES_API_KEY не указан"
+        
+        messages = []
+        
+        system_prompt = """Ты — AI-ассистент для анализа веб-страниц.
+
+ТВОЯ РОЛЬ:
+- Помогаешь пользователю понимать структуру страницы
+- Отвечаешь на вопросы об элементах
+- Даешь рекомендации по действиям
+
+ПРАВИЛА:
+1. Отвечай кратко (3-5 предложений)
+2. Перечисляй элементы с пояснениями
+3. Если не нашел — скажи честно
+4. Используй эмодзи: 🔘 кнопка, 📄 текст, 🔗 ссылка, ✏️ поле
+5. Не выдумывай то, чего нет
+
+ФОРМАТ:
+- Списки: • или 1.
+- Элементы: тип + текст + местоположение
+- Если можно кликнуть — скажи"""
         
         if memory:
             memory_context = memory.get_context_for_ai()
             if memory_context:
-                system_prompt += f"\n\nКонтекст из памяти:\n{memory_context}"
+                system_prompt += f"\n\nКОНТЕКСТ ИЗ ПАМЯТИ:\n{memory_context}"
         
         messages.append({"role": "system", "content": system_prompt})
         
         if context:
-            messages.append({"role": "user", "content": f"Контекст страницы:\n{context}"})
+            messages.append({"role": "user", "content": f"СТРУКТУРА СТРАНИЦЫ:\n{context}"})
         
-        messages.append({"role": "user", "content": prompt})
+        messages.append({"role": "user", "content": f"ВОПРОС: {prompt}"})
         
         headers = {
             "Authorization": f"Bearer {AGNES_API_KEY}",
@@ -342,24 +344,16 @@ def ask_ai(prompt, context=None, memory=None):
             "max_tokens": 800
         }
         
-        file_logger.log(f"🤖 Отправляю запрос к Agnes AI...", "INFO")
-        
         response = requests.post(AGNES_API_URL, headers=headers, json=data, timeout=30)
         
         if response.status_code == 200:
             result = response.json()
             answer = result.get("choices", [{}])[0].get("message", {}).get("content", "Нет ответа")
-            file_logger.log(f"✅ AI ответил ({len(answer)} символов)", "INFO")
             return answer
-        elif response.status_code == 401:
-            return "❌ Ошибка: неверный API ключ"
-        elif response.status_code == 429:
-            return "❌ Превышен лимит запросов. Подождите минуту"
         else:
             return f"❌ Ошибка: HTTP {response.status_code}"
             
     except Exception as e:
-        file_logger.log(f"❌ Ошибка запроса к AI: {e}", "ERROR")
         return f"❌ Ошибка: {e}"
 
 # ---------- МАСКИРОВКА ----------
@@ -919,7 +913,6 @@ class BrowserCDP:
     # ========== ДЕЙСТВИЯ ==========
     
     async def click_element(self, target):
-        """Кликает по элементу"""
         try:
             js = f"""
                 (function() {{
@@ -933,11 +926,8 @@ class BrowserCDP:
                         const id = (el.id || '').toLowerCase();
                         const cls = (el.className || '').toLowerCase();
                         
-                        if (text.includes(target) || 
-                            aria.includes(target) || 
-                            placeholder.includes(target) ||
-                            id.includes(target) ||
-                            cls.includes(target)) {{
+                        if (text.includes(target) || aria.includes(target) || placeholder.includes(target) ||
+                            id.includes(target) || cls.includes(target)) {{
                             el.click();
                             return true;
                         }}
@@ -945,22 +935,18 @@ class BrowserCDP:
                     return false;
                 }})()
             """
-            
             result = await self.eval_js(js)
-            
             if result:
                 file_logger.log(f"✅ Кликнул по {target}", "INFO")
                 return True
             else:
                 file_logger.log(f"❌ Элемент {target} не найден", "WARNING")
                 return False
-                
         except Exception as e:
             file_logger.log(f"❌ Ошибка клика: {e}", "ERROR")
             return False
     
     async def type_text(self, text, field):
-        """Вводит текст в поле"""
         try:
             js = f"""
                 (function() {{
@@ -974,11 +960,8 @@ class BrowserCDP:
                         const cls = (el.className || '').toLowerCase();
                         const name = (el.getAttribute('name') || '').toLowerCase();
                         
-                        if (placeholder.includes(field) || 
-                            aria.includes(field) || 
-                            id.includes(field) ||
-                            cls.includes(field) ||
-                            name.includes(field)) {{
+                        if (placeholder.includes(field) || aria.includes(field) || id.includes(field) ||
+                            cls.includes(field) || name.includes(field)) {{
                             el.focus();
                             el.value = '';
                             el.value = '{text}';
@@ -990,22 +973,18 @@ class BrowserCDP:
                     return false;
                 }})()
             """
-            
             result = await self.eval_js(js)
-            
             if result:
                 file_logger.log(f"✅ Ввел '{text}' в поле {field}", "INFO")
                 return True
             else:
                 file_logger.log(f"❌ Поле {field} не найдено", "WARNING")
                 return False
-                
         except Exception as e:
             file_logger.log(f"❌ Ошибка ввода: {e}", "ERROR")
             return False
     
     async def submit_form(self):
-        """Отправляет форму"""
         try:
             js = """
                 (function() {
@@ -1017,16 +996,13 @@ class BrowserCDP:
                     return false;
                 })()
             """
-            
             result = await self.eval_js(js)
-            
             if result:
                 file_logger.log("✅ Форма отправлена", "INFO")
                 return True
             else:
                 file_logger.log("❌ Форма не найдена", "WARNING")
                 return False
-                
         except Exception as e:
             file_logger.log(f"❌ Ошибка отправки формы: {e}", "ERROR")
             return False
@@ -1117,7 +1093,6 @@ class BrowserCDP:
     async def navigate_and_screenshot(self, url):
         file_logger.log(f"🌐 Навигация на {url}", "INFO")
         await self.connect()
-        
         await self.apply_mask()
         
         try:
@@ -1189,25 +1164,22 @@ class BrowserCDP:
             file_logger.log(f"❌ Screenshot error: {e}", "ERROR")
             return None
 
-# ---------- ОБРАБОТЧИКИ ----------
+# ---------- ОСНОВНОЙ ОБРАБОТЧИК ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if 'memory' not in context.user_data:
         context.user_data['memory'] = Memory()
     
     await update.message.reply_text(
-        "👋 Привет! Я бот для скриншотов, анализа и действий на сайтах.\n\n"
-        "🗣️ Говори со мной как с человеком:\n"
-        "• зайди на google.com\n"
-        "• зайди в google.com\n"
-        "• какие кнопки видишь?\n"
-        "• нажми на кнопку 'Поиск'\n"
-        "• введи 'погода' в поле поиска\n"
-        "• отправь форму\n"
-        "• сделай скриншот\n"
-        "• вернись назад\n"
-        "• покажи историю\n\n"
-        "📁 Команды: /log\n"
-        "🕵️ Маскировка: ВСЕГДА ВКЛЮЧЕНА"
+        "👋 Привет! Я бот с ИИ-пониманием.\n\n"
+        "🗣️ Говори как хочешь — я пойму:\n"
+        "• зайди в гугл\n"
+        "• открой ютуб\n"
+        "• какие кнопки?\n"
+        "• нажми на Войти\n"
+        "• введи погоду в поиск\n"
+        "• сделай скрин\n"
+        "• вернись назад\n\n"
+        "🧠 Всё понимает ИИ, говори свободно!"
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1219,78 +1191,135 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     memory = context.user_data['memory']
     
-    # Парсим команду
-    command = parse_command(text)
-    file_logger.log(f"📝 Распознано: {command}", "DEBUG")
-    
-    # ====== НЕВАЛИДНЫЙ URL ======
-    if command['action'] == 'invalid_url':
-        bad_url = command.get('url', '')
-        await update.message.reply_text(
-            f"❌ Некорректный URL: '{bad_url}'\n\n"
-            "Правильные примеры:\n"
-            "• зайди на google.com\n"
-            "• зайди в google.com\n"
-            "• открой youtube.com\n"
-            "• x.com\n"
-            "• https://github.com"
-        )
-        return
-    
     # ====== ПРИВЕТСТВИЕ ======
-    if command['action'] == 'greeting':
+    if text.lower() in ['привет', 'здравствуй', 'hello', 'hi', 'хай']:
         await update.message.reply_text(
-            "👋 Привет! Я бот для скриншотов, анализа и действий на сайтах.\n\n"
-            "Скажи что-то вроде:\n"
-            "• зайди на google.com\n"
-            "• зайди в google.com\n"
-            "• какие кнопки видишь?\n"
-            "• нажми на кнопку 'Поиск'\n"
-            "• введи 'погода' в поле поиска"
+            "👋 Привет! Спрашивай что хочешь.\n"
+            "Можешь сказать 'зайди в гугл' или 'какие кнопки?'"
         )
         return
+    
+    # ====== ПОМОЩЬ ======
+    if text.lower() in ['помоги', 'что умеешь', 'help', '/help']:
+        await update.message.reply_text(
+            "🤖 Я умею:\n"
+            "• зайди на сайт\n"
+            "• показать кнопки/поля/ссылки\n"
+            "• кликнуть на элемент\n"
+            "• ввести текст в поле\n"
+            "• отправить форму\n"
+            "• сделать скриншот\n"
+            "• вернуться назад\n"
+            "• показать историю\n\n"
+            "Говори как с человеком!"
+        )
+        return
+    
+    # ====== ОТПРАВЛЯЕМ ВСЁ В AI ======
+    thinking_msg = await update.message.reply_text("🤔 Думаю...")
+    
+    command = ask_ai_for_command(text, memory)
+    
+    action = command.get('action', 'unknown')
     
     # ====== НАВИГАЦИЯ ======
-    if command['action'] == 'navigate':
-        url = command['url']
+    if action == 'navigate':
+        url = command.get('url')
+        if not url:
+            await thinking_msg.edit_text("❌ Не понял, на какой сайт перейти")
+            return
+        
         memory.add_action("url", {"url": url})
         
-        await update.message.reply_text(f"🔄 Загружаю {url}...")
+        await thinking_msg.edit_text(f"🔄 Загружаю {url}...")
         
         try:
             browser = BrowserCDP()
             screenshot = await browser.navigate_and_screenshot(url)
             
+            await thinking_msg.delete()
             await update.message.reply_photo(
                 screenshot,
                 caption=f"✅ {url}"
             )
-            file_logger.log(f"✅ Скриншот отправлен {user}", "INFO")
             
             memory.set_snapshot(browser.snapshot, url, browser.snapshot.get('title', 'Без названия'), browser)
             context.user_data['browser'] = browser
             
         except Exception as e:
-            error_msg = str(e)
-            file_logger.log(f"❌ Ошибка: {error_msg}", "ERROR")
-            await update.message.reply_text(f"❌ Ошибка: {error_msg}")
+            await thinking_msg.edit_text(f"❌ Ошибка: {e}")
+        return
+    
+    # ====== ВОПРОС ======
+    if action == 'ask':
+        question = command.get('question', text)
+        
+        if not memory.current_snapshot:
+            await thinking_msg.edit_text("📭 Сначала загрузи страницу (скажи 'зайди на сайт')")
+            return
+        
+        memory.add_action("question", {"question": question})
+        
+        await thinking_msg.edit_text("🤖 Анализирую страницу...")
+        
+        try:
+            snapshot = memory.current_snapshot
+            elements = snapshot.get('elements', [])[:50]
+            
+            elements_text = []
+            for el in elements[:30]:
+                tag = el.get('tag', 'unknown')
+                text_el = el.get('text', '').strip()[:100]
+                attrs = el.get('attrs', {})
+                is_interactive = '🔘' if el.get('isInteractive') else '📄'
+                visible = '👁️' if el.get('visible') else '👻'
+                
+                desc = f"{is_interactive} <{tag}> {visible}"
+                if text_el:
+                    desc += f" — «{text_el}»"
+                if attrs.get('id'):
+                    desc += f" (id: {attrs['id']})"
+                if attrs.get('type'):
+                    desc += f" (type: {attrs['type']})"
+                if attrs.get('placeholder'):
+                    desc += f" (placeholder: {attrs['placeholder']})"
+                
+                elements_text.append(desc)
+            
+            context_text = f"""
+📄 СТРАНИЦА: {snapshot.get('title', 'Без названия')}
+🔗 URL: {snapshot.get('url', 'Нет URL')}
+📊 ВСЕГО ЭЛЕМЕНТОВ: {snapshot.get('total', 0)}
+
+🔍 ОСНОВНЫЕ ЭЛЕМЕНТЫ:
+{chr(10).join(elements_text)}
+"""
+            
+            answer = ask_ai_for_answer(question, context_text, memory)
+            await thinking_msg.edit_text(f"🤖 **Ответ:**\n\n{answer}", parse_mode='Markdown')
+            
+        except Exception as e:
+            await thinking_msg.edit_text(f"❌ Ошибка: {e}")
         return
     
     # ====== КЛИК ======
-    if command['action'] == 'click':
-        target = command['target']
-        
-        if not memory.browser:
-            await update.message.reply_text("📭 Нет загруженной страницы. Сначала отправь URL")
+    if action == 'click':
+        target = command.get('target')
+        if not target:
+            await thinking_msg.edit_text("❌ Не понял, на что кликнуть")
             return
         
-        await update.message.reply_text(f"🔘 Ищу и кликаю по '{target}'...")
+        if not memory.browser:
+            await thinking_msg.edit_text("📭 Сначала загрузи страницу")
+            return
+        
+        await thinking_msg.edit_text(f"🔘 Ищу и кликаю по '{target}'...")
         
         try:
             result = await memory.browser.click_element(target)
             if result:
                 memory.add_action("click", {"target": target})
-                await update.message.reply_text(f"✅ Кликнул по '{target}'")
+                await thinking_msg.edit_text(f"✅ Кликнул по '{target}'")
                 
                 await memory.browser.get_snapshot()
                 memory.set_snapshot(
@@ -1307,27 +1336,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         caption=f"✅ После клика на '{target}'"
                     )
             else:
-                await update.message.reply_text(f"❌ Элемент '{target}' не найден")
+                await thinking_msg.edit_text(f"❌ Элемент '{target}' не найден")
         except Exception as e:
-            await update.message.reply_text(f"❌ Ошибка: {e}")
+            await thinking_msg.edit_text(f"❌ Ошибка: {e}")
         return
     
     # ====== ВВОД ТЕКСТА ======
-    if command['action'] == 'type':
-        text_input = command['text']
-        field = command['field']
-        
-        if not memory.browser:
-            await update.message.reply_text("📭 Нет загруженной страницы. Сначала отправь URL")
+    if action == 'type':
+        text_input = command.get('text')
+        field = command.get('field')
+        if not text_input or not field:
+            await thinking_msg.edit_text("❌ Не понял, что и куда вводить")
             return
         
-        await update.message.reply_text(f"✏️ Ввожу '{text_input}' в поле '{field}'...")
+        if not memory.browser:
+            await thinking_msg.edit_text("📭 Сначала загрузи страницу")
+            return
+        
+        await thinking_msg.edit_text(f"✏️ Ввожу '{text_input}' в поле '{field}'...")
         
         try:
             result = await memory.browser.type_text(text_input, field)
             if result:
                 memory.add_action("type", {"text": text_input, "field": field})
-                await update.message.reply_text(f"✅ Ввел '{text_input}' в поле '{field}'")
+                await thinking_msg.edit_text(f"✅ Ввел '{text_input}' в поле '{field}'")
                 
                 await memory.browser.get_snapshot()
                 memory.set_snapshot(
@@ -1337,24 +1369,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     memory.browser
                 )
             else:
-                await update.message.reply_text(f"❌ Поле '{field}' не найдено")
+                await thinking_msg.edit_text(f"❌ Поле '{field}' не найдено")
         except Exception as e:
-            await update.message.reply_text(f"❌ Ошибка: {e}")
+            await thinking_msg.edit_text(f"❌ Ошибка: {e}")
         return
     
     # ====== ОТПРАВКА ФОРМЫ ======
-    if command['action'] == 'submit':
+    if action == 'submit':
         if not memory.browser:
-            await update.message.reply_text("📭 Нет загруженной страницы. Сначала отправь URL")
+            await thinking_msg.edit_text("📭 Сначала загрузи страницу")
             return
         
-        await update.message.reply_text("📤 Отправляю форму...")
+        await thinking_msg.edit_text("📤 Отправляю форму...")
         
         try:
             result = await memory.browser.submit_form()
             if result:
                 memory.add_action("submit", {})
-                await update.message.reply_text("✅ Форма отправлена")
+                await thinking_msg.edit_text("✅ Форма отправлена")
                 
                 await memory.browser.wait_for_page_load()
                 await memory.browser.get_snapshot()
@@ -1372,21 +1404,45 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         caption="✅ После отправки формы"
                     )
             else:
-                await update.message.reply_text("❌ Форма не найдена")
+                await thinking_msg.edit_text("❌ Форма не найдена")
         except Exception as e:
-            await update.message.reply_text(f"❌ Ошибка: {e}")
+            await thinking_msg.edit_text(f"❌ Ошибка: {e}")
+        return
+    
+    # ====== СКРИНШОТ ======
+    if action == 'screenshot':
+        if not memory.current_url or not memory.browser:
+            await thinking_msg.edit_text("📭 Сначала загрузи страницу")
+            return
+        
+        await thinking_msg.edit_text("📸 Делаю скриншот...")
+        
+        try:
+            screenshot = await memory.browser.screenshot()
+            if screenshot:
+                await thinking_msg.delete()
+                await update.message.reply_photo(
+                    screenshot,
+                    caption=f"✅ {memory.current_url}"
+                )
+                memory.add_action("screenshot", {"url": memory.current_url})
+            else:
+                await thinking_msg.edit_text("❌ Не удалось сделать скриншот")
+        except Exception as e:
+            await thinking_msg.edit_text(f"❌ Ошибка: {e}")
         return
     
     # ====== ВОЗВРАТ НАЗАД ======
-    if command['action'] == 'back':
+    if action == 'back':
         last_url = memory.get_last_url(1)
         if last_url:
-            await update.message.reply_text(f"🔄 Возвращаюсь на {last_url}...")
+            await thinking_msg.edit_text(f"🔄 Возвращаюсь на {last_url}...")
             
             try:
                 browser = BrowserCDP()
                 screenshot = await browser.navigate_and_screenshot(last_url)
                 
+                await thinking_msg.delete()
                 await update.message.reply_photo(
                     screenshot,
                     caption=f"✅ {last_url}"
@@ -1396,98 +1452,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data['browser'] = browser
                 
             except Exception as e:
-                await update.message.reply_text(f"❌ Ошибка: {e}")
+                await thinking_msg.edit_text(f"❌ Ошибка: {e}")
         else:
-            await update.message.reply_text("📭 Нет предыдущей страницы")
-        return
-    
-    # ====== СКРИНШОТ ======
-    if command['action'] == 'screenshot':
-        if memory.current_url and memory.browser:
-            await update.message.reply_text("📸 Делаю скриншот текущей страницы...")
-            
-            try:
-                screenshot = await memory.browser.screenshot()
-                if screenshot:
-                    await update.message.reply_photo(
-                        screenshot,
-                        caption=f"✅ {memory.current_url}"
-                    )
-                    memory.add_action("screenshot", {"url": memory.current_url})
-                else:
-                    await update.message.reply_text("❌ Не удалось сделать скриншот")
-            except Exception as e:
-                await update.message.reply_text(f"❌ Ошибка: {e}")
-        else:
-            await update.message.reply_text("📭 Нет загруженной страницы. Сначала отправь URL")
-        return
-    
-    # ====== ВОПРОСЫ AI ======
-    if command['action'] == 'ask':
-        question = command['question']
-        
-        if not memory.current_snapshot:
-            await update.message.reply_text("📭 Сначала загрузи страницу (отправь URL)")
-            return
-        
-        memory.add_action("question", {"question": question})
-        
-        await update.message.reply_text("🤖 Анализирую страницу...")
-        
-        try:
-            snapshot = memory.current_snapshot
-            elements = snapshot.get('elements', [])[:50]
-            
-            elements_text = []
-            for el in elements[:30]:
-                tag = el.get('tag', 'unknown')
-                text = el.get('text', '').strip()[:100]
-                attrs = el.get('attrs', {})
-                is_interactive = '🔘' if el.get('isInteractive') else '📄'
-                visible = '👁️' if el.get('visible') else '👻'
-                
-                element_desc = f"{is_interactive} <{tag}> {visible}"
-                if text:
-                    element_desc += f" — «{text}»"
-                if attrs.get('id'):
-                    element_desc += f" (id: {attrs['id']})"
-                if attrs.get('type'):
-                    element_desc += f" (type: {attrs['type']})"
-                if attrs.get('placeholder'):
-                    element_desc += f" (placeholder: {attrs['placeholder']})"
-                
-                elements_text.append(element_desc)
-            
-            context_text = f"""
-📄 СТРАНИЦА: {snapshot.get('title', 'Без названия')}
-🔗 URL: {snapshot.get('url', 'Нет URL')}
-📊 ВСЕГО ЭЛЕМЕНТОВ: {snapshot.get('total', 0)}
-
-🔍 ОСНОВНЫЕ ЭЛЕМЕНТЫ:
-{chr(10).join(elements_text)}
-"""
-            
-            prompt = f"""
-На основе структуры страницы ответь на вопрос пользователя.
-
-Вопрос: {question}
-
-Инструкции:
-1. Отвечай кратко и по делу
-2. Ссылайся на конкретные элементы
-3. Если элемент не найден — скажи об этом
-"""
-            
-            answer = ask_ai(prompt, context_text, memory)
-            await update.message.reply_text(f"🤖 **Ответ:**\n\n{answer}", parse_mode='Markdown')
-            
-        except Exception as e:
-            await update.message.reply_text(f"❌ Ошибка: {e}")
+            await thinking_msg.edit_text("📭 Нет предыдущей страницы")
         return
     
     # ====== ИСТОРИЯ ======
-    if command['action'] == 'history':
+    if action == 'history':
         history_text = memory.get_history_text()
+        await thinking_msg.delete()
         
         if len(history_text) > 4000:
             with open('history_temp.txt', 'w', encoding='utf-8') as f:
@@ -1505,25 +1478,55 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # ====== ОЧИСТКА ======
-    if command['action'] == 'clear':
+    if action == 'clear':
         context.user_data['memory'] = Memory()
-        await update.message.reply_text("🧹 Память очищена!")
+        await thinking_msg.edit_text("🧹 Память очищена!")
+        return
+    
+    # ====== ПРИВЕТСТВИЕ (если AI вернул) ======
+    if action == 'greeting':
+        await thinking_msg.edit_text(
+            "👋 Привет! Говори что хочешь:\n"
+            "• зайди на сайт\n"
+            "• покажи кнопки\n"
+            "• кликни на элемент"
+        )
+        return
+    
+    # ====== ПОМОЩЬ ======
+    if action == 'help':
+        await thinking_msg.edit_text(
+            "🤖 Что я умею:\n"
+            "• зайди на сайт\n"
+            "• какие кнопки?\n"
+            "• нажми на Войти\n"
+            "• введи текст в поле\n"
+            "• отправь форму\n"
+            "• сделай скриншот\n"
+            "• вернись назад\n"
+            "• покажи историю"
+        )
         return
     
     # ====== НЕИЗВЕСТНО ======
-    await update.message.reply_text(
-        "❌ Не понял команду\n\n"
-        "Вот что я умею:\n"
-        "• зайди на google.com\n"
-        "• зайди в google.com\n"
-        "• какие кнопки видишь?\n"
-        "• нажми на кнопку 'Поиск'\n"
-        "• введи 'погода' в поле поиска\n"
-        "• отправь форму\n"
-        "• сделай скриншот\n"
-        "• вернись назад\n"
-        "• покажи историю"
-    )
+    if action == 'unknown':
+        await thinking_msg.edit_text(
+            "❌ Не понял команду\n\n"
+            "Примеры:\n"
+            "• зайди в гугл\n"
+            "• какие кнопки?\n"
+            "• нажми на Войти\n"
+            "• введи погоду в поиск"
+        )
+        return
+    
+    # ====== ОШИБКА ======
+    if action == 'error':
+        await thinking_msg.edit_text(f"❌ Ошибка: {command.get('message', 'Неизвестная ошибка')}")
+        return
+    
+    # ====== НА ВСЯКИЙ СЛУЧАЙ ======
+    await thinking_msg.edit_text("❌ Что-то пошло не так. Попробуй еще раз.")
 
 async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -1542,16 +1545,13 @@ async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- ЗАПУСК ----------
 def main():
     print("="*50)
-    print("🚀 ЗАПУСК БОТА (ИСПРАВЛЕННАЯ ВЕРСИЯ)")
+    print("🚀 ЗАПУСК БОТА С AI-ПОНИМАНИЕМ")
     print("="*50)
     print(f"📌 Chrome путь: {CHROME_PATH}")
     print("🕵️ Маскировка: ВСЕГДА ВКЛЮЧЕНА")
     print("🧠 Память: ВКЛЮЧЕНА")
-    print("🗣️ Естественный язык: ВКЛЮЧЕН")
-    print("🔘 Клики: ВКЛЮЧЕНЫ")
-    print("✏️ Ввод текста: ВКЛЮЧЕН")
-    print("📤 Отправка форм: ВКЛЮЧЕНА")
-    print("✅ Проверка URL: ВКЛЮЧЕНА")
+    print("🤖 AI-понимание: ВКЛЮЧЕНО")
+    print(f"🤖 AI модель: {AI_MODEL}")
     print("="*50)
     
     if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "ВАШ_ТОКЕН":
@@ -1559,7 +1559,9 @@ def main():
         return
     
     if not AGNES_API_KEY:
-        print("⚠️ AGNES_API_KEY не указан! AI-функции не будут работать")
+        print("⚠️ AGNES_API_KEY не указан! Бот не будет работать!")
+        print("📌 Получи ключ на https://platform.agnes-ai.com/")
+        return
     
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -1567,13 +1569,11 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print("✅ Бот готов!")
-    print("📁 Команды: /start, /log")
     print("🗣️ Говори как с человеком:")
-    print("   • зайди на google.com")
-    print("   • зайди в google.com  ← ИСПРАВЛЕНО!")
-    print("   • нажми на кнопку 'Поиск'")
-    print("   • введи 'погода' в поле поиска")
-    print("   • отправь форму")
+    print("   • зайди в гугл")
+    print("   • какие кнопки?")
+    print("   • нажми на Войти")
+    print("   • введи погоду в поиск")
     app.run_polling()
 
 if __name__ == "__main__":
