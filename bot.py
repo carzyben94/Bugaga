@@ -1,16 +1,13 @@
 import os
 import json
 import time
-import subprocess 
+import subprocess
 import base64
 import requests
 import asyncio
 import websockets
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from dotenv import load_dotenv
-
-load_dotenv()
 
 # ---------- КОНФИГ ----------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "ВАШ_ТОКЕН")
@@ -69,7 +66,6 @@ class BrowserCDP:
         resp = requests.get(f"http://localhost:{CDP_PORT}/json/version")
         ws_url = resp.json()["webSocketDebuggerUrl"]
         
-        # Асинхронное подключение через websockets
         self.ws = await websockets.connect(ws_url)
         await self.send("Page.enable")
         file_logger.log(f"Подключен к Chrome CDP", "INFO")
@@ -91,19 +87,13 @@ class BrowserCDP:
         file_logger.log(f"Навигация на {url}", "INFO")
         await self.connect()
         
-        # Навигация
         await self.send("Page.navigate", {"url": url})
-        
-        # Ждём загрузку страницы
         await asyncio.sleep(2)
         
-        # Скриншот
         result = await self.send("Page.captureScreenshot", {"format": "png"})
         file_logger.log(f"Скриншот создан для {url}", "INFO")
         
-        # Закрываем соединение
         await self.ws.close()
-        
         return base64.b64decode(result["result"]["data"])
 
 # ---------- ОБРАБОТЧИКИ ----------
@@ -112,7 +102,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_logger.log(f"Пользователь {user} (ID: {update.effective_user.id}) запустил бота", "INFO")
     await update.message.reply_text(
         "👋 Отправь URL и я сделаю скриншот\n"
-        "Пример: https://google.com"
+        "Пример: https://google.com\n\n"
+        "📁 /log — получить файл логов"
     )
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -139,6 +130,36 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_logger.log(f"Ошибка для {user} ({url}): {error_msg}", "ERROR")
         await update.message.reply_text(f"❌ Ошибка: {error_msg}")
 
+async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправляет файл логов в Telegram (доступно всем)"""
+    user = update.effective_user.first_name
+    user_id = update.effective_user.id
+    
+    file_logger.log(f"Пользователь {user} (ID: {user_id}) запросил лог-файл", "INFO")
+    
+    try:
+        if not os.path.exists(LOG_FILE):
+            await update.message.reply_text("📭 Файл логов ещё не создан")
+            return
+        
+        file_size = os.path.getsize(LOG_FILE)
+        if file_size > 50 * 1024 * 1024:
+            await update.message.reply_text(f"⚠️ Файл слишком большой ({file_size // 1024 // 1024}MB)")
+            return
+        
+        with open(LOG_FILE, 'rb') as f:
+            await update.message.reply_document(
+                document=f,
+                filename=f"bot_logs_{time.strftime('%Y-%m-%d')}.txt",
+                caption=f"📋 Логи бота за {time.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+        file_logger.log(f"Лог-файл отправлен пользователю {user}", "INFO")
+        
+    except Exception as e:
+        error_msg = str(e)
+        file_logger.log(f"Ошибка при отправке лога {user}: {error_msg}", "ERROR")
+        await update.message.reply_text(f"❌ Ошибка: {error_msg}")
+
 # ---------- ЗАПУСК ----------
 def main():
     file_logger.log("="*50, "INFO")
@@ -153,10 +174,11 @@ def main():
     
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("log", get_log))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     
     print("🚀 Бот запущен! Логи пишутся в bot_logs.txt")
-    print(f"📦 Используется библиотека: websockets (асинхронная)")
+    print("📁 Команды: /start, /log")
     app.run_polling()
 
 if __name__ == "__main__":
