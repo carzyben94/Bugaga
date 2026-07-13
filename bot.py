@@ -26,6 +26,16 @@ LOG_FILE = "bot_logs.txt"
 os.makedirs(SNAPSHOT_DIR, exist_ok=True)
 os.makedirs(COMPARE_DIR, exist_ok=True)
 
+# ==================== PILLOW ====================
+PILLOW_AVAILABLE = False
+try:
+    from PIL import Image
+    import io
+    PILLOW_AVAILABLE = True
+    print("✅ Pillow загружен")
+except ImportError:
+    print("⚠️ Pillow не установлен. Установите: pip install pillow>=11.0.0")
+
 # ==================== КУКИ ДЛЯ X/TWITTER (СТАВЯТСЯ ДЛЯ ВСЕХ САЙТОВ) ====================
 X_COOKIES = [
     {"domain": ".x.com", "hostOnly": False, "httpOnly": False, "name": "__cuid", "path": "/", "sameSite": "unspecified", "secure": False, "session": True, "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"},
@@ -100,49 +110,26 @@ class ChromeManager:
     def start(self):
         file_logger.info(f"🚀 Запуск Chrome на порту {self.port}")
         
-        # ============ МАКСИМАЛЬНЫЙ СТЕЛС (КАК В Pydoll) ============
         cmd = [
             CHROME_PATH,
-            
-            # ----- Режим headless (новый) -----
             "--headless=new",
-            
-            # ----- Отключаем GPU -----
             "--disable-gpu",
-            
-            # ----- Безопасность для контейнеров -----
             "--no-sandbox",
             "--disable-dev-shm-usage",
             "--disable-setuid-sandbox",
-            
-            # ----- Отключаем software-рендеринг -----
             "--disable-software-rasterizer",
-            
-            # ----- Размер окна -----
             "--window-size=1920,1080",
-            
-            # ----- User-Agent -----
             f"--user-agent={self.user_agent}",
-            
-            # ----- Отключаем признаки автоматизации -----
             "--disable-blink-features=AutomationControlled",
             "--disable-features=IsolateOrigins,site-per-process",
             "--disable-features=BlockInsecurePrivateNetworkRequests",
             "--disable-features=OptimizationGuideModelDownloading",
             "--disable-features=OptimizationHints",
             "--disable-features=MediaRouter",
-            
-            # ----- WebRTC защита -----
             "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
             "--enable-features=NetworkService,NetworkServiceInProcess",
-            
-            # ----- Язык -----
             "--lang=en-US",
-            
-            # ----- Профиль пользователя -----
             "--user-data-dir=/tmp/chrome-profile",
-            
-            # ----- Отключаем лишние функции -----
             "--disable-background-networking",
             "--disable-background-timer-throttling",
             "--disable-backgrounding-occluded-windows",
@@ -166,7 +153,6 @@ class ChromeManager:
             "--disable-translate",
             "--disable-voice-input",
             "--disable-wake-on-wifi",
-            
             f"--remote-debugging-port={self.port}"
         ]
         
@@ -198,7 +184,7 @@ class ChromeManager:
         else:
             file_logger.warning("⚠️ Chrome не был запущен")
 
-# ==================== CDP CONTROLLER (STEALTH + COOKIES) ====================
+# ==================== CDP CONTROLLER (STEALTH + COOKIES + PILLOW) ====================
 class CDPController:
     def __init__(self, port=CDP_PORT):
         self.port = port
@@ -264,7 +250,6 @@ class CDPController:
     
     # ============ РАБОТА С КУКАМИ (КАК В "БАТЯ КОД") ============
     async def set_cookies(self, cookies, session_id=None):
-        """Устанавливает куки на страницу (как в Батя код)"""
         file_logger.info(f"🍪 Установка {len(cookies)} кук...")
         try:
             cdp_cookies = []
@@ -297,7 +282,6 @@ class CDPController:
             return False
     
     async def get_cookies(self, session_id=None):
-        """Получает все куки со страницы"""
         file_logger.debug("🍪 Получение кук...")
         try:
             sid = session_id or self._session_id
@@ -312,7 +296,6 @@ class CDPController:
             return []
     
     async def clear_cookies(self, session_id=None):
-        """Очищает все куки"""
         file_logger.info("🗑️ Очистка кук...")
         try:
             sid = session_id or self._session_id
@@ -326,10 +309,8 @@ class CDPController:
     
     # ============ МАКСИМАЛЬНЫЙ СТЕЛС (КАК В Pydoll) ============
     async def apply_stealth(self, session_id):
-        """Применяет все стелс-настройки как в Pydoll"""
         file_logger.debug("🛡️ Применение стелс-настроек (как в Pydoll)...")
         
-        # 1. Скрываем webdriver
         await self.evaluate("""
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined,
@@ -338,7 +319,6 @@ class CDPController:
             });
         """, session_id)
         
-        # 2. Эмулируем реальный Chrome (как в Pydoll)
         await self.evaluate("""
             // ===== Плагины =====
             Object.defineProperty(navigator, 'plugins', {
@@ -376,7 +356,7 @@ class CDPController:
                 get: () => 8
             });
             
-            // ===== WebGL Vendor (как в Pydoll) =====
+            // ===== WebGL Vendor =====
             const getParameter = WebGLRenderingContext.prototype.getParameter;
             WebGLRenderingContext.prototype.getParameter = function(parameter) {
                 if (parameter === 37445) return 'Intel Inc.';
@@ -384,7 +364,7 @@ class CDPController:
                 return getParameter.call(this, parameter);
             };
             
-            // ===== Canvas Fingerprinting (как в Pydoll) =====
+            // ===== Canvas Fingerprinting =====
             const toDataURL = HTMLCanvasElement.prototype.toDataURL;
             HTMLCanvasElement.prototype.toDataURL = function(type, quality) {
                 if (this.width === 224 && this.height === 224) {
@@ -393,7 +373,7 @@ class CDPController:
                 return toDataURL.call(this, type, quality);
             };
             
-            // ===== AudioContext (как в Pydoll) =====
+            // ===== AudioContext =====
             const createOscillator = AudioContext.prototype.createOscillator;
             AudioContext.prototype.createOscillator = function() {
                 const osc = createOscillator.call(this);
@@ -404,7 +384,7 @@ class CDPController:
                 return osc;
             };
             
-            // ===== Battery API (как в Pydoll) =====
+            // ===== Battery API =====
             Object.defineProperty(navigator, 'getBattery', {
                 get: () => function() {
                     return Promise.resolve({
@@ -416,7 +396,7 @@ class CDPController:
                 }
             });
             
-            // ===== Permissions (как в Pydoll) =====
+            // ===== Permissions =====
             const originalQuery = navigator.permissions.query;
             navigator.permissions.query = function(parameters) {
                 if (parameters.name === 'notifications') {
@@ -428,7 +408,7 @@ class CDPController:
                 return originalQuery.call(this, parameters);
             };
             
-            // ===== Connection (как в Pydoll) =====
+            // ===== Connection =====
             Object.defineProperty(navigator, 'connection', {
                 get: () => ({
                     effectiveType: '4g',
@@ -438,7 +418,7 @@ class CDPController:
                 })
             });
             
-            // ===== window.chrome (как в Pydoll) =====
+            // ===== window.chrome =====
             if (!window.chrome) {
                 window.chrome = {
                     app: {
@@ -468,7 +448,6 @@ class CDPController:
             }
         """, session_id)
         
-        # 3. Удаляем CDP-следы (как в Pydoll)
         await self.evaluate("""
             delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
             delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
@@ -496,7 +475,6 @@ class CDPController:
             await self.send("Network.enable", session_id=session_id)
             await self.send("Log.enable", session_id=session_id)
             
-            # 👇 ПРИМЕНЯЕМ МАКСИМАЛЬНЫЙ СТЕЛС
             await self.apply_stealth(session_id)
             
             file_logger.info(f"✅ Прикреплён к вкладке: {session_id}")
@@ -505,12 +483,10 @@ class CDPController:
             file_logger.error(f"❌ Ошибка прикрепления к вкладке: {str(e)}")
             raise
     
-    # ============ HUMANIZED INTERACTIONS (КАК В Pydoll) ============
+    # ============ HUMANIZED INTERACTIONS ============
     async def human_click(self, selector, session_id, wait_for_navigation=False):
-        """Humanized клик с кривой Безье (как в Pydoll)"""
         file_logger.debug(f"🖱️ Human клик по {selector}")
         
-        # Получаем координаты элемента
         js = f"""
             (function() {{
                 const el = document.querySelector('{selector}');
@@ -530,7 +506,6 @@ class CDPController:
             file_logger.warning(f"⚠️ Элемент {selector} не найден или невидим")
             return False
         
-        # Генерируем человеческую кривую (Безье с овершутом)
         target_x = coords['x'] + random.uniform(-15, 15)
         target_y = coords['y'] + random.uniform(-8, 8)
         
@@ -555,7 +530,6 @@ class CDPController:
         final_y = target_y + random.uniform(-3, 3)
         points.append((int(final_x), int(final_y)))
         
-        # Эмулируем движение мыши
         for x, y in points:
             await self.send("Input.dispatchMouseEvent", {
                 "type": "mouseMoved",
@@ -566,7 +540,6 @@ class CDPController:
         
         await asyncio.sleep(random.uniform(0.05, 0.2))
         
-        # Нажатие
         await self.send("Input.dispatchMouseEvent", {
             "type": "mousePressed",
             "x": final_x,
@@ -577,7 +550,6 @@ class CDPController:
         
         await asyncio.sleep(random.uniform(0.05, 0.15))
         
-        # Отпускание
         await self.send("Input.dispatchMouseEvent", {
             "type": "mouseReleased",
             "x": final_x,
@@ -592,7 +564,6 @@ class CDPController:
         return True
     
     async def human_type(self, selector, text, session_id, clear_first=True):
-        """Humanized ввод с опечатками (как в Pydoll)"""
         file_logger.debug(f"⌨️ Human ввод в {selector}: {text[:20]}...")
         
         await self.evaluate(f"""
@@ -609,7 +580,6 @@ class CDPController:
         await asyncio.sleep(random.uniform(0.1, 0.3))
         
         for i, char in enumerate(text):
-            # 2% шанс опечатки (как в Pydoll)
             if random.random() < 0.02 and len(text) > 3 and i > 1:
                 wrong_char = random.choice('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
                 await self.send("Input.dispatchKeyEvent", {
@@ -636,7 +606,6 @@ class CDPController:
                 
                 await asyncio.sleep(random.uniform(0.05, 0.15))
             
-            # Вводим правильный символ
             await self.send("Input.dispatchKeyEvent", {
                 "type": "keyDown",
                 "text": char
@@ -649,7 +618,6 @@ class CDPController:
             
             await asyncio.sleep(random.uniform(0.03, 0.12))
         
-        # Триггерим события
         await self.evaluate(f"""
             const el = document.querySelector('{selector}');
             if (el) {{
@@ -813,20 +781,54 @@ class CDPController:
             file_logger.error(f"❌ Ошибка выполнения JS: {str(e)}")
             raise
     
-    async def take_screenshot(self, session_id, full_page=True):
-        file_logger.info(f"📸 Создание скриншота (full_page: {full_page})")
+    # ============ СКРИНШОТ С PILLOW (КАК В "БАТЯ КОД") ============
+    async def take_screenshot(self, session_id, full_page=True, optimize=True):
+        """Создание скриншота с оптимизацией через Pillow (как в Батя код)"""
+        file_logger.info(f"📸 Создание скриншота (full_page: {full_page}, optimize: {optimize})")
         try:
             params = {
-                "format": "png",
+                "format": "jpeg" if optimize else "png",
+                "quality": 70 if optimize else 100,
                 "fromSurface": True,
-                "captureBeyondViewport": full_page
+                "captureBeyondViewport": full_page,
+                "optimizeForSpeed": True
             }
             result = await self.send("Page.captureScreenshot", params, session_id)
-            file_logger.info(f"✅ Скриншот создан (размер: {len(result['data'])} байт)")
-            return base64.b64decode(result["data"])
+            
+            if "error" in result:
+                file_logger.error(f"❌ Ошибка скриншота: {result['error']}")
+                return None
+            
+            img_data = base64.b64decode(result["data"])
+            
+            # Оптимизация через Pillow (как в Батя код)
+            if optimize and PILLOW_AVAILABLE:
+                try:
+                    image = Image.open(io.BytesIO(img_data))
+                    
+                    # Уменьшаем если слишком большое
+                    max_size = 1920
+                    if image.width > max_size:
+                        ratio = max_size / image.width
+                        new_size = (max_size, int(image.height * ratio))
+                        image = image.resize(new_size, Image.Resampling.LANCZOS)
+                        file_logger.debug(f"📐 Изменён размер: {image.width}x{image.height}")
+                    
+                    # Сохраняем в JPEG с оптимизацией
+                    output = io.BytesIO()
+                    image.convert('RGB').save(output, format='JPEG', quality=75, optimize=True)
+                    img_data = output.getvalue()
+                    file_logger.debug(f"📦 Оптимизирован: {len(img_data)} байт")
+                    
+                except Exception as e:
+                    file_logger.warning(f"⚠️ Ошибка оптимизации: {e}")
+            
+            file_logger.info(f"✅ Скриншот создан (размер: {len(img_data)} байт)")
+            return img_data
+            
         except Exception as e:
             file_logger.error(f"❌ Ошибка создания скриншота: {str(e)}")
-            raise
+            return None
     
     async def get_page_text(self, session_id):
         file_logger.debug("📝 Получение текста страницы")
@@ -1030,22 +1032,25 @@ class BotHandler:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
+        pillow_status = "✅" if PILLOW_AVAILABLE else "❌"
+        
         await update.message.reply_text(
-            "🤖 *CDP Snapshot Bot (Stealth Mode)*\n\n"
-            "🛡️ *Максимальный стелс (как в Pydoll):*\n"
-            "✅ `--headless=new` (современный headless)\n"
-            "✅ Скрыт `navigator.webdriver`\n"
-            "✅ Реалистичный User-Agent\n"
-            "✅ Эмуляция плагинов и API\n"
-            "✅ Humanized клики и ввод\n"
-            "✅ WebRTC защита\n"
-            "✅ Canvas/WebGL fingerprinting\n"
-            "✅ Профиль пользователя\n"
-            "🍪 Куки X/Twitter: установлены для всех сайтов\n\n"
-            "📸 Делаю полные снэпшоты\n"
-            "🎬 Выполняю интерактивные сценарии\n"
-            "📊 Сравниваю страницы\n\n"
-            "Просто отправь ссылку:",
+            f"🤖 *CDP Snapshot Bot (Stealth Mode)*\n\n"
+            f"🛡️ *Максимальный стелс (как в Pydoll):*\n"
+            f"✅ `--headless=new` (современный headless)\n"
+            f"✅ Скрыт `navigator.webdriver`\n"
+            f"✅ Реалистичный User-Agent\n"
+            f"✅ Эмуляция плагинов и API\n"
+            f"✅ Humanized клики и ввод\n"
+            f"✅ WebRTC защита\n"
+            f"✅ Canvas/WebGL fingerprinting\n"
+            f"✅ Профиль пользователя\n"
+            f"🍪 Куки X/Twitter: установлены для всех сайтов\n"
+            f"🖼️ Pillow: {pillow_status} (оптимизация скриншотов)\n\n"
+            f"📸 Делаю полные снэпшоты\n"
+            f"🎬 Выполняю интерактивные сценарии\n"
+            f"📊 Сравниваю страницы\n\n"
+            f"Просто отправь ссылку:",
             parse_mode="Markdown",
             reply_markup=reply_markup
         )
@@ -1148,7 +1153,7 @@ class BotHandler:
             await self._handle_snapshot(update, url)
     
     async def _handle_snapshot(self, update, url):
-        """Создание ПОЛНОГО снэпшота с установкой кук для всех сайтов"""
+        """Создание ПОЛНОГО снэпшота с установкой кук и оптимизацией скриншотов"""
         user = update.effective_user
         file_logger.info(f"📸 Начало снэпшота для {url} от {user.username or user.id}")
         
@@ -1159,12 +1164,11 @@ class BotHandler:
             session_id = await self.cdp.attach_to_tab()
             file_logger.info(f"📑 Вкладка создана для {url}")
             
-            # ============ СТАВИМ КУКИ ДЛЯ ВСЕХ САЙТОВ (КАК В "БАТЯ КОД") ============
+            # Ставим куки для всех сайтов
             await update.message.reply_text(f"🍪 Устанавливаю куки ({len(X_COOKIES)} шт)...")
             await self.cdp.set_cookies(X_COOKIES, session_id)
             file_logger.info(f"🍪 Установлено {len(X_COOKIES)} кук для {url}")
             
-            # Случайная задержка перед навигацией
             delay = random.uniform(1, 3)
             await update.message.reply_text(f"⏳ Пауза {delay:.1f}с...")
             await asyncio.sleep(delay)
@@ -1172,7 +1176,6 @@ class BotHandler:
             await self.cdp.navigate(url, session_id)
             await update.message.reply_text("⏳ Загрузка страницы...")
             
-            # Увеличенный таймаут для Google и X
             if await self.cdp.wait_for_load(session_id, timeout=45):
                 await update.message.reply_text("✅ Страница загружена!")
                 file_logger.info(f"✅ Страница {url} загружена")
@@ -1180,17 +1183,19 @@ class BotHandler:
                 await update.message.reply_text("⚠️ Частичная загрузка")
                 file_logger.warning(f"⚠️ Частичная загрузка {url}")
             
-            # Дополнительная задержка перед сбором
             await asyncio.sleep(random.uniform(0.5, 1.5))
             
-            # ============ СОБИРАЕМ ВСЁ ============
             await update.message.reply_text("📊 Собираю все данные...")
             file_logger.info(f"📊 Сбор данных для {url}")
             
-            # 1. Скриншот
-            screenshot = await self.cdp.take_screenshot(session_id, full_page=True)
+            # 1. Скриншот с оптимизацией
+            screenshot = await self.cdp.take_screenshot(session_id, full_page=True, optimize=True)
+            if not screenshot:
+                await update.message.reply_text("❌ Не удалось сделать скриншот")
+                return
+            
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            screenshot_path = f"{SNAPSHOT_DIR}/snapshot_{timestamp}.png"
+            screenshot_path = f"{SNAPSHOT_DIR}/snapshot_{timestamp}.jpg"
             with open(screenshot_path, "wb") as f:
                 f.write(screenshot)
             file_logger.info(f"📸 Скриншот сохранён: {screenshot_path}")
@@ -1285,7 +1290,7 @@ class BotHandler:
             text = await self.cdp.get_page_text(session_id)
             file_logger.info(f"📝 Текст: {len(text)} символов")
             
-            # 11. Cookies (получаем установленные куки)
+            # 11. Cookies
             cookies = await self.cdp.get_cookies(session_id)
             file_logger.info(f"🍪 Получено кук: {len(cookies)}")
             
@@ -1343,6 +1348,19 @@ class BotHandler:
             file_logger.info(f"💾 JSON сохранён: {json_path}")
             
             # ============ ОТПРАВЛЯЕМ ============
+            # Проверяем размер перед отправкой
+            if len(screenshot) > 10 * 1024 * 1024:  # > 10MB
+                file_logger.warning("⚠️ Скриншот слишком большой, сжимаю...")
+                if PILLOW_AVAILABLE:
+                    try:
+                        image = Image.open(io.BytesIO(screenshot))
+                        output = io.BytesIO()
+                        image.convert('RGB').save(output, format='JPEG', quality=50, optimize=True)
+                        screenshot = output.getvalue()
+                        file_logger.info(f"📦 Сжат до {len(screenshot)} байт")
+                    except:
+                        pass
+            
             with open(screenshot_path, "rb") as f:
                 await update.message.reply_photo(
                     photo=f,
@@ -1407,7 +1425,6 @@ class BotHandler:
             await self.cdp.create_tab()
             session_id = await self.cdp.attach_to_tab()
             
-            # Устанавливаем куки для всех сайтов
             await self.cdp.set_cookies(X_COOKIES, session_id)
             
             await self.cdp.navigate(url, session_id)
@@ -1416,9 +1433,13 @@ class BotHandler:
             for action_str in actions:
                 await self._parse_and_execute(update, action_str, session_id)
             
-            screenshot = await self.cdp.take_screenshot(session_id, full_page=True)
+            screenshot = await self.cdp.take_screenshot(session_id, full_page=True, optimize=True)
+            if not screenshot:
+                await update.message.reply_text("❌ Не удалось сделать скриншот")
+                return
+            
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            screenshot_path = f"{SNAPSHOT_DIR}/script_result_{timestamp}.png"
+            screenshot_path = f"{SNAPSHOT_DIR}/script_result_{timestamp}.jpg"
             with open(screenshot_path, "wb") as f:
                 f.write(screenshot)
             
@@ -1489,12 +1510,13 @@ class BotHandler:
                     await update.message.reply_text(f"📝 Текст `{text}` появился", parse_mode="Markdown")
                 
                 elif action_name == "screenshot":
-                    screenshot = await self.cdp.take_screenshot(session_id, full_page=True)
-                    path = f"{SNAPSHOT_DIR}/step_screenshot.png"
-                    with open(path, "wb") as f:
-                        f.write(screenshot)
-                    with open(path, "rb") as f:
-                        await update.message.reply_photo(photo=f, caption="📸 Промежуточный скриншот")
+                    screenshot = await self.cdp.take_screenshot(session_id, full_page=True, optimize=True)
+                    if screenshot:
+                        path = f"{SNAPSHOT_DIR}/step_screenshot.jpg"
+                        with open(path, "wb") as f:
+                            f.write(screenshot)
+                        with open(path, "rb") as f:
+                            await update.message.reply_photo(photo=f, caption="📸 Промежуточный скриншот")
                     file_logger.info("📸 Промежуточный скриншот")
             
             else:
@@ -1562,7 +1584,6 @@ class BotHandler:
             await self.cdp.create_tab()
             session_id = await self.cdp.attach_to_tab()
             
-            # Устанавливаем куки для всех сайтов
             await self.cdp.set_cookies(X_COOKIES, session_id)
             
             await self.cdp.navigate(url, session_id)
@@ -1701,6 +1722,7 @@ def main():
     file_logger.info("   ✅ WebRTC защита")
     file_logger.info("   ✅ Профиль пользователя")
     file_logger.info(f"🍪 Куки X/Twitter: {len(X_COOKIES)} шт (устанавливаются для всех сайтов)")
+    file_logger.info(f"🖼️ Pillow: {'✅ Доступен' if PILLOW_AVAILABLE else '❌ НЕ УСТАНОВЛЕН'}")
     
     bot = BotHandler()
     
