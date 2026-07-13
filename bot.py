@@ -61,12 +61,17 @@ class AgnesAI:
             messages = [
                 {
                     "role": "system",
-                    "content": """Ты - AI-агент для автоматизации браузера. Ты видишь структуру страницы и принимаешь решения.
+                    "content": """Ты - AI-агент для автоматизации браузера.
+
+ВАЖНО: Даже если страница кажется пустой, это НЕ значит что задача выполнена.
+Ты должен попытаться найти элементы, прокрутить страницу или подождать.
 
 Правила:
-1. Отвечай ТОЛЬКО в формате JSON
-2. Если не знаешь что делать - ответь {"action": "done", "reason": "объясни"}
-3. Для кнопок используй data-testid если есть, иначе text или class
+1. Если видишь кнопку с текстом "Обзор", "Войти", "Написать" - нажми её
+2. Если есть поле ввода - напиши в него
+3. Если видишь ссылки - перейди по ним
+4. Если страница пустая - подожди 5 секунд и проверь снова
+5. Отвечай ТОЛЬКО в формате JSON
 
 Формат ответа:
 {"action": "click|type|scroll|wait|get|done", "selector": "css_selector", "text": "текст", "reason": "почему"}
@@ -630,12 +635,13 @@ class BrowserCDP:
                 return data
     
     async def navigate(self, url):
-        """Переход на URL с полным ожиданием загрузки DOM"""
+        """Переход на URL с ожиданием элементов X.com"""
         await self.send("Page.navigate", {"url": url}, session_id=self.session_id)
         
-        file_logger.log(f"Ожидание загрузки страницы: {url}", "INFO")
+        file_logger.log(f"Ожидание загрузки {url}", "INFO")
         
-        max_wait = 30
+        # Ждём появления элементов X.com
+        max_wait = 45
         start_time = time.time()
         
         while time.time() - start_time < max_wait:
@@ -643,39 +649,36 @@ class BrowserCDP:
                 result = await self.send("Runtime.evaluate", {
                     "expression": """
                         (function() {
-                            if (document.readyState !== 'complete') return false;
-                            if (!document.body) return false;
-                            if (document.body.children.length === 0) return false;
-                            return true;
+                            // Ждём появления элементов X.com
+                            const selectors = [
+                                '[data-testid="tweetButton"]',
+                                '[data-testid="AppTabBar_Home_Link"]',
+                                '[data-testid="SearchBox_Search_Input"]',
+                                '[data-testid="AppTabBar_Notifications_Link"]',
+                                'article'
+                            ];
+                            
+                            for (const selector of selectors) {
+                                if (document.querySelector(selector)) {
+                                    return true;
+                                }
+                            }
+                            return false;
                         })();
                     """
                 }, session_id=self.session_id)
                 
                 if result.get("result", {}).get("value") == True:
-                    file_logger.log("✅ DOM полностью загружен", "INFO")
+                    file_logger.log("✅ Страница загружена (элементы найдены)", "INFO")
                     await asyncio.sleep(2)
-                    
-                    content_check = await self.send("Runtime.evaluate", {
-                        "expression": """
-                            document.body.innerText.length > 100 || 
-                            document.querySelectorAll('button, input, a').length > 0
-                        """
-                    }, session_id=self.session_id)
-                    
-                    if content_check.get("result", {}).get("value") == True:
-                        file_logger.log("✅ Контент загружен", "INFO")
-                        return True
-                    else:
-                        file_logger.log("⏳ Контент ещё не загружен, ждём...", "INFO")
-                        await asyncio.sleep(1)
-                        continue
-                        
+                    return True
+                
             except Exception as e:
-                file_logger.log(f"Ошибка проверки загрузки: {e}", "WARNING")
+                file_logger.log(f"Ошибка проверки: {e}", "DEBUG")
             
             await asyncio.sleep(0.5)
         
-        file_logger.log("⚠️ Таймаут загрузки страницы", "WARNING")
+        file_logger.log("⚠️ Таймаут загрузки", "WARNING")
         return False
     
     async def click(self, selector, timeout=10):
@@ -705,7 +708,8 @@ class BrowserCDP:
             return False
         
         await self.send("Runtime.evaluate", {
-            "expression": f"document.querySelector('{selector}').click();"
+            "expression": f"document.querySelector('{selector}').click();",
+            "userGesture": True
         }, session_id=self.session_id)
         
         self.action_history.append({"action": "click", "selector": selector, "success": True})
@@ -751,37 +755,34 @@ class BrowserCDP:
         return True
     
     async def get_page_context(self):
-        """Получает контекст страницы с ожиданием DOM"""
-        
-        for attempt in range(5):
+        """Получает контекст страницы с проверкой элементов"""
+        # Ждём появления элементов
+        for attempt in range(10):
             try:
                 check = await self.send("Runtime.evaluate", {
                     "expression": """
                         (function() {
-                            if (document.readyState !== 'complete') return 'loading';
-                            if (!document.body) return 'no_body';
-                            if (document.body.children.length === 0) return 'empty';
-                            return 'ready';
+                            const selectors = [
+                                '[data-testid="tweetButton"]',
+                                '[data-testid="AppTabBar_Home_Link"]',
+                                'article'
+                            ];
+                            for (const selector of selectors) {
+                                if (document.querySelector(selector)) {
+                                    return true;
+                                }
+                            }
+                            return false;
                         })();
                     """
                 }, session_id=self.session_id)
                 
-                status = check.get("result", {}).get("value", "")
-                
-                if status == 'ready':
-                    file_logger.log("✅ DOM готов для сбора контекста", "INFO")
+                if check.get("result", {}).get("value") == True:
+                    file_logger.log("✅ Элементы найдены, собираю контекст", "INFO")
                     break
-                elif status == 'loading':
-                    file_logger.log(f"⏳ Страница загружается... (попытка {attempt+1})", "INFO")
-                    await asyncio.sleep(2)
-                    continue
-                elif status == 'empty':
-                    file_logger.log(f"⏳ DOM пустой, ждём контент... (попытка {attempt+1})", "INFO")
-                    await asyncio.sleep(2)
-                    continue
-            except Exception as e:
-                file_logger.log(f"Ошибка проверки DOM: {e}", "WARNING")
-                await asyncio.sleep(1)
+            except:
+                pass
+            await asyncio.sleep(1)
         
         try:
             result = await self.send("Runtime.evaluate", {
@@ -856,12 +857,7 @@ class BrowserCDP:
                 inputs = len(parsed.get('inputs', []))
                 
                 file_logger.log(f"📊 Контекст: {total} элементов, {buttons} кнопок, {inputs} полей", "INFO")
-                
-                if total > 10:
-                    return context
-                else:
-                    file_logger.log("⚠️ Мало элементов на странице", "WARNING")
-                    return context
+                return context
                     
             except Exception as e:
                 file_logger.log(f"Ошибка парсинга контекста: {e}", "WARNING")
@@ -969,7 +965,7 @@ async def handle_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await browser.navigate(url)
         
         file_logger.log("Ожидание полной загрузки страницы...", "INFO")
-        await asyncio.sleep(5)
+        await asyncio.sleep(3)
         
         context_data = await browser.get_page_context()
         file_logger.log(f"Контекст получен", "INFO")
@@ -1079,7 +1075,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ У тебя нет активной сессии. Начни заново: /agent")
         return
     
-    # Проверяем специальные вопросы про кнопки
     if any(word in text.lower() for word in ['какие кнопки', 'кнопки видишь', 'что видишь', 'что на странице', 'есть ли']):
         context_data = await browser.get_page_context()
         try:
