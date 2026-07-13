@@ -768,10 +768,10 @@ class CDPController:
     
     # ============ ИСПРАВЛЕННЫЙ СКРИНШОТ (КАК В "БАТЯ КОД") ============
     async def take_screenshot(self, session_id, full_page=False):
-        """Скриншот как в Батя код (JPEG, только видимая часть)"""
+        """Скриншот как в Батя код (гибкая обработка)"""
         file_logger.info("📸 Делаю скриншот...")
         try:
-            # Проверяем загрузку страницы
+            # Проверяем загрузку
             title = await self.evaluate("document.title", session_id)
             if not title or title == "":
                 file_logger.warning("⚠️ Страница не загружена, пробую обновить...")
@@ -784,11 +784,11 @@ class CDPController:
             
             file_logger.info(f"📄 Заголовок: {title}")
             
-            # 👇 ПАРАМЕТРЫ КАК В "БАТЯ КОД"
+            # Параметры как в Батя код
             result = await self.send("Page.captureScreenshot", {
                 "format": "jpeg",
                 "quality": 70,
-                "captureBeyondViewport": False,  # ТОЛЬКО ВИДИМОЕ
+                "captureBeyondViewport": False,
                 "fromSurface": True,
                 "optimizeForSpeed": True
             }, session_id=session_id)
@@ -799,13 +799,14 @@ class CDPController:
             
             if "result" in result and "data" in result["result"]:
                 img_data = base64.b64decode(result["result"]["data"])
-                # Проверяем что это JPEG (как в Батя код)
-                if len(img_data) > 100 and img_data[:2] == b'\xff\xd8':
+                
+                # Проверяем что есть данные (как в Батя код)
+                if len(img_data) > 100:
                     file_logger.info(f"✅ Скриншот сделан ({len(img_data)} байт)")
                     return img_data
                 else:
-                    file_logger.warning(f"⚠️ Не JPEG формат, пробую вернуть как есть")
-                    return img_data
+                    file_logger.warning(f"⚠️ Слишком маленький скриншот: {len(img_data)} байт")
+                    return img_data if len(img_data) > 0 else None
             
             file_logger.error("❌ Не удалось получить скриншот")
             return None
