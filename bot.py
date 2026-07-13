@@ -766,12 +766,11 @@ class CDPController:
             file_logger.error(f"❌ Ошибка выполнения JS: {str(e)}")
             raise
     
-    # ============ ИСПРАВЛЕННЫЙ СКРИНШОТ (КАК В "БАТЯ КОД") ============
+    # ============ ИСПРАВЛЕННЫЙ СКРИНШОТ (КАК В PYDOLL) ============
     async def take_screenshot(self, session_id, full_page=False):
-        """Скриншот как в Батя код (гибкая обработка)"""
+        """Скриншот как в Pydoll с параметрами capture_beyond_viewport"""
         file_logger.info("📸 Делаю скриншот...")
         try:
-            # Проверяем загрузку
             title = await self.evaluate("document.title", session_id)
             if not title or title == "":
                 file_logger.warning("⚠️ Страница не загружена, пробую обновить...")
@@ -784,14 +783,16 @@ class CDPController:
             
             file_logger.info(f"📄 Заголовок: {title}")
             
-            # Параметры как в Батя код
-            result = await self.send("Page.captureScreenshot", {
+            # 👇 ПАРАМЕТРЫ КАК В PYDOLL
+            params = {
                 "format": "jpeg",
                 "quality": 70,
-                "captureBeyondViewport": False,
                 "fromSurface": True,
-                "optimizeForSpeed": True
-            }, session_id=session_id)
+                "optimizeForSpeed": True,
+                "capture_beyond_viewport": full_page  # 👈 КЛЮЧЕВОЙ ПАРАМЕТР
+            }
+            
+            result = await self.send("Page.captureScreenshot", params, session_id)
             
             if "error" in result:
                 file_logger.error(f"❌ Ошибка скриншота: {result['error']}")
@@ -799,13 +800,11 @@ class CDPController:
             
             if "result" in result and "data" in result["result"]:
                 img_data = base64.b64decode(result["result"]["data"])
-                
-                # Проверяем что есть данные (как в Батя код)
                 if len(img_data) > 100:
                     file_logger.info(f"✅ Скриншот сделан ({len(img_data)} байт)")
                     return img_data
                 else:
-                    file_logger.warning(f"⚠️ Слишком маленький скриншот: {len(img_data)} байт")
+                    file_logger.warning(f"⚠️ Слишком маленький: {len(img_data)} байт")
                     return img_data if len(img_data) > 0 else None
             
             file_logger.error("❌ Не удалось получить скриншот")
@@ -1137,22 +1136,27 @@ class BotHandler:
         else:
             await self._handle_snapshot(update, url)
     
+    # ============ ИСПРАВЛЕННЫЙ _handle_snapshot (НЕ ОБРЫВАЕТ СБОР) ============
     async def _handle_snapshot(self, update, url):
-        """Создание ПОЛНОГО снэпшота"""
+        """Создание ПОЛНОГО снэпшота (ДАЖЕ ЕСЛИ СКРИНШОТ НЕ УДАЛСЯ)"""
         user = update.effective_user
         file_logger.info(f"📸 Начало снэпшота для {url} от {user.username or user.id}")
         
         await update.message.reply_text(f"🌐 Делаю снэпшот `{url}`...", parse_mode="Markdown")
+        
+        screenshot = None
+        session_id = None
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        screenshot_path = None
         
         try:
             await self.cdp.create_tab()
             session_id = await self.cdp.attach_to_tab()
             file_logger.info(f"📑 Вкладка создана для {url}")
             
-            # Ставим куки для всех сайтов
+            # Ставим куки
             await update.message.reply_text(f"🍪 Устанавливаю куки ({len(X_COOKIES)} шт)...")
             await self.cdp.set_cookies(X_COOKIES, session_id)
-            file_logger.info(f"🍪 Установлено {len(X_COOKIES)} кук для {url}")
             
             delay = random.uniform(1, 3)
             await update.message.reply_text(f"⏳ Пауза {delay:.1f}с...")
@@ -1163,40 +1167,43 @@ class BotHandler:
             
             if await self.cdp.wait_for_load(session_id, timeout=45):
                 await update.message.reply_text("✅ Страница загружена!")
-                file_logger.info(f"✅ Страница {url} загружена")
             else:
                 await update.message.reply_text("⚠️ Частичная загрузка")
-                file_logger.warning(f"⚠️ Частичная загрузка {url}")
             
             await asyncio.sleep(random.uniform(0.5, 1.5))
             
             await update.message.reply_text("📊 Собираю все данные...")
             file_logger.info(f"📊 Сбор данных для {url}")
             
-            # 1. Скриншот (как в Батя код)
-            screenshot = await self.cdp.take_screenshot(session_id, full_page=False)
-            if not screenshot:
-                await update.message.reply_text("❌ Не удалось сделать скриншот")
-                return
+            # ============ ПЫТАЕМСЯ СДЕЛАТЬ СКРИНШОТ (НО НЕ ОБРЫВАЕМ) ============
+            try:
+                screenshot = await self.cdp.take_screenshot(session_id, full_page=False)
+                if screenshot:
+                    screenshot_path = f"{SNAPSHOT_DIR}/snapshot_{timestamp}.jpg"
+                    with open(screenshot_path, "wb") as f:
+                        f.write(screenshot)
+                    file_logger.info(f"📸 Скриншот сохранён: {screenshot_path}")
+                else:
+                    await update.message.reply_text("⚠️ Скриншот не удался, но продолжаю сбор данных...")
+                    file_logger.warning(f"⚠️ Скриншот не удался для {url}")
+            except Exception as e:
+                file_logger.error(f"❌ Ошибка скриншота: {str(e)}")
+                await update.message.reply_text("⚠️ Ошибка скриншота, но продолжаю...")
             
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            screenshot_path = f"{SNAPSHOT_DIR}/snapshot_{timestamp}.jpg"
-            with open(screenshot_path, "wb") as f:
-                f.write(screenshot)
-            file_logger.info(f"📸 Скриншот сохранён: {screenshot_path}")
+            # ============ СОБИРАЕМ ВСЁ ОСТАЛЬНОЕ ============
             
-            # 2. Метаданные
+            # 1. Метаданные
             meta = await self.cdp.get_meta(session_id)
             file_logger.info(f"📊 Метаданные: {meta.get('title', 'Нет')}")
             
-            # 3. HTML
+            # 2. HTML
             html = await self.cdp.evaluate("document.documentElement.outerHTML", session_id)
             html_path = f"{SNAPSHOT_DIR}/snapshot_{timestamp}.html"
             with open(html_path, "w", encoding="utf-8") as f:
                 f.write(html)
             file_logger.info(f"📄 HTML сохранён: {len(html)} символов")
             
-            # 4. Все ссылки
+            # 3. Ссылки
             links = await self.cdp.evaluate("""
                 Array.from(document.querySelectorAll('a')).map(a => ({
                     href: a.href,
@@ -1207,7 +1214,7 @@ class BotHandler:
             """, session_id)
             file_logger.info(f"🔗 Найдено ссылок: {len(links)}")
             
-            # 5. Все изображения
+            # 4. Изображения
             images = await self.cdp.evaluate("""
                 Array.from(document.querySelectorAll('img')).map(img => ({
                     src: img.src,
@@ -1218,7 +1225,7 @@ class BotHandler:
             """, session_id)
             file_logger.info(f"🖼️ Найдено изображений: {len(images)}")
             
-            # 6. Заголовки
+            # 5. Заголовки
             headings = await self.cdp.evaluate("""
                 (function() {
                     const result = {};
@@ -1234,7 +1241,7 @@ class BotHandler:
             total_headings = sum(len(v) for v in headings.values())
             file_logger.info(f"📑 Найдено заголовков: {total_headings}")
             
-            # 7. Скрипты
+            # 6. Скрипты
             scripts = await self.cdp.evaluate("""
                 Array.from(document.querySelectorAll('script')).map(s => ({
                     src: s.src || '',
@@ -1246,7 +1253,7 @@ class BotHandler:
             """, session_id)
             file_logger.info(f"📜 Найдено скриптов: {len(scripts)}")
             
-            # 8. Стили
+            # 7. Стили
             styles = await self.cdp.evaluate("""
                 Array.from(document.querySelectorAll('link[rel="stylesheet"], style')).map(s => ({
                     type: s.tagName === 'LINK' ? 'external' : 'inline',
@@ -1256,7 +1263,7 @@ class BotHandler:
             """, session_id)
             file_logger.info(f"🎨 Найдено стилей: {len(styles)}")
             
-            # 9. Формы
+            # 8. Формы
             forms = await self.cdp.evaluate("""
                 Array.from(document.querySelectorAll('form')).map(f => ({
                     action: f.action || '',
@@ -1271,15 +1278,15 @@ class BotHandler:
             """, session_id)
             file_logger.info(f"📋 Найдено форм: {len(forms)}")
             
-            # 10. Текст
+            # 9. Текст
             text = await self.cdp.get_page_text(session_id)
             file_logger.info(f"📝 Текст: {len(text)} символов")
             
-            # 11. Cookies
+            # 10. Cookies
             cookies = await self.cdp.get_cookies(session_id)
             file_logger.info(f"🍪 Получено кук: {len(cookies)}")
             
-            # 12. localStorage
+            # 11. localStorage
             localStorage = await self.cdp.evaluate("""
                 JSON.stringify(
                     Object.fromEntries(
@@ -1289,7 +1296,7 @@ class BotHandler:
             """, session_id)
             file_logger.info(f"💾 localStorage: {len(localStorage)} байт")
             
-            # 13. Performance метрики
+            # 12. Performance
             perf = await self.cdp.evaluate("""
                 (function() {
                     const perf = performance.getEntriesByType('navigation')[0];
@@ -1304,11 +1311,12 @@ class BotHandler:
             """, session_id)
             file_logger.info(f"⚡ Performance: {perf}")
             
-            # 14. Сохраняем JSON
+            # 13. Сохраняем JSON
             data = {
                 "timestamp": timestamp,
                 "url": url,
                 "cookies_set": len(X_COOKIES),
+                "screenshot_success": screenshot is not None,
                 "metadata": meta,
                 "links": links,
                 "images": images,
@@ -1333,29 +1341,21 @@ class BotHandler:
             file_logger.info(f"💾 JSON сохранён: {json_path}")
             
             # ============ ОТПРАВЛЯЕМ ============
-            # Проверяем размер перед отправкой
-            if len(screenshot) > 10 * 1024 * 1024:  # > 10MB
-                file_logger.warning("⚠️ Скриншот слишком большой, сжимаю...")
-                if PILLOW_AVAILABLE:
-                    try:
-                        image = Image.open(io.BytesIO(screenshot))
-                        output = io.BytesIO()
-                        image.convert('RGB').save(output, format='JPEG', quality=50, optimize=True)
-                        screenshot = output.getvalue()
-                        file_logger.info(f"📦 Сжат до {len(screenshot)} байт")
-                    except:
-                        pass
-            
-            with open(screenshot_path, "rb") as f:
-                await update.message.reply_photo(
-                    photo=f,
-                    caption=f"✅ Снэпшот готов!\n{url}"
-                )
+            if screenshot and screenshot_path:
+                with open(screenshot_path, "rb") as f:
+                    await update.message.reply_photo(
+                        photo=f,
+                        caption=f"✅ Снэпшот готов!\n{url}"
+                    )
+            else:
+                await update.message.reply_text("⚠️ Снэпшот собран без скриншота")
             
             cookies_info = f"🍪 Установлено: {len(X_COOKIES)}, получено: {len(cookies)}"
+            screenshot_status = "✅" if screenshot else "❌"
             
             message = (
                 f"📊 *Собрано данных:*\n\n"
+                f"📸 Скриншот: {screenshot_status}\n"
                 f"📄 HTML: `{len(html):,}` символов\n"
                 f"🔗 Ссылок: {len(links)}\n"
                 f"🖼️ Изображений: {len(images)}\n"
@@ -1370,10 +1370,11 @@ class BotHandler:
                 f"⚡ DOMContentLoaded: {perf.get('domContentLoaded', 0):.0f}ms\n"
                 f"🚀 Полная загрузка: {perf.get('load', 0):.0f}ms\n\n"
                 f"💾 Сохранено:\n"
-                f"`{screenshot_path}`\n"
                 f"`{html_path}`\n"
                 f"`{json_path}`"
             )
+            if screenshot_path:
+                message += f"\n`{screenshot_path}`"
             await update.message.reply_text(message, parse_mode="Markdown")
             
             await self.cdp.close_tab()
@@ -1419,21 +1420,20 @@ class BotHandler:
                 await self._parse_and_execute(update, action_str, session_id)
             
             screenshot = await self.cdp.take_screenshot(session_id, full_page=False)
-            if not screenshot:
-                await update.message.reply_text("❌ Не удалось сделать скриншот")
-                return
-            
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            screenshot_path = f"{SNAPSHOT_DIR}/script_result_{timestamp}.jpg"
-            with open(screenshot_path, "wb") as f:
-                f.write(screenshot)
-            
-            with open(screenshot_path, "rb") as f:
-                await update.message.reply_photo(
-                    photo=f,
-                    caption="✅ *Сценарий выполнен!*\nФинальный скриншот",
-                    parse_mode="Markdown"
-                )
+            if screenshot:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                screenshot_path = f"{SNAPSHOT_DIR}/script_result_{timestamp}.jpg"
+                with open(screenshot_path, "wb") as f:
+                    f.write(screenshot)
+                
+                with open(screenshot_path, "rb") as f:
+                    await update.message.reply_photo(
+                        photo=f,
+                        caption="✅ *Сценарий выполнен!*\nФинальный скриншот",
+                        parse_mode="Markdown"
+                    )
+            else:
+                await update.message.reply_text("⚠️ Скриншот не удался, но сценарий выполнен")
             
             await self.cdp.close_tab()
             file_logger.info(f"✅ Сценарий {url} завершён")
@@ -1502,6 +1502,8 @@ class BotHandler:
                             f.write(screenshot)
                         with open(path, "rb") as f:
                             await update.message.reply_photo(photo=f, caption="📸 Промежуточный скриншот")
+                    else:
+                        await update.message.reply_text("⚠️ Промежуточный скриншот не удался")
                     file_logger.info("📸 Промежуточный скриншот")
             
             else:
