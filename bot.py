@@ -7,12 +7,15 @@ import time
 import base64
 import hashlib
 import difflib
+import random
+import math
 import websockets
 import aiohttp
 from datetime import datetime
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+# ==================== КОНФИГУРАЦИЯ ====================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "ВАШ_ТОКЕН")
 CHROME_PATH = os.getenv("CHROME_PATH", "/usr/bin/google-chrome")
 CDP_PORT = 9222
@@ -29,7 +32,6 @@ class FileLogger:
         self.filename = filename
     
     def log(self, message, level="INFO"):
-        """Запись лога в файл"""
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         try:
             with open(self.filename, 'a', encoding='utf-8') as f:
@@ -50,7 +52,6 @@ class FileLogger:
         self.log(message, "DEBUG")
     
     def get_logs(self, lines=100):
-        """Получить последние N строк лога"""
         try:
             with open(self.filename, 'r', encoding='utf-8') as f:
                 all_lines = f.readlines()
@@ -61,7 +62,6 @@ class FileLogger:
             return f"Ошибка чтения лога: {e}"
     
     def clear_logs(self):
-        """Очистить лог-файл"""
         try:
             with open(self.filename, 'w', encoding='utf-8') as f:
                 f.write("")
@@ -71,14 +71,21 @@ class FileLogger:
 
 file_logger = FileLogger()
 
-# ==================== CHROME MANAGER ====================
+# ==================== CHROME MANAGER (СТЕЛС) ====================
 class ChromeManager:
     def __init__(self):
         self.process = None
         self.port = CDP_PORT
+        self.user_agent = (
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) '
+            'Chrome/130.0.6723.91 Safari/537.36'
+        )
     
     def start(self):
         file_logger.info(f"🚀 Запуск Chrome на порту {self.port}")
+        
+        # ============ СТЕЛС-НАСТРОЙКИ CHROME ============
         cmd = [
             CHROME_PATH,
             "--headless",
@@ -88,9 +95,51 @@ class ChromeManager:
             "--disable-setuid-sandbox",
             "--disable-software-rasterizer",
             "--window-size=1920,1080",
-            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            
+            # User-Agent
+            f"--user-agent={self.user_agent}",
+            
+            # Отключаем признаки автоматизации
             "--disable-blink-features=AutomationControlled",
             "--disable-features=IsolateOrigins,site-per-process",
+            "--disable-features=BlockInsecurePrivateNetworkRequests",
+            "--disable-features=OptimizationGuideModelDownloading",
+            "--disable-features=OptimizationHints",
+            "--disable-features=MediaRouter",
+            
+            # WebRTC защита
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+            "--enable-features=NetworkService,NetworkServiceInProcess",
+            
+            # Профиль
+            "--lang=en-US",
+            
+            # Отключаем лишние функции
+            "--disable-background-networking",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-breakpad",
+            "--disable-client-side-phishing-detection",
+            "--disable-component-update",
+            "--disable-default-apps",
+            "--disable-domain-reliability",
+            "--disable-extensions",
+            "--disable-features=AudioServiceOutOfProcess",
+            "--disable-hang-monitor",
+            "--disable-ipc-flooding-protection",
+            "--disable-notifications",
+            "--disable-offer-store-unmasked-wallet-cards",
+            "--disable-popup-blocking",
+            "--disable-print-preview",
+            "--disable-prompt-on-repost",
+            "--disable-renderer-backgrounding",
+            "--disable-setuid-sandbox",
+            "--disable-speech-api",
+            "--disable-sync",
+            "--disable-translate",
+            "--disable-voice-input",
+            "--disable-wake-on-wifi",
+            
             f"--remote-debugging-port={self.port}"
         ]
         
@@ -122,7 +171,7 @@ class ChromeManager:
         else:
             file_logger.warning("⚠️ Chrome не был запущен")
 
-# ==================== CDP CONTROLLER ====================
+# ==================== CDP CONTROLLER (СТЕЛС) ====================
 class CDPController:
     def __init__(self, port=CDP_PORT):
         self.port = port
@@ -185,6 +234,161 @@ class CDPController:
             file_logger.error(f"❌ Ошибка создания вкладки: {str(e)}")
             raise
     
+    # ============ СТЕЛС-НАСТРОЙКИ CDP ============
+    async def apply_stealth(self, session_id):
+        """Применяет все стелс-настройки к странице"""
+        file_logger.debug("🛡️ Применение стелс-настроек...")
+        
+        # 1. Скрываем webdriver
+        await self.evaluate("""
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined,
+                configurable: true,
+                enumerable: true
+            });
+        """, session_id)
+        
+        # 2. Эмулируем реальный Chrome
+        await self.evaluate("""
+            // Плагины
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => {
+                    const plugins = [];
+                    const names = ['PDF Viewer', 'Chrome PDF Viewer', 'Native Client'];
+                    for (let i = 0; i < names.length; i++) {
+                        plugins.push({
+                            name: names[i],
+                            filename: 'internal-pdf-viewer',
+                            description: 'Portable Document Format',
+                            length: 1
+                        });
+                    }
+                    return plugins;
+                }
+            });
+            
+            // Языки
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['en-US', 'en', 'ru']
+            });
+            
+            // Platform
+            Object.defineProperty(navigator, 'platform', {
+                get: () => 'Win32'
+            });
+            
+            // Hardware concurrency
+            Object.defineProperty(navigator, 'hardwareConcurrency', {
+                get: () => 8
+            });
+            
+            // Device memory
+            Object.defineProperty(navigator, 'deviceMemory', {
+                get: () => 8
+            });
+            
+            // WebGL vendor
+            const getParameter = WebGLRenderingContext.prototype.getParameter;
+            WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                if (parameter === 37445) return 'Intel Inc.';
+                if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+                return getParameter.call(this, parameter);
+            };
+            
+            // Canvas fingerprinting
+            const toDataURL = HTMLCanvasElement.prototype.toDataURL;
+            HTMLCanvasElement.prototype.toDataURL = function(type, quality) {
+                if (this.width === 224 && this.height === 224) {
+                    return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+                }
+                return toDataURL.call(this, type, quality);
+            };
+            
+            // AudioContext fingerprinting
+            const createOscillator = AudioContext.prototype.createOscillator;
+            AudioContext.prototype.createOscillator = function() {
+                const osc = createOscillator.call(this);
+                const originalStart = osc.start;
+                osc.start = function(time) {
+                    originalStart.call(this, time || 0);
+                };
+                return osc;
+            };
+            
+            // Battery API
+            Object.defineProperty(navigator, 'getBattery', {
+                get: () => function() {
+                    return Promise.resolve({
+                        charging: true,
+                        chargingTime: 0,
+                        dischargingTime: Infinity,
+                        level: 1
+                    });
+                }
+            });
+            
+            // Permissions
+            const originalQuery = navigator.permissions.query;
+            navigator.permissions.query = function(parameters) {
+                if (parameters.name === 'notifications') {
+                    return Promise.resolve({ state: 'prompt' });
+                }
+                if (parameters.name === 'geolocation') {
+                    return Promise.resolve({ state: 'prompt' });
+                }
+                return originalQuery.call(this, parameters);
+            };
+            
+            // Connection
+            Object.defineProperty(navigator, 'connection', {
+                get: () => ({
+                    effectiveType: '4g',
+                    rtt: 50,
+                    downlink: 10,
+                    saveData: false
+                })
+            });
+            
+            // Chrome object
+            if (!window.chrome) {
+                window.chrome = {
+                    app: {
+                        InstallState: {},
+                        RunningState: {},
+                        getDetails: function() {},
+                        getIsInstalled: function() {},
+                        isInstalled: false
+                    },
+                    webstore: {
+                        onInstallStageChanged: {},
+                        onDownloadProgress: {}
+                    },
+                    runtime: {
+                        OnInstalledReason: {},
+                        OnRestartRequiredReason: {},
+                        PlatformArch: {},
+                        PlatformNaclArch: {},
+                        PlatformOs: {},
+                        RequestUpdateCheckStatus: {},
+                        onStartup: {
+                            addListener: function() {},
+                            removeListener: function() {}
+                        }
+                    }
+                };
+            }
+        """, session_id)
+        
+        # 3. Удаляем CDP-следы
+        await self.evaluate("""
+            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+        """, session_id)
+        
+        file_logger.debug("✅ Стелс-настройки применены")
+        return True
+    
     async def attach_to_tab(self, target_id=None):
         tid = target_id or self.target_id
         file_logger.info(f"🔗 Прикрепление к вкладке: {tid}")
@@ -203,11 +407,8 @@ class CDPController:
             await self.send("Network.enable", session_id=session_id)
             await self.send("Log.enable", session_id=session_id)
             
-            # Отключаем webdriver
-            await self.evaluate(
-                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})",
-                session_id
-            )
+            # 👇 ПРИМЕНЯЕМ СТЕЛС-НАСТРОЙКИ
+            await self.apply_stealth(session_id)
             
             file_logger.info(f"✅ Прикреплён к вкладке: {session_id}")
             return session_id
@@ -215,6 +416,175 @@ class CDPController:
             file_logger.error(f"❌ Ошибка прикрепления к вкладке: {str(e)}")
             raise
     
+    # ============ HUMANIZED INTERACTIONS ============
+    async def human_click(self, selector, session_id, wait_for_navigation=False):
+        """Клик с человеческой траекторией"""
+        file_logger.debug(f"🖱️ Human клик по {selector}")
+        
+        # Получаем координаты элемента
+        js = f"""
+            (function() {{
+                const el = document.querySelector('{selector}');
+                if (!el) return null;
+                const rect = el.getBoundingClientRect();
+                if (rect.width === 0 || rect.height === 0) return null;
+                return {{
+                    x: rect.x + rect.width/2,
+                    y: rect.y + rect.height/2,
+                    width: rect.width,
+                    height: rect.height
+                }};
+            }})()
+        """
+        coords = await self.evaluate(js, session_id)
+        if not coords:
+            file_logger.warning(f"⚠️ Элемент {selector} не найден или невидим")
+            return False
+        
+        # Генерируем человеческую кривую (Безье с овершутом)
+        target_x = coords['x'] + random.uniform(-15, 15)
+        target_y = coords['y'] + random.uniform(-8, 8)
+        
+        # Случайное количество точек
+        num_points = random.randint(8, 15)
+        points = []
+        
+        # Стартуем от случайной позиции
+        start_x = target_x + random.uniform(-100, -50)
+        start_y = target_y + random.uniform(-50, 50)
+        
+        for i in range(num_points):
+            t = i / num_points
+            # Кривая с овершутом
+            overshoot = 1 + 0.1 * math.sin(t * math.pi * 3)
+            x = start_x + (target_x - start_x) * t * overshoot
+            y = start_y + (target_y - start_y) * t * overshoot
+            
+            # Добавляем тремор
+            x += math.sin(t * math.pi * 5) * random.uniform(-3, 3)
+            y += math.cos(t * math.pi * 4) * random.uniform(-2, 2)
+            
+            points.append((int(x), int(y)))
+        
+        # Добавляем финальную точку с овершутом
+        final_x = target_x + random.uniform(-5, 5)
+        final_y = target_y + random.uniform(-3, 3)
+        points.append((int(final_x), int(final_y)))
+        
+        # Эмулируем движение мыши
+        for x, y in points:
+            await self.send("Input.dispatchMouseEvent", {
+                "type": "mouseMoved",
+                "x": x,
+                "y": y
+            }, session_id)
+            await asyncio.sleep(random.uniform(0.01, 0.04))
+        
+        # Случайная пауза перед кликом
+        await asyncio.sleep(random.uniform(0.05, 0.2))
+        
+        # Нажатие
+        await self.send("Input.dispatchMouseEvent", {
+            "type": "mousePressed",
+            "x": final_x,
+            "y": final_y,
+            "button": "left",
+            "clickCount": 1
+        }, session_id)
+        
+        await asyncio.sleep(random.uniform(0.05, 0.15))
+        
+        # Отпускание
+        await self.send("Input.dispatchMouseEvent", {
+            "type": "mouseReleased",
+            "x": final_x,
+            "y": final_y,
+            "button": "left",
+            "clickCount": 1
+        }, session_id)
+        
+        # Если ожидаем навигацию
+        if wait_for_navigation:
+            await self.wait_for_load(session_id, timeout=15)
+        
+        return True
+    
+    async def human_type(self, selector, text, session_id, clear_first=True):
+        """Ввод с человеческой скоростью и опечатками"""
+        file_logger.debug(f"⌨️ Human ввод в {selector}: {text[:20]}...")
+        
+        # Скроллим к элементу и фокусируемся
+        await self.evaluate(f"""
+            const el = document.querySelector('{selector}');
+            if (el) {{
+                el.scrollIntoView({{block: 'center'}});
+                el.focus();
+                if ({str(clear_first).lower()}) {{
+                    el.value = '';
+                }}
+            }}
+        """, session_id)
+        
+        await asyncio.sleep(random.uniform(0.1, 0.3))
+        
+        # Вводим посимвольно
+        for i, char in enumerate(text):
+            # 2% шанс опечатки и исправления
+            if random.random() < 0.02 and len(text) > 3 and i > 1:
+                # Вводим неправильный символ
+                wrong_char = random.choice('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
+                await self.send("Input.dispatchKeyEvent", {
+                    "type": "keyDown",
+                    "text": wrong_char
+                }, session_id)
+                await asyncio.sleep(random.uniform(0.04, 0.12))
+                await self.send("Input.dispatchKeyEvent", {
+                    "type": "keyUp",
+                    "text": wrong_char
+                }, session_id)
+                
+                # Пауза перед исправлением
+                await asyncio.sleep(random.uniform(0.1, 0.3))
+                
+                # Жмём Backspace
+                await self.send("Input.dispatchKeyEvent", {
+                    "type": "keyDown",
+                    "text": "\b"
+                }, session_id)
+                await asyncio.sleep(random.uniform(0.04, 0.08))
+                await self.send("Input.dispatchKeyEvent", {
+                    "type": "keyUp",
+                    "text": "\b"
+                }, session_id)
+                
+                await asyncio.sleep(random.uniform(0.05, 0.15))
+            
+            # Вводим правильный символ
+            await self.send("Input.dispatchKeyEvent", {
+                "type": "keyDown",
+                "text": char
+            }, session_id)
+            await asyncio.sleep(random.uniform(0.03, 0.1))
+            await self.send("Input.dispatchKeyEvent", {
+                "type": "keyUp",
+                "text": char
+            }, session_id)
+            
+            # Случайная пауза между символами (30-120ms)
+            await asyncio.sleep(random.uniform(0.03, 0.12))
+        
+        # Триггерим события для React/Vue
+        await self.evaluate(f"""
+            const el = document.querySelector('{selector}');
+            if (el) {{
+                el.dispatchEvent(new Event('input', {{bubbles: true}}));
+                el.dispatchEvent(new Event('change', {{bubbles: true}}));
+            }}
+        """, session_id)
+        
+        return True
+    
+    # ============ ОСТАЛЬНЫЕ МЕТОДЫ ============
     async def wait_for_load(self, session_id, timeout=30):
         file_logger.info(f"⏳ Ожидание загрузки страницы (таймаут: {timeout}с)")
         start = time.time()
@@ -260,6 +630,10 @@ class CDPController:
             except Exception as e:
                 file_logger.error(f"❌ Ошибка ожидания загрузки: {str(e)}")
         
+        if content_detected:
+            file_logger.warning(f"⚠️ Частичная загрузка после {timeout}с, но контент есть")
+            return True
+        
         file_logger.warning(f"⚠️ Частичная загрузка после {timeout}с")
         return loaded and content_detected
     
@@ -297,20 +671,22 @@ class CDPController:
                             }, 500);
                         });
                         
-                        observer.observe(document.body, {
-                            childList: true,
-                            subtree: true,
-                            attributes: true
-                        });
+                        if (document.body) {
+                            observer.observe(document.body, {
+                                childList: true,
+                                subtree: true,
+                                attributes: true
+                            });
+                        }
                         
                         let timeoutId = setTimeout(() => {
-                            observer.disconnect();
+                            if (observer.disconnect) observer.disconnect();
                             resolve({hasReact, hasVue, hasAngular, stable: true});
                         }, 2000);
                         
                         if (!hasReact && !hasVue && !hasAngular) {
                             setTimeout(() => {
-                                observer.disconnect();
+                                if (observer.disconnect) observer.disconnect();
                                 resolve({hasReact, hasVue, hasAngular, stable: true});
                             }, 1000);
                         }
@@ -379,7 +755,7 @@ class CDPController:
     async def get_page_text(self, session_id):
         file_logger.debug("📝 Получение текста страницы")
         try:
-            js = "document.body.innerText"
+            js = "document.body?.innerText || ''"
             result = await self.evaluate(js, session_id)
             file_logger.debug(f"✅ Получено {len(result)} символов текста")
             return result
@@ -393,10 +769,13 @@ class CDPController:
             js = """
                 (function() {
                     return {
-                        title: document.title,
-                        url: window.location.href,
+                        title: document.title || '',
+                        url: window.location.href || '',
                         description: document.querySelector('meta[name="description"]')?.content || '',
-                        keywords: document.querySelector('meta[name="keywords"]')?.content || ''
+                        keywords: document.querySelector('meta[name="keywords"]')?.content || '',
+                        og_title: document.querySelector('meta[property="og:title"]')?.content || '',
+                        og_description: document.querySelector('meta[property="og:description"]')?.content || '',
+                        og_image: document.querySelector('meta[property="og:image"]')?.content || ''
                     }
                 })()
             """
@@ -406,6 +785,107 @@ class CDPController:
         except Exception as e:
             file_logger.error(f"❌ Ошибка получения метаданных: {str(e)}")
             return {}
+    
+    async def wait_for_element(self, selector, session_id, timeout=10, visible=True):
+        file_logger.debug(f"⏳ Ожидание элемента: {selector}")
+        js = f"""
+            new Promise((resolve) => {{
+                const start = Date.now();
+                const check = () => {{
+                    const el = document.querySelector('{selector}');
+                    if (el) {{
+                        if ({str(visible).lower()}) {{
+                            const rect = el.getBoundingClientRect();
+                            if (rect.width > 0 && rect.height > 0) {{
+                                resolve(true);
+                                return;
+                            }}
+                        }} else {{
+                            resolve(true);
+                            return;
+                        }}
+                    }}
+                    if (Date.now() - start > {timeout * 1000}) {{
+                        resolve(false);
+                        return;
+                    }}
+                    setTimeout(check, 200);
+                }};
+                check();
+            }})
+        """
+        result = await self.evaluate(js, session_id)
+        if result:
+            file_logger.debug(f"✅ Элемент найден: {selector}")
+        else:
+            file_logger.warning(f"⚠️ Элемент не найден: {selector}")
+        return result
+    
+    async def wait_for_text(self, selector, text, session_id, timeout=10):
+        file_logger.debug(f"⏳ Ожидание текста: '{text}' в {selector}")
+        js = f"""
+            new Promise((resolve) => {{
+                const start = Date.now();
+                const check = () => {{
+                    const el = document.querySelector('{selector}');
+                    if (el && el.innerText && el.innerText.includes('{text}')) {{
+                        resolve(true);
+                        return;
+                    }}
+                    if (Date.now() - start > {timeout * 1000}) {{
+                        resolve(false);
+                        return;
+                    }}
+                    setTimeout(check, 200);
+                }};
+                check();
+            }})
+        """
+        result = await self.evaluate(js, session_id)
+        if result:
+            file_logger.debug(f"✅ Текст найден: '{text}'")
+        else:
+            file_logger.warning(f"⚠️ Текст не найден: '{text}'")
+        return result
+    
+    async def wait_for_url(self, expected_url_part, session_id, timeout=10):
+        file_logger.debug(f"⏳ Ожидание URL: {expected_url_part}")
+        js = f"""
+            new Promise((resolve) => {{
+                const start = Date.now();
+                const check = () => {{
+                    const current = window.location.href;
+                    if (current.includes('{expected_url_part}')) {{
+                        resolve(true);
+                        return;
+                    }}
+                    if (Date.now() - start > {timeout * 1000}) {{
+                        resolve(false);
+                        return;
+                    }}
+                    setTimeout(check, 200);
+                }};
+                check();
+            }})
+        """
+        result = await self.evaluate(js, session_id)
+        if result:
+            file_logger.debug(f"✅ URL изменён: {expected_url_part}")
+        else:
+            file_logger.warning(f"⚠️ URL не изменён: {expected_url_part}")
+        return result
+    
+    async def scroll_to(self, selector, session_id):
+        file_logger.debug(f"📜 Скролл к: {selector}")
+        js = f"""
+            (function() {{
+                const el = document.querySelector('{selector}');
+                if (!el) return false;
+                el.scrollIntoView({{block: 'center', behavior: 'smooth'}});
+                return true;
+            }})()
+        """
+        return await self.evaluate(js, session_id)
     
     async def close_tab(self, target_id=None):
         tid = target_id or self.target_id
@@ -462,14 +942,18 @@ class BotHandler:
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_text(
-            "🤖 *CDP Snapshot Bot*\n\n"
-            "Я умею:\n"
-            "📸 Делать полные снэпшоты страниц\n"
-            "🎬 Выполнять интерактивные сценарии (клики, ввод)\n"
-            "📊 Сравнивать снэпшоты и находить изменения\n"
-            "⚡ Поддерживаю SPA (React, Vue, Angular)\n"
-            "📋 Веду лог всех действий\n\n"
-            "Просто отправь ссылку или выбери действие:",
+            "🤖 *CDP Snapshot Bot (Stealth Mode)*\n\n"
+            "🛡️ *Стелс-настройки:*\n"
+            "✅ Скрыт `navigator.webdriver`\n"
+            "✅ Реалистичный User-Agent\n"
+            "✅ Эмуляция плагинов и API\n"
+            "✅ Humanized клики и ввод\n"
+            "✅ WebRTC защита\n"
+            "✅ Canvas/WebGL fingerprinting\n\n"
+            "📸 Делаю полные снэпшоты\n"
+            "🎬 Выполняю интерактивные сценарии\n"
+            "📊 Сравниваю страницы\n\n"
+            "Просто отправь ссылку:",
             parse_mode="Markdown",
             reply_markup=reply_markup
         )
@@ -497,14 +981,13 @@ class BotHandler:
                 "Отправь команду в формате:\n"
                 "`/script <url> | действие1 | действие2 | ...`\n\n"
                 "*Доступные действия:*\n"
-                "`click(selector)` - клик\n"
-                "`type(selector, text)` - ввод текста\n"
-                "`select(selector, value)` - выбор опции\n"
+                "`click(selector)` - клик (человеческий)\n"
+                "`type(selector, text)` - ввод (человеческий)\n"
                 "`wait(selector)` - ожидание элемента\n"
                 "`wait_text(selector, text)` - ожидание текста\n"
-                "`screenshot()` - скриншот\n\n"
+                "`screenshot()` - промежуточный скриншот\n\n"
                 "*Пример:*\n"
-                "`/script https://example.com | click(#login) | type(#email, test@mail.ru) | click(#submit)`",
+                "`/script https://google.com | type(#APjFqb, погода в москве) | click([name=btnK])`",
                 parse_mode="Markdown"
             )
             context.user_data['mode'] = 'script'
@@ -534,15 +1017,13 @@ class BotHandler:
                 await query.edit_message_text("❌ Ошибка очистки логов")
     
     async def _send_logs(self, update, context):
-        """Отправляет лог-файл пользователю"""
         try:
-            log_content = file_logger.get_logs(500)  # Последние 500 строк
+            log_content = file_logger.get_logs(500)
             
             if not log_content or log_content == "Лог-файл пока не создан.":
                 await update.callback_query.message.reply_text("📋 Лог-файл пока пуст.")
                 return
             
-            # Отправляем как файл
             with open(LOG_FILE, 'rb') as f:
                 await update.callback_query.message.reply_document(
                     document=f,
@@ -801,7 +1282,7 @@ class BotHandler:
             await update.message.reply_text(
                 "❌ Неверный формат.\n"
                 "Используй: `/script <url> | действие1 | действие2 | ...`\n\n"
-                "Пример: `/script https://example.com | click(#login) | type(#email, test@mail.ru)`",
+                "Пример: `/script https://google.com | type(#APjFqb, погода) | click([name=btnK])`",
                 parse_mode="Markdown"
             )
             return
@@ -866,16 +1347,16 @@ class BotHandler:
                 
                 if action_name == "click":
                     selector = params[0].strip('"\'')
-                    await self.cdp.click(selector, session_id, wait_for_navigation=True)
-                    await update.message.reply_text(f"🖱️ Клик по `{selector}`", parse_mode="Markdown")
-                    file_logger.info(f"🖱️ Клик по {selector}")
+                    await self.cdp.human_click(selector, session_id, wait_for_navigation=True)
+                    await update.message.reply_text(f"🖱️ Human клик по `{selector}`", parse_mode="Markdown")
+                    file_logger.info(f"🖱️ Human клик по {selector}")
                 
                 elif action_name == "type":
                     selector = params[0].strip('"\'')
                     text = params[1].strip('"\'')
-                    await self.cdp.type_text(selector, text, session_id)
-                    await update.message.reply_text(f"⌨️ Ввод `{text}` в `{selector}`", parse_mode="Markdown")
-                    file_logger.info(f"⌨️ Ввод в {selector}")
+                    await self.cdp.human_type(selector, text, session_id)
+                    await update.message.reply_text(f"⌨️ Human ввод `{text}` в `{selector}`", parse_mode="Markdown")
+                    file_logger.info(f"⌨️ Human ввод в {selector}")
                 
                 elif action_name == "select":
                     selector = params[0].strip('"\'')
@@ -1032,9 +1513,8 @@ class BotHandler:
             "summary": "\n".join(changes)
         }
     
-    async def compare_with_last(self, update, url):
+    async def _compare_with_last(self, update, url):
         """Сравнивает с предыдущим снэпшотом"""
-        # Находим последний снэпшот
         try:
             files = [f for f in os.listdir(SNAPSHOT_DIR) if f.startswith('snapshot_') and f.endswith('.json')]
             if not files:
@@ -1047,13 +1527,11 @@ class BotHandler:
             
             await update.message.reply_text(f"📊 Сравниваю с предыдущим снэпшотом: {latest}")
             
-            # Делаем новый снэпшот
             new_data = await self._make_snapshot_data(url)
             if not new_data:
                 await update.message.reply_text("❌ Не удалось загрузить страницу")
                 return
             
-            # Сравниваем
             diff = self._compare_snapshots(
                 {
                     "html": old_data.get("html", ""),
@@ -1094,10 +1572,10 @@ class BotHandler:
 # ==================== MAIN ====================
 def main():
     """Точка входа с правильным управлением event loop"""
-    file_logger.info("🚀 ЗАПУСК БОТА")
-    file_logger.info(f"📁 Папка снэпшотов: {SNAPSHOT_DIR}")
-    file_logger.info(f"📁 Лог-файл: {LOG_FILE}")
-    file_logger.info(f"🔑 TELEGRAM_TOKEN: {'Установлен' if TELEGRAM_TOKEN != 'ВАШ_ТОКЕН' else 'НЕ УСТАНОВЛЕН'}")
+    file_logger.info("🚀 ЗАПУСК БОТА (STEALTH MODE)")
+    file_logger.info("📁 Папка снэпшотов: snapshots")
+    file_logger.info("📁 Лог-файл: bot_logs.txt")
+    file_logger.info("🔑 TELEGRAM_TOKEN: Установлен" if TELEGRAM_TOKEN != 'ВАШ_ТОКЕН' else "🔑 TELEGRAM_TOKEN: НЕ УСТАНОВЛЕН")
     
     bot = BotHandler()
     
@@ -1105,7 +1583,7 @@ def main():
     app.add_handler(CommandHandler("start", bot.start_command))
     app.add_handler(CommandHandler("script", bot.script_command))
     app.add_handler(CommandHandler("compare", bot.compare_command))
-    app.add_handler(CommandHandler("compare_last", bot.compare_with_last))
+    app.add_handler(CommandHandler("compare_last", bot._compare_with_last))
     app.add_handler(CallbackQueryHandler(bot.button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_url))
     
