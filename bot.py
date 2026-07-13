@@ -1,6 +1,6 @@
 import os
 import json
-import time 
+import time
 import subprocess
 import base64
 import requests
@@ -299,28 +299,35 @@ class BrowserCDP:
         if self.connected:
             return True
         
-        file_logger.log("Подключение к браузеру...")
+        file_logger.log("Подключение к браузеру...", "INFO")
         
-        # Получаем WebSocket URL
+        # 1. Получаем список вкладок через /json/list
         try:
-            resp = requests.get(f"http://localhost:{CDP_PORT}/json/version")
-            ws_url = resp.json()["webSocketDebuggerUrl"]
-        except:
-            # Пробуем через /json/list
-            try:
-                resp = requests.get(f"http://localhost:{CDP_PORT}/json/list")
-                pages = resp.json()
-                ws_url = None
-                for page in pages:
-                    if page.get("type") == "page":
-                        ws_url = page.get("webSocketDebuggerUrl")
-                        break
-                if not ws_url:
-                    file_logger.log("❌ Не найдена страница", "ERROR")
-                    return False
-            except Exception as e:
-                file_logger.log(f"❌ Ошибка получения WS URL: {e}", "ERROR")
+            resp = requests.get(f"http://localhost:{CDP_PORT}/json/list")
+            pages = resp.json()
+            
+            ws_url = None
+            for page in pages:
+                if page.get("type") == "page":
+                    ws_url = page.get("webSocketDebuggerUrl")
+                    file_logger.log(f"Найдена вкладка: {page.get('url', 'blank')}", "INFO")
+                    break
+            
+            # Если нет вкладок - создаём новую
+            if not ws_url:
+                file_logger.log("Нет вкладок, создаю новую...", "INFO")
+                resp = requests.get(f"http://localhost:{CDP_PORT}/json/new?about:blank")
+                data = resp.json()
+                ws_url = data.get("webSocketDebuggerUrl")
+                file_logger.log(f"Создана вкладка: {ws_url}", "INFO")
+            
+            if not ws_url:
+                file_logger.log("❌ Не удалось получить WebSocket URL", "ERROR")
                 return False
+                
+        except Exception as e:
+            file_logger.log(f"❌ Ошибка получения вкладки: {e}", "ERROR")
+            return False
         
         try:
             self.ws = await websockets.connect(
@@ -331,13 +338,12 @@ class BrowserCDP:
                 max_size=50 * 1024 * 1024
             )
             self.connected = True
-            file_logger.log("✅ WebSocket подключен", "INFO")
+            file_logger.log("✅ WebSocket подключен (вкладка)", "INFO")
             
-            # Включаем домены
+            # Теперь команды работают!
             await self.send("Page.enable")
             await self.send("Runtime.enable")
             await self.send("Network.enable")
-            await self.send("DOM.enable")
             file_logger.log("✅ Домены включены", "INFO")
             
             # Применяем маскировку
@@ -367,7 +373,7 @@ class BrowserCDP:
     async def apply_mask(self):
         """Применение маскировки через JS"""
         try:
-            file_logger.log("🕵️ Применяю маскировку...")
+            file_logger.log("🕵️ Применяю маскировку...", "INFO")
             
             mask_js = """
             (function() {
@@ -406,7 +412,7 @@ class BrowserCDP:
     async def set_cookies(self, cookies):
         """Установка кук"""
         try:
-            file_logger.log(f"🍪 Установка {len(cookies)} кук...")
+            file_logger.log(f"🍪 Установка {len(cookies)} кук...", "INFO")
             
             cookies_list = []
             for cookie in cookies:
@@ -689,7 +695,11 @@ class BrowserCDP:
             await self.send("Target.closeTarget", {"targetId": self.target_id})
         except:
             pass
-        await self.ws.close()
+        if self.ws:
+            try:
+                await self.ws.close()
+            except:
+                pass
         self.connected = False
         self.agent_active = False
 
