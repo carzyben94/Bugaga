@@ -8,6 +8,7 @@ import asyncio
 import websockets
 import random
 import hashlib
+import re
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -56,36 +57,30 @@ class AgnesAI:
         self.api_url = AGNES_API_URL
     
     async def ask(self, prompt, context=None):
-        """Запрос к Agnes AI"""
         try:
-            messages = []
-            
-            # Системный промпт
-            messages.append({
-                "role": "system",
-                "content": """Ты - AI-агент, который помогает автоматизировать действия в браузере.
-                Ты анализируешь страницу и даёшь команды что делать.
-                Отвечай в формате JSON:
+            messages = [
                 {
-                    "action": "click" | "type" | "scroll" | "wait" | "get" | "screenshot",
-                    "selector": "css_selector",
-                    "text": "text for type if action is type",
-                    "reason": "почему ты это делаешь"
-                }"""
-            })
-            
-            # Контекст (DOM страницы)
-            if context:
-                messages.append({
+                    "role": "system",
+                    "content": """Ты - AI-агент для автоматизации браузера. Ты видишь структуру страницы и принимаешь решения.
+
+Правила:
+1. Отвечай ТОЛЬКО в формате JSON
+2. Если не знаешь что делать - ответь {"action": "done", "reason": "объясни"}
+3. Для кнопок используй data-testid если есть, иначе text или class
+
+Формат ответа:
+{"action": "click|type|scroll|wait|get|done", "selector": "css_selector", "text": "текст", "reason": "почему"}
+
+Примеры:
+{"action": "click", "selector": "[data-testid='tweetButton']", "reason": "Нажать кнопку Написать"}
+{"action": "type", "selector": "[data-testid='tweetTextarea_0']", "text": "Привет мир!", "reason": "Написать текст поста"}
+{"action": "done", "reason": "Задача выполнена"}"""
+                },
+                {
                     "role": "user",
-                    "content": f"Вот что я вижу на странице:\n{context}"
-                })
-            
-            # Запрос пользователя
-            messages.append({
-                "role": "user",
-                "content": prompt
-            })
+                    "content": f"Страница: {context}\n\nЗадача: {prompt}"
+                }
+            ]
             
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
@@ -99,29 +94,19 @@ class AgnesAI:
                 "max_tokens": 500
             }
             
-            response = requests.post(
-                self.api_url,
-                headers=headers,
-                json=payload,
-                timeout=30
-            )
+            response = requests.post(self.api_url, headers=headers, json=payload, timeout=30)
             
             if response.status_code == 200:
                 result = response.json()
                 content = result["choices"][0]["message"]["content"]
                 file_logger.log(f"AI ответ: {content[:100]}...", "INFO")
                 
-                # Пытаемся парсить JSON
-                try:
-                    # Ищем JSON в ответе
-                    import re
-                    json_match = re.search(r'\{.*\}', content, re.DOTALL)
-                    if json_match:
-                        return json.loads(json_match.group())
-                    else:
-                        return {"action": "error", "reason": "Не удалось распарсить ответ AI"}
-                except:
-                    return {"action": "error", "reason": "Ошибка парсинга JSON"}
+                # Ищем JSON
+                json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                if json_match:
+                    return json.loads(json_match.group())
+                else:
+                    return {"action": "done", "reason": "Задача выполнена"}
             else:
                 file_logger.log(f"Ошибка AI API: {response.status_code}", "ERROR")
                 return {"action": "error", "reason": f"Ошибка API: {response.status_code}"}
@@ -178,18 +163,14 @@ def get_launch_args():
         "--headless=new",
         "--no-sandbox",
         "--disable-dev-shm-usage",
-        
         "--disable-blink-features=AutomationControlled",
         "--disable-automation",
-        
         "--use-gl=egl",
         "--ignore-gpu-blocklist",
         "--enable-gpu-rasterization",
         "--enable-zero-copy",
-        
         "--disable-features=AudioServiceOutOfProcess,IsolateOrigins,site-per-process",
         "--disable-site-isolation-trials",
-        
         "--disable-default-apps",
         "--disable-extensions",
         "--disable-component-extensions-with-background-pages",
@@ -205,10 +186,8 @@ def get_launch_args():
         "--disable-breakpad",
         "--disable-ipc-flooding-protection",
         "--disable-renderer-backgrounding",
-        
         f"--window-position={window['left']},{window['top']}",
         f"--window-size={window['width']},{window['height']}",
-        
         "--no-default-browser-check",
         "--no-first-run",
         "--force-color-profile=srgb",
@@ -217,15 +196,13 @@ def get_launch_args():
         "--use-mock-keychain",
         "--export-tagged-pdf",
         "--enable-features=NetworkService,NetworkServiceInProcess",
-        
         f"--user-agent={get_random_user_agent()}",
-        
         f"--remote-debugging-port={CDP_PORT}"
     ]
     
     return args
 
-# ---------- БРАУЗЕР (АСИНХРОННЫЙ) ----------
+# ---------- БРАУЗЕР ----------
 class BrowserCDP:
     def __init__(self):
         self.ws = None
@@ -235,7 +212,6 @@ class BrowserCDP:
         self.webgl_vendor = get_random_webgl_vendor()
         self.webgl_renderer = get_random_webgl_renderer()
         self.cookies = COOKIES
-        self.ai = AgnesAI()
     
     def ensure_browser(self):
         try:
@@ -243,18 +219,12 @@ class BrowserCDP:
             file_logger.log("Chrome уже запущен", "INFO")
             return True
         except:
-            file_logger.log("Запускаю Chrome с полной маскировкой...", "INFO")
+            file_logger.log("Запускаю Chrome...", "INFO")
             try:
                 args = get_launch_args()
-                
-                subprocess.Popen(
-                    args,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    env={**os.environ, "LANG": "en_US.UTF-8"}
-                )
+                subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 time.sleep(5)
-                file_logger.log("Chrome запущен успешно", "INFO")
+                file_logger.log("Chrome запущен", "INFO")
                 return True
             except Exception as e:
                 file_logger.log(f"Не удалось запустить Chrome: {e}", "ERROR")
@@ -267,11 +237,8 @@ class BrowserCDP:
         resp = requests.get(f"http://localhost:{CDP_PORT}/json/version")
         ws_url = resp.json()["webSocketDebuggerUrl"]
         
-        self.ws = await websockets.connect(
-            ws_url,
-            max_size=15 * 1024 * 1024
-        )
-        file_logger.log("Подключен к браузеру (лимит 15MB)", "INFO")
+        self.ws = await websockets.connect(ws_url, max_size=15 * 1024 * 1024)
+        file_logger.log("Подключен к браузеру", "INFO")
         
         result = await self.send("Target.createTarget", {"url": "about:blank"})
         self.target_id = result["result"]["targetId"]
@@ -312,10 +279,9 @@ class BrowserCDP:
             await self.send("Network.setCookies", {
                 "cookies": cookies_list
             }, session_id=self.session_id)
-            
-            file_logger.log(f"✅ Установлено {len(cookies)} кук глобально", "INFO")
+            file_logger.log(f"✅ Установлено {len(cookies)} кук", "INFO")
         except Exception as e:
-            file_logger.log(f"Ошибка при установке кук: {e}", "ERROR")
+            file_logger.log(f"Ошибка установки кук: {e}", "ERROR")
     
     async def apply_full_mask(self):
         try:
@@ -612,7 +578,7 @@ class BrowserCDP:
                         webgl: '{webgl_fingerprint}'
                     }};
                     
-                    console.log('✅ 100% маскировка применена');
+                    console.log('✅ Маскировка применена');
                 }})();
             """
             
@@ -620,10 +586,10 @@ class BrowserCDP:
                 "expression": mask_script
             }, session_id=self.session_id)
             
-            file_logger.log("100% маскировка применена", "INFO")
+            file_logger.log("Маскировка применена", "INFO")
             
         except Exception as e:
-            file_logger.log(f"Ошибка при маскировке: {e}", "ERROR")
+            file_logger.log(f"Ошибка маскировки: {e}", "ERROR")
     
     async def send(self, method, params=None, session_id=None):
         self.msg_id += 1
@@ -649,10 +615,13 @@ class BrowserCDP:
                     raise Exception(f"CDP Error [{error_code}]: {error_msg}")
                 return data
     
-    # ========== ДЕЙСТВИЯ НА САЙТЕ ==========
+    async def navigate(self, url):
+        """Переход на URL"""
+        await self.send("Page.navigate", {"url": url}, session_id=self.session_id)
+        await asyncio.sleep(3)
     
     async def click(self, selector, timeout=10):
-        """Кликает на элемент по CSS-селектору"""
+        """Кликает на элемент"""
         file_logger.log(f"Клик на {selector}", "INFO")
         
         result = await self.send("Runtime.evaluate", {
@@ -682,11 +651,10 @@ class BrowserCDP:
             "expression": f"document.querySelector('{selector}').click();"
         }, session_id=self.session_id)
         
-        file_logger.log(f"Клик на {selector} выполнен", "INFO")
         return True
     
     async def type_text(self, selector, text, timeout=10):
-        """Вводит текст в поле по CSS-селектору"""
+        """Вводит текст в поле"""
         file_logger.log(f"Ввод текста в {selector}", "INFO")
         
         result = await self.send("Runtime.evaluate", {
@@ -718,77 +686,63 @@ class BrowserCDP:
                 const el = document.querySelector('{selector}');
                 el.value = '{escaped_text}';
                 el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
             """
         }, session_id=self.session_id)
         
-        file_logger.log(f"Текст введён в {selector}", "INFO")
         return True
-    
-    async def get_text(self, selector, timeout=10):
-        """Получает текст элемента по CSS-селектору"""
-        file_logger.log(f"Получение текста из {selector}", "INFO")
-        
-        result = await self.send("Runtime.evaluate", {
-            "expression": f"""
-                (function() {{
-                    const start = Date.now();
-                    while (Date.now() - start < {timeout * 1000}) {{
-                        const el = document.querySelector('{selector}');
-                        if (el) {{
-                            return el.innerText || el.textContent || '';
-                        }}
-                        const end = Date.now() + 100;
-                        while (Date.now() < end) {{}}
-                    }}
-                    return null;
-                }})();
-            """
-        }, session_id=self.session_id)
-        
-        text = result.get("result", {}).get("value")
-        if text:
-            file_logger.log(f"Текст получен: {text[:50]}...", "INFO")
-        else:
-            file_logger.log(f"Элемент {selector} не найден", "WARNING")
-        
-        return text
     
     async def get_page_context(self):
         """Получает контекст страницы для AI"""
         result = await self.send("Runtime.evaluate", {
             "expression": """
                 (function() {
+                    function getSelector(el) {
+                        if (el.id) return '#' + el.id;
+                        if (el.getAttribute('data-testid')) {
+                            return `[data-testid="${el.getAttribute('data-testid')}"]`;
+                        }
+                        if (el.className && typeof el.className === 'string') {
+                            const classes = el.className.split(' ').filter(c => c && c.length > 0);
+                            if (classes.length > 0) return '.' + classes.join('.');
+                        }
+                        return el.tagName.toLowerCase();
+                    }
+                    
                     const data = {
                         title: document.title,
                         url: window.location.href,
                         buttons: [],
                         inputs: [],
-                        links: [],
-                        text: document.body.innerText.slice(0, 2000)
+                        links: []
                     };
                     
-                    // Находим все кнопки
                     document.querySelectorAll('button, [role="button"]').forEach(el => {
                         const text = el.innerText || el.textContent || '';
                         if (text.trim()) {
                             data.buttons.push({
                                 text: text.trim().slice(0, 50),
-                                selector: el.id ? `#${el.id}` : 
-                                          el.className ? `.${el.className.split(' ')[0]}` : 
-                                          `[data-testid="${el.getAttribute('data-testid')}"]`
+                                selector: getSelector(el)
                             });
                         }
                     });
                     
-                    // Находим все поля ввода
                     document.querySelectorAll('input, textarea, [contenteditable="true"]').forEach(el => {
                         const placeholder = el.placeholder || el.getAttribute('aria-label') || '';
                         if (placeholder) {
                             data.inputs.push({
                                 placeholder: placeholder.slice(0, 50),
-                                selector: el.id ? `#${el.id}` : 
-                                          el.className ? `.${el.className.split(' ')[0]}` : 
-                                          `[data-testid="${el.getAttribute('data-testid')}"]`
+                                selector: getSelector(el)
+                            });
+                        }
+                    });
+                    
+                    document.querySelectorAll('a[href]').forEach(el => {
+                        const text = el.innerText || el.textContent || '';
+                        if (text.trim() && el.href) {
+                            data.links.push({
+                                text: text.trim().slice(0, 30),
+                                href: el.href
                             });
                         }
                     });
@@ -799,374 +753,189 @@ class BrowserCDP:
         }, session_id=self.session_id)
         
         context = result.get("result", {}).get("value", "{}")
-        file_logger.log(f"Контекст страницы получен", "INFO")
         return context
     
-    async def execute_ai_action(self, action_data):
-        """Выполняет действие от AI"""
-        action = action_data.get("action")
-        selector = action_data.get("selector")
-        text = action_data.get("text", "")
-        
-        file_logger.log(f"Выполняю AI-действие: {action} на {selector}", "INFO")
-        
-        if action == "click":
-            return await self.click(selector)
-        elif action == "type":
-            return await self.type_text(selector, text)
-        elif action == "screenshot":
-            return True
-        elif action == "wait":
-            await asyncio.sleep(5)
-            return True
-        else:
-            file_logger.log(f"Неизвестное действие: {action}", "WARNING")
-            return False
-    
-    async def navigate_and_screenshot(self, url):
-        """Навигация и создание скриншота"""
-        file_logger.log(f"Навигация на {url}", "INFO")
-        await self.connect()
-        
-        await self.send("Emulation.setDeviceMetricsOverride", {
-            "width": 1280,
-            "height": 720,
-            "deviceScaleFactor": 1,
-            "mobile": False,
-            "scale": 1
+    async def screenshot(self):
+        """Делает скриншот"""
+        result = await self.send("Page.captureScreenshot", {
+            "format": "jpeg",
+            "quality": 80
         }, session_id=self.session_id)
-        file_logger.log("Установлено разрешение: 1280x720", "INFO")
         
-        if "x.com" not in url and "twitter.com" not in url:
-            await self.send("Page.navigate", {"url": url}, session_id=self.session_id)
-            file_logger.log("Навигация на целевой URL", "INFO")
-        else:
-            file_logger.log("Уже на X.com", "INFO")
-        
-        await asyncio.sleep(5)
-        
-        file_logger.log("Делаю скриншот...", "INFO")
-        screenshot_data = None
-        
-        for attempt in range(3):
-            try:
-                result = await self.send("Page.captureScreenshot", {
-                    "format": "jpeg",
-                    "quality": 80
-                }, session_id=self.session_id)
-                
-                if "result" in result and "data" in result["result"]:
-                    screenshot_data = result["result"]["data"]
-                    file_logger.log(f"Скриншот создан (JPEG, 1280x720)", "INFO")
-                    break
-            except Exception as e:
-                file_logger.log(f"Попытка {attempt+1} не удалась: {e}", "WARNING")
-                await asyncio.sleep(1)
-        
-        if not screenshot_data:
-            raise Exception("Не удалось получить скриншот")
-        
+        return base64.b64decode(result["result"]["data"])
+    
+    async def close(self):
         try:
             await self.send("Target.closeTarget", {"targetId": self.target_id})
         except:
             pass
-        
         await self.ws.close()
-        
-        return base64.b64decode(screenshot_data)
 
 # ---------- ОБРАБОТЧИКИ ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user.first_name
-    user_id = update.effective_user.id
-    file_logger.log(f"Пользователь {user} (ID: {user_id}) запустил бота", "INFO")
+    file_logger.log(f"Пользователь {user} запустил бота", "INFO")
     
     await update.message.reply_text(
-        "📁 /log — получить файл логов\n\n"
-        "🔧 Бот умеет:\n"
-        "• Делать скриншоты (отправь URL)\n"
-        "• Кликать на элементы\n"
-        "• Вводить текст\n"
-        "• Парсить данные\n\n"
-        "🤖 AI-агент:\n"
-        "• /agent URL задача — выполнить задачу на сайте\n"
-        "• Пример: /agent https://x.com найди пост про AI"
+        "🤖 **AI-агент для автоматизации браузера**\n\n"
+        "Просто напиши что нужно сделать:\n"
+        "• `/agent https://x.com найди пост про AI`\n"
+        "• `/agent https://x.com напиши пост Привет`\n"
+        "• `/agent зайди на https://x.com`\n\n"
+        "📁 `/log` — получить логи"
     )
 
-async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = update.message.text.strip()
-    user = update.effective_user.first_name
-    user_id = update.effective_user.id    
-    file_logger.log(f"Пользователь {user} (ID: {user_id}) запросил: {url}", "INFO")
-    
-    if not url.startswith(('http://', 'https://')):
-        file_logger.log(f"Неверный URL от {user}: {url}", "WARNING")
-        await update.message.reply_text("❌ Добавь http:// или https://")
-        return
-    
-    await update.message.reply_text(f"🔄 Загружаю {url}...")
-    
-    try:
-        browser = BrowserCDP()
-        screenshot = await browser.navigate_and_screenshot(url)
-        await update.message.reply_photo(screenshot, caption=f"✅ {url}")
-        file_logger.log(f"Скриншот отправлен пользователю {user}", "INFO")
-    except Exception as e:
-        error_msg = str(e)
-        file_logger.log(f"Ошибка для {user} ({url}): {error_msg}", "ERROR")
-        await update.message.reply_text(f"❌ Ошибка: {error_msg}")
-
-# ========== КОМАНДА AI-АГЕНТА ==========
-
-async def agent_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда AI-агента: /agent URL задача"""
+async def handle_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик AI-агента"""
     user = update.effective_user.first_name
     user_id = update.effective_user.id
     
-    if len(context.args) < 2:
+    if not context.args:
         await update.message.reply_text(
             "❌ Укажи URL и задачу:\n"
             "/agent https://x.com найди пост про AI"
         )
         return
     
-    url = context.args[0]
-    task = " ".join(context.args[1:])
+    # Ищем URL среди аргументов
+    url = None
+    task_parts = []
     
-    file_logger.log(f"Пользователь {user} (ID: {user_id}) запустил AI-агента: {url} - {task}", "INFO")
+    for arg in context.args:
+        if arg.startswith(('http://', 'https://')):
+            url = arg
+        elif '.' in arg and ' ' not in arg and len(arg) > 3 and not arg.startswith('/'):
+            # Возможно URL без протокола
+            url = 'https://' + arg
+        else:
+            task_parts.append(arg)
     
-    await update.message.reply_text(f"🤖 Запускаю AI-агента на {url}...\nЗадача: {task}")
+    # Если URL не найден, ищем в тексте
+    if not url:
+        full_text = " ".join(context.args)
+        url_match = re.search(r'(https?://[^\s]+|[a-zA-Z0-9-]+\.[a-zA-Z]{2,}[^\s]*)', full_text)
+        if url_match:
+            url = url_match.group(1)
+            if not url.startswith(('http://', 'https://')):
+                url = 'https://' + url
+            # Убираем URL из задачи
+            task_parts = full_text.replace(url_match.group(0), '').strip().split()
+    
+    if not url:
+        await update.message.reply_text(
+            "❌ Не найден URL.\n"
+            "Примеры:\n"
+            "/agent https://x.com найди пост\n"
+            "/agent зайди на https://x.com"
+        )
+        return
+    
+    task = " ".join(task_parts) if task_parts else "проанализируй страницу"
+    
+    file_logger.log(f"Пользователь {user} (ID: {user_id}) запустил агента: {url} - {task}", "INFO")
+    
+    await update.message.reply_text(f"🤖 Запускаю агента на {url}...\n📝 Задача: {task}")
     
     try:
         browser = BrowserCDP()
         await browser.connect()
         
         # Переходим на URL
-        await browser.send("Page.navigate", {"url": url}, session_id=browser.session_id)
-        await asyncio.sleep(3)
+        await browser.navigate(url)
         
-        # Получаем контекст страницы
+        # Получаем контекст
         context_data = await browser.get_page_context()
         
-        # Запрашиваем у AI что делать
+        # Спрашиваем AI
         ai = AgnesAI()
-        prompt = f"""
-        Задача: {task}
+        ai_response = await ai.ask(task, context_data)
         
-        Я нахожусь на странице {url}.
-        Вот что я вижу:
-        {context_data}
-        
-        Что мне сделать, чтобы выполнить задачу?
-        """
-        
-        ai_response = await ai.ask(prompt, context_data)
-        
-        # Выполняем действия от AI
         results = []
-        if ai_response.get("action") != "error":
-            for attempt in range(3):  # до 3 действий
-                result = await browser.execute_ai_action(ai_response)
-                results.append(f"✅ {ai_response.get('action')} на {ai_response.get('selector')} - {'успешно' if result else 'неудача'}")
-                
-                # Ждём после действия
-                await asyncio.sleep(2)
-                
-                # Обновляем контекст и спрашиваем следующий шаг
-                context_data = await browser.get_page_context()
-                next_prompt = f"""
-                Я выполнил действие: {ai_response}
-                Теперь страница выглядит так:
-                {context_data}
-                
-                Задача: {task}
-                Что делать дальше?
-                """
-                
-                ai_response = await ai.ask(next_prompt, context_data)
-                if ai_response.get("action") == "error" or ai_response.get("action") == "done":
-                    break
+        max_actions = 5
         
-        # Делаем финальный скриншот
-        await browser.send("Emulation.setDeviceMetricsOverride", {
-            "width": 1280,
-            "height": 720,
-            "deviceScaleFactor": 1,
-            "mobile": False,
-            "scale": 1
-        }, session_id=browser.session_id)
+        for step in range(max_actions):
+            if ai_response.get("action") == "error":
+                results.append(f"❌ Ошибка: {ai_response.get('reason')}")
+                break
+            
+            if ai_response.get("action") == "done":
+                results.append(f"✅ {ai_response.get('reason', 'Задача выполнена!')}")
+                break
+            
+            action = ai_response.get("action")
+            selector = ai_response.get("selector")
+            text = ai_response.get("text", "")
+            reason = ai_response.get("reason", "")
+            
+            file_logger.log(f"Шаг {step+1}: {action} на {selector} ({reason})", "INFO")
+            
+            if action == "click":
+                success = await browser.click(selector)
+                results.append(f"🖱️ Клик на {selector} - {'✅' if success else '❌'}")
+            elif action == "type":
+                success = await browser.type_text(selector, text)
+                results.append(f"⌨️ Ввод '{text}' - {'✅' if success else '❌'}")
+            else:
+                results.append(f"❌ Неизвестное действие: {action}")
+                break
+            
+            await asyncio.sleep(2)
+            
+            # Следующий шаг
+            context_data = await browser.get_page_context()
+            ai_response = await ai.ask(
+                f"Задача: {task}\n\nЯ выполнил: {action} на {selector}\nРезультат: {success}\n\nЧто дальше?",
+                context_data
+            )
         
-        result = await browser.send("Page.captureScreenshot", {
-            "format": "jpeg",
-            "quality": 80
-        }, session_id=browser.session_id)
-        
-        screenshot = base64.b64decode(result["result"]["data"])
+        # Скриншот
+        screenshot = await browser.screenshot()
         
         # Закрываем
-        try:
-            await browser.send("Target.closeTarget", {"targetId": browser.target_id})
-        except:
-            pass
-        await browser.ws.close()
+        await browser.close()
         
         # Отправляем результат
-        await update.message.reply_photo(
-            screenshot,
-            caption=f"🤖 AI-агент выполнил задачу:\n{task}\n\nДействия:\n" + "\n".join(results)
-        )
+        caption = f"🤖 **Задача выполнена!**\n📍 {url}\n📝 {task}\n\n📋 **Действия:**\n" + "\n".join(results)
         
-        file_logger.log(f"AI-агент завершил задачу для {user}", "INFO")
+        await update.message.reply_photo(screenshot, caption=caption[:1024])
+        file_logger.log(f"Агент завершил задачу для {user}", "INFO")
         
     except Exception as e:
         error_msg = str(e)
-        file_logger.log(f"Ошибка AI-агента для {user}: {error_msg}", "ERROR")
-        await update.message.reply_text(f"❌ Ошибка AI-агента: {error_msg}")
-
-async def click_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user.first_name
-    user_id = update.effective_user.id
-    
-    if not context.args:
-        await update.message.reply_text("❌ Укажи селектор: /click button#submit")
-        return
-    
-    selector = " ".join(context.args)
-    file_logger.log(f"Пользователь {user} (ID: {user_id}) кликает на {selector}", "INFO")
-    
-    await update.message.reply_text(f"🔄 Кликаю на {selector}...")
-    
-    try:
-        browser = BrowserCDP()
-        await browser.connect()
-        result = await browser.click(selector)
-        await browser.ws.close()
-        
-        if result:
-            await update.message.reply_text(f"✅ Клик на {selector} выполнен")
-        else:
-            await update.message.reply_text(f"❌ Элемент {selector} не найден")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-
-async def type_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user.first_name
-    user_id = update.effective_user.id
-    
-    if len(context.args) < 2:
-        await update.message.reply_text("❌ Укажи селектор и текст: /type input#name Привет")
-        return
-    
-    selector = context.args[0]
-    text = " ".join(context.args[1:])
-    file_logger.log(f"Пользователь {user} (ID: {user_id}) вводит '{text}' в {selector}", "INFO")
-    
-    await update.message.reply_text(f"🔄 Ввожу текст в {selector}...")
-    
-    try:
-        browser = BrowserCDP()
-        await browser.connect()
-        result = await browser.type_text(selector, text)
-        await browser.ws.close()
-        
-        if result:
-            await update.message.reply_text(f"✅ Текст введён в {selector}")
-        else:
-            await update.message.reply_text(f"❌ Элемент {selector} не найден")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-
-async def get_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user.first_name
-    user_id = update.effective_user.id
-    
-    if not context.args:
-        await update.message.reply_text("❌ Укажи селектор: /get article")
-        return
-    
-    selector = " ".join(context.args)
-    file_logger.log(f"Пользователь {user} (ID: {user_id}) получает текст из {selector}", "INFO")
-    
-    await update.message.reply_text(f"🔄 Получаю текст из {selector}...")
-    
-    try:
-        browser = BrowserCDP()
-        await browser.connect()
-        text = await browser.get_text(selector)
-        await browser.ws.close()
-        
-        if text:
-            await update.message.reply_text(f"📝 Текст:\n{text[:1000]}")
-        else:
-            await update.message.reply_text(f"❌ Элемент {selector} не найден или пуст")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
+        file_logger.log(f"Ошибка агента для {user}: {error_msg}", "ERROR")
+        await update.message.reply_text(f"❌ Ошибка: {error_msg}\n\n💡 Формат: /agent https://x.com задача")
 
 async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user.first_name
-    user_id = update.effective_user.id
-    
-    file_logger.log(f"Пользователь {user} (ID: {user_id}) запросил лог-файл", "INFO")
     
     try:
         if not os.path.exists(LOG_FILE):
-            await update.message.reply_text("📭 Файл логов ещё не создан")
-            return
-        
-        file_size = os.path.getsize(LOG_FILE)
-        if file_size > 50 * 1024 * 1024:
-            await update.message.reply_text(f"⚠️ Файл слишком большой ({file_size // 1024 // 1024}MB)")
+            await update.message.reply_text("📭 Логов нет")
             return
         
         with open(LOG_FILE, 'rb') as f:
             await update.message.reply_document(
                 document=f,
-                filename=f"bot_logs_{time.strftime('%Y-%m-%d')}.txt",
-                caption=f"📋 Логи бота за {time.strftime('%Y-%m-%d %H:%M:%S')}"
+                filename=f"bot_logs_{time.strftime('%Y-%m-%d')}.txt"
             )
-        file_logger.log(f"Лог-файл отправлен пользователю {user}", "INFO")
-        
     except Exception as e:
-        error_msg = str(e)
-        file_logger.log(f"Ошибка при отправке лога {user}: {error_msg}", "ERROR")
-        await update.message.reply_text(f"❌ Ошибка: {error_msg}")
+        await update.message.reply_text(f"❌ Ошибка: {e}")
 
 # ---------- ЗАПУСК ----------
 def main():
-    file_logger.log("="*50, "INFO")
-    file_logger.log("БОТ ЗАПУЩЕН (С AI-АГЕНТОМ)", "INFO")
-    file_logger.log(f"Chrome путь: {CHROME_PATH}", "INFO")
-    file_logger.log(f"CDP порт: {CDP_PORT}", "INFO")
-    file_logger.log("WebSocket лимит: 15 MB", "INFO")
-    file_logger.log(f"Загружено кук: {len(COOKIES)}", "INFO")
-    file_logger.log("Разрешение скриншотов: 1280x720", "INFO")
-    file_logger.log(f"AI: Agnes API ({'✅' if AGNES_API_KEY != 'ваш_api_ключ' else '❌ не настроен'})", "INFO")
-    
     if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "ВАШ_ТОКЕН":
-        file_logger.log("TELEGRAM_BOT_TOKEN не указан!", "ERROR")
         print("❌ Укажи TELEGRAM_BOT_TOKEN в .env файле!")
         return
     
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("log", get_log))
-    app.add_handler(CommandHandler("click", click_command))
-    app.add_handler(CommandHandler("type", type_command))
-    app.add_handler(CommandHandler("get", get_command))
-    app.add_handler(CommandHandler("agent", agent_command))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
+    app.add_handler(CommandHandler("agent", handle_agent))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_agent))
     
     print("🚀 Бот запущен!")
-    print("📁 Команды:")
-    print("  /start - меню")
-    print("  /log - получить логи")
-    print("  /click selector - кликнуть на элемент")
-    print("  /type selector текст - ввести текст")
-    print("  /get selector - получить текст")
-    print("  /agent URL задача - запустить AI-агента")
-    print("  URL - сделать скриншот")
-    print(f"🍪 Куки: {len(COOKIES)} (X.com)")
-    print(f"🤖 AI: {'✅ настроен' if AGNES_API_KEY != 'ваш_api_ключ' else '❌ не настроен'}")
+    print("🤖 AI-агент: /agent https://x.com задача")
+    print("📁 Логи: /log")
     
     app.run_polling()
 
