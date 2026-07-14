@@ -28,6 +28,144 @@ AI_MODEL = "agnes-2.0-flash"
 # ---------- СПИСОК ID GOOGLE ----------
 GOOGLE_SEARCH_IDS = ['APjFqb', 'gbqfq', 'lst-ib', 'searchbox', 'q']
 
+# ---------- КУКИ ДЛЯ X.COM (TWITTER) ----------
+X_COOKIES = [
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "__cuid",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "lang",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "ru"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "dnt",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "1"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "guest_id",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "v1%3A178267838599411411"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "guest_id_marketing",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "v1%3A178267838599411411"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "guest_id_ads",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "v1%3A178267838599411411"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "personalization_id",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "\"v1_DKrxLZAC902dMFdd1QrVYg==\""
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "twid",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "u%3D2067347503503052800"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "auth_token",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "ct0",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb"
+    },
+    {
+        "domain": ".x.com",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "__cf_bm",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "KFaKAqD6gO1ZhCG6Eng0A2oPJccRx5Yjs2LnNaZIUDs-1784022753.029898-1.0.1.1-NIpFLkCP7hAPgu0V_JbWmriYyaVYe7B5rrbuxMtSTicUxDV0MYrhlTiAdVxPlMbIKnf4TLZNw53wRWfRpoodX0Ys6UaRcP2oXJjXWiYMwXp2i4tTOSYKYcLnRL41ius7"
+    }
+]
+
+# ---------- КУКИ ДЛЯ РАЗНЫХ САЙТОВ ----------
+SITE_COOKIES = {
+    "x.com": X_COOKIES,
+    "twitter.com": X_COOKIES,
+}
+
+def get_cookies_for_url(url):
+    """Возвращает куки для конкретного сайта"""
+    for domain, cookies in SITE_COOKIES.items():
+        if domain in url.lower():
+            return cookies
+    return []
+
 # ---------- СИСТЕМНЫЙ ПРОМТ (УЛУЧШЕННЫЙ) ----------
 SYSTEM_PROMPT = """Ты — AI-ассистент для анализа веб-страниц.
 
@@ -777,6 +915,7 @@ class BrowserCDP:
         self.target_id = None
         self.snapshot = {}
         self.last_fields = None
+        self.cookies_set = False
     
     def find_chrome(self):
         chrome_paths = [
@@ -876,6 +1015,37 @@ class BrowserCDP:
         except Exception as e:
             file_logger.log(f"❌ Ошибка создания вкладки: {e}", "ERROR")
             raise
+    
+    # ========== УСТАНОВКА КУК ==========
+    async def set_cookies(self, cookies_list):
+        """Устанавливает куки одной командой"""
+        try:
+            if not cookies_list:
+                return True
+            
+            cdp_cookies = []
+            for cookie in cookies_list:
+                cdp_cookie = {
+                    "name": cookie.get("name"),
+                    "value": cookie.get("value"),
+                    "domain": cookie.get("domain"),
+                    "path": cookie.get("path", "/"),
+                    "secure": cookie.get("secure", False),
+                    "httpOnly": cookie.get("httpOnly", False),
+                    "sameSite": cookie.get("sameSite", "unspecified"),
+                    "session": cookie.get("session", True)
+                }
+                cdp_cookies.append(cdp_cookie)
+            
+            await self.send("Network.setCookies", {
+                "cookies": cdp_cookies
+            })
+            file_logger.log(f"✅ Установлено {len(cdp_cookies)} кук", "INFO")
+            self.cookies_set = True
+            return True
+        except Exception as e:
+            file_logger.log(f"❌ Ошибка установки кук: {e}", "ERROR")
+            return False
     
     async def connect(self):
         if not self.ensure_browser():
@@ -983,7 +1153,6 @@ class BrowserCDP:
                     const target = '{target}'.toLowerCase();
                     const meaning = '{meaning}' if '{meaning}' else '';
                     
-                    // 🔥 РАСШИРЕННЫЙ СПИСОК ЭЛЕМЕНТОВ
                     const elements = document.querySelectorAll('button, a, input, div[role="button"], [role="link"], [role="menuitem"], input[type="submit"]');
                     
                     for (let el of elements) {{
@@ -997,7 +1166,6 @@ class BrowserCDP:
                         
                         const allText = text + ' ' + aria + ' ' + placeholder + ' ' + id + ' ' + cls + ' ' + title + ' ' + name;
                         
-                        // 🔥 СПЕЦИАЛЬНЫЕ СЛОВА ДЛЯ ПОИСКА
                         const searchWords = ['поиск', 'search', 'найти', 'find', 'google', 'btnk', 'gbqfba'];
                         
                         if (allText.includes(target) || 
@@ -1027,7 +1195,7 @@ class BrowserCDP:
             if not await self.ensure_connection():
                 return False
             
-            # 🔥 1. ПРЯМОЙ ПОИСК ПО ID
+            # 1. ПРЯМОЙ ПОИСК ПО ID
             for field_id in GOOGLE_SEARCH_IDS:
                 js = f"""
                     (function() {{
@@ -1037,7 +1205,6 @@ class BrowserCDP:
                             el.value = '';
                             el.value = '{text}';
                             
-                            // 🔥 НАСТОЯЩИЙ ENTER
                             const enterEvent = new KeyboardEvent('keydown', {{
                                 key: 'Enter',
                                 code: 'Enter',
@@ -1059,7 +1226,7 @@ class BrowserCDP:
                     file_logger.log(f"✅ Ввел '{text}' в поле по ID: {field_id} + Enter", "INFO")
                     return True
             
-            # 🔥 2. ПОИСК ПО АТРИБУТАМ
+            # 2. ПОИСК ПО АТРИБУТАМ
             meaning = get_meaning(field)
             
             js = f"""
@@ -1106,7 +1273,6 @@ class BrowserCDP:
                             el.value = '';
                             el.value = '{text}';
                             
-                            // 🔥 НАСТОЯЩИЙ ENTER
                             const enterEvent = new KeyboardEvent('keydown', {{
                                 key: 'Enter',
                                 code: 'Enter',
@@ -1122,7 +1288,7 @@ class BrowserCDP:
                         }}
                     }}
                     
-                    // 🔥 3. ПЕРВОЕ ВИДИМОЕ ПОЛЕ
+                    // 3. ПЕРВОЕ ВИДИМОЕ ПОЛЕ
                     for (let el of elements) {{
                         if (el.type !== 'hidden' && el.type !== 'submit' && el.type !== 'button') {{
                             const rect = el.getBoundingClientRect();
@@ -1131,7 +1297,6 @@ class BrowserCDP:
                                 el.value = '';
                                 el.value = '{text}';
                                 
-                                // 🔥 НАСТОЯЩИЙ ENTER
                                 const enterEvent = new KeyboardEvent('keydown', {{
                                     key: 'Enter',
                                     code: 'Enter',
@@ -1157,7 +1322,7 @@ class BrowserCDP:
                 file_logger.log(f"✅ Ввел '{text}' в поле + Enter", "INFO")
                 return True
             
-            # 🔥 4. ПОКАЗЫВАЕМ ПОЛЯ
+            # 4. ПОКАЗЫВАЕМ ПОЛЯ
             fields_js = """
                 (function() {
                     const inputs = document.querySelectorAll('input, textarea, [contenteditable="true"]');
@@ -1363,10 +1528,17 @@ class BrowserCDP:
             self.snapshot = {"title": "Ошибка", "url": "Ошибка", "total": 0, "elements": []}
             return False
 
+    # ========== НАВИГАЦИЯ С КУКАМИ ==========
     async def navigate_and_screenshot(self, url):
         file_logger.log(f"🌐 Навигация на {url}", "INFO")
         await self.connect()
         await self.apply_mask()
+        
+        # 🔥 УСТАНАВЛИВАЕМ КУКИ ДО НАВИГАЦИИ
+        cookies = get_cookies_for_url(url)
+        if cookies:
+            file_logger.log(f"🍪 Устанавливаю {len(cookies)} кук для {url}", "INFO")
+            await self.set_cookies(cookies)
         
         try:
             await self.send("Page.navigate", {"url": url})
@@ -1446,15 +1618,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['memory'] = Memory()
     
     await update.message.reply_text(
-        "👋 Привет! Я бот с ИИ-пониманием.\n\n"
+        "👋 Привет! Я бот с ИИ-пониманием и авторизацией через куки.\n\n"
         "🗣️ Говори как хочешь — я пойму:\n"
         "• зайди в гугл\n"
         "• открой ютуб\n"
+        "• зайди на x.com (автоматически с куками!)\n"
         "• какие кнопки?\n"
         "• нажми на Войти\n"
         "• введи погоду в поиск\n"
         "• сделай скрин\n"
         "• вернись назад\n\n"
+        "🍪 Автоматическая авторизация на X.com!\n"
         "🧠 Понимаю смысл, а не просто слова!\n"
         "🔍 Нахожу поля Google по ID!\n"
         "📊 Сортирую элементы по важности!\n"
@@ -1490,6 +1664,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• сделать скриншот\n"
             "• вернуться назад\n"
             "• показать историю\n\n"
+            "🍪 Автоматическая авторизация на X.com!\n"
             "📊 Сортирую элементы по важности (сначала видимые и интерактивные)!\n"
             "⌨️ После ввода текста автоматически нажимаю Enter!"
         )
@@ -1805,6 +1980,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• сделай скриншот\n"
             "• вернись назад\n"
             "• покажи историю\n\n"
+            "🍪 Автоматическая авторизация на X.com!\n"
             "📊 Сортирую элементы по важности!\n"
             "⌨️ Автоматически нажимаю Enter после ввода!"
         )
@@ -1847,15 +2023,15 @@ async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- ЗАПУСК ----------
 def main():
     print("="*50)
-    print("🚀 ЗАПУСК БОТА (ENTER + УЛУЧШЕННЫЙ КЛИК)")
+    print("🚀 ЗАПУСК БОТА (С КУКАМИ)")
     print("="*50)
     print(f"📌 Chrome путь: {CHROME_PATH}")
     print("🕵️ Маскировка: ВСЕГДА ВКЛЮЧЕНА")
     print("🧠 Память: ВКЛЮЧЕНА")
     print("🤖 AI-понимание: ВКЛЮЧЕНО")
-    print("🎯 Универсальный поиск: ВКЛЮЧЕН")
+    print("🍪 Куки: ВКЛЮЧЕНЫ (X.com)")
     print("✅ Google ID: APjFqb, gbqfq, lst-ib, searchbox, q")
-    print("📊 Сортировка: ВКЛЮЧЕНА (видимые → интерактивные → структурные)")
+    print("📊 Сортировка: ВКЛЮЧЕНА")
     print("⌨️ Enter после ввода: ВКЛЮЧЕН")
     print(f"🤖 AI модель: {AI_MODEL}")
     print("="*50)
@@ -1879,10 +2055,8 @@ def main():
     print("   • зайди в гугл")
     print("   • введи валера в поиск (автоматически Enter)")
     print("   • нажми на Войти")
-    print("   • какие кнопки? (отсортирует по важности)")
-    print("🔍 Теперь ищет поля Google по ID APjFqb!")
-    print("📊 Сортирует элементы: видимые → интерактивные → структурные")
-    print("⌨️ Автоматически нажимает Enter после ввода!")
+    print("   • зайди на x.com (автоматическая авторизация!)")
+    print("🍪 Куки для X.com установлены!")
     app.run_polling()
 
 if __name__ == "__main__":
