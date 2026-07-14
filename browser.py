@@ -7,6 +7,8 @@ import random
 import time
 from typing import Optional, List, Dict, Any
 
+GOOGLE_SEARCH_IDS = ['APjFqb', 'gbqfq', 'lst-ib', 'searchbox', 'q']
+
 class BrowserManager:
     def __init__(self, host='localhost', port=9222):
         self.host = host
@@ -1043,7 +1045,7 @@ class BrowserManager:
     # ========== ГЛАВНЫЙ МЕТОД: ВВОД ТЕКСТА + ENTER (КАК В ТВОЁМ КОДЕ) ==========
     
     async def type_text_cdp(self, selector: str, text: str):
-        """Ввод текста + Enter (как в твоём рабочем коде)"""
+        """Ввод текста + Enter (как в твоём коде)"""
         await self.connect()
         
         if await self.is_page_empty():
@@ -1051,26 +1053,38 @@ class BrowserManager:
         
         safe_selector = selector.replace('"', '\\"').replace("'", "\\'")
         
-        # 1. Клик по полю
-        await self.click_element(selector)
-        await asyncio.sleep(0.1)
-        
-        # 2. ВСЁ В ОДНОМ JS БЛОКЕ (как в твоём коде!)
+        # ✅ ВСЁ В ОДНОМ JS БЛОКЕ (как в твоём коде!)
         js = f"""
         (function() {{
-            const el = document.querySelector('{safe_selector}');
+            // 1. Прямой поиск поля по ID
+            const searchIds = ['APjFqb', 'gbqfq', 'lst-ib', 'searchbox', 'q'];
+            let el = null;
+            
+            for (let id of searchIds) {{
+                const found = document.getElementById(id);
+                if (found) {{
+                    el = found;
+                    break;
+                }}
+            }}
+            
+            // 2. Если не нашли по ID — ищем по селектору
+            if (!el) {{
+                el = document.querySelector('{safe_selector}');
+            }}
+            
             if (!el) return false;
             
-            // ✅ ВСЁ ПОСЛЕДОВАТЕЛЬНО В ОДНОМ БЛОКЕ
+            // 3. Фокус + ввод
             el.focus();
             el.value = '';
             el.value = '{text}';
             
-            // События для React
+            // 4. События для React
             el.dispatchEvent(new Event('input', {{ bubbles: true }}));
             el.dispatchEvent(new Event('change', {{ bubbles: true }}));
             
-            // ENTER (как в твоём коде)
+            // 5. ENTER
             const enterEvent = new KeyboardEvent('keydown', {{
                 key: 'Enter',
                 code: 'Enter',
@@ -1082,7 +1096,7 @@ class BrowserManager:
             }});
             el.dispatchEvent(enterEvent);
             
-            // 🔥 ДОПОЛНИТЕЛЬНО: отправка формы для X/Twitter
+            // 6. Отправка формы
             const form = el.closest('form');
             if (form) {{
                 if (form.requestSubmit) {{
@@ -1090,16 +1104,15 @@ class BrowserManager:
                 }} else {{
                     form.submit();
                 }}
-                return true;
             }}
             
-            // ИЛИ клик по кнопке поиска
-            const buttons = document.querySelectorAll('button[type="submit"], input[type="submit"]');
+            // 7. Поиск кнопки (запасной вариант)
+            const buttons = document.querySelectorAll('button[type="submit"], input[type="submit"], button[aria-label*="поиск"], button[aria-label*="search"]');
             for (let btn of buttons) {{
                 const text = (btn.textContent || btn.value || '').toLowerCase();
-                if (text.includes('поиск') || text.includes('search')) {{
+                if (text.includes('поиск') || text.includes('search') || text.includes('найти')) {{
                     btn.click();
-                    return true;
+                    break;
                 }}
             }}
             
