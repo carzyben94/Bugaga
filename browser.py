@@ -1211,7 +1211,7 @@ class BrowserManager:
         response = ai_engine.ask(prompt, "")
         return response
     
-    # ========== ИИ-АГЕНТ (ГЛАВНАЯ ФИЧА) ==========
+    # ========== ИИ-АГЕНТ (ГИБКИЙ ПРОМТ) ==========
     
     def _format_interactive_for_ai(self, elements: List[Dict]) -> str:
         if not elements:
@@ -1240,23 +1240,52 @@ class BrowserManager:
         return result
     
     async def ai_agent(self, command: str) -> str:
-        """ИИ-агент: читает DOM и выполняет команды"""
+        """ИИ-агент с гибким промтом"""
         await self.connect()
         
-        if await self.is_page_empty():
-            return "📭 Страница пустая. Сначала откройте страницу"
+        # Проверяем страницу
+        page_empty = await self.is_page_empty()
         
-        # Получаем DOM
-        dom_data = await self.get_dom_with_metadata()
-        full_dom = await self.get_full_dom()
-        dom_preview = full_dom[:5000] + "..." if len(full_dom) > 5000 else full_dom
+        # Собираем данные о странице
+        dom_data = {}
+        dom_preview = ""
+        interactive_str = "Нет данных"
         
-        # Формируем промпт для ИИ
-        from ai import AgnesAI
-        ai_engine = AgnesAI()
+        if not page_empty:
+            dom_data = await self.get_dom_with_metadata()
+            full_dom = await self.get_full_dom()
+            dom_preview = full_dom[:3000] + "..." if len(full_dom) > 3000 else full_dom
+            interactive_str = self._format_interactive_for_ai(dom_data.get('interactive', []))
         
-        prompt = f"""
-Ты ИИ-агент, который управляет браузером. Твоя задача — выполнить команду пользователя.
+        # ========== ГИБКИЙ ПРОМТ ==========
+        
+        if page_empty:
+            # 🔹 ПРОМТ ДЛЯ ПУСТОЙ СТРАНИЦЫ
+            prompt = f"""
+Ты ИИ-агент, управляешь браузером. СТРАНИЦА ПУСТАЯ (about:blank).
+
+Пользователь хочет: {command}
+
+Твои ВОЗМОЖНЫЕ ДЕЙСТВИЯ:
+1. open — открыть URL
+2. analyze — просто ответить
+3. none — ответить без действий
+
+⚠️ ВАЖНО: Если пользователь пишет "открой", "перейди", "зайди" + URL/сайт → ИСПОЛЬЗУЙ action: open
+
+Примеры:
+- "открой google.com" → {{"action": "open", "url": "https://google.com", "message": "🌐 Открываю Google"}}
+- "привет" → {{"action": "none", "message": "Привет! Я бот для управления браузером. Напиши что хочешь открыть."}}
+- "что ты умеешь?" → {{"action": "analyze", "message": "Я умею открывать страницы, делать скриншоты, кликать по кнопкам, искать элементы, вводить текст. Просто скажи что сделать!"}}
+
+ОТВЕТЬ В ФОРМАТЕ JSON:
+{{"action": "open | analyze | none", "url": "URL для открытия", "message": "ответ пользователю"}}
+"""
+        
+        else:
+            # 🔹 ПРОМТ ДЛЯ ЗАГРУЖЕННОЙ СТРАНИЦЫ
+            prompt = f"""
+Ты ИИ-агент, управляешь браузером.
 
 📄 ТЕКУЩАЯ СТРАНИЦА:
 Заголовок: {dom_data.get('title', 'Нет')}
@@ -1265,48 +1294,51 @@ URL: {dom_data.get('url', 'Нет')}
 Форм: {dom_data.get('forms', 0)}
 Ссылок: {dom_data.get('links', 0)}
 
-🖱 ДОСТУПНЫЕ ИНТЕРАКТИВНЫЕ ЭЛЕМЕНТЫ:
-{self._format_interactive_for_ai(dom_data.get('interactive', []))}
+🖱 ДОСТУПНЫЕ ЭЛЕМЕНТЫ:
+{interactive_str}
 
-📄 ФРАГМЕНТ DOM (первые 5000 символов):
+📄 ФРАГМЕНТ DOM:
 {dom_preview}
 
-КОМАНДА ПОЛЬЗОВАТЕЛЯ:
-{command}
+КОМАНДА ПОЛЬЗОВАТЕЛЯ: {command}
+
+Твои ВОЗМОЖНЫЕ ДЕЙСТВИЯ:
+1. click — кликнуть по элементу (нужен selector)
+2. type — ввести текст (нужны selector + text)
+3. open — открыть URL
+4. find — найти элементы по тексту
+5. wait — ожидать элемент
+6. screenshot — сделать скриншот
+7. analyze — проанализировать страницу
+8. none — просто ответить
+
+⚠️ ПРАВИЛА:
+- Для click/type ВСЕГДА указывай selector из доступных элементов
+- Если пользователь просит "нажми", "кликни" → используй action: click
+- Если пользователь просит "введи", "напиши" → используй action: type
+- Если пользователь спрашивает "что видишь", "какие кнопки" → используй action: analyze
+- Если пользователь просит "открой" → используй action: open
 
 ОТВЕТЬ В ФОРМАТЕ JSON:
 {{
-    "action": "click | type | find | analyze | wait | none | screenshot | open",
-    "selector": "CSS селектор элемента",
-    "text": "текст для ввода (если action=type)",
-    "url": "URL для открытия (если action=open)",
+    "action": "click | type | open | find | wait | screenshot | analyze | none",
+    "selector": "CSS селектор (для click/type/wait/find)",
+    "text": "текст для ввода (для type)",
+    "url": "URL (для open)",
     "message": "понятный ответ пользователю"
 }}
 
 ПРИМЕРЫ:
-1. Команда: "нажми на кнопку войти"
-   {{"action": "click", "selector": "#login-btn", "message": "✅ Кликнул по кнопке 'Войти'"}}
-
-2. Команда: "введи test@gmail.com в поле email"
-   {{"action": "type", "selector": "input[type='email']", "text": "test@gmail.com", "message": "✅ Ввёл email в поле"}}
-
-3. Команда: "какие кнопки есть?"
-   {{"action": "analyze", "selector": "", "message": "На странице есть кнопки: 'Войти', 'Зарегистрироваться'"}}
-
-4. Команда: "подожди загрузки"
-   {{"action": "wait", "selector": ".loading", "message": "⏳ Ожидание загрузки..."}}
-
-5. Команда: "что здесь написано?"
-   {{"action": "none", "selector": "", "message": "На странице написано: ..."}}
-
-6. Команда: "открой google.com"
-   {{"action": "open", "url": "https://google.com", "message": "✅ Открыл Google"}}
-
-7. Команда: "сделай скриншот"
-   {{"action": "screenshot", "selector": "", "message": "📸 Скриншот готов"}}
+1. "нажми на кнопку войти" → {{"action": "click", "selector": "#login-btn", "message": "✅ Кликнул по кнопке 'Войти'"}}
+2. "введи test@gmail.com" → {{"action": "type", "selector": "input[type='email']", "text": "test@gmail.com", "message": "✅ Ввёл email"}}
+3. "какие кнопки есть?" → {{"action": "analyze", "message": "На странице есть кнопки: 'Войти', 'Зарегистрироваться'"}}
+4. "открой youtube.com" → {{"action": "open", "url": "https://youtube.com", "message": "🌐 Открываю YouTube"}}
+5. "сделай скриншот" → {{"action": "screenshot", "message": "📸 Скриншот готов"}}
 """
         
         # Получаем ответ от ИИ
+        from ai import AgnesAI
+        ai_engine = AgnesAI()
         response = ai_engine.ask(prompt, "")
         
         # Парсим JSON
@@ -1336,7 +1368,6 @@ URL: {dom_data.get('url', 'Нет')}
             
             elif action == 'screenshot':
                 screenshot_base64 = await self.screenshot()
-                # Возвращаем base64 для отправки в Telegram
                 return f"{message}\n📸 screenshot_data:{screenshot_base64}"
             
             elif action == 'click':
