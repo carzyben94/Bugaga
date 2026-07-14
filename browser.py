@@ -2,6 +2,7 @@ import asyncio
 import json
 import websockets
 import requests
+import base64
 from typing import Optional
 
 class BrowserManager:
@@ -107,6 +108,7 @@ class BrowserManager:
         return result
     
     async def screenshot(self):
+        """Сделать скриншот (1280x720) - возвращает base64 строку без мусора"""
         await self.connect()
         await self._set_viewport()
         
@@ -115,7 +117,17 @@ class BrowserManager:
             "captureBeyondViewport": False
         })
         
-        return result['data']
+        # ✅ Очищаем base64 от лишних символов
+        screenshot_data = result['data']
+        # Убираем пробелы, переносы строк и другие мусорные символы
+        screenshot_data = screenshot_data.strip()
+        # Убираем возможные префиксы типа "data:image/png;base64,"
+        if ',' in screenshot_data:
+            screenshot_data = screenshot_data.split(',')[-1]
+        # Убираем все пробелы и переносы
+        screenshot_data = ''.join(screenshot_data.split())
+        
+        return screenshot_data
     
     async def get_page_text(self):
         await self.connect()
@@ -203,7 +215,7 @@ class BrowserManager:
             if not pages:
                 return "📭 Нет открытых вкладок"
             
-            result = "📑 <b>Список вкладок:</b>\n\n"
+            result = "📑 Список вкладок:\n\n"
             for i, page in enumerate(pages):
                 title = page.get('title', 'Без названия')[:40]
                 url = page.get('url', '')[:40]
