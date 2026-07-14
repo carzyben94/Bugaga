@@ -5,4 +5,4 @@ def test_function():
 
 class TestClass:
     def __init__(self):
-        self.name = "TestClass"
+        self.name = "TestClass" 
