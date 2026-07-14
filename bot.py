@@ -15,7 +15,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from browser import BrowserManager
 from ai import AgnesAI
 
-# ========== НАСТРОЙКА ЛОГИРОВАНИЯ (ТОЛЬКО ВАЖНОЕ) ==========
+# ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
 LOG_FILE = 'bot.log'
 
 if os.path.exists(LOG_FILE):
@@ -40,7 +40,6 @@ AI_MODEL = os.getenv("AI_MODEL", "agnes-2.0-flash")
 logger.info(f"🔑 TELEGRAM_TOKEN: {'✅' if TELEGRAM_TOKEN else '❌'}")
 logger.info(f"🔑 AGNES_API_KEY: {'✅' if AGNES_API_KEY else '❌'}")
 
-# ПУТЬ К CHROME
 CHROME_PATH = os.getenv("CHROME_PATH", "/usr/bin/google-chrome")
 
 if not os.path.exists(CHROME_PATH):
@@ -180,12 +179,10 @@ CDP порт: 9222
 # ========== ОСНОВНАЯ ЛОГИКА ==========
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка ВСЕХ сообщений"""
     text = update.message.text
     logger.info(f"📩 {text[:50]}...")
     
     try:
-        # Специальные команды
         if text.lower().startswith('/log'):
             await log_command(update, context)
             return
@@ -194,7 +191,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await start(update, context)
             return
         
-        # ========== ЛОКАЛЬНАЯ ОБРАБОТКА ==========
         text_lower = text.lower()
         
         # 1. ОТКРЫТИЕ СТРАНИЦЫ
