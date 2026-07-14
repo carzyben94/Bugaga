@@ -949,14 +949,17 @@ class BrowserManager:
         except:
             return "Без названия"
     
-    # ========== ИСПРАВЛЕННЫЙ CLICK_ELEMENT (С ПОДДЕРЖКОЙ data-testid) ==========
+    # ========== ИСПРАВЛЕННЫЙ CLICK_ELEMENT ==========
     
     async def click_element(self, selector: str):
-        """Универсальный клик с поддержкой data-testid"""
+        """Универсальный клик с поддержкой data-testid и aria-label"""
         await self.connect()
         
         if await self.is_page_empty():
             return "❌ Страница пустая. Сначала откройте страницу"
+        
+        # Экранируем кавычки для безопасной передачи в JS
+        safe_selector = selector.replace('"', '\\"').replace("'", "\\'")
         
         # 1. Пробуем найти элемент через DOM
         find_result = await self._send_command("DOM.querySelector", {
@@ -964,16 +967,15 @@ class BrowserManager:
         })
         node_id = find_result.get('nodeId')
         
-        # 2. Если не нашли — пробуем через JS (для ссылок и сложных селекторов)
+        # 2. Если не нашли — пробуем через JS
         if not node_id or node_id == 0:
             js = f"""
             (function() {{
-                const el = document.querySelector('{selector}');
+                const el = document.querySelector('{safe_selector}');
                 if (!el) return false;
                 
                 el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
                 
-                // Полные события для React
                 const rect = el.getBoundingClientRect();
                 const x = rect.left + rect.width / 2;
                 const y = rect.top + rect.height / 2;
@@ -998,12 +1000,11 @@ class BrowserManager:
             """
             result = await self.execute_script(js)
             if result:
-                # Обрезаем длинный селектор
                 short_selector = self._shorten_selector(selector)
                 return f"✅ Кликнул по: {short_selector}"
             return f"❌ Элемент не найден: {self._shorten_selector(selector)}"
         
-        # 3. Если нашли — кликаем через CDP (самый надёжный)
+        # 3. Если нашли — кликаем через CDP
         box_result = await self._send_command("DOM.getBoxModel", {
             "nodeId": node_id
         })
@@ -1017,11 +1018,11 @@ class BrowserManager:
         
         # Скролл к элементу
         await self.execute_script(f"""
-            document.querySelector('{selector}')?.scrollIntoView({{ block: 'center' }});
+            document.querySelector('{safe_selector}')?.scrollIntoView({{ block: 'center' }});
         """)
         await asyncio.sleep(0.1)
         
-        # Эмуляция клика через CDP (Input domain)
+        # Эмуляция клика через CDP
         await self._send_command("Input.dispatchMouseEvent", {
             "type": "mouseMoved",
             "x": x,
@@ -1156,7 +1157,7 @@ class BrowserManager:
         
         return f"❌ Текст не найден за {timeout} секунд: {text}"
     
-    # ========== DOM МЕТОДЫ (С ПОДДЕРЖКОЙ data-testid) ==========
+    # ========== DOM МЕТОДЫ ==========
     
     async def get_full_dom(self) -> str:
         await self.connect()
@@ -1200,7 +1201,7 @@ class BrowserManager:
                 return true;
             }
             
-            // ========== ПОЛУЧЕНИЕ СЕЛЕКТОРА С ПРИОРИТЕТОМ data-testid ==========
+            // ========== ПОЛУЧЕНИЕ СЕЛЕКТОРА ==========
             function getSelector(el) {
                 const testId = el.getAttribute('data-testid');
                 if (testId) {
