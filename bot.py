@@ -1,5 +1,5 @@
 import os
-import asyncio 
+import asyncio
 import subprocess
 import logging
 import time
@@ -114,8 +114,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"📩 Получена команда /start от {update.effective_user.username}")
     try:
         await update.message.reply_text(
-            "🤖 <b>Бот для управления браузером</b>\n\n"
-            "📌 <b>Команды:</b>\n"
+            "🤖 Бот для управления браузером\n\n"
+            "📌 Команды:\n"
             "/open <url> - открыть страницу\n"
             "/screenshot - скриншот (1280x720)\n"
             "/ask <вопрос> - вопрос по странице\n"
@@ -127,8 +127,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/back - назад\n"
             "/forward - вперёд\n"
             "/refresh - обновить\n"
-            "/help - эта справка",
-            parse_mode='HTML'
+            "/help - эта справка"
         )
         logger.info("✅ Ответ на /start отправлен")
     except Exception as e:
@@ -210,7 +209,7 @@ async def eval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     js = ' '.join(context.args)
     try:
         result = await browser.execute_script(js)
-        await update.message.reply_text(f"📊 Результат:\n<code>{str(result)[:4000]}</code>", parse_mode='HTML')
+        await update.message.reply_text(f"📊 Результат:\n{str(result)[:4000]}")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
@@ -218,7 +217,7 @@ async def tabs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Список вкладок"""
     try:
         result = await browser.list_tabs()
-        await update.message.reply_text(result, parse_mode='HTML')
+        await update.message.reply_text(result)
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
