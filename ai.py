@@ -1,117 +1,61 @@
-import json
+import os
 import requests
-from config import AGNES_API_KEY, AGNES_API_URL, AI_MODEL
+import json
 
-SYSTEM_PROMPT_COMMAND = """You are a smart AI assistant that understands user commands.
-
-🔥 IMPORTANT: ALWAYS respond with JSON only!
-
-RECOGNIZE THESE COMMANDS (in ANY language):
-1. Questions about page (ask):
-   - "what buttons do you see?" → {"action": "ask", "question": "what buttons are on the page?"}
-   - "какие кнопки есть?" → {"action": "ask", "question": "what buttons are on the page?"}
-   - "what fields are there?" → {"action": "ask", "question": "what input fields are on the page?"}
-   - "какие поля есть?" → {"action": "ask", "question": "what input fields are on the page?"}
-
-2. Click actions (click):
-   - "нажми Обзор" → {"action": "click", "target": "Обзор"}
-   - "click Explore" → {"action": "click", "target": "Explore"}
-   - "нажми Поиск" → {"action": "click", "target": "Search"}
-
-3. Type actions (type):
-   - "введи текст в поиск" → {"action": "type", "text": "текст", "field": "поиск"}
-   - "type hello in search" → {"action": "type", "text": "hello", "field": "search"}
-
-4. Navigation (navigate):
-   - "зайди на x.com" → {"action": "navigate", "url": "https://x.com"}
-   - "go to google" → {"action": "navigate", "url": "https://google.com"}
-
-5. Other:
-   - "сделай скриншот" → {"action": "screenshot"}
-   - "вернись назад" → {"action": "back"}
-
-🔥 RULES:
-- ALWAYS respond with JSON only
-- If you don't understand → {"action": "unknown"}
-
-Current user said: """
-
-SYSTEM_PROMPT_ANSWER = """You are a helpful assistant that answers questions about web pages.
-
-🔥 IMPORTANT RULES:
-1. Return ONLY plain text, NOT JSON!
-2. Group elements by type (buttons, inputs, links, menus)
-3. Sort within groups: visible first, hidden last
-4. Use bullet points with emojis
-
-FORMAT EXAMPLE:
-🔘 **Visible Buttons:**
-1. Home (visible)
-2. Explore (visible)
-
-🔘 **Hidden Buttons:**
-3. Settings (hidden)
-
-✏️ **Input Fields:**
-1. Search (visible)
-
-Current page context:
-"""
-
-def ask_ai_for_command(text, memory=None):
-    if not AGNES_API_KEY:
-        return {'action': 'error', 'message': 'AGNES_API_KEY не указан'}
+class AgnesAI:
+    def __init__(self):
+        self.api_key = os.getenv("AGNES_API_KEY")
+        self.api_url = os.getenv("AGNES_API_URL", "https://apihub.agnes-ai.com/v1/chat/completions")
+        self.model = os.getenv("AI_MODEL", "agnes-2.0-flash")
     
-    system_prompt = SYSTEM_PROMPT_COMMAND
-    if memory:
-        context = memory.get_context_for_ai()
-        if context:
-            system_prompt += f"\n\nCONTEXT:\n{context}"
-    
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": text}
-    ]
-    
-    headers = {"Authorization": f"Bearer {AGNES_API_KEY}", "Content-Type": "application/json"}
-    data = {"model": AI_MODEL, "messages": messages, "temperature": 0.1, "max_tokens": 200}
-    
-    try:
-        response = requests.post(AGNES_API_URL, headers=headers, json=data, timeout=30)
-        if response.status_code == 200:
-            result = response.json()
-            answer = result.get("choices", [{}])[0].get("message", {}).get("content", "{}")
-            try:
-                return json.loads(answer)
-            except:
-                return {'action': 'unknown'}
-        return {'action': 'error', 'message': f"HTTP {response.status_code}"}
-    except Exception as e:
-        return {'action': 'error', 'message': str(e)}
+    def ask(self, question: str, context_text: str = ""):
+        """Запрос к Agnes AI"""
+        if not self.api_key:
+            return "❌ AGNES_API_KEY не настроен"
+        
+        if not context_text or context_text.strip() == "":
+            context_text = "Страница не загружена или не содержит текста"
+        
+        system_prompt = """Ты помощник для анализа веб-страниц.
+Отвечай на вопросы пользователя на основе содержимого страницы.
+Если информации нет - честно скажи об этом.
+Будь точным, полезным и лаконичным.
+Используй русский язык для ответов."""
 
-def ask_ai_for_answer(prompt, context=None, memory=None):
-    if not AGNES_API_KEY:
-        return "❌ AGNES_API_KEY is not set"
-    
-    system_prompt = SYSTEM_PROMPT_ANSWER
-    if memory:
-        memory_context = memory.get_context_for_ai()
-        if memory_context:
-            system_prompt += f"\n{memory_context}"
-    
-    messages = [{"role": "system", "content": system_prompt}]
-    if context:
-        messages.append({"role": "user", "content": f"Page structure:\n{context}"})
-    messages.append({"role": "user", "content": f"Question: {prompt}"})
-    
-    headers = {"Authorization": f"Bearer {AGNES_API_KEY}", "Content-Type": "application/json"}
-    data = {"model": AI_MODEL, "messages": messages, "temperature": 0.7, "max_tokens": 600}
-    
-    try:
-        response = requests.post(AGNES_API_URL, headers=headers, json=data, timeout=30)
-        if response.status_code == 200:
-            result = response.json()
-            return result.get("choices", [{}])[0].get("message", {}).get("content", "Нет ответа")
-        return f"❌ Ошибка: HTTP {response.status_code}"
-    except Exception as e:
-        return f"❌ Ошибка: {e}"
+        user_content = f"Содержимое страницы:\n{context_text}\n\nВопрос пользователя: {question}"
+        
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content}
+            ],
+            "temperature": 0.7,
+            "max_tokens": 1000
+        }
+        
+        try:
+            response = requests.post(
+                self.api_url,
+                json=payload,
+                headers=headers,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                return data['choices'][0]['message']['content']
+            else:
+                return f"❌ Ошибка API ({response.status_code}): {response.text[:200]}"
+                
+        except requests.exceptions.Timeout:
+            return "❌ Таймаут запроса к AI"
+        except requests.exceptions.ConnectionError:
+            return "❌ Ошибка подключения к AI"
+        except Exception as e:
+            return f"❌ Ошибка: {str(e)}"
