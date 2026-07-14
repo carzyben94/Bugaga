@@ -100,36 +100,25 @@ class Memory:
             return snapshots[-(index + 1)].get('data', {}).get('url')
         return None
     
-    # ========== 🔥 НОВАЯ ФУНКЦИЯ: ПОИСК В SNAPSHOT ==========
     def find_element_by_text(self, text):
-        """Ищет элемент в snapshot по тексту (работает с любым текстом)"""
+        """Ищет элемент в snapshot по тексту"""
         if not self.current_snapshot:
             return None
         
         interactive = self.current_snapshot.get('interactive', [])
         text_lower = text.lower().strip()
         
-        # Сначала ищем точное совпадение
+        # Точное совпадение
         for el in interactive:
             el_text = el.get('text', '').lower().strip()
             if el_text == text_lower:
-                return {
-                    'selector': el.get('selector'),
-                    'text': el.get('text'),
-                    'type': el.get('type'),
-                    'visible': el.get('visible', True)
-                }
+                return {'selector': el.get('selector'), 'text': el.get('text'), 'type': el.get('type'), 'visible': el.get('visible', True)}
         
-        # Потом частичное
+        # Частичное
         for el in interactive:
             el_text = el.get('text', '').lower().strip()
             if text_lower in el_text or el_text in text_lower:
-                return {
-                    'selector': el.get('selector'),
-                    'text': el.get('text'),
-                    'type': el.get('type'),
-                    'visible': el.get('visible', True)
-                }
+                return {'selector': el.get('selector'), 'text': el.get('text'), 'type': el.get('type'), 'visible': el.get('visible', True)}
         
         return None
     
@@ -196,32 +185,71 @@ class Memory:
         return "\n".join(lines)
 
 # ---------- AI ФУНКЦИИ ----------
-SYSTEM_PROMPT = """You are a smart AI assistant that understands user commands.
+SYSTEM_PROMPT_COMMAND = """You are a smart AI assistant that understands user commands.
 
-🔥 IMPORTANT: ALWAYS use ENGLISH names for elements!
+🔥 IMPORTANT: ALWAYS respond with JSON only!
 
 RECOGNIZE THESE COMMANDS (in ANY language):
-1. Questions about page:
+1. Questions about page (ask):
    - "what buttons do you see?" → {"action": "ask", "question": "what buttons are on the page?"}
    - "какие кнопки есть?" → {"action": "ask", "question": "what buttons are on the page?"}
+   - "what fields are there?" → {"action": "ask", "question": "what input fields are on the page?"}
+   - "какие поля есть?" → {"action": "ask", "question": "what input fields are on the page?"}
 
-2. Actions:
+2. Click actions (click):
    - "нажми Обзор" → {"action": "click", "target": "Обзор"}
    - "click Explore" → {"action": "click", "target": "Explore"}
+
+3. Type actions (type):
    - "введи текст в поиск" → {"action": "type", "text": "текст", "field": "поиск"}
    - "type hello in search" → {"action": "type", "text": "hello", "field": "search"}
 
-3. Navigation:
+4. Navigation (navigate):
    - "зайди на x.com" → {"action": "navigate", "url": "https://x.com"}
    - "go to google" → {"action": "navigate", "url": "https://google.com"}
 
+5. Other:
+   - "сделай скриншот" → {"action": "screenshot"}
+   - "вернись назад" → {"action": "back"}
+
 🔥 RULES:
 - ALWAYS respond with JSON only
-- If user asks about elements → use "ask"
-- If user wants to click → use "click"
-- If user wants to type → use "type"
+- If you don't understand → {"action": "unknown"}
+- Language: answer in the same language as user asked
 
 Current user said: """
+
+SYSTEM_PROMPT_ANSWER = """You are a helpful assistant that answers questions about web pages.
+
+🔥 IMPORTANT RULES:
+1. Return ONLY plain text, NOT JSON!
+2. Group elements by type (buttons, inputs, links, menus)
+3. Sort within groups: visible first, hidden last
+4. Use bullet points with emojis
+5. If answering about buttons, list them with visibility status
+
+FORMAT EXAMPLE:
+🔘 **Visible Buttons:**
+1. Home (visible)
+2. Explore (visible)
+
+🔘 **Hidden Buttons:**
+3. Settings (hidden)
+
+✏️ **Input Fields:**
+1. Search (visible)
+
+🔗 **Links:**
+1. Profile (visible)
+
+🔥 SORTING RULES:
+- VISIBLE interactive elements first
+- VISIBLE content elements second  
+- HIDDEN interactive elements third
+- HIDDEN content elements last
+
+Current page context:
+"""
 
 def ask_ai_for_command(text, memory=None):
     try:
@@ -229,7 +257,7 @@ def ask_ai_for_command(text, memory=None):
             return {'action': 'error', 'message': 'AGNES_API_KEY не указан'}
         
         messages = []
-        system_prompt = SYSTEM_PROMPT
+        system_prompt = SYSTEM_PROMPT_COMMAND
         
         if memory:
             context = memory.get_context_for_ai()
@@ -265,22 +293,17 @@ def ask_ai_for_answer(prompt, context=None, memory=None):
             return "❌ AGNES_API_KEY is not set"
         
         messages = []
-        system_prompt = SYSTEM_PROMPT + """
-        
-🔥 LANGUAGE RULES:
-- If user asked in English → answer in English
-- If user asked in Russian → answer in Russian
-- Always use emojis: 🔘 button, 🔗 link, ✏️ input field, 👁️ visible, 👻 hidden"""
+        system_prompt = SYSTEM_PROMPT_ANSWER
         
         if memory:
             memory_context = memory.get_context_for_ai()
             if memory_context:
-                system_prompt += f"\n\nCONTEXT:\n{memory_context}"
+                system_prompt += f"\n{memory_context}"
         
         messages.append({"role": "system", "content": system_prompt})
         if context:
-            messages.append({"role": "user", "content": f"PAGE STRUCTURE:\n{context}"})
-        messages.append({"role": "user", "content": f"QUESTION: {prompt}"})
+            messages.append({"role": "user", "content": f"Page structure:\n{context}"})
+        messages.append({"role": "user", "content": f"Question: {prompt}"})
         
         headers = {"Authorization": f"Bearer {AGNES_API_KEY}", "Content-Type": "application/json"}
         data = {"model": AI_MODEL, "messages": messages, "temperature": 0.7, "max_tokens": 600}
@@ -289,7 +312,8 @@ def ask_ai_for_answer(prompt, context=None, memory=None):
         
         if response.status_code == 200:
             result = response.json()
-            return result.get("choices", [{}])[0].get("message", {}).get("content", "Нет ответа")
+            answer = result.get("choices", [{}])[0].get("message", {}).get("content", "Нет ответа")
+            return answer
         else:
             return f"❌ Ошибка: HTTP {response.status_code}"
     except Exception as e:
@@ -947,7 +971,7 @@ class BrowserCDP:
             file_logger.log(f"❌ Ошибка сбора элементов: {e}", "ERROR")
             return []
 
-    # ========== SNAPSHOT ==========
+    # ========== SNAPSHOT С СОРТИРОВКОЙ ==========
     async def get_snapshot(self):
         try:
             file_logger.log("📸 Делаю слепок страницы...", "INFO")
@@ -1023,7 +1047,18 @@ class BrowserCDP:
             title = await self.eval_js("document.title") or "Нет заголовка"
             url = await self.eval_js("window.location.href") or "Нет URL"
             
-            elements.sort(key=lambda x: x.get('visible', False), reverse=True)
+            # 🔥 СОРТИРОВКА: видимые интерактивные → видимые → скрытые
+            elements.sort(key=lambda x: (
+                (x.get('visible', False) and x.get('isInteractive', False)) * 100 +
+                (x.get('visible', False)) * 10 +
+                (x.get('isInteractive', False)) * 1
+            ), reverse=True)
+            
+            if interactive_elements:
+                interactive_elements.sort(key=lambda x: (
+                    (x.get('visible', False)) * 10 +
+                    (x.get('type') == 'interactive') * 5
+                ), reverse=True)
             
             self.snapshot = {
                 "title": title,
@@ -1041,22 +1076,17 @@ class BrowserCDP:
             self.snapshot = {"title": "Ошибка", "url": "Ошибка", "total": 0, "elements": [], "interactive": []}
             return False
 
-    # ========== КЛИК (С ПОИСКОМ В SNAPSHOT) ==========
+    # ========== КЛИК ==========
     async def click_element(self, target, memory=None):
         try:
             if not await self.ensure_connection():
                 return False
             
-            # 🔥 1. СНАЧАЛА ИЩЕМ В SNAPSHOT
+            # Сначала ищем в snapshot
             if memory:
                 found = memory.find_element_by_text(target)
                 if found and found.get('selector'):
                     file_logger.log(f"🔍 Нашел в snapshot: '{found['text']}' → {found['selector']}", "INFO")
-                    
-                    # Проверяем видимость
-                    if not found.get('visible', True):
-                        file_logger.log(f"⚠️ Элемент '{target}' скрыт (visible: false)", "WARNING")
-                        # Пробуем все равно кликнуть
                     
                     js = f"""
                         (function() {{
@@ -1072,10 +1102,8 @@ class BrowserCDP:
                     if result:
                         file_logger.log(f"✅ Кликнул по '{target}' через snapshot", "INFO")
                         return True
-                    else:
-                        file_logger.log(f"⚠️ Не удалось кликнуть по селектору, пробую другие методы", "WARNING")
             
-            # 🔥 2. ЕСЛИ НЕ НАШЛИ — СТАРЫЙ МЕТОД (поиск по тексту в DOM)
+            # Старый метод
             file_logger.log(f"🔍 Ищу '{target}' в DOM", "INFO")
             
             js = f"""
@@ -1117,7 +1145,6 @@ class BrowserCDP:
             
             file_logger.log(f"🔍 Ищем поле '{field}'", "INFO")
             
-            # Сначала ищем по ID Google
             for field_id in GOOGLE_SEARCH_IDS:
                 js = f"""
                     (function() {{
@@ -1141,7 +1168,6 @@ class BrowserCDP:
                     file_logger.log(f"✅ Ввел '{text}' в поле по ID: {field_id} + Enter", "INFO")
                     return True
             
-            # Потом по атрибутам
             js = f"""
                 (function() {{
                     const field = '{field}'.toLowerCase();
@@ -1364,7 +1390,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     command = ask_ai_for_command(text, memory)
     action = command.get('action', 'unknown')
     
-    # ====== FALLBACK ======
+    # Fallback
     if action == 'unknown':
         text_lower = text.lower()
         if any(word in text_lower for word in ['кнопк', 'button', 'buttons', 'кнопки']):
@@ -1390,7 +1416,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
     
-    # ====== НАВИГАЦИЯ ======
+    # Навигация
     if action == 'navigate':
         url = command.get('url')
         if not url:
@@ -1409,7 +1435,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await thinking_msg.edit_text(f"❌ Ошибка: {e}")
         return
     
-    # ====== ВОПРОС ======
+    # Вопрос
     if action == 'ask':
         question = command.get('question', text)
         if not memory.current_snapshot:
@@ -1435,7 +1461,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await thinking_msg.edit_text(f"❌ Ошибка: {e}")
         return
     
-    # ====== КЛИК (С ПЕРЕДАЧЕЙ MEMORY) ======
+    # Клик
     if action == 'click':
         target = command.get('target')
         if not target:
@@ -1446,7 +1472,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await thinking_msg.edit_text(f"🔘 Ищу '{target}'...")
         try:
-            result = await memory.browser.click_element(target, memory)  # ← передаем memory!
+            result = await memory.browser.click_element(target, memory)
             if result:
                 memory.add_action("click", {"target": target})
                 await thinking_msg.edit_text(f"✅ Кликнул по '{target}'")
@@ -1466,7 +1492,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await thinking_msg.edit_text(f"❌ Ошибка: {e}")
         return
     
-    # ====== ВВОД ТЕКСТА ======
+    # Ввод текста
     if action == 'type':
         text_input = command.get('text')
         field = command.get('field')
@@ -1499,7 +1525,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await thinking_msg.edit_text(f"❌ Ошибка: {e}")
         return
     
-    # ====== ОТПРАВКА ФОРМЫ ======
+    # Отправка формы
     if action == 'submit':
         if not memory.browser:
             await thinking_msg.edit_text("📭 Сначала загрузи страницу")
@@ -1527,7 +1553,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await thinking_msg.edit_text(f"❌ Ошибка: {e}")
         return
     
-    # ====== СКРИНШОТ ======
+    # Скриншот
     if action == 'screenshot':
         if not memory.current_url or not memory.browser:
             await thinking_msg.edit_text("📭 Сначала загрузи страницу")
@@ -1545,7 +1571,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await thinking_msg.edit_text(f"❌ Ошибка: {e}")
         return
     
-    # ====== ВОЗВРАТ НАЗАД ======
+    # Возврат назад
     if action == 'back':
         last_url = memory.get_last_url(1)
         if last_url:
@@ -1563,7 +1589,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await thinking_msg.edit_text("📭 Нет предыдущей страницы")
         return
     
-    # ====== ИСТОРИЯ ======
+    # История
     if action == 'history':
         history_text = memory.get_history_text()
         await thinking_msg.delete()
@@ -1581,13 +1607,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"📜 **История:**\n\n{history_text}", parse_mode='Markdown')
         return
     
-    # ====== ОЧИСТКА ======
+    # Очистка
     if action == 'clear':
         context.user_data['memory'] = Memory()
         await thinking_msg.edit_text("🧹 Память очищена!")
         return
     
-    # ====== НЕИЗВЕСТНО ======
+    # Неизвестно
     if action == 'unknown':
         await thinking_msg.edit_text(
             "❌ Не понял команду\n\n"
@@ -1599,7 +1625,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # ====== ОШИБКА ======
+    # Ошибка
     if action == 'error':
         await thinking_msg.edit_text(f"❌ Ошибка: {command.get('message', 'Неизвестная ошибка')}")
         return
@@ -1622,14 +1648,14 @@ async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- ЗАПУСК ----------
 def main():
     print("="*50)
-    print("🚀 ЗАПУСК БОТА (СНАПШОТ-ПОИСК)")
+    print("🚀 ЗАПУСК БОТА (СОРТИРОВКА + БЕЗ JSON)")
     print("="*50)
     print(f"📌 Chrome путь: {CHROME_PATH}")
     print("📦 WebSocket max_size: 50 МБ")
     print("🕵️ Маскировка: ВКЛЮЧЕНА")
     print("🍪 Куки: ВКЛЮЧЕНЫ (X.com)")
     print("🔍 Поиск в snapshot: ВКЛЮЧЕН")
-    print("📊 Snapshot: ВСЕ ЭЛЕМЕНТЫ")
+    print("📊 Сортировка: ВКЛЮЧЕНА (видимые → скрытые)")
     print("🔄 Auto-reconnect: ВКЛЮЧЕН")
     print("="*50)
     
@@ -1651,7 +1677,7 @@ def main():
     print("   • зайди на x.com")
     print("   • what buttons do you see?")
     print("   • нажми Обзор")
-    print("🔍 Поиск в snapshot: находит любой текст!")
+    print("📊 Ответы с сортировкой по важности!")
     app.run_polling()
 
 if __name__ == "__main__":
