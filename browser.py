@@ -1042,7 +1042,7 @@ class BrowserManager:
                 return parts[0] + '.' + parts[1] + '.' + parts[2] + '...'
         return selector[:60] + '...'
     
-    # ========== ГЛАВНЫЙ МЕТОД: ВВОД ТЕКСТА + ENTER (КАК В ТВОЁМ КОДЕ) ==========
+    # ========== ГЛАВНЫЙ МЕТОД: ВВОД ТЕКСТА + ENTER ==========
     
     async def type_text_cdp(self, selector: str, text: str):
         """Ввод текста + Enter (как в твоём коде)"""
@@ -1053,38 +1053,111 @@ class BrowserManager:
         
         safe_selector = selector.replace('"', '\\"').replace("'", "\\'")
         
-        # ✅ ВСЁ В ОДНОМ JS БЛОКЕ (как в твоём коде!)
         js = f"""
         (function() {{
-            // 1. Прямой поиск поля по ID
-            const searchIds = ['APjFqb', 'gbqfq', 'lst-ib', 'searchbox', 'q'];
             let el = null;
+            let foundBy = 'не найден';
             
-            for (let id of searchIds) {{
+            // ========== 1. GOOGLE: ПОИСК ПО ID ==========
+            const googleIds = ['APjFqb', 'gbqfq', 'lst-ib', 'searchbox', 'q'];
+            for (let id of googleIds) {{
                 const found = document.getElementById(id);
                 if (found) {{
                     el = found;
+                    foundBy = 'ID: ' + id;
                     break;
                 }}
             }}
             
-            // 2. Если не нашли по ID — ищем по селектору
+            // ========== 2. ПОИСК ПО АТРИБУТАМ (X/Twitter и другие) ==========
             if (!el) {{
-                el = document.querySelector('{safe_selector}');
+                const inputs = document.querySelectorAll('input, textarea');
+                for (let inp of inputs) {{
+                    const placeholder = (inp.placeholder || '').toLowerCase();
+                    const aria = (inp.getAttribute('aria-label') || '').toLowerCase();
+                    const name = (inp.name || '').toLowerCase();
+                    const type = (inp.type || '').toLowerCase();
+                    const id = (inp.id || '').toLowerCase();
+                    const cls = (inp.className || '').toLowerCase();
+                    
+                    const isMatch = (
+                        placeholder.includes('поиск') || placeholder.includes('search') ||
+                        placeholder.includes('найти') || placeholder.includes('find') ||
+                        aria.includes('поиск') || aria.includes('search') ||
+                        name === 'q' || name === 'search' ||
+                        type === 'search' ||
+                        id.includes('search') || id.includes('query') ||
+                        cls.includes('search') || cls.includes('query')
+                    );
+                    
+                    if (isMatch) {{
+                        el = inp;
+                        foundBy = 'атрибуты';
+                        break;
+                    }}
+                }}
             }}
             
-            if (!el) return false;
+            // ========== 3. X/Twitter: ПОИСК ПО DATA-TESTID ==========
+            if (!el) {{
+                const testIds = ['SearchBox_Search_Input', 'tweetTextarea_0'];
+                for (let testId of testIds) {{
+                    const found = document.querySelector('[data-testid="' + testId + '"]');
+                    if (found) {{
+                        el = found;
+                        foundBy = 'data-testid: ' + testId;
+                        break;
+                    }}
+                }}
+            }}
             
-            // 3. Фокус + ввод
+            // ========== 4. ПЕРВОЕ ВИДИМОЕ ПОЛЕ (запасной вариант) ==========
+            if (!el) {{
+                const inputs = document.querySelectorAll('input, textarea');
+                for (let inp of inputs) {{
+                    if (inp.type !== 'hidden' && inp.offsetParent !== null) {{
+                        el = inp;
+                        foundBy = 'первое видимое поле';
+                        break;
+                    }}
+                }}
+            }}
+            
+            // ========== 5. ПОИСК ПО СЕЛЕКТОРУ (если передан) ==========
+            if (!el && '{safe_selector}') {{
+                el = document.querySelector('{safe_selector}');
+                if (el) foundBy = 'селектор';
+            }}
+            
+            // ========== 6. ЕСЛИ НИЧЕГО НЕ НАШЛИ — ПОКАЗЫВАЕМ ПОЛЯ ==========
+            if (!el) {{
+                const inputs = document.querySelectorAll('input, textarea, [contenteditable="true"]');
+                const result = [];
+                inputs.forEach(inp => {{
+                    const rect = inp.getBoundingClientRect();
+                    if (rect.width > 0 && rect.height > 0) {{
+                        result.push({{
+                            tag: inp.tagName.toLowerCase(),
+                            id: inp.id || '',
+                            class: inp.className || '',
+                            placeholder: inp.placeholder || '',
+                            ariaLabel: inp.getAttribute('aria-label') || '',
+                            name: inp.name || '',
+                            type: inp.type || ''
+                        }});
+                    }}
+                }});
+                return result;
+            }}
+            
+            // ========== 7. ВВОД ТЕКСТА + ENTER ==========
             el.focus();
             el.value = '';
             el.value = '{text}';
             
-            // 4. События для React
             el.dispatchEvent(new Event('input', {{ bubbles: true }}));
             el.dispatchEvent(new Event('change', {{ bubbles: true }}));
             
-            // 5. ENTER
             const enterEvent = new KeyboardEvent('keydown', {{
                 key: 'Enter',
                 code: 'Enter',
@@ -1096,7 +1169,7 @@ class BrowserManager:
             }});
             el.dispatchEvent(enterEvent);
             
-            // 6. Отправка формы
+            // ========== 8. ОТПРАВКА ФОРМЫ ==========
             const form = el.closest('form');
             if (form) {{
                 if (form.requestSubmit) {{
@@ -1106,7 +1179,7 @@ class BrowserManager:
                 }}
             }}
             
-            // 7. Поиск кнопки (запасной вариант)
+            // ========== 9. ПОИСК КНОПКИ (запасной вариант) ==========
             const buttons = document.querySelectorAll('button[type="submit"], input[type="submit"], button[aria-label*="поиск"], button[aria-label*="search"]');
             for (let btn of buttons) {{
                 const text = (btn.textContent || btn.value || '').toLowerCase();
@@ -1122,10 +1195,46 @@ class BrowserManager:
         
         result = await self.execute_script(js)
         
-        if result:
+        # ========== 10. ОБРАБОТКА РЕЗУЛЬТАТА ==========
+        # Если результат — список полей (массив)
+        if isinstance(result, list) and len(result) > 0:
+            fields_text = "🔍 **На странице есть поля:**\n\n"
+            for i, f in enumerate(result[:10], 1):
+                tag = f.get('tag', 'unknown')
+                placeholder = f.get('placeholder', '')
+                ariaLabel = f.get('ariaLabel', '')
+                name = f.get('name', '')
+                field_id = f.get('id', '')
+                type = f.get('type', '')
+                
+                desc = f"  {i}. <{tag}>"
+                if placeholder:
+                    desc += f" placeholder='{placeholder}'"
+                elif ariaLabel:
+                    desc += f" aria-label='{ariaLabel}'"
+                elif name:
+                    desc += f" name='{name}'"
+                if field_id:
+                    desc += f" id='{field_id}'"
+                if type:
+                    desc += f" type='{type}'"
+                fields_text += desc + "\n"
+            
+            if len(result) > 10:
+                fields_text += f"\n... и ещё {len(result) - 10} полей"
+            
+            return fields_text
+        
+        # Если результат — True (ввод выполнен)
+        if result is True:
             return f"✅ Ввёл '{text}' и отправил поиск"
-        else:
+        
+        # Если результат — False (ошибка)
+        if result is False:
             return f"⚠️ Ввёл '{text}', но поиск не отправлен"
+        
+        # Если ничего не подошло
+        return f"⚠️ Ввёл '{text}', но результат неизвестен"
     
     # ========== ОСТАЛЬНЫЕ МЕТОДЫ ==========
     
@@ -1291,6 +1400,7 @@ class BrowserManager:
             
             const interactive = [];
             
+            // ========== КНОПКИ ==========
             document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"], [role="link"], [data-testid*="Button"], [data-testid*="Link"], [data-testid*="Tab"]').forEach(el => {
                 if (!isVisible(el)) return;
                 const rect = el.getBoundingClientRect();
@@ -1312,6 +1422,7 @@ class BrowserManager:
                 });
             });
             
+            // ========== ПОЛЯ ВВОДА ==========
             document.querySelectorAll('input:not([type="submit"]):not([type="button"]):not([type="hidden"]), textarea, select').forEach(el => {
                 if (!isVisible(el)) return;
                 const rect = el.getBoundingClientRect();
@@ -1338,6 +1449,7 @@ class BrowserManager:
                 });
             });
             
+            // ========== ССЫЛКИ ==========
             document.querySelectorAll('a[href]:not([href=""]):not([href="#"])').forEach(el => {
                 if (!isVisible(el)) return;
                 const rect = el.getBoundingClientRect();
