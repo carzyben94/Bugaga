@@ -61,7 +61,6 @@ logger.info(f"📂 Путь к Chrome: {CHROME_PATH}")
 
 # ========== ЗАПУСК CHROME ==========
 def start_chrome():
-    """Запуск Chrome с маскировкой"""
     try:
         temp_browser = BrowserManager()
         
@@ -114,47 +113,28 @@ except Exception as e:
 # ========== КОМАНДЫ ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Приветствие — только одна команда"""
     logger.info(f"📩 Получена команда /start от {update.effective_user.username}")
     try:
         await update.message.reply_text(
             "🤖 Бот для управления браузером\n\n"
-            "📌 Команды:\n"
-            "/open <url> - открыть страницу\n"
-            "/screenshot - скриншот (1280x720)\n"
-            "/ask <вопрос> - вопрос по странице\n"
-            "/click <селектор> - кликнуть элемент\n"
-            "/eval <js> - выполнить JS\n"
-            "/tabs - список вкладок\n"
-            "/newtab <url> - создать вкладку\n"
-            "/closetab - закрыть вкладку\n"
-            "/back - назад\n"
-            "/forward - вперёд\n"
-            "/refresh - обновить\n"
-            "/wait <селектор> - ожидать элемент\n"
-            "/waittext <текст> - ожидать текст\n"
-            "/geo - случайная геолокация\n"
-            "/geo <ip> - гео по IP\n"
-            "/geoset <lat> <lng> - установить координаты\n"
-            "/timezone <зона> - установить таймзону\n"
-            "/lang <язык> - установить язык\n"
-            "/dom - получить полный HTML\n"
-            "/summary - сводка по странице\n"
-            "/find <текст> - найти элемент по тексту\n"
-            "/aifind <описание> - ИИ поиск элемента\n"
-            "/aiclick <описание> - ИИ клик по элементу\n"
-            "/aianalyze <вопрос> - ИИ анализ страницы\n"
-            "/agent <команда> - ИИ-агент (выполняет любые команды)\n"
-            "/log - скачать логи\n"
-            "/help - эта справка"
+            "Просто напиши что хочешь сделать в чат.\n\n"
+            "📌 Примеры:\n"
+            "• открой google.com\n"
+            "• сделай скриншот\n"
+            "• нажми на кнопку войти\n"
+            "• введи test@gmail.com в поле email\n"
+            "• какие кнопки есть на странице?\n"
+            "• что здесь написано?\n"
+            "• подожди загрузки\n\n"
+            "Я сам пойму что тебе нужно! 🧠"
         )
         logger.info("✅ Ответ на /start отправлен")
     except Exception as e:
         logger.error(f"❌ Ошибка в /start: {e}")
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await start(update, context)
-
 async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Скачать логи (скрытая команда)"""
     logger.info(f"📩 Получена команда /log от {update.effective_user.username}")
     try:
         log_content = ""
@@ -199,399 +179,30 @@ CDP порт: 9222
         logger.error(f"❌ Ошибка в /log: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
-async def open_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Укажи URL: /open https://example.com")
-        return
-    
-    url = context.args[0]
-    if not url.startswith(('http://', 'https://')):
-        url = 'https://' + url
-    
-    try:
-        await update.message.reply_text(f"🌐 Открываю: {url}")
-        await browser.open_page(url)
-        title = await browser.get_page_title()
-        await update.message.reply_text(f"✅ Открыто: {title}")
-    except Exception as e:
-        logger.error(f"❌ Ошибка /open: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"📩 Получена команда /screenshot от {update.effective_user.username}")
-    await update.message.reply_text("📸 Делаю скриншот...")
-    try:
-        screenshot_base64 = await browser.screenshot()
-        image_bytes = base64.b64decode(screenshot_base64)
-        
-        await update.message.reply_photo(
-            photo=InputFile(io.BytesIO(image_bytes), filename="screenshot.png"),
-            caption="📸 Скриншот 1280x720"
-        )
-        logger.info("✅ Скриншот отправлен")
-    except Exception as e:
-        logger.error(f"❌ Ошибка скриншота: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Напиши вопрос: /ask что видишь?")
-        return
-    
-    question = ' '.join(context.args)
-    await update.message.reply_text("🧠 Думаю...")
-    
-    try:
-        page_text = await browser.get_page_text()
-        response = ai.ask(question, page_text)
-        await update.message.reply_text(response[:4096])
-    except Exception as e:
-        logger.error(f"❌ Ошибка /ask: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def click_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Укажи селектор: /click #button")
-        return
-    
-    selector = ' '.join(context.args)
-    try:
-        result = await browser.click_element(selector)
-        await update.message.reply_text(result)
-    except Exception as e:
-        logger.error(f"❌ Ошибка /click: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def eval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Напиши JS: /eval document.title")
-        return
-    
-    js = ' '.join(context.args)
-    try:
-        result = await browser.execute_script(js)
-        await update.message.reply_text(f"📊 Результат:\n{str(result)[:4000]}")
-    except Exception as e:
-        logger.error(f"❌ Ошибка /eval: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def tabs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        result = await browser.list_tabs()
-        await update.message.reply_text(result)
-    except Exception as e:
-        logger.error(f"❌ Ошибка /tabs: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def newtab_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = context.args[0] if context.args else ""
-    try:
-        result = await browser.create_tab(url)
-        await update.message.reply_text(result)
-    except Exception as e:
-        logger.error(f"❌ Ошибка /newtab: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def closetab_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        result = await browser.close_tab()
-        await update.message.reply_text(result)
-    except Exception as e:
-        logger.error(f"❌ Ошибка /closetab: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def back_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        result = await browser.go_back()
-        await update.message.reply_text(result if isinstance(result, str) else "⬅️ Назад")
-    except Exception as e:
-        logger.error(f"❌ Ошибка /back: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def forward_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        result = await browser.go_forward()
-        await update.message.reply_text(result if isinstance(result, str) else "➡️ Вперёд")
-    except Exception as e:
-        logger.error(f"❌ Ошибка /forward: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        result = await browser.refresh()
-        await update.message.reply_text(result if isinstance(result, str) else "🔄 Обновлено")
-    except Exception as e:
-        logger.error(f"❌ Ошибка /refresh: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-# ========== ОЖИДАНИЕ ==========
-
-async def wait_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Укажи селектор: /wait #button")
-        return
-    
-    selector = ' '.join(context.args)
-    await update.message.reply_text(f"⏳ Жду элемент: {selector}")
-    
-    try:
-        result = await browser.wait_for_selector(selector)
-        await update.message.reply_text(result)
-    except Exception as e:
-        logger.error(f"❌ Ошибка /wait: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def waittext_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Укажи текст: /waittext Привет")
-        return
-    
-    text = ' '.join(context.args)
-    await update.message.reply_text(f"⏳ Жду текст: {text}")
-    
-    try:
-        result = await browser.wait_for_text(text)
-        await update.message.reply_text(result)
-    except Exception as e:
-        logger.error(f"❌ Ошибка /waittext: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-# ========== ГЕОЛОКАЦИЯ ==========
-
-async def geo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"📩 Получена команда /geo от {update.effective_user.username}")
-    
-    try:
-        if context.args:
-            ip = context.args[0]
-            result = await browser.setup_location_by_ip(ip)
-            await update.message.reply_text(result)
-        else:
-            result = await browser.setup_location_by_ip()
-            await update.message.reply_text(result)
-    except Exception as e:
-        logger.error(f"❌ Ошибка /geo: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def geoset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) < 2:
-        await update.message.reply_text("❌ Укажи координаты: /geoset 55.7558 37.6173")
-        return
-    
-    try:
-        lat = float(context.args[0])
-        lng = float(context.args[1])
-        result = await browser.set_geolocation(lat, lng)
-        await update.message.reply_text(result)
-    except Exception as e:
-        logger.error(f"❌ Ошибка /geoset: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def timezone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Укажи таймзону: /timezone Europe/London")
-        return
-    
-    timezone = context.args[0]
-    try:
-        result = await browser.set_timezone(timezone)
-        await update.message.reply_text(result)
-    except Exception as e:
-        logger.error(f"❌ Ошибка /timezone: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def lang_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Укажи язык: /lang ru-RU")
-        return
-    
-    lang = context.args[0]
-    try:
-        result = await browser.set_language(lang)
-        await update.message.reply_text(result)
-    except Exception as e:
-        logger.error(f"❌ Ошибка /lang: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-# ========== DOM КОМАНДЫ ==========
-
-async def dom_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"📩 Получена команда /dom от {update.effective_user.username}")
-    try:
-        await update.message.reply_text("📄 Получаю DOM страницы...")
-        dom = await browser.get_full_dom()
-        
-        if len(dom) > 4096:
-            await update.message.reply_document(
-                document=io.BytesIO(dom.encode('utf-8')),
-                filename="page_dom.html",
-                caption="📄 Полный DOM страницы"
-            )
-        else:
-            await update.message.reply_text(f"📄 DOM страницы:\n\n{dom[:4000]}")
-    except Exception as e:
-        logger.error(f"❌ Ошибка /dom: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"📩 Получена команда /summary от {update.effective_user.username}")
-    try:
-        await update.message.reply_text("📊 Анализирую страницу...")
-        summary = await browser.get_dom_summary()
-        await update.message.reply_text(summary)
-    except Exception as e:
-        logger.error(f"❌ Ошибка /summary: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def find_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Укажи текст для поиска: /find войти")
-        return
-    
-    text = ' '.join(context.args)
-    logger.info(f"📩 Получена команда /find от {update.effective_user.username}: {text}")
-    
-    try:
-        await update.message.reply_text(f"🔍 Ищу: {text}")
-        results = await browser.find_elements_by_text(text)
-        
-        if not results:
-            await update.message.reply_text(f"❌ Ничего не найдено по запросу: {text}")
-            return
-        
-        response = f"🔍 Найдено {len(results)} элементов по запросу '{text}':\n\n"
-        for i, el in enumerate(results[:10]):
-            response += f"{i+1}. <{el.get('tag', '')}>"
-            if el.get('text'):
-                response += f" '{el.get('text')[:30]}'"
-            if el.get('type'):
-                response += f" type={el.get('type')}"
-            response += f"\n   Селектор: {el.get('selector', '')}\n"
-        
-        if len(results) > 10:
-            response += f"\n... и ещё {len(results) - 10} элементов"
-        
-        await update.message.reply_text(response[:4000])
-    except Exception as e:
-        logger.error(f"❌ Ошибка /find: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-# ========== ИИ КОМАНДЫ ==========
-
-async def aifind_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Укажи описание: /aifind кнопка войти")
-        return
-    
-    description = ' '.join(context.args)
-    logger.info(f"📩 Получена команда /aifind от {update.effective_user.username}: {description}")
-    
-    try:
-        await update.message.reply_text(f"🧠 Ищу: {description}")
-        result = await browser.ai_find_element(description)
-        
-        if not result.get('found', False):
-            await update.message.reply_text(f"❌ {result.get('message', 'Элемент не найден')}")
-            return
-        
-        el = result['best']
-        response = f"✅ Найден элемент по описанию '{description}':\n\n"
-        response += f"📌 Тег: <{el.get('tag', '')}>\n"
-        if el.get('text'):
-            response += f"📝 Текст: {el.get('text', '')[:50]}\n"
-        if el.get('placeholder'):
-            response += f"💬 Плейсхолдер: {el.get('placeholder', '')}\n"
-        if el.get('type'):
-            response += f"🔤 Тип: {el.get('type', '')}\n"
-        if el.get('value'):
-            response += f"📋 Значение: {el.get('value', '')[:50]}\n"
-        response += f"🎯 Селектор: {el.get('selector', '')}\n"
-        response += f"👁 Видим: {'✅' if el.get('visible', False) else '❌'}\n"
-        response += f"📐 Координаты: ({el.get('x', 0)}, {el.get('y', 0)})\n"
-        
-        candidates = result.get('candidates', [])
-        if len(candidates) > 1:
-            response += f"\n🔍 Другие кандидаты ({len(candidates)-1}):\n"
-            for c in candidates[1:4]:
-                response += f"  - <{c.get('tag', '')}>"
-                if c.get('text'):
-                    response += f" '{c.get('text', '')[:20]}'"
-                response += f" (селектор: {c.get('selector', '')})\n"
-        
-        await update.message.reply_text(response[:4000])
-    except Exception as e:
-        logger.error(f"❌ Ошибка /aifind: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def aiclick_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Укажи описание: /aiclick кнопка войти")
-        return
-    
-    description = ' '.join(context.args)
-    logger.info(f"📩 Получена команда /aiclick от {update.effective_user.username}: {description}")
-    
-    try:
-        await update.message.reply_text(f"🖱 Взаимодействую: {description}")
-        result = await browser.ai_interact(description, "click")
-        await update.message.reply_text(result)
-    except Exception as e:
-        logger.error(f"❌ Ошибка /aiclick: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def aianalyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Укажи вопрос: /aianalyze какие кнопки есть на странице?")
-        return
-    
-    question = ' '.join(context.args)
-    logger.info(f"📩 Получена команда /aianalyze от {update.effective_user.username}")
-    
-    try:
-        await update.message.reply_text("🧠 Анализирую страницу...")
-        response = await browser.ai_analyze_page(question)
-        await update.message.reply_text(response[:4096])
-    except Exception as e:
-        logger.error(f"❌ Ошибка /aianalyze: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-# ========== ИИ-АГЕНТ (ГЛАВНАЯ ФИЧА!) ==========
-
-async def agent_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ИИ-агент: выполняет любые команды на странице"""
-    if not context.args:
-        await update.message.reply_text(
-            "🤖 ИИ-агент выполняет команды на странице\n\n"
-            "📌 Примеры:\n"
-            "/agent нажми на кнопку войти\n"
-            "/agent введи test@gmail.com в поле email\n"
-            "/agent какие кнопки есть на странице?\n"
-            "/agent заполни форму регистрации\n"
-            "/agent подожди загрузки\n"
-            "/agent что здесь написано?"
-        )
-        return
-    
-    command = ' '.join(context.args)
-    logger.info(f"📩 Получена команда /agent от {update.effective_user.username}: {command}")
-    
-    try:
-        await update.message.reply_text(f"🧠 ИИ-агент выполняет: {command}")
-        result = await browser.ai_agent(command)
-        await update.message.reply_text(result[:4096])
-    except Exception as e:
-        logger.error(f"❌ Ошибка /agent: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-# ========== ОБРАБОТЧИК ТЕКСТА ==========
+# ========== ОСНОВНАЯ ЛОГИКА ==========
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка ВСЕХ сообщений через ИИ-агент"""
     text = update.message.text
     logger.info(f"📩 Получен текст: {text[:50]}...")
+    
     try:
-        page_text = await browser.get_page_text()
-        response = ai.ask(text, page_text)
-        await update.message.reply_text(response[:4096])
+        # Специальные команды (для обратной совместимости)
+        command_lower = text.lower()
+        
+        if command_lower.startswith('/log'):
+            await log_command(update, context)
+            return
+        
+        if command_lower.startswith('/start'):
+            await start(update, context)
+            return
+        
+        # Остальное — через ИИ-агент
+        await update.message.reply_text(f"🧠 Думаю...")
+        result = await browser.ai_agent(text)
+        await update.message.reply_text(result[:4096])
+        
     except Exception as e:
         logger.error(f"❌ Ошибка handle_message: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
@@ -624,32 +235,7 @@ def main():
     try:
         logger.info("📝 Регистрирую команды...")
         app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("help", help_command))
         app.add_handler(CommandHandler("log", log_command))
-        app.add_handler(CommandHandler("open", open_command))
-        app.add_handler(CommandHandler("screenshot", screenshot_command))
-        app.add_handler(CommandHandler("ask", ask_command))
-        app.add_handler(CommandHandler("click", click_command))
-        app.add_handler(CommandHandler("eval", eval_command))
-        app.add_handler(CommandHandler("tabs", tabs_command))
-        app.add_handler(CommandHandler("newtab", newtab_command))
-        app.add_handler(CommandHandler("closetab", closetab_command))
-        app.add_handler(CommandHandler("back", back_command))
-        app.add_handler(CommandHandler("forward", forward_command))
-        app.add_handler(CommandHandler("refresh", refresh_command))
-        app.add_handler(CommandHandler("wait", wait_command))
-        app.add_handler(CommandHandler("waittext", waittext_command))
-        app.add_handler(CommandHandler("geo", geo_command))
-        app.add_handler(CommandHandler("geoset", geoset_command))
-        app.add_handler(CommandHandler("timezone", timezone_command))
-        app.add_handler(CommandHandler("lang", lang_command))
-        app.add_handler(CommandHandler("dom", dom_command))
-        app.add_handler(CommandHandler("summary", summary_command))
-        app.add_handler(CommandHandler("find", find_command))
-        app.add_handler(CommandHandler("aifind", aifind_command))
-        app.add_handler(CommandHandler("aiclick", aiclick_command))
-        app.add_handler(CommandHandler("aianalyze", aianalyze_command))
-        app.add_handler(CommandHandler("agent", agent_command))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         logger.info("✅ Команды зарегистрированы")
     except Exception as e:
