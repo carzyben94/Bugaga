@@ -239,36 +239,8 @@ class AgentHandler:
                 if not selector:
                     return "❌ Не найден селектор для ввода"
                 
-                # ✅ 1. КЛИКАЕМ ПО ПОЛЮ (активируем)
-                await self.browser.click_element(selector)
-                await asyncio.sleep(0.1)
-                
-                # ✅ 2. ВВОДИМ ТЕКСТ
-                js = f"""
-                (function() {{
-                    const el = document.querySelector('{selector}');
-                    if (el) {{
-                        el.value = '{text}';
-                        el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                        el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                        return true;
-                    }}
-                    return false;
-                }})()
-                """
-                result = await self.browser.execute_script(js)
-                if not result:
-                    return f"❌ Не удалось ввести текст в поле: {selector}"
-                
-                # ✅ 3. АВТОМАТИЧЕСКИ НАЖИМАЕМ ENTER
-                await self.browser.press_enter(selector)
-                
-                return f"{message}\n✅ Текст введён и отправлен (Enter)"
-            
-            elif action == 'press_enter':
-                if not selector:
-                    return "❌ Не указан селектор для поля"
-                result = await self.browser.press_enter(selector)
+                # ✅ Используем посимвольный ввод через CDP
+                result = await self.browser.type_text_cdp(selector, text)
                 return f"{message}\n{result}"
             
             elif action == 'find':
