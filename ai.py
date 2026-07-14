@@ -98,7 +98,7 @@ class AgentPrompts:
         url: str,
         interactive_str: str
     ) -> str:
-        """Промт для загруженной страницы (только полезные элементы)"""
+        """Промт для загруженной страницы (с приоритетом data-testid)"""
         return f"""
 Ты ИИ-агент, управляешь браузером.
 
@@ -108,6 +108,22 @@ URL: {url}
 
 🖱 ДОСТУПНЫЕ ЭЛЕМЕНТЫ (ТОЛЬКО ТЕ, С КОТОРЫМИ МОЖНО ВЗАИМОДЕЙСТВОВАТЬ):
 {interactive_str}
+
+⚠️ ВАЖНЫЕ ПРАВИЛА ВЫБОРА СЕЛЕКТОРА:
+1. Если у элемента есть data-testid — ИСПОЛЬЗУЙ ЕГО! Это самый надёжный селектор.
+   Пример: [data-testid='AppTabBar_Home_Link']
+
+2. Если есть aria-label — используй его.
+   Пример: [aria-label='Перейти к ленте']
+
+3. Если есть id — используй #id.
+
+4. CSS-классы (.css-..., .r-...) — ИСПОЛЬЗУЙ ТОЛЬКО В КРАЙНЕМ СЛУЧАЕ, они могут меняться.
+
+5. Для полей ввода используй атрибуты: name, placeholder, type.
+   Пример: input[name='email'], input[type='search'], [placeholder='Поиск']
+
+6. Для кнопок без текста используй aria-label или data-testid.
 
 КОМАНДА ПОЛЬЗОВАТЕЛЯ: {command}
 
@@ -123,11 +139,9 @@ URL: {url}
 
 ⚠️ ПРАВИЛА:
 - Для click/type ВСЕГДА указывай selector из доступных элементов
-- Если пользователь просит "нажми", "кликни" → используй action: click
-- Если пользователь просит "введи", "напиши" → используй action: type
-- Если пользователь спрашивает "что видишь", "какие кнопки" → используй action: analyze
-- Если пользователь просит "открой" → используй action: open
+- Если есть data-testid — используй его (он самый надёжный)
 - НЕ ВЫДУМЫВАЙ элементы, которых нет в списке
+- Для ввода текста используй action: type и укажи selector + text
 
 ОТВЕТЬ В ФОРМАТЕ JSON:
 {{
@@ -139,11 +153,13 @@ URL: {url}
 }}
 
 ПРИМЕРЫ:
-1. "нажми на кнопку войти" → {{"action": "click", "selector": "#login-btn", "message": "✅ Кликнул по кнопке 'Войти'"}}
-2. "введи test@gmail.com" → {{"action": "type", "selector": "input[type='email']", "text": "test@gmail.com", "message": "✅ Ввёл email"}}
-3. "какие кнопки есть?" → {{"action": "analyze", "message": "На странице есть кнопки: 'Войти', 'Зарегистрироваться'"}}
-4. "открой youtube.com" → {{"action": "open", "url": "https://youtube.com", "message": "🌐 Открываю YouTube"}}
-5. "сделай скриншот" → {{"action": "screenshot", "message": "📸 Скриншот готов"}}
+1. "нажми на главную" → {{"action": "click", "selector": "[data-testid='AppTabBar_Home_Link']", "message": "✅ Перешёл на главную"}}
+2. "открой чат" → {{"action": "click", "selector": "[data-testid='AppTabBar_DirectMessage_Link']", "message": "✅ Открыл чат"}}
+3. "введи Python в поиск" → {{"action": "type", "selector": "[data-testid='SearchBox_Search_Input']", "text": "Python", "message": "✅ Ввёл Python в поиск"}}
+4. "напиши Привет в поле поста" → {{"action": "type", "selector": "[data-testid='tweetTextarea_0']", "text": "Привет", "message": "✅ Написал пост"}}
+5. "какие кнопки есть?" → {{"action": "analyze", "message": "На странице есть кнопки: 'Главная', 'Обзор', 'Уведомления', 'Чат', 'Профиль'"}}
+6. "найди поле для email" → {{"action": "find", "selector": "input[type='email']", "message": "🔍 Найдено поле для email"}}
+7. "введи test@gmail.com в поле email" → {{"action": "type", "selector": "input[name='email']", "text": "test@gmail.com", "message": "✅ Ввёл email"}}
 """
 
 
@@ -267,7 +283,7 @@ class AgentHandler:
             return f"❌ Ошибка выполнения команды: {str(e)}"
     
     def _format_interactive(self, elements: List[Dict]) -> str:
-        """Форматирует интерактивные элементы для ИИ"""
+        """Форматирует интерактивные элементы для ИИ (с data-testid)"""
         if not elements:
             return "Нет интерактивных элементов"
         
@@ -277,22 +293,26 @@ class AgentHandler:
         buttons = [el for el in elements if el.get('type') == 'button']
         links = [el for el in elements if el.get('type') == 'link']
         inputs = [el for el in elements if el.get('type') == 'input']
-        forms = [el for el in elements if el.get('type') == 'form']
-        checkboxes = [el for el in elements if el.get('type') == 'checkbox']
         
         if buttons:
             result += "\n🔘 КНОПКИ:\n"
-            for i, el in enumerate(buttons[:10]):
+            for i, el in enumerate(buttons[:20]):
                 text = el.get('text', '') or el.get('aria_label', '') or 'без текста'
-                result += f"  {i+1}. '{text}' → {el.get('selector', '')}\n"
-            if len(buttons) > 10:
-                result += f"  ... и ещё {len(buttons) - 10} кнопок\n"
+                selector = el.get('selector', '')
+                # Если есть data-testid — показываем его
+                if 'data-testid' in selector:
+                    result += f"  {i+1}. '{text}' → {selector}\n"
+                else:
+                    result += f"  {i+1}. '{text}' → {selector}\n"
+            if len(buttons) > 20:
+                result += f"  ... и ещё {len(buttons) - 20} кнопок\n"
         
         if links:
             result += "\n🔗 ССЫЛКИ:\n"
             for i, el in enumerate(links[:10]):
                 text = el.get('text', '') or 'без текста'
-                result += f"  {i+1}. '{text}' → {el.get('selector', '')}\n"
+                selector = el.get('selector', '')
+                result += f"  {i+1}. '{text}' → {selector}\n"
             if len(links) > 10:
                 result += f"  ... и ещё {len(links) - 10} ссылок\n"
         
@@ -300,20 +320,11 @@ class AgentHandler:
             result += "\n⌨️ ПОЛЯ ВВОДА:\n"
             for i, el in enumerate(inputs[:10]):
                 label = el.get('label', '') or el.get('placeholder', '') or el.get('name', '') or 'поле'
-                result += f"  {i+1}. '{label}' → {el.get('selector', '')}\n"
+                selector = el.get('selector', '')
+                input_type = el.get('input_type', '')
+                type_info = f" (type={input_type})" if input_type else ""
+                result += f"  {i+1}. '{label}'{type_info} → {selector}\n"
             if len(inputs) > 10:
                 result += f"  ... и ещё {len(inputs) - 10} полей\n"
-        
-        if checkboxes:
-            result += "\n✅ ЧЕКБОКСЫ:\n"
-            for i, el in enumerate(checkboxes[:5]):
-                label = el.get('label', '') or 'без названия'
-                checked = '✅' if el.get('checked') else '☐'
-                result += f"  {i+1}. {checked} '{label}' → {el.get('selector', '')}\n"
-        
-        if forms:
-            result += "\n📝 ФОРМЫ:\n"
-            for i, el in enumerate(forms[:5]):
-                result += f"  {i+1}. form → {el.get('selector', '')}\n"
         
         return result
