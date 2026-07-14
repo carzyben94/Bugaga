@@ -239,7 +239,7 @@ class AgentHandler:
                 if not selector:
                     return "❌ Не найден селектор для ввода"
                 
-                # ✅ Используем посимвольный ввод через CDP
+                # ✅ ОДИН МЕТОД — ВСЁ ВМЕСТЕ (клик + ввод + enter)
                 result = await self.browser.type_text_cdp(selector, text)
                 return f"{message}\n{result}"
             
