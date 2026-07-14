@@ -99,7 +99,7 @@ class AgentPrompts:
         url: str,
         interactive_str: str
     ) -> str:
-        """Промт для загруженной страницы (как в твоём коде)"""
+        """Промт для загруженной страницы"""
         return f"""
 Ты — AI-ассистент для анализа веб-страниц и выполнения команд.
 
@@ -251,7 +251,6 @@ class AgentHandler:
                 return f"{message}\n{result}"
             
             elif action == 'ask':
-                # Если это вопрос — анализируем страницу
                 if not question:
                     question = message or "Что на странице?"
                 return await self.browser.ai_analyze_page(question)
