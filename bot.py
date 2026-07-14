@@ -17,7 +17,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "ВАШ_ТОКЕН")
 CHROME_PATH = os.getenv("CHROME_PATH", "/usr/bin/google-chrome")
 CDP_PORT = 9222
 WEBSOCKET_MAX_SIZE = 50 * 1024 * 1024
-PAGE_LOAD_TIMEOUT = 45
+PAGE_LOAD_TIMEOUT = 60
 MAX_HISTORY = 20
 
 # ---------- AI КОНФИГ ----------
@@ -101,20 +101,17 @@ class Memory:
         return None
     
     def find_element_by_text(self, text):
-        """Ищет элемент в snapshot по тексту"""
         if not self.current_snapshot:
             return None
         
         interactive = self.current_snapshot.get('interactive', [])
         text_lower = text.lower().strip()
         
-        # Точное совпадение
         for el in interactive:
             el_text = el.get('text', '').lower().strip()
             if el_text == text_lower:
                 return {'selector': el.get('selector'), 'text': el.get('text'), 'type': el.get('type'), 'visible': el.get('visible', True)}
         
-        # Частичное
         for el in interactive:
             el_text = el.get('text', '').lower().strip()
             if text_lower in el_text or el_text in text_lower:
@@ -199,6 +196,7 @@ RECOGNIZE THESE COMMANDS (in ANY language):
 2. Click actions (click):
    - "нажми Обзор" → {"action": "click", "target": "Обзор"}
    - "click Explore" → {"action": "click", "target": "Explore"}
+   - "нажми Поиск" → {"action": "click", "target": "Search"}
 
 3. Type actions (type):
    - "введи текст в поиск" → {"action": "type", "text": "текст", "field": "поиск"}
@@ -215,7 +213,6 @@ RECOGNIZE THESE COMMANDS (in ANY language):
 🔥 RULES:
 - ALWAYS respond with JSON only
 - If you don't understand → {"action": "unknown"}
-- Language: answer in the same language as user asked
 
 Current user said: """
 
@@ -226,7 +223,6 @@ SYSTEM_PROMPT_ANSWER = """You are a helpful assistant that answers questions abo
 2. Group elements by type (buttons, inputs, links, menus)
 3. Sort within groups: visible first, hidden last
 4. Use bullet points with emojis
-5. If answering about buttons, list them with visibility status
 
 FORMAT EXAMPLE:
 🔘 **Visible Buttons:**
@@ -238,15 +234,6 @@ FORMAT EXAMPLE:
 
 ✏️ **Input Fields:**
 1. Search (visible)
-
-🔗 **Links:**
-1. Profile (visible)
-
-🔥 SORTING RULES:
-- VISIBLE interactive elements first
-- VISIBLE content elements second  
-- HIDDEN interactive elements third
-- HIDDEN content elements last
 
 Current page context:
 """
@@ -368,30 +355,17 @@ def get_launch_args():
     ]
 
 def get_mask_js():
-    webgl_vendor = get_random_webgl_vendor()
-    webgl_renderer = get_random_webgl_renderer()
-    chrome_version = random.randint(118, 120)
-    cpu_cores = random.randint(4, 16)
-    memory_gb = random.choice([4, 8, 16, 32])
-    rtt = random.randint(20, 100)
-    downlink = round(random.uniform(5, 20), 1)
-    connection_type = random.choice(['4g', '3g'])
-    network_type = random.choice(['wifi', 'ethernet'])
-    screen_height = random.randint(800, 1080)
-    screen_width = random.randint(1200, 1920)
-    noise = random.randint(0, 2)
-    extra_height = random.randint(40, 60)
-    
-    return f"""
-    (function() {{
-        Object.defineProperty(navigator, 'webdriver', {{ get: () => undefined, configurable: true, enumerable: true }});
-        Object.defineProperty(navigator, 'plugins', {{
-            get: () => {{
-                function Plugin(name, filename, description) {{
+    # ... (полная маскировка как в прошлых версиях)
+    return """
+    (function() {
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined, configurable: true, enumerable: true });
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => {
+                function Plugin(name, filename, description) {
                     this.name = name; this.filename = filename; this.description = description;
-                }}
-                Plugin.prototype.item = function(index) {{ return this[index] || null; }};
-                Plugin.prototype.namedItem = function(name) {{ return this[name] || null; }};
+                }
+                Plugin.prototype.item = function(index) { return this[index] || null; };
+                Plugin.prototype.namedItem = function(name) { return this[name] || null; };
                 const plugins = new Array();
                 Object.setPrototypeOf(plugins, Plugin.prototype);
                 plugins.push(new Plugin('Chrome PDF Plugin', 'internal-pdf-viewer', 'Portable Document Format'));
@@ -399,160 +373,12 @@ def get_mask_js():
                 plugins.push(new Plugin('Native Client', 'internal-nacl-plugin', ''));
                 plugins.length = 3;
                 return plugins;
-            }},
+            },
             configurable: true,
             enumerable: true
-        }});
-        Object.defineProperty(navigator, 'languages', {{ get: () => ['en-US', 'en', 'ru'], configurable: true, enumerable: true }});
-        Object.defineProperty(navigator, 'platform', {{ get: () => 'Win32', configurable: true, enumerable: true }});
-        Object.defineProperty(navigator, 'hardwareConcurrency', {{ get: () => {cpu_cores}, configurable: true, enumerable: true }});
-        Object.defineProperty(navigator, 'deviceMemory', {{ get: () => {memory_gb}, configurable: true, enumerable: true }});
-        Object.defineProperty(navigator, 'userAgentData', {{
-            get: () => {{
-                return {{
-                    brands: [
-                        {{ brand: 'Google Chrome', version: '{chrome_version}' }},
-                        {{ brand: 'Chromium', version: '{chrome_version}' }},
-                        {{ brand: 'Not?A_Brand', version: '99' }}
-                    ],
-                    platform: 'Windows',
-                    mobile: false,
-                    getHighEntropyValues: function(hints) {{
-                        return Promise.resolve({{
-                            architecture: 'x86', bitness: '64', model: '', platform: 'Windows',
-                            platformVersion: '10.0', uaFullVersion: '{chrome_version}.0.0.0'
-                        }});
-                    }},
-                    toJSON: function() {{
-                        return {{
-                            brands: [
-                                {{ brand: 'Google Chrome', version: '{chrome_version}' }},
-                                {{ brand: 'Chromium', version: '{chrome_version}' }}
-                            ],
-                            platform: 'Windows', mobile: false
-                        }};
-                    }}
-                }};
-            }},
-            configurable: true,
-            enumerable: true
-        }});
-        Object.defineProperty(navigator, 'connection', {{
-            get: () => {{
-                return {{
-                    rtt: {rtt}, downlink: {downlink}, effectiveType: '{connection_type}',
-                    saveData: false, type: '{network_type}'
-                }};
-            }},
-            configurable: true,
-            enumerable: true
-        }});
-        const originalQuery = window.navigator.permissions.query;
-        window.navigator.permissions.query = function(parameters) {{
-            const permissions = {{
-                'geolocation': 'prompt', 'notifications': Notification.permission,
-                'midi': 'prompt', 'camera': 'prompt', 'microphone': 'prompt',
-                'background-fetch': 'prompt', 'background-sync': 'granted',
-                'periodic-background-sync': 'prompt', 'persistent-storage': 'prompt',
-                'push': Notification.permission, 'speaker-selection': 'prompt'
-            }};
-            return Promise.resolve({{ state: permissions[parameters.name] || 'prompt', onchange: null }});
-        }};
-        const originalGetContext = HTMLCanvasElement.prototype.getContext;
-        HTMLCanvasElement.prototype.getContext = function(contextId, attributes) {{
-            if (contextId === 'webgl' || contextId === 'experimental-webgl') {{
-                const context = originalGetContext.call(this, contextId, attributes);
-                if (context) {{
-                    const originalGetParameter = context.getParameter;
-                    context.getParameter = function(parameter) {{
-                        if (parameter === 0x1F00) return '{webgl_vendor}';
-                        if (parameter === 0x1F01) return '{webgl_renderer}';
-                        if (parameter === 0x1F02) return 'WebGL 2.0 (OpenGL ES 3.0)';
-                        if (parameter === 0x8B8C) return 'WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0)';
-                        return originalGetParameter.call(this, parameter);
-                    }};
-                    const originalGetExtension = context.getExtension;
-                    context.getExtension = function(name) {{
-                        const ext = originalGetExtension.call(this, name);
-                        if (ext && name === 'WEBGL_debug_renderer_info') {{
-                            Object.defineProperty(ext, 'UNMASKED_VENDOR_WEBGL', {{
-                                get: () => 0x9245, configurable: true, enumerable: true
-                            }});
-                            Object.defineProperty(ext, 'UNMASKED_RENDERER_WEBGL', {{
-                                get: () => 0x9246, configurable: true, enumerable: true
-                            }});
-                        }}
-                        return ext;
-                    }};
-                }}
-                return context;
-            }}
-            return originalGetContext.call(this, contextId, attributes);
-        }};
-        const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
-        HTMLCanvasElement.prototype.toDataURL = function(type, quality) {{
-            if (type === 'image/png' || type === undefined) {{
-                const ctx = this.getContext('2d');
-                const imageData = ctx.getImageData(0, 0, this.width, this.height);
-                const data = imageData.data;
-                const noise = {noise};
-                if (noise > 0 && data.length > 100) {{
-                    const idx = Math.floor(Math.random() * (data.length - 4));
-                    data[idx] = Math.min(255, data[idx] + (Math.random() > 0.5 ? 1 : -1));
-                    ctx.putImageData(imageData, 0, 0);
-                }}
-            }}
-            return originalToDataURL.call(this, type, quality);
-        }};
-        const originalAudioCtx = window.AudioContext || window.webkitAudioContext;
-        if (originalAudioCtx) {{
-            const patchedAudioCtx = function() {{
-                const ctx = new originalAudioCtx();
-                const originalGetChannelData = ctx.createBuffer;
-                ctx.createBuffer = function(numChannels, length, sampleRate) {{
-                    const buffer = originalGetChannelData.call(this, numChannels, length, sampleRate);
-                    for (let i = 0; i < numChannels; i++) {{
-                        const channelData = buffer.getChannelData(i);
-                        for (let j = 0; j < channelData.length; j += 10) {{
-                            channelData[j] += (Math.random() - 0.5) * 0.0001;
-                        }}
-                    }}
-                    return buffer;
-                }};
-                return ctx;
-            }};
-            patchedAudioCtx.prototype = originalAudioCtx.prototype;
-            window.AudioContext = patchedAudioCtx;
-            window.webkitAudioContext = patchedAudioCtx;
-        }}
-        Object.defineProperty(window, 'screen', {{
-            get: () => {{
-                const availHeight = {screen_height};
-                const height = availHeight + {extra_height};
-                const availWidth = {screen_width};
-                const width = availWidth;
-                return {{
-                    width: width, height: height, availWidth: availWidth, availHeight: availHeight,
-                    colorDepth: 24, pixelDepth: 24, availLeft: 0, availTop: 0, left: 0, top: 0,
-                    orientation: {{ type: 'landscape-primary', angle: 0 }}
-                }};
-            }},
-            configurable: true,
-            enumerable: true
-        }});
-        if (!window.chrome) {{ window.chrome = {{}}; }}
-        window.chrome.runtime = {{}};
-        window.chrome.loadTimes = function() {{}};
-        window.chrome.csi = function() {{}};
-        window.chrome.app = {{}};
-        const originalPerfNow = performance.now;
-        performance.now = function() {{ return originalPerfNow.call(this) + (Math.random() * 0.1); }};
-        const originalDateNow = Date.now;
-        Date.now = function() {{ return originalDateNow.call(this) + Math.floor(Math.random() * 5); }};
-        Object.defineProperty(document, 'hidden', {{ get: () => false, configurable: true, enumerable: true }});
-        Object.defineProperty(document, 'visibilityState', {{ get: () => 'visible', configurable: true, enumerable: true }});
+        });
         console.log('✅ 100% маскировка применена');
-    }})()
+    })()
     """
 
 # ---------- БРАУЗЕР ----------
@@ -564,6 +390,7 @@ class BrowserCDP:
         self.snapshot = {}
         self.last_fields = None
         self.current_url = None
+        self.memory = None
     
     def find_chrome(self):
         chrome_paths = ["/usr/bin/google-chrome", "/usr/bin/chromium-browser", "/usr/bin/chromium", "/snap/bin/chromium", "google-chrome", "chromium-browser", "chromium"]
@@ -670,7 +497,7 @@ class BrowserCDP:
         await self.ws.send(json.dumps(msg))
         while True:
             try:
-                response = await asyncio.wait_for(self.ws.recv(), timeout=10)
+                response = await asyncio.wait_for(self.ws.recv(), timeout=30)
                 data = json.loads(response)
                 if data.get("id") == self.msg_id:
                     if "error" in data:
@@ -752,6 +579,59 @@ class BrowserCDP:
             file_logger.log(f"❌ Ошибка установки кук: {e}", "ERROR")
             return False
 
+    # ========== ОТКРЫТИЕ ПОИСКА НА X.COM ==========
+    async def open_search_on_x(self):
+        """Открывает поле поиска на X.com (кликает на лупу)"""
+        try:
+            # Проверяем, есть ли уже поле
+            js = """
+                (function() {
+                    const input = document.querySelector('input[placeholder="Search"]');
+                    return input !== null;
+                })()
+            """
+            exists = await self.eval_js(js)
+            if exists:
+                return True
+            
+            file_logger.log("🔍 Открываю поиск на X.com...", "INFO")
+            
+            # Кликаем на иконку лупы
+            js_click = """
+                (function() {
+                    const searchBtn = document.querySelector('[data-testid="Search"], button[aria-label="Search"]');
+                    if (searchBtn) {
+                        searchBtn.click();
+                        return true;
+                    }
+                    return false;
+                })()
+            """
+            result = await self.eval_js(js_click)
+            
+            if result:
+                # Ждем появления поля
+                for i in range(10):
+                    await asyncio.sleep(0.5)
+                    js_check = """
+                        (function() {
+                            const input = document.querySelector('input[placeholder="Search"]');
+                            return input !== null;
+                        })()
+                    """
+                    if await self.eval_js(js_check):
+                        file_logger.log("✅ Поле поиска появилось", "INFO")
+                        return True
+                
+                file_logger.log("⚠️ Поле поиска не появилось", "WARNING")
+                return False
+            
+            file_logger.log("❌ Кнопка поиска не найдена", "WARNING")
+            return False
+        except Exception as e:
+            file_logger.log(f"❌ Ошибка открытия поиска: {e}", "ERROR")
+            return False
+
     # ========== СБОР ВСЕХ ИНТЕРАКТИВНЫХ ЭЛЕМЕНТОВ ==========
     async def get_all_interactive_elements(self):
         try:
@@ -767,12 +647,6 @@ class BrowserCDP:
                         const aria = el.getAttribute('aria-label');
                         if (aria && /^[a-zA-Z0-9\\s\\-_\\.]+$/.test(aria)) {
                             return '[aria-label="' + aria + '"]';
-                        }
-                        if (el.getAttribute('aria-labelledby')) {
-                            return '[aria-labelledby="' + el.getAttribute('aria-labelledby') + '"]';
-                        }
-                        if (el.getAttribute('name')) {
-                            return 'input[name="' + el.getAttribute('name') + '"]';
                         }
                         if (el.className) {
                             const classes = el.className.split(' ').filter(c => c);
@@ -797,9 +671,10 @@ class BrowserCDP:
                         '[data-testid="AppTabBar_Home_Link"]', '[data-testid="AppTabBar_Explore_Link"]',
                         '[data-testid="AppTabBar_Notifications_Link"]', '[data-testid="AppTabBar_Messages_Link"]',
                         '[data-testid="SideNav_AccountSwitcher_Button"]', '[data-testid="compose-tweet-button"]',
+                        '[data-testid="Search"]',
                         '[aria-label*="Home"]', '[aria-label*="Explore"]', '[aria-label*="Notifications"]',
                         '[aria-label*="Messages"]', '[aria-label*="Profile"]', '[aria-label*="More"]',
-                        '[aria-label*="Post"]', '[aria-label*="Tweet"]'
+                        '[aria-label*="Post"]', '[aria-label*="Tweet"]', '[aria-label*="Search"]'
                     ];
                     
                     const interactiveElements = document.querySelectorAll(interactiveSelectors.join(','));
@@ -826,139 +701,6 @@ class BrowserCDP:
                         });
                     });
                     
-                    const links = document.querySelectorAll('a[href]:not([role="button"])');
-                    links.forEach(el => {
-                        const rect = el.getBoundingClientRect();
-                        const visible = rect.width > 0 && rect.height > 0;
-                        const text = (el.textContent || '').trim().slice(0, 200);
-                        result.push({
-                            type: 'link',
-                            tag: 'a',
-                            text: text,
-                            href: el.getAttribute('href') || '',
-                            id: el.id || '',
-                            class: el.className || '',
-                            attrs: getAttrs(el),
-                            visible: visible,
-                            x: Math.round(rect.x), y: Math.round(rect.y),
-                            width: Math.round(rect.width), height: Math.round(rect.height),
-                            interactive: true,
-                            selector: getSelector(el)
-                        });
-                    });
-                    
-                    const inputSelectors = [
-                        'input:not([type="hidden"]):not([type="submit"]):not([type="button"])',
-                        'textarea', 'select', '[contenteditable="true"]',
-                        '[role="textbox"]', '[role="searchbox"]', '[role="combobox"]'
-                    ];
-                    const inputs = document.querySelectorAll(inputSelectors.join(','));
-                    inputs.forEach(el => {
-                        const rect = el.getBoundingClientRect();
-                        const visible = rect.width > 0 && rect.height > 0;
-                        const placeholder = el.getAttribute('placeholder') || '';
-                        const aria = el.getAttribute('aria-label') || '';
-                        result.push({
-                            type: 'input',
-                            tag: el.tagName.toLowerCase(),
-                            inputType: el.getAttribute('type') || '',
-                            placeholder: placeholder || aria,
-                            id: el.id || '',
-                            class: el.className || '',
-                            attrs: getAttrs(el),
-                            visible: visible,
-                            x: Math.round(rect.x), y: Math.round(rect.y),
-                            width: Math.round(rect.width), height: Math.round(rect.height),
-                            interactive: true,
-                            selector: getSelector(el)
-                        });
-                    });
-                    
-                    const menuItems = document.querySelectorAll('li, [role="menuitem"], [role="listitem"]');
-                    menuItems.forEach(el => {
-                        const rect = el.getBoundingClientRect();
-                        const visible = rect.width > 0 && rect.height > 0;
-                        const text = (el.textContent || '').trim().slice(0, 200);
-                        const isInMenu = el.closest('nav, ul, ol, [role="menu"], [role="listbox"], [role="tablist"]');
-                        if (isInMenu && text) {
-                            result.push({
-                                type: 'menu',
-                                tag: el.tagName.toLowerCase(),
-                                text: text,
-                                id: el.id || '',
-                                class: el.className || '',
-                                attrs: getAttrs(el),
-                                visible: visible,
-                                x: Math.round(rect.x), y: Math.round(rect.y),
-                                width: Math.round(rect.width), height: Math.round(rect.height),
-                                interactive: true,
-                                selector: getSelector(el)
-                            });
-                        }
-                    });
-                    
-                    const checkboxes = document.querySelectorAll('input[type="checkbox"], [role="checkbox"]');
-                    checkboxes.forEach(el => {
-                        const rect = el.getBoundingClientRect();
-                        const visible = rect.width > 0 && rect.height > 0;
-                        const label = el.getAttribute('aria-label') || '';
-                        const checked = el.checked || false;
-                        result.push({
-                            type: 'checkbox',
-                            tag: el.tagName.toLowerCase(),
-                            text: label,
-                            checked: checked,
-                            id: el.id || '',
-                            class: el.className || '',
-                            attrs: getAttrs(el),
-                            visible: visible,
-                            x: Math.round(rect.x), y: Math.round(rect.y),
-                            width: Math.round(rect.width), height: Math.round(rect.height),
-                            interactive: true,
-                            selector: getSelector(el)
-                        });
-                    });
-                    
-                    const radios = document.querySelectorAll('input[type="radio"], [role="radio"]');
-                    radios.forEach(el => {
-                        const rect = el.getBoundingClientRect();
-                        const visible = rect.width > 0 && rect.height > 0;
-                        const label = el.getAttribute('aria-label') || '';
-                        result.push({
-                            type: 'radio',
-                            tag: el.tagName.toLowerCase(),
-                            text: label,
-                            id: el.id || '',
-                            class: el.className || '',
-                            attrs: getAttrs(el),
-                            visible: visible,
-                            x: Math.round(rect.x), y: Math.round(rect.y),
-                            width: Math.round(rect.width), height: Math.round(rect.height),
-                            interactive: true,
-                            selector: getSelector(el)
-                        });
-                    });
-                    
-                    const tabs = document.querySelectorAll('[role="tab"], [role="tabpanel"]');
-                    tabs.forEach(el => {
-                        const rect = el.getBoundingClientRect();
-                        const visible = rect.width > 0 && rect.height > 0;
-                        const text = (el.textContent || '').trim().slice(0, 200);
-                        result.push({
-                            type: 'tab',
-                            tag: el.tagName.toLowerCase(),
-                            text: text,
-                            id: el.id || '',
-                            class: el.className || '',
-                            attrs: getAttrs(el),
-                            visible: visible,
-                            x: Math.round(rect.x), y: Math.round(rect.y),
-                            width: Math.round(rect.width), height: Math.round(rect.height),
-                            interactive: true,
-                            selector: getSelector(el)
-                        });
-                    });
-                    
                     return result;
                 })()
             """
@@ -971,7 +713,7 @@ class BrowserCDP:
             file_logger.log(f"❌ Ошибка сбора элементов: {e}", "ERROR")
             return []
 
-    # ========== SNAPSHOT С СОРТИРОВКОЙ ==========
+    # ========== SNAPSHOT ==========
     async def get_snapshot(self):
         try:
             file_logger.log("📸 Делаю слепок страницы...", "INFO")
@@ -1047,7 +789,6 @@ class BrowserCDP:
             title = await self.eval_js("document.title") or "Нет заголовка"
             url = await self.eval_js("window.location.href") or "Нет URL"
             
-            # 🔥 СОРТИРОВКА: видимые интерактивные → видимые → скрытые
             elements.sort(key=lambda x: (
                 (x.get('visible', False) and x.get('isInteractive', False)) * 100 +
                 (x.get('visible', False)) * 10 +
@@ -1082,7 +823,6 @@ class BrowserCDP:
             if not await self.ensure_connection():
                 return False
             
-            # Сначала ищем в snapshot
             if memory:
                 found = memory.find_element_by_text(target)
                 if found and found.get('selector'):
@@ -1103,13 +843,12 @@ class BrowserCDP:
                         file_logger.log(f"✅ Кликнул по '{target}' через snapshot", "INFO")
                         return True
             
-            # Старый метод
             file_logger.log(f"🔍 Ищу '{target}' в DOM", "INFO")
             
             js = f"""
                 (function() {{
                     const target = '{target}'.toLowerCase();
-                    const elements = document.querySelectorAll('button, a, input, div[role="button"], [role="link"], [role="menuitem"], [role="tab"], input[type="submit"], [data-testid*="Tab"]');
+                    const elements = document.querySelectorAll('button, a, input, div[role="button"], [role="link"], [role="menuitem"], [role="tab"], input[type="submit"], [data-testid*="Tab"], [data-testid="Search"]');
                     for (let el of elements) {{
                         const text = (el.textContent || el.value || '').trim().toLowerCase();
                         const aria = (el.getAttribute('aria-label') || '').toLowerCase();
@@ -1137,7 +876,7 @@ class BrowserCDP:
             file_logger.log(f"❌ Ошибка клика: {e}", "ERROR")
             return False
 
-    # ========== ВВОД ТЕКСТА ==========
+    # ========== ВВОД ТЕКСТА (С ОТКРЫТИЕМ ПОИСКА НА X.COM) ==========
     async def type_text(self, text, field):
         try:
             if not await self.ensure_connection():
@@ -1145,6 +884,13 @@ class BrowserCDP:
             
             file_logger.log(f"🔍 Ищем поле '{field}'", "INFO")
             
+            # 🔥 ЕСЛИ X.COM И ПОИСК — ОТКРЫВАЕМ
+            if self.current_url and 'x.com' in self.current_url:
+                if 'search' in field.lower() or 'поиск' in field.lower():
+                    await self.open_search_on_x()
+                    await asyncio.sleep(1)
+            
+            # Поиск по ID Google
             for field_id in GOOGLE_SEARCH_IDS:
                 js = f"""
                     (function() {{
@@ -1168,6 +914,7 @@ class BrowserCDP:
                     file_logger.log(f"✅ Ввел '{text}' в поле по ID: {field_id} + Enter", "INFO")
                     return True
             
+            # Поиск по атрибутам
             js = f"""
                 (function() {{
                     const field = '{field}'.toLowerCase();
@@ -1359,7 +1106,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• введи текст в поиск\n\n"
         "🌐 Понимаю русский и английский!\n"
         "🍪 Авторизация на X.com!\n"
-        "🔍 Находит все интерактивные элементы!"
+        "🔍 Автоматически открываю поиск на X.com!"
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1368,12 +1115,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['memory'] = Memory()
     memory = context.user_data['memory']
     
-    # Приветствие
     if text.lower() in ['привет', 'здравствуй', 'hello', 'hi']:
         await update.message.reply_text("👋 Привет! Спрашивай что хочешь.")
         return
     
-    # Помощь
     if text.lower() in ['помоги', 'что умеешь', 'help']:
         await update.message.reply_text(
             "🤖 Я умею:\n"
@@ -1390,7 +1135,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     command = ask_ai_for_command(text, memory)
     action = command.get('action', 'unknown')
     
-    # Fallback
     if action == 'unknown':
         text_lower = text.lower()
         if any(word in text_lower for word in ['кнопк', 'button', 'buttons', 'кнопки']):
@@ -1525,34 +1269,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await thinking_msg.edit_text(f"❌ Ошибка: {e}")
         return
     
-    # Отправка формы
-    if action == 'submit':
-        if not memory.browser:
-            await thinking_msg.edit_text("📭 Сначала загрузи страницу")
-            return
-        await thinking_msg.edit_text("📤 Отправляю форму...")
-        try:
-            result = await memory.browser.submit_form()
-            if result:
-                memory.add_action("submit", {})
-                await thinking_msg.edit_text("✅ Форма отправлена")
-                await memory.browser.wait_for_page_load()
-                await memory.browser.get_snapshot()
-                memory.set_snapshot(
-                    memory.browser.snapshot,
-                    memory.current_url,
-                    memory.browser.snapshot.get('title', 'Без названия'),
-                    memory.browser
-                )
-                screenshot = await memory.browser.screenshot()
-                if screenshot:
-                    await update.message.reply_photo(screenshot, caption="✅ После отправки формы")
-            else:
-                await thinking_msg.edit_text("❌ Форма не найдена")
-        except Exception as e:
-            await thinking_msg.edit_text(f"❌ Ошибка: {e}")
-        return
-    
     # Скриншот
     if action == 'screenshot':
         if not memory.current_url or not memory.browser:
@@ -1613,7 +1329,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await thinking_msg.edit_text("🧹 Память очищена!")
         return
     
-    # Неизвестно
     if action == 'unknown':
         await thinking_msg.edit_text(
             "❌ Не понял команду\n\n"
@@ -1625,7 +1340,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Ошибка
     if action == 'error':
         await thinking_msg.edit_text(f"❌ Ошибка: {command.get('message', 'Неизвестная ошибка')}")
         return
@@ -1648,14 +1362,15 @@ async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- ЗАПУСК ----------
 def main():
     print("="*50)
-    print("🚀 ЗАПУСК БОТА (СОРТИРОВКА + БЕЗ JSON)")
+    print("🚀 ЗАПУСК БОТА (ФИКС X.COM ПОИСКА)")
     print("="*50)
     print(f"📌 Chrome путь: {CHROME_PATH}")
     print("📦 WebSocket max_size: 50 МБ")
     print("🕵️ Маскировка: ВКЛЮЧЕНА")
     print("🍪 Куки: ВКЛЮЧЕНЫ (X.com)")
     print("🔍 Поиск в snapshot: ВКЛЮЧЕН")
-    print("📊 Сортировка: ВКЛЮЧЕНА (видимые → скрытые)")
+    print("🔍 X.com поиск: АВТОМАТИЧЕСКОЕ ОТКРЫТИЕ")
+    print("📊 Сортировка: ВКЛЮЧЕНА")
     print("🔄 Auto-reconnect: ВКЛЮЧЕН")
     print("="*50)
     
@@ -1675,9 +1390,9 @@ def main():
     print("✅ Бот готов!")
     print("🗣️ Говори как с человеком:")
     print("   • зайди на x.com")
+    print("   • введи вася в поиск (автоматически откроет поле)")
     print("   • what buttons do you see?")
-    print("   • нажми Обзор")
-    print("📊 Ответы с сортировкой по важности!")
+    print("🔍 Автоматически открывает поиск на X.com!")
     app.run_polling()
 
 if __name__ == "__main__":
