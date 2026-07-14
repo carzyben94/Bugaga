@@ -5,6 +5,8 @@ import logging
 import time
 import requests
 import sys
+import io
+from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from browser import BrowserManager
@@ -127,6 +129,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/back - назад\n"
             "/forward - вперёд\n"
             "/refresh - обновить\n"
+            "/log - скачать логи\n"
             "/help - эта справка"
         )
         logger.info("✅ Ответ на /start отправлен")
@@ -140,6 +143,53 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start(update, context)
     except Exception as e:
         logger.error(f"❌ Ошибка в /help: {e}")
+
+async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /log - скачать логи"""
+    logger.info(f"📩 Получена команда /log от {update.effective_user.username}")
+    try:
+        # Собираем логи из логгера
+        log_stream = io.StringIO()
+        log_stream.write(f"📋 Логи бота\n")
+        log_stream.write(f"Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        log_stream.write("=" * 50 + "\n\n")
+        
+        # Читаем логи из файла если есть
+        log_file = 'bot.log'
+        if os.path.exists(log_file):
+            with open(log_file, 'r', encoding='utf-8') as f:
+                log_stream.write(f.read())
+        else:
+            log_stream.write("⚠️ Файл логов не найден\n")
+            log_stream.write("Логи выводятся только в консоль\n")
+        
+        # Добавляем информацию о системе
+        log_stream.write("\n" + "=" * 50 + "\n")
+        log_stream.write(f"📊 Системная информация:\n")
+        log_stream.write(f"Chrome путь: {CHROME_PATH}\n")
+        log_stream.write(f"Chrome запущен: {os.path.exists(CHROME_PATH)}\n")
+        log_stream.write(f"CDP порт: 9222\n")
+        
+        # Проверяем CDP
+        try:
+            resp = requests.get("http://localhost:9222/json/version", timeout=3)
+            log_stream.write(f"CDP статус: ✅ Работает ({resp.status_code})\n")
+        except:
+            log_stream.write(f"CDP статус: ❌ Не отвечает\n")
+        
+        log_content = log_stream.getvalue()
+        
+        # Отправляем файл
+        await update.message.reply_document(
+            document=io.BytesIO(log_content.encode('utf-8')),
+            filename=f"bot_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+            caption="📋 Полные логи бота"
+        )
+        logger.info("✅ Логи отправлены")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в /log: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def open_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Открыть URL"""
@@ -164,11 +214,13 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text("📸 Делаю скриншот...")
     try:
         screenshot = await browser.screenshot()
+        # ✅ Отправляем как фото с правильным форматом
         await update.message.reply_photo(
-            screenshot,
+            photo=screenshot,
             caption="📸 Скриншот 1280x720"
         )
     except Exception as e:
+        logger.error(f"❌ Ошибка скриншота: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -307,6 +359,7 @@ def main():
         logger.info("📝 Регистрирую команды...")
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("help", help_command))
+        app.add_handler(CommandHandler("log", log_command))
         app.add_handler(CommandHandler("open", open_command))
         app.add_handler(CommandHandler("screenshot", screenshot_command))
         app.add_handler(CommandHandler("ask", ask_command))
