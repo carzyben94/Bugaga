@@ -1,7 +1,14 @@
-import os 
+import os
 import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+
+# ====== ПРОВЕРКА ФАЙЛОВ В ПАПКЕ ======
+print("="*50)
+print("📁 ФАЙЛЫ В ПАПКЕ:")
+for file in os.listdir('.'):
+    print(f"   📄 {file}")
+print("="*50)
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
