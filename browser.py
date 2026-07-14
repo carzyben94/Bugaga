@@ -921,39 +921,41 @@ class BrowserManager:
         
         return screenshot_data
     
+    # ========== GET_PAGE_TEXT (EVAL) ==========
+    
     async def get_page_text(self):
+        """Получить текст страницы через EVAL"""
         await self.connect()
         
-        try:
-            result = await self._send_command("Runtime.evaluate", {
-                "expression": "document.body?.innerText || document.documentElement?.textContent || ''"
-            })
-            text = result['result'].get('value', '')
-            
-            if not text or text.strip() == "":
-                return "📭 Страница пустая или не содержит текста"
-            
-            return text[:10000]
-        except Exception as e:
-            return f"⚠️ Не удалось получить текст: {str(e)[:100]}"
+        js = """
+        (function() {
+            return document.body?.innerText || document.documentElement?.textContent || '';
+        })()
+        """
+        
+        text = await self.execute_script(js)
+        
+        if not text or text.strip() == "":
+            return "📭 Страница пустая или не содержит текста"
+        
+        return text[:10000]
     
     async def get_page_title(self):
+        """Получить заголовок страницы через EVAL"""
         await self.connect()
-        try:
-            result = await self._send_command("Runtime.evaluate", {
-                "expression": "document.title || ''"
-            })
-            title = result['result'].get('value', '')
-            if not title or title.strip() == "":
-                return "Без названия"
-            return title
-        except:
+        
+        js = "return document.title || ''"
+        
+        title = await self.execute_script(js)
+        
+        if not title or title.strip() == "":
             return "Без названия"
+        return title
     
-    # ========== CLICK_ELEMENT ==========
+    # ========== CLICK_ELEMENT (EVAL + CDP запасной) ==========
     
     async def click_element(self, selector: str):
-        """Универсальный клик с правильным использованием CDP"""
+        """Клик через EVAL (основной) + CDP (запасной)"""
         await self.connect()
         
         if await self.is_page_empty():
@@ -961,74 +963,69 @@ class BrowserManager:
         
         safe_selector = selector.replace('"', '\\"').replace("'", "\\'")
         
-        doc = await self._send_command("DOM.getDocument")
-        root_node_id = doc['root']['nodeId']
+        # 1. EVAL (основной способ)
+        js = f"""
+        (function() {{
+            const el = document.querySelector('{safe_selector}');
+            if (!el) return false;
+            
+            // Скролл к элементу
+            el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+            
+            // Настоящий клик
+            el.click();
+            
+            // Дополнительные события для React
+            el.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }}));
+            el.dispatchEvent(new MouseEvent('mouseup', {{ bubbles: true }}));
+            el.focus();
+            
+            return true;
+        }})()
+        """
         
-        find_result = await self._send_command("DOM.querySelector", {
-            "nodeId": root_node_id,
-            "selector": selector
-        })
-        node_id = find_result.get('nodeId')
+        result = await self.execute_script(js)
+        if result:
+            return f"✅ Кликнул по: {self._shorten_selector(selector)}"
         
-        if not node_id or node_id == 0:
-            js = f"""
-            (function() {{
-                const el = document.querySelector('{safe_selector}');
-                if (!el) return false;
-                el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
-                const rect = el.getBoundingClientRect();
-                const x = rect.left + rect.width / 2;
-                const y = rect.top + rect.height / 2;
-                const events = ['mousedown', 'mouseup', 'click'];
-                events.forEach(type => {{
-                    const event = new MouseEvent(type, {{
-                        view: window, bubbles: true, cancelable: true,
-                        clientX: x, clientY: y
-                    }});
-                    el.dispatchEvent(event);
-                }});
-                el.focus();
-                return true;
-            }})()
-            """
-            result = await self.execute_script(js)
-            if result:
-                return f"✅ Кликнул по: {self._shorten_selector(selector)}"
-            return f"❌ Элемент не найден: {self._shorten_selector(selector)}"
-        
-        box_result = await self._send_command("DOM.getBoxModel", {
-            "nodeId": node_id
-        })
-        
-        if not box_result or 'model' not in box_result:
-            return f"❌ Не удалось получить координаты"
-        
-        content = box_result['model']['content']
-        x = (content[0] + content[4]) / 2
-        y = (content[1] + content[5]) / 2
-        
-        await self.execute_script(f"""
-            document.querySelector('{safe_selector}')?.scrollIntoView({{ block: 'center' }});
-        """)
-        await asyncio.sleep(0.1)
-        
-        await self._send_command("Input.dispatchMouseEvent", {
-            "type": "mouseMoved", "x": x, "y": y
-        })
-        await asyncio.sleep(0.05)
-        
-        await self._send_command("Input.dispatchMouseEvent", {
-            "type": "mousePressed", "x": x, "y": y,
-            "button": "left", "clickCount": 1
-        })
-        await asyncio.sleep(0.05)
-        
-        await self._send_command("Input.dispatchMouseEvent", {
-            "type": "mouseReleased", "x": x, "y": y,
-            "button": "left", "clickCount": 1
-        })
-        
-        return f"✅ Кликнул по: {self._shorten_selector(selector)} (координаты: {x:.0f}, {y:.0f})"
+        # 2. CDP (запасной способ)
+        try:
+            doc = await self._send_command("DOM.getDocument")
+            root_node_id = doc['root']['nodeId']
+            
+            find_result = await self._send_command("DOM.querySelector", {
+                "nodeId": root_node_id,
+                "selector": selector
+            })
+            node_id = find_result.get('nodeId')
+            
+            if not node_id or node_id == 0:
+                return f"❌ Элемент не найден: {self._shorten_selector(selector)}"
+            
+            box_result = await self._send_command("DOM.getBoxModel", {
+                "nodeId": node_id
+            })
+            
+            if not box_result or 'model' not in box_result:
+                return f"❌ Не удалось получить координаты"
+            
+            content = box_result['model']['content']
+            x = (content[0] + content[4]) / 2
+            y = (content[1] + content[5]) / 2
+            
+            await self._send_command("Input.dispatchMouseEvent", {
+                "type": "mousePressed", "x": x, "y": y,
+                "button": "left", "clickCount": 1
+            })
+            await self._send_command("Input.dispatchMouseEvent", {
+                "type": "mouseReleased", "x": x, "y": y,
+                "button": "left", "clickCount": 1
+            })
+            
+            return f"✅ Кликнул по: {self._shorten_selector(selector)} (CDP)"
+            
+        except Exception as e:
+            return f"❌ Ошибка клика: {str(e)[:200]}"
     
     def _shorten_selector(self, selector: str) -> str:
         """Обрезает длинные селекторы"""
@@ -1042,10 +1039,10 @@ class BrowserManager:
                 return parts[0] + '.' + parts[1] + '.' + parts[2] + '...'
         return selector[:60] + '...'
     
-    # ========== ГЛАВНЫЙ МЕТОД: ВВОД ТЕКСТА + ENTER ==========
+    # ========== TYPE_TEXT (EVAL) ==========
     
     async def type_text_cdp(self, selector: str, text: str):
-        """Ввод текста + Enter (как в твоём коде)"""
+        """Ввод текста + Enter (полностью на EVAL)"""
         await self.connect()
         
         if await self.is_page_empty():
@@ -1058,7 +1055,7 @@ class BrowserManager:
             let el = null;
             let foundBy = 'не найден';
             
-            // ========== 1. GOOGLE: ПОИСК ПО ID ==========
+            // 1. Google: поиск по ID
             const googleIds = ['APjFqb', 'gbqfq', 'lst-ib', 'searchbox', 'q'];
             for (let id of googleIds) {{
                 const found = document.getElementById(id);
@@ -1069,7 +1066,7 @@ class BrowserManager:
                 }}
             }}
             
-            // ========== 2. ПОИСК ПО АТРИБУТАМ (X/Twitter и другие) ==========
+            // 2. Поиск по атрибутам
             if (!el) {{
                 const inputs = document.querySelectorAll('input, textarea');
                 for (let inp of inputs) {{
@@ -1098,7 +1095,7 @@ class BrowserManager:
                 }}
             }}
             
-            // ========== 3. X/Twitter: ПОИСК ПО DATA-TESTID ==========
+            // 3. X/Twitter: поиск по data-testid
             if (!el) {{
                 const testIds = ['SearchBox_Search_Input', 'tweetTextarea_0'];
                 for (let testId of testIds) {{
@@ -1111,7 +1108,7 @@ class BrowserManager:
                 }}
             }}
             
-            // ========== 4. ПЕРВОЕ ВИДИМОЕ ПОЛЕ (запасной вариант) ==========
+            // 4. Первое видимое поле
             if (!el) {{
                 const inputs = document.querySelectorAll('input, textarea');
                 for (let inp of inputs) {{
@@ -1123,13 +1120,13 @@ class BrowserManager:
                 }}
             }}
             
-            // ========== 5. ПОИСК ПО СЕЛЕКТОРУ (если передан) ==========
+            // 5. Поиск по селектору
             if (!el && '{safe_selector}') {{
                 el = document.querySelector('{safe_selector}');
                 if (el) foundBy = 'селектор';
             }}
             
-            // ========== 6. ЕСЛИ НИЧЕГО НЕ НАШЛИ — ПОКАЗЫВАЕМ ПОЛЯ ==========
+            // 6. Если ничего не нашли — показываем поля
             if (!el) {{
                 const inputs = document.querySelectorAll('input, textarea, [contenteditable="true"]');
                 const result = [];
@@ -1150,14 +1147,14 @@ class BrowserManager:
                 return result;
             }}
             
-            // ========== 7. ВВОД ТЕКСТА + ENTER ==========
+            // 7. ВВОД ТЕКСТА + ENTER (EVAL)
             el.focus();
             el.value = '';
             el.value = '{text}';
-            
             el.dispatchEvent(new Event('input', {{ bubbles: true }}));
             el.dispatchEvent(new Event('change', {{ bubbles: true }}));
             
+            // Enter через KeyboardEvent
             const enterEvent = new KeyboardEvent('keydown', {{
                 key: 'Enter',
                 code: 'Enter',
@@ -1169,7 +1166,7 @@ class BrowserManager:
             }});
             el.dispatchEvent(enterEvent);
             
-            // ========== 8. ОТПРАВКА ФОРМЫ ==========
+            // 8. Отправка формы
             const form = el.closest('form');
             if (form) {{
                 if (form.requestSubmit) {{
@@ -1179,7 +1176,7 @@ class BrowserManager:
                 }}
             }}
             
-            // ========== 9. ПОИСК КНОПКИ (запасной вариант) ==========
+            // 9. Поиск кнопки (запасной вариант)
             const buttons = document.querySelectorAll('button[type="submit"], input[type="submit"], button[aria-label*="поиск"], button[aria-label*="search"]');
             for (let btn of buttons) {{
                 const text = (btn.textContent || btn.value || '').toLowerCase();
@@ -1195,8 +1192,7 @@ class BrowserManager:
         
         result = await self.execute_script(js)
         
-        # ========== 10. ОБРАБОТКА РЕЗУЛЬТАТА ==========
-        # Если результат — список полей (массив)
+        # Обработка результата
         if isinstance(result, list) and len(result) > 0:
             fields_text = "🔍 **На странице есть поля:**\n\n"
             for i, f in enumerate(result[:10], 1):
@@ -1225,20 +1221,101 @@ class BrowserManager:
             
             return fields_text
         
-        # Если результат — True (ввод выполнен)
         if result is True:
             return f"✅ Ввёл '{text}' и отправил поиск"
         
-        # Если результат — False (ошибка)
         if result is False:
             return f"⚠️ Ввёл '{text}', но поиск не отправлен"
         
-        # Если ничего не подошло
         return f"⚠️ Ввёл '{text}', но результат неизвестен"
     
-    # ========== ОСТАЛЬНЫЕ МЕТОДЫ ==========
+    # ========== WAIT_FOR_SELECTOR (EVAL) ==========
+    
+    async def wait_for_selector(self, selector: str, timeout: int = 30):
+        """Ожидание элемента через EVAL"""
+        await self.connect()
+        
+        if await self.is_page_empty():
+            return "❌ Страница пустая. Сначала откройте страницу"
+        
+        safe_selector = selector.replace('"', '\\"').replace("'", "\\'")
+        
+        js = f"""
+        (function() {{
+            const start = Date.now();
+            const timeout = {timeout * 1000};
+            const selector = '{safe_selector}';
+            
+            return new Promise((resolve) => {{
+                const check = () => {{
+                    if (document.querySelector(selector)) {{
+                        resolve(true);
+                        return;
+                    }}
+                    if (Date.now() - start > timeout) {{
+                        resolve(false);
+                        return;
+                    }}
+                    setTimeout(check, 100);
+                }};
+                check();
+            }});
+        }})()
+        """
+        
+        result = await self.execute_script(js)
+        
+        if result:
+            return f"✅ Элемент найден: {self._shorten_selector(selector)}"
+        else:
+            return f"❌ Элемент не найден за {timeout} секунд: {self._shorten_selector(selector)}"
+    
+    # ========== WAIT_FOR_TEXT (EVAL) ==========
+    
+    async def wait_for_text(self, text: str, timeout: int = 30):
+        """Ожидание текста через EVAL"""
+        await self.connect()
+        
+        if await self.is_page_empty():
+            return "❌ Страница пустая. Сначала откройте страницу"
+        
+        safe_text = text.replace('"', '\\"').replace("'", "\\'")
+        
+        js = f"""
+        (function() {{
+            const start = Date.now();
+            const timeout = {timeout * 1000};
+            const text = '{safe_text}';
+            
+            return new Promise((resolve) => {{
+                const check = () => {{
+                    const body = document.body?.innerText || document.documentElement?.textContent || '';
+                    if (body.toLowerCase().includes(text.toLowerCase())) {{
+                        resolve(true);
+                        return;
+                    }}
+                    if (Date.now() - start > timeout) {{
+                        resolve(false);
+                        return;
+                    }}
+                    setTimeout(check, 100);
+                }};
+                check();
+            }});
+        }})()
+        """
+        
+        result = await self.execute_script(js)
+        
+        if result:
+            return f"✅ Текст найден: {text}"
+        else:
+            return f"❌ Текст не найден за {timeout} секунд: {text}"
+    
+    # ========== EXECUTE_SCRIPT (EVAL) ==========
     
     async def execute_script(self, script: str):
+        """Выполнить JavaScript"""
         await self.connect()
         
         if await self.is_page_empty() and script not in ['document.title', 'location.href']:
@@ -1251,6 +1328,8 @@ class BrowserManager:
         
         value = result['result'].get('value')
         return value if value is not None else 'undefined'
+    
+    # ========== НАВИГАЦИЯ (CDP) ==========
     
     async def go_back(self):
         await self.connect()
@@ -1281,50 +1360,6 @@ class BrowserManager:
         await self._send_command("Page.reload", {"ignoreCache": True})
         await asyncio.sleep(1)
         return "🔄 Обновлено"
-    
-    # ========== ОЖИДАНИЕ ЭЛЕМЕНТОВ ==========
-    
-    async def wait_for_selector(self, selector: str, timeout: int = 30):
-        await self.connect()
-        
-        if await self.is_page_empty():
-            return "❌ Страница пустая. Сначала откройте страницу"
-        
-        start_time = time.time()
-        
-        while time.time() - start_time < timeout:
-            try:
-                result = await self._send_command("Runtime.evaluate", {
-                    "expression": f"document.querySelector('{selector}') !== null"
-                })
-                
-                if result['result'].get('value', False):
-                    return f"✅ Элемент найден: {self._shorten_selector(selector)}"
-                
-                await asyncio.sleep(0.5)
-            except Exception as e:
-                pass
-        
-        return f"❌ Элемент не найден за {timeout} секунд: {self._shorten_selector(selector)}"
-    
-    async def wait_for_text(self, text: str, timeout: int = 30):
-        await self.connect()
-        
-        if await self.is_page_empty():
-            return "❌ Страница пустая. Сначала откройте страницу"
-        
-        start_time = time.time()
-        
-        while time.time() - start_time < timeout:
-            try:
-                page_text = await self.get_page_text()
-                if text.lower() in page_text.lower():
-                    return f"✅ Текст найден: {text}"
-                await asyncio.sleep(0.5)
-            except Exception as e:
-                pass
-        
-        return f"❌ Текст не найден за {timeout} секунд: {text}"
     
     # ========== DOM МЕТОДЫ ==========
     
@@ -1400,7 +1435,7 @@ class BrowserManager:
             
             const interactive = [];
             
-            // ========== КНОПКИ ==========
+            // КНОПКИ
             document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"], [role="link"], [data-testid*="Button"], [data-testid*="Link"], [data-testid*="Tab"]').forEach(el => {
                 if (!isVisible(el)) return;
                 const rect = el.getBoundingClientRect();
@@ -1422,7 +1457,7 @@ class BrowserManager:
                 });
             });
             
-            // ========== ПОЛЯ ВВОДА ==========
+            // ПОЛЯ ВВОДА
             document.querySelectorAll('input:not([type="submit"]):not([type="button"]):not([type="hidden"]), textarea, select').forEach(el => {
                 if (!isVisible(el)) return;
                 const rect = el.getBoundingClientRect();
@@ -1449,7 +1484,7 @@ class BrowserManager:
                 });
             });
             
-            // ========== ССЫЛКИ ==========
+            // ССЫЛКИ
             document.querySelectorAll('a[href]:not([href=""]):not([href="#"])').forEach(el => {
                 if (!isVisible(el)) return;
                 const rect = el.getBoundingClientRect();
