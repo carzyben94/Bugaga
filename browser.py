@@ -18,6 +18,7 @@ class BrowserManager:
         self._page_id = None
         self._current_url = ""
         self._masked = False
+        self._debug = False
         
         self.viewport_width = 1280
         self.viewport_height = 720
@@ -143,7 +144,7 @@ class BrowserManager:
             "accuracy": random.randint(10, 100)
         })
         
-        print(f"📍 Геолокация установлена: {lat}, {lng}")
+        print(f"📍 Геолокация: {lat}, {lng}")
         return f"📍 Геолокация: {lat}, {lng}"
     
     async def set_timezone(self, timezone: str = None):
@@ -179,7 +180,7 @@ class BrowserManager:
         """
         
         await self.execute_script(js)
-        print(f"🕐 Таймзона установлена: {timezone}")
+        print(f"🕐 Таймзона: {timezone}")
         return f"🕐 Таймзона: {timezone}"
     
     async def set_language(self, lang: str = None):
@@ -208,7 +209,7 @@ class BrowserManager:
         """
         
         await self.execute_script(js)
-        print(f"🌐 Язык установлен: {lang}")
+        print(f"🌐 Язык: {lang}")
         return f"🌐 Язык: {lang}"
     
     async def setup_location_by_ip(self, ip: str = None):
@@ -257,6 +258,159 @@ class BrowserManager:
         
         return f"✅ Случайная геолокация:\n📍 {location['name']}\n🕐 {location['timezone']}\n🌐 {location['lang']}"
     
+    # ========== КУКИ ==========
+    
+    def get_default_cookies(self) -> List[Dict[str, Any]]:
+        """Получить стандартные куки для X/Twitter"""
+        return [
+            {
+                "domain": ".x.com",
+                "hostOnly": False,
+                "httpOnly": False,
+                "name": "__cuid",
+                "path": "/",
+                "sameSite": "unspecified",
+                "secure": False,
+                "session": True,
+                "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"
+            },
+            {
+                "domain": ".x.com",
+                "hostOnly": False,
+                "httpOnly": False,
+                "name": "lang",
+                "path": "/",
+                "sameSite": "unspecified",
+                "secure": False,
+                "session": True,
+                "value": "ru"
+            },
+            {
+                "domain": ".x.com",
+                "hostOnly": False,
+                "httpOnly": False,
+                "name": "dnt",
+                "path": "/",
+                "sameSite": "unspecified",
+                "secure": False,
+                "session": True,
+                "value": "1"
+            },
+            {
+                "domain": ".x.com",
+                "hostOnly": False,
+                "httpOnly": False,
+                "name": "guest_id",
+                "path": "/",
+                "sameSite": "unspecified",
+                "secure": False,
+                "session": True,
+                "value": "v1%3A178267838599411411"
+            },
+            {
+                "domain": ".x.com",
+                "hostOnly": False,
+                "httpOnly": False,
+                "name": "guest_id_marketing",
+                "path": "/",
+                "sameSite": "unspecified",
+                "secure": False,
+                "session": True,
+                "value": "v1%3A178267838599411411"
+            },
+            {
+                "domain": ".x.com",
+                "hostOnly": False,
+                "httpOnly": False,
+                "name": "guest_id_ads",
+                "path": "/",
+                "sameSite": "unspecified",
+                "secure": False,
+                "session": True,
+                "value": "v1%3A178267838599411411"
+            },
+            {
+                "domain": ".x.com",
+                "hostOnly": False,
+                "httpOnly": False,
+                "name": "personalization_id",
+                "path": "/",
+                "sameSite": "unspecified",
+                "secure": False,
+                "session": True,
+                "value": '"v1_DKrxLZAC902dMFdd1QrVYg=="'
+            },
+            {
+                "domain": ".x.com",
+                "hostOnly": False,
+                "httpOnly": False,
+                "name": "twid",
+                "path": "/",
+                "sameSite": "unspecified",
+                "secure": False,
+                "session": True,
+                "value": "u%3D2067347503503052800"
+            },
+            {
+                "domain": ".x.com",
+                "hostOnly": False,
+                "httpOnly": False,
+                "name": "auth_token",
+                "path": "/",
+                "sameSite": "unspecified",
+                "secure": False,
+                "session": True,
+                "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936"
+            },
+            {
+                "domain": ".x.com",
+                "hostOnly": False,
+                "httpOnly": False,
+                "name": "ct0",
+                "path": "/",
+                "sameSite": "unspecified",
+                "secure": False,
+                "session": True,
+                "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb"
+            },
+            {
+                "domain": ".x.com",
+                "hostOnly": False,
+                "httpOnly": False,
+                "name": "__cf_bm",
+                "path": "/",
+                "sameSite": "unspecified",
+                "secure": False,
+                "session": True,
+                "value": "wj_dszyJY7t.NS3PCGD3fz27cRQXW6tgfO9_TrBoXPk-1784047968.7823458-1.0.1.1-oJnV6LCjpA4HNw4UmXCuwUCnHGdRlOCDFcQoVgBxAMdp35GIZImrhfbf3kRCgjicmLdK5VzMmZQ5Xqwu4ZmH9dv2Y8I1BWwbonY_SeuhqMeJUz4Y8vxdNzRog4InHuwB"
+            }
+        ]
+    
+    async def set_cookies(self, cookies: Optional[List[Dict[str, Any]]] = None):
+        """Установить куки в браузере (все сразу)"""
+        await self.connect()
+        
+        if cookies is None:
+            cookies = self.get_default_cookies()
+        
+        await self._send_command("Network.setCookies", {
+            "cookies": cookies
+        })
+        
+        print(f"🍪 Установлено {len(cookies)} кук")
+        return f"🍪 Установлено {len(cookies)} кук"
+    
+    async def get_cookies(self, urls: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """Получить все куки из браузера"""
+        await self.connect()
+        
+        params = {}
+        if urls:
+            params["urls"] = urls
+        
+        result = await self._send_command("Network.getCookies", params)
+        return result.get('cookies', [])
+    
     # ========== МАСКИРОВКА JS ==========
     
     async def apply_mask(self):
@@ -264,7 +418,7 @@ class BrowserManager:
             return True
         
         try:
-            print("🕵️ Применяю 100% маскировку...")
+            print("🕵️ Маскировка...")
             
             location = self.get_random_location()
             await self.set_geolocation(location["lat"], location["lng"])
@@ -600,165 +754,12 @@ class BrowserManager:
             
             await self.execute_script(mask_js)
             self._masked = True
-            print("✅ 100% маскировка применена")
+            print("✅ Маскировка OK")
             return True
             
         except Exception as e:
             print(f"❌ Ошибка маскировки: {e}")
             return False
-    
-    # ========== УПРАВЛЕНИЕ КУКАМИ ==========
-    
-    def get_default_cookies(self) -> List[Dict[str, Any]]:
-        """Получить стандартные куки для X/Twitter"""
-        return [
-            {
-                "domain": ".x.com",
-                "hostOnly": False,
-                "httpOnly": False,
-                "name": "__cuid",
-                "path": "/",
-                "sameSite": "unspecified",
-                "secure": False,
-                "session": True,
-                "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"
-            },
-            {
-                "domain": ".x.com",
-                "hostOnly": False,
-                "httpOnly": False,
-                "name": "lang",
-                "path": "/",
-                "sameSite": "unspecified",
-                "secure": False,
-                "session": True,
-                "value": "ru"
-            },
-            {
-                "domain": ".x.com",
-                "hostOnly": False,
-                "httpOnly": False,
-                "name": "dnt",
-                "path": "/",
-                "sameSite": "unspecified",
-                "secure": False,
-                "session": True,
-                "value": "1"
-            },
-            {
-                "domain": ".x.com",
-                "hostOnly": False,
-                "httpOnly": False,
-                "name": "guest_id",
-                "path": "/",
-                "sameSite": "unspecified",
-                "secure": False,
-                "session": True,
-                "value": "v1%3A178267838599411411"
-            },
-            {
-                "domain": ".x.com",
-                "hostOnly": False,
-                "httpOnly": False,
-                "name": "guest_id_marketing",
-                "path": "/",
-                "sameSite": "unspecified",
-                "secure": False,
-                "session": True,
-                "value": "v1%3A178267838599411411"
-            },
-            {
-                "domain": ".x.com",
-                "hostOnly": False,
-                "httpOnly": False,
-                "name": "guest_id_ads",
-                "path": "/",
-                "sameSite": "unspecified",
-                "secure": False,
-                "session": True,
-                "value": "v1%3A178267838599411411"
-            },
-            {
-                "domain": ".x.com",
-                "hostOnly": False,
-                "httpOnly": False,
-                "name": "personalization_id",
-                "path": "/",
-                "sameSite": "unspecified",
-                "secure": False,
-                "session": True,
-                "value": '"v1_DKrxLZAC902dMFdd1QrVYg=="'
-            },
-            {
-                "domain": ".x.com",
-                "hostOnly": False,
-                "httpOnly": False,
-                "name": "twid",
-                "path": "/",
-                "sameSite": "unspecified",
-                "secure": False,
-                "session": True,
-                "value": "u%3D2067347503503052800"
-            },
-            {
-                "domain": ".x.com",
-                "hostOnly": False,
-                "httpOnly": False,
-                "name": "auth_token",
-                "path": "/",
-                "sameSite": "unspecified",
-                "secure": False,
-                "session": True,
-                "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936"
-            },
-            {
-                "domain": ".x.com",
-                "hostOnly": False,
-                "httpOnly": False,
-                "name": "ct0",
-                "path": "/",
-                "sameSite": "unspecified",
-                "secure": False,
-                "session": True,
-                "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb"
-            },
-            {
-                "domain": ".x.com",
-                "hostOnly": False,
-                "httpOnly": False,
-                "name": "__cf_bm",
-                "path": "/",
-                "sameSite": "unspecified",
-                "secure": False,
-                "session": True,
-                "value": "wj_dszyJY7t.NS3PCGD3fz27cRQXW6tgfO9_TrBoXPk-1784047968.7823458-1.0.1.1-oJnV6LCjpA4HNw4UmXCuwUCnHGdRlOCDFcQoVgBxAMdp35GIZImrhfbf3kRCgjicmLdK5VzMmZQ5Xqwu4ZmH9dv2Y8I1BWwbonY_SeuhqMeJUz4Y8vxdNzRog4InHuwB"
-            }
-        ]
-    
-    async def set_cookies(self, cookies: Optional[List[Dict[str, Any]]] = None):
-        """Установить куки в браузере"""
-        await self.connect()
-        
-        if cookies is None:
-            cookies = self.get_default_cookies()
-        
-        await self._send_command("Network.setCookies", {
-            "cookies": cookies
-        })
-        
-        print(f"🍪 Установлено {len(cookies)} кук")
-        return f"🍪 Установлено {len(cookies)} кук"
-    
-    async def get_cookies(self, urls: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-        """Получить все куки из браузера"""
-        await self.connect()
-        
-        params = {}
-        if urls:
-            params["urls"] = urls
-        
-        result = await self._send_command("Network.getCookies", params)
-        return result.get('cookies', [])
     
     # ========== ОСНОВНЫЕ МЕТОДЫ ==========
     
@@ -794,7 +795,6 @@ class BrowserManager:
             return None
     
     async def connect(self, tab_id: Optional[str] = None):
-        """Подключение к Chrome + автоматическая установка кук"""
         if self._connected and self.ws:
             return
         
@@ -802,7 +802,7 @@ class BrowserManager:
         if not self.ws_url:
             raise Exception("❌ Chrome не запущен или нет доступных вкладок")
         
-        print(f"🔗 Подключаюсь к: {self.ws_url}")
+        print(f"🔗 Подключение...")
         self.ws = await websockets.connect(
             self.ws_url,
             max_size=50 * 1024 * 1024,
@@ -811,23 +811,16 @@ class BrowserManager:
         )
         self._connected = True
         
-        # Включаем необходимые домены
         await self._send_command("Page.enable")
         await self._send_command("Runtime.enable")
         await self._send_command("DOM.enable")
-        await self._send_command("Network.enable")  # ✅ Включаем Network для кук
+        await self._send_command("Network.enable")
         
-        # Устанавливаем вьюпорт
         await self._set_viewport()
-        
-        # ✅ АВТОМАТИЧЕСКИ УСТАНАВЛИВАЕМ КУКИ
         await self.set_cookies()
-        
-        # Применяем маскировку
         await self.apply_mask()
         
-        print("✅ Подключение к CDP установлено")
-        print("🍪 Куки автоматически установлены")
+        print("✅ Подключение OK")
     
     async def _set_viewport(self):
         await self._send_command("Emulation.setDeviceMetricsOverride", {
@@ -849,7 +842,11 @@ class BrowserManager:
         }
         
         await self.ws.send(json.dumps(message))
-        print(f"📤 Отправлена команда: {method} (id: {self._message_id})")
+        
+        # Только важные команды в логах
+        important = ['Page.navigate', 'Page.captureScreenshot', 'Page.reload']
+        if self._debug or method in important:
+            print(f"📤 {method}")
         
         while True:
             try:
@@ -859,7 +856,15 @@ class BrowserManager:
                 if data.get('id') == self._message_id:
                     if 'error' in data:
                         raise Exception(f"CDP Error: {data['error']}")
-                    print(f"📥 Получен ответ на {method}")
+                    
+                    if self._debug or method in important:
+                        if method == 'Page.captureScreenshot':
+                            print(f"📥 screenshot OK")
+                        elif method == 'Page.navigate':
+                            print(f"📥 navigate OK")
+                        else:
+                            print(f"📥 {method} OK")
+                    
                     return data.get('result', {})
             except asyncio.TimeoutError:
                 raise Exception(f"❌ Таймаут ответа от Chrome на команду {method}")
@@ -1089,6 +1094,7 @@ class BrowserManager:
         return result['result'].get('value', '')
     
     async def get_dom_with_metadata(self) -> Dict[str, Any]:
+        """Получить ТОЛЬКО полезные интерактивные элементы (без мусора)"""
         await self.connect()
         
         if await self.is_page_empty():
@@ -1096,46 +1102,164 @@ class BrowserManager:
         
         js = """
         (function() {
-            const interactive = [];
-            const selectors = ['button', 'a', 'input', 'textarea', 'select', '[role="button"]', '[onclick]'];
+            // ========== ПРОВЕРКА ВИДИМОСТИ ==========
+            function isVisible(el) {
+                const rect = el.getBoundingClientRect();
+                const style = window.getComputedStyle(el);
+                
+                if (rect.width === 0 && rect.height === 0) return false;
+                if (style.display === 'none') return false;
+                if (style.visibility === 'hidden') return false;
+                if (style.opacity === '0') return false;
+                if (parseFloat(style.width) === 0 && parseFloat(style.height) === 0) return false;
+                
+                let parent = el.parentElement;
+                while (parent) {
+                    const parentStyle = window.getComputedStyle(parent);
+                    if (parentStyle.display === 'none') return false;
+                    if (parentStyle.visibility === 'hidden') return false;
+                    parent = parent.parentElement;
+                }
+                return true;
+            }
             
-            selectors.forEach(sel => {
-                document.querySelectorAll(sel).forEach(el => {
-                    const rect = el.getBoundingClientRect();
-                    interactive.push({
-                        tag: el.tagName.toLowerCase(),
-                        id: el.id || null,
-                        class: el.className || null,
-                        text: el.innerText ? el.innerText.trim().slice(0, 100) : null,
-                        placeholder: el.placeholder || null,
-                        value: el.value || null,
-                        type: el.type || null,
-                        href: el.href || null,
-                        name: el.name || null,
-                        role: el.getAttribute('role') || null,
-                        aria_label: el.getAttribute('aria-label') || null,
-                        data_attr: el.getAttribute('data-testid') || el.getAttribute('data-id') || null,
-                        visible: rect.width > 0 && rect.height > 0,
-                        x: Math.round(rect.x),
-                        y: Math.round(rect.y),
-                        width: Math.round(rect.width),
-                        height: Math.round(rect.height),
-                        selector: el.id ? '#' + el.id : 
-                                  el.className ? '.' + el.className.split(' ')[0] : 
-                                  el.tagName.toLowerCase()
-                    });
+            // ========== ПОЛУЧЕНИЕ СЕЛЕКТОРА ==========
+            function getSelector(el) {
+                if (el.id) return '#' + el.id;
+                if (el.className && typeof el.className === 'string') {
+                    const classes = el.className.split(' ').filter(c => c).join('.');
+                    if (classes) return '.' + classes;
+                }
+                const tag = el.tagName.toLowerCase();
+                const parent = el.parentElement;
+                if (parent) {
+                    const siblings = parent.querySelectorAll(tag);
+                    if (siblings.length > 1) {
+                        for (let i = 0; i < siblings.length; i++) {
+                            if (siblings[i] === el) return tag + ':nth-child(' + (i + 1) + ')';
+                        }
+                    }
+                }
+                return tag;
+            }
+            
+            // ========== ТОЛЬКО ИНТЕРАКТИВНЫЕ ЭЛЕМЕНТЫ ==========
+            const interactive = [];
+            
+            // КНОПКИ
+            document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"]').forEach(el => {
+                if (!isVisible(el)) return;
+                const rect = el.getBoundingClientRect();
+                const text = el.innerText?.trim() || el.value || el.getAttribute('aria-label') || '';
+                if (!text && !el.getAttribute('aria-label')) return;
+                interactive.push({
+                    type: 'button',
+                    tag: el.tagName.toLowerCase(),
+                    text: text.slice(0, 50),
+                    selector: getSelector(el),
+                    visible: true,
+                    x: Math.round(rect.x),
+                    y: Math.round(rect.y),
+                    action: 'click'
                 });
+            });
+            
+            // ПОЛЯ ВВОДА
+            document.querySelectorAll('input:not([type="submit"]):not([type="button"]):not([type="hidden"]), textarea, select').forEach(el => {
+                if (!isVisible(el)) return;
+                const rect = el.getBoundingClientRect();
+                const placeholder = el.placeholder || '';
+                const value = el.value || '';
+                const name = el.name || '';
+                const label = placeholder || value || name || '';
+                if (!label) return;
+                const inputType = el.type || 'text';
+                
+                interactive.push({
+                    type: 'input',
+                    tag: el.tagName.toLowerCase(),
+                    input_type: inputType,
+                    placeholder: placeholder.slice(0, 50),
+                    value: value.slice(0, 50),
+                    name: name.slice(0, 30),
+                    label: label.slice(0, 50),
+                    selector: getSelector(el),
+                    visible: true,
+                    x: Math.round(rect.x),
+                    y: Math.round(rect.y),
+                    action: 'type'
+                });
+            });
+            
+            // ССЫЛКИ
+            document.querySelectorAll('a[href]:not([href=""]):not([href="#"])').forEach(el => {
+                if (!isVisible(el)) return;
+                const rect = el.getBoundingClientRect();
+                const text = el.innerText?.trim() || el.getAttribute('aria-label') || '';
+                if (!text) return;
+                interactive.push({
+                    type: 'link',
+                    tag: 'a',
+                    text: text.slice(0, 50),
+                    href: el.href || '',
+                    selector: getSelector(el),
+                    visible: true,
+                    x: Math.round(rect.x),
+                    y: Math.round(rect.y),
+                    action: 'click'
+                });
+            });
+            
+            // ЧЕКБОКСЫ И РАДИО
+            document.querySelectorAll('input[type="checkbox"], input[type="radio"]').forEach(el => {
+                if (!isVisible(el)) return;
+                const rect = el.getBoundingClientRect();
+                const label = el.getAttribute('aria-label') || el.name || '';
+                if (!label) return;
+                interactive.push({
+                    type: 'checkbox',
+                    tag: 'input',
+                    input_type: el.type,
+                    label: label.slice(0, 50),
+                    checked: el.checked || false,
+                    selector: getSelector(el),
+                    visible: true,
+                    x: Math.round(rect.x),
+                    y: Math.round(rect.y),
+                    action: 'click'
+                });
+            });
+            
+            // ФОРМЫ
+            document.querySelectorAll('form').forEach(el => {
+                if (!isVisible(el)) return;
+                const rect = el.getBoundingClientRect();
+                interactive.push({
+                    type: 'form',
+                    tag: 'form',
+                    id: el.id || '',
+                    action: el.action || '',
+                    method: el.method || 'get',
+                    selector: getSelector(el),
+                    visible: true,
+                    x: Math.round(rect.x),
+                    y: Math.round(rect.y),
+                    action: 'submit'
+                });
+            });
+            
+            // ========== СОРТИРОВКА ==========
+            interactive.sort((a, b) => {
+                if (a.visible !== b.visible) return a.visible ? -1 : 1;
+                const order = { button: 0, link: 1, input: 2, checkbox: 3, form: 4 };
+                return (order[a.type] || 99) - (order[b.type] || 99);
             });
             
             return {
                 title: document.title || '',
                 url: window.location.href,
                 interactive: interactive,
-                total_elements: document.querySelectorAll('*').length,
-                forms: document.forms.length,
-                links: document.links.length,
-                images: document.images.length,
-                scripts: document.scripts.length
+                total_interactive: interactive.length
             };
         })()
         """
@@ -1211,27 +1335,16 @@ class BrowserManager:
 • Заголовок: {data.get('title', 'Нет')}
 • URL: {data.get('url', 'Нет')}
 
-📊 СТАТИСТИКА:
-• Всего элементов: {data.get('total_elements', 0)}
-• Форм: {data.get('forms', 0)}
-• Ссылок: {data.get('links', 0)}
-• Изображений: {data.get('images', 0)}
-• Скриптов: {data.get('scripts', 0)}
-
-🖱 ИНТЕРАКТИВНЫЕ ЭЛЕМЕНТЫ ({len(data.get('interactive', []))}):
+🖱 ДОСТУПНЫЕ ЭЛЕМЕНТЫ ({data.get('total_interactive', 0)}):
 """
         
         for i, el in enumerate(data.get('interactive', [])[:20]):
             text = el.get('text', '') or el.get('placeholder', '') or el.get('value', '') or ''
-            summary += f"  {i+1}. <{el.get('tag', '')}>"
+            summary += f"  {i+1}. <{el.get('type', '')}>"
             if text:
                 summary += f" '{text[:30]}'"
-            if el.get('type'):
-                summary += f" type={el.get('type')}"
-            if el.get('visible'):
-                summary += " ✅"
-            else:
-                summary += " ⛔"
+            if el.get('input_type'):
+                summary += f" type={el.get('input_type')}"
             summary += f"\n     Селектор: {el.get('selector', '')}\n"
         
         if len(data.get('interactive', [])) > 20:
@@ -1257,7 +1370,7 @@ class BrowserManager:
             score = 0
             text = (el.get('text') or '').lower()
             placeholder = (el.get('placeholder') or '').lower()
-            aria_label = (el.get('aria_label') or '').lower()
+            label = (el.get('label') or '').lower()
             value = (el.get('value') or '').lower()
             tag = el.get('tag', '').lower()
             el_type = (el.get('type') or '').lower()
@@ -1270,7 +1383,7 @@ class BrowserManager:
                     score += 3
                 if kw in placeholder:
                     score += 2
-                if kw in aria_label:
+                if kw in label:
                     score += 2
                 if kw in value:
                     score += 2
@@ -1294,7 +1407,7 @@ class BrowserManager:
             return {
                 "found": True,
                 "best": candidates[0],
-                "candidates": candidates[:5]
+                "candidates": candidates[:3]
             }
         
         return {
@@ -1346,8 +1459,6 @@ class BrowserManager:
             return "📭 Страница пустая"
         
         dom_summary = await self.get_dom_summary()
-        full_dom = await self.get_full_dom()
-        dom_preview = full_dom[:3000] + "..." if len(full_dom) > 3000 else full_dom
         
         from ai import AgnesAI
         ai_engine = AgnesAI()
@@ -1357,9 +1468,6 @@ class BrowserManager:
 
 {dom_summary}
 
-Фрагмент DOM страницы (первые 3000 символов):
-{dom_preview}
-
 ВОПРОС ПОЛЬЗОВАТЕЛЯ:
 {question}
 
@@ -1367,19 +1475,25 @@ class BrowserManager:
 1. Кратко опиши что на странице
 2. Найди элементы по запросу пользователя
 3. Предложи селекторы для найденных элементов
-4. Если есть кнопки - предложи их найти и нажать
 """
         
         response = ai_engine.ask(prompt, "")
         return response
     
-    # ========== ИИ-АГЕНТ (вызывает AgentHandler из ai.py) ==========
+    # ========== ИИ-АГЕНТ ==========
     
     async def ai_agent(self, command: str) -> str:
         """ИИ-агент — использует AgentHandler из ai.py"""
         from ai import AgentHandler
+        
+        print(f"🧠 Агент: {command[:50]}...")
+        
         handler = AgentHandler(self)
-        return await handler.execute(command)
+        result = await handler.execute(command)
+        
+        print(f"✅ Агент OK")
+        
+        return result
     
     # ========== УПРАВЛЕНИЕ ВКЛАДКАМИ ==========
     
