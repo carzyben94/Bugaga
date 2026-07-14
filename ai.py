@@ -125,6 +125,9 @@ URL: {url}
 
 6. Для кнопок без текста используй aria-label или data-testid.
 
+⚠️ ВНИМАНИЕ: Используй ТОЧНО такие селекторы как в списке!
+Не выдумывай data-testid — бери их из списка элементов!
+
 КОМАНДА ПОЛЬЗОВАТЕЛЯ: {command}
 
 Твои ВОЗМОЖНЫЕ ДЕЙСТВИЯ:
@@ -136,12 +139,6 @@ URL: {url}
 6. screenshot — сделать скриншот
 7. analyze — проанализировать страницу
 8. none — просто ответить
-
-⚠️ ПРАВИЛА:
-- Для click/type ВСЕГДА указывай selector из доступных элементов
-- Если есть data-testid — используй его (он самый надёжный)
-- НЕ ВЫДУМЫВАЙ элементы, которых нет в списке
-- Для ввода текста используй action: type и укажи selector + text
 
 ОТВЕТЬ В ФОРМАТЕ JSON:
 {{
@@ -296,25 +293,24 @@ class AgentHandler:
         
         if buttons:
             result += "\n🔘 КНОПКИ:\n"
-            for i, el in enumerate(buttons[:20]):
+            for i, el in enumerate(buttons[:30]):
                 text = el.get('text', '') or el.get('aria_label', '') or 'без текста'
                 selector = el.get('selector', '')
-                # Если есть data-testid — показываем его
                 if 'data-testid' in selector:
                     result += f"  {i+1}. '{text}' → {selector}\n"
                 else:
                     result += f"  {i+1}. '{text}' → {selector}\n"
-            if len(buttons) > 20:
-                result += f"  ... и ещё {len(buttons) - 20} кнопок\n"
+            if len(buttons) > 30:
+                result += f"  ... и ещё {len(buttons) - 30} кнопок\n"
         
         if links:
             result += "\n🔗 ССЫЛКИ:\n"
-            for i, el in enumerate(links[:10]):
+            for i, el in enumerate(links[:15]):
                 text = el.get('text', '') or 'без текста'
                 selector = el.get('selector', '')
                 result += f"  {i+1}. '{text}' → {selector}\n"
-            if len(links) > 10:
-                result += f"  ... и ещё {len(links) - 10} ссылок\n"
+            if len(links) > 15:
+                result += f"  ... и ещё {len(links) - 15} ссылок\n"
         
         if inputs:
             result += "\n⌨️ ПОЛЯ ВВОДА:\n"
