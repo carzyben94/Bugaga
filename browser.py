@@ -18,7 +18,6 @@ class BrowserManager:
         self.viewport_height = 720
     
     def _get_tab_ws_url(self, tab_id: Optional[str] = None) -> Optional[str]:
-        """Получить WebSocket URL для вкладки"""
         try:
             resp = requests.get(f'http://{self.host}:{self.port}/json/list', timeout=5)
             if resp.status_code != 200:
@@ -47,7 +46,6 @@ class BrowserManager:
             return None
     
     async def connect(self, tab_id: Optional[str] = None):
-        """Подключиться к вкладке"""
         if self._connected and self.ws:
             return
         
@@ -69,7 +67,6 @@ class BrowserManager:
         await self._set_viewport()
     
     async def _set_viewport(self):
-        """Установить размер вьюпорта"""
         await self._send_command("Emulation.setDeviceMetricsOverride", {
             "width": self.viewport_width,
             "height": self.viewport_height,
@@ -78,7 +75,6 @@ class BrowserManager:
         })
     
     async def _send_command(self, method: str, params: dict = None):
-        """Отправить CDP команду"""
         if not self._connected:
             await self.connect()
         
@@ -103,10 +99,7 @@ class BrowserManager:
             except asyncio.TimeoutError:
                 raise Exception("❌ Таймаут ответа от Chrome")
     
-    # ========== ОСНОВНЫЕ МЕТОДЫ ==========
-    
     async def open_page(self, url: str):
-        """Открыть URL"""
         await self.connect()
         result = await self._send_command("Page.navigate", {"url": url})
         await asyncio.sleep(2)
@@ -114,7 +107,6 @@ class BrowserManager:
         return result
     
     async def screenshot(self):
-        """Сделать скриншот (1280x720)"""
         await self.connect()
         await self._set_viewport()
         
@@ -126,7 +118,6 @@ class BrowserManager:
         return result['data']
     
     async def get_page_text(self):
-        """Получить текст страницы"""
         await self.connect()
         result = await self._send_command("Runtime.evaluate", {
             "expression": "document.body?.innerText || document.documentElement?.textContent || ''"
@@ -134,7 +125,6 @@ class BrowserManager:
         return result['result'].get('value', '')[:10000]
     
     async def get_page_title(self):
-        """Получить заголовок страницы"""
         await self.connect()
         result = await self._send_command("Runtime.evaluate", {
             "expression": "document.title || ''"
@@ -142,7 +132,6 @@ class BrowserManager:
         return result['result'].get('value', '')
     
     async def click_element(self, selector: str):
-        """Кликнуть по элементу"""
         await self.connect()
         
         find_result = await self._send_command("DOM.querySelector", {
@@ -182,7 +171,6 @@ class BrowserManager:
         return f"✅ Кликнул по: {selector}"
     
     async def execute_script(self, script: str):
-        """Выполнить JavaScript"""
         await self.connect()
         result = await self._send_command("Runtime.evaluate", {
             "expression": script,
@@ -193,27 +181,21 @@ class BrowserManager:
         return value if value is not None else 'undefined'
     
     async def go_back(self):
-        """Назад"""
         await self.connect()
         await self._send_command("Page.navigateBack")
         await asyncio.sleep(1)
     
     async def go_forward(self):
-        """Вперёд"""
         await self.connect()
         await self._send_command("Page.navigateForward")
         await asyncio.sleep(1)
     
     async def refresh(self):
-        """Обновить страницу"""
         await self.connect()
         await self._send_command("Page.reload", {"ignoreCache": True})
         await asyncio.sleep(1)
     
-    # ========== УПРАВЛЕНИЕ ВКЛАДКАМИ ==========
-    
     async def list_tabs(self):
-        """Список вкладок"""
         try:
             resp = requests.get(f'http://{self.host}:{self.port}/json/list', timeout=5)
             pages = resp.json()
@@ -232,7 +214,6 @@ class BrowserManager:
             return f"❌ Ошибка: {e}"
     
     async def create_tab(self, url: str = ""):
-        """Создать новую вкладку"""
         try:
             resp = requests.get(f'http://{self.host}:{self.port}/json/new', timeout=5)
             page = resp.json()
@@ -250,7 +231,6 @@ class BrowserManager:
             return f"❌ Ошибка: {e}"
     
     async def close_tab(self):
-        """Закрыть текущую вкладку"""
         if not self._page_id:
             return "❌ Нет активной вкладки"
         
@@ -258,14 +238,12 @@ class BrowserManager:
             requests.get(f'http://{self.host}:{self.port}/json/close/{self._page_id}', timeout=5)
             await self.close()
             
-            # Переключаемся на первую доступную вкладку
             await self.connect()
             return "✅ Вкладка закрыта"
         except Exception as e:
             return f"❌ Ошибка: {e}"
     
     async def close(self):
-        """Закрыть WebSocket"""
         if self.ws and self._connected:
             try:
                 await self.ws.close()
