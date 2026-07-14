@@ -1040,10 +1040,10 @@ class BrowserManager:
                 return parts[0] + '.' + parts[1] + '.' + parts[2] + '...'
         return selector[:60] + '...'
     
-    # ========== НОВЫЙ МЕТОД: ПОСИМВОЛЬНЫЙ ВВОД ЧЕРЕЗ CDP ==========
+    # ========== ГЛАВНЫЙ МЕТОД: ВВОД ТЕКСТА + ENTER ==========
     
     async def type_text_cdp(self, selector: str, text: str):
-        """Гарантированный ввод текста посимвольно через CDP (по документации)"""
+        """Гарантированный ввод текста + Enter (KeyboardEvent с isComposing: false)"""
         await self.connect()
         
         if await self.is_page_empty():
@@ -1066,16 +1066,14 @@ class BrowserManager:
         """)
         await asyncio.sleep(0.1)
         
-        # 3. Ввод каждого символа через CDP (по документации)
+        # 3. Ввод каждого символа через CDP
         for char in text:
-            # keyDown
             await self._send_command("Input.dispatchKeyEvent", {
                 "type": "keyDown",
                 "text": char
             })
             await asyncio.sleep(0.01)
             
-            # char — главный для React!
             await self._send_command("Input.dispatchKeyEvent", {
                 "type": "char",
                 "text": char,
@@ -1083,7 +1081,6 @@ class BrowserManager:
             })
             await asyncio.sleep(0.01)
             
-            # keyUp
             await self._send_command("Input.dispatchKeyEvent", {
                 "type": "keyUp",
                 "text": char
@@ -1092,25 +1089,50 @@ class BrowserManager:
         
         await asyncio.sleep(0.2)
         
-        # 4. Отправка поиска через Enter
-        await self._send_command("Input.dispatchKeyEvent", {
-            "type": "keyDown",
-            "key": "Enter",
-            "code": "Enter",
-            "windowsVirtualKeyCode": 13,
-            "nativeVirtualKeyCode": 13
-        })
-        await asyncio.sleep(0.05)
+        # 4. ✅ ОДИН ENTER (KeyboardEvent + isComposing: false)
+        js = f"""
+        (function() {{
+            let el = document.querySelector('{safe_selector}');
+            if (!el) {{
+                el = document.activeElement;
+            }}
+            if (!el) return false;
+            
+            // 🔥 KeyboardEvent с isComposing: false (для React)
+            const enterEvent = new KeyboardEvent('keydown', {{
+                key: 'Enter',
+                code: 'Enter',
+                keyCode: 13,
+                which: 13,
+                bubbles: true,
+                cancelable: true,
+                composed: true,
+                isComposing: false
+            }});
+            el.dispatchEvent(enterEvent);
+            
+            const keyupEvent = new KeyboardEvent('keyup', {{
+                key: 'Enter',
+                code: 'Enter',
+                keyCode: 13,
+                which: 13,
+                bubbles: true,
+                cancelable: true,
+                composed: true,
+                isComposing: false
+            }});
+            el.dispatchEvent(keyupEvent);
+            
+            return true;
+        }})()
+        """
         
-        await self._send_command("Input.dispatchKeyEvent", {
-            "type": "keyUp",
-            "key": "Enter",
-            "code": "Enter",
-            "windowsVirtualKeyCode": 13,
-            "nativeVirtualKeyCode": 13
-        })
+        result = await self.execute_script(js)
         
-        return f"✅ Ввёл '{text}' и нажал Enter"
+        if result:
+            return f"✅ Ввёл '{text}' и нажал Enter"
+        else:
+            return f"⚠️ Ввёл '{text}', но Enter не сработал"
     
     # ========== ОСТАЛЬНЫЕ МЕТОДЫ ==========
     
