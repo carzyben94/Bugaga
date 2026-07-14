@@ -136,6 +136,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/geoset <lat> <lng> - установить координаты\n"
             "/timezone <зона> - установить таймзону\n"
             "/lang <язык> - установить язык\n"
+            "/dom - получить полный HTML\n"
+            "/summary - сводка по странице\n"
+            "/find <текст> - найти элемент по тексту\n"
+            "/aifind <описание> - ИИ поиск элемента\n"
+            "/aiclick <описание> - ИИ клик по элементу\n"
+            "/aianalyze <вопрос> - ИИ анализ страницы\n"
             "/log - скачать логи\n"
             "/help - эта справка"
         )
@@ -316,10 +322,7 @@ async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ Ошибка /refresh: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
-# ========== НОВЫЕ КОМАНДЫ ==========
-
 async def wait_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ожидание элемента"""
     if not context.args:
         await update.message.reply_text("❌ Укажи селектор: /wait #button")
         return
@@ -335,7 +338,6 @@ async def wait_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def waittext_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ожидание текста"""
     if not context.args:
         await update.message.reply_text("❌ Укажи текст: /waittext Привет")
         return
@@ -351,7 +353,6 @@ async def waittext_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def geo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Геолокация"""
     logger.info(f"📩 Получена команда /geo от {update.effective_user.username}")
     
     try:
@@ -367,7 +368,6 @@ async def geo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def geoset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Установить координаты"""
     if len(context.args) < 2:
         await update.message.reply_text("❌ Укажи координаты: /geoset 55.7558 37.6173")
         return
@@ -382,7 +382,6 @@ async def geoset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def timezone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Установить таймзону"""
     if not context.args:
         await update.message.reply_text("❌ Укажи таймзону: /timezone Europe/London")
         return
@@ -396,7 +395,6 @@ async def timezone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def lang_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Установить язык"""
     if not context.args:
         await update.message.reply_text("❌ Укажи язык: /lang ru-RU")
         return
@@ -407,6 +405,152 @@ async def lang_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(result)
     except Exception as e:
         logger.error(f"❌ Ошибка /lang: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+# ========== НОВЫЕ КОМАНДЫ DOM ==========
+
+async def dom_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Получить DOM страницы"""
+    logger.info(f"📩 Получена команда /dom от {update.effective_user.username}")
+    try:
+        await update.message.reply_text("📄 Получаю DOM страницы...")
+        dom = await browser.get_full_dom()
+        
+        if len(dom) > 4096:
+            await update.message.reply_document(
+                document=io.BytesIO(dom.encode('utf-8')),
+                filename="page_dom.html",
+                caption="📄 Полный DOM страницы"
+            )
+        else:
+            await update.message.reply_text(f"📄 DOM страницы:\n\n{dom[:4000]}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка /dom: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Получить краткую сводку по странице"""
+    logger.info(f"📩 Получена команда /summary от {update.effective_user.username}")
+    try:
+        await update.message.reply_text("📊 Анализирую страницу...")
+        summary = await browser.get_dom_summary()
+        await update.message.reply_text(summary)
+    except Exception as e:
+        logger.error(f"❌ Ошибка /summary: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def find_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Найти элемент по тексту"""
+    if not context.args:
+        await update.message.reply_text("❌ Укажи текст для поиска: /find войти")
+        return
+    
+    text = ' '.join(context.args)
+    logger.info(f"📩 Получена команда /find от {update.effective_user.username}: {text}")
+    
+    try:
+        await update.message.reply_text(f"🔍 Ищу: {text}")
+        results = await browser.find_elements_by_text(text)
+        
+        if not results:
+            await update.message.reply_text(f"❌ Ничего не найдено по запросу: {text}")
+            return
+        
+        response = f"🔍 Найдено {len(results)} элементов по запросу '{text}':\n\n"
+        for i, el in enumerate(results[:10]):
+            response += f"{i+1}. <{el.get('tag', '')}>"
+            if el.get('text'):
+                response += f" '{el.get('text')[:30]}'"
+            if el.get('type'):
+                response += f" type={el.get('type')}"
+            response += f"\n   Селектор: {el.get('selector', '')}\n"
+        
+        if len(results) > 10:
+            response += f"\n... и ещё {len(results) - 10} элементов"
+        
+        await update.message.reply_text(response[:4000])
+    except Exception as e:
+        logger.error(f"❌ Ошибка /find: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def aifind_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ИИ-поиск элемента по описанию"""
+    if not context.args:
+        await update.message.reply_text("❌ Укажи описание: /aifind кнопка войти")
+        return
+    
+    description = ' '.join(context.args)
+    logger.info(f"📩 Получена команда /aifind от {update.effective_user.username}: {description}")
+    
+    try:
+        await update.message.reply_text(f"🧠 Ищу: {description}")
+        result = await browser.ai_find_element(description)
+        
+        if not result.get('found', False):
+            await update.message.reply_text(f"❌ {result.get('message', 'Элемент не найден')}")
+            return
+        
+        el = result['best']
+        response = f"✅ Найден элемент по описанию '{description}':\n\n"
+        response += f"📌 Тег: <{el.get('tag', '')}>\n"
+        if el.get('text'):
+            response += f"📝 Текст: {el.get('text', '')[:50]}\n"
+        if el.get('placeholder'):
+            response += f"💬 Плейсхолдер: {el.get('placeholder', '')}\n"
+        if el.get('type'):
+            response += f"🔤 Тип: {el.get('type', '')}\n"
+        if el.get('value'):
+            response += f"📋 Значение: {el.get('value', '')[:50]}\n"
+        response += f"🎯 Селектор: {el.get('selector', '')}\n"
+        response += f"👁 Видим: {'✅' if el.get('visible', False) else '❌'}\n"
+        response += f"📐 Координаты: ({el.get('x', 0)}, {el.get('y', 0)})\n"
+        
+        candidates = result.get('candidates', [])
+        if len(candidates) > 1:
+            response += f"\n🔍 Другие кандидаты ({len(candidates)-1}):\n"
+            for c in candidates[1:4]:
+                response += f"  - <{c.get('tag', '')}>"
+                if c.get('text'):
+                    response += f" '{c.get('text', '')[:20]}'"
+                response += f" (селектор: {c.get('selector', '')})\n"
+        
+        await update.message.reply_text(response[:4000])
+    except Exception as e:
+        logger.error(f"❌ Ошибка /aifind: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def aiclick_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ИИ-взаимодействие с элементом"""
+    if not context.args:
+        await update.message.reply_text("❌ Укажи описание: /aiclick кнопка войти")
+        return
+    
+    description = ' '.join(context.args)
+    logger.info(f"📩 Получена команда /aiclick от {update.effective_user.username}: {description}")
+    
+    try:
+        await update.message.reply_text(f"🖱 Взаимодействую: {description}")
+        result = await browser.ai_interact(description, "click")
+        await update.message.reply_text(result)
+    except Exception as e:
+        logger.error(f"❌ Ошибка /aiclick: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def aianalyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ИИ-анализ страницы"""
+    if not context.args:
+        await update.message.reply_text("❌ Укажи вопрос: /aianalyze какие кнопки есть на странице?")
+        return
+    
+    question = ' '.join(context.args)
+    logger.info(f"📩 Получена команда /aianalyze от {update.effective_user.username}")
+    
+    try:
+        await update.message.reply_text("🧠 Анализирую страницу...")
+        response = await browser.ai_analyze_page(question)
+        await update.message.reply_text(response[:4096])
+    except Exception as e:
+        logger.error(f"❌ Ошибка /aianalyze: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ========== ОБРАБОТЧИК ТЕКСТА ==========
@@ -468,6 +612,12 @@ def main():
         app.add_handler(CommandHandler("geoset", geoset_command))
         app.add_handler(CommandHandler("timezone", timezone_command))
         app.add_handler(CommandHandler("lang", lang_command))
+        app.add_handler(CommandHandler("dom", dom_command))
+        app.add_handler(CommandHandler("summary", summary_command))
+        app.add_handler(CommandHandler("find", find_command))
+        app.add_handler(CommandHandler("aifind", aifind_command))
+        app.add_handler(CommandHandler("aiclick", aiclick_command))
+        app.add_handler(CommandHandler("aianalyze", aianalyze_command))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         logger.info("✅ Команды зарегистрированы")
     except Exception as e:
