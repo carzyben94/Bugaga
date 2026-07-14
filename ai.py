@@ -2,6 +2,7 @@ import os
 import requests
 import json
 import re
+import asyncio
 from typing import Dict, Any, List
 
 class AgnesAI:
@@ -132,7 +133,7 @@ URL: {url}
 
 Твои ВОЗМОЖНЫЕ ДЕЙСТВИЯ:
 1. click — кликнуть по элементу (нужен selector)
-2. type — ввести текст (нужны selector + text)
+2. type — ввести текст (нужны selector + text) — ПОСЛЕ ВВОДА АВТОМАТИЧЕСКИ НАЖИМАЕТСЯ ENTER
 3. open — открыть URL
 4. find — найти элементы по тексту
 5. wait — ожидать элемент
@@ -151,12 +152,10 @@ URL: {url}
 
 ПРИМЕРЫ:
 1. "нажми на главную" → {{"action": "click", "selector": "[data-testid='AppTabBar_Home_Link']", "message": "✅ Перешёл на главную"}}
-2. "открой чат" → {{"action": "click", "selector": "[data-testid='AppTabBar_DirectMessage_Link']", "message": "✅ Открыл чат"}}
-3. "введи Python в поиск" → {{"action": "type", "selector": "[data-testid='SearchBox_Search_Input']", "text": "Python", "message": "✅ Ввёл Python в поиск"}}
-4. "напиши Привет в поле поста" → {{"action": "type", "selector": "[data-testid='tweetTextarea_0']", "text": "Привет", "message": "✅ Написал пост"}}
-5. "какие кнопки есть?" → {{"action": "analyze", "message": "На странице есть кнопки: 'Главная', 'Обзор', 'Уведомления', 'Чат', 'Профиль'"}}
-6. "найди поле для email" → {{"action": "find", "selector": "input[type='email']", "message": "🔍 Найдено поле для email"}}
-7. "введи test@gmail.com в поле email" → {{"action": "type", "selector": "input[name='email']", "text": "test@gmail.com", "message": "✅ Ввёл email"}}
+2. "введи Python в поиск" → {{"action": "type", "selector": "[data-testid='SearchBox_Search_Input']", "text": "Python", "message": "✅ Ввёл Python и нажал Enter"}}
+3. "какие кнопки есть?" → {{"action": "analyze", "message": "На странице есть кнопки: 'Главная', 'Обзор', 'Уведомления', 'Чат', 'Профиль'"}}
+4. "открой youtube.com" → {{"action": "open", "url": "https://youtube.com", "message": "🌐 Открываю YouTube"}}
+5. "сделай скриншот" → {{"action": "screenshot", "message": "📸 Скриншот готов"}}
 """
 
 
@@ -239,6 +238,12 @@ class AgentHandler:
             elif action == 'type':
                 if not selector:
                     return "❌ Не найден селектор для ввода"
+                
+                # ✅ 1. КЛИКАЕМ ПО ПОЛЮ (активируем)
+                await self.browser.click_element(selector)
+                await asyncio.sleep(0.1)
+                
+                # ✅ 2. ВВОДИМ ТЕКСТ
                 js = f"""
                 (function() {{
                     const el = document.querySelector('{selector}');
@@ -252,10 +257,19 @@ class AgentHandler:
                 }})()
                 """
                 result = await self.browser.execute_script(js)
-                if result:
-                    return f"{message}\n✅ Текст введён в поле: {selector}"
-                else:
+                if not result:
                     return f"❌ Не удалось ввести текст в поле: {selector}"
+                
+                # ✅ 3. АВТОМАТИЧЕСКИ НАЖИМАЕМ ENTER
+                await self.browser.press_enter(selector)
+                
+                return f"{message}\n✅ Текст введён и отправлен (Enter)"
+            
+            elif action == 'press_enter':
+                if not selector:
+                    return "❌ Не указан селектор для поля"
+                result = await self.browser.press_enter(selector)
+                return f"{message}\n{result}"
             
             elif action == 'find':
                 results = await self.browser.find_elements_by_text(text or selector)
@@ -286,7 +300,6 @@ class AgentHandler:
         
         result = ""
         
-        # Группируем по типу
         buttons = [el for el in elements if el.get('type') == 'button']
         links = [el for el in elements if el.get('type') == 'link']
         inputs = [el for el in elements if el.get('type') == 'input']
