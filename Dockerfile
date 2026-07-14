@@ -47,8 +47,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
-# Копирование бота
-COPY bot.py .
+# 🔥 КОПИРУЕМ ВСЕ ФАЙЛЫ (включая test.py!)
+COPY . .
 
 # Проверка Chrome
 RUN google-chrome --version && which google-chrome
