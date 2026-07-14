@@ -804,14 +804,22 @@ class BrowserManager:
         if not self.ws_url:
             raise Exception("❌ Chrome не запущен или нет доступных вкладок")
         
-        print(f"🔗 Подключение...")
-        self.ws = await websockets.connect(
-            self.ws_url,
-            max_size=50 * 1024 * 1024,
-            ping_interval=20,
-            ping_timeout=60
-        )
-        self._connected = True
+        print(f"🔗 Подключение к Chrome...")
+        
+        try:
+            self.ws = await asyncio.wait_for(
+                websockets.connect(
+                    self.ws_url,
+                    max_size=50 * 1024 * 1024,
+                    ping_interval=20,
+                    ping_timeout=60
+                ),
+                timeout=10
+            )
+            self._connected = True
+            print("✅ WebSocket подключен")
+        except asyncio.TimeoutError:
+            raise Exception("❌ Таймаут подключения к Chrome")
         
         await self._send_command("Page.enable")
         await self._send_command("Runtime.enable")
@@ -851,7 +859,7 @@ class BrowserManager:
         
         while True:
             try:
-                response = await asyncio.wait_for(self.ws.recv(), timeout=self.timeout)
+                response = await asyncio.wait_for(self.ws.recv(), timeout=30)
                 data = json.loads(response)
                 
                 if data.get('id') == self._message_id:
@@ -871,11 +879,19 @@ class BrowserManager:
                 raise Exception(f"❌ Таймаут ответа от Chrome на команду {method}")
     
     async def open_page(self, url: str):
+        print(f"🔵 open_page: {url}")
         await self.connect()
+        print("🔵 connect OK")
+        
         result = await self._send_command("Page.navigate", {"url": url})
+        print(f"🔵 Page.navigate отправлен")
+        
         self._current_url = url
+        print("🔵 Жду 2 секунды...")
         await asyncio.sleep(2)
+        
         await self._set_viewport()
+        print("🔵 viewport установлен")
         return result
     
     async def is_page_empty(self) -> bool:
@@ -969,13 +985,8 @@ class BrowserManager:
             const el = document.querySelector('{safe_selector}');
             if (!el) return false;
             
-            // Скролл к элементу
             el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
-            
-            // Настоящий клик
             el.click();
-            
-            // Дополнительные события для React
             el.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }}));
             el.dispatchEvent(new MouseEvent('mouseup', {{ bubbles: true }}));
             el.focus();
@@ -1055,7 +1066,6 @@ class BrowserManager:
             let el = null;
             let foundBy = 'не найден';
             
-            // 1. Google: поиск по ID
             const googleIds = ['APjFqb', 'gbqfq', 'lst-ib', 'searchbox', 'q'];
             for (let id of googleIds) {{
                 const found = document.getElementById(id);
@@ -1066,7 +1076,6 @@ class BrowserManager:
                 }}
             }}
             
-            // 2. Поиск по атрибутам
             if (!el) {{
                 const inputs = document.querySelectorAll('input, textarea');
                 for (let inp of inputs) {{
@@ -1095,7 +1104,6 @@ class BrowserManager:
                 }}
             }}
             
-            // 3. X/Twitter: поиск по data-testid
             if (!el) {{
                 const testIds = ['SearchBox_Search_Input', 'tweetTextarea_0'];
                 for (let testId of testIds) {{
@@ -1108,7 +1116,6 @@ class BrowserManager:
                 }}
             }}
             
-            // 4. Первое видимое поле
             if (!el) {{
                 const inputs = document.querySelectorAll('input, textarea');
                 for (let inp of inputs) {{
@@ -1120,13 +1127,11 @@ class BrowserManager:
                 }}
             }}
             
-            // 5. Поиск по селектору
             if (!el && '{safe_selector}') {{
                 el = document.querySelector('{safe_selector}');
                 if (el) foundBy = 'селектор';
             }}
             
-            // 6. Если ничего не нашли — показываем поля
             if (!el) {{
                 const inputs = document.querySelectorAll('input, textarea, [contenteditable="true"]');
                 const result = [];
@@ -1147,14 +1152,12 @@ class BrowserManager:
                 return result;
             }}
             
-            // 7. ВВОД ТЕКСТА + ENTER (EVAL)
             el.focus();
             el.value = '';
             el.value = '{text}';
             el.dispatchEvent(new Event('input', {{ bubbles: true }}));
             el.dispatchEvent(new Event('change', {{ bubbles: true }}));
             
-            // Enter через KeyboardEvent
             const enterEvent = new KeyboardEvent('keydown', {{
                 key: 'Enter',
                 code: 'Enter',
@@ -1166,7 +1169,6 @@ class BrowserManager:
             }});
             el.dispatchEvent(enterEvent);
             
-            // 8. Отправка формы
             const form = el.closest('form');
             if (form) {{
                 if (form.requestSubmit) {{
@@ -1176,7 +1178,6 @@ class BrowserManager:
                 }}
             }}
             
-            // 9. Поиск кнопки (запасной вариант)
             const buttons = document.querySelectorAll('button[type="submit"], input[type="submit"], button[aria-label*="поиск"], button[aria-label*="search"]');
             for (let btn of buttons) {{
                 const text = (btn.textContent || btn.value || '').toLowerCase();
@@ -1192,7 +1193,6 @@ class BrowserManager:
         
         result = await self.execute_script(js)
         
-        # Обработка результата
         if isinstance(result, list) and len(result) > 0:
             fields_text = "🔍 **На странице есть поля:**\n\n"
             for i, f in enumerate(result[:10], 1):
@@ -1229,105 +1229,87 @@ class BrowserManager:
         
         return f"⚠️ Ввёл '{text}', но результат неизвестен"
     
-    # ========== WAIT_FOR_SELECTOR (EVAL) ==========
+    # ========== WAIT_FOR_SELECTOR (EVAL С ТАЙМАУТОМ) ==========
     
     async def wait_for_selector(self, selector: str, timeout: int = 30):
-        """Ожидание элемента через EVAL"""
+        """Ожидание элемента с таймаутом"""
         await self.connect()
         
         if await self.is_page_empty():
             return "❌ Страница пустая. Сначала откройте страницу"
         
-        safe_selector = selector.replace('"', '\\"').replace("'", "\\'")
+        print(f"🔵 wait_for_selector: {selector}, timeout={timeout} сек")
         
-        js = f"""
-        (function() {{
-            const start = Date.now();
-            const timeout = {timeout * 1000};
-            const selector = '{safe_selector}';
+        start = time.time()
+        
+        while time.time() - start < timeout:
+            try:
+                result = await asyncio.wait_for(
+                    self.execute_script(f"document.querySelector('{selector}') !== null"),
+                    timeout=2
+                )
+                if result:
+                    return f"✅ Элемент найден: {selector}"
+            except asyncio.TimeoutError:
+                print("⏳ Ждём...")
+            except Exception as e:
+                print(f"⚠️ Ошибка: {e}")
             
-            return new Promise((resolve) => {{
-                const check = () => {{
-                    if (document.querySelector(selector)) {{
-                        resolve(true);
-                        return;
-                    }}
-                    if (Date.now() - start > timeout) {{
-                        resolve(false);
-                        return;
-                    }}
-                    setTimeout(check, 100);
-                }};
-                check();
-            }});
-        }})()
-        """
+            await asyncio.sleep(0.5)
         
-        result = await self.execute_script(js)
-        
-        if result:
-            return f"✅ Элемент найден: {self._shorten_selector(selector)}"
-        else:
-            return f"❌ Элемент не найден за {timeout} секунд: {self._shorten_selector(selector)}"
+        return f"❌ Элемент не найден за {timeout} секунд: {selector}"
     
-    # ========== WAIT_FOR_TEXT (EVAL) ==========
+    # ========== WAIT_FOR_TEXT (EVAL С ТАЙМАУТОМ) ==========
     
     async def wait_for_text(self, text: str, timeout: int = 30):
-        """Ожидание текста через EVAL"""
+        """Ожидание текста с таймаутом"""
         await self.connect()
         
         if await self.is_page_empty():
             return "❌ Страница пустая. Сначала откройте страницу"
         
-        safe_text = text.replace('"', '\\"').replace("'", "\\'")
+        print(f"🔵 wait_for_text: {text}, timeout={timeout} сек")
         
-        js = f"""
-        (function() {{
-            const start = Date.now();
-            const timeout = {timeout * 1000};
-            const text = '{safe_text}';
+        start = time.time()
+        
+        while time.time() - start < timeout:
+            try:
+                page_text = await asyncio.wait_for(
+                    self.get_page_text(),
+                    timeout=2
+                )
+                if text.lower() in page_text.lower():
+                    return f"✅ Текст найден: {text}"
+            except asyncio.TimeoutError:
+                print("⏳ Ждём...")
+            except Exception as e:
+                print(f"⚠️ Ошибка: {e}")
             
-            return new Promise((resolve) => {{
-                const check = () => {{
-                    const body = document.body?.innerText || document.documentElement?.textContent || '';
-                    if (body.toLowerCase().includes(text.toLowerCase())) {{
-                        resolve(true);
-                        return;
-                    }}
-                    if (Date.now() - start > timeout) {{
-                        resolve(false);
-                        return;
-                    }}
-                    setTimeout(check, 100);
-                }};
-                check();
-            }});
-        }})()
-        """
+            await asyncio.sleep(0.5)
         
-        result = await self.execute_script(js)
-        
-        if result:
-            return f"✅ Текст найден: {text}"
-        else:
-            return f"❌ Текст не найден за {timeout} секунд: {text}"
+        return f"❌ Текст не найден за {timeout} секунд: {text}"
     
-    # ========== EXECUTE_SCRIPT (EVAL) ==========
+    # ========== EXECUTE_SCRIPT (С ТАЙМАУТОМ) ==========
     
     async def execute_script(self, script: str):
-        """Выполнить JavaScript"""
+        """Выполнить JavaScript с таймаутом"""
         await self.connect()
         
         if await self.is_page_empty() and script not in ['document.title', 'location.href']:
             return "⚠️ Страница пустая. Сначала откройте страницу"
         
-        result = await self._send_command("Runtime.evaluate", {
-            "expression": script,
-            "returnByValue": True
-        })
-        
-        value = result['result'].get('value')
-        return value if value is not None else 'undefined'
+        try:
+            result = await asyncio.wait_for(
+                self._send_command("Runtime.evaluate", {
+                    "expression": script,
+                    "returnByValue": True
+                }),
+                timeout=10
+            )
+            value = result['result'].get('value')
+            return value if value is not None else 'undefined'
+        except asyncio.TimeoutError:
+            raise Exception("❌ Таймаут выполнения JS")
     
     # ========== НАВИГАЦИЯ (CDP) ==========
     
@@ -1435,7 +1417,6 @@ class BrowserManager:
             
             const interactive = [];
             
-            // КНОПКИ
             document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"], [role="link"], [data-testid*="Button"], [data-testid*="Link"], [data-testid*="Tab"]').forEach(el => {
                 if (!isVisible(el)) return;
                 const rect = el.getBoundingClientRect();
@@ -1457,7 +1438,6 @@ class BrowserManager:
                 });
             });
             
-            // ПОЛЯ ВВОДА
             document.querySelectorAll('input:not([type="submit"]):not([type="button"]):not([type="hidden"]), textarea, select').forEach(el => {
                 if (!isVisible(el)) return;
                 const rect = el.getBoundingClientRect();
@@ -1484,7 +1464,6 @@ class BrowserManager:
                 });
             });
             
-            // ССЫЛКИ
             document.querySelectorAll('a[href]:not([href=""]):not([href="#"])').forEach(el => {
                 if (!isVisible(el)) return;
                 const rect = el.getBoundingClientRect();
