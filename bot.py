@@ -15,15 +15,15 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from browser import BrowserManager
 from ai import AgnesAI
 
-# ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
+# ========== НАСТРОЙКА ЛОГИРОВАНИЯ (ТОЛЬКО ВАЖНОЕ) ==========
 LOG_FILE = 'bot.log'
 
 if os.path.exists(LOG_FILE):
     os.remove(LOG_FILE)
 
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    level=logging.INFO,
     handlers=[
         logging.StreamHandler(sys.stdout),
         logging.FileHandler(LOG_FILE, encoding='utf-8')
@@ -37,8 +37,8 @@ AGNES_API_KEY = os.getenv("AGNES_API_KEY")
 AGNES_API_URL = os.getenv("AGNES_API_URL", "https://apihub.agnes-ai.com/v1/chat/completions")
 AI_MODEL = os.getenv("AI_MODEL", "agnes-2.0-flash")
 
-logger.info(f"🔑 TELEGRAM_TOKEN: {'✅ Есть' if TELEGRAM_TOKEN else '❌ НЕТ!'}")
-logger.info(f"🔑 AGNES_API_KEY: {'✅ Есть' if AGNES_API_KEY else '❌ НЕТ!'}")
+logger.info(f"🔑 TELEGRAM_TOKEN: {'✅' if TELEGRAM_TOKEN else '❌'}")
+logger.info(f"🔑 AGNES_API_KEY: {'✅' if AGNES_API_KEY else '❌'}")
 
 # ПУТЬ К CHROME
 CHROME_PATH = os.getenv("CHROME_PATH", "/usr/bin/google-chrome")
@@ -78,13 +78,13 @@ def start_chrome():
             stderr=subprocess.DEVNULL
         )
         
-        logger.info("⏳ Ждём запуска Chrome с маскировкой...")
+        logger.info("⏳ Ждём запуска Chrome...")
         time.sleep(3)
         
         try:
             resp = requests.get("http://localhost:9222/json/version", timeout=5)
             if resp.status_code == 200:
-                logger.info("🚀 Chrome успешно запущен с маскировкой")
+                logger.info("🚀 Chrome запущен")
                 return True
         except Exception as e:
             logger.error(f"❌ CDP не отвечает: {e}")
@@ -113,8 +113,7 @@ except Exception as e:
 # ========== КОМАНДЫ ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Приветствие"""
-    logger.info(f"📩 Получена команда /start от {update.effective_user.username}")
+    logger.info(f"📩 /start от {update.effective_user.username}")
     try:
         await update.message.reply_text(
             "🤖 Бот для управления браузером\n\n"
@@ -134,8 +133,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ Ошибка в /start: {e}")
 
 async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Скачать логи"""
-    logger.info(f"📩 Получена команда /log от {update.effective_user.username}")
+    logger.info(f"📩 /log от {update.effective_user.username}")
     try:
         log_content = ""
         
@@ -184,7 +182,7 @@ CDP порт: 9222
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка ВСЕХ сообщений"""
     text = update.message.text
-    logger.info(f"📩 Получен текст: {text[:50]}...")
+    logger.info(f"📩 {text[:50]}...")
     
     try:
         # Специальные команды
@@ -224,7 +222,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     caption="📸 Скриншот 1280x720"
                 )
             except Exception as e:
-                await update.message.reply_text(f"❌ Ошибка скриншота: {str(e)[:200]}")
+                await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
             return
         
         # 3. ОСТАЛЬНОЕ — ЧЕРЕЗ AI
@@ -233,7 +231,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(result[:4096])
         
     except Exception as e:
-        logger.error(f"❌ Ошибка handle_message: {e}")
+        logger.error(f"❌ {str(e)[:200]}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ========== ЗАПУСК ==========
@@ -249,14 +247,14 @@ def main():
         logger.warning("⚠️ AGNES_API_KEY не задан! AI функции не будут работать")
     
     if start_chrome():
-        logger.info("✅ Chrome готов к работе")
+        logger.info("✅ Chrome готов")
     else:
-        logger.warning("⚠️ Chrome не запустился, проверь установку")
+        logger.warning("⚠️ Chrome не запустился")
     
     try:
-        logger.info("📱 Создаю Telegram приложение...")
+        logger.info("📱 Создаю приложение...")
         app = Application.builder().token(TELEGRAM_TOKEN).build()
-        logger.info("✅ Telegram приложение создано")
+        logger.info("✅ Приложение создано")
     except Exception as e:
         logger.error(f"❌ Ошибка создания приложения: {e}")
         raise
@@ -271,7 +269,7 @@ def main():
         logger.error(f"❌ Ошибка регистрации команд: {e}")
         raise
     
-    logger.info("🚀 Бот запущен! Ожидаю сообщения...")
+    logger.info("🚀 Бот запущен!")
     try:
         app.run_polling(allowed_updates=Update.ALL_TYPES)
     except Exception as e:
