@@ -16,7 +16,7 @@ from datetime import datetime
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "ВАШ_ТОКЕН")
 CHROME_PATH = os.getenv("CHROME_PATH", "/usr/bin/google-chrome")
 CDP_PORT = 9222
-WEBSOCKET_MAX_SIZE = 50 * 1024 * 1024  # 50 МБ
+WEBSOCKET_MAX_SIZE = 50 * 1024 * 1024
 PAGE_LOAD_TIMEOUT = 45
 MAX_HISTORY = 20
 
@@ -50,56 +50,6 @@ def get_cookies_for_url(url):
         if domain in url.lower():
             return cookies
     return []
-
-# ---------- ПЕРЕВОДЫ И СИНОНИМЫ ----------
-TRANSLATIONS = {
-    'обзор': 'Explore', 'главная': 'Home', 'уведомления': 'Notifications',
-    'сообщения': 'Messages', 'профиль': 'Profile', 'закладки': 'Bookmarks',
-    'настройки': 'Settings', 'помощь': 'Help', 'выход': 'Logout',
-    'пост': 'Post', 'чат': 'Chat', 'лента': 'Feed', 'популярное': 'Trending',
-    'для вас': 'For you', 'читаю': 'Following', 'опубликовать': 'Post',
-    'ещё': 'More', 'поиск': 'Search', 'войти': 'Login', 'регистрация': 'Register',
-    'отправить': 'Send', 'закрыть': 'Close', 'назад': 'Back', 'далее': 'Next',
-    'предыдущий': 'Previous',
-}
-
-SYNONYMS = {
-    'search': ['search', 'поиск', 'find', 'query', 'lookup'],
-    'login': ['login', 'sign in', 'log in', 'войти', 'вход'],
-    'register': ['register', 'sign up', 'зарегистрироваться', 'регистрация'],
-    'submit': ['submit', 'send', 'отправить', 'послать'],
-    'close': ['close', 'закрыть', 'exit'],
-    'home': ['home', 'главная', 'main'],
-    'explore': ['explore', 'обзор', 'discover'],
-    'notifications': ['notifications', 'уведомления', 'alerts'],
-    'messages': ['messages', 'сообщения', 'chat'],
-    'profile': ['profile', 'профиль', 'account'],
-    'bookmarks': ['bookmarks', 'закладки', 'saved'],
-    'settings': ['settings', 'настройки', 'preferences'],
-    'help': ['help', 'помощь', 'support'],
-    'logout': ['logout', 'sign out', 'выход', 'выйти'],
-    'post': ['post', 'tweet', 'пост', 'опубликовать', 'publish'],
-    'chat': ['chat', 'чат', 'messaging'],
-    'feed': ['feed', 'лента', 'timeline'],
-    'trending': ['trending', 'популярное', 'popular'],
-    'for you': ['for you', 'для вас', 'recommended'],
-    'following': ['following', 'читаю', 'подписки', 'follow'],
-    'more': ['more', 'ещё', 'additional'],
-}
-
-def translate_to_english(text):
-    text_lower = text.lower().strip()
-    for ru, en in TRANSLATIONS.items():
-        if ru in text_lower or text_lower in ru:
-            return en
-    return text
-
-def get_meaning(text):
-    text_lower = text.lower().strip()
-    for meaning, synonyms in SYNONYMS.items():
-        if any(synonym in text_lower for synonym in synonyms):
-            return meaning
-    return None
 
 # ---------- ЛОГИРОВАНИЕ ----------
 LOG_FILE = "bot_logs.txt"
@@ -150,6 +100,39 @@ class Memory:
             return snapshots[-(index + 1)].get('data', {}).get('url')
         return None
     
+    # ========== 🔥 НОВАЯ ФУНКЦИЯ: ПОИСК В SNAPSHOT ==========
+    def find_element_by_text(self, text):
+        """Ищет элемент в snapshot по тексту (работает с любым текстом)"""
+        if not self.current_snapshot:
+            return None
+        
+        interactive = self.current_snapshot.get('interactive', [])
+        text_lower = text.lower().strip()
+        
+        # Сначала ищем точное совпадение
+        for el in interactive:
+            el_text = el.get('text', '').lower().strip()
+            if el_text == text_lower:
+                return {
+                    'selector': el.get('selector'),
+                    'text': el.get('text'),
+                    'type': el.get('type'),
+                    'visible': el.get('visible', True)
+                }
+        
+        # Потом частичное
+        for el in interactive:
+            el_text = el.get('text', '').lower().strip()
+            if text_lower in el_text or el_text in text_lower:
+                return {
+                    'selector': el.get('selector'),
+                    'text': el.get('text'),
+                    'type': el.get('type'),
+                    'visible': el.get('visible', True)
+                }
+        
+        return None
+    
     def get_element_names(self):
         if not self.current_snapshot:
             return []
@@ -159,8 +142,6 @@ class Memory:
             text = el.get('text', '').strip()
             if text:
                 names.append(text)
-            elif el.get('selector'):
-                names.append(el.get('selector'))
         return names
     
     def get_context_for_ai(self):
@@ -222,21 +203,13 @@ SYSTEM_PROMPT = """You are a smart AI assistant that understands user commands.
 RECOGNIZE THESE COMMANDS (in ANY language):
 1. Questions about page:
    - "what buttons do you see?" → {"action": "ask", "question": "what buttons are on the page?"}
-   - "what links are there?" → {"action": "ask", "question": "what links are on the page?"}
-   - "what fields are there?" → {"action": "ask", "question": "what input fields are on the page?"}
-   - "what do you see?" → {"action": "ask", "question": "what do you see on the page?"}
    - "какие кнопки есть?" → {"action": "ask", "question": "what buttons are on the page?"}
-   - "что видишь?" → {"action": "ask", "question": "what do you see on the page?"}
 
 2. Actions:
-   - "нажми Обзор" → {"action": "click", "target": "Explore"}
+   - "нажми Обзор" → {"action": "click", "target": "Обзор"}
    - "click Explore" → {"action": "click", "target": "Explore"}
-   - "введи текст в поиск" → {"action": "type", "text": "текст", "field": "search"}
+   - "введи текст в поиск" → {"action": "type", "text": "текст", "field": "поиск"}
    - "type hello in search" → {"action": "type", "text": "hello", "field": "search"}
-   - "отправь форму" → {"action": "submit"}
-   - "submit form" → {"action": "submit"}
-   - "сделай скриншот" → {"action": "screenshot"}
-   - "take screenshot" → {"action": "screenshot"}
 
 3. Navigation:
    - "зайди на x.com" → {"action": "navigate", "url": "https://x.com"}
@@ -247,7 +220,6 @@ RECOGNIZE THESE COMMANDS (in ANY language):
 - If user asks about elements → use "ask"
 - If user wants to click → use "click"
 - If user wants to type → use "type"
-- If user asks in English → respond in English
 
 Current user said: """
 
@@ -298,8 +270,7 @@ def ask_ai_for_answer(prompt, context=None, memory=None):
 🔥 LANGUAGE RULES:
 - If user asked in English → answer in English
 - If user asked in Russian → answer in Russian
-- Always use emojis: 🔘 button, 🔗 link, ✏️ input field, 👁️ visible, 👻 hidden
-- List elements with their types and selectors"""
+- Always use emojis: 🔘 button, 🔗 link, ✏️ input field, 👁️ visible, 👻 hidden"""
         
         if memory:
             memory_context = memory.get_context_for_ai()
@@ -1070,21 +1041,47 @@ class BrowserCDP:
             self.snapshot = {"title": "Ошибка", "url": "Ошибка", "total": 0, "elements": [], "interactive": []}
             return False
 
-    # ========== КЛИК ==========
-    async def click_element(self, target):
+    # ========== КЛИК (С ПОИСКОМ В SNAPSHOT) ==========
+    async def click_element(self, target, memory=None):
         try:
             if not await self.ensure_connection():
                 return False
             
-            english_target = translate_to_english(target)
-            meaning = get_meaning(english_target)
-            file_logger.log(f"🔍 Ищем '{target}' → '{english_target}'", "INFO")
+            # 🔥 1. СНАЧАЛА ИЩЕМ В SNAPSHOT
+            if memory:
+                found = memory.find_element_by_text(target)
+                if found and found.get('selector'):
+                    file_logger.log(f"🔍 Нашел в snapshot: '{found['text']}' → {found['selector']}", "INFO")
+                    
+                    # Проверяем видимость
+                    if not found.get('visible', True):
+                        file_logger.log(f"⚠️ Элемент '{target}' скрыт (visible: false)", "WARNING")
+                        # Пробуем все равно кликнуть
+                    
+                    js = f"""
+                        (function() {{
+                            const el = document.querySelector('{found['selector']}');
+                            if (el) {{
+                                el.click();
+                                return true;
+                            }}
+                            return false;
+                        }})()
+                    """
+                    result = await self.eval_js(js)
+                    if result:
+                        file_logger.log(f"✅ Кликнул по '{target}' через snapshot", "INFO")
+                        return True
+                    else:
+                        file_logger.log(f"⚠️ Не удалось кликнуть по селектору, пробую другие методы", "WARNING")
+            
+            # 🔥 2. ЕСЛИ НЕ НАШЛИ — СТАРЫЙ МЕТОД (поиск по тексту в DOM)
+            file_logger.log(f"🔍 Ищу '{target}' в DOM", "INFO")
             
             js = f"""
                 (function() {{
-                    const target = '{english_target}'.toLowerCase();
-                    const meaning = '{meaning}' if '{meaning}' else '';
-                    const elements = document.querySelectorAll('button, a, input, div[role="button"], [role="link"], [role="menuitem"], [role="tab"], input[type="submit"], [data-testid*="Tab"], [aria-label*="Home"], [aria-label*="Explore"]');
+                    const target = '{target}'.toLowerCase();
+                    const elements = document.querySelectorAll('button, a, input, div[role="button"], [role="link"], [role="menuitem"], [role="tab"], input[type="submit"], [data-testid*="Tab"]');
                     for (let el of elements) {{
                         const text = (el.textContent || el.value || '').trim().toLowerCase();
                         const aria = (el.getAttribute('aria-label') || '').toLowerCase();
@@ -1093,7 +1090,7 @@ class BrowserCDP:
                         const title = (el.getAttribute('title') || '').toLowerCase();
                         const dataTestId = (el.getAttribute('data-testid') || '').toLowerCase();
                         const allText = text + ' ' + aria + ' ' + id + ' ' + cls + ' ' + title + ' ' + dataTestId;
-                        if (allText.includes(target) || (meaning && allText.includes(meaning)) || text === target || aria === target) {{
+                        if (allText.includes(target) || text === target || aria === target) {{
                             el.click();
                             return true;
                         }}
@@ -1103,7 +1100,7 @@ class BrowserCDP:
             """
             result = await self.eval_js(js)
             if result:
-                file_logger.log(f"✅ Кликнул по '{target}'", "INFO")
+                file_logger.log(f"✅ Кликнул по '{target}' через DOM", "INFO")
                 return True
             else:
                 file_logger.log(f"❌ Элемент '{target}' не найден", "WARNING")
@@ -1118,9 +1115,9 @@ class BrowserCDP:
             if not await self.ensure_connection():
                 return False
             
-            english_field = translate_to_english(field)
-            file_logger.log(f"🔍 Ищем поле '{field}' → '{english_field}'", "INFO")
+            file_logger.log(f"🔍 Ищем поле '{field}'", "INFO")
             
+            # Сначала ищем по ID Google
             for field_id in GOOGLE_SEARCH_IDS:
                 js = f"""
                     (function() {{
@@ -1144,12 +1141,10 @@ class BrowserCDP:
                     file_logger.log(f"✅ Ввел '{text}' в поле по ID: {field_id} + Enter", "INFO")
                     return True
             
-            meaning = get_meaning(english_field)
-            
+            # Потом по атрибутам
             js = f"""
                 (function() {{
-                    const field = '{english_field}'.toLowerCase();
-                    const meaning = '{meaning}' if '{meaning}' else '';
+                    const field = '{field}'.toLowerCase();
                     const elements = document.querySelectorAll('input, textarea, [contenteditable="true"]');
                     for (let el of elements) {{
                         const placeholder = (el.getAttribute('placeholder') || '').toLowerCase();
@@ -1161,8 +1156,7 @@ class BrowserCDP:
                         const isMatch = (
                             placeholder.includes(field) || aria.includes(field) || id.includes(field) ||
                             cls.includes(field) || name.includes(field) || type === 'search' ||
-                            name === 'q' || (meaning && (placeholder.includes(meaning) || aria.includes(meaning))) ||
-                            placeholder.includes('search') || aria.includes('search')
+                            name === 'q' || placeholder.includes('search') || aria.includes('search')
                         );
                         if (isMatch) {{
                             el.focus();
@@ -1370,34 +1364,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     command = ask_ai_for_command(text, memory)
     action = command.get('action', 'unknown')
     
-    # ====== FALLBACK ДЛЯ НЕИЗВЕСТНЫХ КОМАНД ======
+    # ====== FALLBACK ======
     if action == 'unknown':
         text_lower = text.lower()
-        if any(word in text_lower for word in ['кнопк', 'button', 'buttons', 'кнопки', 'кнопок']):
+        if any(word in text_lower for word in ['кнопк', 'button', 'buttons', 'кнопки']):
             action = 'ask'
             question = text
             command = {'action': 'ask', 'question': question}
-            file_logger.log("🔄 Fallback: вопрос о кнопках", "INFO")
-        elif any(word in text_lower for word in ['ссылк', 'link', 'links', 'ссылки', 'ссылок']):
+        elif any(word in text_lower for word in ['what', 'where', 'how', 'why', 'when']):
             action = 'ask'
             question = text
             command = {'action': 'ask', 'question': question}
-            file_logger.log("🔄 Fallback: вопрос о ссылках", "INFO")
-        elif any(word in text_lower for word in ['пол', 'field', 'fields', 'input', 'поля', 'поле']):
+        elif any(word in text_lower for word in ['что', 'какие', 'какая', 'какой', 'где', 'когда']):
             action = 'ask'
             question = text
             command = {'action': 'ask', 'question': question}
-            file_logger.log("🔄 Fallback: вопрос о полях", "INFO")
-        elif any(word in text_lower for word in ['what', 'where', 'how', 'why', 'when', 'which', 'who']):
-            action = 'ask'
-            question = text
-            command = {'action': 'ask', 'question': question}
-            file_logger.log("🔄 Fallback: английский вопрос", "INFO")
-        elif any(word in text_lower for word in ['что', 'какие', 'какая', 'какой', 'где', 'когда', 'почему', 'сколько']):
-            action = 'ask'
-            question = text
-            command = {'action': 'ask', 'question': question}
-            file_logger.log("🔄 Fallback: русский вопрос", "INFO")
         else:
             await thinking_msg.edit_text(
                 "❌ I didn't understand the command\n\n"
@@ -1405,8 +1386,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "• go to x.com\n"
                 "• what buttons do you see?\n"
                 "• click Explore\n"
-                "• type hello in search\n\n"
-                "🌐 I understand both English and Russian!"
+                "• type hello in search"
             )
             return
     
@@ -1455,7 +1435,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await thinking_msg.edit_text(f"❌ Ошибка: {e}")
         return
     
-    # ====== КЛИК ======
+    # ====== КЛИК (С ПЕРЕДАЧЕЙ MEMORY) ======
     if action == 'click':
         target = command.get('target')
         if not target:
@@ -1466,7 +1446,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await thinking_msg.edit_text(f"🔘 Ищу '{target}'...")
         try:
-            result = await memory.browser.click_element(target)
+            result = await memory.browser.click_element(target, memory)  # ← передаем memory!
             if result:
                 memory.add_action("click", {"target": target})
                 await thinking_msg.edit_text(f"✅ Кликнул по '{target}'")
@@ -1615,8 +1595,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• зайди на x.com\n"
             "• what buttons do you see?\n"
             "• нажми Обзор\n"
-            "• введи текст в поиск\n\n"
-            "🌐 Я понимаю и русский, и английский!"
+            "• введи текст в поиск"
         )
         return
     
@@ -1643,15 +1622,14 @@ async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- ЗАПУСК ----------
 def main():
     print("="*50)
-    print("🚀 ЗАПУСК БОТА (ФИНАЛЬНАЯ ВЕРСИЯ)")
+    print("🚀 ЗАПУСК БОТА (СНАПШОТ-ПОИСК)")
     print("="*50)
     print(f"📌 Chrome путь: {CHROME_PATH}")
     print("📦 WebSocket max_size: 50 МБ")
     print("🕵️ Маскировка: ВКЛЮЧЕНА")
     print("🍪 Куки: ВКЛЮЧЕНЫ (X.com)")
-    print("🌐 AI перевод: ВКЛЮЧЕН")
-    print("🔍 Поиск по data-testid, aria-label, role: ВКЛЮЧЕН")
-    print("📊 Snapshot: ВСЕ ЭЛЕМЕНТЫ (без ограничений)")
+    print("🔍 Поиск в snapshot: ВКЛЮЧЕН")
+    print("📊 Snapshot: ВСЕ ЭЛЕМЕНТЫ")
     print("🔄 Auto-reconnect: ВКЛЮЧЕН")
     print("="*50)
     
@@ -1672,9 +1650,8 @@ def main():
     print("🗣️ Говори как с человеком:")
     print("   • зайди на x.com")
     print("   • what buttons do you see?")
-    print("   • нажми Обзор (AI переведет в Explore)")
-    print("🔍 Находит все интерактивные элементы!")
-    print("🔄 Автоматически восстанавливает WebSocket!")
+    print("   • нажми Обзор")
+    print("🔍 Поиск в snapshot: находит любой текст!")
     app.run_polling()
 
 if __name__ == "__main__":
