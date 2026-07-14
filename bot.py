@@ -970,7 +970,7 @@ class BrowserCDP:
             await self.apply_mask()
             return True
 
-    # ========== КЛИК ==========
+    # ========== КЛИК (УЛУЧШЕННЫЙ) ==========
     async def click_element(self, target):
         try:
             if not await self.ensure_connection():
@@ -983,20 +983,26 @@ class BrowserCDP:
                     const target = '{target}'.toLowerCase();
                     const meaning = '{meaning}' if '{meaning}' else '';
                     
-                    const elements = document.querySelectorAll('button, a, input, div[role="button"], [role="link"], [role="menuitem"]');
+                    // 🔥 РАСШИРЕННЫЙ СПИСОК ЭЛЕМЕНТОВ
+                    const elements = document.querySelectorAll('button, a, input, div[role="button"], [role="link"], [role="menuitem"], input[type="submit"]');
                     
                     for (let el of elements) {{
-                        const text = (el.textContent || '').trim().toLowerCase();
+                        const text = (el.textContent || el.value || '').trim().toLowerCase();
                         const aria = (el.getAttribute('aria-label') || '').toLowerCase();
                         const placeholder = (el.getAttribute('placeholder') || '').toLowerCase();
                         const id = (el.id || '').toLowerCase();
                         const cls = (el.className || '').toLowerCase();
                         const title = (el.getAttribute('title') || '').toLowerCase();
-                        const value = (el.value || '').toLowerCase();
+                        const name = (el.getAttribute('name') || '').toLowerCase();
                         
-                        const allText = text + ' ' + aria + ' ' + placeholder + ' ' + id + ' ' + cls + ' ' + title + ' ' + value;
+                        const allText = text + ' ' + aria + ' ' + placeholder + ' ' + id + ' ' + cls + ' ' + title + ' ' + name;
                         
-                        if (allText.includes(target) || (meaning && allText.includes(meaning))) {{
+                        // 🔥 СПЕЦИАЛЬНЫЕ СЛОВА ДЛЯ ПОИСКА
+                        const searchWords = ['поиск', 'search', 'найти', 'find', 'google', 'btnk', 'gbqfba'];
+                        
+                        if (allText.includes(target) || 
+                            (meaning && allText.includes(meaning)) ||
+                            searchWords.some(word => allText.includes(word) && (target.includes('поиск') || target.includes('search')))) {{
                             el.click();
                             return true;
                         }}
@@ -1015,13 +1021,13 @@ class BrowserCDP:
             file_logger.log(f"❌ Ошибка клика: {e}", "ERROR")
             return False
 
-    # ========== ВВОД ТЕКСТА ==========
+    # ========== ВВОД ТЕКСТА (С ENTER) ==========
     async def type_text(self, text, field):
         try:
             if not await self.ensure_connection():
                 return False
             
-            # 🔥 1. ПРЯМОЙ ПОИСК ПО ID (САМЫЙ НАДЕЖНЫЙ)
+            # 🔥 1. ПРЯМОЙ ПОИСК ПО ID
             for field_id in GOOGLE_SEARCH_IDS:
                 js = f"""
                     (function() {{
@@ -1030,8 +1036,19 @@ class BrowserCDP:
                             el.focus();
                             el.value = '';
                             el.value = '{text}';
-                            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                            
+                            // 🔥 НАСТОЯЩИЙ ENTER
+                            const enterEvent = new KeyboardEvent('keydown', {{
+                                key: 'Enter',
+                                code: 'Enter',
+                                keyCode: 13,
+                                which: 13,
+                                bubbles: true,
+                                cancelable: true,
+                                composed: true
+                            }});
+                            el.dispatchEvent(enterEvent);
+                            
                             return true;
                         }}
                         return false;
@@ -1039,7 +1056,7 @@ class BrowserCDP:
                 """
                 result = await self.eval_js(js)
                 if result:
-                    file_logger.log(f"✅ Ввел '{text}' в поле по ID: {field_id}", "INFO")
+                    file_logger.log(f"✅ Ввел '{text}' в поле по ID: {field_id} + Enter", "INFO")
                     return True
             
             # 🔥 2. ПОИСК ПО АТРИБУТАМ
@@ -1088,8 +1105,19 @@ class BrowserCDP:
                             el.focus();
                             el.value = '';
                             el.value = '{text}';
-                            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                            
+                            // 🔥 НАСТОЯЩИЙ ENTER
+                            const enterEvent = new KeyboardEvent('keydown', {{
+                                key: 'Enter',
+                                code: 'Enter',
+                                keyCode: 13,
+                                which: 13,
+                                bubbles: true,
+                                cancelable: true,
+                                composed: true
+                            }});
+                            el.dispatchEvent(enterEvent);
+                            
                             return true;
                         }}
                     }}
@@ -1102,8 +1130,19 @@ class BrowserCDP:
                                 el.focus();
                                 el.value = '';
                                 el.value = '{text}';
-                                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                
+                                // 🔥 НАСТОЯЩИЙ ENTER
+                                const enterEvent = new KeyboardEvent('keydown', {{
+                                    key: 'Enter',
+                                    code: 'Enter',
+                                    keyCode: 13,
+                                    which: 13,
+                                    bubbles: true,
+                                    cancelable: true,
+                                    composed: true
+                                }});
+                                el.dispatchEvent(enterEvent);
+                                
                                 return true;
                             }}
                         }}
@@ -1115,7 +1154,7 @@ class BrowserCDP:
             result = await self.eval_js(js)
             
             if result:
-                file_logger.log(f"✅ Ввел '{text}' в поле", "INFO")
+                file_logger.log(f"✅ Ввел '{text}' в поле + Enter", "INFO")
                 return True
             
             # 🔥 4. ПОКАЗЫВАЕМ ПОЛЯ
@@ -1418,7 +1457,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• вернись назад\n\n"
         "🧠 Понимаю смысл, а не просто слова!\n"
         "🔍 Нахожу поля Google по ID!\n"
-        "📊 Сортирую элементы по важности!"
+        "📊 Сортирую элементы по важности!\n"
+        "⌨️ Автоматически нажимаю Enter после ввода!"
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1445,12 +1485,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• зайди на сайт\n"
             "• показать кнопки/поля/ссылки\n"
             "• кликнуть на элемент\n"
-            "• ввести текст в поле\n"
+            "• ввести текст в поле (автоматически Enter)\n"
             "• отправить форму\n"
             "• сделать скриншот\n"
             "• вернуться назад\n"
             "• показать историю\n\n"
-            "📊 Сортирую элементы по важности (сначала видимые и интерактивные)!"
+            "📊 Сортирую элементы по важности (сначала видимые и интерактивные)!\n"
+            "⌨️ После ввода текста автоматически нажимаю Enter!"
         )
         return
     
@@ -1580,7 +1621,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await thinking_msg.edit_text(f"❌ Ошибка: {e}")
         return
     
-    # ====== ВВОД ТЕКСТА ======
+    # ====== ВВОД ТЕКСТА (С ENTER) ======
     if action == 'type':
         text_input = command.get('text')
         field = command.get('field')
@@ -1599,8 +1640,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             if result:
                 memory.add_action("type", {"text": text_input, "field": field})
-                await thinking_msg.edit_text(f"✅ Ввел '{text_input}'")
+                await thinking_msg.edit_text(f"✅ Ввел '{text_input}' + Enter")
                 
+                # Ждем загрузки после Enter
+                await memory.browser.wait_for_page_load()
                 await memory.browser.get_snapshot()
                 memory.set_snapshot(
                     memory.browser.snapshot,
@@ -1608,6 +1651,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     memory.browser.snapshot.get('title', 'Без названия'),
                     memory.browser
                 )
+                
+                # Делаем скриншот результатов
+                screenshot = await memory.browser.screenshot()
+                if screenshot:
+                    await update.message.reply_photo(
+                        screenshot,
+                        caption=f"✅ Результаты поиска '{text_input}'"
+                    )
             else:
                 fields = memory.browser.last_fields
                 if fields:
@@ -1749,12 +1800,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• зайди на сайт\n"
             "• какие кнопки?\n"
             "• нажми на Войти\n"
-            "• введи текст в поле\n"
+            "• введи текст в поле (автоматически Enter)\n"
             "• отправь форму\n"
             "• сделай скриншот\n"
             "• вернись назад\n"
             "• покажи историю\n\n"
-            "📊 Сортирую элементы по важности!"
+            "📊 Сортирую элементы по важности!\n"
+            "⌨️ Автоматически нажимаю Enter после ввода!"
         )
         return
     
@@ -1795,7 +1847,7 @@ async def get_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- ЗАПУСК ----------
 def main():
     print("="*50)
-    print("🚀 ЗАПУСК БОТА (УЛУЧШЕННЫЙ ПРОМТ + СОРТИРОВКА)")
+    print("🚀 ЗАПУСК БОТА (ENTER + УЛУЧШЕННЫЙ КЛИК)")
     print("="*50)
     print(f"📌 Chrome путь: {CHROME_PATH}")
     print("🕵️ Маскировка: ВСЕГДА ВКЛЮЧЕНА")
@@ -1804,6 +1856,7 @@ def main():
     print("🎯 Универсальный поиск: ВКЛЮЧЕН")
     print("✅ Google ID: APjFqb, gbqfq, lst-ib, searchbox, q")
     print("📊 Сортировка: ВКЛЮЧЕНА (видимые → интерактивные → структурные)")
+    print("⌨️ Enter после ввода: ВКЛЮЧЕН")
     print(f"🤖 AI модель: {AI_MODEL}")
     print("="*50)
     
@@ -1824,11 +1877,12 @@ def main():
     print("✅ Бот готов!")
     print("🗣️ Говори как с человеком:")
     print("   • зайди в гугл")
-    print("   • введи валера в поиск")
+    print("   • введи валера в поиск (автоматически Enter)")
     print("   • нажми на Войти")
     print("   • какие кнопки? (отсортирует по важности)")
     print("🔍 Теперь ищет поля Google по ID APjFqb!")
     print("📊 Сортирует элементы: видимые → интерактивные → структурные")
+    print("⌨️ Автоматически нажимает Enter после ввода!")
     app.run_polling()
 
 if __name__ == "__main__":
