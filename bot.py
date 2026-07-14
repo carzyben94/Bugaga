@@ -13,9 +13,9 @@ from ai import AgnesAI
 # ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.DEBUG,  # ← DEBUG вместо INFO
+    level=logging.DEBUG,
     handlers=[
-        logging.StreamHandler(sys.stdout)  # ← Вывод в консоль
+        logging.StreamHandler(sys.stdout)
     ]
 )
 logger = logging.getLogger(__name__)
@@ -61,8 +61,7 @@ def start_chrome():
             chrome_cmd = CHROME_PATH
             logger.info(f"✅ Chrome найден: {CHROME_PATH}")
         
-        # Запускаем Chrome
-        process = subprocess.Popen([
+        subprocess.Popen([
             chrome_cmd,
             '--headless=new',
             '--remote-debugging-port=9222',
@@ -78,7 +77,6 @@ def start_chrome():
         logger.info("⏳ Ждём запуска Chrome...")
         time.sleep(3)
         
-        # Проверяем, что Chrome запустился
         try:
             resp = requests.get("http://localhost:9222/json/version", timeout=5)
             if resp.status_code == 200:
@@ -144,7 +142,138 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"❌ Ошибка в /help: {e}")
 
-# ... (остальные команды без изменений) ...
+async def open_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Открыть URL"""
+    if not context.args:
+        await update.message.reply_text("❌ Укажи URL: /open https://example.com")
+        return
+    
+    url = context.args[0]
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+    
+    try:
+        await update.message.reply_text(f"🌐 Открываю: {url}")
+        await browser.open_page(url)
+        title = await browser.get_page_title()
+        await update.message.reply_text(f"✅ Открыто: {title}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сделать скриншот"""
+    await update.message.reply_text("📸 Делаю скриншот...")
+    try:
+        screenshot = await browser.screenshot()
+        await update.message.reply_photo(
+            screenshot,
+            caption="📸 Скриншот 1280x720"
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Задать вопрос AI"""
+    if not context.args:
+        await update.message.reply_text("❌ Напиши вопрос: /ask что видишь?")
+        return
+    
+    question = ' '.join(context.args)
+    await update.message.reply_text("🧠 Думаю...")
+    
+    try:
+        page_text = await browser.get_page_text()
+        response = ai.ask(question, page_text)
+        await update.message.reply_text(response[:4096])
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def click_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кликнуть по элементу"""
+    if not context.args:
+        await update.message.reply_text("❌ Укажи селектор: /click #button")
+        return
+    
+    selector = ' '.join(context.args)
+    try:
+        result = await browser.click_element(selector)
+        await update.message.reply_text(result)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def eval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Выполнить JavaScript"""
+    if not context.args:
+        await update.message.reply_text("❌ Напиши JS: /eval document.title")
+        return
+    
+    js = ' '.join(context.args)
+    try:
+        result = await browser.execute_script(js)
+        await update.message.reply_text(f"📊 Результат:\n<code>{str(result)[:4000]}</code>", parse_mode='HTML')
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def tabs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Список вкладок"""
+    try:
+        result = await browser.list_tabs()
+        await update.message.reply_text(result, parse_mode='HTML')
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def newtab_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Создать новую вкладку"""
+    url = context.args[0] if context.args else ""
+    try:
+        result = await browser.create_tab(url)
+        await update.message.reply_text(result)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def closetab_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Закрыть текущую вкладку"""
+    try:
+        result = await browser.close_tab()
+        await update.message.reply_text(result)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def back_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Назад в истории"""
+    try:
+        await browser.go_back()
+        await update.message.reply_text("⬅️ Назад")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def forward_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Вперёд в истории"""
+    try:
+        await browser.go_forward()
+        await update.message.reply_text("➡️ Вперёд")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обновить страницу"""
+    try:
+        await browser.refresh()
+        await update.message.reply_text("🔄 Обновлено")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+# ========== ОБРАБОТЧИК ТЕКСТА ==========
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка текстовых сообщений (AI)"""
+    text = update.message.text
+    logger.info(f"📩 Получен текст: {text[:50]}...")
+    try:
+        page_text = await browser.get_page_text()
+        response = ai.ask(text, page_text)
+        await update.message.reply_text(response[:4096])
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ========== ЗАПУСК ==========
 
@@ -179,14 +308,22 @@ def main():
         logger.info("📝 Регистрирую команды...")
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("help", help_command))
-        # ... остальные команды ...
+        app.add_handler(CommandHandler("open", open_command))
+        app.add_handler(CommandHandler("screenshot", screenshot_command))
+        app.add_handler(CommandHandler("ask", ask_command))
+        app.add_handler(CommandHandler("click", click_command))
+        app.add_handler(CommandHandler("eval", eval_command))
+        app.add_handler(CommandHandler("tabs", tabs_command))
+        app.add_handler(CommandHandler("newtab", newtab_command))
+        app.add_handler(CommandHandler("closetab", closetab_command))
+        app.add_handler(CommandHandler("back", back_command))
+        app.add_handler(CommandHandler("forward", forward_command))
+        app.add_handler(CommandHandler("refresh", refresh_command))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         logger.info("✅ Команды зарегистрированы")
     except Exception as e:
         logger.error(f"❌ Ошибка регистрации команд: {e}")
         raise
-    
-    # Обработка текста
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     # Запуск
     logger.info("🚀 Бот запущен! Ожидаю сообщения...")
