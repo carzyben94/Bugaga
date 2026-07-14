@@ -912,10 +912,9 @@ class BrowserManager:
         
         return f"❌ Текст не найден за {timeout} секунд: {text}"
     
-    # ========== НОВЫЕ МЕТОДЫ DOM ==========
+    # ========== DOM МЕТОДЫ ==========
     
     async def get_full_dom(self) -> str:
-        """Получить полный HTML страницы"""
         await self.connect()
         
         if await self.is_page_empty():
@@ -928,7 +927,6 @@ class BrowserManager:
         return result['result'].get('value', '')
     
     async def get_dom_with_metadata(self) -> Dict[str, Any]:
-        """Получить DOM + метаданные для ИИ"""
         await self.connect()
         
         if await self.is_page_empty():
@@ -988,7 +986,6 @@ class BrowserManager:
         return result['result'].get('value', {})
     
     async def find_elements_by_text(self, text: str) -> List[Dict[str, Any]]:
-        """Найти элементы по тексту"""
         await self.connect()
         
         if await self.is_page_empty():
@@ -1038,12 +1035,10 @@ class BrowserManager:
         return result['result'].get('value', [])
     
     async def get_interactive_elements(self) -> List[Dict[str, Any]]:
-        """Получить все интерактивные элементы"""
         data = await self.get_dom_with_metadata()
         return data.get('interactive', [])
     
     async def get_dom_summary(self) -> str:
-        """Краткая сводка по DOM для ИИ"""
         data = await self.get_dom_with_metadata()
         
         if 'error' in data:
@@ -1083,7 +1078,6 @@ class BrowserManager:
         return summary
     
     async def ai_find_element(self, description: str) -> Dict[str, Any]:
-        """Найти элемент по описанию (ИИ-поиск)"""
         await self.connect()
         
         if await self.is_page_empty():
@@ -1147,7 +1141,6 @@ class BrowserManager:
         }
     
     async def ai_interact(self, description: str, action: str = "click") -> str:
-        """ИИ-взаимодействие с элементом по описанию"""
         result = await self.ai_find_element(description)
         
         if not result.get('found', False):
@@ -1185,7 +1178,6 @@ class BrowserManager:
         return f"✅ Действие '{action}' выполнено на: {description}"
     
     async def ai_analyze_page(self, question: str) -> str:
-        """Анализ страницы ИИ с полным DOM"""
         await self.connect()
         
         if await self.is_page_empty():
@@ -1218,6 +1210,167 @@ class BrowserManager:
         
         response = ai_engine.ask(prompt, "")
         return response
+    
+    # ========== ИИ-АГЕНТ (ГЛАВНАЯ ФИЧА) ==========
+    
+    def _format_interactive_for_ai(self, elements: List[Dict]) -> str:
+        if not elements:
+            return "Нет интерактивных элементов"
+        
+        result = ""
+        for i, el in enumerate(elements[:30]):
+            text = el.get('text', '') or el.get('placeholder', '') or el.get('value', '') or ''
+            if text:
+                result += f"  {i+1}. <{el.get('tag', '')}> '{text[:40]}'"
+            else:
+                result += f"  {i+1}. <{el.get('tag', '')}>"
+            
+            if el.get('type'):
+                result += f" type={el.get('type')}"
+            
+            result += f" → {el.get('selector', '')}"
+            
+            if not el.get('visible', False):
+                result += " ⛔"
+            result += "\n"
+        
+        if len(elements) > 30:
+            result += f"  ... и ещё {len(elements) - 30} элементов\n"
+        
+        return result
+    
+    async def ai_agent(self, command: str) -> str:
+        """ИИ-агент: читает DOM и выполняет команды"""
+        await self.connect()
+        
+        if await self.is_page_empty():
+            return "📭 Страница пустая. Сначала откройте страницу командой /open"
+        
+        # Получаем DOM
+        dom_data = await self.get_dom_with_metadata()
+        full_dom = await self.get_full_dom()
+        dom_preview = full_dom[:5000] + "..." if len(full_dom) > 5000 else full_dom
+        
+        # Формируем промпт для ИИ
+        from ai import AgnesAI
+        ai_engine = AgnesAI()
+        
+        prompt = f"""
+Ты ИИ-агент, который управляет браузером. Твоя задача — выполнить команду пользователя.
+
+📄 ТЕКУЩАЯ СТРАНИЦА:
+Заголовок: {dom_data.get('title', 'Нет')}
+URL: {dom_data.get('url', 'Нет')}
+Всего элементов: {dom_data.get('total_elements', 0)}
+Форм: {dom_data.get('forms', 0)}
+Ссылок: {dom_data.get('links', 0)}
+
+🖱 ДОСТУПНЫЕ ИНТЕРАКТИВНЫЕ ЭЛЕМЕНТЫ:
+{self._format_interactive_for_ai(dom_data.get('interactive', []))}
+
+📄 ФРАГМЕНТ DOM (первые 5000 символов):
+{dom_preview}
+
+КОМАНДА ПОЛЬЗОВАТЕЛЯ:
+{command}
+
+ОТВЕТЬ В ФОРМАТЕ JSON:
+{{
+    "action": "click | type | find | analyze | wait | none",
+    "selector": "CSS селектор элемента",
+    "text": "текст для ввода (если action=type)",
+    "message": "понятный ответ пользователю"
+}}
+
+ПРИМЕРЫ:
+1. Команда: "нажми на кнопку войти"
+   {{"action": "click", "selector": "#login-btn", "message": "✅ Кликнул по кнопке 'Войти'"}}
+
+2. Команда: "введи test@gmail.com в поле email"
+   {{"action": "type", "selector": "input[type='email']", "text": "test@gmail.com", "message": "✅ Ввёл email в поле"}}
+
+3. Команда: "какие кнопки есть?"
+   {{"action": "analyze", "selector": "", "message": "На странице есть кнопки: 'Войти', 'Зарегистрироваться'"}}
+
+4. Команда: "подожди загрузки"
+   {{"action": "wait", "selector": ".loading", "message": "⏳ Ожидание загрузки..."}}
+
+5. Команда: "что здесь написано?"
+   {{"action": "none", "selector": "", "message": "На странице написано: ..."}}
+"""
+        
+        # Получаем ответ от ИИ
+        response = ai_engine.ask(prompt, "")
+        
+        # Парсим JSON
+        try:
+            json_match = re.search(r'\{[^{}]*\}', response, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group())
+            else:
+                return f"❌ ИИ не смог распарсить команду: {response[:200]}"
+        except Exception as e:
+            return f"❌ Ошибка парсинга JSON: {e}\nОтвет ИИ: {response[:200]}"
+        
+        action = data.get('action', 'none')
+        selector = data.get('selector', '')
+        text = data.get('text', '')
+        message = data.get('message', '')
+        
+        # Выполняем действие
+        try:
+            if action == 'click':
+                if not selector:
+                    return "❌ Не найден селектор для клика"
+                result = await self.click_element(selector)
+                return f"{message}\n{result}"
+            
+            elif action == 'type':
+                if not selector:
+                    return "❌ Не найден селектор для ввода"
+                js = f"""
+                (function() {{
+                    const el = document.querySelector('{selector}');
+                    if (el) {{
+                        el.value = '{text}';
+                        el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        return true;
+                    }}
+                    return false;
+                }})()
+                """
+                result = await self.execute_script(js)
+                if result:
+                    return f"{message}\n✅ Текст введён в поле: {selector}"
+                else:
+                    return f"❌ Не удалось ввести текст в поле: {selector}"
+            
+            elif action == 'find':
+                if not selector:
+                    results = await self.find_elements_by_text(text or '')
+                else:
+                    results = await self.find_elements_by_text(selector)
+                
+                if results:
+                    return f"{message}\n🔍 Найдено {len(results)} элементов"
+                else:
+                    return f"❌ Элементы не найдены: {message}"
+            
+            elif action == 'wait':
+                if not selector:
+                    return "❌ Не указан селектор для ожидания"
+                result = await self.wait_for_selector(selector)
+                return f"{message}\n{result}"
+            
+            elif action == 'analyze':
+                return message
+            
+            else:
+                return message or response
+        
+        except Exception as e:
+            return f"❌ Ошибка выполнения команды: {str(e)}"
     
     # ========== УПРАВЛЕНИЕ ВКЛАДКАМИ ==========
     
