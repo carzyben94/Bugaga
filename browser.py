@@ -130,7 +130,7 @@ class BrowserManager:
         
         return args
     
-    # ========== ГЕОЛОКАЦИЯ ==========
+    # ========== ГЕОЛОКАЦИЯ (ИСПРАВЛЕНА) ==========
     
     async def set_geolocation(self, lat: float = None, lng: float = None):
         await self.connect()
@@ -140,6 +140,7 @@ class BrowserManager:
             lat = location["lat"]
             lng = location["lng"]
         
+        # ✅ ДОБАВЛЕН AWAIT
         await self._send_command("Emulation.setGeolocationOverride", {
             "latitude": lat,
             "longitude": lng,
@@ -260,7 +261,7 @@ class BrowserManager:
         
         return f"✅ Случайная геолокация:\n📍 {location['name']}\n🕐 {location['timezone']}\n🌐 {location['lang']}"
     
-    # ========== КУКИ ==========
+    # ========== КУКИ (ИСПРАВЛЕНЫ) ==========
     
     def get_default_cookies(self) -> List[Dict[str, Any]]:
         """Получить стандартные куки для X/Twitter"""
@@ -395,6 +396,7 @@ class BrowserManager:
         if cookies is None:
             cookies = self.get_default_cookies()
         
+        # ✅ ДОБАВЛЕН AWAIT
         await self._send_command("Network.setCookies", {
             "cookies": cookies
         })
@@ -410,6 +412,7 @@ class BrowserManager:
         if urls:
             params["urls"] = urls
         
+        # ✅ ДОБАВЛЕН AWAIT
         result = await self._send_command("Network.getCookies", params)
         return result.get('cookies', [])
     
@@ -796,7 +799,7 @@ class BrowserManager:
             print(f"❌ Ошибка подключения к Chrome: {e}")
             return None
     
-    # ========== connect() — ИСПРАВЛЕН (ДОБАВЛЕНЫ AWAIT) ==========
+    # ========== CONNECT (ИСПРАВЛЕН) ==========
     
     async def connect(self, tab_id: Optional[str] = None):
         if self._connected and self.ws:
@@ -823,7 +826,7 @@ class BrowserManager:
         except asyncio.TimeoutError:
             raise Exception("❌ Таймаут подключения к Chrome")
         
-        # ✅ ИСПРАВЛЕНО — ВСЕ С AWAIT!
+        # ✅ ВСЕ С AWAIT
         await self._send_command("Page.enable")
         await self._send_command("Runtime.enable")
         await self._send_command("DOM.enable")
@@ -880,8 +883,6 @@ class BrowserManager:
                     return data.get('result', {})
             except asyncio.TimeoutError:
                 raise Exception(f"❌ Таймаут ответа от Chrome на команду {method}")
-    
-    # ========== open_page() — ДОБАВЛЕНЫ ЛОГИ ==========
     
     async def open_page(self, url: str):
         print(f"🔵 open_page: {url}")
