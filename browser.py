@@ -1040,10 +1040,10 @@ class BrowserManager:
                 return parts[0] + '.' + parts[1] + '.' + parts[2] + '...'
         return selector[:60] + '...'
     
-    # ========== ГЛАВНЫЙ МЕТОД: ВВОД ТЕКСТА + ENTER (ФИКС) ==========
+    # ========== ГЛАВНЫЙ МЕТОД: ВВОД ТЕКСТА + ENTER (КАК В ТВОЁМ КОДЕ) ==========
     
     async def type_text_cdp(self, selector: str, text: str):
-        """Ввод текста + Enter (с focus как в рабочем коде)"""
+        """Ввод текста + Enter (как в твоём рабочем коде)"""
         await self.connect()
         
         if await self.is_page_empty():
@@ -1053,22 +1053,24 @@ class BrowserManager:
         
         # 1. Клик по полю
         await self.click_element(selector)
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.1)
         
-        # 2. Ввод текста + Enter (как в твоём рабочем коде)
+        # 2. ВСЁ В ОДНОМ JS БЛОКЕ (как в твоём коде!)
         js = f"""
         (function() {{
             const el = document.querySelector('{safe_selector}');
             if (!el) return false;
             
-            // ✅ 1. ФОКУС (ГЛАВНОЕ!)
+            // ✅ ВСЁ ПОСЛЕДОВАТЕЛЬНО В ОДНОМ БЛОКЕ
             el.focus();
-            
-            // 2. Ввод текста
             el.value = '';
             el.value = '{text}';
             
-            // 3. ENTER (как в твоём коде)
+            // События для React
+            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            
+            // ENTER (как в твоём коде)
             const enterEvent = new KeyboardEvent('keydown', {{
                 key: 'Enter',
                 code: 'Enter',
@@ -1080,6 +1082,27 @@ class BrowserManager:
             }});
             el.dispatchEvent(enterEvent);
             
+            // 🔥 ДОПОЛНИТЕЛЬНО: отправка формы для X/Twitter
+            const form = el.closest('form');
+            if (form) {{
+                if (form.requestSubmit) {{
+                    form.requestSubmit();
+                }} else {{
+                    form.submit();
+                }}
+                return true;
+            }}
+            
+            // ИЛИ клик по кнопке поиска
+            const buttons = document.querySelectorAll('button[type="submit"], input[type="submit"]');
+            for (let btn of buttons) {{
+                const text = (btn.textContent || btn.value || '').toLowerCase();
+                if (text.includes('поиск') || text.includes('search')) {{
+                    btn.click();
+                    return true;
+                }}
+            }}
+            
             return true;
         }})()
         """
@@ -1087,9 +1110,9 @@ class BrowserManager:
         result = await self.execute_script(js)
         
         if result:
-            return f"✅ Ввёл '{text}' и нажал Enter"
+            return f"✅ Ввёл '{text}' и отправил поиск"
         else:
-            return f"⚠️ Ввёл '{text}', но Enter не сработал"
+            return f"⚠️ Ввёл '{text}', но поиск не отправлен"
     
     # ========== ОСТАЛЬНЫЕ МЕТОДЫ ==========
     
