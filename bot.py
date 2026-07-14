@@ -14,20 +14,18 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from browser import BrowserManager
 from ai import AgnesAI
 
-# ========== НАСТРОЙКА ЛОГИРОВАНИЯ (В ФАЙЛ И КОНСОЛЬ) ==========
+# ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
 LOG_FILE = 'bot.log'
 
-# Удаляем старый лог-файл при запуске
 if os.path.exists(LOG_FILE):
     os.remove(LOG_FILE)
 
-# Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.DEBUG,
     handlers=[
-        logging.StreamHandler(sys.stdout),  # В консоль
-        logging.FileHandler(LOG_FILE, encoding='utf-8')  # В файл
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(LOG_FILE, encoding='utf-8')
     ]
 )
 logger = logging.getLogger(__name__)
@@ -44,7 +42,6 @@ logger.info(f"🔑 AGNES_API_KEY: {'✅ Есть' if AGNES_API_KEY else '❌ Н�
 # ПУТЬ К CHROME
 CHROME_PATH = os.getenv("CHROME_PATH", "/usr/bin/google-chrome")
 
-# Альтернативные пути для разных ОС
 if not os.path.exists(CHROME_PATH):
     if os.path.exists("/usr/bin/google-chrome"):
         CHROME_PATH = "/usr/bin/google-chrome"
@@ -63,41 +60,35 @@ logger.info(f"📂 Путь к Chrome: {CHROME_PATH}")
 
 # ========== ЗАПУСК CHROME ==========
 def start_chrome():
-    """Запуск Chrome с CDP"""
+    """Запуск Chrome с маскировкой"""
     try:
+        temp_browser = BrowserManager()
+        
         if not os.path.exists(CHROME_PATH):
             logger.warning(f"⚠️ Chrome не найден по пути: {CHROME_PATH}")
-            logger.warning("⚠️ Пробую 'google-chrome' из PATH")
             chrome_cmd = "google-chrome"
         else:
             chrome_cmd = CHROME_PATH
-            logger.info(f"✅ Chrome найден: {CHROME_PATH}")
         
-        subprocess.Popen([
-            chrome_cmd,
-            '--headless=new',
-            '--remote-debugging-port=9222',
-            '--no-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-gpu',
-            '--disable-software-rasterizer',
-            '--disable-extensions',
-            '--disable-setuid-sandbox',
-            '--user-data-dir=/tmp/chrome-profile'
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        args = temp_browser.get_launch_args(chrome_cmd)
         
-        logger.info("⏳ Ждём запуска Chrome...")
+        subprocess.Popen(
+            args,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        
+        logger.info("⏳ Ждём запуска Chrome с маскировкой...")
         time.sleep(3)
         
         try:
             resp = requests.get("http://localhost:9222/json/version", timeout=5)
             if resp.status_code == 200:
-                logger.info("🚀 Chrome успешно запущен с CDP")
+                logger.info("🚀 Chrome успешно запущен с маскировкой")
                 return True
         except Exception as e:
             logger.error(f"❌ CDP не отвечает: {e}")
         
-        logger.warning("⚠️ Chrome запущен, но CDP не отвечает")
         return True
         
     except Exception as e:
@@ -122,7 +113,6 @@ except Exception as e:
 # ========== КОМАНДЫ ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /start"""
     logger.info(f"📩 Получена команда /start от {update.effective_user.username}")
     try:
         await update.message.reply_text(
@@ -139,6 +129,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/back - назад\n"
             "/forward - вперёд\n"
             "/refresh - обновить\n"
+            "/wait <селектор> - ожидать элемент\n"
+            "/waittext <текст> - ожидать текст\n"
+            "/geo - случайная геолокация\n"
+            "/geo <ip> - гео по IP\n"
+            "/geoset <lat> <lng> - установить координаты\n"
+            "/timezone <зона> - установить таймзону\n"
+            "/lang <язык> - установить язык\n"
             "/log - скачать логи\n"
             "/help - эта справка"
         )
@@ -147,27 +144,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ Ошибка в /start: {e}")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /help"""
-    logger.info(f"📩 Получена команда /help от {update.effective_user.username}")
-    try:
-        await start(update, context)
-    except Exception as e:
-        logger.error(f"❌ Ошибка в /help: {e}")
+    await start(update, context)
 
 async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /log - скачать логи"""
     logger.info(f"📩 Получена команда /log от {update.effective_user.username}")
     try:
         log_content = ""
         
-        # Читаем лог-файл
         if os.path.exists(LOG_FILE):
             with open(LOG_FILE, 'r', encoding='utf-8') as f:
                 log_content = f.read()
         else:
             log_content = "⚠️ Лог-файл не найден\n"
         
-        # Добавляем системную информацию
         system_info = f"""
 {'='*50}
 📊 Системная информация:
@@ -176,14 +165,12 @@ Chrome путь: {CHROME_PATH}
 Chrome существует: {os.path.exists(CHROME_PATH)}
 CDP порт: 9222
 """
-        # Проверяем CDP
         try:
             resp = requests.get("http://localhost:9222/json/version", timeout=3)
             system_info += f"CDP статус: ✅ Работает ({resp.status_code})\n"
         except Exception as e:
             system_info += f"CDP статус: ❌ Не отвечает ({str(e)[:50]})\n"
         
-        # Проверяем открытые вкладки
         try:
             resp = requests.get("http://localhost:9222/json/list", timeout=3)
             pages = resp.json()
@@ -193,7 +180,6 @@ CDP порт: 9222
         
         full_log = log_content + system_info
         
-        # Отправляем файл
         await update.message.reply_document(
             document=io.BytesIO(full_log.encode('utf-8')),
             filename=f"bot_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
@@ -206,7 +192,6 @@ CDP порт: 9222
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def open_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Открыть URL"""
     if not context.args:
         await update.message.reply_text("❌ Укажи URL: /open https://example.com")
         return
@@ -225,16 +210,12 @@ async def open_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Сделать скриншот"""
     logger.info(f"📩 Получена команда /screenshot от {update.effective_user.username}")
     await update.message.reply_text("📸 Делаю скриншот...")
     try:
         screenshot_base64 = await browser.screenshot()
-        
-        # ✅ Конвертируем base64 в байты для InputFile
         image_bytes = base64.b64decode(screenshot_base64)
         
-        # Отправляем как файл через InputFile
         await update.message.reply_photo(
             photo=InputFile(io.BytesIO(image_bytes), filename="screenshot.png"),
             caption="📸 Скриншот 1280x720"
@@ -245,7 +226,6 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Задать вопрос AI"""
     if not context.args:
         await update.message.reply_text("❌ Напиши вопрос: /ask что видишь?")
         return
@@ -262,7 +242,6 @@ async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def click_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Кликнуть по элементу"""
     if not context.args:
         await update.message.reply_text("❌ Укажи селектор: /click #button")
         return
@@ -276,7 +255,6 @@ async def click_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def eval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Выполнить JavaScript"""
     if not context.args:
         await update.message.reply_text("❌ Напиши JS: /eval document.title")
         return
@@ -290,7 +268,6 @@ async def eval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def tabs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Список вкладок"""
     try:
         result = await browser.list_tabs()
         await update.message.reply_text(result)
@@ -299,7 +276,6 @@ async def tabs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def newtab_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Создать новую вкладку"""
     url = context.args[0] if context.args else ""
     try:
         result = await browser.create_tab(url)
@@ -309,7 +285,6 @@ async def newtab_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def closetab_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Закрыть текущую вкладку"""
     try:
         result = await browser.close_tab()
         await update.message.reply_text(result)
@@ -318,35 +293,124 @@ async def closetab_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def back_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Назад в истории"""
     try:
-        await browser.go_back()
-        await update.message.reply_text("⬅️ Назад")
+        result = await browser.go_back()
+        await update.message.reply_text(result if isinstance(result, str) else "⬅️ Назад")
     except Exception as e:
         logger.error(f"❌ Ошибка /back: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def forward_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Вперёд в истории"""
     try:
-        await browser.go_forward()
-        await update.message.reply_text("➡️ Вперёд")
+        result = await browser.go_forward()
+        await update.message.reply_text(result if isinstance(result, str) else "➡️ Вперёд")
     except Exception as e:
         logger.error(f"❌ Ошибка /forward: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обновить страницу"""
     try:
-        await browser.refresh()
-        await update.message.reply_text("🔄 Обновлено")
+        result = await browser.refresh()
+        await update.message.reply_text(result if isinstance(result, str) else "🔄 Обновлено")
     except Exception as e:
         logger.error(f"❌ Ошибка /refresh: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
+# ========== НОВЫЕ КОМАНДЫ ==========
+
+async def wait_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ожидание элемента"""
+    if not context.args:
+        await update.message.reply_text("❌ Укажи селектор: /wait #button")
+        return
+    
+    selector = ' '.join(context.args)
+    await update.message.reply_text(f"⏳ Жду элемент: {selector}")
+    
+    try:
+        result = await browser.wait_for_selector(selector)
+        await update.message.reply_text(result)
+    except Exception as e:
+        logger.error(f"❌ Ошибка /wait: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def waittext_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ожидание текста"""
+    if not context.args:
+        await update.message.reply_text("❌ Укажи текст: /waittext Привет")
+        return
+    
+    text = ' '.join(context.args)
+    await update.message.reply_text(f"⏳ Жду текст: {text}")
+    
+    try:
+        result = await browser.wait_for_text(text)
+        await update.message.reply_text(result)
+    except Exception as e:
+        logger.error(f"❌ Ошибка /waittext: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def geo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Геолокация"""
+    logger.info(f"📩 Получена команда /geo от {update.effective_user.username}")
+    
+    try:
+        if context.args:
+            ip = context.args[0]
+            result = await browser.setup_location_by_ip(ip)
+            await update.message.reply_text(result)
+        else:
+            result = await browser.setup_location_by_ip()
+            await update.message.reply_text(result)
+    except Exception as e:
+        logger.error(f"❌ Ошибка /geo: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def geoset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Установить координаты"""
+    if len(context.args) < 2:
+        await update.message.reply_text("❌ Укажи координаты: /geoset 55.7558 37.6173")
+        return
+    
+    try:
+        lat = float(context.args[0])
+        lng = float(context.args[1])
+        result = await browser.set_geolocation(lat, lng)
+        await update.message.reply_text(result)
+    except Exception as e:
+        logger.error(f"❌ Ошибка /geoset: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def timezone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Установить таймзону"""
+    if not context.args:
+        await update.message.reply_text("❌ Укажи таймзону: /timezone Europe/London")
+        return
+    
+    timezone = context.args[0]
+    try:
+        result = await browser.set_timezone(timezone)
+        await update.message.reply_text(result)
+    except Exception as e:
+        logger.error(f"❌ Ошибка /timezone: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def lang_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Установить язык"""
+    if not context.args:
+        await update.message.reply_text("❌ Укажи язык: /lang ru-RU")
+        return
+    
+    lang = context.args[0]
+    try:
+        result = await browser.set_language(lang)
+        await update.message.reply_text(result)
+    except Exception as e:
+        logger.error(f"❌ Ошибка /lang: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
 # ========== ОБРАБОТЧИК ТЕКСТА ==========
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка текстовых сообщений (AI)"""
     text = update.message.text
     logger.info(f"📩 Получен текст: {text[:50]}...")
     try:
@@ -360,7 +424,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== ЗАПУСК ==========
 
 def main():
-    """Главная функция"""
     logger.info("🚀 ЗАПУСК БОТА")
     
     if not TELEGRAM_TOKEN:
@@ -370,13 +433,11 @@ def main():
     if not AGNES_API_KEY:
         logger.warning("⚠️ AGNES_API_KEY не задан! AI функции не будут работать")
     
-    # Запускаем Chrome
     if start_chrome():
         logger.info("✅ Chrome готов к работе")
     else:
         logger.warning("⚠️ Chrome не запустился, проверь установку")
     
-    # Создаём приложение
     try:
         logger.info("📱 Создаю Telegram приложение...")
         app = Application.builder().token(TELEGRAM_TOKEN).build()
@@ -385,7 +446,6 @@ def main():
         logger.error(f"❌ Ошибка создания приложения: {e}")
         raise
     
-    # Регистрируем команды
     try:
         logger.info("📝 Регистрирую команды...")
         app.add_handler(CommandHandler("start", start))
@@ -402,13 +462,18 @@ def main():
         app.add_handler(CommandHandler("back", back_command))
         app.add_handler(CommandHandler("forward", forward_command))
         app.add_handler(CommandHandler("refresh", refresh_command))
+        app.add_handler(CommandHandler("wait", wait_command))
+        app.add_handler(CommandHandler("waittext", waittext_command))
+        app.add_handler(CommandHandler("geo", geo_command))
+        app.add_handler(CommandHandler("geoset", geoset_command))
+        app.add_handler(CommandHandler("timezone", timezone_command))
+        app.add_handler(CommandHandler("lang", lang_command))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         logger.info("✅ Команды зарегистрированы")
     except Exception as e:
         logger.error(f"❌ Ошибка регистрации команд: {e}")
         raise
     
-    # Запуск
     logger.info("🚀 Бот запущен! Ожидаю сообщения...")
     try:
         app.run_polling(allowed_updates=Update.ALL_TYPES)
