@@ -182,7 +182,7 @@ CDP порт: 9222
 # ========== ОСНОВНАЯ ЛОГИКА ==========
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка ВСЕХ сообщений через ИИ-агент"""
+    """Обработка ВСЕХ сообщений"""
     text = update.message.text
     logger.info(f"📩 Получен текст: {text[:50]}...")
     
@@ -196,7 +196,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await start(update, context)
             return
         
-        # Остальное — через ИИ-агент
+        # ========== ЛОКАЛЬНАЯ ОБРАБОТКА ==========
+        text_lower = text.lower()
+        
+        # 1. ОТКРЫТИЕ СТРАНИЦЫ
+        if any(word in text_lower for word in ['открой', 'перейди', 'зайди', 'открыть', 'перейти']) and \
+           any(ext in text for ext in ['.com', '.ru', '.org', '.net', '.io', 'http']):
+            urls = re.findall(r'(?:https?://)?(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?:/[^\s]*)?', text)
+            if urls:
+                url = urls[0]
+                if not url.startswith('http'):
+                    url = 'https://' + url
+                await update.message.reply_text(f"🌐 Открываю: {url}")
+                await browser.open_page(url)
+                title = await browser.get_page_title()
+                await update.message.reply_text(f"✅ Открыто: {title}")
+                return
+        
+        # 2. СКРИНШОТ
+        if any(word in text_lower for word in ['скриншот', 'скрин', 'сфоткай', 'фото страницы']):
+            await update.message.reply_text("📸 Делаю скриншот...")
+            try:
+                screenshot_base64 = await browser.screenshot()
+                image_bytes = base64.b64decode(screenshot_base64)
+                await update.message.reply_photo(
+                    photo=InputFile(io.BytesIO(image_bytes), filename="screenshot.png"),
+                    caption="📸 Скриншот 1280x720"
+                )
+            except Exception as e:
+                await update.message.reply_text(f"❌ Ошибка скриншота: {str(e)[:200]}")
+            return
+        
+        # 3. ОСТАЛЬНОЕ — ЧЕРЕЗ AI
         await update.message.reply_text(f"🧠 Думаю...")
         result = await browser.ai_agent(text)
         await update.message.reply_text(result[:4096])
