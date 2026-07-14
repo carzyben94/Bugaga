@@ -796,6 +796,8 @@ class BrowserManager:
             print(f"❌ Ошибка подключения к Chrome: {e}")
             return None
     
+    # ========== connect() — ИСПРАВЛЕН (ДОБАВЛЕНЫ AWAIT) ==========
+    
     async def connect(self, tab_id: Optional[str] = None):
         if self._connected and self.ws:
             return
@@ -821,6 +823,7 @@ class BrowserManager:
         except asyncio.TimeoutError:
             raise Exception("❌ Таймаут подключения к Chrome")
         
+        # ✅ ИСПРАВЛЕНО — ВСЕ С AWAIT!
         await self._send_command("Page.enable")
         await self._send_command("Runtime.enable")
         await self._send_command("DOM.enable")
@@ -877,6 +880,8 @@ class BrowserManager:
                     return data.get('result', {})
             except asyncio.TimeoutError:
                 raise Exception(f"❌ Таймаут ответа от Chrome на команду {method}")
+    
+    # ========== open_page() — ДОБАВЛЕНЫ ЛОГИ ==========
     
     async def open_page(self, url: str):
         print(f"🔵 open_page: {url}")
