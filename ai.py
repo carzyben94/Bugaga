@@ -96,28 +96,18 @@ class AgentPrompts:
         command: str,
         title: str,
         url: str,
-        total_elements: int,
-        forms: int,
-        links: int,
-        interactive_str: str,
-        dom_preview: str
+        interactive_str: str
     ) -> str:
-        """Промт для загруженной страницы"""
+        """Промт для загруженной страницы (только полезные элементы)"""
         return f"""
 Ты ИИ-агент, управляешь браузером.
 
 📄 ТЕКУЩАЯ СТРАНИЦА:
 Заголовок: {title}
 URL: {url}
-Всего элементов: {total_elements}
-Форм: {forms}
-Ссылок: {links}
 
-🖱 ДОСТУПНЫЕ ЭЛЕМЕНТЫ:
+🖱 ДОСТУПНЫЕ ЭЛЕМЕНТЫ (ТОЛЬКО ТЕ, С КОТОРЫМИ МОЖНО ВЗАИМОДЕЙСТВОВАТЬ):
 {interactive_str}
-
-📄 ФРАГМЕНТ DOM:
-{dom_preview}
 
 КОМАНДА ПОЛЬЗОВАТЕЛЯ: {command}
 
@@ -137,6 +127,7 @@ URL: {url}
 - Если пользователь просит "введи", "напиши" → используй action: type
 - Если пользователь спрашивает "что видишь", "какие кнопки" → используй action: analyze
 - Если пользователь просит "открой" → используй action: open
+- НЕ ВЫДУМЫВАЙ элементы, которых нет в списке
 
 ОТВЕТЬ В ФОРМАТЕ JSON:
 {{
@@ -173,13 +164,10 @@ class AgentHandler:
         
         # Собираем данные о странице
         dom_data = {}
-        dom_preview = ""
         interactive_str = "Нет данных"
         
         if not page_empty:
             dom_data = await self.browser.get_dom_with_metadata()
-            full_dom = await self.browser.get_full_dom()
-            dom_preview = full_dom[:3000] + "..." if len(full_dom) > 3000 else full_dom
             interactive_str = self._format_interactive(dom_data.get('interactive', []))
         
         # Формируем промт
@@ -190,11 +178,7 @@ class AgentHandler:
                 command=command,
                 title=dom_data.get('title', 'Нет'),
                 url=dom_data.get('url', 'Нет'),
-                total_elements=dom_data.get('total_elements', 0),
-                forms=dom_data.get('forms', 0),
-                links=dom_data.get('links', 0),
-                interactive_str=interactive_str,
-                dom_preview=dom_preview
+                interactive_str=interactive_str
             )
         
         # Получаем ответ от ИИ
@@ -288,23 +272,48 @@ class AgentHandler:
             return "Нет интерактивных элементов"
         
         result = ""
-        for i, el in enumerate(elements[:30]):
-            text = el.get('text', '') or el.get('placeholder', '') or el.get('value', '') or ''
-            if text:
-                result += f"  {i+1}. <{el.get('tag', '')}> '{text[:40]}'"
-            else:
-                result += f"  {i+1}. <{el.get('tag', '')}>"
-            
-            if el.get('type'):
-                result += f" type={el.get('type')}"
-            
-            result += f" → {el.get('selector', '')}"
-            
-            if not el.get('visible', False):
-                result += " ⛔"
-            result += "\n"
         
-        if len(elements) > 30:
-            result += f"  ... и ещё {len(elements) - 30} элементов\n"
+        # Группируем по типу
+        buttons = [el for el in elements if el.get('type') == 'button']
+        links = [el for el in elements if el.get('type') == 'link']
+        inputs = [el for el in elements if el.get('type') == 'input']
+        forms = [el for el in elements if el.get('type') == 'form']
+        checkboxes = [el for el in elements if el.get('type') == 'checkbox']
+        
+        if buttons:
+            result += "\n🔘 КНОПКИ:\n"
+            for i, el in enumerate(buttons[:10]):
+                text = el.get('text', '') or el.get('aria_label', '') or 'без текста'
+                result += f"  {i+1}. '{text}' → {el.get('selector', '')}\n"
+            if len(buttons) > 10:
+                result += f"  ... и ещё {len(buttons) - 10} кнопок\n"
+        
+        if links:
+            result += "\n🔗 ССЫЛКИ:\n"
+            for i, el in enumerate(links[:10]):
+                text = el.get('text', '') or 'без текста'
+                result += f"  {i+1}. '{text}' → {el.get('selector', '')}\n"
+            if len(links) > 10:
+                result += f"  ... и ещё {len(links) - 10} ссылок\n"
+        
+        if inputs:
+            result += "\n⌨️ ПОЛЯ ВВОДА:\n"
+            for i, el in enumerate(inputs[:10]):
+                label = el.get('label', '') or el.get('placeholder', '') or el.get('name', '') or 'поле'
+                result += f"  {i+1}. '{label}' → {el.get('selector', '')}\n"
+            if len(inputs) > 10:
+                result += f"  ... и ещё {len(inputs) - 10} полей\n"
+        
+        if checkboxes:
+            result += "\n✅ ЧЕКБОКСЫ:\n"
+            for i, el in enumerate(checkboxes[:5]):
+                label = el.get('label', '') or 'без названия'
+                checked = '✅' if el.get('checked') else '☐'
+                result += f"  {i+1}. {checked} '{label}' → {el.get('selector', '')}\n"
+        
+        if forms:
+            result += "\n📝 ФОРМЫ:\n"
+            for i, el in enumerate(forms[:5]):
+                result += f"  {i+1}. form → {el.get('selector', '')}\n"
         
         return result
