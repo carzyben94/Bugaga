@@ -1040,10 +1040,10 @@ class BrowserManager:
                 return parts[0] + '.' + parts[1] + '.' + parts[2] + '...'
         return selector[:60] + '...'
     
-    # ========== ГЛАВНЫЙ МЕТОД: ВВОД ТЕКСТА + ENTER ==========
+    # ========== ГЛАВНЫЙ МЕТОД: ВВОД ТЕКСТА + ENTER (ФИКС) ==========
     
     async def type_text_cdp(self, selector: str, text: str):
-        """Гарантированный ввод текста + Enter (KeyboardEvent с isComposing: false)"""
+        """Ввод текста + Enter (с focus как в рабочем коде)"""
         await self.connect()
         
         if await self.is_page_empty():
@@ -1055,50 +1055,20 @@ class BrowserManager:
         await self.click_element(selector)
         await asyncio.sleep(0.2)
         
-        # 2. Очистка поля
-        await self.execute_script(f"""
-            const el = document.querySelector('{safe_selector}');
-            if (el) {{
-                el.value = '';
-                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-            }}
-        """)
-        await asyncio.sleep(0.1)
-        
-        # 3. Ввод каждого символа через CDP
-        for char in text:
-            await self._send_command("Input.dispatchKeyEvent", {
-                "type": "keyDown",
-                "text": char
-            })
-            await asyncio.sleep(0.01)
-            
-            await self._send_command("Input.dispatchKeyEvent", {
-                "type": "char",
-                "text": char,
-                "unmodifiedText": char
-            })
-            await asyncio.sleep(0.01)
-            
-            await self._send_command("Input.dispatchKeyEvent", {
-                "type": "keyUp",
-                "text": char
-            })
-            await asyncio.sleep(0.01)
-        
-        await asyncio.sleep(0.2)
-        
-        # 4. ✅ ОДИН ENTER (KeyboardEvent + isComposing: false)
+        # 2. Ввод текста + Enter (как в твоём рабочем коде)
         js = f"""
         (function() {{
-            let el = document.querySelector('{safe_selector}');
-            if (!el) {{
-                el = document.activeElement;
-            }}
+            const el = document.querySelector('{safe_selector}');
             if (!el) return false;
             
-            // 🔥 KeyboardEvent с isComposing: false (для React)
+            // ✅ 1. ФОКУС (ГЛАВНОЕ!)
+            el.focus();
+            
+            // 2. Ввод текста
+            el.value = '';
+            el.value = '{text}';
+            
+            // 3. ENTER (как в твоём коде)
             const enterEvent = new KeyboardEvent('keydown', {{
                 key: 'Enter',
                 code: 'Enter',
@@ -1106,22 +1076,9 @@ class BrowserManager:
                 which: 13,
                 bubbles: true,
                 cancelable: true,
-                composed: true,
-                isComposing: false
+                composed: true
             }});
             el.dispatchEvent(enterEvent);
-            
-            const keyupEvent = new KeyboardEvent('keyup', {{
-                key: 'Enter',
-                code: 'Enter',
-                keyCode: 13,
-                which: 13,
-                bubbles: true,
-                cancelable: true,
-                composed: true,
-                isComposing: false
-            }});
-            el.dispatchEvent(keyupEvent);
             
             return true;
         }})()
