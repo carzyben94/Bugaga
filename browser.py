@@ -949,47 +949,38 @@ class BrowserManager:
         except:
             return "Без названия"
     
+    # ========== ИСПРАВЛЕННЫЙ CLICK_ELEMENT (ЧЕРЕЗ JS) ==========
+    
     async def click_element(self, selector: str):
+        """Универсальный клик по элементу (через JS)"""
         await self.connect()
         
         if await self.is_page_empty():
             return "❌ Страница пустая. Сначала откройте страницу"
         
-        find_result = await self._send_command("DOM.querySelector", {
-            "selector": selector
-        })
-        node_id = find_result.get('nodeId')
+        # ✅ Кликаем через JavaScript (работает для любых элементов)
+        js = f"""
+        (function() {{
+            const el = document.querySelector('{selector}');
+            if (el) {{
+                el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+                setTimeout(() => {{
+                    el.click();
+                }}, 200);
+                return true;
+            }}
+            return false;
+        }})()
+        """
         
-        if not node_id or node_id == 0:
-            return "❌ Элемент не найден"
+        result = await self.execute_script(js)
         
-        box_result = await self._send_command("DOM.getBoxModel", {
-            "nodeId": node_id
-        })
-        
-        if not box_result or 'model' not in box_result:
-            return "❌ Не удалось получить координаты"
-        
-        content = box_result['model']['content']
-        x = (content[0] + content[4]) / 2
-        y = (content[1] + content[5]) / 2
-        
-        await self._send_command("Input.dispatchMouseEvent", {
-            "type": "mousePressed",
-            "x": x,
-            "y": y,
-            "button": "left",
-            "clickCount": 1
-        })
-        await self._send_command("Input.dispatchMouseEvent", {
-            "type": "mouseReleased",
-            "x": x,
-            "y": y,
-            "button": "left",
-            "clickCount": 1
-        })
-        
-        return f"✅ Кликнул по: {selector}"
+        if result:
+            return f"✅ Кликнул по: {selector}"
+        else:
+            return f"❌ Элемент не найден: {selector}"
+    
+    # ========== ОСТАЛЬНЫЕ МЕТОДЫ ==========
     
     async def execute_script(self, script: str):
         await self.connect()
