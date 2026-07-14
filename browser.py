@@ -948,7 +948,7 @@ class BrowserManager:
         except:
             return "Без названия"
     
-    # ========== ИСПРАВЛЕННЫЙ CLICK_ELEMENT (С ПРАВИЛЬНЫМ CDP) ==========
+    # ========== ИСПРАВЛЕННЫЙ CLICK_ELEMENT ==========
     
     async def click_element(self, selector: str):
         """Универсальный клик с правильным использованием CDP"""
@@ -959,18 +959,15 @@ class BrowserManager:
         
         safe_selector = selector.replace('"', '\\"').replace("'", "\\'")
         
-        # 1. ПОЛУЧАЕМ ДОКУМЕНТ (ОБЯЗАТЕЛЬНО!)
         doc = await self._send_command("DOM.getDocument")
         root_node_id = doc['root']['nodeId']
         
-        # 2. Ищем элемент через DOM.querySelector с nodeId
         find_result = await self._send_command("DOM.querySelector", {
             "nodeId": root_node_id,
             "selector": selector
         })
         node_id = find_result.get('nodeId')
         
-        # 3. Если не нашли — пробуем через JS (как fallback)
         if not node_id or node_id == 0:
             js = f"""
             (function() {{
@@ -997,7 +994,6 @@ class BrowserManager:
                 return f"✅ Кликнул по: {self._shorten_selector(selector)}"
             return f"❌ Элемент не найден: {self._shorten_selector(selector)}"
         
-        # 4. Получаем координаты через DOM.getBoxModel
         box_result = await self._send_command("DOM.getBoxModel", {
             "nodeId": node_id
         })
@@ -1009,13 +1005,11 @@ class BrowserManager:
         x = (content[0] + content[4]) / 2
         y = (content[1] + content[5]) / 2
         
-        # 5. Скролл к элементу
         await self.execute_script(f"""
             document.querySelector('{safe_selector}')?.scrollIntoView({{ block: 'center' }});
         """)
         await asyncio.sleep(0.1)
         
-        # 6. Эмуляция клика через CDP (Input domain)
         await self._send_command("Input.dispatchMouseEvent", {
             "type": "mouseMoved", "x": x, "y": y
         })
@@ -1038,18 +1032,46 @@ class BrowserManager:
         """Обрезает длинные селекторы"""
         if len(selector) <= 60:
             return selector
-        
         if "data-testid" in selector:
             return selector
-        
         if '.css-' in selector or '.r-' in selector:
             parts = selector.split('.')
             if len(parts) > 3:
                 return parts[0] + '.' + parts[1] + '.' + parts[2] + '...'
-        
         return selector[:60] + '...'
     
-    # ========== ОСТАЛЬНЫЕ МЕТОДЫ (БЕЗ ИЗМЕНЕНИЙ) ==========
+    # ========== НОВЫЙ МЕТОД: НАЖАТИЕ ENTER ==========
+    
+    async def press_enter(self, selector: Optional[str] = None):
+        """Нажать Enter в активном поле или по селектору"""
+        await self.connect()
+        
+        if selector:
+            await self.execute_script(f"""
+                document.querySelector('{selector}')?.focus();
+            """)
+            await asyncio.sleep(0.1)
+        
+        await self._send_command("Input.dispatchKeyEvent", {
+            "type": "keyDown",
+            "key": "Enter",
+            "code": "Enter",
+            "windowsVirtualKeyCode": 13,
+            "nativeVirtualKeyCode": 13
+        })
+        await asyncio.sleep(0.05)
+        
+        await self._send_command("Input.dispatchKeyEvent", {
+            "type": "keyUp",
+            "key": "Enter",
+            "code": "Enter",
+            "windowsVirtualKeyCode": 13,
+            "nativeVirtualKeyCode": 13
+        })
+        
+        return "⌨️ Нажал Enter"
+    
+    # ========== ОСТАЛЬНЫЕ МЕТОДЫ ==========
     
     async def execute_script(self, script: str):
         await self.connect()
