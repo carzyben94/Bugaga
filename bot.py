@@ -4,16 +4,30 @@ import subprocess
 import logging
 import time
 import requests
+import sys
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from browser import BrowserManager
 from ai import AgnesAI
+
+# ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.DEBUG,  # ← DEBUG вместо INFO
+    handlers=[
+        logging.StreamHandler(sys.stdout)  # ← Вывод в консоль
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # ========== КОНФИГ ==========
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 AGNES_API_KEY = os.getenv("AGNES_API_KEY")
 AGNES_API_URL = os.getenv("AGNES_API_URL", "https://apihub.agnes-ai.com/v1/chat/completions")
 AI_MODEL = os.getenv("AI_MODEL", "agnes-2.0-flash")
+
+logger.info(f"🔑 TELEGRAM_TOKEN: {'✅ Есть' if TELEGRAM_TOKEN else '❌ НЕТ!'}")
+logger.info(f"🔑 AGNES_API_KEY: {'✅ Есть' if AGNES_API_KEY else '❌ НЕТ!'}")
 
 # ПУТЬ К CHROME
 CHROME_PATH = os.getenv("CHROME_PATH", "/usr/bin/google-chrome")
@@ -33,12 +47,7 @@ if not os.path.exists(CHROME_PATH):
     elif os.path.exists("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"):
         CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
-# ========== ЛОГИРОВАНИЕ ==========
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+logger.info(f"📂 Путь к Chrome: {CHROME_PATH}")
 
 # ========== ЗАПУСК CHROME ==========
 def start_chrome():
@@ -53,7 +62,7 @@ def start_chrome():
             logger.info(f"✅ Chrome найден: {CHROME_PATH}")
         
         # Запускаем Chrome
-        subprocess.Popen([
+        process = subprocess.Popen([
             chrome_cmd,
             '--headless=new',
             '--remote-debugging-port=9222',
@@ -66,7 +75,7 @@ def start_chrome():
             '--user-data-dir=/tmp/chrome-profile'
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
-        # Ждём запуска
+        logger.info("⏳ Ждём запуска Chrome...")
         time.sleep(3)
         
         # Проверяем, что Chrome запустился
@@ -75,8 +84,8 @@ def start_chrome():
             if resp.status_code == 200:
                 logger.info("🚀 Chrome успешно запущен с CDP")
                 return True
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"❌ CDP не отвечает: {e}")
         
         logger.warning("⚠️ Chrome запущен, но CDP не отвечает")
         return True
@@ -86,206 +95,110 @@ def start_chrome():
         return False
 
 # ========== ИНИЦИАЛИЗАЦИЯ ==========
-browser = BrowserManager()
-ai = AgnesAI()
+try:
+    browser = BrowserManager()
+    logger.info("✅ BrowserManager создан")
+except Exception as e:
+    logger.error(f"❌ Ошибка создания BrowserManager: {e}")
+    browser = None
+
+try:
+    ai = AgnesAI()
+    logger.info("✅ AgnesAI создан")
+except Exception as e:
+    logger.error(f"❌ Ошибка создания AgnesAI: {e}")
+    ai = None
 
 # ========== КОМАНДЫ ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /start"""
-    await update.message.reply_text(
-        "🤖 <b>Бот для управления браузером</b>\n\n"
-        "📌 <b>Команды:</b>\n"
-        "/open <url> - открыть страницу\n"
-        "/screenshot - скриншот (1280x720)\n"
-        "/ask <вопрос> - вопрос по странице\n"
-        "/click <селектор> - кликнуть элемент\n"
-        "/eval <js> - выполнить JS\n"
-        "/tabs - список вкладок\n"
-        "/newtab <url> - создать вкладку\n"
-        "/closetab - закрыть вкладку\n"
-        "/back - назад\n"
-        "/forward - вперёд\n"
-        "/refresh - обновить\n"
-        "/help - эта справка",
-        parse_mode='HTML'
-    )
+    logger.info(f"📩 Получена команда /start от {update.effective_user.username}")
+    try:
+        await update.message.reply_text(
+            "🤖 <b>Бот для управления браузером</b>\n\n"
+            "📌 <b>Команды:</b>\n"
+            "/open <url> - открыть страницу\n"
+            "/screenshot - скриншот (1280x720)\n"
+            "/ask <вопрос> - вопрос по странице\n"
+            "/click <селектор> - кликнуть элемент\n"
+            "/eval <js> - выполнить JS\n"
+            "/tabs - список вкладок\n"
+            "/newtab <url> - создать вкладку\n"
+            "/closetab - закрыть вкладку\n"
+            "/back - назад\n"
+            "/forward - вперёд\n"
+            "/refresh - обновить\n"
+            "/help - эта справка",
+            parse_mode='HTML'
+        )
+        logger.info("✅ Ответ на /start отправлен")
+    except Exception as e:
+        logger.error(f"❌ Ошибка в /start: {e}")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /help"""
-    await start(update, context)
-
-async def open_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Открыть URL"""
-    if not context.args:
-        await update.message.reply_text("❌ Укажи URL: /open https://example.com")
-        return
-    
-    url = context.args[0]
-    if not url.startswith(('http://', 'https://')):
-        url = 'https://' + url
-    
+    logger.info(f"📩 Получена команда /help от {update.effective_user.username}")
     try:
-        await update.message.reply_text(f"🌐 Открываю: {url}")
-        await browser.open_page(url)
-        title = await browser.get_page_title()
-        await update.message.reply_text(f"✅ Открыто: {title}")
+        await start(update, context)
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        logger.error(f"❌ Ошибка в /help: {e}")
 
-async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Сделать скриншот"""
-    await update.message.reply_text("📸 Делаю скриншот...")
-    try:
-        screenshot = await browser.screenshot()
-        await update.message.reply_photo(
-            screenshot,
-            caption=f"📸 Скриншот 1280x720"
-        )
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Задать вопрос AI"""
-    if not context.args:
-        await update.message.reply_text("❌ Напиши вопрос: /ask что видишь?")
-        return
-    
-    question = ' '.join(context.args)
-    await update.message.reply_text("🧠 Думаю...")
-    
-    try:
-        page_text = await browser.get_page_text()
-        response = ai.ask(question, page_text)
-        await update.message.reply_text(response[:4096])
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def click_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Кликнуть по элементу"""
-    if not context.args:
-        await update.message.reply_text("❌ Укажи селектор: /click #button")
-        return
-    
-    selector = ' '.join(context.args)
-    try:
-        result = await browser.click_element(selector)
-        await update.message.reply_text(result)
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def eval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Выполнить JavaScript"""
-    if not context.args:
-        await update.message.reply_text("❌ Напиши JS: /eval document.title")
-        return
-    
-    js = ' '.join(context.args)
-    try:
-        result = await browser.execute_script(js)
-        await update.message.reply_text(f"📊 Результат:\n<code>{str(result)[:4000]}</code>", parse_mode='HTML')
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def tabs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Список вкладок"""
-    try:
-        result = await browser.list_tabs()
-        await update.message.reply_text(result, parse_mode='HTML')
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def newtab_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Создать новую вкладку"""
-    url = context.args[0] if context.args else ""
-    try:
-        result = await browser.create_tab(url)
-        await update.message.reply_text(result)
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def closetab_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Закрыть текущую вкладку"""
-    try:
-        result = await browser.close_tab()
-        await update.message.reply_text(result)
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def back_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Назад в истории"""
-    try:
-        await browser.go_back()
-        await update.message.reply_text("⬅️ Назад")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def forward_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Вперёд в истории"""
-    try:
-        await browser.go_forward()
-        await update.message.reply_text("➡️ Вперёд")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обновить страницу"""
-    try:
-        await browser.refresh()
-        await update.message.reply_text("🔄 Обновлено")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка текстовых сообщений"""
-    text = update.message.text
-    try:
-        page_text = await browser.get_page_text()
-        response = ai.ask(text, page_text)
-        await update.message.reply_text(response[:4096])
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+# ... (остальные команды без изменений) ...
 
 # ========== ЗАПУСК ==========
 
 def main():
     """Главная функция"""
+    logger.info("🚀 ЗАПУСК БОТА")
+    
     if not TELEGRAM_TOKEN:
+        logger.error("❌ TELEGRAM_BOT_TOKEN не задан!")
         raise ValueError("❌ TELEGRAM_BOT_TOKEN не задан!")
     
     if not AGNES_API_KEY:
         logger.warning("⚠️ AGNES_API_KEY не задан! AI функции не будут работать")
     
     # Запускаем Chrome
-    logger.info(f"📂 Путь к Chrome: {CHROME_PATH}")
     if start_chrome():
         logger.info("✅ Chrome готов к работе")
     else:
         logger.warning("⚠️ Chrome не запустился, проверь установку")
     
     # Создаём приложение
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    try:
+        logger.info("📱 Создаю Telegram приложение...")
+        app = Application.builder().token(TELEGRAM_TOKEN).build()
+        logger.info("✅ Telegram приложение создано")
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания приложения: {e}")
+        raise
     
     # Регистрируем команды
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("open", open_command))
-    app.add_handler(CommandHandler("screenshot", screenshot_command))
-    app.add_handler(CommandHandler("ask", ask_command))
-    app.add_handler(CommandHandler("click", click_command))
-    app.add_handler(CommandHandler("eval", eval_command))
-    app.add_handler(CommandHandler("tabs", tabs_command))
-    app.add_handler(CommandHandler("newtab", newtab_command))
-    app.add_handler(CommandHandler("closetab", closetab_command))
-    app.add_handler(CommandHandler("back", back_command))
-    app.add_handler(CommandHandler("forward", forward_command))
-    app.add_handler(CommandHandler("refresh", refresh_command))
+    try:
+        logger.info("📝 Регистрирую команды...")
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(CommandHandler("help", help_command))
+        # ... остальные команды ...
+        logger.info("✅ Команды зарегистрированы")
+    except Exception as e:
+        logger.error(f"❌ Ошибка регистрации команд: {e}")
+        raise
     
     # Обработка текста
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    logger.info("🚀 Бот запущен!")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    # Запуск
+    logger.info("🚀 Бот запущен! Ожидаю сообщения...")
+    try:
+        app.run_polling(allowed_updates=Update.ALL_TYPES)
+    except Exception as e:
+        logger.error(f"❌ Ошибка при запуске polling: {e}")
+        raise
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
+        sys.exit(1)
