@@ -843,7 +843,6 @@ class BrowserManager:
         
         await self.ws.send(json.dumps(message))
         
-        # Только важные команды в логах
         important = ['Page.navigate', 'Page.captureScreenshot', 'Page.reload']
         if self._debug or method in important:
             print(f"📤 {method}")
@@ -949,62 +948,56 @@ class BrowserManager:
         except:
             return "Без названия"
     
-    # ========== ИСПРАВЛЕННЫЙ CLICK_ELEMENT ==========
+    # ========== ИСПРАВЛЕННЫЙ CLICK_ELEMENT (С ПРАВИЛЬНЫМ CDP) ==========
     
     async def click_element(self, selector: str):
-        """Универсальный клик с поддержкой data-testid и aria-label"""
+        """Универсальный клик с правильным использованием CDP"""
         await self.connect()
         
         if await self.is_page_empty():
             return "❌ Страница пустая. Сначала откройте страницу"
         
-        # Экранируем кавычки для безопасной передачи в JS
         safe_selector = selector.replace('"', '\\"').replace("'", "\\'")
         
-        # 1. Пробуем найти элемент через DOM
+        # 1. ПОЛУЧАЕМ ДОКУМЕНТ (ОБЯЗАТЕЛЬНО!)
+        doc = await self._send_command("DOM.getDocument")
+        root_node_id = doc['root']['nodeId']
+        
+        # 2. Ищем элемент через DOM.querySelector с nodeId
         find_result = await self._send_command("DOM.querySelector", {
+            "nodeId": root_node_id,
             "selector": selector
         })
         node_id = find_result.get('nodeId')
         
-        # 2. Если не нашли — пробуем через JS
+        # 3. Если не нашли — пробуем через JS (как fallback)
         if not node_id or node_id == 0:
             js = f"""
             (function() {{
                 const el = document.querySelector('{safe_selector}');
                 if (!el) return false;
-                
                 el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
-                
                 const rect = el.getBoundingClientRect();
                 const x = rect.left + rect.width / 2;
                 const y = rect.top + rect.height / 2;
-                
                 const events = ['mousedown', 'mouseup', 'click'];
                 events.forEach(type => {{
                     const event = new MouseEvent(type, {{
-                        view: window,
-                        bubbles: true,
-                        cancelable: true,
-                        clientX: x,
-                        clientY: y
+                        view: window, bubbles: true, cancelable: true,
+                        clientX: x, clientY: y
                     }});
                     el.dispatchEvent(event);
                 }});
-                
                 el.focus();
-                el.dispatchEvent(new FocusEvent('focus', {{ bubbles: true }}));
-                
                 return true;
             }})()
             """
             result = await self.execute_script(js)
             if result:
-                short_selector = self._shorten_selector(selector)
-                return f"✅ Кликнул по: {short_selector}"
+                return f"✅ Кликнул по: {self._shorten_selector(selector)}"
             return f"❌ Элемент не найден: {self._shorten_selector(selector)}"
         
-        # 3. Если нашли — кликаем через CDP
+        # 4. Получаем координаты через DOM.getBoxModel
         box_result = await self._send_command("DOM.getBoxModel", {
             "nodeId": node_id
         })
@@ -1016,50 +1009,39 @@ class BrowserManager:
         x = (content[0] + content[4]) / 2
         y = (content[1] + content[5]) / 2
         
-        # Скролл к элементу
+        # 5. Скролл к элементу
         await self.execute_script(f"""
             document.querySelector('{safe_selector}')?.scrollIntoView({{ block: 'center' }});
         """)
         await asyncio.sleep(0.1)
         
-        # Эмуляция клика через CDP
+        # 6. Эмуляция клика через CDP (Input domain)
         await self._send_command("Input.dispatchMouseEvent", {
-            "type": "mouseMoved",
-            "x": x,
-            "y": y
+            "type": "mouseMoved", "x": x, "y": y
         })
         await asyncio.sleep(0.05)
         
         await self._send_command("Input.dispatchMouseEvent", {
-            "type": "mousePressed",
-            "x": x,
-            "y": y,
-            "button": "left",
-            "clickCount": 1
+            "type": "mousePressed", "x": x, "y": y,
+            "button": "left", "clickCount": 1
         })
         await asyncio.sleep(0.05)
         
         await self._send_command("Input.dispatchMouseEvent", {
-            "type": "mouseReleased",
-            "x": x,
-            "y": y,
-            "button": "left",
-            "clickCount": 1
+            "type": "mouseReleased", "x": x, "y": y,
+            "button": "left", "clickCount": 1
         })
         
-        short_selector = self._shorten_selector(selector)
-        return f"✅ Кликнул по: {short_selector} (координаты: {x:.0f}, {y:.0f})"
+        return f"✅ Кликнул по: {self._shorten_selector(selector)} (координаты: {x:.0f}, {y:.0f})"
     
     def _shorten_selector(self, selector: str) -> str:
         """Обрезает длинные селекторы"""
         if len(selector) <= 60:
             return selector
         
-        # Если это data-testid — оставляем как есть
         if "data-testid" in selector:
             return selector
         
-        # Если это CSS-классы X/Twitter — обрезаем
         if '.css-' in selector or '.r-' in selector:
             parts = selector.split('.')
             if len(parts) > 3:
@@ -1067,7 +1049,7 @@ class BrowserManager:
         
         return selector[:60] + '...'
     
-    # ========== ОСТАЛЬНЫЕ МЕТОДЫ ==========
+    # ========== ОСТАЛЬНЫЕ МЕТОДЫ (БЕЗ ИЗМЕНЕНИЙ) ==========
     
     async def execute_script(self, script: str):
         await self.connect()
@@ -1180,7 +1162,6 @@ class BrowserManager:
         
         js = """
         (function() {
-            // ========== ПРОВЕРКА ВИДИМОСТИ ==========
             function isVisible(el) {
                 const rect = el.getBoundingClientRect();
                 const style = window.getComputedStyle(el);
@@ -1201,7 +1182,6 @@ class BrowserManager:
                 return true;
             }
             
-            // ========== ПОЛУЧЕНИЕ СЕЛЕКТОРА ==========
             function getSelector(el) {
                 const testId = el.getAttribute('data-testid');
                 if (testId) {
@@ -1231,10 +1211,8 @@ class BrowserManager:
                 return tag;
             }
             
-            // ========== ТОЛЬКО ИНТЕРАКТИВНЫЕ ЭЛЕМЕНТЫ ==========
             const interactive = [];
             
-            // КНОПКИ
             document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"], [role="link"], [data-testid*="Button"], [data-testid*="Link"], [data-testid*="Tab"]').forEach(el => {
                 if (!isVisible(el)) return;
                 const rect = el.getBoundingClientRect();
@@ -1256,7 +1234,6 @@ class BrowserManager:
                 });
             });
             
-            // ПОЛЯ ВВОДА
             document.querySelectorAll('input:not([type="submit"]):not([type="button"]):not([type="hidden"]), textarea, select').forEach(el => {
                 if (!isVisible(el)) return;
                 const rect = el.getBoundingClientRect();
@@ -1283,7 +1260,6 @@ class BrowserManager:
                 });
             });
             
-            // ССЫЛКИ
             document.querySelectorAll('a[href]:not([href=""]):not([href="#"])').forEach(el => {
                 if (!isVisible(el)) return;
                 const rect = el.getBoundingClientRect();
@@ -1302,7 +1278,6 @@ class BrowserManager:
                 });
             });
             
-            // ========== СОРТИРОВКА ==========
             interactive.sort((a, b) => {
                 if (a.visible !== b.visible) return a.visible ? -1 : 1;
                 const order = { button: 0, link: 1, input: 2 };
