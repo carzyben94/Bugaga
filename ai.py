@@ -9,7 +9,6 @@ class AgnesAI:
         self.model = os.getenv("AI_MODEL", "agnes-2.0-flash")
     
     def ask(self, question: str, context_text: str = ""):
-        """Запрос к Agnes AI"""
         if not self.api_key:
             return "❌ AGNES_API_KEY не настроен"
         
