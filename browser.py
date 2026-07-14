@@ -731,7 +731,7 @@ class BrowserManager:
         await self.connect()
         
         if await self.is_page_empty():
-            raise Exception("📭 Страница пустая или не загружена. Сначала откройте страницу командой /open")
+            raise Exception("📭 Страница пустая или не загружена. Сначала откройте страницу")
         
         await self._set_viewport()
         
@@ -786,7 +786,7 @@ class BrowserManager:
         await self.connect()
         
         if await self.is_page_empty():
-            return "❌ Страница пустая. Сначала откройте страницу командой /open"
+            return "❌ Страница пустая. Сначала откройте страницу"
         
         find_result = await self._send_command("DOM.querySelector", {
             "selector": selector
@@ -828,7 +828,7 @@ class BrowserManager:
         await self.connect()
         
         if await self.is_page_empty() and script not in ['document.title', 'location.href']:
-            return "⚠️ Страница пустая. Сначала откройте страницу командой /open"
+            return "⚠️ Страница пустая. Сначала откройте страницу"
         
         result = await self._send_command("Runtime.evaluate", {
             "expression": script,
@@ -874,7 +874,7 @@ class BrowserManager:
         await self.connect()
         
         if await self.is_page_empty():
-            return "❌ Страница пустая. Сначала откройте страницу командой /open"
+            return "❌ Страница пустая. Сначала откройте страницу"
         
         start_time = time.time()
         
@@ -897,7 +897,7 @@ class BrowserManager:
         await self.connect()
         
         if await self.is_page_empty():
-            return "❌ Страница пустая. Сначала откройте страницу командой /open"
+            return "❌ Страница пустая. Сначала откройте страницу"
         
         start_time = time.time()
         
@@ -1244,7 +1244,7 @@ class BrowserManager:
         await self.connect()
         
         if await self.is_page_empty():
-            return "📭 Страница пустая. Сначала откройте страницу командой /open"
+            return "📭 Страница пустая. Сначала откройте страницу"
         
         # Получаем DOM
         dom_data = await self.get_dom_with_metadata()
@@ -1276,9 +1276,10 @@ URL: {dom_data.get('url', 'Нет')}
 
 ОТВЕТЬ В ФОРМАТЕ JSON:
 {{
-    "action": "click | type | find | analyze | wait | none",
+    "action": "click | type | find | analyze | wait | none | screenshot | open",
     "selector": "CSS селектор элемента",
     "text": "текст для ввода (если action=type)",
+    "url": "URL для открытия (если action=open)",
     "message": "понятный ответ пользователю"
 }}
 
@@ -1297,6 +1298,12 @@ URL: {dom_data.get('url', 'Нет')}
 
 5. Команда: "что здесь написано?"
    {{"action": "none", "selector": "", "message": "На странице написано: ..."}}
+
+6. Команда: "открой google.com"
+   {{"action": "open", "url": "https://google.com", "message": "✅ Открыл Google"}}
+
+7. Команда: "сделай скриншот"
+   {{"action": "screenshot", "selector": "", "message": "📸 Скриншот готов"}}
 """
         
         # Получаем ответ от ИИ
@@ -1315,11 +1322,24 @@ URL: {dom_data.get('url', 'Нет')}
         action = data.get('action', 'none')
         selector = data.get('selector', '')
         text = data.get('text', '')
+        url = data.get('url', '')
         message = data.get('message', '')
         
         # Выполняем действие
         try:
-            if action == 'click':
+            if action == 'open':
+                if not url:
+                    return "❌ Не указан URL для открытия"
+                await self.open_page(url)
+                title = await self.get_page_title()
+                return f"{message}\n✅ Открыто: {title}"
+            
+            elif action == 'screenshot':
+                screenshot_base64 = await self.screenshot()
+                # Возвращаем base64 для отправки в Telegram
+                return f"{message}\n📸 screenshot_data:{screenshot_base64}"
+            
+            elif action == 'click':
                 if not selector:
                     return "❌ Не найден селектор для клика"
                 result = await self.click_element(selector)
@@ -1347,11 +1367,7 @@ URL: {dom_data.get('url', 'Нет')}
                     return f"❌ Не удалось ввести текст в поле: {selector}"
             
             elif action == 'find':
-                if not selector:
-                    results = await self.find_elements_by_text(text or '')
-                else:
-                    results = await self.find_elements_by_text(selector)
-                
+                results = await self.find_elements_by_text(text or selector)
                 if results:
                     return f"{message}\n🔍 Найдено {len(results)} элементов"
                 else:
