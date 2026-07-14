@@ -5,7 +5,7 @@ import requests
 import re
 import random
 import time
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 class BrowserManager:
     def __init__(self, host='localhost', port=9222):
@@ -286,8 +286,6 @@ class BrowserManager:
             
             mask_js = f"""
             (function() {{
-                // ========== NAVIGATOR ==========
-                
                 Object.defineProperty(navigator, 'webdriver', {{
                     get: () => undefined,
                     configurable: true,
@@ -408,8 +406,6 @@ class BrowserManager:
                     enumerable: true
                 }});
                 
-                // ========== WEBGL ==========
-                
                 const originalGetContext = HTMLCanvasElement.prototype.getContext;
                 HTMLCanvasElement.prototype.getContext = function(contextId, attributes) {{
                     if (contextId === 'webgl' || contextId === 'experimental-webgl') {{
@@ -431,8 +427,6 @@ class BrowserManager:
                     return originalGetContext.call(this, contextId, attributes);
                 }};
                 
-                // ========== CANVAS ШУМ ==========
-                
                 const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
                 HTMLCanvasElement.prototype.toDataURL = function(type, quality) {{
                     if (type === 'image/png' || type === undefined) {{
@@ -452,8 +446,6 @@ class BrowserManager:
                     }}
                     return originalToDataURL.call(this, type, quality);
                 }};
-                
-                // ========== AUDIO ШУМ ==========
                 
                 const originalAudioCtx = window.AudioContext || window.webkitAudioContext;
                 if (originalAudioCtx) {{
@@ -476,8 +468,6 @@ class BrowserManager:
                     window.AudioContext = patchedAudioCtx;
                     window.webkitAudioContext = patchedAudioCtx;
                 }}
-                
-                // ========== SCREEN ==========
                 
                 Object.defineProperty(window, 'screen', {{
                     get: () => {{
@@ -505,8 +495,6 @@ class BrowserManager:
                     configurable: true,
                     enumerable: true
                 }});
-                
-                // ========== CHROME ==========
                 
                 if (!window.chrome) {{
                     window.chrome = {{}};
@@ -540,8 +528,6 @@ class BrowserManager:
                 window.chrome.app = {{}};
                 window.chrome.app.isInstalled = false;
                 
-                // ========== MIME TYPES ==========
-                
                 Object.defineProperty(navigator, 'mimeTypes', {{
                     get: () => {{
                         return {{
@@ -562,8 +548,6 @@ class BrowserManager:
                     enumerable: true
                 }});
                 
-                // ========== TIMING ==========
-                
                 const originalPerfNow = performance.now;
                 performance.now = function() {{
                     return originalPerfNow.call(this) + (Math.random() * 0.5);
@@ -573,8 +557,6 @@ class BrowserManager:
                 Date.now = function() {{
                     return originalDateNow.call(this) + Math.floor(Math.random() * 10);
                 }};
-                
-                // ========== DOCUMENT ==========
                 
                 Object.defineProperty(document, 'hidden', {{
                     get: () => false,
@@ -587,8 +569,6 @@ class BrowserManager:
                     configurable: true,
                     enumerable: true
                 }});
-                
-                // ========== PERMISSIONS ==========
                 
                 const originalQuery = window.navigator.permissions.query;
                 window.navigator.permissions.query = function(parameters) {{
@@ -931,6 +911,313 @@ class BrowserManager:
                 pass
         
         return f"❌ Текст не найден за {timeout} секунд: {text}"
+    
+    # ========== НОВЫЕ МЕТОДЫ DOM ==========
+    
+    async def get_full_dom(self) -> str:
+        """Получить полный HTML страницы"""
+        await self.connect()
+        
+        if await self.is_page_empty():
+            return "📭 Страница пустая или не загружена"
+        
+        result = await self._send_command("Runtime.evaluate", {
+            "expression": "document.documentElement.outerHTML"
+        })
+        
+        return result['result'].get('value', '')
+    
+    async def get_dom_with_metadata(self) -> Dict[str, Any]:
+        """Получить DOM + метаданные для ИИ"""
+        await self.connect()
+        
+        if await self.is_page_empty():
+            return {"error": "Страница пустая"}
+        
+        js = """
+        (function() {
+            const interactive = [];
+            const selectors = ['button', 'a', 'input', 'textarea', 'select', '[role="button"]', '[onclick]'];
+            
+            selectors.forEach(sel => {
+                document.querySelectorAll(sel).forEach(el => {
+                    const rect = el.getBoundingClientRect();
+                    interactive.push({
+                        tag: el.tagName.toLowerCase(),
+                        id: el.id || null,
+                        class: el.className || null,
+                        text: el.innerText ? el.innerText.trim().slice(0, 100) : null,
+                        placeholder: el.placeholder || null,
+                        value: el.value || null,
+                        type: el.type || null,
+                        href: el.href || null,
+                        name: el.name || null,
+                        role: el.getAttribute('role') || null,
+                        aria_label: el.getAttribute('aria-label') || null,
+                        data_attr: el.getAttribute('data-testid') || el.getAttribute('data-id') || null,
+                        visible: rect.width > 0 && rect.height > 0,
+                        x: Math.round(rect.x),
+                        y: Math.round(rect.y),
+                        width: Math.round(rect.width),
+                        height: Math.round(rect.height),
+                        selector: el.id ? '#' + el.id : 
+                                  el.className ? '.' + el.className.split(' ')[0] : 
+                                  el.tagName.toLowerCase()
+                    });
+                });
+            });
+            
+            return {
+                title: document.title || '',
+                url: window.location.href,
+                interactive: interactive,
+                total_elements: document.querySelectorAll('*').length,
+                forms: document.forms.length,
+                links: document.links.length,
+                images: document.images.length,
+                scripts: document.scripts.length
+            };
+        })()
+        """
+        
+        result = await self._send_command("Runtime.evaluate", {
+            "expression": js,
+            "returnByValue": True
+        })
+        
+        return result['result'].get('value', {})
+    
+    async def find_elements_by_text(self, text: str) -> List[Dict[str, Any]]:
+        """Найти элементы по тексту"""
+        await self.connect()
+        
+        if await self.is_page_empty():
+            return []
+        
+        js = f"""
+        (function() {{
+            const results = [];
+            const xpath = ".//*[contains(text(), '{text}') or contains(@value, '{text}') or contains(@placeholder, '{text}') or contains(@aria-label, '{text}')]";
+            
+            const elements = document.evaluate(
+                xpath,
+                document,
+                null,
+                XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+                null
+            );
+            
+            for (let i = 0; i < elements.snapshotLength; i++) {{
+                const el = elements.snapshotItem(i);
+                const rect = el.getBoundingClientRect();
+                results.push({{
+                    tag: el.tagName.toLowerCase(),
+                    id: el.id || null,
+                    class: el.className || null,
+                    text: el.innerText ? el.innerText.trim().slice(0, 100) : null,
+                    value: el.value || null,
+                    placeholder: el.placeholder || null,
+                    href: el.href || null,
+                    type: el.type || null,
+                    visible: rect.width > 0 && rect.height > 0,
+                    x: Math.round(rect.x),
+                    y: Math.round(rect.y),
+                    selector: el.id ? '#' + el.id : el.tagName.toLowerCase()
+                }});
+            }}
+            
+            return results;
+        }})()
+        """
+        
+        result = await self._send_command("Runtime.evaluate", {
+            "expression": js,
+            "returnByValue": True
+        })
+        
+        return result['result'].get('value', [])
+    
+    async def get_interactive_elements(self) -> List[Dict[str, Any]]:
+        """Получить все интерактивные элементы"""
+        data = await self.get_dom_with_metadata()
+        return data.get('interactive', [])
+    
+    async def get_dom_summary(self) -> str:
+        """Краткая сводка по DOM для ИИ"""
+        data = await self.get_dom_with_metadata()
+        
+        if 'error' in data:
+            return data['error']
+        
+        summary = f"""
+📄 СТРАНИЦА:
+• Заголовок: {data.get('title', 'Нет')}
+• URL: {data.get('url', 'Нет')}
+
+📊 СТАТИСТИКА:
+• Всего элементов: {data.get('total_elements', 0)}
+• Форм: {data.get('forms', 0)}
+• Ссылок: {data.get('links', 0)}
+• Изображений: {data.get('images', 0)}
+• Скриптов: {data.get('scripts', 0)}
+
+🖱 ИНТЕРАКТИВНЫЕ ЭЛЕМЕНТЫ ({len(data.get('interactive', []))}):
+"""
+        
+        for i, el in enumerate(data.get('interactive', [])[:20]):
+            text = el.get('text', '') or el.get('placeholder', '') or el.get('value', '') or ''
+            summary += f"  {i+1}. <{el.get('tag', '')}>"
+            if text:
+                summary += f" '{text[:30]}'"
+            if el.get('type'):
+                summary += f" type={el.get('type')}"
+            if el.get('visible'):
+                summary += " ✅"
+            else:
+                summary += " ⛔"
+            summary += f"\n     Селектор: {el.get('selector', '')}\n"
+        
+        if len(data.get('interactive', [])) > 20:
+            summary += f"  ... и ещё {len(data.get('interactive', [])) - 20} элементов\n"
+        
+        return summary
+    
+    async def ai_find_element(self, description: str) -> Dict[str, Any]:
+        """Найти элемент по описанию (ИИ-поиск)"""
+        await self.connect()
+        
+        if await self.is_page_empty():
+            return {"error": "Страница пустая"}
+        
+        elements = await self.get_interactive_elements()
+        
+        if not elements:
+            return {"error": "Нет интерактивных элементов"}
+        
+        desc_lower = description.lower()
+        candidates = []
+        
+        for el in elements:
+            score = 0
+            text = (el.get('text') or '').lower()
+            placeholder = (el.get('placeholder') or '').lower()
+            aria_label = (el.get('aria_label') or '').lower()
+            value = (el.get('value') or '').lower()
+            tag = el.get('tag', '').lower()
+            el_type = (el.get('type') or '').lower()
+            
+            keywords = desc_lower.split()
+            for kw in keywords:
+                if len(kw) < 3:
+                    continue
+                if kw in text:
+                    score += 3
+                if kw in placeholder:
+                    score += 2
+                if kw in aria_label:
+                    score += 2
+                if kw in value:
+                    score += 2
+            
+            if tag in ['button', 'a'] and 'кнопк' in desc_lower:
+                score += 1
+            if tag == 'input' and 'пол' in desc_lower:
+                score += 1
+            if el_type == 'submit' and 'отправ' in desc_lower:
+                score += 1
+            
+            if el.get('visible', False):
+                score += 1
+            
+            if score > 0:
+                candidates.append({**el, 'score': score})
+        
+        candidates.sort(key=lambda x: x.get('score', 0), reverse=True)
+        
+        if candidates:
+            return {
+                "found": True,
+                "best": candidates[0],
+                "candidates": candidates[:5]
+            }
+        
+        return {
+            "found": False,
+            "message": f"Не найден элемент по описанию: {description}"
+        }
+    
+    async def ai_interact(self, description: str, action: str = "click") -> str:
+        """ИИ-взаимодействие с элементом по описанию"""
+        result = await self.ai_find_element(description)
+        
+        if not result.get('found', False):
+            return f"❌ {result.get('message', 'Элемент не найден')}"
+        
+        el = result['best']
+        selector = el.get('selector', '')
+        
+        if action == "click":
+            if not selector:
+                return "❌ Нет селектора для клика"
+            return await self.click_element(selector)
+        
+        elif action == "get_text":
+            return f"📝 Текст: {el.get('text', 'Нет текста')}"
+        
+        elif action == "focus":
+            await self.execute_script(f"document.querySelector('{selector}')?.focus()")
+            return f"✅ Фокус на: {description}"
+        
+        elif action == "hover":
+            await self.execute_script(f"""
+                const el = document.querySelector('{selector}');
+                if (el) {{
+                    const event = new MouseEvent('mouseover', {{
+                        view: window,
+                        bubbles: true,
+                        cancelable: true
+                    }});
+                    el.dispatchEvent(event);
+                }}
+            """)
+            return f"🖱 Наведение на: {description}"
+        
+        return f"✅ Действие '{action}' выполнено на: {description}"
+    
+    async def ai_analyze_page(self, question: str) -> str:
+        """Анализ страницы ИИ с полным DOM"""
+        await self.connect()
+        
+        if await self.is_page_empty():
+            return "📭 Страница пустая"
+        
+        dom_summary = await self.get_dom_summary()
+        full_dom = await self.get_full_dom()
+        dom_preview = full_dom[:3000] + "..." if len(full_dom) > 3000 else full_dom
+        
+        from ai import AgnesAI
+        ai_engine = AgnesAI()
+        
+        prompt = f"""
+Ты эксперт по анализу веб-страниц. Ответь на вопрос пользователя.
+
+{dom_summary}
+
+Фрагмент DOM страницы (первые 3000 символов):
+{dom_preview}
+
+ВОПРОС ПОЛЬЗОВАТЕЛЯ:
+{question}
+
+ОТВЕТЬ:
+1. Кратко опиши что на странице
+2. Найди элементы по запросу пользователя
+3. Предложи селекторы для найденных элементов
+4. Если есть кнопки - предложи их найти и нажать
+"""
+        
+        response = ai_engine.ask(prompt, "")
+        return response
     
     # ========== УПРАВЛЕНИЕ ВКЛАДКАМИ ==========
     
