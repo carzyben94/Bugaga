@@ -607,6 +607,159 @@ class BrowserManager:
             print(f"❌ Ошибка маскировки: {e}")
             return False
     
+    # ========== УПРАВЛЕНИЕ КУКАМИ ==========
+    
+    def get_default_cookies(self) -> List[Dict[str, Any]]:
+        """Получить стандартные куки для X/Twitter"""
+        return [
+            {
+                "domain": ".x.com",
+                "hostOnly": False,
+                "httpOnly": False,
+                "name": "__cuid",
+                "path": "/",
+                "sameSite": "unspecified",
+                "secure": False,
+                "session": True,
+                "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"
+            },
+            {
+                "domain": ".x.com",
+                "hostOnly": False,
+                "httpOnly": False,
+                "name": "lang",
+                "path": "/",
+                "sameSite": "unspecified",
+                "secure": False,
+                "session": True,
+                "value": "ru"
+            },
+            {
+                "domain": ".x.com",
+                "hostOnly": False,
+                "httpOnly": False,
+                "name": "dnt",
+                "path": "/",
+                "sameSite": "unspecified",
+                "secure": False,
+                "session": True,
+                "value": "1"
+            },
+            {
+                "domain": ".x.com",
+                "hostOnly": False,
+                "httpOnly": False,
+                "name": "guest_id",
+                "path": "/",
+                "sameSite": "unspecified",
+                "secure": False,
+                "session": True,
+                "value": "v1%3A178267838599411411"
+            },
+            {
+                "domain": ".x.com",
+                "hostOnly": False,
+                "httpOnly": False,
+                "name": "guest_id_marketing",
+                "path": "/",
+                "sameSite": "unspecified",
+                "secure": False,
+                "session": True,
+                "value": "v1%3A178267838599411411"
+            },
+            {
+                "domain": ".x.com",
+                "hostOnly": False,
+                "httpOnly": False,
+                "name": "guest_id_ads",
+                "path": "/",
+                "sameSite": "unspecified",
+                "secure": False,
+                "session": True,
+                "value": "v1%3A178267838599411411"
+            },
+            {
+                "domain": ".x.com",
+                "hostOnly": False,
+                "httpOnly": False,
+                "name": "personalization_id",
+                "path": "/",
+                "sameSite": "unspecified",
+                "secure": False,
+                "session": True,
+                "value": '"v1_DKrxLZAC902dMFdd1QrVYg=="'
+            },
+            {
+                "domain": ".x.com",
+                "hostOnly": False,
+                "httpOnly": False,
+                "name": "twid",
+                "path": "/",
+                "sameSite": "unspecified",
+                "secure": False,
+                "session": True,
+                "value": "u%3D2067347503503052800"
+            },
+            {
+                "domain": ".x.com",
+                "hostOnly": False,
+                "httpOnly": False,
+                "name": "auth_token",
+                "path": "/",
+                "sameSite": "unspecified",
+                "secure": False,
+                "session": True,
+                "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936"
+            },
+            {
+                "domain": ".x.com",
+                "hostOnly": False,
+                "httpOnly": False,
+                "name": "ct0",
+                "path": "/",
+                "sameSite": "unspecified",
+                "secure": False,
+                "session": True,
+                "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb"
+            },
+            {
+                "domain": ".x.com",
+                "hostOnly": False,
+                "httpOnly": False,
+                "name": "__cf_bm",
+                "path": "/",
+                "sameSite": "unspecified",
+                "secure": False,
+                "session": True,
+                "value": "wj_dszyJY7t.NS3PCGD3fz27cRQXW6tgfO9_TrBoXPk-1784047968.7823458-1.0.1.1-oJnV6LCjpA4HNw4UmXCuwUCnHGdRlOCDFcQoVgBxAMdp35GIZImrhfbf3kRCgjicmLdK5VzMmZQ5Xqwu4ZmH9dv2Y8I1BWwbonY_SeuhqMeJUz4Y8vxdNzRog4InHuwB"
+            }
+        ]
+    
+    async def set_cookies(self, cookies: Optional[List[Dict[str, Any]]] = None):
+        """Установить куки в браузере"""
+        await self.connect()
+        
+        if cookies is None:
+            cookies = self.get_default_cookies()
+        
+        await self._send_command("Network.setCookies", {
+            "cookies": cookies
+        })
+        
+        print(f"🍪 Установлено {len(cookies)} кук")
+        return f"🍪 Установлено {len(cookies)} кук"
+    
+    async def get_cookies(self, urls: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """Получить все куки из браузера"""
+        await self.connect()
+        
+        params = {}
+        if urls:
+            params["urls"] = urls
+        
+        result = await self._send_command("Network.getCookies", params)
+        return result.get('cookies', [])
+    
     # ========== ОСНОВНЫЕ МЕТОДЫ ==========
     
     def _get_tab_ws_url(self, tab_id: Optional[str] = None) -> Optional[str]:
@@ -641,6 +794,7 @@ class BrowserManager:
             return None
     
     async def connect(self, tab_id: Optional[str] = None):
+        """Подключение к Chrome + автоматическая установка кук"""
         if self._connected and self.ws:
             return
         
@@ -657,15 +811,23 @@ class BrowserManager:
         )
         self._connected = True
         
+        # Включаем необходимые домены
         await self._send_command("Page.enable")
         await self._send_command("Runtime.enable")
         await self._send_command("DOM.enable")
-        await self._send_command("Network.enable")
+        await self._send_command("Network.enable")  # ✅ Включаем Network для кук
         
+        # Устанавливаем вьюпорт
         await self._set_viewport()
+        
+        # ✅ АВТОМАТИЧЕСКИ УСТАНАВЛИВАЕМ КУКИ
+        await self.set_cookies()
+        
+        # Применяем маскировку
         await self.apply_mask()
         
         print("✅ Подключение к CDP установлено")
+        print("🍪 Куки автоматически установлены")
     
     async def _set_viewport(self):
         await self._send_command("Emulation.setDeviceMetricsOverride", {
