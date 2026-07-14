@@ -6,8 +6,10 @@ import time
 import requests
 import sys
 import io
+import base64
+import re
 from datetime import datetime
-from telegram import Update
+from telegram import Update, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from browser import BrowserManager
 from ai import AgnesAI
@@ -227,9 +229,14 @@ async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     logger.info(f"📩 Получена команда /screenshot от {update.effective_user.username}")
     await update.message.reply_text("📸 Делаю скриншот...")
     try:
-        screenshot = await browser.screenshot()
+        screenshot_base64 = await browser.screenshot()
+        
+        # ✅ Конвертируем base64 в байты для InputFile
+        image_bytes = base64.b64decode(screenshot_base64)
+        
+        # Отправляем как файл через InputFile
         await update.message.reply_photo(
-            photo=screenshot,
+            photo=InputFile(io.BytesIO(image_bytes), filename="screenshot.png"),
             caption="📸 Скриншот 1280x720"
         )
         logger.info("✅ Скриншот отправлен")
@@ -251,6 +258,7 @@ async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = ai.ask(question, page_text)
         await update.message.reply_text(response[:4096])
     except Exception as e:
+        logger.error(f"❌ Ошибка /ask: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def click_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -264,6 +272,7 @@ async def click_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result = await browser.click_element(selector)
         await update.message.reply_text(result)
     except Exception as e:
+        logger.error(f"❌ Ошибка /click: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def eval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -277,6 +286,7 @@ async def eval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result = await browser.execute_script(js)
         await update.message.reply_text(f"📊 Результат:\n{str(result)[:4000]}")
     except Exception as e:
+        logger.error(f"❌ Ошибка /eval: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def tabs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -285,6 +295,7 @@ async def tabs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result = await browser.list_tabs()
         await update.message.reply_text(result)
     except Exception as e:
+        logger.error(f"❌ Ошибка /tabs: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def newtab_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -294,6 +305,7 @@ async def newtab_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result = await browser.create_tab(url)
         await update.message.reply_text(result)
     except Exception as e:
+        logger.error(f"❌ Ошибка /newtab: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def closetab_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -302,6 +314,7 @@ async def closetab_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result = await browser.close_tab()
         await update.message.reply_text(result)
     except Exception as e:
+        logger.error(f"❌ Ошибка /closetab: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def back_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -310,6 +323,7 @@ async def back_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await browser.go_back()
         await update.message.reply_text("⬅️ Назад")
     except Exception as e:
+        logger.error(f"❌ Ошибка /back: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def forward_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -318,6 +332,7 @@ async def forward_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await browser.go_forward()
         await update.message.reply_text("➡️ Вперёд")
     except Exception as e:
+        logger.error(f"❌ Ошибка /forward: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -326,6 +341,7 @@ async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await browser.refresh()
         await update.message.reply_text("🔄 Обновлено")
     except Exception as e:
+        logger.error(f"❌ Ошибка /refresh: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ========== ОБРАБОТЧИК ТЕКСТА ==========
@@ -338,6 +354,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = ai.ask(text, page_text)
         await update.message.reply_text(response[:4096])
     except Exception as e:
+        logger.error(f"❌ Ошибка handle_message: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ========== ЗАПУСК ==========
