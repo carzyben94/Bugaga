@@ -113,7 +113,7 @@ except Exception as e:
 # ========== КОМАНДЫ ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Приветствие — только одна команда"""
+    """Приветствие"""
     logger.info(f"📩 Получена команда /start от {update.effective_user.username}")
     try:
         await update.message.reply_text(
@@ -134,7 +134,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ Ошибка в /start: {e}")
 
 async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Скачать логи (скрытая команда)"""
+    """Скачать логи"""
     logger.info(f"📩 Получена команда /log от {update.effective_user.username}")
     try:
         log_content = ""
@@ -187,14 +187,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"📩 Получен текст: {text[:50]}...")
     
     try:
-        # Специальные команды (для обратной совместимости)
-        command_lower = text.lower()
-        
-        if command_lower.startswith('/log'):
+        # Специальные команды
+        if text.lower().startswith('/log'):
             await log_command(update, context)
             return
         
-        if command_lower.startswith('/start'):
+        if text.lower().startswith('/start'):
             await start(update, context)
             return
         
