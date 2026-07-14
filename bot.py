@@ -12,12 +12,20 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from browser import BrowserManager
 from ai import AgnesAI
 
-# ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
+# ========== НАСТРОЙКА ЛОГИРОВАНИЯ (В ФАЙЛ И КОНСОЛЬ) ==========
+LOG_FILE = 'bot.log'
+
+# Удаляем старый лог-файл при запуске
+if os.path.exists(LOG_FILE):
+    os.remove(LOG_FILE)
+
+# Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.DEBUG,
     handlers=[
-        logging.StreamHandler(sys.stdout)
+        logging.StreamHandler(sys.stdout),  # В консоль
+        logging.FileHandler(LOG_FILE, encoding='utf-8')  # В файл
     ]
 )
 logger = logging.getLogger(__name__)
@@ -148,40 +156,44 @@ async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /log - скачать логи"""
     logger.info(f"📩 Получена команда /log от {update.effective_user.username}")
     try:
-        # Собираем логи из логгера
-        log_stream = io.StringIO()
-        log_stream.write(f"📋 Логи бота\n")
-        log_stream.write(f"Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        log_stream.write("=" * 50 + "\n\n")
+        log_content = ""
         
-        # Читаем логи из файла если есть
-        log_file = 'bot.log'
-        if os.path.exists(log_file):
-            with open(log_file, 'r', encoding='utf-8') as f:
-                log_stream.write(f.read())
+        # Читаем лог-файл
+        if os.path.exists(LOG_FILE):
+            with open(LOG_FILE, 'r', encoding='utf-8') as f:
+                log_content = f.read()
         else:
-            log_stream.write("⚠️ Файл логов не найден\n")
-            log_stream.write("Логи выводятся только в консоль\n")
+            log_content = "⚠️ Лог-файл не найден\n"
         
-        # Добавляем информацию о системе
-        log_stream.write("\n" + "=" * 50 + "\n")
-        log_stream.write(f"📊 Системная информация:\n")
-        log_stream.write(f"Chrome путь: {CHROME_PATH}\n")
-        log_stream.write(f"Chrome запущен: {os.path.exists(CHROME_PATH)}\n")
-        log_stream.write(f"CDP порт: 9222\n")
-        
+        # Добавляем системную информацию
+        system_info = f"""
+{'='*50}
+📊 Системная информация:
+Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Chrome путь: {CHROME_PATH}
+Chrome существует: {os.path.exists(CHROME_PATH)}
+CDP порт: 9222
+"""
         # Проверяем CDP
         try:
             resp = requests.get("http://localhost:9222/json/version", timeout=3)
-            log_stream.write(f"CDP статус: ✅ Работает ({resp.status_code})\n")
-        except:
-            log_stream.write(f"CDP статус: ❌ Не отвечает\n")
+            system_info += f"CDP статус: ✅ Работает ({resp.status_code})\n"
+        except Exception as e:
+            system_info += f"CDP статус: ❌ Не отвечает ({str(e)[:50]})\n"
         
-        log_content = log_stream.getvalue()
+        # Проверяем открытые вкладки
+        try:
+            resp = requests.get("http://localhost:9222/json/list", timeout=3)
+            pages = resp.json()
+            system_info += f"Открытых вкладок: {len(pages)}\n"
+        except Exception as e:
+            system_info += f"Вкладки: ❌ Не удалось получить\n"
+        
+        full_log = log_content + system_info
         
         # Отправляем файл
         await update.message.reply_document(
-            document=io.BytesIO(log_content.encode('utf-8')),
+            document=io.BytesIO(full_log.encode('utf-8')),
             filename=f"bot_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
             caption="📋 Полные логи бота"
         )
@@ -207,18 +219,20 @@ async def open_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         title = await browser.get_page_title()
         await update.message.reply_text(f"✅ Открыто: {title}")
     except Exception as e:
+        logger.error(f"❌ Ошибка /open: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Сделать скриншот"""
+    logger.info(f"📩 Получена команда /screenshot от {update.effective_user.username}")
     await update.message.reply_text("📸 Делаю скриншот...")
     try:
         screenshot = await browser.screenshot()
-        # ✅ Отправляем как фото с правильным форматом
         await update.message.reply_photo(
             photo=screenshot,
             caption="📸 Скриншот 1280x720"
         )
+        logger.info("✅ Скриншот отправлен")
     except Exception as e:
         logger.error(f"❌ Ошибка скриншота: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
