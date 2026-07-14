@@ -949,36 +949,122 @@ class BrowserManager:
         except:
             return "Без названия"
     
-    # ========== ИСПРАВЛЕННЫЙ CLICK_ELEMENT (ЧЕРЕЗ JS) ==========
+    # ========== ИСПРАВЛЕННЫЙ CLICK_ELEMENT (С ПОДДЕРЖКОЙ data-testid) ==========
     
     async def click_element(self, selector: str):
-        """Универсальный клик по элементу (через JS)"""
+        """Универсальный клик с поддержкой data-testid"""
         await self.connect()
         
         if await self.is_page_empty():
             return "❌ Страница пустая. Сначала откройте страницу"
         
-        # ✅ Кликаем через JavaScript (работает для любых элементов)
-        js = f"""
-        (function() {{
-            const el = document.querySelector('{selector}');
-            if (el) {{
+        # 1. Пробуем найти элемент через DOM
+        find_result = await self._send_command("DOM.querySelector", {
+            "selector": selector
+        })
+        node_id = find_result.get('nodeId')
+        
+        # 2. Если не нашли — пробуем через JS (для ссылок и сложных селекторов)
+        if not node_id or node_id == 0:
+            js = f"""
+            (function() {{
+                const el = document.querySelector('{selector}');
+                if (!el) return false;
+                
                 el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
-                setTimeout(() => {{
-                    el.click();
-                }}, 200);
+                
+                // Полные события для React
+                const rect = el.getBoundingClientRect();
+                const x = rect.left + rect.width / 2;
+                const y = rect.top + rect.height / 2;
+                
+                const events = ['mousedown', 'mouseup', 'click'];
+                events.forEach(type => {{
+                    const event = new MouseEvent(type, {{
+                        view: window,
+                        bubbles: true,
+                        cancelable: true,
+                        clientX: x,
+                        clientY: y
+                    }});
+                    el.dispatchEvent(event);
+                }});
+                
+                el.focus();
+                el.dispatchEvent(new FocusEvent('focus', {{ bubbles: true }}));
+                
                 return true;
-            }}
-            return false;
-        }})()
-        """
+            }})()
+            """
+            result = await self.execute_script(js)
+            if result:
+                # Обрезаем длинный селектор
+                short_selector = self._shorten_selector(selector)
+                return f"✅ Кликнул по: {short_selector}"
+            return f"❌ Элемент не найден: {self._shorten_selector(selector)}"
         
-        result = await self.execute_script(js)
+        # 3. Если нашли — кликаем через CDP (самый надёжный)
+        box_result = await self._send_command("DOM.getBoxModel", {
+            "nodeId": node_id
+        })
         
-        if result:
-            return f"✅ Кликнул по: {selector}"
-        else:
-            return f"❌ Элемент не найден: {selector}"
+        if not box_result or 'model' not in box_result:
+            return f"❌ Не удалось получить координаты"
+        
+        content = box_result['model']['content']
+        x = (content[0] + content[4]) / 2
+        y = (content[1] + content[5]) / 2
+        
+        # Скролл к элементу
+        await self.execute_script(f"""
+            document.querySelector('{selector}')?.scrollIntoView({{ block: 'center' }});
+        """)
+        await asyncio.sleep(0.1)
+        
+        # Эмуляция клика через CDP (Input domain)
+        await self._send_command("Input.dispatchMouseEvent", {
+            "type": "mouseMoved",
+            "x": x,
+            "y": y
+        })
+        await asyncio.sleep(0.05)
+        
+        await self._send_command("Input.dispatchMouseEvent", {
+            "type": "mousePressed",
+            "x": x,
+            "y": y,
+            "button": "left",
+            "clickCount": 1
+        })
+        await asyncio.sleep(0.05)
+        
+        await self._send_command("Input.dispatchMouseEvent", {
+            "type": "mouseReleased",
+            "x": x,
+            "y": y,
+            "button": "left",
+            "clickCount": 1
+        })
+        
+        short_selector = self._shorten_selector(selector)
+        return f"✅ Кликнул по: {short_selector} (координаты: {x:.0f}, {y:.0f})"
+    
+    def _shorten_selector(self, selector: str) -> str:
+        """Обрезает длинные селекторы"""
+        if len(selector) <= 60:
+            return selector
+        
+        # Если это data-testid — оставляем как есть
+        if "data-testid" in selector:
+            return selector
+        
+        # Если это CSS-классы X/Twitter — обрезаем
+        if '.css-' in selector or '.r-' in selector:
+            parts = selector.split('.')
+            if len(parts) > 3:
+                return parts[0] + '.' + parts[1] + '.' + parts[2] + '...'
+        
+        return selector[:60] + '...'
     
     # ========== ОСТАЛЬНЫЕ МЕТОДЫ ==========
     
@@ -1043,13 +1129,13 @@ class BrowserManager:
                 })
                 
                 if result['result'].get('value', False):
-                    return f"✅ Элемент найден: {selector}"
+                    return f"✅ Элемент найден: {self._shorten_selector(selector)}"
                 
                 await asyncio.sleep(0.5)
             except Exception as e:
                 pass
         
-        return f"❌ Элемент не найден за {timeout} секунд: {selector}"
+        return f"❌ Элемент не найден за {timeout} секунд: {self._shorten_selector(selector)}"
     
     async def wait_for_text(self, text: str, timeout: int = 30):
         await self.connect()
@@ -1070,7 +1156,7 @@ class BrowserManager:
         
         return f"❌ Текст не найден за {timeout} секунд: {text}"
     
-    # ========== DOM МЕТОДЫ ==========
+    # ========== DOM МЕТОДЫ (С ПОДДЕРЖКОЙ data-testid) ==========
     
     async def get_full_dom(self) -> str:
         await self.connect()
@@ -1085,7 +1171,7 @@ class BrowserManager:
         return result['result'].get('value', '')
     
     async def get_dom_with_metadata(self) -> Dict[str, Any]:
-        """Получить ТОЛЬКО полезные интерактивные элементы (без мусора)"""
+        """Получить ТОЛЬКО полезные интерактивные элементы с data-testid"""
         await self.connect()
         
         if await self.is_page_empty():
@@ -1114,11 +1200,21 @@ class BrowserManager:
                 return true;
             }
             
-            // ========== ПОЛУЧЕНИЕ СЕЛЕКТОРА ==========
+            // ========== ПОЛУЧЕНИЕ СЕЛЕКТОРА С ПРИОРИТЕТОМ data-testid ==========
             function getSelector(el) {
-                if (el.id) return '#' + el.id;
+                const testId = el.getAttribute('data-testid');
+                if (testId) {
+                    return '[data-testid="' + testId + '"]';
+                }
+                const ariaLabel = el.getAttribute('aria-label');
+                if (ariaLabel && ariaLabel.length < 50) {
+                    return '[aria-label="' + ariaLabel + '"]';
+                }
+                if (el.id) {
+                    return '#' + el.id;
+                }
                 if (el.className && typeof el.className === 'string') {
-                    const classes = el.className.split(' ').filter(c => c).join('.');
+                    const classes = el.className.split(' ').filter(c => c && !c.startsWith('r-') && !c.startsWith('css-')).join('.');
                     if (classes) return '.' + classes;
                 }
                 const tag = el.tagName.toLowerCase();
@@ -1138,20 +1234,24 @@ class BrowserManager:
             const interactive = [];
             
             // КНОПКИ
-            document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"]').forEach(el => {
+            document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"], [role="link"], [data-testid*="Button"], [data-testid*="Link"], [data-testid*="Tab"]').forEach(el => {
                 if (!isVisible(el)) return;
                 const rect = el.getBoundingClientRect();
                 const text = el.innerText?.trim() || el.value || el.getAttribute('aria-label') || '';
-                if (!text && !el.getAttribute('aria-label')) return;
+                const testId = el.getAttribute('data-testid') || '';
+                const ariaLabel = el.getAttribute('aria-label') || '';
+                const displayText = text || ariaLabel || testId || 'без текста';
                 interactive.push({
                     type: 'button',
                     tag: el.tagName.toLowerCase(),
-                    text: text.slice(0, 50),
+                    text: displayText.slice(0, 50),
                     selector: getSelector(el),
                     visible: true,
                     x: Math.round(rect.x),
                     y: Math.round(rect.y),
-                    action: 'click'
+                    action: 'click',
+                    testId: testId,
+                    ariaLabel: ariaLabel
                 });
             });
             
@@ -1201,48 +1301,10 @@ class BrowserManager:
                 });
             });
             
-            // ЧЕКБОКСЫ И РАДИО
-            document.querySelectorAll('input[type="checkbox"], input[type="radio"]').forEach(el => {
-                if (!isVisible(el)) return;
-                const rect = el.getBoundingClientRect();
-                const label = el.getAttribute('aria-label') || el.name || '';
-                if (!label) return;
-                interactive.push({
-                    type: 'checkbox',
-                    tag: 'input',
-                    input_type: el.type,
-                    label: label.slice(0, 50),
-                    checked: el.checked || false,
-                    selector: getSelector(el),
-                    visible: true,
-                    x: Math.round(rect.x),
-                    y: Math.round(rect.y),
-                    action: 'click'
-                });
-            });
-            
-            // ФОРМЫ
-            document.querySelectorAll('form').forEach(el => {
-                if (!isVisible(el)) return;
-                const rect = el.getBoundingClientRect();
-                interactive.push({
-                    type: 'form',
-                    tag: 'form',
-                    id: el.id || '',
-                    action: el.action || '',
-                    method: el.method || 'get',
-                    selector: getSelector(el),
-                    visible: true,
-                    x: Math.round(rect.x),
-                    y: Math.round(rect.y),
-                    action: 'submit'
-                });
-            });
-            
             // ========== СОРТИРОВКА ==========
             interactive.sort((a, b) => {
                 if (a.visible !== b.visible) return a.visible ? -1 : 1;
-                const order = { button: 0, link: 1, input: 2, checkbox: 3, form: 4 };
+                const order = { button: 0, link: 1, input: 2 };
                 return (order[a.type] || 99) - (order[b.type] || 99);
             });
             
@@ -1271,7 +1333,7 @@ class BrowserManager:
         js = f"""
         (function() {{
             const results = [];
-            const xpath = ".//*[contains(text(), '{text}') or contains(@value, '{text}') or contains(@placeholder, '{text}') or contains(@aria-label, '{text}')]";
+            const xpath = ".//*[contains(text(), '{text}') or contains(@value, '{text}') or contains(@placeholder, '{text}') or contains(@aria-label, '{text}') or contains(@data-testid, '{text}')]";
             
             const elements = document.evaluate(
                 xpath,
@@ -1284,6 +1346,7 @@ class BrowserManager:
             for (let i = 0; i < elements.snapshotLength; i++) {{
                 const el = elements.snapshotItem(i);
                 const rect = el.getBoundingClientRect();
+                const testId = el.getAttribute('data-testid') || '';
                 results.push({{
                     tag: el.tagName.toLowerCase(),
                     id: el.id || null,
@@ -1296,7 +1359,7 @@ class BrowserManager:
                     visible: rect.width > 0 && rect.height > 0,
                     x: Math.round(rect.x),
                     y: Math.round(rect.y),
-                    selector: el.id ? '#' + el.id : el.tagName.toLowerCase()
+                    selector: testId ? '[data-testid="' + testId + '"]' : (el.id ? '#' + el.id : el.tagName.toLowerCase())
                 }});
             }}
             
@@ -1336,6 +1399,8 @@ class BrowserManager:
                 summary += f" '{text[:30]}'"
             if el.get('input_type'):
                 summary += f" type={el.get('input_type')}"
+            if el.get('testId'):
+                summary += f" [data-testid={el.get('testId')}]"
             summary += f"\n     Селектор: {el.get('selector', '')}\n"
         
         if len(data.get('interactive', [])) > 20:
@@ -1363,6 +1428,7 @@ class BrowserManager:
             placeholder = (el.get('placeholder') or '').lower()
             label = (el.get('label') or '').lower()
             value = (el.get('value') or '').lower()
+            test_id = (el.get('testId') or '').lower()
             tag = el.get('tag', '').lower()
             el_type = (el.get('type') or '').lower()
             
@@ -1377,6 +1443,8 @@ class BrowserManager:
                 if kw in label:
                     score += 2
                 if kw in value:
+                    score += 2
+                if kw in test_id:
                     score += 2
             
             if tag in ['button', 'a'] and 'кнопк' in desc_lower:
