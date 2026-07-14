@@ -976,7 +976,7 @@ class BrowserCDP:
             file_logger.log(f"❌ Ошибка сбора элементов: {e}", "ERROR")
             return []
 
-    # ========== SNAPSHOT (ВСЕ ЭЛЕМЕНТЫ БЕЗ ОГРАНИЧЕНИЙ) ==========
+    # ========== SNAPSHOT ==========
     async def get_snapshot(self):
         try:
             file_logger.log("📸 Делаю слепок страницы...", "INFO")
@@ -1058,8 +1058,8 @@ class BrowserCDP:
                 "title": title,
                 "url": url,
                 "total": len(elements),
-                "elements": elements,  # ВСЕ элементы
-                "interactive": interactive_elements  # ВСЕ интерактивные
+                "elements": elements,
+                "interactive": interactive_elements
             }
             
             file_logger.log(f"✅ Слепок: {len(elements)} элементов ({len(interactive_elements)} интерактивных)", "INFO")
@@ -1254,7 +1254,6 @@ class BrowserCDP:
                 "width": 1280, "height": 720, "deviceScaleFactor": 1, "mobile": False, "scale": 1
             })
             
-            # Адаптивное качество
             quality = 80
             if self.snapshot and self.snapshot.get('total', 0) > 1000:
                 quality = 60
@@ -1374,7 +1373,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ====== FALLBACK ДЛЯ НЕИЗВЕСТНЫХ КОМАНД ======
     if action == 'unknown':
         text_lower = text.lower()
-        # Русские ключевые слова
         if any(word in text_lower for word in ['кнопк', 'button', 'buttons', 'кнопки', 'кнопок']):
             action = 'ask'
             question = text
@@ -1437,11 +1435,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not memory.current_snapshot:
             await thinking_msg.edit_text("📭 Сначала загрузи страницу")
             return
+        
         memory.add_action("question", {"question": question})
         await thinking_msg.edit_text("🤖 Анализирую страницу...")
+        
         try:
             snapshot = memory.current_snapshot
-            elements = snapshot.get('elements', [])[:100]
             interactive = snapshot.get('interactive', [])[:50]
             
             context_text = "Interactive elements:\n"
