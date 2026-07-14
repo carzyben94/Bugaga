@@ -66,7 +66,7 @@ class AgnesAI:
 
 
 class AgentPrompts:
-    """Все промты для ИИ-агента"""
+    """Все промты для ИИ-агента (как в твоём коде)"""
     
     @staticmethod
     def get_empty_page_prompt(command: str) -> str:
@@ -86,7 +86,6 @@ class AgentPrompts:
 Примеры:
 - "открой google.com" → {{"action": "open", "url": "https://google.com", "message": "🌐 Открываю Google"}}
 - "привет" → {{"action": "none", "message": "Привет! Я бот для управления браузером. Напиши что хочешь открыть."}}
-- "что ты умеешь?" → {{"action": "analyze", "message": "Я умею открывать страницы, делать скриншоты, кликать по кнопкам, искать элементы, вводить текст. Просто скажи что сделать!"}}
 
 ОТВЕТЬ В ФОРМАТЕ JSON:
 {{"action": "open | analyze | none", "url": "URL для открытия", "message": "ответ пользователю"}}
@@ -99,63 +98,71 @@ class AgentPrompts:
         url: str,
         interactive_str: str
     ) -> str:
-        """Промт для загруженной страницы (с приоритетом data-testid)"""
+        """Промт для загруженной страницы (как в твоём коде)"""
         return f"""
-Ты ИИ-агент, управляешь браузером.
+Ты — AI-ассистент для анализа веб-страниц и выполнения команд.
 
 📄 ТЕКУЩАЯ СТРАНИЦА:
 Заголовок: {title}
 URL: {url}
 
-🖱 ДОСТУПНЫЕ ЭЛЕМЕНТЫ (ТОЛЬКО ТЕ, С КОТОРЫМИ МОЖНО ВЗАИМОДЕЙСТВОВАТЬ):
+🖱 ДОСТУПНЫЕ ЭЛЕМЕНТЫ:
 {interactive_str}
 
-⚠️ ВАЖНЫЕ ПРАВИЛА ВЫБОРА СЕЛЕКТОРА:
-1. Если у элемента есть data-testid — ИСПОЛЬЗУЙ ЕГО! Это самый надёжный селектор.
-   Пример: [data-testid='AppTabBar_Home_Link']
+🔥 ПРАВИЛА СОРТИРОВКИ (ОТ ВАЖНОГО К МЕНЕЕ ВАЖНОМУ):
+1. ВИДИМЫЕ интерактивные элементы (кнопки, ссылки, поля) — САМЫЕ ВАЖНЫЕ
+2. ВИДИМЫЕ структурные элементы (заголовки, текст, таблицы)
+3. СКРЫТЫЕ интерактивные элементы
+4. СКРЫТЫЕ структурные элементы
 
-2. Если есть aria-label — используй его.
-   Пример: [aria-label='Перейти к ленте']
+🔥 ВАЖНО: Различай ВОПРОСЫ и КОМАНДЫ!
 
-3. Если есть id — используй #id.
+ВОПРОСЫ (ask) — пользователь СПРАШИВАЕТ о странице:
+• "какие кнопки?" → {"action": "ask", "question": "какие кнопки?"}
+• "есть ли поле?" → {"action": "ask", "question": "есть ли поле?"}
+• "что видишь?" → {"action": "ask", "question": "что видишь?"}
+• "ты можешь ввести текст?" → {"action": "ask", "question": "ты можешь ввести текст?"}
 
-4. CSS-классы (.css-..., .r-...) — ИСПОЛЬЗУЙ ТОЛЬКО В КРАЙНЕМ СЛУЧАЕ, они могут меняться.
+КОМАНДЫ (type, click, submit) — пользователь ПРОСИТ СДЕЛАТЬ:
+• "введи привет в поиск" → {"action": "type", "text": "привет", "selector": "селектор поля"}
+• "нажми на Войти" → {"action": "click", "selector": "селектор кнопки"}
+• "отправь форму" → {"action": "submit"}
 
-5. Для полей ввода используй атрибуты: name, placeholder, type.
-   Пример: input[name='email'], input[type='search'], [placeholder='Поиск']
+ПРАВИЛО:
+- Если пользователь СПРАШИВАЕТ — используй "ask"
+- Если пользователь ПРОСИТ СДЕЛАТЬ — используй действие (type, click, submit)
 
-6. Для кнопок без текста используй aria-label или data-testid.
+ПРИМЕРЫ:
+Пользователь: "ты можешь ввести текст?" → {{"action": "ask", "question": "ты можешь ввести текст?"}}
+Пользователь: "введи привет в поиск" → {{"action": "type", "text": "привет", "selector": "[data-testid='SearchBox_Search_Input']"}}
+Пользователь: "нажми на Войти" → {{"action": "click", "selector": "#login-btn"}}
+Пользователь: "какие кнопки?" → {{"action": "ask", "question": "какие кнопки?"}}
+Пользователь: "напиши туда текст" → {{"action": "type", "text": "текст", "selector": "селектор поля"}}
 
-⚠️ ВНИМАНИЕ: Используй ТОЧНО такие селекторы как в списке!
-Не выдумывай data-testid — бери их из списка элементов!
-
-КОМАНДА ПОЛЬЗОВАТЕЛЯ: {command}
-
-Твои ВОЗМОЖНЫЕ ДЕЙСТВИЯ:
+🔥 Твои ВОЗМОЖНЫЕ ДЕЙСТВИЯ:
 1. click — кликнуть по элементу (нужен selector)
-2. type — ввести текст (нужны selector + text) — ПОСЛЕ ВВОДА АВТОМАТИЧЕСКИ НАЖИМАЕТСЯ ENTER
+2. type — ввести текст (нужны selector + text) — ПОСЛЕ ВВОДА АВТОМАТИЧЕСКИ ENTER
 3. open — открыть URL
-4. find — найти элементы по тексту
+4. ask — ответить на вопрос о странице
 5. wait — ожидать элемент
 6. screenshot — сделать скриншот
 7. analyze — проанализировать страницу
 8. none — просто ответить
 
+⚠️ ВАЖНО: Для click/type ВСЕГДА указывай selector из доступных элементов!
+Если есть data-testid — используй его (он самый надёжный).
+
 ОТВЕТЬ В ФОРМАТЕ JSON:
 {{
-    "action": "click | type | open | find | wait | screenshot | analyze | none",
-    "selector": "CSS селектор (для click/type/wait/find)",
+    "action": "click | type | open | ask | wait | screenshot | analyze | none",
+    "selector": "CSS селектор (для click/type/wait)",
     "text": "текст для ввода (для type)",
     "url": "URL (для open)",
+    "question": "вопрос пользователя (для ask)",
     "message": "понятный ответ пользователю"
 }}
 
-ПРИМЕРЫ:
-1. "нажми на главную" → {{"action": "click", "selector": "[data-testid='AppTabBar_Home_Link']", "message": "✅ Перешёл на главную"}}
-2. "введи Python в поиск" → {{"action": "type", "selector": "[data-testid='SearchBox_Search_Input']", "text": "Python", "message": "✅ Ввёл Python и нажал Enter"}}
-3. "какие кнопки есть?" → {{"action": "analyze", "message": "На странице есть кнопки: 'Главная', 'Обзор', 'Уведомления', 'Чат', 'Профиль'"}}
-4. "открой youtube.com" → {{"action": "open", "url": "https://youtube.com", "message": "🌐 Открываю YouTube"}}
-5. "сделай скриншот" → {{"action": "screenshot", "message": "📸 Скриншот готов"}}
+КОМАНДА ПОЛЬЗОВАТЕЛЯ: {command}
 """
 
 
@@ -215,6 +222,7 @@ class AgentHandler:
         selector = data.get('selector', '')
         text = data.get('text', '')
         url = data.get('url', '')
+        question = data.get('question', '')
         message = data.get('message', '')
         
         try:
@@ -238,10 +246,14 @@ class AgentHandler:
             elif action == 'type':
                 if not selector:
                     return "❌ Не найден селектор для ввода"
-                
-                # ✅ ОДИН МЕТОД — ВСЁ ВМЕСТЕ (клик + ввод + enter)
                 result = await self.browser.type_text_cdp(selector, text)
                 return f"{message}\n{result}"
+            
+            elif action == 'ask':
+                # Если это вопрос — анализируем страницу
+                if not question:
+                    question = message or "Что на странице?"
+                return await self.browser.ai_analyze_page(question)
             
             elif action == 'find':
                 results = await self.browser.find_elements_by_text(text or selector)
@@ -260,45 +272,58 @@ class AgentHandler:
                 return message
             
             else:
-                return message
+                return message or response
         
         except Exception as e:
             return f"❌ Ошибка выполнения команды: {str(e)}"
     
     def _format_interactive(self, elements: List[Dict]) -> str:
-        """Форматирует интерактивные элементы для ИИ (с data-testid)"""
+        """Форматирует интерактивные элементы для ИИ (с сортировкой по важности)"""
         if not elements:
             return "Нет интерактивных элементов"
         
         result = ""
         
-        buttons = [el for el in elements if el.get('type') == 'button']
-        links = [el for el in elements if el.get('type') == 'link']
-        inputs = [el for el in elements if el.get('type') == 'input']
+        # Сортируем: сначала видимые, потом интерактивные
+        buttons = [el for el in elements if el.get('type') == 'button' and el.get('visible', False)]
+        buttons_hidden = [el for el in elements if el.get('type') == 'button' and not el.get('visible', False)]
+        links = [el for el in elements if el.get('type') == 'link' and el.get('visible', False)]
+        links_hidden = [el for el in elements if el.get('type') == 'link' and not el.get('visible', False)]
+        inputs = [el for el in elements if el.get('type') == 'input' and el.get('visible', False)]
+        inputs_hidden = [el for el in elements if el.get('type') == 'input' and not el.get('visible', False)]
         
+        # 🔘 КНОПКИ
         if buttons:
-            result += "\n🔘 КНОПКИ:\n"
+            result += "\n🔘 **Видимые кнопки (можно кликнуть):**\n"
             for i, el in enumerate(buttons[:30]):
                 text = el.get('text', '') or el.get('aria_label', '') or 'без текста'
                 selector = el.get('selector', '')
-                if 'data-testid' in selector:
-                    result += f"  {i+1}. '{text}' → {selector}\n"
-                else:
-                    result += f"  {i+1}. '{text}' → {selector}\n"
+                result += f"  {i+1}. '{text}' → {selector}\n"
             if len(buttons) > 30:
-                result += f"  ... и ещё {len(buttons) - 30} кнопок\n"
+                result += f"  ... и ещё {len(buttons) - 30} видимых кнопок\n"
         
+        if buttons_hidden:
+            result += "\n👻 **Скрытые кнопки:**\n"
+            for i, el in enumerate(buttons_hidden[:10]):
+                text = el.get('text', '') or el.get('aria_label', '') or 'без текста'
+                selector = el.get('selector', '')
+                result += f"  {i+1}. '{text}' → {selector}\n"
+            if len(buttons_hidden) > 10:
+                result += f"  ... и ещё {len(buttons_hidden) - 10} скрытых кнопок\n"
+        
+        # 🔗 ССЫЛКИ
         if links:
-            result += "\n🔗 ССЫЛКИ:\n"
+            result += "\n🔗 **Видимые ссылки:**\n"
             for i, el in enumerate(links[:15]):
                 text = el.get('text', '') or 'без текста'
                 selector = el.get('selector', '')
                 result += f"  {i+1}. '{text}' → {selector}\n"
             if len(links) > 15:
-                result += f"  ... и ещё {len(links) - 15} ссылок\n"
+                result += f"  ... и ещё {len(links) - 15} видимых ссылок\n"
         
+        # ⌨️ ПОЛЯ ВВОДА
         if inputs:
-            result += "\n⌨️ ПОЛЯ ВВОДА:\n"
+            result += "\n⌨️ **Видимые поля ввода:**\n"
             for i, el in enumerate(inputs[:10]):
                 label = el.get('label', '') or el.get('placeholder', '') or el.get('name', '') or 'поле'
                 selector = el.get('selector', '')
