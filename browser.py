@@ -1040,36 +1040,75 @@ class BrowserManager:
                 return parts[0] + '.' + parts[1] + '.' + parts[2] + '...'
         return selector[:60] + '...'
     
-    # ========== НОВЫЙ МЕТОД: НАЖАТИЕ ENTER ==========
+    # ========== ИСПРАВЛЕННЫЙ press_enter (KeyboardEvent для React) ==========
     
     async def press_enter(self, selector: Optional[str] = None):
-        """Нажать Enter в активном поле или по селектору"""
+        """Нажать Enter через KeyboardEvent (работает с React)"""
         await self.connect()
         
-        if selector:
-            await self.execute_script(f"""
-                document.querySelector('{selector}')?.focus();
-            """)
-            await asyncio.sleep(0.1)
+        safe_selector = selector.replace('"', '\\"').replace("'", "\\'") if selector else ''
         
-        await self._send_command("Input.dispatchKeyEvent", {
-            "type": "keyDown",
-            "key": "Enter",
-            "code": "Enter",
-            "windowsVirtualKeyCode": 13,
-            "nativeVirtualKeyCode": 13
-        })
-        await asyncio.sleep(0.05)
+        js = f"""
+        (function() {{
+            let el = null;
+            
+            if ('{safe_selector}') {{
+                el = document.querySelector('{safe_selector}');
+                if (el) {{
+                    el.focus();
+                }}
+            }}
+            
+            if (!el) {{
+                el = document.activeElement;
+            }}
+            
+            if (!el) return false;
+            
+            // 🔥 KeyboardEvent для Enter (работает с React)
+            const enterEvent = new KeyboardEvent('keydown', {{
+                key: 'Enter',
+                code: 'Enter',
+                keyCode: 13,
+                which: 13,
+                bubbles: true,
+                cancelable: true,
+                composed: true
+            }});
+            el.dispatchEvent(enterEvent);
+            
+            const keyupEvent = new KeyboardEvent('keyup', {{
+                key: 'Enter',
+                code: 'Enter',
+                keyCode: 13,
+                which: 13,
+                bubbles: true,
+                cancelable: true,
+                composed: true
+            }});
+            el.dispatchEvent(keyupEvent);
+            
+            const keypressEvent = new KeyboardEvent('keypress', {{
+                key: 'Enter',
+                code: 'Enter',
+                keyCode: 13,
+                which: 13,
+                bubbles: true,
+                cancelable: true,
+                composed: true
+            }});
+            el.dispatchEvent(keypressEvent);
+            
+            return true;
+        }})()
+        """
         
-        await self._send_command("Input.dispatchKeyEvent", {
-            "type": "keyUp",
-            "key": "Enter",
-            "code": "Enter",
-            "windowsVirtualKeyCode": 13,
-            "nativeVirtualKeyCode": 13
-        })
+        result = await self.execute_script(js)
         
-        return "⌨️ Нажал Enter"
+        if result:
+            return "⌨️ Нажал Enter (KeyboardEvent)"
+        else:
+            return "❌ Не удалось нажать Enter"
     
     # ========== ОСТАЛЬНЫЕ МЕТОДЫ ==========
     
