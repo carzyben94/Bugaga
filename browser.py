@@ -948,7 +948,7 @@ class BrowserManager:
         except:
             return "Без названия"
     
-    # ========== ИСПРАВЛЕННЫЙ CLICK_ELEMENT ==========
+    # ========== CLICK_ELEMENT ==========
     
     async def click_element(self, selector: str):
         """Универсальный клик с правильным использованием CDP"""
@@ -1040,75 +1040,77 @@ class BrowserManager:
                 return parts[0] + '.' + parts[1] + '.' + parts[2] + '...'
         return selector[:60] + '...'
     
-    # ========== ИСПРАВЛЕННЫЙ press_enter (KeyboardEvent для React) ==========
+    # ========== НОВЫЙ МЕТОД: ПОСИМВОЛЬНЫЙ ВВОД ЧЕРЕЗ CDP ==========
     
-    async def press_enter(self, selector: Optional[str] = None):
-        """Нажать Enter через KeyboardEvent (работает с React)"""
+    async def type_text_cdp(self, selector: str, text: str):
+        """Гарантированный ввод текста посимвольно через CDP (по документации)"""
         await self.connect()
         
-        safe_selector = selector.replace('"', '\\"').replace("'", "\\'") if selector else ''
+        if await self.is_page_empty():
+            return "❌ Страница пустая. Сначала откройте страницу"
         
-        js = f"""
-        (function() {{
-            let el = null;
-            
-            if ('{safe_selector}') {{
-                el = document.querySelector('{safe_selector}');
-                if (el) {{
-                    el.focus();
-                }}
+        safe_selector = selector.replace('"', '\\"').replace("'", "\\'")
+        
+        # 1. Клик по полю
+        await self.click_element(selector)
+        await asyncio.sleep(0.2)
+        
+        # 2. Очистка поля
+        await self.execute_script(f"""
+            const el = document.querySelector('{safe_selector}');
+            if (el) {{
+                el.value = '';
+                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
             }}
-            
-            if (!el) {{
-                el = document.activeElement;
-            }}
-            
-            if (!el) return false;
-            
-            // 🔥 KeyboardEvent для Enter (работает с React)
-            const enterEvent = new KeyboardEvent('keydown', {{
-                key: 'Enter',
-                code: 'Enter',
-                keyCode: 13,
-                which: 13,
-                bubbles: true,
-                cancelable: true,
-                composed: true
-            }});
-            el.dispatchEvent(enterEvent);
-            
-            const keyupEvent = new KeyboardEvent('keyup', {{
-                key: 'Enter',
-                code: 'Enter',
-                keyCode: 13,
-                which: 13,
-                bubbles: true,
-                cancelable: true,
-                composed: true
-            }});
-            el.dispatchEvent(keyupEvent);
-            
-            const keypressEvent = new KeyboardEvent('keypress', {{
-                key: 'Enter',
-                code: 'Enter',
-                keyCode: 13,
-                which: 13,
-                bubbles: true,
-                cancelable: true,
-                composed: true
-            }});
-            el.dispatchEvent(keypressEvent);
-            
-            return true;
-        }})()
-        """
+        """)
+        await asyncio.sleep(0.1)
         
-        result = await self.execute_script(js)
+        # 3. Ввод каждого символа через CDP (по документации)
+        for char in text:
+            # keyDown
+            await self._send_command("Input.dispatchKeyEvent", {
+                "type": "keyDown",
+                "text": char
+            })
+            await asyncio.sleep(0.01)
+            
+            # char — главный для React!
+            await self._send_command("Input.dispatchKeyEvent", {
+                "type": "char",
+                "text": char,
+                "unmodifiedText": char
+            })
+            await asyncio.sleep(0.01)
+            
+            # keyUp
+            await self._send_command("Input.dispatchKeyEvent", {
+                "type": "keyUp",
+                "text": char
+            })
+            await asyncio.sleep(0.01)
         
-        if result:
-            return "⌨️ Нажал Enter (KeyboardEvent)"
-        else:
-            return "❌ Не удалось нажать Enter"
+        await asyncio.sleep(0.2)
+        
+        # 4. Отправка поиска через Enter
+        await self._send_command("Input.dispatchKeyEvent", {
+            "type": "keyDown",
+            "key": "Enter",
+            "code": "Enter",
+            "windowsVirtualKeyCode": 13,
+            "nativeVirtualKeyCode": 13
+        })
+        await asyncio.sleep(0.05)
+        
+        await self._send_command("Input.dispatchKeyEvent", {
+            "type": "keyUp",
+            "key": "Enter",
+            "code": "Enter",
+            "windowsVirtualKeyCode": 13,
+            "nativeVirtualKeyCode": 13
+        })
+        
+        return f"✅ Ввёл '{text}' и нажал Enter"
     
     # ========== ОСТАЛЬНЫЕ МЕТОДЫ ==========
     
