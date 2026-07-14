@@ -2,7 +2,7 @@ import asyncio
 import json
 import websockets
 import requests
-import base64
+import re
 from typing import Optional
 
 class BrowserManager:
@@ -14,7 +14,7 @@ class BrowserManager:
         self._message_id = 0
         self._connected = False
         self._page_id = None
-        self._current_url = ""  # ← Добавил
+        self._current_url = ""
         
         self.viewport_width = 1280
         self.viewport_height = 720
@@ -120,20 +120,16 @@ class BrowserManager:
         return result
     
     async def is_page_empty(self) -> bool:
-        """Проверить, пустая ли страница"""
         try:
-            # Проверяем URL
             if not self._current_url or self._current_url in ['about:blank', 'chrome://newtab/', '']:
                 return True
             
-            # Проверяем текст
             text = await self.get_page_text()
-            if not text or text.strip() == "":
+            if not text or text.strip() == "" or text == "📭 Страница пустая или не содержит текста":
                 return True
             
-            # Проверяем заголовок
             title = await self.get_page_title()
-            if not title or title.strip() == "":
+            if not title or title.strip() == "" or title == "Без названия":
                 return True
             
             return False
@@ -141,9 +137,9 @@ class BrowserManager:
             return True
     
     async def screenshot(self):
+        """Сделать скриншот (1280x720)"""
         await self.connect()
         
-        # Проверяем, что страница не пустая
         if await self.is_page_empty():
             raise Exception("📭 Страница пустая или не загружена. Сначала откройте страницу командой /open")
         
@@ -154,25 +150,33 @@ class BrowserManager:
             "captureBeyondViewport": False
         })
         
+        # ✅ ПОЛНАЯ ОЧИСТКА BASE64
         screenshot_data = result['data']
         screenshot_data = screenshot_data.strip()
-        if ',' in screenshot_data:
+        
+        # Убираем префикс если есть
+        if 'base64,' in screenshot_data:
+            screenshot_data = screenshot_data.split('base64,')[-1]
+        elif ',' in screenshot_data:
             screenshot_data = screenshot_data.split(',')[-1]
+        
+        # Убираем все пробелы, переносы, табуляции
         screenshot_data = ''.join(screenshot_data.split())
+        
+        # Оставляем только допустимые base64 символы
+        screenshot_data = re.sub(r'[^A-Za-z0-9+/=]', '', screenshot_data)
         
         return screenshot_data
     
     async def get_page_text(self):
         await self.connect()
         
-        # Проверяем, есть ли что-то на странице
         try:
             result = await self._send_command("Runtime.evaluate", {
                 "expression": "document.body?.innerText || document.documentElement?.textContent || ''"
             })
             text = result['result'].get('value', '')
             
-            # Проверяем, не пустой ли текст
             if not text or text.strip() == "":
                 return "📭 Страница пустая или не содержит текста"
             
@@ -196,7 +200,6 @@ class BrowserManager:
     async def click_element(self, selector: str):
         await self.connect()
         
-        # Проверяем, что страница не пустая
         if await self.is_page_empty():
             return "❌ Страница пустая. Сначала откройте страницу командой /open"
         
@@ -239,7 +242,6 @@ class BrowserManager:
     async def execute_script(self, script: str):
         await self.connect()
         
-        # Проверяем, что страница не пустая
         if await self.is_page_empty() and script not in ['document.title', 'location.href']:
             return "⚠️ Страница пустая. Сначала откройте страницу командой /open"
         
