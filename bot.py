@@ -78,7 +78,6 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Анализ страницы — только для автоматизации (кнопки, поля, формы)"""
     global browser
     
     args = context.args
@@ -103,39 +102,33 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         eval = Eval(browser)
         
-        # ===== ТОЛЬКО ДЛЯ АВТОМАТИЗАЦИИ =====
-        title = await eval.get_title()
         buttons = await eval.get_all_buttons()
         inputs = await eval.get_all_inputs()
         forms = await eval.get_all_forms()
         checkboxes = await eval.get_all_checkboxes()
         selects = await eval.get_all_selects()
         
-        # ===== ФОРМИРУЕМ ОТВЕТ =====
         response = (
-            f"📄 **{title}**\n\n"
-            f"─────────────────\n"
             f"🔄 Кнопок: {len(buttons)}\n"
             f"📝 Полей ввода: {len(inputs)}\n"
             f"📋 Форм: {len(forms)}\n"
             f"☑️ Checkbox/Radio: {len(checkboxes)}\n"
-            f"📋 Select: {len(selects)}\n"
+            f"📋 Select: {len(selects)}\n\n"
         )
         
-        # ===== КНОПКИ (ВСЕ) =====
         if buttons:
-            response += "\n🔘 **Кнопки:**\n"
+            response += "🔘 **Кнопки:**\n"
             for i, btn in enumerate(buttons, 1):
                 text = btn['text'][:40] if btn['text'] else '[без текста]'
-                identifier = btn['id'] or btn['name'] or ''
-                if identifier:
-                    response += f"  {i}. {text} (id: {identifier})\n"
+                test_id = btn.get('testId', '')
+                if test_id:
+                    response += f"  {i}. {text} (testid: {test_id})\n"
                 else:
                     response += f"  {i}. {text}\n"
+            response += "\n"
         
-        # ===== ПОЛЯ ВВОДА (ВСЕ) =====
         if inputs:
-            response += "\n✏️ **Поля ввода:**\n"
+            response += "✏️ **Поля ввода:**\n"
             for i, inp in enumerate(inputs, 1):
                 desc = (
                     inp.get('ariaLabel') or 
@@ -146,6 +139,7 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     '[без имени]'
                 )
                 desc = desc[:35]
+                test_id = inp.get('testId', '')
                 
                 field_type = inp.get('type', '')
                 type_icon = {
@@ -159,11 +153,14 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     'textarea': '📄',
                 }.get(field_type, '')
                 
-                response += f"  {i}. {type_icon} {desc}\n"
+                if test_id:
+                    response += f"  {i}. {type_icon} {desc} (testid: {test_id})\n"
+                else:
+                    response += f"  {i}. {type_icon} {desc}\n"
+            response += "\n"
         
-        # ===== ФОРМЫ =====
         if forms:
-            response += f"\n📋 **Формы:** {len(forms)}\n"
+            response += f"📋 **Формы:** {len(forms)}\n"
             for i, form in enumerate(forms[:5], 1):
                 action = form.get('action', '')[:40]
                 method = form.get('method', 'GET')
