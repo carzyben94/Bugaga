@@ -24,6 +24,7 @@ class Browser:
         self._masked = False
         self._keepalive_task = None
         self._is_closing = False
+        self._pending_requests = {}  # ← хранение ожидающих ответов
     
     def _find_chrome(self):
         paths = [
@@ -38,7 +39,6 @@ class Browser:
         return "/usr/bin/google-chrome"
     
     async def start(self):
-        """Запуск Chrome с маскировкой и установкой кук"""
         try:
             if not self._is_chrome_running():
                 args = Mask.get_launch_args(self.chrome_path, self.debug_port)
@@ -69,6 +69,8 @@ class Browser:
             await self.eval_js(js_mask)
             self._masked = True
             
+            # Запускаем фоновый слушатель сообщений
+            self._start_listener()
             self._start_keepalive()
             
             logger.info("✅ Браузер готов (маскировка + куки + keepalive, max_size=10MB)")
@@ -79,41 +81,109 @@ class Browser:
             await self.close()
             raise
     
+    # ===== ФОНОВЫЙ СЛУШАТЕЛЬ =====
+    def _start_listener(self):
+        """Запустить фоновый слушатель сообщений от CDP"""
+        asyncio.create_task(self._listener_loop())
+    
+    async def _listener_loop(self):
+        """Фоновый цикл чтения сообщений от CDP"""
+        try:
+            while not self._is_closing and self.ws is not None:
+                try:
+                    response = await asyncio.wait_for(self.ws.recv(), timeout=1)
+                    data = json.loads(response)
+                    
+                    # Если это ответ на наш запрос — сохраняем
+                    if "id" in data:
+                        msg_id = data["id"]
+                        if msg_id in self._pending_requests:
+                            # Будим ожидающую корутину
+                            future = self._pending_requests.pop(msg_id)
+                            if not future.done():
+                                future.set_result(data)
+                    
+                except asyncio.TimeoutError:
+                    continue
+                except websockets.exceptions.ConnectionClosed as e:
+                    logger.warning(f"⚠️ WebSocket закрыт: {e}")
+                    await self._reconnect()
+                    break
+                except Exception as e:
+                    logger.error(f"❌ Ошибка в listener: {e}")
+                    await asyncio.sleep(1)
+                    
+        except asyncio.CancelledError:
+            logger.info("⏹️ Listener остановлен")
+        except Exception as e:
+            logger.error(f"❌ Listener умер: {e}")
+    
+    # ===== KEEPALIVE =====
     def _start_keepalive(self):
-        """Запустить фоновую задачу для поддержания соединения"""
         if self._keepalive_task is None or self._keepalive_task.done():
             self._keepalive_task = asyncio.create_task(self._keepalive_loop())
             logger.info("🔁 Keepalive задача запущена")
     
     async def _keepalive_loop(self):
-        """Периодически отправлять ping через CDP"""
         try:
             while not self._is_closing and self.ws is not None:
                 await asyncio.sleep(20)
-                
-                if self.ws is None:
-                    continue
-                
                 try:
-                    await self.send("Runtime.evaluate", {
+                    # Используем send без ожидания ответа (fire and forget)
+                    await self._send_raw("Runtime.evaluate", {
                         "expression": "1+1",
                         "returnByValue": True
                     })
                     logger.debug("💓 Keepalive ping отправлен")
-                except websockets.exceptions.ConnectionClosed:
-                    logger.warning("⚠️ WebSocket закрыт, переподключение...")
-                    await self._reconnect()
                 except Exception as e:
                     logger.warning(f"⚠️ Keepalive ping failed: {e}")
-                    await self._reconnect()
-                    
         except asyncio.CancelledError:
             logger.info("⏹️ Keepalive задача остановлена")
         except Exception as e:
             logger.error(f"❌ Ошибка в keepalive: {e}")
     
+    # ===== ОТПРАВКА =====
+    async def _send_raw(self, method, params=None):
+        """Отправить сообщение без ожидания ответа"""
+        if params is None:
+            params = {}
+        msg = {"id": self._msg_id, "method": method, "params": params}
+        await self.ws.send(json.dumps(msg))
+    
+    async def send(self, method, params=None):
+        """Отправить CDP-команду и дождаться ответа"""
+        if params is None:
+            params = {}
+        self._msg_id += 1
+        msg_id = self._msg_id
+        msg = {"id": msg_id, "method": method, "params": params}
+        
+        # Создаём Future для ожидания ответа
+        future = asyncio.get_event_loop().create_future()
+        self._pending_requests[msg_id] = future
+        
+        try:
+            await self.ws.send(json.dumps(msg))
+            
+            # Ждём ответ с таймаутом
+            response = await asyncio.wait_for(future, timeout=60)
+            
+            if "error" in response:
+                raise RuntimeError(f"CDP Error: {response['error']}")
+            if "result" in response:
+                return response["result"]
+            return response
+            
+        except asyncio.TimeoutError:
+            self._pending_requests.pop(msg_id, None)
+            logger.error("⏱️ Таймаут ожидания ответа от CDP")
+            raise RuntimeError("CDP timeout")
+        except Exception as e:
+            self._pending_requests.pop(msg_id, None)
+            raise
+    
+    # ===== ПЕРЕПОДКЛЮЧЕНИЕ =====
     async def _reconnect(self):
-        """Переподключение к WebSocket"""
         logger.info("🔄 Переподключение к CDP...")
         try:
             if self.ws:
@@ -136,8 +206,8 @@ class Browser:
             logger.error(f"❌ Ошибка переподключения: {e}")
             raise
     
+    # ===== ОСТАЛЬНЫЕ МЕТОДЫ =====
     def _is_chrome_running(self):
-        """Проверяет, запущен ли Chrome на порту 9222"""
         try:
             requests.get(f"http://localhost:{self.debug_port}/json/version", timeout=2)
             return True
@@ -145,7 +215,6 @@ class Browser:
             return False
     
     def _get_websocket_url(self):
-        """Получить WebSocket URL из /json/list"""
         resp = requests.get(f"http://localhost:{self.debug_port}/json/list", timeout=5)
         pages = resp.json()
         if not pages:
@@ -154,7 +223,6 @@ class Browser:
         return pages[0]["webSocketDebuggerUrl"]
     
     async def set_cookies(self, cookies_list):
-        """Установить куки одной командой"""
         if not cookies_list:
             return
         await self.send("Network.setCookies", {
@@ -162,40 +230,7 @@ class Browser:
         })
         logger.info(f"🍪 Установлено {len(cookies_list)} кук")
     
-    async def send(self, method, params=None):
-        """Отправить CDP-команду"""
-        if params is None:
-            params = {}
-        self._msg_id += 1
-        msg_id = self._msg_id
-        msg = {"id": msg_id, "method": method, "params": params}
-        
-        try:
-            await self.ws.send(json.dumps(msg))
-            
-            while True:
-                response = await asyncio.wait_for(self.ws.recv(), timeout=60)
-                data = json.loads(response)
-                if "id" in data and data["id"] == msg_id:
-                    if "error" in data:
-                        raise RuntimeError(f"CDP Error: {data['error']}")
-                    if "result" in data:
-                        return data["result"]
-                    return data
-        except asyncio.TimeoutError:
-            logger.error("⏱️ Таймаут ожидания ответа от CDP")
-            raise RuntimeError("CDP timeout")
-        except websockets.exceptions.ConnectionClosed as e:
-            logger.error(f"🔌 WebSocket закрыт: {e}")
-            if not self._is_closing:
-                await self._reconnect()
-            raise
-        except Exception as e:
-            logger.error(f"❌ Ошибка в send: {e}")
-            raise
-    
     async def eval_js(self, js_code):
-        """Выполнить JavaScript на странице"""
         result = await self.send("Runtime.evaluate", {
             "expression": js_code,
             "returnByValue": True
@@ -203,7 +238,6 @@ class Browser:
         return result
     
     async def set_viewport(self, width=1280, height=720):
-        """Установить размер окна через CDP"""
         await self.send("Emulation.setDeviceMetricsOverride", {
             "width": width,
             "height": height,
@@ -215,7 +249,6 @@ class Browser:
         })
     
     async def goto(self, url):
-        """Навигация (CDP) с ожиданием загрузки"""
         result = await self.send("Page.navigate", {"url": url})
         for _ in range(30):
             try:
@@ -229,29 +262,24 @@ class Browser:
         return result
     
     async def screenshot(self):
-        """Скриншот через CDP"""
         result = await self.send("Page.captureScreenshot")
         if "data" in result:
             return result["data"]
         raise RuntimeError(f"data не найдена: {result}")
     
     async def human_click(self, selector):
-        """Человеческий клик через mask.py"""
         js = Mask.get_human_click_js(selector)
         return await self.eval_js(js)
     
     async def human_type(self, selector, text):
-        """Человеческий ввод через mask.py"""
         js = Mask.get_human_type_js(selector, text)
         return await self.eval_js(js)
     
     async def human_scroll(self, distance):
-        """Человеческий скролл через mask.py"""
         js = Mask.get_human_scroll_js(distance)
         return await self.eval_js(js)
     
     async def close(self):
-        """Закрыть браузер"""
         self._is_closing = True
         
         if self._keepalive_task and not self._keepalive_task.done():
