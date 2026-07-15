@@ -358,7 +358,7 @@ class ElementTester:
                 continue
         return None
 
-    # ===== ПОЛНЫЙ ТЕСТ С ОЖИДАНИЕМ ЗАГРУЗКИ =====
+    # ===== ПОЛНЫЙ ТЕСТ =====
     async def run_full_test(self, url: str) -> Dict[str, Any]:
         self.screenshots = []
         self.logs = []
@@ -367,7 +367,6 @@ class ElementTester:
         
         await self.browser.goto(url)
         
-        # ===== ЖДЁМ ЗАГРУЗКИ СТРАНИЦЫ =====
         self._log("⏳ Ожидание загрузки страницы...")
         for _ in range(30):
             try:
@@ -384,7 +383,7 @@ class ElementTester:
             return {
                 "url": url,
                 "timestamp": datetime.now().isoformat(),
-                "error": "Страница не загрузилась (возможно, блокировка или ошибка JS)",
+                "error": "Страница не загрузилась",
                 "results": {"total": 0, "verified": 0, "failed": 0, "skipped": 0, "actions": [], "failed_elements": []},
                 "logs": self.logs,
                 "screenshots_count": len(self.screenshots)
