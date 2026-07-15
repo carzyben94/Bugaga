@@ -1,32 +1,57 @@
 import os
-import requests
 import json
-import re
+import logging
 import asyncio
-from typing import Dict, Any, List
+from typing import Optional, Dict, Any, List
 
-class AgnesAI:
-    """Базовый класс для работы с Agnes AI API"""
+import httpx
+
+logger = logging.getLogger(__name__)
+
+
+class AIAgent:
+    """
+    ИИ агент для анализа страниц и принятия решений.
+    Использует Agnes API.
+    """
     
-    def __init__(self):
-        self.api_key = os.getenv("AGNES_API_KEY")
-        self.api_url = os.getenv("AGNES_API_URL", "https://apihub.agnes-ai.com/v1/chat/completions")
-        self.model = os.getenv("AI_MODEL", "agnes-2.0-flash")
+    def __init__(self, browser=None, eval=None, accessibility=None):
+        """
+        Args:
+            browser: экземпляр Browser из browser.py
+            eval: экземпляр Eval из eval.py
+            accessibility: экземпляр Accessibility из accessibility.py
+        """
+        self.browser = browser
+        self.eval = eval
+        self.accessibility = accessibility
+        
+        self.api_key = os.environ.get("AGNES_API_KEY")
+        self.api_url = os.environ.get("AGNES_API_URL", "https://apihub.agnes-ai.com/v1/chat/completions")
+        self.model = "agnes-2.0-flash"
+        
+        self.client = None
+        self.conversation_history = []
     
-    def ask(self, question: str, context_text: str = ""):
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Получить или создать HTTP клиент"""
+        if self.client is None or self.client.is_closed:
+            self.client = httpx.AsyncClient(timeout=60.0)
+        return self.client
+    
+    async def _call_api(self, messages: List[Dict[str, str]], temperature: float = 0.7) -> str:
+        """
+        Вызвать Agnes API.
+        
+        Args:
+            messages: список сообщений [{"role": "user", "content": "..."}]
+            temperature: температура генерации
+        
+        Returns:
+            ответ от ИИ
+        """
         if not self.api_key:
-            return "❌ AGNES_API_KEY не настроен"
-        
-        if not context_text or context_text.strip() == "":
-            context_text = "Страница не загружена или не содержит текста"
-        
-        system_prompt = """Ты помощник для анализа веб-страниц.
-Отвечай на вопросы пользователя на основе содержимого страницы.
-Если информации нет - честно скажи об этом.
-Будь точным, полезным и лаконичным.
-Используй русский язык для ответов."""
-
-        user_content = f"Содержимое страницы:\n{context_text}\n\nВопрос пользователя: {question}"
+            raise ValueError("AGNES_API_KEY не задан в переменных окружения")
         
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -35,302 +60,379 @@ class AgnesAI:
         
         payload = {
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content}
-            ],
-            "temperature": 0.7,
-            "max_tokens": 1000
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": 2000
         }
         
+        client = await self._get_client()
+        
         try:
-            response = requests.post(
-                self.api_url,
-                json=payload,
-                headers=headers,
-                timeout=60
-            )
+            response = await client.post(self.api_url, headers=headers, json=payload)
             
-            if response.status_code == 200:
-                data = response.json()
-                return data['choices'][0]['message']['content']
-            else:
-                return f"❌ Ошибка API ({response.status_code}): {response.text[:200]}"
+            if response.status_code != 200:
+                error_text = response.text
+                logger.error(f"Agnes API ошибка: {response.status_code} - {error_text}")
+                raise Exception(f"Agnes API ошибка: {response.status_code}")
+            
+            data = response.json()
+            return data["choices"][0]["message"]["content"]
                 
-        except requests.exceptions.Timeout:
-            return "❌ Таймаут запроса к AI (60 секунд)"
-        except requests.exceptions.ConnectionError:
-            return "❌ Ошибка подключения к AI"
-        except Exception as e:
-            return f"❌ Ошибка: {str(e)}"
-
-
-class AgentPrompts:
-    """Все промты для ИИ-агента"""
+        except httpx.TimeoutException:
+            logger.error("Таймаут подключения к Agnes API")
+            raise
+        except httpx.ConnectError as e:
+            logger.error(f"Ошибка подключения к Agnes API: {e}")
+            raise
     
-    @staticmethod
-    def get_empty_page_prompt(command: str) -> str:
-        """Промт для пустой страницы"""
-        return f"""
-Ты ИИ-агент, управляешь браузером. СТРАНИЦА ПУСТАЯ (about:blank).
+    async def analyze_page(self, url: str) -> str:
+        """
+        Проанализировать страницу через ИИ.
+        
+        Args:
+            url: URL страницы
+        
+        Returns:
+            Анализ страницы от ИИ
+        """
+        if not self.browser:
+            raise ValueError("Browser не инициализирован")
+        
+        if not self.eval:
+            raise ValueError("Eval не инициализирован")
+        
+        # Переходим на страницу
+        await self.browser.goto(url)
+        await asyncio.sleep(2)
+        
+        # Собираем данные
+        title = await self.eval.get_title()
+        page_info = await self.eval.get_page_info()
+        links = await self.eval.get_all_links()
+        buttons = await self.eval.get_all_buttons()
+        inputs = await self.eval.get_all_inputs()
+        forms = await self.eval.get_all_forms()
+        
+        # Формируем промпт
+        prompt = f"""
+Ты — AI агент для анализа веб-страниц.
 
-Пользователь хочет: {command}
+**Страница:** {url}
+**Заголовок:** {title}
+**Язык:** {page_info.get('language', 'не определен')}
 
-Твои ВОЗМОЖНЫЕ ДЕЙСТВИЯ:
-1. open — открыть URL
-2. ask — ответить на вопрос
-3. none — ответить без действий
+**Статистика:**
+- Ссылок: {len(links)}
+- Кнопок: {len(buttons)}
+- Полей ввода: {len(inputs)}
+- Форм: {len(forms)}
 
-⚠️ ВАЖНО: Если пользователь пишет "открой", "перейди", "зайди" + URL/сайт → ИСПОЛЬЗУЙ action: open
+**Первые 10 ссылок:**
+{self._format_list(links[:10], ['text', 'href'])}
 
-Примеры:
-- "открой google.com" → {{"action": "open", "url": "https://google.com", "message": "🌐 Открываю Google"}}
-- "привет" → {{"action": "none", "message": "Привет! Я бот для управления браузером. Напиши что хочешь открыть."}}
-- "кто ты?" → {{"action": "ask", "question": "кто ты?", "message": "Я бот для управления браузером"}}
+**Первые 10 кнопок:**
+{self._format_list(buttons[:10], ['text', 'type', 'testId'])}
 
-ОТВЕТЬ В ФОРМАТЕ JSON:
-{{"action": "open | ask | none", "url": "URL для открытия", "message": "ответ пользователю"}}
+**Первые 10 полей:**
+{self._format_list(inputs[:10], ['name', 'type', 'placeholder', 'testId'])}
+
+**Формы:**
+{self._format_list(forms[:5], ['method', 'action'])}
+
+**Текст страницы (первые 2000 символов):**
+{page_info.get('innerText', '')[:2000]}
+
+**Задача:**
+1. Опиши, о чём эта страница
+2. Что можно сделать на этой странице (какие действия)
+3. Есть ли форма входа/регистрации?
+4. Какие основные элементы для автоматизации?
+5. Дай краткий вывод
 """
 
-    @staticmethod
-    def get_full_page_prompt(
-        command: str,
-        title: str,
-        url: str,
-        interactive_str: str
-    ) -> str:
-        """Промт для загруженной страницы"""
-        return f"""
-Ты — AI-ассистент для анализа веб-страниц и выполнения команд.
+        messages = [
+            {"role": "system", "content": "Ты — полезный AI ассистент для веб-автоматизации."},
+            {"role": "user", "content": prompt}
+        ]
+        
+        response = await self._call_api(messages)
+        
+        # Сохраняем историю
+        self.conversation_history.append({"role": "user", "content": prompt})
+        self.conversation_history.append({"role": "assistant", "content": response})
+        
+        return response
+    
+    async def analyze_accessibility(self, url: str) -> str:
+        """
+        Проанализировать Accessibility Tree через ИИ.
+        
+        Args:
+            url: URL страницы
+        
+        Returns:
+            Анализ доступности от ИИ
+        """
+        if not self.browser:
+            raise ValueError("Browser не инициализирован")
+        
+        if not self.accessibility:
+            raise ValueError("Accessibility не инициализирован")
+        
+        await self.browser.goto(url)
+        await asyncio.sleep(3)
+        
+        # Включаем Accessibility
+        await self.accessibility.enable()
+        await asyncio.sleep(2)
+        
+        summary = await self.accessibility.get_summary()
+        buttons = await self.accessibility.get_all_buttons()
+        links = await self.accessibility.get_all_links()
+        inputs = await self.accessibility.get_all_inputs()
+        headings = await self.accessibility.get_all_headings()
+        landmarks = await self.accessibility.get_all_landmarks()
+        
+        prompt = f"""
+Ты — AI агент для анализа доступности (Accessibility) веб-страниц.
 
-📄 ТЕКУЩАЯ СТРАНИЦА:
-Заголовок: {title}
-URL: {url}
+**Страница:** {url}
 
-🖱 ДОСТУПНЫЕ ЭЛЕМЕНТЫ:
-{interactive_str}
+**Accessibility статистика:**
+- Всего узлов: {summary['total_nodes']}
+- Кнопок: {summary['buttons']}
+- Полей ввода: {summary['inputs']}
+- Ссылок: {summary['links']}
+- Заголовков: {summary['headings']}
+- Landmarks: {summary['landmarks']}
+- Изображений: {summary['images']}
+- Списков: {summary['lists']}
+- Таблиц: {summary['tables']}
 
-🔥 ПРАВИЛА СОРТИРОВКИ (ОТ ВАЖНОГО К МЕНЕЕ ВАЖНОМУ):
-1. ВИДИМЫЕ интерактивные элементы (кнопки, ссылки, поля) — САМЫЕ ВАЖНЫЕ
-2. ВИДИМЫЕ структурные элементы (заголовки, текст, таблицы)
-3. СКРЫТЫЕ интерактивные элементы
-4. СКРЫТЫЕ структурные элементы
+**Роли (топ 10):**
+{self._format_dict(summary.get('roles', {}), 10)}
 
-🔥 ВАЖНО: Различай ВОПРОСЫ и КОМАНДЫ!
+**Кнопки (первые 10):**
+{self._format_list(buttons[:10], ['name', 'role'])}
 
-ВОПРОСЫ (ask) — пользователь СПРАШИВАЕТ о странице:
-• "какие кнопки?" → {{"action": "ask", "question": "какие кнопки?"}}
-• "есть ли поле?" → {{"action": "ask", "question": "есть ли поле?"}}
-• "что видишь?" → {{"action": "ask", "question": "что видишь?"}}
-• "ты можешь ввести текст?" → {{"action": "ask", "question": "ты можешь ввести текст?"}}
+**Поля ввода (первые 10):**
+{self._format_list(inputs[:10], ['name', 'role'])}
 
-КОМАНДЫ (type, click, submit) — пользователь ПРОСИТ СДЕЛАТЬ:
-• "введи привет в поиск" → {{"action": "type", "text": "привет", "selector": "селектор поля"}}
-• "нажми на Войти" → {{"action": "click", "selector": "селектор кнопки"}}
-• "отправь форму" → {{"action": "submit"}}
+**Ссылки (первые 10):**
+{self._format_list(links[:10], ['name', 'role'])}
 
-ПРАВИЛО:
-- Если пользователь СПРАШИВАЕТ — используй "ask"
-- Если пользователь ПРОСИТ СДЕЛАТЬ — используй действие (type, click, submit)
-
-ПРИМЕРЫ:
-Пользователь: "ты можешь ввести текст?" → {{"action": "ask", "question": "ты можешь ввести текст?"}}
-Пользователь: "введи привет в поиск" → {{"action": "type", "text": "привет", "selector": "[data-testid='SearchBox_Search_Input']"}}
-Пользователь: "нажми на Войти" → {{"action": "click", "selector": "#login-btn"}}
-Пользователь: "какие кнопки?" → {{"action": "ask", "question": "какие кнопки?"}}
-Пользователь: "напиши туда текст" → {{"action": "type", "text": "текст", "selector": "селектор поля"}}
-
-🔥 Твои ВОЗМОЖНЫЕ ДЕЙСТВИЯ:
-1. click — кликнуть по элементу (нужен selector)
-2. type — ввести текст (нужны selector + text) — ПОСЛЕ ВВОДА АВТОМАТИЧЕСКИ ENTER
-3. open — открыть URL
-4. ask — ответить на вопрос о странице
-5. wait — ожидать элемент
-6. screenshot — сделать скриншот
-7. analyze — проанализировать страницу
-8. none — просто ответить
-
-⚠️ ВАЖНО: Для click/type ВСЕГДА указывай selector из доступных элементов!
-Если есть data-testid — используй его (он самый надёжный).
-
-ОТВЕТЬ В ФОРМАТЕ JSON:
-{{
-    "action": "click | type | open | ask | wait | screenshot | analyze | none",
-    "selector": "CSS селектор (для click/type/wait)",
-    "text": "текст для ввода (для type)",
-    "url": "URL (для open)",
-    "question": "вопрос пользователя (для ask)",
-    "message": "понятный ответ пользователю"
-}}
-
-КОМАНДА ПОЛЬЗОВАТЕЛЯ: {command}
+**Задача:**
+1. Оцени качество доступности страницы
+2. Какие элементы отсутствуют для хорошей доступности?
+3. Есть ли проблемы с семантикой?
+4. Дай рекомендации по улучшению доступности
 """
 
+        messages = [
+            {"role": "system", "content": "Ты — эксперт по веб-доступности (WCAG)."},
+            {"role": "user", "content": prompt}
+        ]
+        
+        response = await self._call_api(messages)
+        
+        self.conversation_history.append({"role": "user", "content": prompt})
+        self.conversation_history.append({"role": "assistant", "content": response})
+        
+        return response
+    
+    async def ask(self, question: str) -> str:
+        """
+        Задать вопрос ИИ с учётом истории.
+        
+        Args:
+            question: вопрос
+        
+        Returns:
+            ответ от ИИ
+        """
+        messages = [
+            {"role": "system", "content": "Ты — полезный AI ассистент для веб-автоматизации."}
+        ]
+        
+        # Добавляем историю
+        messages.extend(self.conversation_history[-10:])  # последние 10 сообщений
+        
+        # Добавляем вопрос
+        messages.append({"role": "user", "content": question})
+        
+        response = await self._call_api(messages)
+        
+        self.conversation_history.append({"role": "user", "content": question})
+        self.conversation_history.append({"role": "assistant", "content": response})
+        
+        return response
+    
+    async def decide_action(self, page_info: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Принять решение о следующем действии на основе данных страницы.
+        
+        Args:
+            page_info: информация о странице
+        
+        Returns:
+            Словарь с решением: {"action": "click", "selector": "...", "reason": "..."}
+        """
+        prompt = f"""
+Ты — AI агент для принятия решений по автоматизации.
 
-class AgentHandler:
-    """Обработчик команд ИИ-агента"""
-    
-    def __init__(self, browser):
-        self.browser = browser
-        self.ai = AgnesAI()
-    
-    async def execute(self, command: str) -> str:
-        """
-        Выполнить команду через ИИ-агент
-        Возвращает результат выполнения
-        """
-        # Проверяем страницу
-        page_empty = await self.browser.is_page_empty()
+**Данные страницы:**
+{json.dumps(page_info, indent=2, ensure_ascii=False)[:2000]}
+
+**Доступные действия:**
+- click: кликнуть по элементу (нужен selector)
+- type: ввести текст (нужен selector и text)
+- scroll: прокрутить страницу (нужен distance)
+- wait: подождать (нужен seconds)
+- navigate: перейти на URL (нужен url)
+- extract: извлечь данные (нужен selector)
+- finish: завершить автоматизацию
+
+**Задача:**
+Определи, какое действие нужно выполнить на основе данных страницы.
+Верни JSON с полями:
+- action: название действия
+- selector: CSS селектор (если нужен)
+- text: текст для ввода (если action = type)
+- url: URL для перехода (если action = navigate)
+- distance: расстояние для скролла (если action = scroll)
+- seconds: время ожидания (если action = wait)
+- reason: причина выбора этого действия
+"""
+
+        messages = [
+            {"role": "system", "content": "Ты — AI агент для веб-автоматизации. Отвечай только JSON."},
+            {"role": "user", "content": prompt}
+        ]
         
-        # Собираем данные о странице
-        dom_data = {}
-        interactive_str = "Нет данных"
+        response = await self._call_api(messages, temperature=0.3)
         
-        if not page_empty:
-            dom_data = await self.browser.get_dom_with_metadata()
-            interactive_str = self._format_interactive(dom_data.get('interactive', []))
-        
-        # Формируем промт
-        if page_empty:
-            prompt = AgentPrompts.get_empty_page_prompt(command)
-        else:
-            prompt = AgentPrompts.get_full_page_prompt(
-                command=command,
-                title=dom_data.get('title', 'Нет'),
-                url=dom_data.get('url', 'Нет'),
-                interactive_str=interactive_str
-            )
-        
-        # Получаем ответ от ИИ
-        response = self.ai.ask(prompt, "")
-        
-        # Парсим JSON
+        # Парсим JSON из ответа
         try:
-            json_match = re.search(r'\{[^{}]*\}', response, re.DOTALL)
-            if json_match:
-                data = json.loads(json_match.group())
+            start = response.find('{')
+            end = response.rfind('}') + 1
+            if start != -1 and end != -1:
+                json_str = response[start:end]
+                return json.loads(json_str)
             else:
-                return f"❌ ИИ не смог распарсить команду: {response[:200]}"
-        except Exception as e:
-            return f"❌ Ошибка парсинга JSON: {e}\nОтвет ИИ: {response[:200]}"
-        
-        # Выполняем действие
-        return await self._execute_action(data)
+                return {"action": "finish", "reason": "Не удалось распарсить решение"}
+        except json.JSONDecodeError:
+            return {"action": "finish", "reason": "Ошибка парсинга JSON"}
     
-    async def _execute_action(self, data: Dict[str, Any]) -> str:
-        """Выполнить действие из JSON"""
-        action = data.get('action', 'none')
-        selector = data.get('selector', '')
-        text = data.get('text', '')
-        url = data.get('url', '')
-        question = data.get('question', '')
-        message = data.get('message', '')
+    async def execute_action(self, decision: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Выполнить действие на основе решения AI.
+        
+        Args:
+            decision: решение от AI {"action": "click", "selector": "...", "reason": "..."}
+        
+        Returns:
+            Результат выполнения
+        """
+        action = decision.get("action")
+        selector = decision.get("selector")
+        text = decision.get("text")
+        distance = decision.get("distance")
+        url = decision.get("url")
+        
+        result = {"success": False, "message": "", "data": None}
         
         try:
-            if action == 'open':
+            if action == "click":
+                if not selector:
+                    result["message"] = "Не указан selector для клика"
+                    return result
+                
+                await self.browser.human_click(selector)
+                result["success"] = True
+                result["message"] = f"Кликнут по {selector}"
+                
+            elif action == "type":
+                if not selector or text is None:
+                    result["message"] = "Не указан selector или текст"
+                    return result
+                
+                await self.browser.human_type(selector, text)
+                result["success"] = True
+                result["message"] = f"Введён текст в {selector}"
+                
+            elif action == "scroll":
+                distance = distance or 500
+                await self.browser.human_scroll(distance)
+                result["success"] = True
+                result["message"] = f"Скролл на {distance}px"
+                
+            elif action == "wait":
+                seconds = decision.get("seconds", 2)
+                await asyncio.sleep(seconds)
+                result["success"] = True
+                result["message"] = f"Ожидание {seconds} сек"
+                
+            elif action == "navigate":
                 if not url:
-                    return "❌ Не указан URL для открытия"
-                await self.browser.open_page(url)
-                title = await self.browser.get_page_title()
-                return f"{message}\n✅ Открыто: {title}"
-            
-            elif action == 'screenshot':
-                screenshot_base64 = await self.browser.screenshot()
-                return f"{message}\n📸 screenshot_data:{screenshot_base64}"
-            
-            elif action == 'click':
+                    result["message"] = "Не указан URL"
+                    return result
+                await self.browser.goto(url)
+                result["success"] = True
+                result["message"] = f"Переход на {url}"
+                
+            elif action == "extract":
                 if not selector:
-                    return "❌ Не найден селектор для клика"
-                result = await self.browser.click_element(selector)
-                return f"{message}\n{result}"
-            
-            elif action == 'type':
-                if not selector:
-                    return "❌ Не найден селектор для ввода"
-                result = await self.browser.type_text_cdp(selector, text)
-                return f"{message}\n{result}"
-            
-            elif action == 'ask':
-                if not question:
-                    question = message or "Что на странице?"
-                return await self.browser.ai_analyze_page(question)
-            
-            elif action == 'find':
-                results = await self.browser.find_elements_by_text(text or selector)
-                if results:
-                    return f"{message}\n🔍 Найдено {len(results)} элементов"
-                else:
-                    return f"❌ Элементы не найдены: {message}"
-            
-            elif action == 'wait':
-                if not selector:
-                    return "❌ Не указан селектор для ожидания"
-                result = await self.browser.wait_for_selector(selector)
-                return f"{message}\n{result}"
-            
-            elif action == 'analyze':
-                return message
-            
+                    result["message"] = "Не указан selector"
+                    return result
+                data = await self.eval.get_text(selector)
+                result["success"] = True
+                result["message"] = f"Извлечён текст из {selector}"
+                result["data"] = data
+                
+            elif action == "finish":
+                result["success"] = True
+                result["message"] = "Автоматизация завершена"
+                
             else:
-                return message or response
-        
+                result["message"] = f"Неизвестное действие: {action}"
+                
         except Exception as e:
-            return f"❌ Ошибка выполнения команды: {str(e)}"
-    
-    def _format_interactive(self, elements: List[Dict]) -> str:
-        """Форматирует интерактивные элементы для ИИ (с сортировкой по важности)"""
-        if not elements:
-            return "Нет интерактивных элементов"
-        
-        result = ""
-        
-        # Сортируем: сначала видимые, потом интерактивные
-        buttons = [el for el in elements if el.get('type') == 'button' and el.get('visible', False)]
-        buttons_hidden = [el for el in elements if el.get('type') == 'button' and not el.get('visible', False)]
-        links = [el for el in elements if el.get('type') == 'link' and el.get('visible', False)]
-        links_hidden = [el for el in elements if el.get('type') == 'link' and not el.get('visible', False)]
-        inputs = [el for el in elements if el.get('type') == 'input' and el.get('visible', False)]
-        inputs_hidden = [el for el in elements if el.get('type') == 'input' and not el.get('visible', False)]
-        
-        # 🔘 КНОПКИ
-        if buttons:
-            result += "\n🔘 **Видимые кнопки (можно кликнуть):**\n"
-            for i, el in enumerate(buttons[:30]):
-                text = el.get('text', '') or el.get('aria_label', '') or 'без текста'
-                selector = el.get('selector', '')
-                result += f"  {i+1}. '{text}' → {selector}\n"
-            if len(buttons) > 30:
-                result += f"  ... и ещё {len(buttons) - 30} видимых кнопок\n"
-        
-        if buttons_hidden:
-            result += "\n👻 **Скрытые кнопки:**\n"
-            for i, el in enumerate(buttons_hidden[:10]):
-                text = el.get('text', '') or el.get('aria_label', '') or 'без текста'
-                selector = el.get('selector', '')
-                result += f"  {i+1}. '{text}' → {selector}\n"
-            if len(buttons_hidden) > 10:
-                result += f"  ... и ещё {len(buttons_hidden) - 10} скрытых кнопок\n"
-        
-        # 🔗 ССЫЛКИ
-        if links:
-            result += "\n🔗 **Видимые ссылки:**\n"
-            for i, el in enumerate(links[:15]):
-                text = el.get('text', '') or 'без текста'
-                selector = el.get('selector', '')
-                result += f"  {i+1}. '{text}' → {selector}\n"
-            if len(links) > 15:
-                result += f"  ... и ещё {len(links) - 15} видимых ссылок\n"
-        
-        # ⌨️ ПОЛЯ ВВОДА
-        if inputs:
-            result += "\n⌨️ **Видимые поля ввода:**\n"
-            for i, el in enumerate(inputs[:10]):
-                label = el.get('label', '') or el.get('placeholder', '') or el.get('name', '') or 'поле'
-                selector = el.get('selector', '')
-                input_type = el.get('input_type', '')
-                type_info = f" (type={input_type})" if input_type else ""
-                result += f"  {i+1}. '{label}'{type_info} → {selector}\n"
-            if len(inputs) > 10:
-                result += f"  ... и ещё {len(inputs) - 10} полей\n"
+            result["message"] = f"Ошибка: {str(e)}"
+            logger.error(f"Ошибка выполнения действия {action}: {e}")
         
         return result
+    
+    def _format_list(self, items: List[Dict], keys: List[str]) -> str:
+        """Форматировать список словарей для промпта"""
+        if not items:
+            return "Нет данных"
+        
+        result = []
+        for i, item in enumerate(items[:10], 1):
+            parts = []
+            for key in keys:
+                value = item.get(key, '')
+                if value:
+                    parts.append(f"{key}={value}")
+            result.append(f"  {i}. " + ", ".join(parts))
+        
+        return "\n".join(result) if result else "Нет данных"
+    
+    def _format_dict(self, data: Dict, limit: int = 10) -> str:
+        """Форматировать словарь для промпта"""
+        if not data:
+            return "Нет данных"
+        
+        sorted_items = sorted(data.items(), key=lambda x: x[1], reverse=True)[:limit]
+        return "\n".join([f"  {key}: {value}" for key, value in sorted_items])
+    
+    async def close(self):
+        """Закрыть HTTP клиент"""
+        if self.client and not self.client.is_closed:
+            await self.client.aclose()
+    
+    async def __aenter__(self):
+        return self
+    
+    async def __aexit__(self, *args):
+        await self.close()
