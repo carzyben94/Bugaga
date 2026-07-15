@@ -26,11 +26,16 @@ class ElementTester:
             return ""
         return text.replace('\\', '\\\\').replace("'", "\\'").replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r')
 
+    def _escape_selector(self, selector: str) -> str:
+        """Экранировать селектор для вставки в JavaScript"""
+        if not selector:
+            return ""
+        return selector.replace("'", "\\'").replace('"', '\\"')
+
     def _sanitize_filename(self, text: str) -> str:
         """Очистить текст для имени файла"""
         if not text:
             return "element"
-        # Убираем спецсимволы, оставляем только буквы, цифры, пробелы
         return re.sub(r'[^a-zA-Z0-9а-яА-Я\s]', '', text)[:30].strip() or "element"
 
     # ===== ЛОГИРОВАНИЕ =====
@@ -82,7 +87,7 @@ class ElementTester:
             self._log_error(f"Ошибка скриншота элемента: {e}")
             return ""
 
-    # ===== СБОР ЭЛЕМЕНТОВ (ТОЛЬКО С СЕЛЕКТОРОМ) =====
+    # ===== СБОР ЭЛЕМЕНТОВ =====
     async def collect_all_elements(self) -> List[Dict[str, Any]]:
         elements = []
         
@@ -246,6 +251,167 @@ class ElementTester:
             self._log_error(f"Ошибка: {e}")
             return {"success": False, "reason": str(e)}
 
+    # ===== ТЕСТИРОВАНИЕ ENTER =====
+    async def test_enter(self, selector: str, text: str = "test") -> Dict[str, Any]:
+        """Тестировать ввод + Enter с экранированием"""
+        
+        self._log(f"🧪 Тестирую Enter")
+        
+        try:
+            exists = await self.eval.exists(selector)
+            if not exists:
+                return {"success": False, "reason": "Элемент не найден"}
+            
+            safe_name = self._sanitize_filename("enter")
+            await self._take_element_screenshot(selector, f"before_enter_{safe_name}")
+            
+            before_url = await self.eval.get_url()
+            
+            await self.browser.human_type(selector, text)
+            await asyncio.sleep(0.5)
+            
+            await self.eval.focus(selector)
+            await self._press_enter(selector)
+            await asyncio.sleep(1.5)
+            
+            await self._take_element_screenshot(selector, f"after_enter_{safe_name}")
+            
+            after_url = await self.eval.get_url()
+            results = await self._check_results()
+            
+            if after_url != before_url:
+                self._log(f"✅ Enter успешен: URL изменился")
+                return {
+                    "success": True,
+                    "action": "enter",
+                    "selector": selector,
+                    "text": text,
+                    "change": f"URL: {before_url} → {after_url}",
+                    "verified": True,
+                    "screenshots": [s.get('name') for s in self.screenshots[-2:]]
+                }
+            elif results:
+                self._log(f"✅ Enter успешен: {results}")
+                return {
+                    "success": True,
+                    "action": "enter",
+                    "selector": selector,
+                    "text": text,
+                    "change": results,
+                    "verified": True,
+                    "screenshots": [s.get('name') for s in self.screenshots[-2:]]
+                }
+            else:
+                self._log_error("Enter не привёл к изменениям")
+                return {
+                    "success": False,
+                    "reason": "Enter не привёл к изменениям"
+                }
+                
+        except Exception as e:
+            self._log_error(f"Ошибка: {e}")
+            return {"success": False, "reason": str(e)}
+
+    # ===== ТЕСТИРОВАНИЕ ЧЕКБОКСА =====
+    async def test_checkbox(self, element: Dict[str, Any]) -> Dict[str, Any]:
+        selector = element.get('selector')
+        if not selector:
+            return {"success": False, "reason": "Нет селектора"}
+        
+        self._log(f"🧪 Тестирую чекбокс: {element.get('name', '')[:30]}")
+        
+        try:
+            exists = await self.eval.exists(selector)
+            if not exists:
+                return {"success": False, "reason": "Элемент не найден"}
+            
+            safe_name = self._sanitize_filename(element.get('name', 'checkbox'))
+            await self._take_element_screenshot(selector, f"before_checkbox_{safe_name}")
+            
+            before = await self.eval.get_checked(selector)
+            await self.browser.human_click(selector)
+            await asyncio.sleep(0.5)
+            
+            await self._take_element_screenshot(selector, f"after_checkbox_{safe_name}")
+            after = await self.eval.get_checked(selector)
+            
+            if before != after:
+                self._log(f"✅ Чекбокс переключён: {before} → {after}")
+                return {
+                    "success": True,
+                    "action": "checkbox",
+                    "selector": selector,
+                    "name": element.get('name', ''),
+                    "before": before,
+                    "after": after,
+                    "verified": True,
+                    "screenshots": [s.get('name') for s in self.screenshots[-2:]]
+                }
+            else:
+                self._log_error(f"Состояние не изменилось: {before} → {after}")
+                return {
+                    "success": False,
+                    "reason": f"Состояние не изменилось: {before} → {after}"
+                }
+                
+        except Exception as e:
+            self._log_error(f"Ошибка: {e}")
+            return {"success": False, "reason": str(e)}
+
+    # ===== ТЕСТИРОВАНИЕ SELECT =====
+    async def test_select(self, element: Dict[str, Any], option_value: str = None) -> Dict[str, Any]:
+        selector = element.get('selector')
+        if not selector:
+            return {"success": False, "reason": "Нет селектора"}
+        
+        self._log(f"🧪 Тестирую select: {element.get('name', '')[:30]}")
+        
+        try:
+            exists = await self.eval.exists(selector)
+            if not exists:
+                return {"success": False, "reason": "Элемент не найден"}
+            
+            options = element.get('options', [])
+            if not options:
+                return {"success": False, "reason": "Нет опций"}
+            
+            if not option_value:
+                option_value = options[0].get('value')
+            
+            safe_name = self._sanitize_filename(element.get('name', 'select'))
+            await self._take_element_screenshot(selector, f"before_select_{safe_name}")
+            
+            before = await self.eval.get_value(selector)
+            await self.eval.select_option(selector, option_value)
+            await asyncio.sleep(0.5)
+            
+            await self._take_element_screenshot(selector, f"after_select_{safe_name}")
+            after = await self.eval.get_value(selector)
+            
+            if after == option_value:
+                self._log(f"✅ Опция выбрана: '{option_value}'")
+                return {
+                    "success": True,
+                    "action": "select",
+                    "selector": selector,
+                    "name": element.get('name', ''),
+                    "option": option_value,
+                    "before": before,
+                    "after": after,
+                    "verified": True,
+                    "screenshots": [s.get('name') for s in self.screenshots[-2:]]
+                }
+            else:
+                self._log_error(f"Опция не выбрана: ожидалось '{option_value}', получено '{after}'")
+                return {
+                    "success": False,
+                    "reason": f"Опция не выбрана: ожидалось '{option_value}', получено '{after}'"
+                }
+                
+        except Exception as e:
+            self._log_error(f"Ошибка: {e}")
+            return {"success": False, "reason": str(e)}
+
     # ===== ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ =====
     async def _get_state(self, selector: str) -> Dict[str, Any]:
         return {
@@ -269,10 +435,29 @@ class ElementTester:
                 continue
         return None
 
+    async def _check_results(self) -> Optional[str]:
+        result_selectors = [
+            "[data-testid='results']",
+            "[data-testid='search-results']",
+            "[role='list']",
+            "[role='grid']"
+        ]
+        for selector in result_selectors:
+            try:
+                if await self.eval.exists(selector) and await self.eval.is_visible(selector):
+                    count = await self.eval.get_count(selector)
+                    if count > 0:
+                        return f"Найдено {count} результатов"
+            except:
+                continue
+        return None
+
     async def _press_enter(self, selector: str):
+        """Нажать Enter через JS с экранированием"""
+        safe_selector = self._escape_selector(selector)
         js = f"""
         (function() {{
-            const el = document.querySelector('{selector}');
+            const el = document.querySelector('{safe_selector}');
             if (!el) return false;
             el.dispatchEvent(new KeyboardEvent('keydown', {{
                 key: 'Enter',
@@ -330,6 +515,8 @@ class ElementTester:
                 result = await self.test_click(element)
             elif action_type == 'input':
                 result = await self.test_input(element, "test")
+            elif action_type == 'navigate':
+                result = await self.test_click(element)
             else:
                 result = await self.test_click(element)
             
