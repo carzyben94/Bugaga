@@ -1,5 +1,5 @@
 import os
-import logging 
+import logging
 import base64
 import asyncio
 import json
@@ -7,7 +7,7 @@ import re
 import zipfile
 from datetime import datetime
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 from browser import Browser
 from eval import Eval
@@ -16,6 +16,7 @@ from ai import AIAgent
 from tester import ElementTester
 from site_map import SiteMap
 from hermes_agent import HermesAgent
+from orchestrator import Orchestrator
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
@@ -30,26 +31,33 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 browser = None
-hermes = None
+orchestrator = None
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Привет! Я бот.\n\n"
-        "Команды:\n"
-        "/screen <url> — скриншот страницы\n"
-        "/analyze <url> — анализ страницы (кнопки, поля, формы)\n"
-        "/accessibility <url> — доступность страницы\n"
-        "/test <url> — тестирование элементов\n"
-        "/x <действие> — работа с X.com через Accessibility Tree\n"
-        "/ai <вопрос> — общение с AI агентом\n"
-        "/results — скачать результаты тестов\n"
-        "/log — скачать лог бота"
+        "🤖 **Привет! Я Луи!**\n\n"
+        "Я — твой AI-помощник для работы с X.com.\n"
+        "Я умею:\n"
+        "  📸 Делать скриншоты\n"
+        "  🔍 Анализировать страницы\n"
+        "  🖱️ Кликать по кнопкам и ссылкам\n"
+        "  ✏️ Вводить текст\n"
+        "  🧠 Строить цепочки действий\n\n"
+        "💡 **Просто напиши, что нужно сделать.**\n\n"
+        "Примеры:\n"
+        "  открой x.com\n"
+        "  перейди в обзор\n"
+        "  опубликуй пост 'Привет мир!'\n"
+        "  покажи что есть на странице\n"
+        "  сделай скрин\n"
+        "  введи в поиск 'AI' и нажми Enter\n\n"
+        "🔥 Я сам пойму, что ты хочешь!"
     )
 
 
 async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global browser
+    global browser, orchestrator
     
     args = context.args
     if not args:
@@ -87,13 +95,13 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if browser:
             await browser.close()
             browser = None
-            hermes = None
+            orchestrator = None
         
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global browser
+    global browser, orchestrator
     
     args = context.args
     if not args:
@@ -198,13 +206,13 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if browser:
             await browser.close()
             browser = None
-            hermes = None
+            orchestrator = None
         
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
 
 async def accessibility(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global browser
+    global browser, orchestrator
     
     args = context.args
     if not args:
@@ -280,14 +288,14 @@ async def accessibility(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if browser:
             await browser.close()
             browser = None
-            hermes = None
+            orchestrator = None
         
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
 
 async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Протестировать кликабельные элементы на странице"""
-    global browser
+    global browser, orchestrator
     
     args = context.args
     if not args:
@@ -361,14 +369,14 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if browser:
             await browser.close()
             browser = None
-            hermes = None
+            orchestrator = None
         
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
 
 async def x(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Работа с X.com через Accessibility Tree"""
-    global browser, hermes
+    """Работа с X.com через Accessibility Tree (старая команда)"""
+    global browser, orchestrator
     
     args = context.args
     if not args:
@@ -395,10 +403,11 @@ async def x(update: Update, context: ContextTypes.DEFAULT_TYPE):
         eval = Eval(browser)
         acc = Accessibility(browser)
         ai_agent = AIAgent(browser, eval, acc)
+        hermes_agent = HermesAgent(browser, acc, eval, ai_agent)
         
-        if hermes is None:
-            hermes = HermesAgent(browser, acc, eval, ai_agent)
-            logger.info("✅ HermesAgent создан")
+        if orchestrator is None:
+            orchestrator = Orchestrator(browser, eval, acc, ai_agent, hermes_agent)
+            logger.info("✅ Оркестратор создан")
         
         if command == "help":
             await update.message.reply_text(
@@ -415,17 +424,17 @@ async def x(update: Update, context: ContextTypes.DEFAULT_TYPE):
             url = args[1] if len(args) > 1 else "https://x.com"
             await update.message.reply_text(f"📸 Получаю снапшот {url}...")
             
-            snapshot = await hermes.get_snapshot(url)
+            result = await orchestrator.snapshot(url)
             
             response = f"📸 **Снапшот страницы**\n\n"
-            response += f"🔗 {snapshot['url']}\n"
-            response += f"📊 **Интерактивных элементов:** {snapshot['total_interactive']}\n\n"
+            response += f"🔗 {url}\n"
+            response += f"📊 **Интерактивных элементов:** {result['total_elements']}\n\n"
             
-            for el in snapshot['elements'][:20]:
+            for el in result['elements'][:20]:
                 response += f"  {el['ref']}: {el['role']} — {el['name'][:40]}\n"
             
-            if len(snapshot['elements']) > 20:
-                response += f"\n... и ещё {len(snapshot['elements']) - 20} элементов"
+            if result['total_elements'] > 20:
+                response += f"\n... и ещё {result['total_elements'] - 20} элементов"
             
             await update.message.reply_text(response)
         
@@ -435,7 +444,7 @@ async def x(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Укажи ref: /x click @e1")
                 return
             
-            result = await hermes.click(ref)
+            result = await orchestrator.hermes.click(ref)
             if result.get("success"):
                 await update.message.reply_text(f"✅ Клик по {ref} выполнен")
                 
@@ -468,7 +477,7 @@ async def x(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Укажи ref и текст: /x type @e2 'текст'")
                 return
             
-            result = await hermes.type_text(ref, text)
+            result = await orchestrator.hermes.type_text(ref, text)
             if result.get("success"):
                 await update.message.reply_text(f"✅ Ввод в {ref} выполнен")
             else:
@@ -480,7 +489,7 @@ async def x(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Укажи ref: /x enter @e2")
                 return
             
-            result = await hermes.press_enter(ref)
+            result = await orchestrator.hermes.press_enter(ref)
             if result.get("success"):
                 await update.message.reply_text(f"✅ Enter на {ref} выполнен")
             else:
@@ -493,7 +502,7 @@ async def x(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             
             await update.message.reply_text("🧠 Думаю...")
-            response = await hermes.ask_ai(question)
+            response = await orchestrator.hermes.ask_ai(question)
             await update.message.reply_text(f"🧠 **AI Агент:**\n\n{response}")
         
         elif command == "chain":
@@ -514,7 +523,7 @@ async def x(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if browser:
             await browser.close()
             browser = None
-            hermes = None
+            orchestrator = None
         
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
@@ -575,7 +584,7 @@ async def results(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Общение с AI агентом"""
-    global browser, hermes
+    global browser, orchestrator
 
     user_id = update.effective_user.id
     text = ' '.join(context.args) if context.args else ''
@@ -674,7 +683,7 @@ async def ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if browser:
             await browser.close()
             browser = None
-            hermes = None
+            orchestrator = None
 
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
@@ -696,9 +705,62 @@ async def log(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
 
 
+# ===== ЛУИ — ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ =====
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает все текстовые сообщения — Луи общается с пользователем"""
+    global browser, orchestrator
+    
+    user_id = update.effective_user.id
+    text = update.message.text
+    
+    if not text:
+        return
+    
+    # Если это команда — пропускаем (они обрабатываются отдельно)
+    if text.startswith('/'):
+        return
+    
+    # Отправляем "печатает..."
+    await update.message.chat.send_action(action="typing")
+    
+    try:
+        if browser is None:
+            browser = await Browser().start()
+            logger.info("✅ Браузер запущен")
+            
+            eval = Eval(browser)
+            acc = Accessibility(browser)
+            ai_agent = AIAgent(browser, eval, acc)
+            hermes_agent = HermesAgent(browser, acc, eval, ai_agent)
+            orchestrator = Orchestrator(browser, eval, acc, ai_agent, hermes_agent)
+            logger.info("✅ Луи готов к работе!")
+        
+        # Если оркестратор ещё не создан
+        if orchestrator is None:
+            eval = Eval(browser)
+            acc = Accessibility(browser)
+            ai_agent = AIAgent(browser, eval, acc)
+            hermes_agent = HermesAgent(browser, acc, eval, ai_agent)
+            orchestrator = Orchestrator(browser, eval, acc, ai_agent, hermes_agent)
+        
+        # Выполняем команду
+        result = await orchestrator.execute(text)
+        
+        if result.get("success"):
+            message = result.get("message", "✅ Готово!")
+            await update.message.reply_text(message)
+        else:
+            await update.message.reply_text(result.get("message", "❌ Не понял. Попробуй переформулировать."))
+        
+    except Exception as e:
+        logger.error(f"Ошибка в Луи: {e}")
+        await update.message.reply_text(f"❌ Ой! Что-то пошло не так: {str(e)[:100]}")
+
+
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
+    # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("analyze", analyze))
@@ -709,7 +771,10 @@ def main():
     app.add_handler(CommandHandler("ai", ai))
     app.add_handler(CommandHandler("log", log))
     
-    logger.info("🚀 Бот запущен")
+    # ===== ЛУИ — ОБРАБАТЫВАЕТ ВСЕ ТЕКСТОВЫЕ СООБЩЕНИЯ =====
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    logger.info("🚀 Луи запущен и готов к общению!")
     app.run_polling()
 
 
