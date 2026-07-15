@@ -12,6 +12,8 @@ from browser import Browser
 from eval import Eval
 from accessibility import Accessibility
 from ai import AIAgent
+from tester import ElementTester
+from site_map import SiteMap
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
@@ -35,6 +37,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/screen <url> — скриншот страницы\n"
         "/analyze <url> — анализ страницы (кнопки, поля, формы)\n"
         "/accessibility <url> — доступность страницы\n"
+        "/test <url> — тестирование элементов\n"
         "/ai <вопрос> — общение с AI агентом\n"
         "/log — скачать лог"
     )
@@ -274,6 +277,86 @@ async def accessibility(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
 
+async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Протестировать кликабельные элементы на странице"""
+    global browser
+    
+    args = context.args
+    if not args:
+        await update.message.reply_text("❌ Укажи URL: /test https://example.com")
+        return
+    
+    url = args[0]
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    
+    user_id = update.effective_user.id
+    await update.message.reply_text(f"🧪 Тестирую элементы на {url}...")
+    
+    try:
+        if browser is None:
+            browser = await Browser().start()
+            logger.info("✅ Браузер запущен")
+        
+        eval = Eval(browser)
+        tester = ElementTester(browser, eval)
+        
+        report = await tester.run_full_test(url)
+        
+        results = report.get("results", {})
+        verified_count = results.get('verified', 0)
+        failed_count = results.get('failed', 0)
+        total = results.get('total', 0)
+        success_rate = f"{verified_count / total * 100:.1f}%" if total > 0 else "0%"
+        
+        response = (
+            f"🧪 **Результаты тестирования**\n\n"
+            f"🔗 {url}\n"
+            f"📊 **Всего элементов:** {total}\n"
+            f"✅ **Работают:** {verified_count}\n"
+            f"❌ **Не работают:** {failed_count}\n"
+            f"⏭️ **Пропущено:** {results.get('skipped', 0)}\n"
+            f"📈 **Успешность:** {success_rate}\n\n"
+        )
+        
+        if results.get('actions'):
+            response += "✅ **Проверенные команды (первые 10):**\n"
+            for cmd in results['actions'][:10]:
+                text = cmd.get('text', cmd.get('name', ''))[:30]
+                selector = cmd.get('selector', '')
+                if selector:
+                    response += f"  🔘 {text}\n"
+                    response += f"     → {selector}\n"
+            if len(results['actions']) > 10:
+                response += f"  ... и ещё {len(results['actions']) - 10} команд\n"
+        
+        if results.get('failed_elements'):
+            response += "\n❌ **Упавшие элементы (первые 5):**\n"
+            for el in results['failed_elements'][:5]:
+                text = el.get('text', el.get('name', ''))[:30]
+                error = el.get('error', 'Неизвестная ошибка')
+                response += f"  ❌ {text}: {error}\n"
+        
+        response += f"\n📸 **Скриншотов:** {report.get('screenshots_count', 0)}\n"
+        response += f"💾 **Результаты:** test_results.json, test_logs.txt\n"
+        response += f"🗺️ **Карта:** site_map.json\n"
+        response += f"\n💡 Теперь AI знает, какие элементы работают!"
+        
+        await update.message.reply_text(response)
+        
+        logger.info(f"User {user_id} запустил тест {url}")
+        
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Ошибка тестирования: {error_msg}")
+        
+        if browser:
+            await browser.close()
+            browser = None
+        
+        await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
+
+
 async def ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Общение с AI агентом"""
     global browser
@@ -318,19 +401,16 @@ async def ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # ===== ПОИСК ПО КАРТЕ =====
         elif url and ('где' in text_lower or 'найти' in text_lower or 'покажи' in text_lower):
-            # Проверяем, есть ли карта для этого URL
             site_map = agent.site_map
             map_data = site_map.get(url)
             if map_data:
-                # Ищем элемент по тексту из запроса
-                # Извлекаем ключевые слова из запроса
                 words = text_lower.split()
                 found = None
                 for word in words:
                     if len(word) > 3:
-                        result = site_map.find_element(url, word)
-                        if result:
-                            found = result
+                        result_search = site_map.find_element(url, word)
+                        if result_search:
+                            found = result_search
                             break
                 
                 if found:
@@ -411,6 +491,7 @@ def main():
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("analyze", analyze))
     app.add_handler(CommandHandler("accessibility", accessibility))
+    app.add_handler(CommandHandler("test", test))
     app.add_handler(CommandHandler("ai", ai))
     app.add_handler(CommandHandler("log", log))
     
