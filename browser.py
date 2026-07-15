@@ -7,6 +7,7 @@ from subprocess import Popen, PIPE, TimeoutExpired
 import os
 
 from mask import Mask
+from cookies import X_COOKIES  # ← импорт кук
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ class Browser:
         return "/usr/bin/google-chrome"
     
     async def start(self):
-        """Запуск Chrome с маскировкой из mask.py"""
+        """Запуск Chrome с маскировкой и установкой кук"""
         try:
             if not self._is_chrome_running():
                 args = Mask.get_launch_args(self.chrome_path, self.debug_port)
@@ -53,17 +54,29 @@ class Browser:
             await self.send("Network.enable")
             await self.set_viewport(self.viewport_width, self.viewport_height)
             
-            # Применяем JS-маскировку из mask.py
+            # ===== УСТАНОВКА КУК ПРИ СТАРТЕ =====
+            await self.set_cookies(X_COOKIES)
+            
+            # Применяем JS-маскировку
             js_mask = Mask.get_js_mask()
             await self.eval_js(js_mask)
             self._masked = True
-            logger.info("✅ Браузер готов (маскировка применена)")
+            logger.info("✅ Браузер готов (маскировка + куки установлены)")
             
             return self
         except Exception as e:
             logger.error(f"❌ Ошибка запуска: {e}")
             await self.close()
             raise
+    
+    async def set_cookies(self, cookies_list):
+        """Установить куки одной командой"""
+        if not cookies_list:
+            return
+        await self.send("Network.setCookies", {
+            "cookies": cookies_list
+        })
+        logger.info(f"🍪 Установлено {len(cookies_list)} кук")
     
     def _is_chrome_running(self):
         try:
@@ -100,7 +113,6 @@ class Browser:
                 return data
     
     async def eval_js(self, js_code):
-        """Выполнить JavaScript на странице"""
         result = await self.send("Runtime.evaluate", {
             "expression": js_code,
             "returnByValue": True
@@ -138,17 +150,14 @@ class Browser:
         raise RuntimeError(f"data не найдена: {result}")
     
     async def human_click(self, selector):
-        """Человеческий клик через mask.py"""
         js = Mask.get_human_click_js(selector)
         return await self.eval_js(js)
     
     async def human_type(self, selector, text):
-        """Человеческий ввод через mask.py"""
         js = Mask.get_human_type_js(selector, text)
         return await self.eval_js(js)
     
     async def human_scroll(self, distance):
-        """Человеческий скролл через mask.py"""
         js = Mask.get_human_scroll_js(distance)
         return await self.eval_js(js)
     
