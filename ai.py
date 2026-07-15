@@ -6,6 +6,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+
 class AIAgent:
     def __init__(self, browser, eval, accessibility):
         self.browser = browser
@@ -42,81 +43,110 @@ class AIAgent:
         return response.json()["choices"][0]["message"]["content"]
 
     async def analyze_structure(self, url: str) -> str:
+        """Комбинированный структурный анализ (Accessibility + DOM)"""
+        
         await self.browser.goto(url)
         await asyncio.sleep(3)
-
+        
+        # 1. Собираем DOM с прокруткой
+        zones = await self.eval.get_elements_with_context(scroll=True)
+        
+        # 2. Собираем Accessibility
         await self.accessibility.enable()
         await asyncio.sleep(2)
-
-        nodes = await self.accessibility.get_full_tree()
         summary = await self.accessibility.get_summary()
+        
+        # 3. Собираем все элементы
         buttons = await self.eval.get_all_buttons()
         inputs = await self.eval.get_all_inputs()
         links = await self.eval.get_all_links()
         forms = await self.eval.get_all_forms()
-        zones = await self.eval.get_elements_with_context()
-
-        prompt = f"""
-Ты — AI агент для структурного анализа веб-страниц.
-
-**Страница:** {url}
-
-**Accessibility Tree (структура):**
-{json.dumps(nodes[:30], indent=2, ensure_ascii=False)[:1500]}
-
-**Статистика доступности:**
-- Кнопок: {summary['buttons']}
-- Полей: {summary['inputs']}
-- Ссылок: {summary['links']}
-- Заголовков: {summary['headings']}
-- Landmarks: {summary['landmarks']}
-
-**DOM элементы:**
-- Кнопок: {len(buttons)}
-- Полей ввода: {len(inputs)}
-- Ссылок: {len(links)}
-- Форм: {len(forms)}
-
-**Группировка по зонам (DOM):**
-{json.dumps(zones, indent=2, ensure_ascii=False)[:1500]}
-
-**Задача:**
-Создай структурированное описание страницы, объединяя:
-1. Семантическую структуру из Accessibility Tree (роли, иерархия)
-2. Конкретные элементы из DOM (data-testid, тексты)
-
-Формат ответа — строго такой:
-
-🏗️ **Структура страницы:**
-
-  🏠 **Навигация (navigation):**
-    🔘 Главная (testid: ...)
-    🔘 Обзор (testid: ...)
-
-  🔍 **Поиск (search):**
-    ✏️ Поисковый запрос (testid: ...)
-
-  📄 **Основной контент (main):**
-    🐦 **Карточка (article):**
-      🔘 Лайк (testid: ...)
-      🔘 Ретвит (testid: ...)
-
-  📋 **Боковая панель (complementary):**
-    📌 Тренды
-
-  📌 **Футер (contentinfo):**
-    🔗 Ссылка
-
-📊 **Статистика:**
-  Кнопок: ... | Полей: ... | Ссылок: ... | Форм: ...
-"""
-
-        messages = [
-            {"role": "system", "content": "Ты — эксперт по структуре веб-страниц. Отвечай строго в указанном формате."},
-            {"role": "user", "content": prompt}
-        ]
-
-        return await self._call_api(messages)
+        checkboxes = await self.eval.get_all_checkboxes()
+        selects = await self.eval.get_all_selects()
+        
+        # 4. Формируем ответ
+        response = f"🏗️ **Структура страницы:**\n\n"
+        
+        zone_icons = {
+            'navigation': '🏠',
+            'header': '🔍',
+            'main': '📄',
+            'articles': '🐦',
+            'complementary': '📋',
+            'footer': '📌',
+            'other': '📎'
+        }
+        
+        zone_names = {
+            'navigation': 'Навигация',
+            'header': 'Шапка / Поиск',
+            'main': 'Основной контент',
+            'articles': 'Карточки',
+            'complementary': 'Боковая панель',
+            'footer': 'Футер',
+            'other': 'Остальное'
+        }
+        
+        for zone, items in zones.items():
+            if not items:
+                continue
+            
+            icon = zone_icons.get(zone, '📎')
+            name = zone_names.get(zone, zone)
+            response += f"  {icon} **{name} ({len(items)}):**\n"
+            
+            for item in items[:10]:
+                text = item.get('text', '')[:35]
+                test_id = item.get('testId', '')
+                aria_label = item.get('ariaLabel', '')
+                
+                tag = item.get('tag', '').lower()
+                if tag in ['button', 'input[type="submit"]']:
+                    prefix = '🔘'
+                elif tag in ['input', 'textarea']:
+                    prefix = '✏️'
+                elif tag == 'a':
+                    prefix = '🔗'
+                elif tag == 'form':
+                    prefix = '📋'
+                else:
+                    prefix = '•'
+                
+                if test_id:
+                    display = f"{text} (testid: {test_id})"
+                elif aria_label:
+                    display = f"{aria_label} (aria: {aria_label})"
+                elif text:
+                    display = text
+                else:
+                    display = f"[{tag}]"
+                
+                response += f"    {prefix} {display}\n"
+            
+            if len(items) > 10:
+                response += f"    ... и ещё {len(items) - 10} элементов\n"
+            response += "\n"
+        
+        # Статистика
+        response += f"📊 **Статистика:**\n"
+        response += f"  🔘 Кнопок: {len(buttons)}\n"
+        response += f"  ✏️ Полей ввода: {len(inputs)}\n"
+        response += f"  🔗 Ссылок: {len(links)}\n"
+        response += f"  📋 Форм: {len(forms)}\n"
+        if checkboxes:
+            response += f"  ☑️ Checkbox/Radio: {len(checkboxes)}\n"
+        if selects:
+            response += f"  📋 Select: {len(selects)}\n"
+        
+        # Дополнительно: Accessibility статистика
+        response += f"\n♿ **Доступность:**\n"
+        response += f"  🔘 Кнопок (role=button): {summary['buttons']}\n"
+        response += f"  ✏️ Полей (role=textbox): {summary['inputs']}\n"
+        response += f"  🔗 Ссылок (role=link): {summary['links']}\n"
+        response += f"  📌 Заголовков: {summary['headings']}\n"
+        response += f"  🏛️ Landmarks: {summary['landmarks']}\n"
+        
+        return response
 
     async def ask(self, question: str) -> str:
         messages = [{"role": "system", "content": "Ты — AI ассистент для веб-автоматизации."}]
