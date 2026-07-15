@@ -430,6 +430,200 @@ class Eval:
             """
         )
     
+    # ========== ИНТЕРАКТИВНЫЕ ЭЛЕМЕНТЫ (НОВЫЕ) ==========
+    
+    async def get_all_buttons(self) -> list:
+        """Получить все кнопки на странице"""
+        return await self.execute(
+            """
+            (function() {
+                return Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"]')).map(el => ({
+                    text: el.innerText || el.value || '',
+                    type: el.type || 'button',
+                    id: el.id || '',
+                    name: el.name || '',
+                    class: el.className || '',
+                    disabled: el.disabled || false,
+                    visible: el.offsetParent !== null
+                }));
+            })()
+            """
+        )
+    
+    async def get_all_inputs(self) -> list:
+        """Получить все поля ввода на странице"""
+        return await self.execute(
+            """
+            (function() {
+                return Array.from(document.querySelectorAll('input:not([type="submit"]):not([type="button"]), textarea, select')).map(el => ({
+                    type: el.type || el.tagName.toLowerCase(),
+                    name: el.name || '',
+                    id: el.id || '',
+                    value: el.value || '',
+                    placeholder: el.placeholder || '',
+                    disabled: el.disabled || false,
+                    visible: el.offsetParent !== null
+                }));
+            })()
+            """
+        )
+    
+    async def get_all_checkboxes(self) -> list:
+        """Получить все checkbox/radio на странице"""
+        return await self.execute(
+            """
+            (function() {
+                return Array.from(document.querySelectorAll('input[type="checkbox"], input[type="radio"]')).map(el => ({
+                    type: el.type,
+                    name: el.name || '',
+                    id: el.id || '',
+                    checked: el.checked || false,
+                    disabled: el.disabled || false,
+                    value: el.value || '',
+                    visible: el.offsetParent !== null
+                }));
+            })()
+            """
+        )
+    
+    async def get_all_selects(self) -> list:
+        """Получить все select на странице"""
+        return await self.execute(
+            """
+            (function() {
+                return Array.from(document.querySelectorAll('select')).map(el => ({
+                    name: el.name || '',
+                    id: el.id || '',
+                    value: el.value || '',
+                    disabled: el.disabled || false,
+                    visible: el.offsetParent !== null,
+                    options: Array.from(el.options).map(opt => ({
+                        text: opt.text,
+                        value: opt.value,
+                        selected: opt.selected
+                    }))
+                }));
+            })()
+            """
+        )
+    
+    async def get_button(self, selector: str) -> dict:
+        """Получить информацию о конкретной кнопке"""
+        return await self.execute(
+            f"""
+            (function() {{
+                const el = document.querySelector('{selector}');
+                if (!el) return null;
+                const rect = el.getBoundingClientRect();
+                return {{
+                    text: el.innerText || el.value || '',
+                    type: el.type || 'button',
+                    id: el.id || '',
+                    name: el.name || '',
+                    class: el.className || '',
+                    disabled: el.disabled || false,
+                    visible: el.offsetParent !== null,
+                    position: {{
+                        x: rect.x,
+                        y: rect.y,
+                        width: rect.width,
+                        height: rect.height,
+                        top: rect.top,
+                        left: rect.left
+                    }}
+                }};
+            }})()
+            """
+        )
+    
+    async def get_input(self, selector: str) -> dict:
+        """Получить информацию о конкретном поле ввода"""
+        return await self.execute(
+            f"""
+            (function() {{
+                const el = document.querySelector('{selector}');
+                if (!el) return null;
+                const rect = el.getBoundingClientRect();
+                return {{
+                    type: el.type || el.tagName.toLowerCase(),
+                    name: el.name || '',
+                    id: el.id || '',
+                    value: el.value || '',
+                    placeholder: el.placeholder || '',
+                    disabled: el.disabled || false,
+                    visible: el.offsetParent !== null,
+                    position: {{
+                        x: rect.x,
+                        y: rect.y,
+                        width: rect.width,
+                        height: rect.height,
+                        top: rect.top,
+                        left: rect.left
+                    }}
+                }};
+            }})()
+            """
+        )
+    
+    async def click_button(self, selector: str) -> bool:
+        """Кликнуть по кнопке (через JS)"""
+        return await self.execute(
+            f"""
+            (function() {{
+                const el = document.querySelector('{selector}');
+                if (!el) return false;
+                el.click();
+                return true;
+            }})()
+            """
+        )
+    
+    async def fill_input(self, selector: str, text: str) -> bool:
+        """Заполнить поле ввода"""
+        return await self.execute(
+            f"""
+            (function() {{
+                const el = document.querySelector('{selector}');
+                if (!el) return false;
+                el.focus();
+                el.value = '{text}';
+                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                el.blur();
+                return true;
+            }})()
+            """
+        )
+    
+    async def check_checkbox(self, selector: str, checked: bool = True) -> bool:
+        """Установить состояние checkbox/radio"""
+        return await self.execute(
+            f"""
+            (function() {{
+                const el = document.querySelector('{selector}');
+                if (!el) return false;
+                if (el.checked !== {str(checked).lower()}) {{
+                    el.click();
+                }}
+                return true;
+            }})()
+            """
+        )
+    
+    async def select_option(self, selector: str, value: str) -> bool:
+        """Выбрать option в select по значению"""
+        return await self.execute(
+            f"""
+            (function() {{
+                const el = document.querySelector('{selector}');
+                if (!el) return false;
+                el.value = '{value}';
+                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                return true;
+            }})()
+            """
+        )
+    
     # ========== STORAGE ==========
     
     async def get_local_storage(self, key: str) -> str:
@@ -522,7 +716,7 @@ class Eval:
                     id: form.id || '',
                     name: form.name || '',
                     inputs: Array.from(form.querySelectorAll('input, textarea, select')).map(el => ({
-                        type: el.type || el.tagName,
+                        type: el.type || el.tagName.toLowerCase(),
                         name: el.name || '',
                         id: el.id || '',
                         value: el.value || ''
