@@ -4,6 +4,7 @@ import base64
 import asyncio
 import json
 import re
+import zipfile
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -39,7 +40,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/accessibility <url> — доступность страницы\n"
         "/test <url> — тестирование элементов\n"
         "/ai <вопрос> — общение с AI агентом\n"
-        "/log — скачать лог"
+        "/results — скачать результаты тестов\n"
+        "/log — скачать лог бота"
     )
 
 
@@ -357,6 +359,64 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
 
+async def results(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Скачать результаты тестирования"""
+    user_id = update.effective_user.id
+    
+    try:
+        # Отправляем test_results.json
+        if os.path.exists("test_results.json"):
+            with open("test_results.json", "rb") as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename=f"test_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    caption="📊 Результаты тестирования"
+                )
+        else:
+            await update.message.reply_text("❌ Нет файла test_results.json")
+        
+        # Отправляем test_logs.txt
+        if os.path.exists("test_logs.txt"):
+            with open("test_logs.txt", "rb") as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename=f"test_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                    caption="📋 Логи тестирования"
+                )
+        
+        # Отправляем site_map.json
+        if os.path.exists("site_map.json"):
+            with open("site_map.json", "rb") as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename=f"site_map_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    caption="🗺️ Карта сайта"
+                )
+        
+        # Отправляем скриншоты архивом
+        if os.path.exists("screenshots") and os.listdir("screenshots"):
+            zip_path = f"screenshots_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+            with zipfile.ZipFile(zip_path, 'w') as zipf:
+                for root, dirs, files in os.walk("screenshots"):
+                    for file in files:
+                        zipf.write(os.path.join(root, file))
+            
+            with open(zip_path, "rb") as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename=zip_path,
+                    caption="📸 Скриншоты тестирования"
+                )
+            
+            os.remove(zip_path)
+        
+        logger.info(f"User {user_id} скачал результаты теста")
+        
+    except Exception as e:
+        logger.error(f"Ошибка скачивания результатов: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
+
+
 async def ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Общение с AI агентом"""
     global browser
@@ -492,6 +552,7 @@ def main():
     app.add_handler(CommandHandler("analyze", analyze))
     app.add_handler(CommandHandler("accessibility", accessibility))
     app.add_handler(CommandHandler("test", test))
+    app.add_handler(CommandHandler("results", results))
     app.add_handler(CommandHandler("ai", ai))
     app.add_handler(CommandHandler("log", log))
     
