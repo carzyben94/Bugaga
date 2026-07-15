@@ -575,7 +575,7 @@ async def results(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Общение с AI агентом"""
-    global browser
+    global browser, hermes
 
     user_id = update.effective_user.id
     text = ' '.join(context.args) if context.args else ''
@@ -610,4 +610,108 @@ async def ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if url and ('карта' in text_lower or 'map' in text_lower or 'слепок' in text_lower):
             result = await agent.build_site_map(url)
 
-        elif url and ('
+        elif url and ('анализ' in text_lower or 'структура' in text_lower or 'проанализируй' in text_lower):
+            result = await agent.analyze_structure(url)
+
+        elif url and ('где' in text_lower or 'найти' in text_lower or 'покажи' in text_lower):
+            site_map = agent.site_map
+            map_data = site_map.get(url)
+            if map_data:
+                words = text_lower.split()
+                found = None
+                for word in words:
+                    if len(word) > 3:
+                        result_search = site_map.find_element(url, word)
+                        if result_search:
+                            found = result_search
+                            break
+                
+                if found:
+                    el = found['element']
+                    zone = found['zone']
+                    response = f"🔍 **Найдено в карте сайта:**\n\n"
+                    response += f"📍 **Зона:** {zone}\n"
+                    response += f"📝 **Текст:** {el.get('text', '')}\n"
+                    if el.get('testId'):
+                        response += f"🔖 **testid:** {el.get('testId')}\n"
+                        response += f"🎯 **Селектор:** `[data-testid='{el.get('testId')}']`\n"
+                    if el.get('ariaLabel'):
+                        response += f"🏷️ **aria-label:** {el.get('ariaLabel')}\n"
+                    if el.get('type'):
+                        response += f"📌 **Тип:** {el.get('type')}\n"
+                    result = response
+                else:
+                    result = f"❌ Не нашёл элемент по запросу '{text}' в карте сайта {url}\n\n💡 Попробуй: /ai карта {url} — чтобы построить карту"
+            else:
+                result = f"❌ Нет карты для {url}\n\n💡 Попробуй: /ai карта {url} — чтобы построить карту"
+
+        elif url:
+            await browser.goto(url)
+            await asyncio.sleep(2)
+            title = await eval.get_title()
+            buttons = await eval.get_all_buttons()
+            inputs = await eval.get_all_inputs()
+            links = await eval.get_all_links()
+            prompt = f"Страница: {url}\nЗаголовок: {title}\nКнопок: {len(buttons)}\nПолей: {len(inputs)}\nСсылок: {len(links)}\n\nВопрос: {text}"
+            result = await agent.ask(prompt)
+
+        else:
+            result = await agent.ask(text)
+
+        if len(result) > 4000:
+            for i in range(0, len(result), 4000):
+                await update.message.reply_text(result[i:i+4000])
+        else:
+            await update.message.reply_text(f"🧠 **AI Агент:**\n\n{result}")
+
+        await agent.close()
+        logger.info(f"User {user_id} -> AI: {text[:50]}...")
+
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Ошибка AI: {error_msg}")
+
+        if browser:
+            await browser.close()
+            browser = None
+            hermes = None
+
+        await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
+
+
+async def log(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    try:
+        with open("bot.log", "rb") as f:
+            await update.message.reply_document(
+                document=f,
+                filename=f"bot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log",
+                caption=f"📋 Лог бота ({datetime.now().strftime('%Y-%m-%d %H:%M')})"
+            )
+        logger.info(f"User {user_id} скачал лог")
+    except FileNotFoundError:
+        await update.message.reply_text("❌ Файл лога не найден")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
+
+
+def main():
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("screen", screen))
+    app.add_handler(CommandHandler("analyze", analyze))
+    app.add_handler(CommandHandler("accessibility", accessibility))
+    app.add_handler(CommandHandler("test", test))
+    app.add_handler(CommandHandler("x", x))
+    app.add_handler(CommandHandler("results", results))
+    app.add_handler(CommandHandler("ai", ai))
+    app.add_handler(CommandHandler("log", log))
+    
+    logger.info("🚀 Бот запущен")
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
