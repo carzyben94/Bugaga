@@ -1,10 +1,12 @@
-# browser.py - полная автоматизация с запуском Chrome
+# browser.py - исправленная версия с правильным получением WS URL
 import asyncio
 import logging
 import subprocess
 import time
 import os
 import shutil
+import json
+import requests
 from typing import Optional, Dict, Any, List
 from cdp_use.client import CDPClient
 
@@ -14,24 +16,18 @@ class BrowserManager:
     """Управление Chrome через CDP с автоматическим запуском"""
     
     def __init__(self, chrome_path: str = "/usr/bin/google-chrome", port: int = 9222):
-        """
-        Args:
-            chrome_path: путь к Chrome
-            port: порт для отладки
-        """
         self.chrome_path = chrome_path
         self.port = port
-        self.ws_url = f"ws://localhost:{port}/devtools/browser/..."
+        self.ws_url: Optional[str] = None
         self.client: Optional[CDPClient] = None
         self.current_session = None
         self.target_id: Optional[str] = None
         self._console_logs: List[str] = []
         self.chrome_process = None
-        self._is_own_chrome = False  # Флаг: мы запустили Chrome или он уже был запущен
+        self._is_own_chrome = False
     
     def _find_chrome(self) -> Optional[str]:
         """Найти Chrome в системе"""
-        # Список возможных путей
         paths = [
             self.chrome_path,
             "/usr/bin/google-chrome",
@@ -39,8 +35,6 @@ class BrowserManager:
             "/usr/bin/chromium",
             "/usr/bin/google-chrome-stable",
             "/opt/google/chrome/chrome",
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",  # macOS
-            "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",  # Windows
         ]
         
         for path in paths:
@@ -50,6 +44,46 @@ class BrowserManager:
         
         return None
     
+    def _get_websocket_url(self) -> Optional[str]:
+        """Получить WebSocket URL из Chrome"""
+        try:
+            # Получаем список доступных страниц
+            response = requests.get(f"http://localhost:{self.port}/json")
+            if response.status_code == 200:
+                pages = response.json()
+                
+                # Ищем первую страницу с WebSocket URL
+                for page in pages:
+                    if "webSocketDebuggerUrl" in page:
+                        ws_url = page["webSocketDebuggerUrl"]
+                        logger.info(f"✅ Найден WebSocket URL: {ws_url}")
+                        return ws_url
+                
+                # Если страниц нет, создаём новую
+                response = requests.get(f"http://localhost:{self.port}/json/new")
+                if response.status_code == 200:
+                    page = response.json()
+                    if "webSocketDebuggerUrl" in page:
+                        ws_url = page["webSocketDebuggerUrl"]
+                        logger.info(f"✅ Создана новая страница: {ws_url}")
+                        return ws_url
+            else:
+                # Пробуем альтернативный путь
+                response = requests.get(f"http://localhost:{self.port}/json/version")
+                if response.status_code == 200:
+                    data = response.json()
+                    if "webSocketDebuggerUrl" in data:
+                        ws_url = data["webSocketDebuggerUrl"]
+                        logger.info(f"✅ Найден WebSocket URL: {ws_url}")
+                        return ws_url
+            
+            logger.error("❌ Не удалось получить WebSocket URL")
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения WebSocket URL: {e}")
+            return None
+    
     async def _launch_chrome(self, headless: bool = True) -> bool:
         """Запустить Chrome"""
         try:
@@ -58,7 +92,7 @@ class BrowserManager:
                 logger.error("❌ Chrome не найден в системе")
                 return False
             
-            # Проверяем, не запущен ли уже Chrome на этом порту
+            # Проверяем, не запущен ли уже Chrome
             if await self._is_chrome_running():
                 logger.info(f"✅ Chrome уже запущен на порту {self.port}")
                 return True
@@ -73,14 +107,13 @@ class BrowserManager:
                 "--disable-gpu",
                 "--disable-dev-shm-usage",
                 "--disable-setuid-sandbox",
-                "--no-sandbox",  # Нужно для Docker/Railway
+                "--no-sandbox",
             ]
             
             if headless:
                 cmd.append("--headless")
                 cmd.append("--window-size=1920,1080")
             
-            # Запускаем Chrome
             self.chrome_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
@@ -94,8 +127,11 @@ class BrowserManager:
             for i in range(10):
                 time.sleep(1)
                 if await self._is_chrome_running():
-                    logger.info(f"✅ Chrome запущен на порту {self.port}")
-                    return True
+                    # Получаем WebSocket URL
+                    self.ws_url = self._get_websocket_url()
+                    if self.ws_url:
+                        logger.info(f"✅ Chrome готов на порту {self.port}")
+                        return True
                 logger.debug(f"Ожидание запуска Chrome... {i+1}/10")
             
             logger.error("❌ Chrome не запустился за 10 секунд")
@@ -108,22 +144,12 @@ class BrowserManager:
     async def _is_chrome_running(self) -> bool:
         """Проверить, запущен ли Chrome на порту"""
         try:
-            # Пробуем подключиться к WebSocket
-            import websockets
-            try:
-                async with websockets.connect(self.ws_url, timeout=1):
-                    return True
-            except:
-                pass
-            
-            # Альтернативная проверка через curl
             import socket
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(1)
             result = sock.connect_ex(('127.0.0.1', self.port))
             sock.close()
             return result == 0
-            
         except Exception:
             return False
     
@@ -134,13 +160,11 @@ class BrowserManager:
                 logger.info("🛑 Закрываю Chrome...")
                 self.chrome_process.terminate()
                 
-                # Ждём завершения
                 for _ in range(5):
                     if self.chrome_process.poll() is not None:
                         break
                     time.sleep(1)
                 
-                # Если не завершился - убиваем
                 if self.chrome_process.poll() is None:
                     self.chrome_process.kill()
                 
@@ -178,7 +202,6 @@ class BrowserManager:
                 self.target_id = None
                 logger.info("✅ Отключен от Chrome")
             
-            # Закрываем Chrome если сами запускали
             if self._is_own_chrome:
                 await self._close_chrome()
                 
@@ -187,33 +210,30 @@ class BrowserManager:
             logger.error(f"❌ Ошибка отключения: {e}")
             return False
     
-    async def list_tabs(self) -> List[Dict[str, Any]]:
-        """Получить список всех открытых вкладок"""
-        try:
-            targets = await self.client.send.Target.getTargets()
-            tabs = []
-            for target in targets.get("targetInfos", []):
-                if target.get("type") == "page":
-                    tabs.append({
-                        "id": target["targetId"],
-                        "url": target["url"],
-                        "title": target.get("title", ""),
-                        "attached": target.get("attached", False)
-                    })
-            return tabs
-        except Exception as e:
-            logger.error(f"❌ Ошибка получения списка вкладок: {e}")
-            return []
-    
     async def create_tab(self, url: str = "about:blank") -> Optional[str]:
         """Создать новую вкладку"""
         try:
+            # Сначала получаем список вкладок
+            targets = await self.client.send.Target.getTargets()
+            
+            # Создаём новую
             result = await self.client.send.Target.createTarget({"url": url})
             target_id = result["targetId"]
             logger.info(f"✅ Создана вкладка: {target_id}")
             return target_id
         except Exception as e:
             logger.error(f"❌ Ошибка создания вкладки: {e}")
+            return None
+    
+    async def attach_to_tab(self, target_id: str):
+        """Подключиться к вкладке"""
+        try:
+            self.target_id = target_id
+            self.current_session = await self.client.attach_target(target_id)
+            logger.info(f"✅ Подключен к вкладке: {target_id}")
+            return self.current_session
+        except Exception as e:
+            logger.error(f"❌ Ошибка подключения к вкладке: {e}")
             return None
     
     async def close_tab(self, target_id: str) -> bool:
@@ -225,17 +245,6 @@ class BrowserManager:
         except Exception as e:
             logger.error(f"❌ Ошибка закрытия вкладки: {e}")
             return False
-    
-    async def attach_to_tab(self, target_id: str):
-        """Подключиться к вкладке"""
-        try:
-            self.target_id = target_id
-            self.current_session = await self.client.attach_to_target(target_id)
-            logger.info(f"✅ Подключен к вкладке: {target_id}")
-            return self.current_session
-        except Exception as e:
-            logger.error(f"❌ Ошибка подключения к вкладке: {e}")
-            return None
     
     async def navigate(self, url: str) -> bool:
         """Перейти по URL"""
@@ -249,20 +258,6 @@ class BrowserManager:
             logger.error(f"❌ Ошибка навигации: {e}")
             return False
     
-    async def get_html(self) -> Optional[str]:
-        """Получить HTML страницы"""
-        try:
-            if not self.current_session:
-                raise Exception("Нет активной сессии")
-            result = await self.current_session.send.Runtime.evaluate({
-                "expression": "document.documentElement.outerHTML",
-                "returnByValue": True
-            })
-            return result["result"]["value"]
-        except Exception as e:
-            logger.error(f"❌ Ошибка получения HTML: {e}")
-            return None
-    
     async def get_title(self) -> Optional[str]:
         """Получить заголовок страницы"""
         try:
@@ -275,20 +270,6 @@ class BrowserManager:
             return result["result"]["value"]
         except Exception as e:
             logger.error(f"❌ Ошибка получения заголовка: {e}")
-            return None
-    
-    async def execute_js(self, script: str) -> Optional[Any]:
-        """Выполнить JavaScript на странице"""
-        try:
-            if not self.current_session:
-                raise Exception("Нет активной сессии")
-            result = await self.current_session.send.Runtime.evaluate({
-                "expression": script,
-                "returnByValue": True
-            })
-            return result["result"]["value"]
-        except Exception as e:
-            logger.error(f"❌ Ошибка выполнения JS: {e}")
             return None
     
     async def screenshot(self, format: str = "png") -> Optional[str]:
@@ -309,10 +290,8 @@ if __name__ == "__main__":
     async def test():
         browser = BrowserManager()
         
-        # Автоматически запустит Chrome и подключится
         await browser.connect(headless=True)
         
-        # Создаём вкладку и работаем
         target_id = await browser.create_tab()
         await browser.attach_to_tab(target_id)
         await browser.navigate("https://example.com")
@@ -320,8 +299,7 @@ if __name__ == "__main__":
         title = await browser.get_title()
         print(f"Заголовок: {title}")
         
-        # Закрываем
         await browser.close_tab(target_id)
-        await browser.disconnect()  # Автоматически закроет Chrome
+        await browser.disconnect()
     
     asyncio.run(test())
