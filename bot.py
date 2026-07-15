@@ -3,6 +3,7 @@ import logging
 import base64
 import asyncio
 import json
+import re
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -34,7 +35,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/screen <url> — скриншот страницы\n"
         "/analyze <url> — анализ страницы (кнопки, поля, формы)\n"
         "/accessibility <url> — доступность страницы\n"
-        "/ai <url> — AI анализ страницы\n"
+        "/ai <вопрос> — общение с AI агентом\n"
         "/log — скачать лог"
     )
 
@@ -214,7 +215,6 @@ async def accessibility(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await browser.goto(url)
         
-        # Ждём загрузки страницы
         logger.info("⏳ Ожидание загрузки страницы...")
         for _ in range(30):
             try:
@@ -275,53 +275,102 @@ async def accessibility(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """AI анализ страницы"""
+    """Общение с AI агентом"""
     global browser
-    
-    args = context.args
-    if not args:
-        await update.message.reply_text("❌ Укажи URL: /ai https://example.com")
-        return
-    
-    url = args[0]
-    if not url.startswith(("http://", "https://")):
-        url = "https://" + url
-    
+
     user_id = update.effective_user.id
-    await update.message.reply_text(f"🧠 Запускаю AI анализ для {url}...")
-    
+    text = ' '.join(context.args) if context.args else ''
+
+    if not text:
+        await update.message.reply_text(
+            "🧠 **AI Агент**\n\n"
+            "Просто напиши вопрос или задачу.\n\n"
+            "Примеры:\n"
+            "  /ai проанализируй https://example.com\n"
+            "  /ai какие кнопки на https://x.com\n"
+            "  /ai есть ли форма входа\n"
+            "  /ai проверь доступность https://x.com\n"
+            "  /ai что можно автоматизировать\n"
+        )
+        return
+
+    await update.message.reply_text(f"🧠 Думаю...")
+
     try:
         if browser is None:
             browser = await Browser().start()
             logger.info("✅ Браузер запущен")
-        
-        await browser.goto(url)
-        await asyncio.sleep(2)
-        
+
         eval = Eval(browser)
         acc = Accessibility(browser)
         agent = AIAgent(browser, eval, acc)
-        
-        result = await agent.analyze_page(url)
-        
+
+        # Проверяем, есть ли URL в тексте
+        url_match = re.search(r'https?://[^\s]+', text)
+        url = url_match.group(0) if url_match else None
+
+        # Проверяем, о чём вопрос
+        text_lower = text.lower()
+
+        if url and ('анализ' in text_lower or 'проанализируй' in text_lower or 'что за' in text_lower or 'опиши' in text_lower):
+            await browser.goto(url)
+            await asyncio.sleep(2)
+            result = await agent.analyze_page(url, detailed=False)
+
+        elif url and ('доступность' in text_lower or 'accessibility' in text_lower or 'wcag' in text_lower):
+            await browser.goto(url)
+            await asyncio.sleep(2)
+            await acc.enable()
+            await asyncio.sleep(2)
+            result = await agent.analyze_accessibility(url)
+
+        elif url:
+            await browser.goto(url)
+            await asyncio.sleep(2)
+            title = await eval.get_title()
+            page_info = await eval.get_page_info()
+            buttons = await eval.get_all_buttons()
+            inputs = await eval.get_all_inputs()
+            links = await eval.get_all_links()
+
+            prompt = f"""
+**Страница:** {url}
+**Заголовок:** {title}
+
+**Данные:**
+- Кнопок: {len(buttons)}
+- Полей ввода: {len(inputs)}
+- Ссылок: {len(links)}
+- Длина текста: {len(page_info.get('innerText', ''))} символов
+- Язык: {page_info.get('language', 'не определен')}
+
+**Вопрос пользователя:** {text}
+
+Ответь на вопрос пользователя, используя данные со страницы. Будь краток и по делу.
+"""
+            result = await agent.ask(prompt)
+
+        else:
+            result = await agent.ask(text)
+
         if len(result) > 4000:
             for i in range(0, len(result), 4000):
                 await update.message.reply_text(result[i:i+4000])
         else:
-            await update.message.reply_text(f"🧠 **AI Анализ:**\n\n{result}")
-        
+            await update.message.reply_text(f"🧠 **AI Агент:**\n\n{result}")
+
         await agent.close()
-        
-        logger.info(f"User {user_id} выполнил AI анализ {url}")
-        
+
+        logger.info(f"User {user_id} -> AI: {text[:50]}...")
+
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"Ошибка AI анализа: {error_msg}")
-        
+        logger.error(f"Ошибка AI: {error_msg}")
+
         if browser:
             await browser.close()
             browser = None
-        
+
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
 
