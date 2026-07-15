@@ -186,10 +186,33 @@ class Browser:
         logger.info(f"🖥️ Viewport: {width}x{height}")
     
     async def goto(self, url):
-        """Навигация (CDP)"""
+        """Навигация (CDP) с ожиданием полной загрузки"""
         logger.info(f"📍 Переход: {url}")
+        
+        # Отправляем навигацию
         result = await self.send("Page.navigate", {"url": url})
-        await asyncio.sleep(2)
+        
+        # Ждём событие загрузки
+        logger.info("⏳ Ожидание загрузки страницы...")
+        
+        # Ждём Page.loadEventFired
+        for _ in range(30):  # максимум 30 секунд
+            try:
+                response = await asyncio.wait_for(self.ws.recv(), timeout=1)
+                data = json.loads(response)
+                
+                if data.get("method") == "Page.loadEventFired":
+                    logger.info("✅ Страница загружена")
+                    break
+                    
+            except asyncio.TimeoutError:
+                continue
+        else:
+            logger.warning("⏱️ Таймаут ожидания загрузки")
+        
+        # Дополнительная задержка для рендера
+        await asyncio.sleep(1)
+        
         return result
     
     async def screenshot(self):
