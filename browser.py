@@ -1,305 +1,101 @@
-# browser.py - исправленная версия с правильным получением WS URL
 import asyncio
-import logging
-import subprocess
-import time
-import os
-import shutil
 import json
 import requests
-from typing import Optional, Dict, Any, List
-from cdp_use.client import CDPClient
+import websockets
+from subprocess import Popen, PIPE
+import time
 
-logger = logging.getLogger(__name__)
-
-class BrowserManager:
-    """Управление Chrome через CDP с автоматическим запуском"""
+class Browser:
+    def __init__(self):
+        self.ws = None
+        self.process = None
+        self.debug_port = 9222
+        self.chrome_path = "/usr/bin/google-chrome"
+        self.viewport_width = 1280
+        self.viewport_height = 720
     
-    def __init__(self, chrome_path: str = "/usr/bin/google-chrome", port: int = 9222):
-        self.chrome_path = chrome_path
-        self.port = port
-        self.ws_url: Optional[str] = None
-        self.client: Optional[CDPClient] = None
-        self.current_session = None
-        self.target_id: Optional[str] = None
-        self._console_logs: List[str] = []
-        self.chrome_process = None
-        self._is_own_chrome = False
-    
-    def _find_chrome(self) -> Optional[str]:
-        """Найти Chrome в системе"""
-        paths = [
+    async def start(self):
+        """Запуск Chrome с открытым CDP"""
+        self.process = Popen([
             self.chrome_path,
-            "/usr/bin/google-chrome",
-            "/usr/bin/chromium-browser",
-            "/usr/bin/chromium",
-            "/usr/bin/google-chrome-stable",
-            "/opt/google/chrome/chrome",
-        ]
+            "--headless",
+            "--no-sandbox",
+            "--disable-gpu",
+            "--disable-dev-shm-usage",
+            f"--remote-debugging-port={self.debug_port}"
+        ], stdout=PIPE, stderr=PIPE)
         
-        for path in paths:
-            if os.path.exists(path) or shutil.which(path):
-                logger.info(f"✅ Найден Chrome: {path}")
-                return path
+        await asyncio.sleep(2)
         
-        return None
-    
-    def _get_websocket_url(self) -> Optional[str]:
-        """Получить WebSocket URL из Chrome"""
-        try:
-            # Получаем список доступных страниц
-            response = requests.get(f"http://localhost:{self.port}/json")
-            if response.status_code == 200:
-                pages = response.json()
-                
-                # Ищем первую страницу с WebSocket URL
-                for page in pages:
-                    if "webSocketDebuggerUrl" in page:
-                        ws_url = page["webSocketDebuggerUrl"]
-                        logger.info(f"✅ Найден WebSocket URL: {ws_url}")
-                        return ws_url
-                
-                # Если страниц нет, создаём новую
-                response = requests.get(f"http://localhost:{self.port}/json/new")
-                if response.status_code == 200:
-                    page = response.json()
-                    if "webSocketDebuggerUrl" in page:
-                        ws_url = page["webSocketDebuggerUrl"]
-                        logger.info(f"✅ Создана новая страница: {ws_url}")
-                        return ws_url
-            else:
-                # Пробуем альтернативный путь
-                response = requests.get(f"http://localhost:{self.port}/json/version")
-                if response.status_code == 200:
-                    data = response.json()
-                    if "webSocketDebuggerUrl" in data:
-                        ws_url = data["webSocketDebuggerUrl"]
-                        logger.info(f"✅ Найден WebSocket URL: {ws_url}")
-                        return ws_url
-            
-            logger.error("❌ Не удалось получить WebSocket URL")
-            return None
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка получения WebSocket URL: {e}")
-            return None
-    
-    async def _launch_chrome(self, headless: bool = True) -> bool:
-        """Запустить Chrome"""
-        try:
-            chrome_path = self._find_chrome()
-            if not chrome_path:
-                logger.error("❌ Chrome не найден в системе")
-                return False
-            
-            # Проверяем, не запущен ли уже Chrome
-            if await self._is_chrome_running():
-                logger.info(f"✅ Chrome уже запущен на порту {self.port}")
-                return True
-            
-            logger.info(f"🚀 Запускаю Chrome: {chrome_path}")
-            
-            cmd = [
-                chrome_path,
-                f"--remote-debugging-port={self.port}",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-gpu",
-                "--disable-dev-shm-usage",
-                "--disable-setuid-sandbox",
-                "--no-sandbox",
-            ]
-            
-            if headless:
-                cmd.append("--headless")
-                cmd.append("--window-size=1920,1080")
-            
-            self.chrome_process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True
-            )
-            
-            self._is_own_chrome = True
-            
-            # Ждём запуска
-            for i in range(10):
-                time.sleep(1)
-                if await self._is_chrome_running():
-                    # Получаем WebSocket URL
-                    self.ws_url = self._get_websocket_url()
-                    if self.ws_url:
-                        logger.info(f"✅ Chrome готов на порту {self.port}")
-                        return True
-                logger.debug(f"Ожидание запуска Chrome... {i+1}/10")
-            
-            logger.error("❌ Chrome не запустился за 10 секунд")
-            return False
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка запуска Chrome: {e}")
-            return False
-    
-    async def _is_chrome_running(self) -> bool:
-        """Проверить, запущен ли Chrome на порту"""
-        try:
-            import socket
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(1)
-            result = sock.connect_ex(('127.0.0.1', self.port))
-            sock.close()
-            return result == 0
-        except Exception:
-            return False
-    
-    async def _close_chrome(self):
-        """Закрыть Chrome (если сами запускали)"""
-        try:
-            if self._is_own_chrome and self.chrome_process:
-                logger.info("🛑 Закрываю Chrome...")
-                self.chrome_process.terminate()
-                
-                for _ in range(5):
-                    if self.chrome_process.poll() is not None:
-                        break
-                    time.sleep(1)
-                
-                if self.chrome_process.poll() is None:
-                    self.chrome_process.kill()
-                
-                self.chrome_process = None
-                self._is_own_chrome = False
-                logger.info("✅ Chrome закрыт")
-            return True
-        except Exception as e:
-            logger.error(f"❌ Ошибка закрытия Chrome: {e}")
-            return False
-    
-    async def connect(self, headless: bool = True):
-        """Подключение к Chrome (автоматически запускает если нужно)"""
-        try:
-            # Запускаем Chrome если не запущен
-            if not await self._launch_chrome(headless):
-                return False
-            
-            # Подключаемся
-            self.client = CDPClient(self.ws_url)
-            await self.client.__aenter__()
-            logger.info("✅ Подключен к Chrome")
-            return True
-        except Exception as e:
-            logger.error(f"❌ Ошибка подключения: {e}")
-            return False
-    
-    async def disconnect(self):
-        """Отключение от Chrome"""
-        try:
-            if self.client:
-                await self.client.__aexit__(None, None, None)
-                self.client = None
-                self.current_session = None
-                self.target_id = None
-                logger.info("✅ Отключен от Chrome")
-            
-            if self._is_own_chrome:
-                await self._close_chrome()
-                
-            return True
-        except Exception as e:
-            logger.error(f"❌ Ошибка отключения: {e}")
-            return False
-    
-    async def create_tab(self, url: str = "about:blank") -> Optional[str]:
-        """Создать новую вкладку"""
-        try:
-            # Сначала получаем список вкладок
-            targets = await self.client.send.Target.getTargets()
-            
-            # Создаём новую
-            result = await self.client.send.Target.createTarget({"url": url})
-            target_id = result["targetId"]
-            logger.info(f"✅ Создана вкладка: {target_id}")
-            return target_id
-        except Exception as e:
-            logger.error(f"❌ Ошибка создания вкладки: {e}")
-            return None
-    
-    async def attach_to_tab(self, target_id: str):
-        """Подключиться к вкладке"""
-        try:
-            self.target_id = target_id
-            self.current_session = await self.client.attach_target(target_id)
-            logger.info(f"✅ Подключен к вкладке: {target_id}")
-            return self.current_session
-        except Exception as e:
-            logger.error(f"❌ Ошибка подключения к вкладке: {e}")
-            return None
-    
-    async def close_tab(self, target_id: str) -> bool:
-        """Закрыть вкладку"""
-        try:
-            await self.client.send.Target.closeTarget({"targetId": target_id})
-            logger.info(f"✅ Закрыта вкладка: {target_id}")
-            return True
-        except Exception as e:
-            logger.error(f"❌ Ошибка закрытия вкладки: {e}")
-            return False
-    
-    async def navigate(self, url: str) -> bool:
-        """Перейти по URL"""
-        try:
-            if not self.current_session:
-                raise Exception("Нет активной сессии")
-            await self.current_session.send.Page.navigate({"url": url})
-            logger.info(f"✅ Навигация на: {url}")
-            return True
-        except Exception as e:
-            logger.error(f"❌ Ошибка навигации: {e}")
-            return False
-    
-    async def get_title(self) -> Optional[str]:
-        """Получить заголовок страницы"""
-        try:
-            if not self.current_session:
-                raise Exception("Нет активной сессии")
-            result = await self.current_session.send.Runtime.evaluate({
-                "expression": "document.title",
-                "returnByValue": True
-            })
-            return result["result"]["value"]
-        except Exception as e:
-            logger.error(f"❌ Ошибка получения заголовка: {e}")
-            return None
-    
-    async def screenshot(self, format: str = "png") -> Optional[str]:
-        """Сделать скриншот страницы"""
-        try:
-            if not self.current_session:
-                raise Exception("Нет активной сессии")
-            result = await self.current_session.send.Page.captureScreenshot({
-                "format": format
-            })
-            return result["data"]
-        except Exception as e:
-            logger.error(f"❌ Ошибка создания скриншота: {e}")
-            return None
-
-
-if __name__ == "__main__":
-    async def test():
-        browser = BrowserManager()
+        ws_url = self._get_websocket_url()
+        self.ws = await websockets.connect(ws_url)
         
-        await browser.connect(headless=True)
+        await self.send("Page.enable")
+        await self.send("Runtime.enable")
+        await self.send("Network.enable")
         
-        target_id = await browser.create_tab()
-        await browser.attach_to_tab(target_id)
-        await browser.navigate("https://example.com")
+        # Устанавливаем размер окна 1280x720
+        await self.set_viewport(self.viewport_width, self.viewport_height)
         
-        title = await browser.get_title()
-        print(f"Заголовок: {title}")
-        
-        await browser.close_tab(target_id)
-        await browser.disconnect()
+        return self
     
-    asyncio.run(test())
+    def _get_websocket_url(self):
+        """Получить WebSocket URL из /json/list"""
+        resp = requests.get(f"http://localhost:{self.debug_port}/json/list")
+        pages = resp.json()
+        
+        if not pages:
+            # Создаём новую вкладку, если нет ни одной
+            resp = requests.get(f"http://localhost:{self.debug_port}/json/new")
+            return resp.json()["webSocketDebuggerUrl"]
+        
+        return pages[0]["webSocketDebuggerUrl"]
+    
+    async def send(self, method, params=None):
+        """Отправить CDP-команду"""
+        if params is None:
+            params = {}
+        
+        msg = {
+            "id": int(time.time() * 1000),
+            "method": method,
+            "params": params
+        }
+        
+        await self.ws.send(json.dumps(msg))
+        response = await self.ws.recv()
+        return json.loads(response)
+    
+    async def set_viewport(self, width=1280, height=720):
+        """Установить размер окна через CDP"""
+        await self.send("Emulation.setDeviceMetricsOverride", {
+            "width": width,
+            "height": height,
+            "deviceScaleFactor": 1,
+            "mobile": False,
+            "screenWidth": width,
+            "screenHeight": height,
+            "captureBeyondViewport": False
+        })
+    
+    async def goto(self, url):
+        """Навигация (CDP)"""
+        return await self.send("Page.navigate", {"url": url})
+    
+    async def screenshot(self):
+        """Скриншот через CDP"""
+        result = await self.send("Page.captureScreenshot")
+        return result["result"]["data"]
+    
+    async def close(self):
+        """Закрыть браузер"""
+        if self.ws:
+            await self.ws.close()
+        if self.process:
+            self.process.terminate()
+    
+    async def __aenter__(self):
+        return await self.start()
+    
+    async def __aexit__(self, *args):
+        await self.close()
