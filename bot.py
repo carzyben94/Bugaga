@@ -1,8 +1,11 @@
 import os
 import logging
+import base64
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+
+from browser import Browser  # ← без core.
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
@@ -17,7 +20,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ===== Глобальный браузер (один на всех) =====
+# ===== Глобальный браузер =====
 browser = None
 
 # ===== Команды =====
@@ -44,20 +47,13 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"📸 Делаю скриншот {url}...")
     
     try:
-        # Запускаем браузер если ещё не запущен
         if browser is None:
-            from browser import Browser
             browser = await Browser().start()
-            logger.info("✅ Браузер запущен")
+            logger.info("✅ Браузер запущен с маскировкой")
         
-        # Переходим на страницу
         await browser.goto(url)
-        
-        # Делаем скриншот
         screenshot_base64 = await browser.screenshot()
         
-        # Отправляем фото
-        import base64
         photo_bytes = base64.b64decode(screenshot_base64)
         
         await update.message.reply_photo(
@@ -68,8 +64,14 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"User {user_id} сделал скриншот {url}")
         
     except Exception as e:
-        logger.error(f"Ошибка скриншота: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
+        error_msg = str(e)
+        logger.error(f"Ошибка скриншота: {error_msg}")
+        
+        if browser:
+            await browser.close()
+            browser = None
+        
+        await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
 async def log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отправить файл лога"""
