@@ -294,7 +294,6 @@ async def accessibility(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Протестировать кликабельные элементы на странице"""
     global browser, orchestrator
     
     args = context.args
@@ -375,7 +374,6 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def x(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Работа с X.com через Accessibility Tree (старая команда)"""
     global browser, orchestrator
     
     args = context.args
@@ -529,7 +527,6 @@ async def x(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def results(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Скачать результаты тестирования"""
     user_id = update.effective_user.id
     
     try:
@@ -583,7 +580,6 @@ async def results(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Общение с AI агентом"""
     global browser, orchestrator
 
     user_id = update.effective_user.id
@@ -705,7 +701,6 @@ async def log(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
 
 
-# ===== ЛУИ — ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ =====
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает все текстовые сообщения — Луи общается с пользователем"""
     global browser, orchestrator
@@ -716,11 +711,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not text:
         return
     
-    # Если это команда — пропускаем (они обрабатываются отдельно)
     if text.startswith('/'):
         return
     
-    # Отправляем "печатает..."
     await update.message.chat.send_action(action="typing")
     
     try:
@@ -735,7 +728,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             orchestrator = Orchestrator(browser, eval, acc, ai_agent, hermes_agent)
             logger.info("✅ Луи готов к работе!")
         
-        # Если оркестратор ещё не создан
         if orchestrator is None:
             eval = Eval(browser)
             acc = Accessibility(browser)
@@ -743,10 +735,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             hermes_agent = HermesAgent(browser, acc, eval, ai_agent)
             orchestrator = Orchestrator(browser, eval, acc, ai_agent, hermes_agent)
         
-        # Выполняем команду
         result = await orchestrator.execute(text)
         
-        if result.get("success"):
+        # ===== ПРОВЕРЯЕМ, ЕСЛИ ЭТО СКРИНШОТ =====
+        if isinstance(result, dict) and result.get("screenshot"):
+            photo_bytes = base64.b64decode(result["screenshot"])
+            await update.message.reply_photo(
+                photo=photo_bytes,
+                caption=f"📸 {result.get('message', 'Скриншот')}"
+            )
+        elif result.get("success"):
             message = result.get("message", "✅ Готово!")
             await update.message.reply_text(message)
         else:
@@ -760,7 +758,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("analyze", analyze))
