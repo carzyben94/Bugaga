@@ -1,892 +1,285 @@
+# browser.py - с указанием пути к Chrome
 import asyncio
-import json
-import websockets
-import requests
-import re
-import random
+import subprocess
 import time
-from typing import Optional, List, Dict, Any
+from typing import Optional, Dict, Any, List
+from cdp_use.client import CDPClient
+from cdp_use.cdp.runtime.commands import Evaluate
+import logging
 
-GOOGLE_SEARCH_IDS = ['APjFqb', 'gbqfq', 'lst-ib', 'searchbox', 'q']
+logger = logging.getLogger(__name__)
 
 class BrowserManager:
-    def __init__(self, host='localhost', port=9222):
-        self.host = host
-        self.port = port
-        self.ws = None
-        self.ws_url = None
-        self._message_id = 0
-        self._connected = False
-        self._page_id = None
-        self._current_url = ""
-        self._masked = False
-        self._debug = False
-        
-        self.viewport_width = 1280
-        self.viewport_height = 720
-        self.timeout = 60
+    """Управление Chrome через CDP"""
     
-    # ========== МАСКИРОВКА ==========
-    
-    def get_random_window_position(self):
-        return {
-            "left": random.randint(50, 300),
-            "top": random.randint(50, 200),
-            "width": random.randint(1200, 1920),
-            "height": random.randint(800, 1080)
-        }
-    
-    def get_random_user_agent(self):
-        user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
-        ]
-        return random.choice(user_agents)
-    
-    def get_random_webgl_vendor(self):
-        vendors = [
-            "Google Inc. (NVIDIA)",
-            "Google Inc. (AMD)",
-            "Google Inc. (Intel)",
-            "NVIDIA Corporation",
-            "Advanced Micro Devices, Inc.",
-            "Intel Corporation"
-        ]
-        return random.choice(vendors)
-    
-    def get_random_webgl_renderer(self):
-        renderers = [
-            "ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Direct3D11 vs_5_0 ps_5_0, D3D11)",
-            "ANGLE (AMD, AMD Radeon RX 6800 XT Direct3D11 vs_5_0 ps_5_0, D3D11)",
-            "ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)",
-            "ANGLE (NVIDIA, NVIDIA GeForce RTX 3070 Direct3D11 vs_5_0 ps_5_0, D3D11)",
-            "ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 Direct3D11 vs_5_0 ps_5_0, D3D11)"
-        ]
-        return random.choice(renderers)
-    
-    def get_random_location(self):
-        cities = [
-            {"name": "New York", "lat": 40.7128, "lng": -74.0060, "timezone": "America/New_York", "lang": "en-US"},
-            {"name": "London", "lat": 51.5074, "lng": -0.1278, "timezone": "Europe/London", "lang": "en-GB"},
-            {"name": "Paris", "lat": 48.8566, "lng": 2.3522, "timezone": "Europe/Paris", "lang": "fr-FR"},
-            {"name": "Berlin", "lat": 52.5200, "lng": 13.4050, "timezone": "Europe/Berlin", "lang": "de-DE"},
-            {"name": "Tokyo", "lat": 35.6762, "lng": 139.6503, "timezone": "Asia/Tokyo", "lang": "ja-JP"},
-            {"name": "Sydney", "lat": -33.8688, "lng": 151.2093, "timezone": "Australia/Sydney", "lang": "en-AU"},
-            {"name": "Moscow", "lat": 55.7558, "lng": 37.6173, "timezone": "Europe/Moscow", "lang": "ru-RU"},
-            {"name": "Dubai", "lat": 25.2048, "lng": 55.2708, "timezone": "Asia/Dubai", "lang": "ar-AE"},
-            {"name": "Singapore", "lat": 1.3521, "lng": 103.8198, "timezone": "Asia/Singapore", "lang": "en-SG"},
-            {"name": "Los Angeles", "lat": 34.0522, "lng": -118.2437, "timezone": "America/Los_Angeles", "lang": "en-US"},
-        ]
-        return random.choice(cities)
-    
-    def get_launch_args(self, chrome_path):
-        window = self.get_random_window_position()
-        user_agent = self.get_random_user_agent()
-        
-        args = [
-            chrome_path,
-            "--headless=new",
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-blink-features=AutomationControlled",
-            "--disable-automation",
-            "--use-gl=egl",
-            "--ignore-gpu-blocklist",
-            "--enable-gpu-rasterization",
-            "--enable-zero-copy",
-            "--disable-features=AudioServiceOutOfProcess,IsolateOrigins,site-per-process",
-            "--disable-site-isolation-trials",
-            "--disable-default-apps",
-            "--disable-extensions",
-            "--disable-component-extensions-with-background-pages",
-            "--disable-client-side-phishing-detection",
-            "--disable-crash-reporter",
-            "--disable-component-update",
-            "--disable-logging",
-            "--disable-prompt-on-repost",
-            "--disable-sync",
-            "--disable-background-networking",
-            "--disable-background-timer-throttling",
-            "--disable-backgrounding-occluded-windows",
-            "--disable-breakpad",
-            "--disable-ipc-flooding-protection",
-            "--disable-renderer-backgrounding",
-            f"--window-position={window['left']},{window['top']}",
-            f"--window-size={window['width']},{window['height']}",
-            "--no-default-browser-check",
-            "--no-first-run",
-            "--force-color-profile=srgb",
-            "--metrics-recording-only",
-            "--password-store=basic",
-            "--use-mock-keychain",
-            "--export-tagged-pdf",
-            "--enable-features=NetworkService,NetworkServiceInProcess",
-            f"--user-agent={user_agent}",
-            f"--remote-debugging-port={self.port}"
-        ]
-        
-        return args
-    
-    # ========== ГЕОЛОКАЦИЯ (ВСЁ С AWAIT) ==========
-    
-    async def set_geolocation(self, lat: float = None, lng: float = None):
-        await self.connect()
-        
-        if lat is None or lng is None:
-            location = self.get_random_location()
-            lat = location["lat"]
-            lng = location["lng"]
-        
-        await self._send_command("Emulation.setGeolocationOverride", {
-            "latitude": lat,
-            "longitude": lng,
-            "accuracy": random.randint(10, 100)
-        })
-        
-        print(f"📍 Геолокация: {lat}, {lng}")
-        return f"📍 Геолокация: {lat}, {lng}"
-    
-    async def set_timezone(self, timezone: str = None):
-        await self.connect()
-        
-        if timezone is None:
-            location = self.get_random_location()
-            timezone = location["timezone"]
-        
-        js = f"""
-        (function() {{
-            const originalDateTimeFormat = Intl.DateTimeFormat;
-            Intl.DateTimeFormat = function(locales, options) {{
-                if (!options) options = {{}};
-                options.timeZone = '{timezone}';
-                return new originalDateTimeFormat(locales, options);
-            }};
-            Intl.DateTimeFormat.prototype = originalDateTimeFormat.prototype;
-            
-            const originalDateToString = Date.prototype.toString;
-            Date.prototype.toString = function() {{
-                return originalDateToString.call(this).replace(/\\(.*?\\)/, '({timezone})');
-            }};
-            
-            const lang = '{timezone.split('/')[0]}';
-            Object.defineProperty(navigator, 'language', {{
-                get: () => lang,
-                configurable: true
-            }});
-            
-            console.log('🕐 Таймзона установлена: {timezone}');
-        }})()
+    def __init__(self, ws_url: str = "ws://localhost:9222", chrome_path: str = "/usr/bin/google-chrome"):
         """
-        
-        await self.execute_script(js)
-        print(f"🕐 Таймзона: {timezone}")
-        return f"🕐 Таймзона: {timezone}"
-    
-    async def set_language(self, lang: str = None):
-        await self.connect()
-        
-        if lang is None:
-            location = self.get_random_location()
-            lang = location["lang"]
-        
-        js = f"""
-        (function() {{
-            const languages = ['{lang}', '{lang.split('-')[0]}', 'en-US', 'en'];
-            
-            Object.defineProperty(navigator, 'language', {{
-                get: () => '{lang}',
-                configurable: true
-            }});
-            
-            Object.defineProperty(navigator, 'languages', {{
-                get: () => languages,
-                configurable: true
-            }});
-            
-            console.log('🌐 Язык установлен: {lang}');
-        }})()
+        Args:
+            ws_url: WebSocket URL для подключения к Chrome
+            chrome_path: путь к исполняемому файлу Chrome
         """
+        self.ws_url = ws_url
+        self.chrome_path = chrome_path
+        self.client: Optional[CDPClient] = None
+        self.current_session = None
+        self.target_id: Optional[str] = None
+        self._console_logs: List[str] = []
+        self.chrome_process = None
         
-        await self.execute_script(js)
-        print(f"🌐 Язык: {lang}")
-        return f"🌐 Язык: {lang}"
-    
-    async def setup_location_by_ip(self, ip: str = None):
-        if ip:
-            try:
-                response = requests.get(f"http://ip-api.com/json/{ip}?fields=status,country,regionName,city,lat,lon,timezone,isp", timeout=10)
-                data = response.json()
-                
-                if data.get('status') == 'success':
-                    lat = data.get('lat')
-                    lng = data.get('lon')
-                    timezone = data.get('timezone', 'Europe/London')
-                    
-                    country = data.get('country', 'US')
-                    lang_map = {
-                        'Russia': 'ru-RU',
-                        'United States': 'en-US',
-                        'United Kingdom': 'en-GB',
-                        'France': 'fr-FR',
-                        'Germany': 'de-DE',
-                        'Japan': 'ja-JP',
-                        'Australia': 'en-AU',
-                        'China': 'zh-CN',
-                        'Brazil': 'pt-BR',
-                        'India': 'hi-IN',
-                        'UAE': 'ar-AE',
-                        'Singapore': 'en-SG',
-                        'Italy': 'it-IT',
-                        'Spain': 'es-ES',
-                        'Canada': 'en-CA',
-                    }
-                    lang = lang_map.get(country, 'en-US')
-                    
-                    await self.set_geolocation(lat, lng)
-                    await self.set_timezone(timezone)
-                    await self.set_language(lang)
-                    
-                    return f"✅ Гео по IP {ip}:\n📍 {lat}, {lng}\n🕐 {timezone}\n🌐 {lang}"
-            except Exception as e:
-                print(f"❌ Ошибка определения гео по IP: {e}")
-        
-        location = self.get_random_location()
-        await self.set_geolocation(location["lat"], location["lng"])
-        await self.set_timezone(location["timezone"])
-        await self.set_language(location["lang"])
-        
-        return f"✅ Случайная геолокация:\n📍 {location['name']}\n🕐 {location['timezone']}\n🌐 {location['lang']}"
-    
-    # ========== КУКИ (ВСЁ С AWAIT) ==========
-    
-    def get_default_cookies(self) -> List[Dict[str, Any]]:
-        """Получить стандартные куки для X/Twitter"""
-        return [
-            {
-                "domain": ".x.com",
-                "hostOnly": False,
-                "httpOnly": False,
-                "name": "__cuid",
-                "path": "/",
-                "sameSite": "unspecified",
-                "secure": False,
-                "session": True,
-                "value": "55d2d7c5-4888-430a-b024-dd785da46ef4"
-            },
-            {
-                "domain": ".x.com",
-                "hostOnly": False,
-                "httpOnly": False,
-                "name": "lang",
-                "path": "/",
-                "sameSite": "unspecified",
-                "secure": False,
-                "session": True,
-                "value": "ru"
-            },
-            {
-                "domain": ".x.com",
-                "hostOnly": False,
-                "httpOnly": False,
-                "name": "dnt",
-                "path": "/",
-                "sameSite": "unspecified",
-                "secure": False,
-                "session": True,
-                "value": "1"
-            },
-            {
-                "domain": ".x.com",
-                "hostOnly": False,
-                "httpOnly": False,
-                "name": "guest_id",
-                "path": "/",
-                "sameSite": "unspecified",
-                "secure": False,
-                "session": True,
-                "value": "v1%3A178267838599411411"
-            },
-            {
-                "domain": ".x.com",
-                "hostOnly": False,
-                "httpOnly": False,
-                "name": "guest_id_marketing",
-                "path": "/",
-                "sameSite": "unspecified",
-                "secure": False,
-                "session": True,
-                "value": "v1%3A178267838599411411"
-            },
-            {
-                "domain": ".x.com",
-                "hostOnly": False,
-                "httpOnly": False,
-                "name": "guest_id_ads",
-                "path": "/",
-                "sameSite": "unspecified",
-                "secure": False,
-                "session": True,
-                "value": "v1%3A178267838599411411"
-            },
-            {
-                "domain": ".x.com",
-                "hostOnly": False,
-                "httpOnly": False,
-                "name": "personalization_id",
-                "path": "/",
-                "sameSite": "unspecified",
-                "secure": False,
-                "session": True,
-                "value": '"v1_DKrxLZAC902dMFdd1QrVYg=="'
-            },
-            {
-                "domain": ".x.com",
-                "hostOnly": False,
-                "httpOnly": False,
-                "name": "twid",
-                "path": "/",
-                "sameSite": "unspecified",
-                "secure": False,
-                "session": True,
-                "value": "u%3D2067347503503052800"
-            },
-            {
-                "domain": ".x.com",
-                "hostOnly": False,
-                "httpOnly": False,
-                "name": "auth_token",
-                "path": "/",
-                "sameSite": "unspecified",
-                "secure": False,
-                "session": True,
-                "value": "c9d83e923e1ad6cf67d19a0bc4f9877a49087936"
-            },
-            {
-                "domain": ".x.com",
-                "hostOnly": False,
-                "httpOnly": False,
-                "name": "ct0",
-                "path": "/",
-                "sameSite": "unspecified",
-                "secure": False,
-                "session": True,
-                "value": "39ee0cdf3c0179fb8c50265001cd49e64d652fd3f647e9f091b372641a1d444a1842958c253fe1621a04794de13817dec713e305ed75866c00ecc2a7a0aec112940c06283ca7745b106c4e71a863e3eb"
-            },
-            {
-                "domain": ".x.com",
-                "hostOnly": False,
-                "httpOnly": False,
-                "name": "__cf_bm",
-                "path": "/",
-                "sameSite": "unspecified",
-                "secure": False,
-                "session": True,
-                "value": "wj_dszyJY7t.NS3PCGD3fz27cRQXW6tgfO9_TrBoXPk-1784047968.7823458-1.0.1.1-oJnV6LCjpA4HNw4UmXCuwUCnHGdRlOCDFcQoVgBxAMdp35GIZImrhfbf3kRCgjicmLdK5VzMmZQ5Xqwu4ZmH9dv2Y8I1BWwbonY_SeuhqMeJUz4Y8vxdNzRog4InHuwB"
-            }
-        ]
-    
-    async def set_cookies(self, cookies: Optional[List[Dict[str, Any]]] = None):
-        """Установить куки в браузере (все сразу)"""
-        await self.connect()
-        
-        if cookies is None:
-            cookies = self.get_default_cookies()
-        
-        await self._send_command("Network.setCookies", {
-            "cookies": cookies
-        })
-        
-        print(f"🍪 Установлено {len(cookies)} кук")
-        return f"🍪 Установлено {len(cookies)} кук"
-    
-    async def get_cookies(self, urls: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-        """Получить все куки из браузера"""
-        await self.connect()
-        
-        params = {}
-        if urls:
-            params["urls"] = urls
-        
-        result = await self._send_command("Network.getCookies", params)
-        return result.get('cookies', [])
-    
-    # ========== МАСКИРОВКА JS ==========
-    
-    async def apply_mask(self):
-        if self._masked:
-            return True
-        
+    async def launch_chrome(self, headless: bool = True, port: int = 9222):
+        """Запустить Chrome с открытым портом для отладки"""
         try:
-            print("🕵️ Маскировка...")
+            cmd = [
+                self.chrome_path,
+                f"--remote-debugging-port={port}",
+                "--no-first-run",
+                "--no-default-browser-check"
+            ]
             
-            location = self.get_random_location()
-            await self.set_geolocation(location["lat"], location["lng"])
-            await self.set_timezone(location["timezone"])
-            await self.set_language(location["lang"])
+            if headless:
+                cmd.append("--headless")
             
-            webgl_vendor = self.get_random_webgl_vendor()
-            webgl_renderer = self.get_random_webgl_renderer()
-            hardware_concurrency = random.randint(4, 16)
-            device_memory = random.choice([4, 8, 16, 32])
-            chrome_version = random.randint(118, 120)
-            rtt = random.randint(20, 100)
-            downlink = round(random.uniform(5, 20), 1)
-            effective_type = random.choice(['4g', '3g'])
-            connection_type = random.choice(['wifi', 'ethernet'])
-            screen_height = random.randint(800, 1080)
-            screen_width = random.randint(1200, 1920)
-            platform = random.choice(['Win32', 'MacIntel', 'Linux x86_64'])
+            # Запускаем Chrome
+            self.chrome_process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
             
-            mask_js = f"""
-            (function() {{
-                Object.defineProperty(navigator, 'webdriver', {{
-                    get: () => undefined,
-                    configurable: true,
-                    enumerable: true
-                }});
-                
-                Object.defineProperty(navigator, 'plugins', {{
-                    get: () => {{
-                        function Plugin(name, filename, description) {{
-                            this.name = name;
-                            this.filename = filename;
-                            this.description = description;
-                        }}
-                        Plugin.prototype.item = function(index) {{
-                            return this[index] || null;
-                        }};
-                        Plugin.prototype.namedItem = function(name) {{
-                            return this[name] || null;
-                        }};
-                        
-                        const plugins = new Array();
-                        Object.setPrototypeOf(plugins, Plugin.prototype);
-                        
-                        plugins.push(new Plugin(
-                            'Chrome PDF Plugin',
-                            'internal-pdf-viewer',
-                            'Portable Document Format'
-                        ));
-                        plugins.push(new Plugin(
-                            'Chrome PDF Viewer',
-                            'mhjfbmdgcfjbbpaeojofohoefgiehjai',
-                            ''
-                        ));
-                        plugins.push(new Plugin(
-                            'Native Client',
-                            'internal-nacl-plugin',
-                            ''
-                        ));
-                        
-                        plugins.length = 3;
-                        return plugins;
-                    }},
-                    configurable: true,
-                    enumerable: true
-                }});
-                
-                Object.defineProperty(navigator, 'languages', {{
-                    get: () => ['en-US', 'en', 'ru'],
-                    configurable: true,
-                    enumerable: true
-                }});
-                
-                Object.defineProperty(navigator, 'platform', {{
-                    get: () => '{platform}',
-                    configurable: true,
-                    enumerable: true
-                }});
-                
-                Object.defineProperty(navigator, 'hardwareConcurrency', {{
-                    get: () => {hardware_concurrency},
-                    configurable: true,
-                    enumerable: true
-                }});
-                
-                Object.defineProperty(navigator, 'deviceMemory', {{
-                    get: () => {device_memory},
-                    configurable: true,
-                    enumerable: true
-                }});
-                
-                Object.defineProperty(navigator, 'userAgentData', {{
-                    get: () => {{
-                        return {{
-                            brands: [
-                                {{ brand: 'Google Chrome', version: '{chrome_version}' }},
-                                {{ brand: 'Chromium', version: '{chrome_version}' }},
-                                {{ brand: 'Not?A_Brand', version: '99' }}
-                            ],
-                            platform: '{platform.replace('Win32', 'Windows').replace('MacIntel', 'macOS').replace('Linux x86_64', 'Linux')}',
-                            mobile: false,
-                            getHighEntropyValues: function(hints) {{
-                                return Promise.resolve({{
-                                    architecture: '{random.choice(['x86', 'arm'])}',
-                                    bitness: '{random.choice(['32', '64'])}',
-                                    model: '',
-                                    platform: '{platform}',
-                                    platformVersion: '{random.choice(['10.0', '11.0', '12.0'])}',
-                                    uaFullVersion: '{chrome_version}.0.0.0'
-                                }});
-                            }},
-                            toJSON: function() {{
-                                return {{
-                                    brands: [
-                                        {{ brand: 'Google Chrome', version: '{chrome_version}' }},
-                                        {{ brand: 'Chromium', version: '{chrome_version}' }}
-                                    ],
-                                    platform: '{platform}',
-                                    mobile: false
-                                }};
-                            }}
-                        }};
-                    }},
-                    configurable: true,
-                    enumerable: true
-                }});
-                
-                Object.defineProperty(navigator, 'connection', {{
-                    get: () => {{
-                        return {{
-                            rtt: {rtt},
-                            downlink: {downlink},
-                            effectiveType: '{effective_type}',
-                            saveData: false,
-                            type: '{connection_type}'
-                        }};
-                    }},
-                    configurable: true,
-                    enumerable: true
-                }});
-                
-                const originalGetContext = HTMLCanvasElement.prototype.getContext;
-                HTMLCanvasElement.prototype.getContext = function(contextId, attributes) {{
-                    if (contextId === 'webgl' || contextId === 'experimental-webgl') {{
-                        const context = originalGetContext.call(this, contextId, attributes);
-                        if (context) {{
-                            const originalGetParameter = context.getParameter;
-                            context.getParameter = function(parameter) {{
-                                if (parameter === 0x1F00) {{
-                                    return '{webgl_vendor}';
-                                }}
-                                if (parameter === 0x1F01) {{
-                                    return '{webgl_renderer}';
-                                }}
-                                return originalGetParameter.call(this, parameter);
-                            }};
-                        }}
-                        return context;
-                    }}
-                    return originalGetContext.call(this, contextId, attributes);
-                }};
-                
-                const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
-                HTMLCanvasElement.prototype.toDataURL = function(type, quality) {{
-                    if (type === 'image/png' || type === undefined) {{
-                        const ctx = this.getContext('2d');
-                        if (ctx) {{
-                            const imageData = ctx.getImageData(0, 0, this.width, this.height);
-                            const data = imageData.data;
-                            for (let i = 0; i < data.length && i < 100; i += 4) {{
-                                if (Math.random() < 0.01) {{
-                                    data[i] = Math.min(255, data[i] + (Math.random() > 0.5 ? 1 : -1));
-                                    data[i+1] = Math.min(255, data[i+1] + (Math.random() > 0.5 ? 1 : -1));
-                                    data[i+2] = Math.min(255, data[i+2] + (Math.random() > 0.5 ? 1 : -1));
-                                }}
-                            }}
-                            ctx.putImageData(imageData, 0, 0);
-                        }}
-                    }}
-                    return originalToDataURL.call(this, type, quality);
-                }};
-                
-                const originalAudioCtx = window.AudioContext || window.webkitAudioContext;
-                if (originalAudioCtx) {{
-                    const patchedAudioCtx = function() {{
-                        const ctx = new originalAudioCtx();
-                        const originalCreateBuffer = ctx.createBuffer;
-                        ctx.createBuffer = function(numChannels, length, sampleRate) {{
-                            const buffer = originalCreateBuffer.call(this, numChannels, length, sampleRate);
-                            for (let i = 0; i < numChannels; i++) {{
-                                const channelData = buffer.getChannelData(i);
-                                for (let j = 0; j < channelData.length; j += 10) {{
-                                    channelData[j] += (Math.random() - 0.5) * 0.0001;
-                                }}
-                            }}
-                            return buffer;
-                        }};
-                        return ctx;
-                    }};
-                    patchedAudioCtx.prototype = originalAudioCtx.prototype;
-                    window.AudioContext = patchedAudioCtx;
-                    window.webkitAudioContext = patchedAudioCtx;
-                }}
-                
-                Object.defineProperty(window, 'screen', {{
-                    get: () => {{
-                        const availHeight = {screen_height};
-                        const height = availHeight + {random.randint(40, 60)};
-                        const availWidth = {screen_width};
-                        const width = availWidth;
-                        return {{
-                            width: width,
-                            height: height,
-                            availWidth: availWidth,
-                            availHeight: availHeight,
-                            colorDepth: 24,
-                            pixelDepth: 24,
-                            availLeft: 0,
-                            availTop: 0,
-                            left: 0,
-                            top: 0,
-                            orientation: {{
-                                type: 'landscape-primary',
-                                angle: 0
-                            }}
-                        }};
-                    }},
-                    configurable: true,
-                    enumerable: true
-                }});
-                
-                if (!window.chrome) {{
-                    window.chrome = {{}};
-                }}
-                window.chrome.runtime = {{}};
-                window.chrome.loadTimes = function() {{
-                    return {{
-                        requestTime: Date.now() / 1000,
-                        startLoadTime: Date.now() / 1000 - {random.uniform(0.5, 2)},
-                        commitLoadTime: Date.now() / 1000 - {random.uniform(0.2, 1)},
-                        finishDocumentLoadTime: Date.now() / 1000 - {random.uniform(0.1, 0.5)},
-                        finishLoadTime: Date.now() / 1000 - {random.uniform(0.05, 0.3)},
-                        firstPaintTime: Date.now() / 1000 - {random.uniform(0.1, 0.8)},
-                        firstPaintAfterLoadTime: 0,
-                        navigationType: 'Other',
-                        wasFetchedViaSpdy: false,
-                        wasNpnNegotiated: false,
-                        npnNegotiatedProtocol: 'unknown',
-                        wasAlternateProtocolAvailable: false,
-                        connectionInfo: 'http/1.1'
-                    }};
-                }};
-                window.chrome.csi = function() {{
-                    return {{
-                        startE: Date.now() - {random.randint(500, 2000)},
-                        onloadT: Date.now() - {random.randint(100, 500)},
-                        pageT: {random.randint(100, 500)},
-                        tran: '15'
-                    }};
-                }};
-                window.chrome.app = {{}};
-                window.chrome.app.isInstalled = false;
-                
-                Object.defineProperty(navigator, 'mimeTypes', {{
-                    get: () => {{
-                        return {{
-                            0: {{
-                                type: 'application/pdf',
-                                suffixes: 'pdf',
-                                description: 'Portable Document Format',
-                                enabledPlugin: {{
-                                    name: 'Chrome PDF Plugin',
-                                    filename: 'internal-pdf-viewer',
-                                    description: 'Portable Document Format'
-                                }}
-                            }},
-                            length: 1
-                        }};
-                    }},
-                    configurable: true,
-                    enumerable: true
-                }});
-                
-                const originalPerfNow = performance.now;
-                performance.now = function() {{
-                    return originalPerfNow.call(this) + (Math.random() * 0.5);
-                }};
-                
-                const originalDateNow = Date.now;
-                Date.now = function() {{
-                    return originalDateNow.call(this) + Math.floor(Math.random() * 10);
-                }};
-                
-                Object.defineProperty(document, 'hidden', {{
-                    get: () => false,
-                    configurable: true,
-                    enumerable: true
-                }});
-                
-                Object.defineProperty(document, 'visibilityState', {{
-                    get: () => 'visible',
-                    configurable: true,
-                    enumerable: true
-                }});
-                
-                const originalQuery = window.navigator.permissions.query;
-                window.navigator.permissions.query = function(parameters) {{
-                    const permissions = {{
-                        'geolocation': '{random.choice(['prompt', 'denied'])}',
-                        'notifications': Notification.permission || 'default',
-                        'midi': 'prompt',
-                        'camera': 'prompt',
-                        'microphone': 'prompt',
-                        'background-fetch': 'prompt',
-                        'background-sync': 'granted',
-                        'periodic-background-sync': 'prompt',
-                        'persistent-storage': 'prompt',
-                        'push': Notification.permission || 'default',
-                        'speaker-selection': 'prompt',
-                        'clipboard-read': 'prompt',
-                        'clipboard-write': 'granted'
-                    }};
-                    return Promise.resolve({{
-                        state: permissions[parameters.name] || 'prompt',
-                        onchange: null,
-                        name: parameters.name
-                    }});
-                }};
-                
-                console.log('✅ 100% маскировка применена');
-            }})()
-            """
+            # Ждём пока Chrome запустится
+            time.sleep(2)
             
-            await self.execute_script(mask_js)
-            self._masked = True
-            print("✅ Маскировка OK")
+            self.ws_url = f"ws://localhost:{port}/devtools/browser/..."
+            logger.info(f"✅ Chrome запущен на порту {port}")
             return True
             
         except Exception as e:
-            print(f"❌ Ошибка маскировки: {e}")
+            logger.error(f"❌ Ошибка запуска Chrome: {e}")
             return False
     
-    # ========== ОСНОВНЫЕ МЕТОДЫ (ВСЁ С AWAIT) ==========
-    
-    def _get_tab_ws_url(self, tab_id: Optional[str] = None) -> Optional[str]:
+    async def close_chrome(self):
+        """Закрыть Chrome"""
         try:
-            resp = requests.get(f'http://{self.host}:{self.port}/json/list', timeout=5)
-            if resp.status_code != 200:
-                return None
-            
-            pages = resp.json()
-            
-            if not pages:
-                resp = requests.get(f'http://{self.host}:{self.port}/json/new', timeout=5)
-                new_page = resp.json()
-                self._page_id = new_page.get('id')
-                self._current_url = new_page.get('url', '')
-                return new_page['webSocketDebuggerUrl']
-            
-            if tab_id:
-                for page in pages:
-                    if page.get('id') == tab_id:
-                        self._page_id = page['id']
-                        self._current_url = page.get('url', '')
-                        return page['webSocketDebuggerUrl']
-            
-            first_page = pages[0]
-            self._page_id = first_page.get('id')
-            self._current_url = first_page.get('url', '')
-            return first_page['webSocketDebuggerUrl']
-            
+            if self.chrome_process:
+                self.chrome_process.terminate()
+                self.chrome_process = None
+                logger.info("✅ Chrome закрыт")
+            return True
         except Exception as e:
-            print(f"❌ Ошибка подключения к Chrome: {e}")
+            logger.error(f"❌ Ошибка закрытия Chrome: {e}")
+            return False
+    
+    async def connect(self):
+        """Подключение к Chrome"""
+        try:
+            self.client = CDPClient(self.ws_url)
+            await self.client.__aenter__()
+            logger.info("✅ Подключен к Chrome")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка подключения: {e}")
+            return False
+    
+    async def disconnect(self):
+        """Отключение от Chrome"""
+        try:
+            if self.client:
+                await self.client.__aexit__(None, None, None)
+                self.client = None
+                self.current_session = None
+                self.target_id = None
+                logger.info("✅ Отключен от Chrome")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка отключения: {e}")
+            return False
+    
+    async def list_tabs(self) -> List[Dict[str, Any]]:
+        """Получить список всех открытых вкладок"""
+        try:
+            targets = await self.client.send.Target.getTargets()
+            tabs = []
+            for target in targets.get("targetInfos", []):
+                if target.get("type") == "page":
+                    tabs.append({
+                        "id": target["targetId"],
+                        "url": target["url"],
+                        "title": target.get("title", ""),
+                        "attached": target.get("attached", False)
+                    })
+            return tabs
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения списка вкладок: {e}")
+            return []
+    
+    async def create_tab(self, url: str = "about:blank") -> Optional[str]:
+        """Создать новую вкладку"""
+        try:
+            result = await self.client.send.Target.createTarget({"url": url})
+            target_id = result["targetId"]
+            logger.info(f"✅ Создана вкладка: {target_id}")
+            return target_id
+        except Exception as e:
+            logger.error(f"❌ Ошибка создания вкладки: {e}")
             return None
     
-    async def connect(self, tab_id: Optional[str] = None):
-        if self._connected and self.ws:
-            return
-        
-        self.ws_url = self._get_tab_ws_url(tab_id)
-        if not self.ws_url:
-            raise Exception("❌ Chrome не запущен или нет доступных вкладок")
-        
-        print(f"🔗 Подключение к Chrome...")
-        
+    async def close_tab(self, target_id: str) -> bool:
+        """Закрыть вкладку"""
         try:
-            self.ws = await asyncio.wait_for(
-                websockets.connect(
-                    self.ws_url,
-                    max_size=50 * 1024 * 1024,
-                    ping_interval=20,
-                    ping_timeout=60
-                ),
-                timeout=10
+            await self.client.send.Target.closeTarget({"targetId": target_id})
+            logger.info(f"✅ Закрыта вкладка: {target_id}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка закрытия вкладки: {e}")
+            return False
+    
+    async def attach_to_tab(self, target_id: str):
+        """Подключиться к вкладке"""
+        try:
+            self.target_id = target_id
+            self.current_session = await self.client.attach_target(target_id)
+            logger.info(f"✅ Подключен к вкладке: {target_id}")
+            return self.current_session
+        except Exception as e:
+            logger.error(f"❌ Ошибка подключения к вкладке: {e}")
+            return None
+    
+    async def navigate(self, url: str) -> bool:
+        """Перейти по URL"""
+        try:
+            if not self.current_session:
+                raise Exception("Нет активной сессии")
+            await self.current_session.send.Page.navigate({"url": url})
+            logger.info(f"✅ Навигация на: {url}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка навигации: {e}")
+            return False
+    
+    async def get_html(self) -> Optional[str]:
+        """Получить HTML страницы"""
+        try:
+            if not self.current_session:
+                raise Exception("Нет активной сессии")
+            result = await self.current_session.send.Runtime.evaluate(
+                Evaluate(
+                    expression="document.documentElement.outerHTML",
+                    returnByValue=True
+                )
             )
-            self._connected = True
-            print("✅ WebSocket подключен")
-        except asyncio.TimeoutError:
-            raise Exception("❌ Таймаут подключения к Chrome")
-        
-        # ✅ ВСЕ С AWAIT
-        await self._send_command("Page.enable")
-        await self._send_command("Runtime.enable")
-        await self._send_command("DOM.enable")
-        await self._send_command("Network.enable")
-        
-        await self._set_viewport()
-        await self.set_cookies()
-        await self.apply_mask()
-        
-        print("✅ Подключение OK")
+            return result["result"]["value"]
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения HTML: {e}")
+            return None
     
-    async def _set_viewport(self):
-        await self._send_command("Emulation.setDeviceMetricsOverride", {
-            "width": self.viewport_width,
-            "height": self.viewport_height,
-            "deviceScaleFactor": 1,
-            "mobile": False
-        })
+    async def get_title(self) -> Optional[str]:
+        """Получить заголовок страницы"""
+        try:
+            if not self.current_session:
+                raise Exception("Нет активной сессии")
+            result = await self.current_session.send.Runtime.evaluate(
+                Evaluate(
+                    expression="document.title",
+                    returnByValue=True
+                )
+            )
+            return result["result"]["value"]
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения заголовка: {e}")
+            return None
     
-    async def _send_command(self, method: str, params: dict = None):
-        if not self._connected:
-            await self.connect()
-        
-        self._message_id += 1
-        message = {
-            "id": self._message_id,
-            "method": method,
-            "params": params or {}
-        }
-        
-        await self.ws.send(json.dumps(message))
-        
-        important = ['Page.navigate', 'Page.captureScreenshot', 'Page.reload']
-        if self._debug or method in important:
-            print(f"📤 {method}")
-        
-        while True:
-            try:
-                response = await asyncio.wait_for(self.ws.recv(), timeout=30)
-                data = json.loads(response)
-                
-                if data.get('id') == self._message_id:
-                    if 'error' in data:
-                        raise Exception(f"CDP Error: {data['error']}")
-                    
-                    if self._debug or method in important:
-                        if method == 'Page.captureScreenshot':
-                            print(f"📥 screenshot OK")
-                        elif method == 'Page.navigate':
-                            print(f"📥 navigate OK")
-                        else:
-                            print(f"📥 {method} OK")
-                    
-                    return data.get('result', {})
-            except asyncio.TimeoutError:
-                raise Exception(f"❌ Таймаут ответа от Chrome на команду {method}")
+    async def execute_js(self, script: str) -> Optional[Any]:
+        """Выполнить JavaScript на странице"""
+        try:
+            if not self.current_session:
+                raise Exception("Нет активной сессии")
+            result = await self.current_session.send.Runtime.evaluate(
+                Evaluate(
+                    expression=script,
+                    returnByValue=True
+                )
+            )
+            return result["result"]["value"]
+        except Exception as e:
+            logger.error(f"❌ Ошибка выполнения JS: {e}")
+            return None
     
-    async def open_page(self, url: str):
-        print(f"🔵 open_page: {url}")
-        await self.connect()
-        print("🔵 connect OK")
+    async def screenshot(self, format: str = "png") -> Optional[str]:
+        """Сделать скриншот страницы"""
+        try:
+            if not self.current_session:
+                raise Exception("Нет активной сессии")
+            result = await self.current_session.send.Page.captureScreenshot({
+                "format": format
+            })
+            return result["data"]
+        except Exception as e:
+            logger.error(f"❌ Ошибка создания скриншота: {e}")
+            return None
+
+
+# Функция для быстрого использования
+async def quick_browser_action(ws_url: str, action: str, **kwargs):
+    """Быстрое выполнение одного действия"""
+    browser = BrowserManager(ws_url)
+    
+    try:
+        await browser.connect()
         
-        result = await self._send_command("Page.navigate", {"url": url})
-        print(f"🔵 Page.navigate отправлен")
+        target_id = await browser.create_tab()
+        if not target_id:
+            raise Exception("Не удалось создать вкладку")
         
-        self._current_url = url
-        print("🔵 Жду 2 секунды...")
-        await asyncio.sleep(2
+        await browser.attach_to_tab(target_id)
+        
+        if action == "get_html":
+            if "url" in kwargs:
+                await browser.navigate(kwargs["url"])
+            return await browser.get_html()
+        
+        elif action == "get_title":
+            if "url" in kwargs:
+                await browser.navigate(kwargs["url"])
+            return await browser.get_title()
+        
+        elif action == "screenshot":
+            if "url" in kwargs:
+                await browser.navigate(kwargs["url"])
+            return await browser.screenshot()
+        
+        elif action == "execute_js":
+            if "url" in kwargs:
+                await browser.navigate(kwargs["url"])
+            return await browser.execute_js(kwargs["script"])
+        
+        elif action == "navigate":
+            return await browser.navigate(kwargs["url"])
+        
+        else:
+            raise ValueError(f"Неизвестное действие: {action}")
+    
+    finally:
+        if browser.target_id:
+            await browser.close_tab(browser.target_id)
+        await browser.disconnect()
+
+
+if __name__ == "__main__":
+    # Тест
+    async def test():
+        browser = BrowserManager(chrome_path="/usr/bin/google-chrome")
+        await browser.launch_chrome(headless=True)
+        await browser.connect()
+        
+        target_id = await browser.create_tab()
+        await browser.attach_to_tab(target_id)
+        await browser.navigate("https://example.com")
+        
+        title = await browser.get_title()
+        print(f"Заголовок: {title}")
+        
+        await browser.close_tab(target_id)
+        await browser.disconnect()
+        await browser.close_chrome()
+    
+    asyncio.run(test())
