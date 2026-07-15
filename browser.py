@@ -18,6 +18,7 @@ class Browser:
         self.viewport_width = 1280
         self.viewport_height = 720
         self.ws_url = None
+        self._msg_id = 0  # ← счётчик для CDP команд
     
     def _find_chrome(self):
         """Найти Chrome в системе"""
@@ -34,14 +35,13 @@ class Browser:
                 return path
         
         logger.error("❌ Chrome не найден в системе!")
-        return "/usr/bin/google-chrome"  # fallback
+        return "/usr/bin/google-chrome"
     
     async def start(self):
         """Запуск Chrome с открытым CDP"""
         try:
             logger.info("🚀 Запуск Chrome...")
             
-            # Проверяем, не запущен ли уже Chrome на этом порту
             if not self._is_chrome_running():
                 self.process = Popen([
                     self.chrome_path,
@@ -53,14 +53,12 @@ class Browser:
                     "--disable-extensions",
                     "--disable-setuid-sandbox",
                     f"--remote-debugging-port={self.debug_port}",
-                    "about:blank"  # Стартовая страница
+                    "about:blank"
                 ], stdout=PIPE, stderr=PIPE)
                 
-                # Ждём запуска
                 logger.info("⏳ Ожидание запуска Chrome...")
                 await asyncio.sleep(3)
                 
-                # Проверяем, запустился ли процесс
                 if self.process.poll() is not None:
                     stdout, stderr = self.process.communicate(timeout=2)
                     logger.error(f"Chrome упал при запуске: {stderr.decode()}")
@@ -68,19 +66,15 @@ class Browser:
             else:
                 logger.info("ℹ️ Chrome уже запущен")
             
-            # Получаем WebSocket URL
             self.ws_url = self._get_websocket_url()
             logger.info(f"🔗 Подключение к CDP: {self.ws_url}")
             
-            # Подключаемся
             self.ws = await websockets.connect(self.ws_url)
             
-            # Включаем домены
             await self.send("Page.enable")
             await self.send("Runtime.enable")
             await self.send("Network.enable")
             
-            # Устанавливаем размер окна
             await self.set_viewport(self.viewport_width, self.viewport_height)
             
             logger.info("✅ Браузер готов к работе!")
@@ -102,7 +96,6 @@ class Browser:
     def _get_websocket_url(self):
         """Получить WebSocket URL из /json/list"""
         try:
-            # Проверяем, что Chrome доступен
             resp = requests.get(f"http://localhost:{self.debug_port}/json/list", timeout=5)
             resp.raise_for_status()
             pages = resp.json()
@@ -121,12 +114,13 @@ class Browser:
             raise RuntimeError(f"Ошибка получения WebSocket URL: {e}")
     
     async def send(self, method, params=None):
-        """Отправить CDP-команду"""
+        """Отправить CDP-команду с целочисленным id"""
         if params is None:
             params = {}
         
+        self._msg_id += 1  # ← увеличиваем счётчик
         msg = {
-            "id": int(time.time() * 1000),
+            "id": self._msg_id,  # ← 1, 2, 3, ...
             "method": method,
             "params": params
         }
@@ -136,14 +130,12 @@ class Browser:
             response = await self.ws.recv()
             data = json.loads(response)
             
-            # Проверяем ошибки CDP
             if "error" in data:
                 error_msg = data["error"].get("message", "Unknown CDP error")
                 error_code = data["error"].get("code", "N/A")
                 logger.error(f"CDP Error ({method}): [{error_code}] {error_msg}")
                 raise RuntimeError(f"CDP Error: {error_msg}")
             
-            # Возвращаем result если есть
             if "result" in data:
                 return data["result"]
             return data
@@ -172,10 +164,7 @@ class Browser:
         """Навигация (CDP)"""
         logger.info(f"📍 Переход: {url}")
         result = await self.send("Page.navigate", {"url": url})
-        
-        # Ждём загрузки
         await asyncio.sleep(2)
-        
         return result
     
     async def screenshot(self):
