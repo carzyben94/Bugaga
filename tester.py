@@ -358,7 +358,7 @@ class ElementTester:
                 continue
         return None
 
-    # ===== ПОЛНЫЙ ТЕСТ =====
+    # ===== ПОЛНЫЙ ТЕСТ С ОЖИДАНИЕМ ЗАГРУЗКИ =====
     async def run_full_test(self, url: str) -> Dict[str, Any]:
         self.screenshots = []
         self.logs = []
@@ -366,7 +366,31 @@ class ElementTester:
         self._log(f"🚀 Начинаю тестирование {url}")
         
         await self.browser.goto(url)
-        await asyncio.sleep(3)
+        
+        # ===== ЖДЁМ ЗАГРУЗКИ СТРАНИЦЫ =====
+        self._log("⏳ Ожидание загрузки страницы...")
+        for _ in range(30):
+            try:
+                result = await self.eval.execute("document.readyState === 'complete'")
+                if result:
+                    self._log("✅ Страница загружена")
+                    break
+            except:
+                pass
+            await asyncio.sleep(1)
+        else:
+            self._log_error("❌ Таймаут загрузки страницы")
+            await self._take_screenshot("page_load_error")
+            return {
+                "url": url,
+                "timestamp": datetime.now().isoformat(),
+                "error": "Страница не загрузилась (возможно, блокировка или ошибка JS)",
+                "results": {"total": 0, "verified": 0, "failed": 0, "skipped": 0, "actions": [], "failed_elements": []},
+                "logs": self.logs,
+                "screenshots_count": len(self.screenshots)
+            }
+        
+        await asyncio.sleep(1)
         self._last_url = url
         
         await self._take_screenshot("page_full")
