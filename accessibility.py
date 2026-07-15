@@ -71,12 +71,10 @@ class Accessibility:
             "children": []
         }
         
-        # Роль берём из node["role"]["value"]
         role_obj = node.get("role")
         if role_obj and isinstance(role_obj, dict):
             result["role"] = role_obj.get("value", "")
         
-        # Свойства
         properties = node.get("properties", [])
         for prop in properties:
             prop_name = prop.get("name")
@@ -200,9 +198,18 @@ class Accessibility:
         return ""
     
     async def get_summary(self) -> dict:
-        """Получить краткую сводку по accessibility tree"""
+        """Получить краткую сводку по accessibility tree (только полезные роли)"""
         await self.enable()
         nodes = await self.get_full_tree()
+        
+        # ===== ТОЛЬКО ПОЛЕЗНЫЕ РОЛИ =====
+        USEFUL_ROLES = {
+            "button", "link", "heading", "textbox", "searchbox", "combobox",
+            "checkbox", "radio", "select", "listbox", "menuitem", "tab",
+            "navigation", "main", "complementary", "contentinfo", "banner",
+            "article", "section", "list", "listitem", "img", "image",
+            "form", "search", "dialog", "alert", "status", "progressbar"
+        }
         
         summary = {
             "total_nodes": len(nodes),
@@ -225,6 +232,10 @@ class Accessibility:
             role = role_obj.get("value", "") if isinstance(role_obj, dict) else ""
             
             if not role:
+                continue
+            
+            # ===== ПРОПУСКАЕМ МУСОРНЫЕ РОЛИ =====
+            if role not in USEFUL_ROLES:
                 continue
             
             summary["roles"][role] = summary["roles"].get(role, 0) + 1
