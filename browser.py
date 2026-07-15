@@ -50,7 +50,7 @@ class Browser:
         return pages[0]["webSocketDebuggerUrl"]
     
     async def send(self, method, params=None):
-        """Отправить CDP-команду и вернуть только result"""
+        """Отправить CDP-команду и вернуть весь ответ"""
         if params is None:
             params = {}
         
@@ -64,8 +64,8 @@ class Browser:
         response = await self.ws.recv()
         data = json.loads(response)
         
-        # Возвращаем только result
-        return data.get("result", {})
+        # Возвращаем весь ответ
+        return data
     
     async def set_viewport(self, width=1280, height=720):
         """Установить размер окна через CDP"""
@@ -81,13 +81,13 @@ class Browser:
     
     async def goto(self, url):
         """Навигация (CDP)"""
-        result = await self.send("Page.navigate", {"url": url})
-        return result
+        response = await self.send("Page.navigate", {"url": url})
+        return response.get("result", {})
     
     async def screenshot(self):
-        """Скриншот через CDP"""
-        result = await self.send("Page.captureScreenshot")
-        return result["data"]
+        """Скриншот через CDP (по документации: data на верхнем уровне)"""
+        response = await self.send("Page.captureScreenshot")
+        return response["data"]  # ← data напрямую, без result
     
     async def close(self):
         """Закрыть браузер"""
