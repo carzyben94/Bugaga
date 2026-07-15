@@ -88,8 +88,6 @@ class HermesAgent:
                 "has_selector": selector is not None
             }
             snapshot.append(element_info)
-            
-            # ===== СОХРАНЯЕМ ВСЕ ЭЛЕМЕНТЫ =====
             self.element_map[ref] = element_info
         
         self.snapshot = snapshot
@@ -189,6 +187,7 @@ class HermesAgent:
             return {"success": False, "reason": f"Элемент {ref} не имеет имени"}
         
         try:
+            # ===== ЭКРАНИРУЕМ ИМЯ ДЛЯ JS =====
             safe_name = json.dumps(name)
             
             # Пробуем найти по aria-label
@@ -202,7 +201,7 @@ class HermesAgent:
                 await asyncio.sleep(1.5)
                 return {"success": True, "action": "click", "ref": ref, "selector": aria_selector}
             
-            # Ищем через JS по тексту
+            # ===== ИЩЕМ ЧЕРЕЗ JS С ЭКРАНИРОВАНИЕМ =====
             js = f"""
             (function() {{
                 const elements = document.querySelectorAll('button, a, [role="button"], [role="link"]');
