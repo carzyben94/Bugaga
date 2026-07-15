@@ -3,7 +3,7 @@ import json
 import logging
 import asyncio
 import httpx
-from site_map import SiteMap  # ← ИМПОРТ
+from site_map import SiteMap
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ class AIAgent:
         self.model = "agnes-2.0-flash"
         self.client = None
         self.conversation_history = []
-        self.site_map = SiteMap()  # ← ХРАНИЛИЩЕ
+        self.site_map = SiteMap()
 
     async def _get_client(self):
         if self.client is None or self.client.is_closed:
@@ -44,6 +44,49 @@ class AIAgent:
             raise Exception(f"API error: {response.status_code}")
         return response.json()["choices"][0]["message"]["content"]
 
+    # ===== ВИЗУАЛЬНЫЙ АНАЛИЗ СКРИНШОТА =====
+    async def analyze_screenshot(self, screenshot_base64: str, question: str = "Опиши, что ты видишь на этом скриншоте") -> str:
+        """
+        Отправить скриншот в Agnes Vision для анализа.
+        """
+        if not self.api_key:
+            raise ValueError("AGNES_API_KEY not set")
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": question},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{screenshot_base64}"
+                        }
+                    }
+                ]
+            }
+        ]
+
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": 1024
+        }
+
+        client = await self._get_client()
+        response = await client.post(self.api_url, headers=headers, json=payload)
+        
+        if response.status_code != 200:
+            raise Exception(f"Agnes Vision API error: {response.status_code}")
+        
+        data = response.json()
+        return data["choices"][0]["message"]["content"]
+
     # ===== ПОСТРОЕНИЕ КАРТЫ САЙТА =====
     async def build_site_map(self, url: str) -> str:
         """Построить карту сайта и сохранить в хранилище"""
@@ -51,7 +94,6 @@ class AIAgent:
         await self.browser.goto(url)
         await asyncio.sleep(3)
         
-        # 1. Собираем данные
         title = await self.eval.get_title()
         zones = await self.eval.get_elements_with_context(scroll=True)
         buttons = await self.eval.get_all_buttons()
@@ -65,7 +107,6 @@ class AIAgent:
         await asyncio.sleep(2)
         summary = await self.accessibility.get_summary()
         
-        # 2. Строим структуру
         structure = {}
         selectors = {}
         total_elements = 0
@@ -109,7 +150,6 @@ class AIAgent:
                     key = item.get('text', '')[:30] or item.get('testId')
                     selectors[key] = f"[data-testid='{item.get('testId')}']"
         
-        # 3. Статистика
         statistics = {
             "buttons": len(buttons),
             "inputs": len(inputs),
@@ -120,7 +160,6 @@ class AIAgent:
             "accessibility": summary
         }
         
-        # 4. Сохраняем карту
         self.site_map.save_map(url, {
             "title": title,
             "structure": structure,
@@ -130,7 +169,6 @@ class AIAgent:
             "total_elements": total_elements
         })
         
-        # 5. Формируем ответ
         response = f"🗺️ **Карта сайта построена и сохранена!**\n\n"
         response += f"📄 **{title}**\n"
         response += f"🔗 {url}\n\n"
