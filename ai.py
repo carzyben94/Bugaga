@@ -85,36 +85,36 @@ class AIAgent:
             logger.error(f"Ошибка подключения к Agnes API: {e}")
             raise
     
-    async def analyze_page(self, url: str) -> str:
+    async def analyze_page(self, url: str, detailed: bool = False) -> str:
         """
         Проанализировать страницу через ИИ.
-        
+
         Args:
             url: URL страницы
-        
+            detailed: если True — полный анализ, если False — краткий
+
         Returns:
             Анализ страницы от ИИ
         """
         if not self.browser:
             raise ValueError("Browser не инициализирован")
-        
+
         if not self.eval:
             raise ValueError("Eval не инициализирован")
-        
-        # Переходим на страницу
+
         await self.browser.goto(url)
         await asyncio.sleep(2)
-        
-        # Собираем данные
+
         title = await self.eval.get_title()
         page_info = await self.eval.get_page_info()
         links = await self.eval.get_all_links()
         buttons = await self.eval.get_all_buttons()
         inputs = await self.eval.get_all_inputs()
         forms = await self.eval.get_all_forms()
-        
-        # Формируем промпт
-        prompt = f"""
+
+        if detailed:
+            # ===== ПОЛНЫЙ АНАЛИЗ =====
+            prompt = f"""
 Ты — AI агент для анализа веб-страниц.
 
 **Страница:** {url}
@@ -149,18 +149,43 @@ class AIAgent:
 4. Какие основные элементы для автоматизации?
 5. Дай краткий вывод
 """
+        else:
+            # ===== КРАТКИЙ АНАЛИЗ =====
+            prompt = f"""
+Ты — AI агент. Дай КРАТКИЙ ответ на вопросы.
+
+**Страница:** {url}
+**Заголовок:** {title}
+
+**Элементы:**
+- Кнопок: {len(buttons)}
+- Полей ввода: {len(inputs)}
+- Ссылок: {len(links)}
+- Форм: {len(forms)}
+
+**Главные элементы (первые 5):**
+Кнопки: {', '.join([b['text'][:30] for b in buttons[:5] if b['text']]) or 'нет'}
+Поля: {', '.join([i['name'][:30] for i in inputs[:5] if i['name']]) or 'нет'}
+Ссылки: {', '.join([l['text'][:30] for l in links[:5] if l['text']]) or 'нет'}
+
+**Вопросы (отвечай кратко, по делу):**
+1. О чём страница? (1 предложение)
+2. Что можно сделать? (список действий через запятую)
+3. Есть ли форма входа/регистрации? (да/нет, если да — какие поля)
+4. Что нужно для автоматизации? (какие селекторы/data-testid)
+5. Вывод (1 предложение)
+"""
 
         messages = [
-            {"role": "system", "content": "Ты — полезный AI ассистент для веб-автоматизации."},
+            {"role": "system", "content": "Ты — полезный AI ассистент для веб-автоматизации. Отвечай кратко и по делу."},
             {"role": "user", "content": prompt}
         ]
-        
+
         response = await self._call_api(messages)
-        
-        # Сохраняем историю
+
         self.conversation_history.append({"role": "user", "content": prompt})
         self.conversation_history.append({"role": "assistant", "content": response})
-        
+
         return response
     
     async def analyze_accessibility(self, url: str) -> str:
