@@ -38,6 +38,7 @@ class Browser:
         return "/usr/bin/google-chrome"
     
     async def start(self):
+        """Запуск Chrome с маскировкой и установкой кук"""
         try:
             if not self._is_chrome_running():
                 args = Mask.get_launch_args(self.chrome_path, self.debug_port)
@@ -79,11 +80,13 @@ class Browser:
             raise
     
     def _start_keepalive(self):
+        """Запустить фоновую задачу для поддержания соединения"""
         if self._keepalive_task is None or self._keepalive_task.done():
             self._keepalive_task = asyncio.create_task(self._keepalive_loop())
             logger.info("🔁 Keepalive задача запущена")
     
     async def _keepalive_loop(self):
+        """Периодически отправлять ping через CDP"""
         try:
             while not self._is_closing and self.ws is not None:
                 await asyncio.sleep(20)
@@ -92,7 +95,6 @@ class Browser:
                     continue
                 
                 try:
-                    # Просто отправляем ping, если ошибка — переподключаемся
                     await self.send("Runtime.evaluate", {
                         "expression": "1+1",
                         "returnByValue": True
@@ -111,6 +113,7 @@ class Browser:
             logger.error(f"❌ Ошибка в keepalive: {e}")
     
     async def _reconnect(self):
+        """Переподключение к WebSocket"""
         logger.info("🔄 Переподключение к CDP...")
         try:
             if self.ws:
@@ -134,6 +137,7 @@ class Browser:
             raise
     
     def _is_chrome_running(self):
+        """Проверяет, запущен ли Chrome на порту 9222"""
         try:
             requests.get(f"http://localhost:{self.debug_port}/json/version", timeout=2)
             return True
@@ -141,6 +145,7 @@ class Browser:
             return False
     
     def _get_websocket_url(self):
+        """Получить WebSocket URL из /json/list"""
         resp = requests.get(f"http://localhost:{self.debug_port}/json/list", timeout=5)
         pages = resp.json()
         if not pages:
@@ -149,6 +154,7 @@ class Browser:
         return pages[0]["webSocketDebuggerUrl"]
     
     async def set_cookies(self, cookies_list):
+        """Установить куки одной командой"""
         if not cookies_list:
             return
         await self.send("Network.setCookies", {
@@ -157,6 +163,7 @@ class Browser:
         logger.info(f"🍪 Установлено {len(cookies_list)} кук")
     
     async def send(self, method, params=None):
+        """Отправить CDP-команду"""
         if params is None:
             params = {}
         self._msg_id += 1
@@ -183,19 +190,12 @@ class Browser:
             if not self._is_closing:
                 await self._reconnect()
             raise
-        except websockets.exceptions.MessageTooLarge as e:
-            logger.error(f"📦 Сообщение слишком большое: {e}")
-            self.ws = await websockets.connect(
-                self.ws_url,
-                ping_interval=15,
-                ping_timeout=30,
-                close_timeout=10,
-                max_size=20 * 1024 * 1024,
-                max_queue=128
-            )
+        except Exception as e:
+            logger.error(f"❌ Ошибка в send: {e}")
             raise
     
     async def eval_js(self, js_code):
+        """Выполнить JavaScript на странице"""
         result = await self.send("Runtime.evaluate", {
             "expression": js_code,
             "returnByValue": True
@@ -203,6 +203,7 @@ class Browser:
         return result
     
     async def set_viewport(self, width=1280, height=720):
+        """Установить размер окна через CDP"""
         await self.send("Emulation.setDeviceMetricsOverride", {
             "width": width,
             "height": height,
@@ -214,6 +215,7 @@ class Browser:
         })
     
     async def goto(self, url):
+        """Навигация (CDP) с ожиданием загрузки"""
         result = await self.send("Page.navigate", {"url": url})
         for _ in range(30):
             try:
@@ -227,31 +229,38 @@ class Browser:
         return result
     
     async def screenshot(self):
+        """Скриншот через CDP"""
         result = await self.send("Page.captureScreenshot")
         if "data" in result:
             return result["data"]
         raise RuntimeError(f"data не найдена: {result}")
     
     async def human_click(self, selector):
+        """Человеческий клик через mask.py"""
         js = Mask.get_human_click_js(selector)
         return await self.eval_js(js)
     
     async def human_type(self, selector, text):
+        """Человеческий ввод через mask.py"""
         js = Mask.get_human_type_js(selector, text)
         return await self.eval_js(js)
     
     async def human_scroll(self, distance):
+        """Человеческий скролл через mask.py"""
         js = Mask.get_human_scroll_js(distance)
         return await self.eval_js(js)
     
     async def close(self):
+        """Закрыть браузер"""
         self._is_closing = True
+        
         if self._keepalive_task and not self._keepalive_task.done():
             self._keepalive_task.cancel()
             try:
                 await self._keepalive_task
             except asyncio.CancelledError:
                 pass
+        
         if self.ws:
             try:
                 await self.ws.close()
