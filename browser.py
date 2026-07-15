@@ -6,7 +6,7 @@ import websockets
 from subprocess import Popen, PIPE, TimeoutExpired
 import os
 
-from core.mask import Mask  # ← маскировка из отдельного модуля
+from mask import Mask  # ← без core.
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,6 @@ class Browser:
         """Запуск Chrome с маскировкой из mask.py"""
         try:
             if not self._is_chrome_running():
-                # ✅ Флаги из mask.py
                 args = Mask.get_launch_args(self.chrome_path, self.debug_port)
                 logger.info("🚀 Запуск Chrome с маскировкой...")
                 self.process = Popen(args, stdout=PIPE, stderr=PIPE)
@@ -54,7 +53,7 @@ class Browser:
             await self.send("Network.enable")
             await self.set_viewport(self.viewport_width, self.viewport_height)
             
-            # ✅ JS-маскировка из mask.py
+            # Применяем JS-маскировку из mask.py
             js_mask = Mask.get_js_mask()
             await self.eval_js(js_mask)
             self._masked = True
