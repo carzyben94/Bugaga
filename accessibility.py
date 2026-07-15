@@ -22,23 +22,15 @@ class Accessibility:
             logger.info("♿ Accessibility включён")
     
     async def get_full_tree(self, depth: int = -1) -> dict:
-        """
-        Получить полное accessibility дерево страницы.
-        
-        Args:
-            depth: глубина дерева (-1 = всё)
-        
-        Returns:
-            Словарь с accessibility деревом
-        """
-        await self.enable()  # ← ВКЛЮЧАЕМ ПЕРЕД ИСПОЛЬЗОВАНИЕМ
+        """Получить полное accessibility дерево страницы"""
+        await self.enable()
         result = await self.browser.send("Accessibility.getFullAXTree", {
             "depth": depth
         })
         return result.get("nodes", [])
     
     async def get_root(self) -> dict:
-        """Получить корневой узел accessibility дерева"""
+        """Получить корневой узел"""
         await self.enable()
         nodes = await self.get_full_tree(depth=0)
         return nodes[0] if nodes else {}
@@ -53,180 +45,159 @@ class Accessibility:
         return {}
     
     async def get_node_by_selector(self, selector: str) -> dict:
-        """
-        Найти accessibility узел по CSS селектору.
-        Сначала ищем DOM элемент, потом его accessibility узел.
-        """
+        """Найти accessibility узел по CSS селектору"""
         await self.enable()
-        # Ищем DOM элемент
         dom_result = await self.browser.send("DOM.querySelector", {
             "selector": selector
         })
         node_id = dom_result.get("nodeId")
-        
         if not node_id:
             return {}
-        
-        # Получаем accessibility узел для DOM элемента
         ax_result = await self.browser.send("Accessibility.getPartialAXTree", {
             "nodeId": node_id
         })
-        
         nodes = ax_result.get("nodes", [])
         return nodes[0] if nodes else {}
     
+    def _parse_node(self, node: dict) -> dict:
+        """Преобразовать узел в удобный формат"""
+        result = {
+            "nodeId": node.get("nodeId"),
+            "name": node.get("name", {}).get("value", "") if node.get("name") else "",
+            "role": "",
+            "ariaLabel": "",
+            "description": "",
+            "disabled": False,
+            "children": []
+        }
+        
+        # Роль берём из node["role"]["value"]
+        role_obj = node.get("role")
+        if role_obj and isinstance(role_obj, dict):
+            result["role"] = role_obj.get("value", "")
+        
+        # Свойства
+        properties = node.get("properties", [])
+        for prop in properties:
+            prop_name = prop.get("name")
+            prop_value_obj = prop.get("value", {})
+            prop_value = prop_value_obj.get("value", "") if isinstance(prop_value_obj, dict) else ""
+            
+            if prop_name == "ariaLabel":
+                result["ariaLabel"] = prop_value
+            elif prop_name == "description":
+                result["description"] = prop_value
+            elif prop_name == "disabled":
+                result["disabled"] = bool(prop_value)
+        
+        return result
+    
     async def get_all_buttons(self) -> list:
-        """Получить все кнопки из accessibility tree"""
+        """Получить все кнопки"""
         await self.enable()
         nodes = await self.get_full_tree()
         buttons = []
-        
         for node in nodes:
-            properties = node.get("properties", [])
-            for prop in properties:
-                if prop.get("name") == "role" and prop.get("value", {}).get("value") in ["button", "link"]:
-                    buttons.append(self._parse_node(node))
-                    break
-        
+            if node.get("ignored"):
+                continue
+            role_obj = node.get("role")
+            role = role_obj.get("value", "") if isinstance(role_obj, dict) else ""
+            if role == "button":
+                buttons.append(self._parse_node(node))
         return buttons
     
     async def get_all_inputs(self) -> list:
-        """Получить все поля ввода из accessibility tree"""
+        """Получить все поля ввода"""
         await self.enable()
         nodes = await self.get_full_tree()
         inputs = []
-        
         for node in nodes:
-            properties = node.get("properties", [])
-            for prop in properties:
-                if prop.get("name") == "role" and prop.get("value", {}).get("value") in ["textbox", "searchbox", "combobox"]:
-                    inputs.append(self._parse_node(node))
-                    break
-        
+            if node.get("ignored"):
+                continue
+            role_obj = node.get("role")
+            role = role_obj.get("value", "") if isinstance(role_obj, dict) else ""
+            if role in ["textbox", "searchbox", "combobox"]:
+                inputs.append(self._parse_node(node))
         return inputs
     
-    async def get_all_headings(self) -> list:
-        """Получить все заголовки (h1-h6) из accessibility tree"""
-        await self.enable()
-        nodes = await self.get_full_tree()
-        headings = []
-        
-        for node in nodes:
-            properties = node.get("properties", [])
-            for prop in properties:
-                if prop.get("name") == "role" and prop.get("value", {}).get("value", "").startswith("heading"):
-                    headings.append(self._parse_node(node))
-                    break
-        
-        return headings
-    
     async def get_all_links(self) -> list:
-        """Получить все ссылки из accessibility tree"""
+        """Получить все ссылки"""
         await self.enable()
         nodes = await self.get_full_tree()
         links = []
-        
         for node in nodes:
-            properties = node.get("properties", [])
-            for prop in properties:
-                if prop.get("name") == "role" and prop.get("value", {}).get("value") == "link":
-                    links.append(self._parse_node(node))
-                    break
-        
+            if node.get("ignored"):
+                continue
+            role_obj = node.get("role")
+            role = role_obj.get("value", "") if isinstance(role_obj, dict) else ""
+            if role == "link":
+                links.append(self._parse_node(node))
         return links
     
+    async def get_all_headings(self) -> list:
+        """Получить все заголовки"""
+        await self.enable()
+        nodes = await self.get_full_tree()
+        headings = []
+        for node in nodes:
+            if node.get("ignored"):
+                continue
+            role_obj = node.get("role")
+            role = role_obj.get("value", "") if isinstance(role_obj, dict) else ""
+            if role.startswith("heading"):
+                headings.append(self._parse_node(node))
+        return headings
+    
     async def get_all_landmarks(self) -> list:
-        """Получить все landmark элементы (header, main, footer, nav, aside)"""
+        """Получить все landmark элементы"""
         await self.enable()
         nodes = await self.get_full_tree()
         landmarks = []
-        
         for node in nodes:
-            properties = node.get("properties", [])
-            for prop in properties:
-                if prop.get("name") == "role" and prop.get("value", {}).get("value") in [
-                    "banner", "main", "contentinfo", "navigation", "complementary", "search"
-                ]:
-                    landmarks.append(self._parse_node(node))
-                    break
-        
+            if node.get("ignored"):
+                continue
+            role_obj = node.get("role")
+            role = role_obj.get("value", "") if isinstance(role_obj, dict) else ""
+            if role in ["banner", "main", "contentinfo", "navigation", "complementary", "search"]:
+                landmarks.append(self._parse_node(node))
         return landmarks
     
     async def get_aria_label(self, selector: str) -> str:
         """Получить aria-label элемента"""
-        await self.enable()
         node = await self.get_node_by_selector(selector)
         if not node:
             return ""
-        
         properties = node.get("properties", [])
         for prop in properties:
             if prop.get("name") == "ariaLabel":
                 return prop.get("value", {}).get("value", "")
-        
         return ""
     
     async def get_aria_role(self, selector: str) -> str:
         """Получить aria-role элемента"""
-        await self.enable()
         node = await self.get_node_by_selector(selector)
         if not node:
             return ""
-        
-        properties = node.get("properties", [])
-        for prop in properties:
-            if prop.get("name") == "role":
-                return prop.get("value", {}).get("value", "")
-        
-        return ""
+        role_obj = node.get("role")
+        return role_obj.get("value", "") if isinstance(role_obj, dict) else ""
     
     async def get_name(self, selector: str) -> str:
-        """Получить доступное имя элемента (из accessibility tree)"""
-        await self.enable()
+        """Получить доступное имя элемента"""
         node = await self.get_node_by_selector(selector)
         if not node:
             return ""
-        
-        return node.get("name", {}).get("value", "")
+        return node.get("name", {}).get("value", "") if node.get("name") else ""
     
     async def get_description(self, selector: str) -> str:
-        """Получить описание элемента из accessibility tree"""
-        await self.enable()
+        """Получить описание элемента"""
         node = await self.get_node_by_selector(selector)
         if not node:
             return ""
-        
         properties = node.get("properties", [])
         for prop in properties:
             if prop.get("name") == "description":
                 return prop.get("value", {}).get("value", "")
-        
         return ""
-    
-    def _parse_node(self, node: dict) -> dict:
-        """Преобразовать узел accessibility tree в удобный формат"""
-        result = {
-            "nodeId": node.get("nodeId"),
-            "name": node.get("name", {}).get("value", ""),
-            "role": "",
-            "ariaLabel": "",
-            "description": "",
-            "children": []
-        }
-        
-        properties = node.get("properties", [])
-        for prop in properties:
-            prop_name = prop.get("name")
-            prop_value = prop.get("value", {}).get("value", "")
-            
-            if prop_name == "role":
-                result["role"] = prop_value
-            elif prop_name == "ariaLabel":
-                result["ariaLabel"] = prop_value
-            elif prop_name == "description":
-                result["description"] = prop_value
-        
-        return result
     
     async def get_summary(self) -> dict:
         """Получить краткую сводку по accessibility tree"""
@@ -247,30 +218,33 @@ class Accessibility:
         }
         
         for node in nodes:
-            properties = node.get("properties", [])
-            role = ""
-            for prop in properties:
-                if prop.get("name") == "role":
-                    role = prop.get("value", {}).get("value", "")
-                    break
-            
-            if role:
-                summary["roles"][role] = summary["roles"].get(role, 0) + 1
+            if node.get("ignored"):
+                continue
                 
-                if role in ["button", "link"]:
-                    summary["buttons"] += 1
-                elif role in ["textbox", "searchbox", "combobox"]:
-                    summary["inputs"] += 1
-                elif role.startswith("heading"):
-                    summary["headings"] += 1
-                elif role in ["banner", "main", "contentinfo", "navigation", "complementary"]:
-                    summary["landmarks"] += 1
-                elif role == "img":
-                    summary["images"] += 1
-                elif role == "list":
-                    summary["lists"] += 1
-                elif role == "table":
-                    summary["tables"] += 1
+            role_obj = node.get("role")
+            role = role_obj.get("value", "") if isinstance(role_obj, dict) else ""
+            
+            if not role:
+                continue
+            
+            summary["roles"][role] = summary["roles"].get(role, 0) + 1
+            
+            if role == "button":
+                summary["buttons"] += 1
+            elif role in ["textbox", "searchbox", "combobox"]:
+                summary["inputs"] += 1
+            elif role.startswith("heading"):
+                summary["headings"] += 1
+            elif role == "link":
+                summary["links"] += 1
+            elif role in ["banner", "main", "contentinfo", "navigation", "complementary", "search"]:
+                summary["landmarks"] += 1
+            elif role in ["img", "image"]:
+                summary["images"] += 1
+            elif role == "list":
+                summary["lists"] += 1
+            elif role == "table":
+                summary["tables"] += 1
         
         return summary
     
@@ -279,14 +253,13 @@ class Accessibility:
         await self.enable()
         nodes = await self.get_full_tree()
         result = []
-        
         for node in nodes:
-            properties = node.get("properties", [])
-            for prop in properties:
-                if prop.get("name") == "role" and prop.get("value", {}).get("value") == role:
-                    result.append(self._parse_node(node))
-                    break
-        
+            if node.get("ignored"):
+                continue
+            role_obj = node.get("role")
+            node_role = role_obj.get("value", "") if isinstance(role_obj, dict) else ""
+            if node_role == role:
+                result.append(self._parse_node(node))
         return result
     
     async def find_by_name(self, name: str) -> list:
@@ -294,12 +267,10 @@ class Accessibility:
         await self.enable()
         nodes = await self.get_full_tree()
         result = []
-        
         for node in nodes:
-            node_name = node.get("name", {}).get("value", "")
+            node_name = node.get("name", {}).get("value", "") if node.get("name") else ""
             if node_name == name:
                 result.append(self._parse_node(node))
-        
         return result
     
     async def find_by_name_contains(self, text: str) -> list:
@@ -307,25 +278,8 @@ class Accessibility:
         await self.enable()
         nodes = await self.get_full_tree()
         result = []
-        
         for node in nodes:
-            node_name = node.get("name", {}).get("value", "")
+            node_name = node.get("name", {}).get("value", "") if node.get("name") else ""
             if text.lower() in node_name.lower():
                 result.append(self._parse_node(node))
-        
         return result
-    
-    async def get_node_children(self, node_id: str) -> list:
-        """Получить дочерние узлы"""
-        await self.enable()
-        nodes = await self.get_full_tree()
-        for node in nodes:
-            if node.get("nodeId") == node_id:
-                children = []
-                for child_id in node.get("childIds", []):
-                    for child in nodes:
-                        if child.get("nodeId") == child_id:
-                            children.append(self._parse_node(child))
-                            break
-                return children
-        return []
