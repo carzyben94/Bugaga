@@ -136,41 +136,46 @@ class Browser:
             raise RuntimeError(f"Ошибка получения WebSocket URL: {e}")
     
     async def send(self, method, params=None):
-        """Отправить CDP-команду с целочисленным id"""
+        """Отправить CDP-команду и ждать ответ с тем же id"""
         if params is None:
             params = {}
         
         self._msg_id += 1
+        msg_id = self._msg_id
         msg = {
-            "id": self._msg_id,
+            "id": msg_id,
             "method": method,
             "params": params
         }
         
-        try:
-            await self.ws.send(json.dumps(msg))
+        await self.ws.send(json.dumps(msg))
+        
+        # Ждём ответ с нашим id
+        while True:
             response = await self.ws.recv()
             data = json.loads(response)
             
-            # Логируем полный ответ для диагностики
-            logger.info(f"📨 Ответ CDP на {method}: {json.dumps(data)[:500]}")
+            # Если это ответ на наш запрос (есть id)
+            if "id" in data and data["id"] == msg_id:
+                logger.info(f"📨 Ответ CDP на {method}: {json.dumps(data)[:500]}")
+                
+                if "error" in data:
+                    error_msg = data["error"].get("message", "Unknown CDP error")
+                    raise RuntimeError(f"CDP Error: {error_msg}")
+                
+                if "result" in data:
+                    return data["result"]
+                return data
             
-            if "error" in data:
-                error_msg = data["error"].get("message", "Unknown CDP error")
-                error_code = data["error"].get("code", "N/A")
-                logger.error(f"CDP Error ({method}): [{error_code}] {error_msg}")
-                raise RuntimeError(f"CDP Error: {error_msg}")
+            # Если это событие — логируем и игнорируем
+            elif "method" in data:
+                logger.debug(f"📡 Событие CDP: {data.get('method')}")
+                continue
             
-            if "result" in data:
-                return data["result"]
-            return data
-            
-        except websockets.exceptions.ConnectionClosed:
-            logger.error("WebSocket соединение закрыто")
-            raise RuntimeError("Соединение с браузером потеряно")
-        except Exception as e:
-            logger.error(f"Ошибка отправки CDP команды {method}: {e}")
-            raise
+            # Если что-то непонятное — логируем
+            else:
+                logger.warning(f"⚠️ Неизвестный ответ: {data}")
+                continue
     
     async def set_viewport(self, width=1280, height=720):
         """Установить размер окна через CDP"""
@@ -186,17 +191,13 @@ class Browser:
         logger.info(f"🖥️ Viewport: {width}x{height}")
     
     async def goto(self, url):
-        """Навигация (CDP) с ожиданием полной загрузки"""
+        """Навигация (CDP) с ожиданием загрузки"""
         logger.info(f"📍 Переход: {url}")
         
-        # Отправляем навигацию
         result = await self.send("Page.navigate", {"url": url})
         
-        # Ждём событие загрузки
         logger.info("⏳ Ожидание загрузки страницы...")
-        
-        # Ждём Page.loadEventFired
-        for _ in range(30):  # максимум 30 секунд
+        for _ in range(30):
             try:
                 response = await asyncio.wait_for(self.ws.recv(), timeout=1)
                 data = json.loads(response)
@@ -204,34 +205,23 @@ class Browser:
                 if data.get("method") == "Page.loadEventFired":
                     logger.info("✅ Страница загружена")
                     break
-                    
             except asyncio.TimeoutError:
                 continue
         else:
             logger.warning("⏱️ Таймаут ожидания загрузки")
         
-        # Дополнительная задержка для рендера
         await asyncio.sleep(1)
-        
         return result
     
     async def screenshot(self):
-        """Скриншот через CDP с диагностикой"""
+        """Скриншот через CDP"""
         logger.info("📸 Делаю скриншот...")
         result = await self.send("Page.captureScreenshot")
         
-        # Подробная диагностика
-        logger.info(f"🔍 Тип ответа: {type(result)}")
-        logger.info(f"🔍 Ключи ответа: {result.keys() if isinstance(result, dict) else 'не словарь'}")
-        
         if isinstance(result, dict) and "data" in result:
-            logger.info("✅ data найдена в result")
+            logger.info("✅ data найдена")
             return result["data"]
-        elif isinstance(result, dict) and "result" in result and "data" in result["result"]:
-            logger.info("✅ data найдена в result.result")
-            return result["result"]["data"]
         else:
-            # Если data нет — показываем что пришло
             logger.error(f"❌ Неизвестный формат ответа: {result}")
             raise RuntimeError(f"Поле 'data' не найдено. Получено: {result}")
     
