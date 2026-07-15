@@ -37,21 +37,16 @@ orchestrator = None
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 **Привет! Я Луи!**\n\n"
-        "Я — твой AI-помощник для работы с X.com.\n"
-        "Я умею:\n"
-        "  📸 Делать скриншоты\n"
-        "  🔍 Анализировать страницы\n"
-        "  🖱️ Кликать по кнопкам и ссылкам\n"
-        "  ✏️ Вводить текст\n"
-        "  🧠 Строить цепочки действий\n\n"
+        "Я — твой AI-помощник для работы с X.com.\n\n"
+        "📋 **Команды:**\n"
+        "  /log — скачать лог моих действий\n"
+        "  /log_clear — очистить лог\n\n"
         "💡 **Просто напиши, что нужно сделать.**\n\n"
         "Примеры:\n"
         "  открой x.com\n"
         "  перейди в обзор\n"
         "  опубликуй пост 'Привет мир!'\n"
-        "  покажи что есть на странице\n"
-        "  сделай скрин\n"
-        "  введи в поиск 'AI' и нажми Enter\n\n"
+        "  сделай скрин\n\n"
         "🔥 Я сам пойму, что ты хочешь!"
     )
 
@@ -684,7 +679,55 @@ async def ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
 
+async def louis_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Скачать лог действий Луи"""
+    global orchestrator
+    
+    user_id = update.effective_user.id
+    
+    if orchestrator is None:
+        await update.message.reply_text("❌ Луи ещё не активен. Напиши что-нибудь, чтобы он запустился.")
+        return
+    
+    args = context.args
+    limit = 100
+    if args and args[0].isdigit():
+        limit = int(args[0])
+    
+    log_text = orchestrator.get_logs_text(limit)
+    
+    if len(log_text) > 4000:
+        filename = f"louis_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(log_text)
+        
+        with open(filename, "rb") as f:
+            await update.message.reply_document(
+                document=f,
+                filename=filename,
+                caption=f"📋 Лог Луи (последние {limit} действий)"
+            )
+        os.remove(filename)
+    else:
+        await update.message.reply_text(log_text)
+    
+    logger.info(f"User {user_id} скачал лог Луи")
+
+
+async def louis_log_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Очистить логи Луи"""
+    global orchestrator
+    
+    if orchestrator is None:
+        await update.message.reply_text("❌ Луи ещё не активен.")
+        return
+    
+    orchestrator.clear_logs()
+    await update.message.reply_text("🗑️ Логи Луи очищены!")
+
+
 async def log(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Скачать лог бота (старый)"""
     user_id = update.effective_user.id
     
     try:
@@ -737,7 +780,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         result = await orchestrator.execute(text)
         
-        # ===== ПРОВЕРЯЕМ, ЕСЛИ ЭТО СКРИНШОТ =====
         if isinstance(result, dict) and result.get("screenshot"):
             photo_bytes = base64.b64decode(result["screenshot"])
             await update.message.reply_photo(
@@ -767,6 +809,8 @@ def main():
     app.add_handler(CommandHandler("results", results))
     app.add_handler(CommandHandler("ai", ai))
     app.add_handler(CommandHandler("log", log))
+    app.add_handler(CommandHandler("louis_log", louis_log))
+    app.add_handler(CommandHandler("log_clear", louis_log_clear))
     
     # ===== ЛУИ — ОБРАБАТЫВАЕТ ВСЕ ТЕКСТОВЫЕ СООБЩЕНИЯ =====
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
