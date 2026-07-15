@@ -34,7 +34,6 @@ class Browser:
         await self.send("Runtime.enable")
         await self.send("Network.enable")
         
-        # Устанавливаем размер окна 1280x720
         await self.set_viewport(self.viewport_width, self.viewport_height)
         
         return self
@@ -45,7 +44,6 @@ class Browser:
         pages = resp.json()
         
         if not pages:
-            # Создаём новую вкладку, если нет ни одной
             resp = requests.get(f"http://localhost:{self.debug_port}/json/new")
             return resp.json()["webSocketDebuggerUrl"]
         
@@ -84,8 +82,8 @@ class Browser:
     
     async def screenshot(self):
         """Скриншот через CDP"""
-        result = await self.send("Page.captureScreenshot")
-        return result["result"]["data"]
+        response = await self.send("Page.captureScreenshot")
+        return response["result"]["data"]  # ← ИСПРАВЛЕНО
     
     async def close(self):
         """Закрыть браузер"""
