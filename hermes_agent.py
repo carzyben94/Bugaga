@@ -20,7 +20,7 @@ class HermesAgent:
         self.element_map = {}  # ref → информация об элементе
         self.snapshot = []
         self._last_url = ""
-    
+
     # ===== СБОР СНАПШОТА =====
     async def get_snapshot(self, url: str) -> Dict[str, Any]:
         """Получить снапшот страницы через Accessibility Tree"""
@@ -36,7 +36,7 @@ class HermesAgent:
         interactive_roles = {"button", "link", "textbox", "searchbox", "combobox", "checkbox", "radio", "select"}
         
         snapshot = []
-        self.element_map = {}
+        self.element_map = {}  # ← ОЧИЩАЕМ КАРТУ
         
         ref_counter = 1
         for node in nodes:
@@ -89,7 +89,7 @@ class HermesAgent:
             }
             snapshot.append(element_info)
             
-            # ===== СОХРАНЯЕМ ВСЮ ИНФОРМАЦИЮ =====
+            # ===== СОХРАНЯЕМ ВСЕ ЭЛЕМЕНТЫ (ДАЖЕ БЕЗ СЕЛЕКТОРА) =====
             self.element_map[ref] = element_info
         
         self.snapshot = snapshot
@@ -99,31 +99,40 @@ class HermesAgent:
             "elements": snapshot,
             "element_map": self.element_map
         }
-    
+
     async def _find_test_id(self, node: dict) -> Optional[str]:
         """Найти data-testid в дереве"""
         node_id = node.get("nodeId")
         if not node_id:
             return None
+        
+        # ===== ПРЕОБРАЗУЕМ В ЧИСЛО (CDP ТРЕБУЕТ INT) =====
         try:
-            dom_result = await self.browser.send("DOM.describeNode", {"nodeId": node_id})
+            node_id_int = int(node_id)
+        except (ValueError, TypeError):
+            return None
+        
+        try:
+            dom_result = await self.browser.send("DOM.describeNode", {"nodeId": node_id_int})
             dom_node = dom_result.get("node", {})
             attributes = dom_node.get("attributes", [])
             for i in range(0, len(attributes), 2):
                 if attributes[i] == "data-testid":
                     return attributes[i + 1]
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Ошибка поиска testId: {e}")
+        
         return None
-    
+
     async def _find_aria_label(self, node: dict) -> Optional[str]:
         """Найти aria-label в свойствах узла"""
         properties = node.get("properties", [])
         for prop in properties:
             if prop.get("name") == "ariaLabel":
-                return prop.get("value", {}).get("value")
+                value_obj = prop.get("value", {})
+                return value_obj.get("value", "")
         return None
-    
+
     # ===== ДЕЙСТВИЯ =====
     async def click(self, ref: str) -> Dict[str, Any]:
         """Кликнуть по элементу по ref"""
@@ -135,14 +144,14 @@ class HermesAgent:
         role = element_info.get("role", "")
         name = element_info.get("name", "")
         
-        # ===== ЕСЛИ ЕСТЬ СЕЛЕКТОР =====
+        # ===== ЕСЛИ ЕСТЬ СЕЛЕКТОР — ИСПОЛЬЗУЕМ ЕГО =====
         if selector:
             try:
                 exists = await self.eval.exists(selector)
                 if not exists:
                     return {"success": False, "reason": f"Элемент {ref} не найден на странице"}
                 
-                # ДЛЯ ССЫЛОК ИСПОЛЬЗУЕМ click_js()
+                # Для ссылок используем click_js()
                 if role == "link":
                     await self.eval.click_js(selector)
                 else:
@@ -211,11 +220,11 @@ class HermesAgent:
                     await asyncio.sleep(1.5)
                     return {"success": True, "action": "click", "ref": ref, "method": "js_search"}
             
-            return {"success": False, "reason": f"Не удалось найти элемент {ref}"}
+            return {"success": False, "reason": f"Не удалось найти элемент {ref} (role={role}, name={name})"}
             
         except Exception as e:
             return {"success": False, "reason": str(e)}
-    
+
     async def type_text(self, ref: str, text: str) -> Dict[str, Any]:
         """Ввести текст в поле по ref"""
         element_info = self.element_map.get(ref)
@@ -244,7 +253,7 @@ class HermesAgent:
                 return {"success": False, "reason": str(e)}
         
         return {"success": False, "reason": f"Элемент {ref} не имеет селектора"}
-    
+
     async def press_enter(self, ref: str) -> Dict[str, Any]:
         """Нажать Enter в поле по ref"""
         element_info = self.element_map.get(ref)
@@ -256,7 +265,28 @@ class HermesAgent:
         if selector:
             try:
                 await self.eval.focus(selector)
-                await self._press_enter(selector)
+                
+                safe_selector = json.dumps(selector)
+                js = f"""
+                (function() {{
+                    const el = document.querySelector({safe_selector});
+                    if (!el) return false;
+                    el.dispatchEvent(new KeyboardEvent('keydown', {{
+                        key: 'Enter',
+                        code: 'Enter',
+                        bubbles: true,
+                        cancelable: true
+                    }}));
+                    el.dispatchEvent(new KeyboardEvent('keyup', {{
+                        key: 'Enter',
+                        code: 'Enter',
+                        bubbles: true,
+                        cancelable: true
+                    }}));
+                    return true;
+                }})()
+                """
+                await self.eval.execute(js)
                 await asyncio.sleep(1)
                 
                 return {
@@ -269,31 +299,7 @@ class HermesAgent:
                 return {"success": False, "reason": str(e)}
         
         return {"success": False, "reason": f"Элемент {ref} не имеет селектора"}
-    
-    async def _press_enter(self, selector: str):
-        """Нажать Enter через JS"""
-        safe_selector = json.dumps(selector)
-        js = f"""
-        (function() {{
-            const el = document.querySelector({safe_selector});
-            if (!el) return false;
-            el.dispatchEvent(new KeyboardEvent('keydown', {{
-                key: 'Enter',
-                code: 'Enter',
-                bubbles: true,
-                cancelable: true
-            }}));
-            el.dispatchEvent(new KeyboardEvent('keyup', {{
-                key: 'Enter',
-                code: 'Enter',
-                bubbles: true,
-                cancelable: true
-            }}));
-            return true;
-        }})()
-        """
-        await self.eval.execute(js)
-    
+
     # ===== AI АНАЛИЗ =====
     async def ask_ai(self, question: str) -> str:
         """Задать вопрос AI о странице"""
@@ -322,7 +328,7 @@ class HermesAgent:
 """
 
         return await self.ai.ask(prompt)
-    
+
     # ===== ВЫПОЛНЕНИЕ ЦЕПОЧКИ =====
     async def execute_chain(self, steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Выполнить цепочку действий"""
