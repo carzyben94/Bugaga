@@ -15,6 +15,7 @@ from accessibility import Accessibility
 from ai import AIAgent
 from tester import ElementTester
 from site_map import SiteMap
+from hermes_agent import HermesAgent
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
@@ -39,6 +40,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/analyze <url> — анализ страницы (кнопки, поля, формы)\n"
         "/accessibility <url> — доступность страницы\n"
         "/test <url> — тестирование элементов\n"
+        "/x <действие> — работа с X.com через Accessibility Tree\n"
         "/ai <вопрос> — общение с AI агентом\n"
         "/results — скачать результаты тестов\n"
         "/log — скачать лог бота"
@@ -359,6 +361,142 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
 
+async def x(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Работа с X.com через Accessibility Tree"""
+    global browser
+    
+    args = context.args
+    if not args:
+        await update.message.reply_text(
+            "❌ Укажи действие:\n"
+            "/x snapshot <url> — получить снапшот страницы\n"
+            "/x click @e1 — кликнуть по элементу\n"
+            "/x type @e2 'текст' — ввести текст\n"
+            "/x enter @e2 — нажать Enter\n"
+            "/x ask 'вопрос' — спросить AI\n"
+            "/x chain — выполнить цепочку (пример)\n"
+            "/x help — показать это сообщение"
+        )
+        return
+    
+    user_id = update.effective_user.id
+    command = args[0].lower()
+    
+    try:
+        if browser is None:
+            browser = await Browser().start()
+            logger.info("✅ Браузер запущен")
+        
+        eval = Eval(browser)
+        acc = Accessibility(browser)
+        ai_agent = AIAgent(browser, eval, acc)
+        hermes = HermesAgent(browser, acc, eval, ai_agent)
+        
+        if command == "help":
+            await update.message.reply_text(
+                "📖 **Команды /x:**\n\n"
+                "/x snapshot <url> — получить снапшот страницы с ref\n"
+                "/x click @e1 — кликнуть по элементу\n"
+                "/x type @e2 'текст' — ввести текст\n"
+                "/x enter @e2 — нажать Enter\n"
+                "/x ask 'вопрос' — спросить AI\n"
+                "/x chain — выполнить цепочку (пример)\n"
+            )
+        
+        elif command == "snapshot":
+            url = args[1] if len(args) > 1 else "https://x.com"
+            await update.message.reply_text(f"📸 Получаю снапшот {url}...")
+            
+            snapshot = await hermes.get_snapshot(url)
+            
+            response = f"📸 **Снапшот страницы**\n\n"
+            response += f"🔗 {snapshot['url']}\n"
+            response += f"📊 **Интерактивных элементов:** {snapshot['total_interactive']}\n\n"
+            
+            for el in snapshot['elements'][:20]:
+                response += f"  {el['ref']}: {el['role']} — {el['name'][:40]}\n"
+            
+            if len(snapshot['elements']) > 20:
+                response += f"\n... и ещё {len(snapshot['elements']) - 20} элементов"
+            
+            await update.message.reply_text(response)
+        
+        elif command == "click":
+            ref = args[1] if len(args) > 1 else None
+            if not ref:
+                await update.message.reply_text("❌ Укажи ref: /x click @e1")
+                return
+            
+            result = await hermes.click(ref)
+            if result.get("success"):
+                await update.message.reply_text(f"✅ Клик по {ref} выполнен")
+            else:
+                await update.message.reply_text(f"❌ {result.get('reason')}")
+        
+        elif command == "type":
+            ref = args[1] if len(args) > 1 else None
+            text = ' '.join(args[2:]) if len(args) > 2 else None
+            if not ref or text is None:
+                await update.message.reply_text("❌ Укажи ref и текст: /x type @e2 'текст'")
+                return
+            
+            result = await hermes.type_text(ref, text)
+            if result.get("success"):
+                await update.message.reply_text(f"✅ Ввод в {ref} выполнен")
+            else:
+                await update.message.reply_text(f"❌ {result.get('reason')}")
+        
+        elif command == "enter":
+            ref = args[1] if len(args) > 1 else None
+            if not ref:
+                await update.message.reply_text("❌ Укажи ref: /x enter @e2")
+                return
+            
+            result = await hermes.press_enter(ref)
+            if result.get("success"):
+                await update.message.reply_text(f"✅ Enter на {ref} выполнен")
+            else:
+                await update.message.reply_text(f"❌ {result.get('reason')}")
+        
+        elif command == "ask":
+            question = ' '.join(args[1:]) if len(args) > 1 else None
+            if not question:
+                await update.message.reply_text("❌ Укажи вопрос: /x ask 'как опубликовать пост?'")
+                return
+            
+            await update.message.reply_text("🧠 Думаю...")
+            response = await hermes.ask_ai(question)
+            await update.message.reply_text(f"🧠 **AI Агент:**\n\n{response}")
+        
+        elif command == "chain":
+            await update.message.reply_text("🔄 Выполняю цепочку...")
+            
+            # Пример цепочки (нужно адаптировать под реальные ref)
+            await update.message.reply_text(
+                "⚠️ Для цепочки нужны реальные ref из снапшота.\n"
+                "Сначала: /x snapshot https://x.com\n"
+                "Потом: /x chain @e1 @e2 ..."
+            )
+            
+            # Пример с реальными ref, если они есть
+            # steps = [
+            #     {"action": "click", "ref": "@e1"},
+            #     {"action": "type", "ref": "@e2", "text": "test"},
+            #     {"action": "enter", "ref": "@e2"}
+            # ]
+            # results = await hermes.execute_chain(steps)
+        
+        else:
+            await update.message.reply_text(f"❌ Неизвестная команда: {command}")
+        
+        await ai_agent.close()
+        
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Ошибка X: {error_msg}")
+        await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
+
+
 async def results(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Скачать результаты тестирования"""
     user_id = update.effective_user.id
@@ -552,6 +690,7 @@ def main():
     app.add_handler(CommandHandler("analyze", analyze))
     app.add_handler(CommandHandler("accessibility", accessibility))
     app.add_handler(CommandHandler("test", test))
+    app.add_handler(CommandHandler("x", x))
     app.add_handler(CommandHandler("results", results))
     app.add_handler(CommandHandler("ai", ai))
     app.add_handler(CommandHandler("log", log))
