@@ -17,16 +17,13 @@ class HermesAgent:
         self.accessibility = accessibility
         self.eval = eval
         self.ai = ai_agent
-        self.element_map = {}  # ref → selector
+        self.element_map = {}  # ref → информация об элементе
         self.snapshot = []
         self._last_url = ""
     
     # ===== СБОР СНАПШОТА =====
     async def get_snapshot(self, url: str) -> Dict[str, Any]:
-        """
-        Получить снапшот страницы через Accessibility Tree.
-        Возвращает только интерактивные элементы с ref-ссылками.
-        """
+        """Получить снапшот страницы через Accessibility Tree"""
         await self.browser.goto(url)
         await asyncio.sleep(3)
         self._last_url = url
@@ -34,10 +31,8 @@ class HermesAgent:
         await self.accessibility.enable()
         await asyncio.sleep(1)
         
-        # Получаем полное дерево
         nodes = await self.accessibility.get_full_tree()
         
-        # Собираем интерактивные элементы
         interactive_roles = {"button", "link", "textbox", "searchbox", "combobox", "checkbox", "radio", "select"}
         
         snapshot = []
@@ -54,11 +49,9 @@ class HermesAgent:
             if role not in interactive_roles:
                 continue
             
-            # Получаем имя элемента
             name_obj = node.get("name")
             name = name_obj.get("value", "") if isinstance(name_obj, dict) else ""
             
-            # Получаем свойства
             properties = node.get("properties", [])
             is_disabled = False
             is_checked = False
@@ -68,15 +61,13 @@ class HermesAgent:
                 if prop.get("name") == "checked" and prop.get("value", {}).get("value"):
                     is_checked = True
             
-            # Пропускаем disabled элементы
             if is_disabled:
                 continue
             
-            # Создаём ref
             ref = f"@e{ref_counter}"
             ref_counter += 1
             
-            # Пытаемся найти selector (testId или aria-label)
+            # Пытаемся найти селектор
             selector = None
             test_id = await self._find_test_id(node)
             if test_id:
@@ -86,7 +77,6 @@ class HermesAgent:
                 if aria_label:
                     selector = f"[aria-label='{aria_label}']"
             
-            # Сохраняем
             element_info = {
                 "ref": ref,
                 "role": role,
@@ -94,11 +84,13 @@ class HermesAgent:
                 "selector": selector,
                 "nodeId": node.get("nodeId"),
                 "disabled": is_disabled,
-                "checked": is_checked
+                "checked": is_checked,
+                "has_selector": selector is not None
             }
             snapshot.append(element_info)
-            if selector:
-                self.element_map[ref] = selector
+            
+            # ===== СОХРАНЯЕМ ВСЮ ИНФОРМАЦИЮ =====
+            self.element_map[ref] = element_info
         
         self.snapshot = snapshot
         return {
@@ -109,24 +101,19 @@ class HermesAgent:
         }
     
     async def _find_test_id(self, node: dict) -> Optional[str]:
-        """Найти data-testid в дереве (через DOM)"""
+        """Найти data-testid в дереве"""
         node_id = node.get("nodeId")
         if not node_id:
             return None
-        
         try:
-            # Пытаемся получить DOM узел
             dom_result = await self.browser.send("DOM.describeNode", {"nodeId": node_id})
             dom_node = dom_result.get("node", {})
             attributes = dom_node.get("attributes", [])
-            
-            # Ищем data-testid в атрибутах
             for i in range(0, len(attributes), 2):
                 if attributes[i] == "data-testid":
                     return attributes[i + 1]
         except:
             pass
-        
         return None
     
     async def _find_aria_label(self, node: dict) -> Optional[str]:
@@ -140,76 +127,151 @@ class HermesAgent:
     # ===== ДЕЙСТВИЯ =====
     async def click(self, ref: str) -> Dict[str, Any]:
         """Кликнуть по элементу по ref"""
-        selector = self.element_map.get(ref)
-        if not selector:
+        element_info = self.element_map.get(ref)
+        if not element_info:
             return {"success": False, "reason": f"Элемент {ref} не найден в карте"}
         
+        selector = element_info.get("selector")
+        role = element_info.get("role", "")
+        name = element_info.get("name", "")
+        
+        # ===== ЕСЛИ ЕСТЬ СЕЛЕКТОР =====
+        if selector:
+            try:
+                exists = await self.eval.exists(selector)
+                if not exists:
+                    return {"success": False, "reason": f"Элемент {ref} не найден на странице"}
+                
+                # ДЛЯ ССЫЛОК ИСПОЛЬЗУЕМ click_js()
+                if role == "link":
+                    await self.eval.click_js(selector)
+                else:
+                    await self.browser.human_click(selector)
+                
+                await asyncio.sleep(1.5)
+                
+                return {
+                    "success": True,
+                    "action": "click",
+                    "ref": ref,
+                    "selector": selector,
+                    "role": role
+                }
+            except Exception as e:
+                return {"success": False, "reason": str(e)}
+        
+        # ===== ЕСЛИ НЕТ СЕЛЕКТОРА — ИЩЕМ ПО ИМЕНИ =====
+        if not name:
+            return {"success": False, "reason": f"Элемент {ref} не имеет имени"}
+        
         try:
-            # Проверяем, что элемент существует
-            exists = await self.eval.exists(selector)
-            if not exists:
-                return {"success": False, "reason": f"Элемент {ref} не найден на странице"}
+            safe_name = json.dumps(name)
             
-            # Кликаем
-            await self.browser.human_click(selector)
-            await asyncio.sleep(1)
+            # Пробуем найти по aria-label
+            aria_selector = f"[aria-label='{name}']"
+            exists = await self.eval.exists(aria_selector)
+            if exists:
+                if role == "link":
+                    await self.eval.click_js(aria_selector)
+                else:
+                    await self.browser.human_click(aria_selector)
+                await asyncio.sleep(1.5)
+                return {"success": True, "action": "click", "ref": ref, "selector": aria_selector}
             
-            return {
-                "success": True,
-                "action": "click",
-                "ref": ref,
-                "selector": selector
-            }
+            # Ищем через JS по тексту
+            js = f"""
+            (function() {{
+                const elements = document.querySelectorAll('button, a, [role="button"], [role="link"]');
+                for (const el of elements) {{
+                    const text = el.innerText || el.textContent || '';
+                    if (text.includes({safe_name})) {{
+                        return el;
+                    }}
+                }}
+                return null;
+            }})()
+            """
+            result = await self.eval.execute(js)
+            if result:
+                click_js = f"""
+                (function() {{
+                    const elements = document.querySelectorAll('button, a, [role="button"], [role="link"]');
+                    for (const el of elements) {{
+                        const text = el.innerText || el.textContent || '';
+                        if (text.includes({safe_name})) {{
+                            el.click();
+                            return true;
+                        }}
+                    }}
+                    return false;
+                }})()
+                """
+                clicked = await self.eval.execute(click_js)
+                if clicked:
+                    await asyncio.sleep(1.5)
+                    return {"success": True, "action": "click", "ref": ref, "method": "js_search"}
+            
+            return {"success": False, "reason": f"Не удалось найти элемент {ref}"}
+            
         except Exception as e:
             return {"success": False, "reason": str(e)}
     
     async def type_text(self, ref: str, text: str) -> Dict[str, Any]:
         """Ввести текст в поле по ref"""
-        selector = self.element_map.get(ref)
-        if not selector:
+        element_info = self.element_map.get(ref)
+        if not element_info:
             return {"success": False, "reason": f"Элемент {ref} не найден в карте"}
         
-        try:
-            exists = await self.eval.exists(selector)
-            if not exists:
-                return {"success": False, "reason": f"Элемент {ref} не найден на странице"}
-            
-            await self.browser.human_type(selector, text)
-            await asyncio.sleep(0.5)
-            
-            return {
-                "success": True,
-                "action": "type",
-                "ref": ref,
-                "selector": selector,
-                "text": text
-            }
-        except Exception as e:
-            return {"success": False, "reason": str(e)}
+        selector = element_info.get("selector")
+        
+        if selector:
+            try:
+                exists = await self.eval.exists(selector)
+                if not exists:
+                    return {"success": False, "reason": f"Элемент {ref} не найден на странице"}
+                
+                await self.browser.human_type(selector, text)
+                await asyncio.sleep(0.5)
+                
+                return {
+                    "success": True,
+                    "action": "type",
+                    "ref": ref,
+                    "selector": selector,
+                    "text": text
+                }
+            except Exception as e:
+                return {"success": False, "reason": str(e)}
+        
+        return {"success": False, "reason": f"Элемент {ref} не имеет селектора"}
     
     async def press_enter(self, ref: str) -> Dict[str, Any]:
         """Нажать Enter в поле по ref"""
-        selector = self.element_map.get(ref)
-        if not selector:
+        element_info = self.element_map.get(ref)
+        if not element_info:
             return {"success": False, "reason": f"Элемент {ref} не найден в карте"}
         
-        try:
-            await self.eval.focus(selector)
-            await self._press_enter(selector)
-            await asyncio.sleep(1)
-            
-            return {
-                "success": True,
-                "action": "enter",
-                "ref": ref,
-                "selector": selector
-            }
-        except Exception as e:
-            return {"success": False, "reason": str(e)}
+        selector = element_info.get("selector")
+        
+        if selector:
+            try:
+                await self.eval.focus(selector)
+                await self._press_enter(selector)
+                await asyncio.sleep(1)
+                
+                return {
+                    "success": True,
+                    "action": "enter",
+                    "ref": ref,
+                    "selector": selector
+                }
+            except Exception as e:
+                return {"success": False, "reason": str(e)}
+        
+        return {"success": False, "reason": f"Элемент {ref} не имеет селектора"}
     
     async def _press_enter(self, selector: str):
         """Нажать Enter через JS"""
-        import json
         safe_selector = json.dumps(selector)
         js = f"""
         (function() {{
@@ -238,13 +300,21 @@ class HermesAgent:
         if not self.snapshot:
             return "Сначала получите снапшот страницы"
         
+        # Формируем компактный список элементов
+        elements_text = "\n".join([
+            f"  {el['ref']}: {el['role']} — {el['name']}"
+            for el in self.snapshot[:30]
+        ])
+        if len(self.snapshot) > 30:
+            elements_text += f"\n  ... и ещё {len(self.snapshot) - 30} элементов"
+        
         prompt = f"""
 Ты — AI агент для автоматизации X.com.
 
 **Страница:** {self._last_url}
 
 **Доступные элементы (Accessibility Tree):**
-{json.dumps(self.snapshot, indent=2, ensure_ascii=False)}
+{elements_text}
 
 **Вопрос пользователя:** {question}
 
