@@ -288,9 +288,8 @@ async def ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Примеры:\n"
             "  /ai проанализируй https://example.com\n"
             "  /ai какие кнопки на https://x.com\n"
-            "  /ai есть ли форма входа\n"
-            "  /ai проверь доступность https://x.com\n"
             "  /ai что можно автоматизировать\n"
+            "  /ai проверь доступность https://x.com\n"
         )
         return
 
@@ -309,26 +308,150 @@ async def ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
         url_match = re.search(r'https?://[^\s]+', text)
         url = url_match.group(0) if url_match else None
 
-        # Проверяем, о чём вопрос
         text_lower = text.lower()
 
+        # ===== АНАЛИЗ СТРАНИЦЫ (только полезные элементы) =====
         if url and ('анализ' in text_lower or 'проанализируй' in text_lower or 'что за' in text_lower or 'опиши' in text_lower):
             await browser.goto(url)
             await asyncio.sleep(2)
-            result = await agent.analyze_page(url, detailed=False)
+            
+            # Собираем данные
+            title = await eval.get_title()
+            buttons = await eval.get_all_buttons()
+            inputs = await eval.get_all_inputs()
+            links = await eval.get_all_links()
+            forms = await eval.get_all_forms()
+            checkboxes = await eval.get_all_checkboxes()
+            selects = await eval.get_all_selects()
+            
+            # Формируем ответ
+            response = f"📄 **{title}**\n\n"
+            
+            # Только полезные элементы
+            if buttons:
+                response += f"🔘 **Кнопки ({len(buttons)}):**\n"
+                for i, btn in enumerate(buttons[:15], 1):
+                    text_btn = btn['text'][:40] if btn['text'] else '[без текста]'
+                    test_id = btn.get('testId', '')
+                    if test_id:
+                        response += f"  {i}. {text_btn} (testid: {test_id})\n"
+                    else:
+                        response += f"  {i}. {text_btn}\n"
+                response += "\n"
+            
+            if inputs:
+                response += f"✏️ **Поля ввода ({len(inputs)}):**\n"
+                for i, inp in enumerate(inputs[:10], 1):
+                    desc = (
+                        inp.get('ariaLabel') or 
+                        inp.get('placeholder') or 
+                        inp.get('name') or 
+                        inp.get('id') or 
+                        '[без имени]'
+                    )
+                    desc = desc[:35]
+                    test_id = inp.get('testId', '')
+                    if test_id:
+                        response += f"  {i}. {desc} (testid: {test_id})\n"
+                    else:
+                        response += f"  {i}. {desc}\n"
+                response += "\n"
+            
+            if links:
+                response += f"🔗 **Ссылки ({len(links)}):**\n"
+                for i, link in enumerate(links[:10], 1):
+                    text_link = link['text'][:30] if link['text'] else '[без текста]'
+                    response += f"  {i}. {text_link} → {link['href'][:50]}\n"
+                response += "\n"
+            
+            if forms:
+                response += f"📋 **Формы ({len(forms)}):**\n"
+                for i, form in enumerate(forms[:5], 1):
+                    action = form.get('action', '')[:40]
+                    method = form.get('method', 'GET')
+                    response += f"  {i}. {method} → {action}\n"
+                response += "\n"
+            
+            if checkboxes:
+                response += f"☑️ **Checkbox/Radio ({len(checkboxes)}):**\n"
+                for i, cb in enumerate(checkboxes[:5], 1):
+                    name = cb.get('name', '[без имени]')[:25]
+                    response += f"  {i}. {name}\n"
+                response += "\n"
+            
+            if selects:
+                response += f"📋 **Select ({len(selects)}):**\n"
+                for i, sel in enumerate(selects[:5], 1):
+                    name = sel.get('name', '[без имени]')[:25]
+                    response += f"  {i}. {name}\n"
+                response += "\n"
+            
+            if not buttons and not inputs and not links and not forms:
+                response += "⚠️ На странице нет интерактивных элементов для автоматизации.\n"
+            
+            await update.message.reply_text(response)
 
         elif url and ('доступность' in text_lower or 'accessibility' in text_lower or 'wcag' in text_lower):
             await browser.goto(url)
             await asyncio.sleep(2)
             await acc.enable()
             await asyncio.sleep(2)
-            result = await agent.analyze_accessibility(url)
+            
+            summary = await acc.get_summary()
+            acc_buttons = await acc.get_all_buttons()
+            acc_inputs = await acc.get_all_inputs()
+            acc_links = await acc.get_all_links()
+            acc_headings = await acc.get_all_headings()
+            acc_landmarks = await acc.get_all_landmarks()
+            
+            response = f"♿ **Доступность:** {url}\n\n"
+            
+            # Только полезные элементы из Accessibility
+            if acc_buttons:
+                response += f"🔘 **Кнопки (role=button):** {len(acc_buttons)}\n"
+                for i, btn in enumerate(acc_buttons[:10], 1):
+                    name = btn.get('name', '[без имени]')[:40]
+                    response += f"  {i}. {name}\n"
+                response += "\n"
+            
+            if acc_inputs:
+                response += f"✏️ **Поля ввода (role=textbox/searchbox):** {len(acc_inputs)}\n"
+                for i, inp in enumerate(acc_inputs[:10], 1):
+                    name = inp.get('name', '[без имени]')[:35]
+                    response += f"  {i}. {name}\n"
+                response += "\n"
+            
+            if acc_links:
+                response += f"🔗 **Ссылки (role=link):** {len(acc_links)}\n"
+                for i, link in enumerate(acc_links[:10], 1):
+                    name = link.get('name', '[без имени]')[:30]
+                    response += f"  {i}. {name}\n"
+                response += "\n"
+            
+            if acc_headings:
+                response += f"📌 **Заголовки (role=heading):** {len(acc_headings)}\n"
+                for i, h in enumerate(acc_headings[:5], 1):
+                    name = h.get('name', '[без имени]')[:30]
+                    response += f"  {i}. {name}\n"
+                response += "\n"
+            
+            if acc_landmarks:
+                response += f"🏛️ **Landmarks:** {len(acc_landmarks)}\n"
+                for i, lm in enumerate(acc_landmarks[:5], 1):
+                    name = lm.get('name', '[без имени]')[:30]
+                    role = lm.get('role', '')
+                    response += f"  {i}. {name} ({role})\n"
+                response += "\n"
+            
+            if not acc_buttons and not acc_inputs and not acc_links:
+                response += "⚠️ Нет элементов для автоматизации в Accessibility Tree.\n"
+            
+            await update.message.reply_text(response)
 
         elif url:
             await browser.goto(url)
             await asyncio.sleep(2)
             title = await eval.get_title()
-            page_info = await eval.get_page_info()
             buttons = await eval.get_all_buttons()
             inputs = await eval.get_all_inputs()
             links = await eval.get_all_links()
@@ -337,26 +460,19 @@ async def ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
 **Страница:** {url}
 **Заголовок:** {title}
 
-**Данные:**
-- Кнопок: {len(buttons)}
-- Полей ввода: {len(inputs)}
-- Ссылок: {len(links)}
-- Длина текста: {len(page_info.get('innerText', ''))} символов
-- Язык: {page_info.get('language', 'не определен')}
+**Кнопки:** {len(buttons)} шт.
+**Поля ввода:** {len(inputs)} шт.
+**Ссылки:** {len(links)} шт.
 
 **Вопрос пользователя:** {text}
 
-Ответь на вопрос пользователя, используя данные со страницы. Будь краток и по делу.
+Ответь кратко, используя данные со страницы.
 """
             result = await agent.ask(prompt)
+            await update.message.reply_text(f"🧠 **AI Агент:**\n\n{result}")
 
         else:
             result = await agent.ask(text)
-
-        if len(result) > 4000:
-            for i in range(0, len(result), 4000):
-                await update.message.reply_text(result[i:i+4000])
-        else:
             await update.message.reply_text(f"🧠 **AI Агент:**\n\n{result}")
 
         await agent.close()
