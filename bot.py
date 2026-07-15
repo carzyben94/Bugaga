@@ -8,7 +8,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 from browser import Browser
 from eval import Eval
-from accessibility import Accessibility  # ← НОВЫЙ ИМПОРТ
+from accessibility import Accessibility
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
@@ -31,7 +31,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Команды:\n"
         "/screen <url> — скриншот страницы\n"
         "/analyze <url> — анализ страницы (кнопки, поля, формы)\n"
-        "/accessibility <url> — доступность страницы\n"  # ← НОВАЯ КОМАНДА
+        "/accessibility <url> — доступность страницы\n"
         "/log — скачать лог"
     )
 
@@ -189,7 +189,6 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
 
-# ========== НОВАЯ КОМАНДА ==========
 async def accessibility(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global browser
     
@@ -215,7 +214,9 @@ async def accessibility(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         acc = Accessibility(browser)
         
-        # Получаем сводку
+        # Включаем Accessibility
+        await acc.enable()
+        
         summary = await acc.get_summary()
         
         response = (
@@ -232,28 +233,11 @@ async def accessibility(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📊 Таблиц: {summary['tables']}\n"
         )
         
-        # Роли (топ 10)
         if summary.get('roles'):
             response += "\n📋 **Роли (топ 10):**\n"
             sorted_roles = sorted(summary['roles'].items(), key=lambda x: x[1], reverse=True)[:10]
             for role, count in sorted_roles:
                 response += f"  {role}: {count}\n"
-        
-        # Кнопки
-        buttons = await acc.get_all_buttons()
-        if buttons:
-            response += f"\n🔘 **Кнопки ({len(buttons)}):**\n"
-            for i, btn in enumerate(buttons[:10], 1):
-                name = btn.get('name', '')[:30] or '[без имени]'
-                response += f"  {i}. {name}\n"
-        
-        # Поля ввода
-        inputs = await acc.get_all_inputs()
-        if inputs:
-            response += f"\n✏️ **Поля ввода ({len(inputs)}):**\n"
-            for i, inp in enumerate(inputs[:10], 1):
-                name = inp.get('name', '')[:30] or '[без имени]'
-                response += f"  {i}. {name}\n"
         
         if len(response) > 4000:
             response = response[:4000] + "\n\n... (обрезано)"
@@ -296,7 +280,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("analyze", analyze))
-    app.add_handler(CommandHandler("accessibility", accessibility))  # ← НОВЫЙ ХЕНДЛЕР
+    app.add_handler(CommandHandler("accessibility", accessibility))
     app.add_handler(CommandHandler("log", log))
     
     logger.info("🚀 Бот запущен")
