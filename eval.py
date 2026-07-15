@@ -18,31 +18,58 @@ class Eval:
         """
         self.browser = browser
     
-    async def execute(self, js_code: str, return_by_value: bool = True) -> dict:
+    async def execute(self, js_code: str, return_by_value: bool = True, await_promise: bool = False):
         """
-        Выполнить произвольный JS код на странице.
+        Выполняет JavaScript на странице и возвращает РЕЗУЛЬТАТ выполнения.
         
         Args:
             js_code: строка с JavaScript кодом
             return_by_value: вернуть результат как JSON (True) или objectId (False)
+            await_promise: ждать выполнения Promise (True) или нет (False)
         
         Returns:
-            результат выполнения JS
+            результат выполнения JS (значение, массив, объект и т.д.)
         """
+        # 1. Отправляем команду в браузер
         result = await self.browser.send("Runtime.evaluate", {
             "expression": js_code,
-            "returnByValue": return_by_value
+            "returnByValue": return_by_value,
+            "awaitPromise": await_promise
         })
-        return result
+
+        # 2. Проверяем, не вернул ли браузер ошибку
+        if "exceptionDetails" in result:
+            exception = result["exceptionDetails"]
+            error_text = exception.get("text", "Unknown JS error")
+            logger.error(f"JavaScript error: {error_text}")
+            raise RuntimeError(f"JavaScript execution failed: {error_text}")
+
+        # 3. Извлекаем RemoteObject из ответа
+        remote_object = result.get("result", {})
+        if not remote_object:
+            logger.error(f"No 'result' field in CDP response: {result}")
+            return None
+
+        # 4. Умно извлекаем значение из RemoteObject
+        if "value" in remote_object:
+            # Примитив или сериализованный объект
+            return remote_object["value"]
+        elif "objectId" in remote_object:
+            # Сложный объект (массив, DOM-элемент и т.д.)
+            logger.warning(f"Received objectId instead of value for: {js_code[:50]}...")
+            return f"<ObjectReference: {remote_object['objectId']}>"
+        else:
+            # Неизвестный формат
+            logger.error(f"Unexpected RemoteObject structure: {remote_object}")
+            return None
     
     # ========== DOM ==========
     
     async def get_text(self, selector: str) -> str:
         """Получить текст элемента по селектору"""
-        result = await self.execute(
+        return await self.execute(
             f"document.querySelector('{selector}')?.innerText || ''"
         )
-        return result.get("value", "")
     
     async def get_html(self, selector: str = None) -> str:
         """Получить HTML элемента или всей страницы"""
@@ -50,43 +77,37 @@ class Eval:
             js = f"document.querySelector('{selector}')?.outerHTML || ''"
         else:
             js = "document.documentElement.outerHTML"
-        result = await self.execute(js)
-        return result.get("value", "")
+        return await self.execute(js)
     
     async def get_title(self) -> str:
         """Получить заголовок страницы"""
-        result = await self.execute("document.title")
-        return result.get("value", "")
+        return await self.execute("document.title")
     
     async def get_url(self) -> str:
         """Получить текущий URL"""
-        result = await self.execute("window.location.href")
-        return result.get("value", "")
+        return await self.execute("window.location.href")
     
     async def get_attribute(self, selector: str, attr: str) -> str:
         """Получить атрибут элемента"""
-        result = await self.execute(
+        return await self.execute(
             f"document.querySelector('{selector}')?.getAttribute('{attr}') || ''"
         )
-        return result.get("value", "")
     
     async def get_inner_html(self, selector: str) -> str:
         """Получить innerHTML элемента"""
-        result = await self.execute(
+        return await self.execute(
             f"document.querySelector('{selector}')?.innerHTML || ''"
         )
-        return result.get("value", "")
     
     async def get_outer_html(self, selector: str) -> str:
         """Получить outerHTML элемента"""
-        result = await self.execute(
+        return await self.execute(
             f"document.querySelector('{selector}')?.outerHTML || ''"
         )
-        return result.get("value", "")
     
     async def get_style(self, selector: str, property_name: str) -> str:
         """Получить CSS свойство элемента"""
-        result = await self.execute(
+        return await self.execute(
             f"""
             (function() {{
                 const el = document.querySelector('{selector}');
@@ -95,11 +116,10 @@ class Eval:
             }})()
             """
         )
-        return result.get("value", "")
     
     async def get_class_list(self, selector: str) -> list:
         """Получить список классов элемента"""
-        result = await self.execute(
+        return await self.execute(
             f"""
             (function() {{
                 const el = document.querySelector('{selector}');
@@ -108,11 +128,10 @@ class Eval:
             }})()
             """
         )
-        return result.get("value", [])
     
     async def get_dataset(self, selector: str) -> dict:
         """Получить dataset элемента"""
-        result = await self.execute(
+        return await self.execute(
             f"""
             (function() {{
                 const el = document.querySelector('{selector}');
@@ -121,32 +140,28 @@ class Eval:
             }})()
             """
         )
-        return result.get("value", {})
     
     async def get_value(self, selector: str) -> str:
         """Получить значение input/textarea/select"""
-        result = await self.execute(
+        return await self.execute(
             f"document.querySelector('{selector}')?.value || ''"
         )
-        return result.get("value", "")
     
     async def get_checked(self, selector: str) -> bool:
         """Получить состояние checkbox/radio"""
-        result = await self.execute(
+        return await self.execute(
             f"document.querySelector('{selector}')?.checked || false"
         )
-        return result.get("value", False)
     
     async def get_selected(self, selector: str) -> bool:
         """Получить состояние option"""
-        result = await self.execute(
+        return await self.execute(
             f"document.querySelector('{selector}')?.selected || false"
         )
-        return result.get("value", False)
     
     async def get_options(self, selector: str) -> list:
         """Получить все options из select"""
-        result = await self.execute(
+        return await self.execute(
             f"""
             (function() {{
                 const el = document.querySelector('{selector}');
@@ -159,11 +174,10 @@ class Eval:
             }})()
             """
         )
-        return result.get("value", [])
     
     async def get_position(self, selector: str) -> dict:
         """Получить позицию элемента на странице"""
-        result = await self.execute(
+        return await self.execute(
             f"""
             (function() {{
                 const el = document.querySelector('{selector}');
@@ -182,20 +196,18 @@ class Eval:
             }})()
             """
         )
-        return result.get("value", {})
     
     async def get_count(self, selector: str) -> int:
         """Получить количество элементов по селектору"""
-        result = await self.execute(
+        return await self.execute(
             f"document.querySelectorAll('{selector}').length"
         )
-        return result.get("value", 0)
     
     # ========== ПРОВЕРКИ ==========
     
     async def is_visible(self, selector: str) -> bool:
         """Проверить, видим ли элемент"""
-        result = await self.execute(
+        return await self.execute(
             f"""
             (function() {{
                 const el = document.querySelector('{selector}');
@@ -205,28 +217,24 @@ class Eval:
             }})()
             """
         )
-        return result.get("value", False)
     
     async def is_enabled(self, selector: str) -> bool:
         """Проверить, включен ли элемент (не disabled)"""
-        result = await self.execute(
+        return await self.execute(
             f"document.querySelector('{selector}')?.disabled === false || true"
         )
-        return result.get("value", True)
     
     async def is_checked(self, selector: str) -> bool:
         """Проверить, выбран ли checkbox/radio"""
-        result = await self.execute(
+        return await self.execute(
             f"document.querySelector('{selector}')?.checked || false"
         )
-        return result.get("value", False)
     
     async def exists(self, selector: str) -> bool:
         """Проверить, существует ли элемент"""
-        result = await self.execute(
+        return await self.execute(
             f"document.querySelector('{selector}') !== null"
         )
-        return result.get("value", False)
     
     # ========== ОЖИДАНИЯ ==========
     
@@ -263,8 +271,7 @@ class Eval:
             }});
         }})()
         """
-        result = await self.execute(js)
-        return result.get("value", False)
+        return await self.execute(js, await_promise=True)
     
     async def wait_for_visible(self, selector: str, timeout: int = 10) -> bool:
         """Ожидать, когда элемент станет видимым"""
@@ -293,8 +300,7 @@ class Eval:
             }});
         }})()
         """
-        result = await self.execute(js)
-        return result.get("value", False)
+        return await self.execute(js, await_promise=True)
     
     async def wait_for_text(self, selector: str, text: str, timeout: int = 10) -> bool:
         """Ожидать, когда элемент содержит определенный текст"""
@@ -320,8 +326,7 @@ class Eval:
             }});
         }})()
         """
-        result = await self.execute(js)
-        return result.get("value", False)
+        return await self.execute(js, await_promise=True)
     
     async def wait_for_url(self, url_part: str, timeout: int = 10) -> bool:
         """Ожидать, когда URL станет содержать подстроку"""
@@ -346,14 +351,13 @@ class Eval:
             }});
         }})()
         """
-        result = await self.execute(js)
-        return result.get("value", False)
+        return await self.execute(js, await_promise=True)
     
     # ========== МАНИПУЛЯЦИИ ==========
     
     async def click_js(self, selector: str) -> bool:
         """Клик через JS (простой, без humanize)"""
-        result = await self.execute(
+        return await self.execute(
             f"""
             (function() {{
                 const el = document.querySelector('{selector}');
@@ -363,11 +367,10 @@ class Eval:
             }})()
             """
         )
-        return result.get("value", False)
     
     async def type_js(self, selector: str, text: str) -> bool:
         """Ввод текста через JS (простой, без humanize)"""
-        result = await self.execute(
+        return await self.execute(
             f"""
             (function() {{
                 const el = document.querySelector('{selector}');
@@ -379,11 +382,10 @@ class Eval:
             }})()
             """
         )
-        return result.get("value", False)
     
     async def scroll_to(self, selector: str) -> bool:
         """Скролл к элементу"""
-        result = await self.execute(
+        return await self.execute(
             f"""
             (function() {{
                 const el = document.querySelector('{selector}');
@@ -393,7 +395,6 @@ class Eval:
             }})()
             """
         )
-        return result.get("value", False)
     
     async def scroll_to_top(self) -> None:
         """Скролл наверх"""
@@ -405,7 +406,7 @@ class Eval:
     
     async def focus(self, selector: str) -> bool:
         """Фокус на элементе"""
-        result = await self.execute(
+        return await self.execute(
             f"""
             (function() {{
                 const el = document.querySelector('{selector}');
@@ -415,11 +416,10 @@ class Eval:
             }})()
             """
         )
-        return result.get("value", False)
     
     async def blur(self, selector: str) -> bool:
         """Снять фокус с элемента"""
-        result = await self.execute(
+        return await self.execute(
             f"""
             (function() {{
                 const el = document.querySelector('{selector}');
@@ -429,14 +429,12 @@ class Eval:
             }})()
             """
         )
-        return result.get("value", False)
     
     # ========== STORAGE ==========
     
     async def get_local_storage(self, key: str) -> str:
         """Получить значение из localStorage"""
-        result = await self.execute(f"localStorage.getItem('{key}') || ''")
-        return result.get("value", "")
+        return await self.execute(f"localStorage.getItem('{key}') || ''")
     
     async def set_local_storage(self, key: str, value: str) -> None:
         """Установить значение в localStorage"""
@@ -444,8 +442,7 @@ class Eval:
     
     async def get_session_storage(self, key: str) -> str:
         """Получить значение из sessionStorage"""
-        result = await self.execute(f"sessionStorage.getItem('{key}') || ''")
-        return result.get("value", "")
+        return await self.execute(f"sessionStorage.getItem('{key}') || ''")
     
     async def set_session_storage(self, key: str, value: str) -> None:
         """Установить значение в sessionStorage"""
@@ -453,8 +450,7 @@ class Eval:
     
     async def get_cookies(self) -> list:
         """Получить все cookies"""
-        result = await self.execute("document.cookie")
-        cookies_str = result.get("value", "")
+        cookies_str = await self.execute("document.cookie")
         if not cookies_str:
             return []
         return [c.strip() for c in cookies_str.split(';')]
@@ -484,12 +480,11 @@ class Eval:
             };
         })()
         """
-        result = await self.execute(js)
-        return result.get("value", {})
+        return await self.execute(js)
     
     async def get_all_links(self) -> list:
         """Получить все ссылки на странице"""
-        result = await self.execute(
+        return await self.execute(
             """
             (function() {
                 return Array.from(document.querySelectorAll('a[href]')).map(a => ({
@@ -500,11 +495,10 @@ class Eval:
             })()
             """
         )
-        return result.get("value", [])
     
     async def get_all_images(self) -> list:
         """Получить все изображения на странице"""
-        result = await self.execute(
+        return await self.execute(
             """
             (function() {
                 return Array.from(document.querySelectorAll('img')).map(img => ({
@@ -516,11 +510,10 @@ class Eval:
             })()
             """
         )
-        return result.get("value", [])
     
     async def get_all_forms(self) -> list:
         """Получить все формы на странице"""
-        result = await self.execute(
+        return await self.execute(
             """
             (function() {
                 return Array.from(document.querySelectorAll('form')).map(form => ({
@@ -538,4 +531,3 @@ class Eval:
             })()
             """
         )
-        return result.get("value", [])
