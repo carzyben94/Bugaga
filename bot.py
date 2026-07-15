@@ -29,7 +29,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 Привет! Я бот.\n\n"
         "Команды:\n"
         "/screen <url> — скриншот страницы\n"
-        "/analyze <url> — анализ страницы\n"
+        "/analyze <url> — анализ страницы (кнопки, поля, формы)\n"
         "/log — скачать лог"
     )
 
@@ -78,6 +78,7 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Анализ страницы — только для автоматизации (кнопки, поля, формы)"""
     global browser
     
     args = context.args
@@ -102,81 +103,50 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         eval = Eval(browser)
         
-        # ===== ОСНОВНЫЕ ДАННЫЕ =====
+        # ===== ТОЛЬКО ДЛЯ АВТОМАТИЗАЦИИ =====
         title = await eval.get_title()
-        links = await eval.get_all_links()
-        images = await eval.get_all_images()
-        forms = await eval.get_all_forms()
-        page_info = await eval.get_page_info()
-        
-        # ===== ИНТЕРАКТИВНЫЕ ЭЛЕМЕНТЫ =====
         buttons = await eval.get_all_buttons()
         inputs = await eval.get_all_inputs()
+        forms = await eval.get_all_forms()
         checkboxes = await eval.get_all_checkboxes()
         selects = await eval.get_all_selects()
         
         # ===== ФОРМИРУЕМ ОТВЕТ =====
         response = (
             f"📄 **{title}**\n\n"
-            f"🔗 Ссылок: {len(links)}\n"
-            f"🖼️ Изображений: {len(images)}\n"
-            f"📝 Форм: {len(forms)}\n"
-            f"📏 Длина текста: {len(page_info.get('innerText', ''))} символов\n"
-            f"🌐 Язык: {page_info.get('language', 'не определен')}\n"
             f"─────────────────\n"
             f"🔄 Кнопок: {len(buttons)}\n"
             f"📝 Полей ввода: {len(inputs)}\n"
+            f"📋 Форм: {len(forms)}\n"
             f"☑️ Checkbox/Radio: {len(checkboxes)}\n"
             f"📋 Select: {len(selects)}\n"
         )
         
-        # ===== ПЕРВЫЕ 5 ССЫЛОК =====
-        if links:
-            response += "\n📌 **Первые 5 ссылок:**\n"
-            for i, link in enumerate(links[:5], 1):
-                text = link['text'][:30] if link['text'] else '[без текста]'
-                href = link['href'][:50] if link['href'] else '#'
-                response += f"  {i}. {text} → {href}\n"
-        
-        # ===== ПЕРВЫЕ 5 КНОПОК =====
+        # ===== КНОПКИ (ВСЕ) =====
         if buttons:
-            response += "\n🔘 **Первые 5 кнопок:**\n"
-            for i, btn in enumerate(buttons[:5], 1):
-                text = btn['text'][:30] if btn['text'] else '[без текста]'
+            response += "\n🔘 **Кнопки:**\n"
+            for i, btn in enumerate(buttons, 1):
+                text = btn['text'][:40] if btn['text'] else '[без текста]'
                 identifier = btn['id'] or btn['name'] or ''
                 if identifier:
                     response += f"  {i}. {text} (id: {identifier})\n"
                 else:
                     response += f"  {i}. {text}\n"
         
-        # ===== ПЕРВЫЕ 5 ПОЛЕЙ (С ОПИСАНИЕМ) =====
+        # ===== ПОЛЯ ВВОДА (ВСЕ) =====
         if inputs:
-            response += "\n✏️ **Первые 5 полей:**\n"
-            for i, inp in enumerate(inputs[:5], 1):
-                # Собираем описание поля из всех возможных атрибутов
+            response += "\n✏️ **Поля ввода:**\n"
+            for i, inp in enumerate(inputs, 1):
                 desc = (
                     inp.get('ariaLabel') or 
                     inp.get('placeholder') or 
                     inp.get('title') or 
                     inp.get('name') or 
                     inp.get('id') or 
-                    ''
+                    '[без имени]'
                 )
+                desc = desc[:35]
                 
-                # Если есть и name и описание — показываем оба
-                name = inp.get('name', '')
-                if name and desc and name != desc:
-                    display = f"{desc} ({name})"
-                elif desc:
-                    display = desc
-                elif name:
-                    display = name
-                else:
-                    display = '[без имени]'
-                
-                display = display[:35]  # обрезаем длинные
-                
-                # Добавляем тип поля
                 field_type = inp.get('type', '')
                 type_icon = {
                     'text': '📝',
@@ -187,13 +157,20 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     'url': '🔗',
                     'search': '🔍',
                     'textarea': '📄',
-                    'select': '📋'
                 }.get(field_type, '')
                 
-                if type_icon:
-                    response += f"  {i}. {type_icon} {display}\n"
+                response += f"  {i}. {type_icon} {desc}\n"
+        
+        # ===== ФОРМЫ =====
+        if forms:
+            response += f"\n📋 **Формы:** {len(forms)}\n"
+            for i, form in enumerate(forms[:5], 1):
+                action = form.get('action', '')[:40]
+                method = form.get('method', 'GET')
+                if action:
+                    response += f"  {i}. {method} → {action}\n"
                 else:
-                    response += f"  {i}. {display}\n"
+                    response += f"  {i}. {method}\n"
         
         if len(response) > 4000:
             response = response[:4000] + "\n\n... (обрезано)"
