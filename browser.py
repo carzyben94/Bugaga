@@ -38,7 +38,6 @@ class Browser:
         return "/usr/bin/google-chrome"
     
     async def start(self):
-        """Запуск Chrome с маскировкой и установкой кук"""
         try:
             if not self._is_chrome_running():
                 args = Mask.get_launch_args(self.chrome_path, self.debug_port)
@@ -49,15 +48,13 @@ class Browser:
                     raise RuntimeError("Chrome не запустился")
             
             self.ws_url = self._get_websocket_url()
-            
-            # ===== УВЕЛИЧИВАЕМ РАЗМЕРЫ СОКЕТА =====
             self.ws = await websockets.connect(
                 self.ws_url,
                 ping_interval=15,
-                ping_timeout=30,           # ← увеличено
+                ping_timeout=30,
                 close_timeout=10,
-                max_size=10 * 1024 * 1024, # ← 10 МБ
-                max_queue=64               # ← очередь сообщений
+                max_size=10 * 1024 * 1024,
+                max_queue=64
             )
             
             await self.send("Page.enable")
@@ -90,16 +87,24 @@ class Browser:
         try:
             while not self._is_closing and self.ws is not None:
                 await asyncio.sleep(20)
-                if self.ws and not self.ws.closed:
-                    try:
-                        await self.send("Runtime.evaluate", {
-                            "expression": "1+1",
-                            "returnByValue": True
-                        })
-                        logger.debug("💓 Keepalive ping отправлен")
-                    except Exception as e:
-                        logger.warning(f"⚠️ Keepalive ping failed: {e}")
-                        await self._reconnect()
+                
+                if self.ws is None:
+                    continue
+                
+                try:
+                    # Просто отправляем ping, если ошибка — переподключаемся
+                    await self.send("Runtime.evaluate", {
+                        "expression": "1+1",
+                        "returnByValue": True
+                    })
+                    logger.debug("💓 Keepalive ping отправлен")
+                except websockets.exceptions.ConnectionClosed:
+                    logger.warning("⚠️ WebSocket закрыт, переподключение...")
+                    await self._reconnect()
+                except Exception as e:
+                    logger.warning(f"⚠️ Keepalive ping failed: {e}")
+                    await self._reconnect()
+                    
         except asyncio.CancelledError:
             logger.info("⏹️ Keepalive задача остановлена")
         except Exception as e:
@@ -162,7 +167,7 @@ class Browser:
             await self.ws.send(json.dumps(msg))
             
             while True:
-                response = await asyncio.wait_for(self.ws.recv(), timeout=60)  # ← увеличено до 60 сек
+                response = await asyncio.wait_for(self.ws.recv(), timeout=60)
                 data = json.loads(response)
                 if "id" in data and data["id"] == msg_id:
                     if "error" in data:
@@ -180,13 +185,12 @@ class Browser:
             raise
         except websockets.exceptions.MessageTooLarge as e:
             logger.error(f"📦 Сообщение слишком большое: {e}")
-            # Пытаемся увеличить лимит
             self.ws = await websockets.connect(
                 self.ws_url,
                 ping_interval=15,
                 ping_timeout=30,
                 close_timeout=10,
-                max_size=20 * 1024 * 1024,  # ← 20 МБ
+                max_size=20 * 1024 * 1024,
                 max_queue=128
             )
             raise
