@@ -1,6 +1,9 @@
 import asyncio
 import logging
 import json
+import base64
+import os
+from datetime import datetime
 from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -111,7 +114,6 @@ class HermesAgent:
         if not node_id:
             return None
         
-        # ===== ПРЕОБРАЗУЕМ В ЧИСЛО (CDP ТРЕБУЕТ INT) =====
         try:
             node_id_int = int(node_id)
         except (ValueError, TypeError):
@@ -138,106 +140,65 @@ class HermesAgent:
                 return value_obj.get("value", "")
         return None
 
+    # ===== СКРИНШОТЫ =====
+    async def _take_screenshot(self, name: str) -> str:
+        """Сделать скриншот и сохранить"""
+        try:
+            screenshot_base64 = await self.browser.screenshot()
+            screenshots_dir = "screenshots"
+            os.makedirs(screenshots_dir, exist_ok=True)
+            filename = f"{screenshots_dir}/{datetime.now().strftime('%Y%m%d_%H%M%S')}_{name}.png"
+            with open(filename, "wb") as f:
+                f.write(base64.b64decode(screenshot_base64))
+            logger.info(f"📸 Скриншот сохранён: {filename}")
+            return filename
+        except Exception as e:
+            logger.error(f"Ошибка скриншота: {e}")
+            return ""
+
     # ===== ДЕЙСТВИЯ =====
     async def click(self, ref: str) -> Dict[str, Any]:
-        """Кликнуть по элементу по ref"""
+        """Кликнуть по элементу по ref и отправить скриншот"""
         
-        # ===== ЛОГИРУЕМ ПОИСК =====
         logger.info(f"🔍 Ищу {ref}")
         logger.info(f"📋 В карте {len(self.element_map)} элементов")
         
         element_info = self.element_map.get(ref)
         if not element_info:
             logger.error(f"❌ {ref} НЕ НАЙДЕН в карте!")
-            logger.info(f"📋 Доступные ref: {list(self.element_map.keys())[:10]}")
             return {"success": False, "reason": f"Элемент {ref} не найден в карте"}
         
         logger.info(f"✅ {ref} найден: role={element_info.get('role')}, name={element_info.get('name')[:30]}")
         
         selector = element_info.get("selector")
         role = element_info.get("role", "")
-        name = element_info.get("name", "")
         
-        # ===== ЕСЛИ ЕСТЬ СЕЛЕКТОР — ИСПОЛЬЗУЕМ ЕГО =====
         if selector:
             try:
                 exists = await self.eval.exists(selector)
                 if not exists:
                     return {"success": False, "reason": f"Элемент {ref} не найден на странице"}
                 
-                if role == "link":
-                    await self.eval.click_js(selector)
-                else:
-                    await self.browser.human_click(selector)
+                screenshot_before = await self._take_screenshot("before_click")
                 
+                await self.browser.human_click(selector)
                 await asyncio.sleep(1.5)
+                
+                screenshot_after = await self._take_screenshot("after_click")
                 
                 return {
                     "success": True,
                     "action": "click",
                     "ref": ref,
                     "selector": selector,
-                    "role": role
+                    "role": role,
+                    "screenshot_before": screenshot_before,
+                    "screenshot_after": screenshot_after
                 }
             except Exception as e:
                 return {"success": False, "reason": str(e)}
         
-        # ===== ЕСЛИ НЕТ СЕЛЕКТОРА — ИЩЕМ ПО ИМЕНИ =====
-        if not name:
-            return {"success": False, "reason": f"Элемент {ref} не имеет имени"}
-        
-        try:
-            # ===== ЭКРАНИРУЕМ ИМЯ ДЛЯ JS =====
-            safe_name = json.dumps(name)
-            
-            # Пробуем найти по aria-label
-            aria_selector = f"[aria-label='{name}']"
-            exists = await self.eval.exists(aria_selector)
-            if exists:
-                if role == "link":
-                    await self.eval.click_js(aria_selector)
-                else:
-                    await self.browser.human_click(aria_selector)
-                await asyncio.sleep(1.5)
-                return {"success": True, "action": "click", "ref": ref, "selector": aria_selector}
-            
-            # ===== ИЩЕМ ЧЕРЕЗ JS С ЭКРАНИРОВАНИЕМ =====
-            js = f"""
-            (function() {{
-                const elements = document.querySelectorAll('button, a, [role="button"], [role="link"]');
-                for (const el of elements) {{
-                    const text = el.innerText || el.textContent || '';
-                    if (text.includes({safe_name})) {{
-                        return el;
-                    }}
-                }}
-                return null;
-            }})()
-            """
-            result = await self.eval.execute(js)
-            if result:
-                click_js = f"""
-                (function() {{
-                    const elements = document.querySelectorAll('button, a, [role="button"], [role="link"]');
-                    for (const el of elements) {{
-                        const text = el.innerText || el.textContent || '';
-                        if (text.includes({safe_name})) {{
-                            el.click();
-                            return true;
-                        }}
-                    }}
-                    return false;
-                }})()
-                """
-                clicked = await self.eval.execute(click_js)
-                if clicked:
-                    await asyncio.sleep(1.5)
-                    return {"success": True, "action": "click", "ref": ref, "method": "js_search"}
-            
-            return {"success": False, "reason": f"Не удалось найти элемент {ref} (role={role}, name={name})"}
-            
-        except Exception as e:
-            return {"success": False, "reason": str(e)}
+        return {"success": False, "reason": f"Элемент {ref} не имеет селектора (testId или aria-label)"}
 
     async def type_text(self, ref: str, text: str) -> Dict[str, Any]:
         """Ввести текст в поле по ref"""
@@ -320,7 +281,6 @@ class HermesAgent:
         if not self.snapshot:
             return "Сначала получите снапшот страницы"
         
-        # Формируем компактный список элементов
         elements_text = "\n".join([
             f"  {el['ref']}: {el['role']} — {el['name']}"
             for el in self.snapshot[:30]
