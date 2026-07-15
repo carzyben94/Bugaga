@@ -20,18 +20,6 @@ class ElementTester:
         self.screenshots = []
         self.logs = []
 
-    def _escape_js(self, text: str) -> str:
-        """Экранировать текст для вставки в JavaScript"""
-        if not text:
-            return ""
-        return text.replace('\\', '\\\\').replace("'", "\\'").replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r')
-
-    def _escape_selector(self, selector: str) -> str:
-        """Экранировать селектор для вставки в JavaScript"""
-        if not selector:
-            return ""
-        return selector.replace("'", "\\'").replace('"', '\\"')
-
     def _sanitize_filename(self, text: str) -> str:
         """Очистить текст для имени файла"""
         if not text:
@@ -40,20 +28,12 @@ class ElementTester:
 
     # ===== ЛОГИРОВАНИЕ =====
     def _log(self, message: str, level: str = "INFO"):
-        entry = {
-            "timestamp": datetime.now().isoformat(),
-            "level": level,
-            "message": message
-        }
+        entry = {"timestamp": datetime.now().isoformat(), "level": level, "message": message}
         self.logs.append(entry)
         logger.info(message)
     
     def _log_error(self, message: str):
-        entry = {
-            "timestamp": datetime.now().isoformat(),
-            "level": "ERROR",
-            "message": message
-        }
+        entry = {"timestamp": datetime.now().isoformat(), "level": "ERROR", "message": message}
         self.logs.append(entry)
         logger.error(message)
 
@@ -61,11 +41,7 @@ class ElementTester:
     async def _take_screenshot(self, name: str) -> str:
         try:
             screenshot_base64 = await self.browser.screenshot()
-            entry = {
-                "name": name,
-                "timestamp": datetime.now().isoformat(),
-                "data": screenshot_base64
-            }
+            entry = {"name": name, "timestamp": datetime.now().isoformat(), "data": screenshot_base64}
             self.screenshots.append(entry)
             screenshots_dir = "screenshots"
             os.makedirs(screenshots_dir, exist_ok=True)
@@ -147,11 +123,9 @@ class ElementTester:
         text = element.get('text', '')[:30]
         self._log(f"🧪 Тестирую клик: {text}")
         
-        # Экранируем селектор для JS
         safe_selector = json.dumps(selector)
         
         try:
-            # Проверяем существование через eval
             exists_js = f"document.querySelector({safe_selector}) !== null"
             exists = await self.eval.execute(exists_js)
             if not exists:
@@ -219,7 +193,6 @@ class ElementTester:
         
         self._log(f"🧪 Тестирую ввод: {element.get('name', '')[:30]}")
         
-        # Экранируем селектор и текст
         safe_selector = json.dumps(selector)
         
         try:
