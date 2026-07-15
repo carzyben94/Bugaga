@@ -7,7 +7,7 @@ from subprocess import Popen, PIPE, TimeoutExpired
 import os
 
 from mask import Mask
-from cookies import X_COOKIES  # ← импорт кук
+from cookies import X_COOKIES
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +22,8 @@ class Browser:
         self.ws_url = None
         self._msg_id = 0
         self._masked = False
+        self._keepalive_task = None  # ← задача keepalive
+        self._is_closing = False
     
     def _find_chrome(self):
         paths = [
@@ -47,21 +49,28 @@ class Browser:
                     raise RuntimeError("Chrome не запустился")
             
             self.ws_url = self._get_websocket_url()
-            self.ws = await websockets.connect(self.ws_url)
+            self.ws = await websockets.connect(
+                self.ws_url,
+                ping_interval=20,      # ← отправлять ping каждые 20 сек
+                ping_timeout=10,       # ← ждать ответ 10 сек
+                close_timeout=5
+            )
             
             await self.send("Page.enable")
             await self.send("Runtime.enable")
             await self.send("Network.enable")
             await self.set_viewport(self.viewport_width, self.viewport_height)
             
-            # ===== УСТАНОВКА КУК ПРИ СТАРТЕ =====
             await self.set_cookies(X_COOKIES)
             
-            # Применяем JS-маскировку
             js_mask = Mask.get_js_mask()
             await self.eval_js(js_mask)
             self._masked = True
-            logger.info("✅ Браузер готов (маскировка + куки установлены)")
+            
+            # ===== ЗАПУСКАЕМ KEEPALIVE =====
+            self._start_keepalive()
+            
+            logger.info("✅ Браузер готов (маскировка + куки + keepalive)")
             
             return self
         except Exception as e:
@@ -69,8 +78,35 @@ class Browser:
             await self.close()
             raise
     
+    def _start_keepalive(self):
+        """Запустить фоновую задачу для поддержания соединения"""
+        if self._keepalive_task is None or self._keepalive_task.done():
+            self._keepalive_task = asyncio.create_task(self._keepalive_loop())
+            logger.info("🔁 Keepalive задача запущена")
+    
+    async def _keepalive_loop(self):
+        """Периодически отправлять ping через WebSocket"""
+        try:
+            while not self._is_closing and self.ws is not None:
+                await asyncio.sleep(25)  # каждые 25 секунд
+                
+                if self.ws and not self.ws.closed:
+                    try:
+                        # Отправляем простой ping (CDP команда без изменений)
+                        await self.send("Runtime.evaluate", {
+                            "expression": "1+1",
+                            "returnByValue": True
+                        })
+                        logger.debug("💓 Keepalive ping отправлен")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Keepalive ping failed: {e}")
+                        break
+        except asyncio.CancelledError:
+            logger.info("⏹️ Keepalive задача остановлена")
+        except Exception as e:
+            logger.error(f"❌ Ошибка в keepalive: {e}")
+    
     async def set_cookies(self, cookies_list):
-        """Установить куки одной командой"""
         if not cookies_list:
             return
         await self.send("Network.setCookies", {
@@ -100,17 +136,47 @@ class Browser:
         msg_id = self._msg_id
         msg = {"id": msg_id, "method": method, "params": params}
         
-        await self.ws.send(json.dumps(msg))
-        
-        while True:
-            response = await self.ws.recv()
-            data = json.loads(response)
-            if "id" in data and data["id"] == msg_id:
-                if "error" in data:
-                    raise RuntimeError(f"CDP Error: {data['error']}")
-                if "result" in data:
-                    return data["result"]
-                return data
+        try:
+            await self.ws.send(json.dumps(msg))
+            
+            while True:
+                response = await asyncio.wait_for(self.ws.recv(), timeout=30)
+                data = json.loads(response)
+                if "id" in data and data["id"] == msg_id:
+                    if "error" in data:
+                        raise RuntimeError(f"CDP Error: {data['error']}")
+                    if "result" in data:
+                        return data["result"]
+                    return data
+        except asyncio.TimeoutError:
+            logger.error("⏱️ Таймаут ожидания ответа от CDP")
+            raise RuntimeError("CDP timeout")
+        except websockets.exceptions.ConnectionClosed as e:
+            logger.error(f"🔌 WebSocket закрыт: {e}")
+            # Пытаемся переподключиться
+            if not self._is_closing:
+                await self._reconnect()
+            raise
+    
+    async def _reconnect(self):
+        """Переподключение к WebSocket"""
+        logger.info("🔄 Переподключение к CDP...")
+        try:
+            self.ws_url = self._get_websocket_url()
+            self.ws = await websockets.connect(
+                self.ws_url,
+                ping_interval=20,
+                ping_timeout=10,
+                close_timeout=5
+            )
+            await self.send("Page.enable")
+            await self.send("Runtime.enable")
+            await self.send("Network.enable")
+            await self.set_viewport(self.viewport_width, self.viewport_height)
+            logger.info("✅ Переподключение успешно")
+        except Exception as e:
+            logger.error(f"❌ Ошибка переподключения: {e}")
+            raise
     
     async def eval_js(self, js_code):
         result = await self.send("Runtime.evaluate", {
@@ -162,10 +228,30 @@ class Browser:
         return await self.eval_js(js)
     
     async def close(self):
+        self._is_closing = True
+        
+        # Останавливаем keepalive
+        if self._keepalive_task and not self._keepalive_task.done():
+            self._keepalive_task.cancel()
+            try:
+                await self._keepalive_task
+            except asyncio.CancelledError:
+                pass
+        
         if self.ws:
-            await self.ws.close()
+            try:
+                await self.ws.close()
+            except:
+                pass
         if self.process:
-            self.process.terminate()
+            try:
+                self.process.terminate()
+                await asyncio.sleep(1)
+                if self.process.poll() is None:
+                    self.process.kill()
+            except:
+                pass
+        logger.info("🛑 Браузер закрыт")
     
     async def __aenter__(self):
         return await self.start()
