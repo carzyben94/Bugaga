@@ -11,7 +11,6 @@ from eval import Eval
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-# ===== Логирование =====
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -22,14 +21,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ===== Глобальный браузер =====
 browser = None
 
 
-# ===== Команды =====
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Приветствие"""
     await update.message.reply_text(
         "👋 Привет! Я бот.\n\n"
         "Команды:\n"
@@ -40,7 +35,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Сделать скриншот страницы"""
     global browser
     
     args = context.args
@@ -84,7 +78,6 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Анализ страницы с интерактивными элементами"""
     global browser
     
     args = context.args
@@ -150,15 +143,57 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
             response += "\n🔘 **Первые 5 кнопок:**\n"
             for i, btn in enumerate(buttons[:5], 1):
                 text = btn['text'][:30] if btn['text'] else '[без текста]'
-                response += f"  {i}. {text} (type: {btn['type']})\n"
+                identifier = btn['id'] or btn['name'] or ''
+                if identifier:
+                    response += f"  {i}. {text} (id: {identifier})\n"
+                else:
+                    response += f"  {i}. {text}\n"
         
-        # ===== ПЕРВЫЕ 5 ПОЛЕЙ =====
+        # ===== ПЕРВЫЕ 5 ПОЛЕЙ (С ОПИСАНИЕМ) =====
         if inputs:
             response += "\n✏️ **Первые 5 полей:**\n"
             for i, inp in enumerate(inputs[:5], 1):
-                name = inp['name'][:20] if inp['name'] else '[без имени]'
-                placeholder = f" ({inp['placeholder'][:20]})" if inp['placeholder'] else ''
-                response += f"  {i}. {name}{placeholder}\n"
+                # Собираем описание поля из всех возможных атрибутов
+                desc = (
+                    inp.get('ariaLabel') or 
+                    inp.get('placeholder') or 
+                    inp.get('title') or 
+                    inp.get('name') or 
+                    inp.get('id') or 
+                    ''
+                )
+                
+                # Если есть и name и описание — показываем оба
+                name = inp.get('name', '')
+                if name and desc and name != desc:
+                    display = f"{desc} ({name})"
+                elif desc:
+                    display = desc
+                elif name:
+                    display = name
+                else:
+                    display = '[без имени]'
+                
+                display = display[:35]  # обрезаем длинные
+                
+                # Добавляем тип поля
+                field_type = inp.get('type', '')
+                type_icon = {
+                    'text': '📝',
+                    'password': '🔒',
+                    'email': '📧',
+                    'number': '🔢',
+                    'tel': '📞',
+                    'url': '🔗',
+                    'search': '🔍',
+                    'textarea': '📄',
+                    'select': '📋'
+                }.get(field_type, '')
+                
+                if type_icon:
+                    response += f"  {i}. {type_icon} {display}\n"
+                else:
+                    response += f"  {i}. {display}\n"
         
         if len(response) > 4000:
             response = response[:4000] + "\n\n... (обрезано)"
@@ -179,7 +214,6 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def log(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отправить файл лога"""
     user_id = update.effective_user.id
     
     try:
@@ -195,8 +229,6 @@ async def log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
 
-
-# ===== Запуск =====
 
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
