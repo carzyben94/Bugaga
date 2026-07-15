@@ -49,11 +49,15 @@ class Browser:
                     raise RuntimeError("Chrome не запустился")
             
             self.ws_url = self._get_websocket_url()
+            
+            # ===== УВЕЛИЧИВАЕМ РАЗМЕРЫ СОКЕТА =====
             self.ws = await websockets.connect(
                 self.ws_url,
-                ping_interval=15,       # WebSocket keepalive
-                ping_timeout=10,
-                close_timeout=5
+                ping_interval=15,
+                ping_timeout=30,           # ← увеличено
+                close_timeout=10,
+                max_size=10 * 1024 * 1024, # ← 10 МБ
+                max_queue=64               # ← очередь сообщений
             )
             
             await self.send("Page.enable")
@@ -67,10 +71,9 @@ class Browser:
             await self.eval_js(js_mask)
             self._masked = True
             
-            # Запускаем keepalive
             self._start_keepalive()
             
-            logger.info("✅ Браузер готов (маскировка + куки + keepalive)")
+            logger.info("✅ Браузер готов (маскировка + куки + keepalive, max_size=10MB)")
             
             return self
         except Exception as e:
@@ -79,17 +82,14 @@ class Browser:
             raise
     
     def _start_keepalive(self):
-        """Запустить фоновую задачу для поддержания соединения"""
         if self._keepalive_task is None or self._keepalive_task.done():
             self._keepalive_task = asyncio.create_task(self._keepalive_loop())
             logger.info("🔁 Keepalive задача запущена")
     
     async def _keepalive_loop(self):
-        """Периодически отправлять ping через CDP"""
         try:
             while not self._is_closing and self.ws is not None:
                 await asyncio.sleep(20)
-                
                 if self.ws and not self.ws.closed:
                     try:
                         await self.send("Runtime.evaluate", {
@@ -106,18 +106,18 @@ class Browser:
             logger.error(f"❌ Ошибка в keepalive: {e}")
     
     async def _reconnect(self):
-        """Переподключение к WebSocket"""
         logger.info("🔄 Переподключение к CDP...")
         try:
             if self.ws:
                 await self.ws.close()
-            
             self.ws_url = self._get_websocket_url()
             self.ws = await websockets.connect(
                 self.ws_url,
                 ping_interval=15,
-                ping_timeout=10,
-                close_timeout=5
+                ping_timeout=30,
+                close_timeout=10,
+                max_size=10 * 1024 * 1024,
+                max_queue=64
             )
             await self.send("Page.enable")
             await self.send("Runtime.enable")
@@ -152,7 +152,6 @@ class Browser:
         logger.info(f"🍪 Установлено {len(cookies_list)} кук")
     
     async def send(self, method, params=None):
-        """Отправить CDP-команду"""
         if params is None:
             params = {}
         self._msg_id += 1
@@ -163,7 +162,7 @@ class Browser:
             await self.ws.send(json.dumps(msg))
             
             while True:
-                response = await asyncio.wait_for(self.ws.recv(), timeout=30)
+                response = await asyncio.wait_for(self.ws.recv(), timeout=60)  # ← увеличено до 60 сек
                 data = json.loads(response)
                 if "id" in data and data["id"] == msg_id:
                     if "error" in data:
@@ -178,6 +177,18 @@ class Browser:
             logger.error(f"🔌 WebSocket закрыт: {e}")
             if not self._is_closing:
                 await self._reconnect()
+            raise
+        except websockets.exceptions.MessageTooLarge as e:
+            logger.error(f"📦 Сообщение слишком большое: {e}")
+            # Пытаемся увеличить лимит
+            self.ws = await websockets.connect(
+                self.ws_url,
+                ping_interval=15,
+                ping_timeout=30,
+                close_timeout=10,
+                max_size=20 * 1024 * 1024,  # ← 20 МБ
+                max_queue=128
+            )
             raise
     
     async def eval_js(self, js_code):
@@ -231,14 +242,12 @@ class Browser:
     
     async def close(self):
         self._is_closing = True
-        
         if self._keepalive_task and not self._keepalive_task.done():
             self._keepalive_task.cancel()
             try:
                 await self._keepalive_task
             except asyncio.CancelledError:
                 pass
-        
         if self.ws:
             try:
                 await self.ws.close()
