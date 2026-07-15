@@ -10,6 +10,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from browser import Browser
 from eval import Eval
 from accessibility import Accessibility
+from ai import AIAgent
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
@@ -33,6 +34,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/screen <url> — скриншот страницы\n"
         "/analyze <url> — анализ страницы (кнопки, поля, формы)\n"
         "/accessibility <url> — доступность страницы\n"
+        "/ai <url> — AI анализ страницы\n"
         "/log — скачать лог"
     )
 
@@ -212,7 +214,7 @@ async def accessibility(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await browser.goto(url)
         
-        # ===== ЖДЁМ ЗАГРУЗКИ СТРАНИЦЫ =====
+        # Ждём загрузки страницы
         logger.info("⏳ Ожидание загрузки страницы...")
         for _ in range(30):
             try:
@@ -226,16 +228,10 @@ async def accessibility(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             logger.warning("⏱️ Таймаут ожидания загрузки")
         
-        # Дополнительная задержка для рендера
         await asyncio.sleep(2)
         
         acc = Accessibility(browser)
-        
-        # Включаем Accessibility
         await acc.enable()
-        
-        # Ждём формирования Accessibility Tree
-        logger.info("⏳ Ожидание Accessibility Tree...")
         await asyncio.sleep(2)
         
         summary = await acc.get_summary()
@@ -278,6 +274,57 @@ async def accessibility(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
 
+async def ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """AI анализ страницы"""
+    global browser
+    
+    args = context.args
+    if not args:
+        await update.message.reply_text("❌ Укажи URL: /ai https://example.com")
+        return
+    
+    url = args[0]
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    
+    user_id = update.effective_user.id
+    await update.message.reply_text(f"🧠 Запускаю AI анализ для {url}...")
+    
+    try:
+        if browser is None:
+            browser = await Browser().start()
+            logger.info("✅ Браузер запущен")
+        
+        await browser.goto(url)
+        await asyncio.sleep(2)
+        
+        eval = Eval(browser)
+        acc = Accessibility(browser)
+        agent = AIAgent(browser, eval, acc)
+        
+        result = await agent.analyze_page(url)
+        
+        if len(result) > 4000:
+            for i in range(0, len(result), 4000):
+                await update.message.reply_text(result[i:i+4000])
+        else:
+            await update.message.reply_text(f"🧠 **AI Анализ:**\n\n{result}")
+        
+        await agent.close()
+        
+        logger.info(f"User {user_id} выполнил AI анализ {url}")
+        
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Ошибка AI анализа: {error_msg}")
+        
+        if browser:
+            await browser.close()
+            browser = None
+        
+        await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
+
+
 async def log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
@@ -302,6 +349,7 @@ def main():
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("analyze", analyze))
     app.add_handler(CommandHandler("accessibility", accessibility))
+    app.add_handler(CommandHandler("ai", ai))
     app.add_handler(CommandHandler("log", log))
     
     logger.info("🚀 Бот запущен")
