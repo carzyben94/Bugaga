@@ -368,32 +368,34 @@ class Eval:
             """
         )
     
-    # ========== ИНТЕРАКТИВНЫЕ ЭЛЕМЕНТЫ (ОБНОВЛЕНЫ) ==========
+    # ========== ИНТЕРАКТИВНЫЕ ЭЛЕМЕНТЫ ==========
     
     async def get_all_buttons(self) -> list:
-        """Получить все кнопки с текстом из aria-label, title, value"""
+        """Получить все кнопки с data-testid"""
         return await self.execute(
             """
             (function() {
-                return Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"]')).map(el => ({
-                    text: el.innerText || el.value || el.getAttribute('aria-label') || el.title || el.getAttribute('data-tooltip') || el.textContent || '',
-                    type: el.type || 'button',
+                return Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"], a[role="link"]')).map(el => ({
+                    text: el.innerText || el.value || el.textContent || el.title || el.getAttribute('aria-label') || '',
+                    type: el.type || el.tagName.toLowerCase(),
                     id: el.id || '',
                     name: el.name || '',
                     class: el.className || '',
                     disabled: el.disabled || false,
-                    visible: el.offsetParent !== null
+                    visible: el.offsetParent !== null,
+                    testId: el.getAttribute('data-testid') || '',
+                    ariaLabel: el.getAttribute('aria-label') || ''
                 }));
             })()
             """
         )
     
     async def get_all_inputs(self) -> list:
-        """Получить все поля ввода с name, id, placeholder, aria-label"""
+        """Получить все поля ввода с data-testid"""
         return await self.execute(
             """
             (function() {
-                return Array.from(document.querySelectorAll('input:not([type="submit"]):not([type="button"]), textarea, select')).map(el => ({
+                return Array.from(document.querySelectorAll('input:not([type="submit"]):not([type="button"]):not([type="hidden"]), textarea, select')).map(el => ({
                     type: el.type || el.tagName.toLowerCase(),
                     name: el.name || el.id || '',
                     id: el.id || '',
@@ -402,7 +404,8 @@ class Eval:
                     ariaLabel: el.getAttribute('aria-label') || '',
                     title: el.title || '',
                     disabled: el.disabled || false,
-                    visible: el.offsetParent !== null
+                    visible: el.offsetParent !== null,
+                    testId: el.getAttribute('data-testid') || ''
                 }));
             })()
             """
@@ -419,7 +422,8 @@ class Eval:
                     checked: el.checked || false,
                     disabled: el.disabled || false,
                     value: el.value || '',
-                    visible: el.offsetParent !== null
+                    visible: el.offsetParent !== null,
+                    testId: el.getAttribute('data-testid') || ''
                 }));
             })()
             """
@@ -435,6 +439,7 @@ class Eval:
                     value: el.value || '',
                     disabled: el.disabled || false,
                     visible: el.offsetParent !== null,
+                    testId: el.getAttribute('data-testid') || '',
                     options: Array.from(el.options).map(opt => ({
                         text: opt.text,
                         value: opt.value,
@@ -460,6 +465,7 @@ class Eval:
                     class: el.className || '',
                     disabled: el.disabled || false,
                     visible: el.offsetParent !== null,
+                    testId: el.getAttribute('data-testid') || '',
                     position: {{
                         x: rect.x,
                         y: rect.y,
@@ -490,6 +496,7 @@ class Eval:
                     title: el.title || '',
                     disabled: el.disabled || false,
                     visible: el.offsetParent !== null,
+                    testId: el.getAttribute('data-testid') || '',
                     position: {{
                         x: rect.x,
                         y: rect.y,
@@ -640,11 +647,13 @@ class Eval:
                     method: form.method,
                     id: form.id || '',
                     name: form.name || '',
+                    testId: form.getAttribute('data-testid') || '',
                     inputs: Array.from(form.querySelectorAll('input, textarea, select')).map(el => ({
                         type: el.type || el.tagName.toLowerCase(),
                         name: el.name || el.id || '',
                         id: el.id || '',
-                        value: el.value || ''
+                        value: el.value || '',
+                        testId: el.getAttribute('data-testid') || ''
                     }))
                 }));
             })()
