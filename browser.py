@@ -22,7 +22,7 @@ class Browser:
         self.ws_url = None
         self._msg_id = 0
         self._masked = False
-        self._keepalive_task = None  # ← задача keepalive
+        self._keepalive_task = None
         self._is_closing = False
     
     def _find_chrome(self):
@@ -51,8 +51,8 @@ class Browser:
             self.ws_url = self._get_websocket_url()
             self.ws = await websockets.connect(
                 self.ws_url,
-                ping_interval=20,      # ← отправлять ping каждые 20 сек
-                ping_timeout=10,       # ← ждать ответ 10 сек
+                ping_interval=15,       # WebSocket keepalive
+                ping_timeout=10,
                 close_timeout=5
             )
             
@@ -67,7 +67,7 @@ class Browser:
             await self.eval_js(js_mask)
             self._masked = True
             
-            # ===== ЗАПУСКАЕМ KEEPALIVE =====
+            # Запускаем keepalive
             self._start_keepalive()
             
             logger.info("✅ Браузер готов (маскировка + куки + keepalive)")
@@ -85,14 +85,13 @@ class Browser:
             logger.info("🔁 Keepalive задача запущена")
     
     async def _keepalive_loop(self):
-        """Периодически отправлять ping через WebSocket"""
+        """Периодически отправлять ping через CDP"""
         try:
             while not self._is_closing and self.ws is not None:
-                await asyncio.sleep(25)  # каждые 25 секунд
+                await asyncio.sleep(20)
                 
                 if self.ws and not self.ws.closed:
                     try:
-                        # Отправляем простой ping (CDP команда без изменений)
                         await self.send("Runtime.evaluate", {
                             "expression": "1+1",
                             "returnByValue": True
@@ -100,19 +99,34 @@ class Browser:
                         logger.debug("💓 Keepalive ping отправлен")
                     except Exception as e:
                         logger.warning(f"⚠️ Keepalive ping failed: {e}")
-                        break
+                        await self._reconnect()
         except asyncio.CancelledError:
             logger.info("⏹️ Keepalive задача остановлена")
         except Exception as e:
             logger.error(f"❌ Ошибка в keepalive: {e}")
     
-    async def set_cookies(self, cookies_list):
-        if not cookies_list:
-            return
-        await self.send("Network.setCookies", {
-            "cookies": cookies_list
-        })
-        logger.info(f"🍪 Установлено {len(cookies_list)} кук")
+    async def _reconnect(self):
+        """Переподключение к WebSocket"""
+        logger.info("🔄 Переподключение к CDP...")
+        try:
+            if self.ws:
+                await self.ws.close()
+            
+            self.ws_url = self._get_websocket_url()
+            self.ws = await websockets.connect(
+                self.ws_url,
+                ping_interval=15,
+                ping_timeout=10,
+                close_timeout=5
+            )
+            await self.send("Page.enable")
+            await self.send("Runtime.enable")
+            await self.send("Network.enable")
+            await self.set_viewport(self.viewport_width, self.viewport_height)
+            logger.info("✅ Переподключение успешно")
+        except Exception as e:
+            logger.error(f"❌ Ошибка переподключения: {e}")
+            raise
     
     def _is_chrome_running(self):
         try:
@@ -129,7 +143,16 @@ class Browser:
             return resp.json()["webSocketDebuggerUrl"]
         return pages[0]["webSocketDebuggerUrl"]
     
+    async def set_cookies(self, cookies_list):
+        if not cookies_list:
+            return
+        await self.send("Network.setCookies", {
+            "cookies": cookies_list
+        })
+        logger.info(f"🍪 Установлено {len(cookies_list)} кук")
+    
     async def send(self, method, params=None):
+        """Отправить CDP-команду"""
         if params is None:
             params = {}
         self._msg_id += 1
@@ -153,29 +176,8 @@ class Browser:
             raise RuntimeError("CDP timeout")
         except websockets.exceptions.ConnectionClosed as e:
             logger.error(f"🔌 WebSocket закрыт: {e}")
-            # Пытаемся переподключиться
             if not self._is_closing:
                 await self._reconnect()
-            raise
-    
-    async def _reconnect(self):
-        """Переподключение к WebSocket"""
-        logger.info("🔄 Переподключение к CDP...")
-        try:
-            self.ws_url = self._get_websocket_url()
-            self.ws = await websockets.connect(
-                self.ws_url,
-                ping_interval=20,
-                ping_timeout=10,
-                close_timeout=5
-            )
-            await self.send("Page.enable")
-            await self.send("Runtime.enable")
-            await self.send("Network.enable")
-            await self.set_viewport(self.viewport_width, self.viewport_height)
-            logger.info("✅ Переподключение успешно")
-        except Exception as e:
-            logger.error(f"❌ Ошибка переподключения: {e}")
             raise
     
     async def eval_js(self, js_code):
@@ -230,7 +232,6 @@ class Browser:
     async def close(self):
         self._is_closing = True
         
-        # Останавливаем keepalive
         if self._keepalive_task and not self._keepalive_task.done():
             self._keepalive_task.cancel()
             try:
