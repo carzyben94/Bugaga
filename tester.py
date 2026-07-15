@@ -93,7 +93,6 @@ class ElementTester:
         
         buttons = await self.eval.get_all_buttons()
         for btn in buttons:
-            # Пропускаем без testId
             if not btn.get('testId'):
                 continue
             text = btn.get('text', '') or btn.get('ariaLabel', '') or 'button'
@@ -148,8 +147,13 @@ class ElementTester:
         text = element.get('text', '')[:30]
         self._log(f"🧪 Тестирую клик: {text}")
         
+        # Экранируем селектор для JS
+        safe_selector = json.dumps(selector)
+        
         try:
-            exists = await self.eval.exists(selector)
+            # Проверяем существование через eval
+            exists_js = f"document.querySelector({safe_selector}) !== null"
+            exists = await self.eval.execute(exists_js)
             if not exists:
                 self._log_error(f"Элемент не найден: {selector}")
                 return {"success": False, "reason": "Элемент не найден"}
@@ -215,8 +219,12 @@ class ElementTester:
         
         self._log(f"🧪 Тестирую ввод: {element.get('name', '')[:30]}")
         
+        # Экранируем селектор и текст
+        safe_selector = json.dumps(selector)
+        
         try:
-            exists = await self.eval.exists(selector)
+            exists_js = f"document.querySelector({safe_selector}) !== null"
+            exists = await self.eval.execute(exists_js)
             if not exists:
                 return {"success": False, "reason": "Элемент не найден"}
             
@@ -251,67 +259,6 @@ class ElementTester:
             self._log_error(f"Ошибка: {e}")
             return {"success": False, "reason": str(e)}
 
-    # ===== ТЕСТИРОВАНИЕ ENTER =====
-    async def test_enter(self, selector: str, text: str = "test") -> Dict[str, Any]:
-        """Тестировать ввод + Enter с экранированием"""
-        
-        self._log(f"🧪 Тестирую Enter")
-        
-        try:
-            exists = await self.eval.exists(selector)
-            if not exists:
-                return {"success": False, "reason": "Элемент не найден"}
-            
-            safe_name = self._sanitize_filename("enter")
-            await self._take_element_screenshot(selector, f"before_enter_{safe_name}")
-            
-            before_url = await self.eval.get_url()
-            
-            await self.browser.human_type(selector, text)
-            await asyncio.sleep(0.5)
-            
-            await self.eval.focus(selector)
-            await self._press_enter(selector)
-            await asyncio.sleep(1.5)
-            
-            await self._take_element_screenshot(selector, f"after_enter_{safe_name}")
-            
-            after_url = await self.eval.get_url()
-            results = await self._check_results()
-            
-            if after_url != before_url:
-                self._log(f"✅ Enter успешен: URL изменился")
-                return {
-                    "success": True,
-                    "action": "enter",
-                    "selector": selector,
-                    "text": text,
-                    "change": f"URL: {before_url} → {after_url}",
-                    "verified": True,
-                    "screenshots": [s.get('name') for s in self.screenshots[-2:]]
-                }
-            elif results:
-                self._log(f"✅ Enter успешен: {results}")
-                return {
-                    "success": True,
-                    "action": "enter",
-                    "selector": selector,
-                    "text": text,
-                    "change": results,
-                    "verified": True,
-                    "screenshots": [s.get('name') for s in self.screenshots[-2:]]
-                }
-            else:
-                self._log_error("Enter не привёл к изменениям")
-                return {
-                    "success": False,
-                    "reason": "Enter не привёл к изменениям"
-                }
-                
-        except Exception as e:
-            self._log_error(f"Ошибка: {e}")
-            return {"success": False, "reason": str(e)}
-
     # ===== ТЕСТИРОВАНИЕ ЧЕКБОКСА =====
     async def test_checkbox(self, element: Dict[str, Any]) -> Dict[str, Any]:
         selector = element.get('selector')
@@ -320,8 +267,11 @@ class ElementTester:
         
         self._log(f"🧪 Тестирую чекбокс: {element.get('name', '')[:30]}")
         
+        safe_selector = json.dumps(selector)
+        
         try:
-            exists = await self.eval.exists(selector)
+            exists_js = f"document.querySelector({safe_selector}) !== null"
+            exists = await self.eval.execute(exists_js)
             if not exists:
                 return {"success": False, "reason": "Элемент не найден"}
             
@@ -434,47 +384,6 @@ class ElementTester:
             except:
                 continue
         return None
-
-    async def _check_results(self) -> Optional[str]:
-        result_selectors = [
-            "[data-testid='results']",
-            "[data-testid='search-results']",
-            "[role='list']",
-            "[role='grid']"
-        ]
-        for selector in result_selectors:
-            try:
-                if await self.eval.exists(selector) and await self.eval.is_visible(selector):
-                    count = await self.eval.get_count(selector)
-                    if count > 0:
-                        return f"Найдено {count} результатов"
-            except:
-                continue
-        return None
-
-    async def _press_enter(self, selector: str):
-        """Нажать Enter через JS с экранированием"""
-        safe_selector = self._escape_selector(selector)
-        js = f"""
-        (function() {{
-            const el = document.querySelector('{safe_selector}');
-            if (!el) return false;
-            el.dispatchEvent(new KeyboardEvent('keydown', {{
-                key: 'Enter',
-                code: 'Enter',
-                bubbles: true,
-                cancelable: true
-            }}));
-            el.dispatchEvent(new KeyboardEvent('keyup', {{
-                key: 'Enter',
-                code: 'Enter',
-                bubbles: true,
-                cancelable: true
-            }}));
-            return true;
-        }})()
-        """
-        await self.eval.execute(js)
 
     # ===== ПОЛНЫЙ ТЕСТ =====
     async def run_full_test(self, url: str) -> Dict[str, Any]:
