@@ -8,6 +8,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 from browser import Browser
 from eval import Eval
+from accessibility import Accessibility  # ← НОВЫЙ ИМПОРТ
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
@@ -30,6 +31,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Команды:\n"
         "/screen <url> — скриншот страницы\n"
         "/analyze <url> — анализ страницы (кнопки, поля, формы)\n"
+        "/accessibility <url> — доступность страницы\n"  # ← НОВАЯ КОМАНДА
         "/log — скачать лог"
     )
 
@@ -187,6 +189,90 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
 
+# ========== НОВАЯ КОМАНДА ==========
+async def accessibility(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global browser
+    
+    args = context.args
+    if not args:
+        await update.message.reply_text("❌ Укажи URL: /accessibility https://example.com")
+        return
+    
+    url = args[0]
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    
+    user_id = update.effective_user.id
+    await update.message.reply_text(f"♿ Собираю Accessibility Tree для {url}...")
+    
+    try:
+        if browser is None:
+            browser = await Browser().start()
+            logger.info("✅ Браузер запущен")
+        
+        await browser.goto(url)
+        await asyncio.sleep(2)
+        
+        acc = Accessibility(browser)
+        
+        # Получаем сводку
+        summary = await acc.get_summary()
+        
+        response = (
+            f"♿ **Accessibility Tree**\n\n"
+            f"📊 **Всего узлов:** {summary['total_nodes']}\n"
+            f"─────────────────\n"
+            f"🔘 Кнопок: {summary['buttons']}\n"
+            f"📝 Полей ввода: {summary['inputs']}\n"
+            f"🔗 Ссылок: {summary['links']}\n"
+            f"📌 Заголовков: {summary['headings']}\n"
+            f"🏛️ Landmarks: {summary['landmarks']}\n"
+            f"🖼️ Изображений: {summary['images']}\n"
+            f"📋 Списков: {summary['lists']}\n"
+            f"📊 Таблиц: {summary['tables']}\n"
+        )
+        
+        # Роли (топ 10)
+        if summary.get('roles'):
+            response += "\n📋 **Роли (топ 10):**\n"
+            sorted_roles = sorted(summary['roles'].items(), key=lambda x: x[1], reverse=True)[:10]
+            for role, count in sorted_roles:
+                response += f"  {role}: {count}\n"
+        
+        # Кнопки
+        buttons = await acc.get_all_buttons()
+        if buttons:
+            response += f"\n🔘 **Кнопки ({len(buttons)}):**\n"
+            for i, btn in enumerate(buttons[:10], 1):
+                name = btn.get('name', '')[:30] or '[без имени]'
+                response += f"  {i}. {name}\n"
+        
+        # Поля ввода
+        inputs = await acc.get_all_inputs()
+        if inputs:
+            response += f"\n✏️ **Поля ввода ({len(inputs)}):**\n"
+            for i, inp in enumerate(inputs[:10], 1):
+                name = inp.get('name', '')[:30] or '[без имени]'
+                response += f"  {i}. {name}\n"
+        
+        if len(response) > 4000:
+            response = response[:4000] + "\n\n... (обрезано)"
+        
+        await update.message.reply_text(response)
+        
+        logger.info(f"User {user_id} запросил accessibility для {url}")
+        
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Ошибка Accessibility: {error_msg}")
+        
+        if browser:
+            await browser.close()
+            browser = None
+        
+        await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
+
+
 async def log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
@@ -210,6 +296,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("analyze", analyze))
+    app.add_handler(CommandHandler("accessibility", accessibility))  # ← НОВЫЙ ХЕНДЛЕР
     app.add_handler(CommandHandler("log", log))
     
     logger.info("🚀 Бот запущен")
