@@ -4,7 +4,6 @@ import logging
 import requests
 import websockets
 from subprocess import Popen, PIPE, TimeoutExpired
-import time
 import os
 
 logger = logging.getLogger(__name__)
@@ -18,7 +17,7 @@ class Browser:
         self.viewport_width = 1280
         self.viewport_height = 720
         self.ws_url = None
-        self._msg_id = 0  # ← счётчик для CDP команд
+        self._msg_id = 0
     
     def _find_chrome(self):
         """Найти Chrome в системе"""
@@ -118,9 +117,9 @@ class Browser:
         if params is None:
             params = {}
         
-        self._msg_id += 1  # ← увеличиваем счётчик
+        self._msg_id += 1
         msg = {
-            "id": self._msg_id,  # ← 1, 2, 3, ...
+            "id": self._msg_id,
             "method": method,
             "params": params
         }
@@ -129,6 +128,9 @@ class Browser:
             await self.ws.send(json.dumps(msg))
             response = await self.ws.recv()
             data = json.loads(response)
+            
+            # Логируем полный ответ для диагностики
+            logger.info(f"📨 Ответ CDP на {method}: {json.dumps(data)[:500]}")
             
             if "error" in data:
                 error_msg = data["error"].get("message", "Unknown CDP error")
@@ -168,17 +170,24 @@ class Browser:
         return result
     
     async def screenshot(self):
-        """Скриншот через CDP"""
+        """Скриншот через CDP с диагностикой"""
         logger.info("📸 Делаю скриншот...")
         result = await self.send("Page.captureScreenshot")
         
-        if "data" in result:
+        # Подробная диагностика
+        logger.info(f"🔍 Тип ответа: {type(result)}")
+        logger.info(f"🔍 Ключи ответа: {result.keys() if isinstance(result, dict) else 'не словарь'}")
+        
+        if isinstance(result, dict) and "data" in result:
+            logger.info("✅ data найдена в result")
             return result["data"]
-        elif isinstance(result, dict) and "data" in result:
-            return result["data"]
+        elif isinstance(result, dict) and "result" in result and "data" in result["result"]:
+            logger.info("✅ data найдена в result.result")
+            return result["result"]["data"]
         else:
-            logger.error(f"Неизвестный формат ответа: {list(result.keys())}")
-            raise RuntimeError(f"Поле 'data' не найдено в ответе CDP")
+            # Если data нет — показываем что пришло
+            logger.error(f"❌ Неизвестный формат ответа: {result}")
+            raise RuntimeError(f"Поле 'data' не найдено. Получено: {result}")
     
     async def close(self):
         """Закрыть браузер"""
