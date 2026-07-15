@@ -1,6 +1,7 @@
 import os
 import logging
 import base64
+import asyncio
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -10,6 +11,7 @@ from eval import Eval
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
+# ===== Логирование =====
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -20,10 +22,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ===== Глобальный браузер =====
 browser = None
 
 
+# ===== Команды =====
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Приветствие"""
     await update.message.reply_text(
         "👋 Привет! Я бот.\n\n"
         "Команды:\n"
@@ -34,7 +40,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сделать скриншот страницы"""
     global browser
+    
     args = context.args
     if not args:
         await update.message.reply_text("❌ Укажи URL: /screen https://example.com")
@@ -76,6 +84,7 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Анализ страницы с интерактивными элементами"""
     global browser
     
     args = context.args
@@ -96,29 +105,60 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info("✅ Браузер запущен")
         
         await browser.goto(url)
+        await asyncio.sleep(2)
         
         eval = Eval(browser)
         
+        # ===== ОСНОВНЫЕ ДАННЫЕ =====
         title = await eval.get_title()
         links = await eval.get_all_links()
         images = await eval.get_all_images()
         forms = await eval.get_all_forms()
         page_info = await eval.get_page_info()
         
+        # ===== ИНТЕРАКТИВНЫЕ ЭЛЕМЕНТЫ =====
+        buttons = await eval.get_all_buttons()
+        inputs = await eval.get_all_inputs()
+        checkboxes = await eval.get_all_checkboxes()
+        selects = await eval.get_all_selects()
+        
+        # ===== ФОРМИРУЕМ ОТВЕТ =====
         response = (
             f"📄 **{title}**\n\n"
             f"🔗 Ссылок: {len(links)}\n"
             f"🖼️ Изображений: {len(images)}\n"
             f"📝 Форм: {len(forms)}\n"
             f"📏 Длина текста: {len(page_info.get('innerText', ''))} символов\n"
-            f"🌐 Язык: {page_info.get('language', 'не определен')}\n\n"
-            f"📌 Первые 5 ссылок:\n"
+            f"🌐 Язык: {page_info.get('language', 'не определен')}\n"
+            f"─────────────────\n"
+            f"🔄 Кнопок: {len(buttons)}\n"
+            f"📝 Полей ввода: {len(inputs)}\n"
+            f"☑️ Checkbox/Radio: {len(checkboxes)}\n"
+            f"📋 Select: {len(selects)}\n"
         )
         
-        for i, link in enumerate(links[:5], 1):
-            text = link['text'][:30] if link['text'] else '[без текста]'
-            href = link['href'][:50] if link['href'] else '#'
-            response += f"  {i}. {text} → {href}\n"
+        # ===== ПЕРВЫЕ 5 ССЫЛОК =====
+        if links:
+            response += "\n📌 **Первые 5 ссылок:**\n"
+            for i, link in enumerate(links[:5], 1):
+                text = link['text'][:30] if link['text'] else '[без текста]'
+                href = link['href'][:50] if link['href'] else '#'
+                response += f"  {i}. {text} → {href}\n"
+        
+        # ===== ПЕРВЫЕ 5 КНОПОК =====
+        if buttons:
+            response += "\n🔘 **Первые 5 кнопок:**\n"
+            for i, btn in enumerate(buttons[:5], 1):
+                text = btn['text'][:30] if btn['text'] else '[без текста]'
+                response += f"  {i}. {text} (type: {btn['type']})\n"
+        
+        # ===== ПЕРВЫЕ 5 ПОЛЕЙ =====
+        if inputs:
+            response += "\n✏️ **Первые 5 полей:**\n"
+            for i, inp in enumerate(inputs[:5], 1):
+                name = inp['name'][:20] if inp['name'] else '[без имени]'
+                placeholder = f" ({inp['placeholder'][:20]})" if inp['placeholder'] else ''
+                response += f"  {i}. {name}{placeholder}\n"
         
         if len(response) > 4000:
             response = response[:4000] + "\n\n... (обрезано)"
@@ -139,6 +179,7 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def log(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправить файл лога"""
     user_id = update.effective_user.id
     
     try:
@@ -154,6 +195,8 @@ async def log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
 
+
+# ===== Запуск =====
 
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
