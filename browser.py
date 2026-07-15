@@ -6,7 +6,7 @@ import websockets
 from subprocess import Popen, PIPE, TimeoutExpired
 import os
 
-from mask import Mask  # ← без core.
+from mask import Mask
 
 logger = logging.getLogger(__name__)
 
