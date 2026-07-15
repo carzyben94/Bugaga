@@ -164,7 +164,6 @@ class Orchestrator:
         """Выполнить команду с умом"""
         
         # ===== КОНТЕКСТ =====
-        # Если нет снапшота — делаем его
         if not self.hermes.snapshot and "открой" not in text.lower():
             await self.browser.goto("https://x.com")
             self.current_url = "https://x.com"
@@ -175,7 +174,14 @@ class Orchestrator:
                            await self._continue_execution(text)
             }
         
-        return await self._continue_execution(text)
+        result = await self._continue_execution(text)
+        
+        # Если результат — строка, превращаем в словарь
+        if isinstance(result, str):
+            return {"success": True, "message": result}
+        if isinstance(result, dict):
+            return result
+        return {"success": True, "message": str(result)}
     
     async def _continue_execution(self, text: str) -> str:
         """Продолжить выполнение после инициализации"""
@@ -316,7 +322,6 @@ class Orchestrator:
         
         # Клик по названию
         if "клик" in text_lower or "нажми" in text_lower:
-            # Извлекаем название
             words = text.split()
             for i, word in enumerate(words):
                 if word in ["на", "по", "кнопку", "ссылку"] and i + 1 < len(words):
