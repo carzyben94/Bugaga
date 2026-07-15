@@ -34,12 +34,7 @@ class Orchestrator:
         }
         
         # ===== КЭШ ПОВЕДЕНИЯ =====
-        self.behavior_cache = {
-            # "x.com": {
-            #     "publish_post": ["@e6", "@e4", "@e6"],
-            #     "search": ["@e10", "@e2", "@e2"]
-            # }
-        }
+        self.behavior_cache = {}
         
         # ===== СОСТОЯНИЕ =====
         self.current_url = None
@@ -81,7 +76,6 @@ class Orchestrator:
             await self.browser.goto(url)
             self.current_url = url
         
-        # Если уже есть снапшот и не force — возвращаем его
         if self.hermes.snapshot and not force:
             logger.info("📸 Использую кэшированный снапшот")
             return {
@@ -91,7 +85,6 @@ class Orchestrator:
                 "elements": self.hermes.snapshot[:20]
             }
         
-        # Делаем новый снапшот
         result = await self.hermes.get_snapshot(self.current_url or "https://x.com")
         self.remember("last_snapshot", result)
         self.remember("last_url", self.current_url)
@@ -107,14 +100,12 @@ class Orchestrator:
     async def plan(self, goal: str) -> List[Dict[str, Any]]:
         """Создать план действий для достижения цели"""
         
-        # Проверяем кэш
         site = "x.com" if self.current_url and "x.com" in self.current_url else "unknown"
         cached = self.get_cached_behavior(site, goal[:30])
         if cached:
             logger.info(f"📋 Использую кэшированный план для {goal[:30]}")
             return [{"action": "click", "ref": ref} for ref in cached]
         
-        # Если нет кэша — просим AI
         snapshot_text = "\n".join([
             f"{el['ref']}: {el['role']} — {el['name']}"
             for el in self.hermes.snapshot[:30]
@@ -144,13 +135,11 @@ class Orchestrator:
 
         response = await self.ai.ask(prompt)
         
-        # Парсим JSON
         try:
             start = response.find('[')
             end = response.rfind(']') + 1
             if start != -1 and end != -1:
                 plan = json.loads(response[start:end])
-                # Кэшируем
                 if len(plan) > 1:
                     self.cache_behavior(site, goal[:30], [step.get("ref") for step in plan if step.get("ref")])
                 return plan
@@ -163,7 +152,6 @@ class Orchestrator:
     async def execute(self, text: str) -> Dict[str, Any]:
         """Выполнить команду с умом"""
         
-        # ===== КОНТЕКСТ =====
         if not self.hermes.snapshot and "открой" not in text.lower():
             await self.browser.goto("https://x.com")
             self.current_url = "https://x.com"
@@ -176,7 +164,6 @@ class Orchestrator:
         
         result = await self._continue_execution(text)
         
-        # Если результат — строка, превращаем в словарь
         if isinstance(result, str):
             return {"success": True, "message": result}
         if isinstance(result, dict):
@@ -186,7 +173,6 @@ class Orchestrator:
     async def _continue_execution(self, text: str) -> str:
         """Продолжить выполнение после инициализации"""
         
-        # ===== ПАРСИМ =====
         parsed = await self._parse_natural_language(text)
         action = parsed.get("action")
         
@@ -198,7 +184,12 @@ class Orchestrator:
             filename = f"{screenshots_dir}/{datetime.now().strftime('%Y%m%d_%H%M%S')}_screen.png"
             with open(filename, "wb") as f:
                 f.write(base64.b64decode(screenshot_base64))
-            return f"📸 Скриншот сохранён: {filename}"
+            return {
+                "success": True,
+                "message": f"📸 Скриншот сохранён: {filename}",
+                "screenshot": screenshot_base64,
+                "filename": filename
+            }
         
         # ===== НАВИГАЦИЯ =====
         if action == "navigate":
@@ -222,7 +213,6 @@ class Orchestrator:
         # ===== КЛИК =====
         if action == "click_by_name":
             name = parsed.get("name")
-            # Ищем по имени
             for ref, info in self.hermes.element_map.items():
                 if name.lower() in info.get("name", "").lower():
                     result = await self.hermes.click(ref)
@@ -233,12 +223,10 @@ class Orchestrator:
         
         # ===== ЦЕПОЧКА =====
         if action == "chain" or action == "publish":
-            # Строим план
             plan = await self.plan(text)
             if not plan:
                 return "❌ Не могу построить план"
             
-            # Выполняем
             results = []
             for step in plan:
                 action_type = step.get("action")
@@ -256,10 +244,8 @@ class Orchestrator:
                 results.append(result)
                 await asyncio.sleep(0.5)
             
-            # Обновляем снапшот
             await self.snapshot(force=True)
             
-            # Формируем ответ
             response = "✅ **Цепочка выполнена!**\n\n"
             for i, r in enumerate(results):
                 status = "✅" if r.get("success") else "❌"
@@ -297,7 +283,6 @@ class Orchestrator:
         """Распарсить команду на естественном языке"""
         text_lower = text.lower()
         
-        # Сокращения и синонимы
         if "скрин" in text_lower or "screenshot" in text_lower:
             return {"action": "screenshot"}
         
@@ -320,7 +305,6 @@ class Orchestrator:
                 return {"action": "publish", "text": quote_match.group(1)}
             return {"action": "publish"}
         
-        # Клик по названию
         if "клик" in text_lower or "нажми" in text_lower:
             words = text.split()
             for i, word in enumerate(words):
@@ -329,7 +313,6 @@ class Orchestrator:
                     if len(name) > 2:
                         return {"action": "click_by_name", "name": name}
         
-        # Ввод текста
         if "введи" in text_lower or "напиши" in text_lower:
             quote_match = re.search(r'["\']([^"\']*)["\']', text)
             if quote_match:
