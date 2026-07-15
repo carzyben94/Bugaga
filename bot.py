@@ -2,6 +2,7 @@ import os
 import logging
 import base64
 import asyncio
+import json
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -210,12 +211,32 @@ async def accessibility(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info("✅ Браузер запущен")
         
         await browser.goto(url)
+        
+        # ===== ЖДЁМ ЗАГРУЗКИ СТРАНИЦЫ =====
+        logger.info("⏳ Ожидание загрузки страницы...")
+        for _ in range(30):
+            try:
+                response = await asyncio.wait_for(browser.ws.recv(), timeout=1)
+                data = json.loads(response)
+                if data.get("method") == "Page.loadEventFired":
+                    logger.info("✅ Страница загружена")
+                    break
+            except asyncio.TimeoutError:
+                continue
+        else:
+            logger.warning("⏱️ Таймаут ожидания загрузки")
+        
+        # Дополнительная задержка для рендера
         await asyncio.sleep(2)
         
         acc = Accessibility(browser)
         
         # Включаем Accessibility
         await acc.enable()
+        
+        # Ждём формирования Accessibility Tree
+        logger.info("⏳ Ожидание Accessibility Tree...")
+        await asyncio.sleep(2)
         
         summary = await acc.get_summary()
         
