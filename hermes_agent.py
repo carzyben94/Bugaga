@@ -158,7 +158,7 @@ class HermesAgent:
 
     # ===== ДЕЙСТВИЯ =====
     async def click(self, ref: str) -> Dict[str, Any]:
-        """Кликнуть по элементу по ref и отправить скриншот"""
+        """Кликнуть по элементу по ref"""
         
         logger.info(f"🔍 Ищу {ref}")
         logger.info(f"📋 В карте {len(self.element_map)} элементов")
@@ -172,7 +172,9 @@ class HermesAgent:
         
         selector = element_info.get("selector")
         role = element_info.get("role", "")
+        name = element_info.get("name", "")
         
+        # ===== ЕСЛИ ЕСТЬ СЕЛЕКТОР — ИСПОЛЬЗУЕМ =====
         if selector:
             try:
                 exists = await self.eval.exists(selector)
@@ -180,10 +182,8 @@ class HermesAgent:
                     return {"success": False, "reason": f"Элемент {ref} не найден на странице"}
                 
                 screenshot_before = await self._take_screenshot("before_click")
-                
                 await self.browser.human_click(selector)
                 await asyncio.sleep(1.5)
-                
                 screenshot_after = await self._take_screenshot("after_click")
                 
                 return {
@@ -198,7 +198,52 @@ class HermesAgent:
             except Exception as e:
                 return {"success": False, "reason": str(e)}
         
-        return {"success": False, "reason": f"Элемент {ref} не имеет селектора (testId или aria-label)"}
+        # ===== ЕСЛИ НЕТ СЕЛЕКТОРА — ИЩЕМ ПО ТЕКСТУ (ДЛЯ ССЫЛОК) =====
+        if not name:
+            return {"success": False, "reason": f"Элемент {ref} не имеет имени"}
+        
+        try:
+            safe_name = json.dumps(name)
+            
+            # ===== ИЩЕМ ССЫЛКУ ПО ТЕКСТУ =====
+            js = f"""
+            (function() {{
+                // Ищем все кликабельные элементы
+                const elements = document.querySelectorAll('a, [role="link"], button, [role="button"], div[role="link"], span[role="link"]');
+                for (const el of elements) {{
+                    const text = el.innerText || el.textContent || '';
+                    if (text.includes({safe_name})) {{
+                        el.click();
+                        return true;
+                    }}
+                }}
+                
+                // Если не нашли — ищем по aria-label
+                const byAria = document.querySelector('[aria-label*={safe_name}]');
+                if (byAria) {{
+                    byAria.click();
+                    return true;
+                }}
+                
+                return false;
+            }})()
+            """
+            clicked = await self.eval.execute(js)
+            if clicked:
+                await asyncio.sleep(1.5)
+                screenshot_after = await self._take_screenshot("after_click")
+                return {
+                    "success": True,
+                    "action": "click",
+                    "ref": ref,
+                    "method": "text_search",
+                    "screenshot_after": screenshot_after
+                }
+            
+            return {"success": False, "reason": f"Не удалось найти элемент {ref} по тексту '{name}'"}
+            
+        except Exception as e:
+            return {"success": False, "reason": str(e)}
 
     async def type_text(self, ref: str, text: str) -> Dict[str, Any]:
         """Ввести текст в поле по ref"""
