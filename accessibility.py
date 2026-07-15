@@ -12,6 +12,14 @@ class Accessibility:
     
     def __init__(self, browser):
         self.browser = browser
+        self._enabled = False
+    
+    async def enable(self):
+        """Включить Accessibility домен"""
+        if not self._enabled:
+            await self.browser.send("Accessibility.enable")
+            self._enabled = True
+            logger.info("♿ Accessibility включён")
     
     async def get_full_tree(self, depth: int = -1) -> dict:
         """
@@ -23,6 +31,7 @@ class Accessibility:
         Returns:
             Словарь с accessibility деревом
         """
+        await self.enable()  # ← ВКЛЮЧАЕМ ПЕРЕД ИСПОЛЬЗОВАНИЕМ
         result = await self.browser.send("Accessibility.getFullAXTree", {
             "depth": depth
         })
@@ -30,11 +39,13 @@ class Accessibility:
     
     async def get_root(self) -> dict:
         """Получить корневой узел accessibility дерева"""
+        await self.enable()
         nodes = await self.get_full_tree(depth=0)
         return nodes[0] if nodes else {}
     
     async def get_node_by_id(self, node_id: str) -> dict:
         """Получить узел по ID"""
+        await self.enable()
         nodes = await self.get_full_tree()
         for node in nodes:
             if node.get("nodeId") == node_id:
@@ -46,6 +57,7 @@ class Accessibility:
         Найти accessibility узел по CSS селектору.
         Сначала ищем DOM элемент, потом его accessibility узел.
         """
+        await self.enable()
         # Ищем DOM элемент
         dom_result = await self.browser.send("DOM.querySelector", {
             "selector": selector
@@ -65,6 +77,7 @@ class Accessibility:
     
     async def get_all_buttons(self) -> list:
         """Получить все кнопки из accessibility tree"""
+        await self.enable()
         nodes = await self.get_full_tree()
         buttons = []
         
@@ -79,6 +92,7 @@ class Accessibility:
     
     async def get_all_inputs(self) -> list:
         """Получить все поля ввода из accessibility tree"""
+        await self.enable()
         nodes = await self.get_full_tree()
         inputs = []
         
@@ -93,6 +107,7 @@ class Accessibility:
     
     async def get_all_headings(self) -> list:
         """Получить все заголовки (h1-h6) из accessibility tree"""
+        await self.enable()
         nodes = await self.get_full_tree()
         headings = []
         
@@ -107,6 +122,7 @@ class Accessibility:
     
     async def get_all_links(self) -> list:
         """Получить все ссылки из accessibility tree"""
+        await self.enable()
         nodes = await self.get_full_tree()
         links = []
         
@@ -121,6 +137,7 @@ class Accessibility:
     
     async def get_all_landmarks(self) -> list:
         """Получить все landmark элементы (header, main, footer, nav, aside)"""
+        await self.enable()
         nodes = await self.get_full_tree()
         landmarks = []
         
@@ -137,6 +154,7 @@ class Accessibility:
     
     async def get_aria_label(self, selector: str) -> str:
         """Получить aria-label элемента"""
+        await self.enable()
         node = await self.get_node_by_selector(selector)
         if not node:
             return ""
@@ -150,6 +168,7 @@ class Accessibility:
     
     async def get_aria_role(self, selector: str) -> str:
         """Получить aria-role элемента"""
+        await self.enable()
         node = await self.get_node_by_selector(selector)
         if not node:
             return ""
@@ -163,6 +182,7 @@ class Accessibility:
     
     async def get_name(self, selector: str) -> str:
         """Получить доступное имя элемента (из accessibility tree)"""
+        await self.enable()
         node = await self.get_node_by_selector(selector)
         if not node:
             return ""
@@ -171,6 +191,7 @@ class Accessibility:
     
     async def get_description(self, selector: str) -> str:
         """Получить описание элемента из accessibility tree"""
+        await self.enable()
         node = await self.get_node_by_selector(selector)
         if not node:
             return ""
@@ -209,6 +230,7 @@ class Accessibility:
     
     async def get_summary(self) -> dict:
         """Получить краткую сводку по accessibility tree"""
+        await self.enable()
         nodes = await self.get_full_tree()
         
         summary = {
@@ -254,6 +276,7 @@ class Accessibility:
     
     async def find_by_role(self, role: str) -> list:
         """Найти все элементы с указанной ролью"""
+        await self.enable()
         nodes = await self.get_full_tree()
         result = []
         
@@ -268,6 +291,7 @@ class Accessibility:
     
     async def find_by_name(self, name: str) -> list:
         """Найти элементы по имени (точное совпадение)"""
+        await self.enable()
         nodes = await self.get_full_tree()
         result = []
         
@@ -280,6 +304,7 @@ class Accessibility:
     
     async def find_by_name_contains(self, text: str) -> list:
         """Найти элементы по имени (частичное совпадение)"""
+        await self.enable()
         nodes = await self.get_full_tree()
         result = []
         
@@ -292,6 +317,7 @@ class Accessibility:
     
     async def get_node_children(self, node_id: str) -> list:
         """Получить дочерние узлы"""
+        await self.enable()
         nodes = await self.get_full_tree()
         for node in nodes:
             if node.get("nodeId") == node_id:
