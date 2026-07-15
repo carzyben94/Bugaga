@@ -1,3 +1,4 @@
+import asyncio
 import logging
 logger = logging.getLogger(__name__)
 
@@ -6,6 +7,7 @@ class Eval:
     def __init__(self, browser):
         self.browser = browser
 
+    # ===== БАЗОВЫЙ МЕТОД =====
     async def execute(self, js_code: str, return_by_value: bool = True, await_promise: bool = False):
         result = await self.browser.send("Runtime.evaluate", {
             "expression": js_code,
@@ -18,6 +20,15 @@ class Eval:
         if "value" in remote:
             return remote["value"]
         return remote
+
+    # ===== СКРОЛЛ ПЕРЕД СБОРОМ =====
+    async def scroll_page(self, times: int = 3, pause: float = 0.8):
+        """Прокрутить страницу вниз несколько раз для загрузки динамического контента"""
+        for i in range(times):
+            await self.execute(f"window.scrollTo(0, document.body.scrollHeight * {(i+1) / times})")
+            await asyncio.sleep(pause)
+        await self.execute("window.scrollTo(0, 0)")
+        await asyncio.sleep(0.5)
 
     # ===== DOM =====
     async def get_text(self, selector: str) -> str:
@@ -562,8 +573,12 @@ class Eval:
             })()
         """)
 
-    # ===== НОВЫЙ МЕТОД ДЛЯ СТРУКТУРЫ =====
-    async def get_elements_with_context(self) -> dict:
+    # ===== НОВЫЙ МЕТОД ДЛЯ СТРУКТУРЫ С ПРОКРУТКОЙ =====
+    async def get_elements_with_context(self, scroll: bool = True) -> dict:
+        """Получить элементы с контекстом (с прокруткой)"""
+        if scroll:
+            await self.scroll_page(times=3, pause=0.8)
+        
         return await self.execute("""
             (function() {
                 const result = {
@@ -576,29 +591,43 @@ class Eval:
                     other: []
                 };
 
-                document.querySelectorAll('button, input:not([type="hidden"]), a[href], form').forEach(el => {
+                const elements = document.querySelectorAll('button, input:not([type="hidden"]), a[href], form, [role="button"], [role="link"]');
+                
+                elements.forEach(el => {
                     const info = {
                         tag: el.tagName,
-                        text: el.innerText || el.value || el.getAttribute('aria-label') || '',
+                        text: (el.innerText || el.value || el.getAttribute('aria-label') || '').trim(),
                         testId: el.getAttribute('data-testid') || '',
                         id: el.id || '',
-                        class: el.className || ''
+                        class: el.className || '',
+                        ariaLabel: el.getAttribute('aria-label') || '',
+                        role: el.getAttribute('role') || ''
                     };
 
-                    let parent = el.parentElement;
+                    let parent = el;
                     let zone = 'other';
-                    while (parent) {
+                    let depth = 0;
+                    
+                    while (parent && parent !== document.body && depth < 10) {
                         const tag = parent.tagName.toLowerCase();
                         const role = parent.getAttribute('role') || '';
+                        const testId = parent.getAttribute('data-testid') || '';
+                        
                         if (tag === 'nav' || role === 'navigation') { zone = 'navigation'; break; }
                         if (tag === 'header' || role === 'banner') { zone = 'header'; break; }
                         if (tag === 'main' || role === 'main') { zone = 'main'; break; }
                         if (tag === 'article' || role === 'article') { zone = 'articles'; break; }
                         if (tag === 'footer' || role === 'contentinfo') { zone = 'footer'; break; }
                         if (tag === 'aside' || role === 'complementary') { zone = 'complementary'; break; }
+                        
+                        if (testId.includes('SideNav')) { zone = 'navigation'; break; }
+                        if (testId.includes('Search')) { zone = 'header'; break; }
+                        if (testId.includes('tweet') || testId.includes('post')) { zone = 'main'; break; }
+                        
                         parent = parent.parentElement;
+                        depth++;
                     }
-
+                    
                     if (result[zone]) result[zone].push(info);
                     else result.other.push(info);
                 });
