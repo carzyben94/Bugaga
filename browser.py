@@ -3,10 +3,10 @@ import json
 import logging
 import requests
 import websockets
-from subprocess import Popen, PIPE
+from subprocess import Popen, PIPE, TimeoutExpired
 import time
+import os
 
-# Настройка логирования для этого модуля
 logger = logging.getLogger(__name__)
 
 class Browser:
@@ -14,62 +14,114 @@ class Browser:
         self.ws = None
         self.process = None
         self.debug_port = 9222
-        self.chrome_path = "/usr/bin/google-chrome"
+        self.chrome_path = self._find_chrome()
         self.viewport_width = 1280
         self.viewport_height = 720
+        self.ws_url = None
+    
+    def _find_chrome(self):
+        """Найти Chrome в системе"""
+        paths = [
+            "/usr/bin/google-chrome",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/usr/bin/google-chrome-stable",
+        ]
+        
+        for path in paths:
+            if os.path.exists(path):
+                logger.info(f"✅ Chrome найден: {path}")
+                return path
+        
+        logger.error("❌ Chrome не найден в системе!")
+        return "/usr/bin/google-chrome"  # fallback
     
     async def start(self):
         """Запуск Chrome с открытым CDP"""
-        logger.info("🚀 Запуск Chrome...")
-        self.process = Popen([
-            self.chrome_path,
-            "--headless",
-            "--no-sandbox",
-            "--disable-gpu",
-            "--disable-dev-shm-usage",
-            f"--remote-debugging-port={self.debug_port}"
-        ], stdout=PIPE, stderr=PIPE)
-        
-        await asyncio.sleep(2)
-        
-        ws_url = self._get_websocket_url()
-        logger.info(f"🔗 Подключение к WebSocket: {ws_url}")
-        self.ws = await websockets.connect(ws_url)
-        
-        # Включаем необходимые домены
-        await self.send("Page.enable")
-        await self.send("Runtime.enable")
-        await self.send("Network.enable")
-        
-        # Устанавливаем размер окна
-        await self.set_viewport(self.viewport_width, self.viewport_height)
-        logger.info("✅ Браузер готов")
-        return self
+        try:
+            logger.info("🚀 Запуск Chrome...")
+            
+            # Проверяем, не запущен ли уже Chrome на этом порту
+            if not self._is_chrome_running():
+                self.process = Popen([
+                    self.chrome_path,
+                    "--headless",
+                    "--no-sandbox",
+                    "--disable-gpu",
+                    "--disable-dev-shm-usage",
+                    "--disable-software-rasterizer",
+                    "--disable-extensions",
+                    "--disable-setuid-sandbox",
+                    f"--remote-debugging-port={self.debug_port}",
+                    "about:blank"  # Стартовая страница
+                ], stdout=PIPE, stderr=PIPE)
+                
+                # Ждём запуска
+                logger.info("⏳ Ожидание запуска Chrome...")
+                await asyncio.sleep(3)
+                
+                # Проверяем, запустился ли процесс
+                if self.process.poll() is not None:
+                    stdout, stderr = self.process.communicate(timeout=2)
+                    logger.error(f"Chrome упал при запуске: {stderr.decode()}")
+                    raise RuntimeError(f"Chrome не запустился: {stderr.decode()}")
+            else:
+                logger.info("ℹ️ Chrome уже запущен")
+            
+            # Получаем WebSocket URL
+            self.ws_url = self._get_websocket_url()
+            logger.info(f"🔗 Подключение к CDP: {self.ws_url}")
+            
+            # Подключаемся
+            self.ws = await websockets.connect(self.ws_url)
+            
+            # Включаем домены
+            await self.send("Page.enable")
+            await self.send("Runtime.enable")
+            await self.send("Network.enable")
+            
+            # Устанавливаем размер окна
+            await self.set_viewport(self.viewport_width, self.viewport_height)
+            
+            logger.info("✅ Браузер готов к работе!")
+            return self
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка запуска браузера: {e}")
+            await self.close()
+            raise
+    
+    def _is_chrome_running(self):
+        """Проверяет, запущен ли Chrome на порту 9222"""
+        try:
+            resp = requests.get(f"http://localhost:{self.debug_port}/json/version", timeout=2)
+            return resp.status_code == 200
+        except:
+            return False
     
     def _get_websocket_url(self):
         """Получить WebSocket URL из /json/list"""
         try:
-            resp = requests.get(f"http://localhost:{self.debug_port}/json/list")
+            # Проверяем, что Chrome доступен
+            resp = requests.get(f"http://localhost:{self.debug_port}/json/list", timeout=5)
             resp.raise_for_status()
             pages = resp.json()
             
             if not pages:
                 logger.warning("Нет активных страниц, создаю новую...")
-                resp = requests.get(f"http://localhost:{self.debug_port}/json/new")
+                resp = requests.get(f"http://localhost:{self.debug_port}/json/new", timeout=5)
                 resp.raise_for_status()
                 return resp.json()["webSocketDebuggerUrl"]
             
             return pages[0]["webSocketDebuggerUrl"]
+            
+        except requests.exceptions.ConnectionError:
+            raise RuntimeError(f"Не удалось подключиться к Chrome на порту {self.debug_port}")
         except Exception as e:
-            logger.error(f"Ошибка получения WebSocket URL: {e}")
-            raise
+            raise RuntimeError(f"Ошибка получения WebSocket URL: {e}")
     
     async def send(self, method, params=None):
-        """
-        Отправить CDP-команду и вернуть РАСПАРСЕННЫЙ ответ.
-        Всегда возвращает словарь. Если есть поле 'result' - возвращает его,
-        иначе возвращает весь ответ.
-        """
+        """Отправить CDP-команду"""
         if params is None:
             params = {}
         
@@ -79,17 +131,29 @@ class Browser:
             "params": params
         }
         
-        await self.ws.send(json.dumps(msg))
-        response = await self.ws.recv()
-        data = json.loads(response)
-        
-        # Логируем структуру ответа для отладки
-        logger.debug(f"Ответ CDP на {method}: {list(data.keys())}")
-        
-        # Если в ответе есть поле 'result' - возвращаем его, иначе весь ответ
-        if "result" in data:
-            return data["result"]
-        return data
+        try:
+            await self.ws.send(json.dumps(msg))
+            response = await self.ws.recv()
+            data = json.loads(response)
+            
+            # Проверяем ошибки CDP
+            if "error" in data:
+                error_msg = data["error"].get("message", "Unknown CDP error")
+                error_code = data["error"].get("code", "N/A")
+                logger.error(f"CDP Error ({method}): [{error_code}] {error_msg}")
+                raise RuntimeError(f"CDP Error: {error_msg}")
+            
+            # Возвращаем result если есть
+            if "result" in data:
+                return data["result"]
+            return data
+            
+        except websockets.exceptions.ConnectionClosed:
+            logger.error("WebSocket соединение закрыто")
+            raise RuntimeError("Соединение с браузером потеряно")
+        except Exception as e:
+            logger.error(f"Ошибка отправки CDP команды {method}: {e}")
+            raise
     
     async def set_viewport(self, width=1280, height=720):
         """Установить размер окна через CDP"""
@@ -102,38 +166,45 @@ class Browser:
             "screenHeight": height,
             "captureBeyondViewport": False
         })
-        logger.info(f"🖥️ Viewport установлен: {width}x{height}")
+        logger.info(f"🖥️ Viewport: {width}x{height}")
     
     async def goto(self, url):
         """Навигация (CDP)"""
-        logger.info(f"📍 Переход на {url}")
+        logger.info(f"📍 Переход: {url}")
         result = await self.send("Page.navigate", {"url": url})
+        
+        # Ждём загрузки
+        await asyncio.sleep(2)
+        
         return result
     
     async def screenshot(self):
-        """Скриншот через CDP с правильной обработкой ответа"""
-        logger.info("📸 Запрос скриншота...")
-        response = await self.send("Page.captureScreenshot")
+        """Скриншот через CDP"""
+        logger.info("📸 Делаю скриншот...")
+        result = await self.send("Page.captureScreenshot")
         
-        # Диагностика: выводим структуру ответа
-        logger.info(f"Структура ответа screenshot: {list(response.keys())}")
-        
-        # Пытаемся извлечь data отовсюду
-        if "data" in response:
-            return response["data"]
-        elif isinstance(response, dict) and "result" in response and "data" in response["result"]:
-            return response["result"]["data"]
+        if "data" in result:
+            return result["data"]
+        elif isinstance(result, dict) and "data" in result:
+            return result["data"]
         else:
-            logger.error(f"Не удалось найти 'data' в ответе: {response}")
-            raise KeyError(f"Поле 'data' не найдено в ответе CDP. Получено: {list(response.keys())}")
+            logger.error(f"Неизвестный формат ответа: {list(result.keys())}")
+            raise RuntimeError(f"Поле 'data' не найдено в ответе CDP")
     
     async def close(self):
         """Закрыть браузер"""
-        if self.ws:
-            await self.ws.close()
-        if self.process:
-            self.process.terminate()
-        logger.info("🛑 Браузер закрыт")
+        try:
+            if self.ws:
+                await self.ws.close()
+            if self.process:
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=3)
+                except TimeoutExpired:
+                    self.process.kill()
+            logger.info("🛑 Браузер закрыт")
+        except Exception as e:
+            logger.warning(f"Ошибка при закрытии браузера: {e}")
     
     async def __aenter__(self):
         return await self.start()
