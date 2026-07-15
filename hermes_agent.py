@@ -17,7 +17,7 @@ class HermesAgent:
         self.accessibility = accessibility
         self.eval = eval
         self.ai = ai_agent
-        self.element_map = {}  # ref → информация об элементе
+        self.element_map = {}
         self.snapshot = []
         self._last_url = ""
 
@@ -36,7 +36,7 @@ class HermesAgent:
         interactive_roles = {"button", "link", "textbox", "searchbox", "combobox", "checkbox", "radio", "select"}
         
         snapshot = []
-        self.element_map = {}  # ← ОЧИЩАЕМ КАРТУ
+        self.element_map = {}
         
         ref_counter = 1
         for node in nodes:
@@ -89,10 +89,17 @@ class HermesAgent:
             }
             snapshot.append(element_info)
             
-            # ===== СОХРАНЯЕМ ВСЕ ЭЛЕМЕНТЫ (ДАЖЕ БЕЗ СЕЛЕКТОРА) =====
+            # ===== СОХРАНЯЕМ ВСЕ ЭЛЕМЕНТЫ =====
             self.element_map[ref] = element_info
         
         self.snapshot = snapshot
+        
+        # ===== ЛОГИРУЕМ =====
+        logger.info(f"📊 Собрано {len(snapshot)} элементов")
+        logger.info(f"🔑 Доступные ref: {list(self.element_map.keys())[:20]}")
+        for ref, info in list(self.element_map.items())[:15]:
+            logger.info(f"  {ref}: role={info.get('role')}, name={info.get('name')[:30]}, selector={info.get('selector')}")
+        
         return {
             "url": url,
             "total_interactive": len(snapshot),
@@ -136,9 +143,18 @@ class HermesAgent:
     # ===== ДЕЙСТВИЯ =====
     async def click(self, ref: str) -> Dict[str, Any]:
         """Кликнуть по элементу по ref"""
+        
+        # ===== ЛОГИРУЕМ ПОИСК =====
+        logger.info(f"🔍 Ищу {ref}")
+        logger.info(f"📋 В карте {len(self.element_map)} элементов")
+        
         element_info = self.element_map.get(ref)
         if not element_info:
+            logger.error(f"❌ {ref} НЕ НАЙДЕН в карте!")
+            logger.info(f"📋 Доступные ref: {list(self.element_map.keys())[:10]}")
             return {"success": False, "reason": f"Элемент {ref} не найден в карте"}
+        
+        logger.info(f"✅ {ref} найден: role={element_info.get('role')}, name={element_info.get('name')[:30]}")
         
         selector = element_info.get("selector")
         role = element_info.get("role", "")
@@ -151,7 +167,6 @@ class HermesAgent:
                 if not exists:
                     return {"success": False, "reason": f"Элемент {ref} не найден на странице"}
                 
-                # Для ссылок используем click_js()
                 if role == "link":
                     await self.eval.click_js(selector)
                 else:
