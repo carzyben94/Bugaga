@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 class Orchestrator:
     """
     Оркестратор — главный агент Луи.
-    Умеет: память, планирование, кэширование, адаптивность.
+    Умеет: память, планирование, кэширование, адаптивность, логирование.
     """
     
     def __init__(self, browser, eval, accessibility, ai_agent, hermes_agent):
@@ -33,6 +33,10 @@ class Orchestrator:
             "current_step": 0
         }
         
+        # ===== ЛОГИ ДЕЙСТВИЙ =====
+        self.action_logs = []
+        self.log_file = "louis_actions.log"
+        
         # ===== КЭШ ПОВЕДЕНИЯ =====
         self.behavior_cache = {}
         
@@ -41,6 +45,75 @@ class Orchestrator:
         self.is_planning = False
         self.current_plan = []
         self.plan_step = 0
+        
+        # Загружаем существующие логи
+        self._load_logs()
+    
+    # ===== ЛОГИРОВАНИЕ =====
+    def _load_logs(self):
+        """Загрузить логи из файла"""
+        if os.path.exists(self.log_file):
+            try:
+                with open(self.log_file, 'r', encoding='utf-8') as f:
+                    self.action_logs = json.load(f)
+                logger.info(f"📋 Загружено {len(self.action_logs)} логов из {self.log_file}")
+            except:
+                self.action_logs = []
+    
+    def _save_logs(self):
+        """Сохранить логи в файл"""
+        try:
+            with open(self.log_file, 'w', encoding='utf-8') as f:
+                json.dump(self.action_logs, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"Ошибка сохранения логов: {e}")
+    
+    def log_action(self, action: str, details: Dict[str, Any]):
+        """Записать действие в логи"""
+        log_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "action": action,
+            "url": self.current_url,
+            "details": details,
+            "success": details.get("success", False)
+        }
+        self.action_logs.append(log_entry)
+        self._save_logs()
+        logger.info(f"📝 Лог: {action} - {details.get('message', '')[:50]}")
+    
+    def get_logs(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Получить последние логи"""
+        return self.action_logs[-limit:]
+    
+    def get_logs_text(self, limit: int = 100) -> str:
+        """Получить логи в текстовом формате"""
+        logs = self.get_logs(limit)
+        if not logs:
+            return "📋 Логов пока нет."
+        
+        text = "📋 **Лог действий Луи**\n\n"
+        for log in logs:
+            timestamp = log.get("timestamp", "")[:19]
+            action = log.get("action", "unknown")
+            success = "✅" if log.get("success") else "❌"
+            url = log.get("url", "")
+            details = log.get("details", {})
+            message = details.get("message", "")
+            
+            text += f"{timestamp} {success} {action}"
+            if url:
+                text += f" | {url}"
+            if message:
+                text += f" | {message}"
+            text += "\n"
+        
+        return text
+    
+    def clear_logs(self):
+        """Очистить логи"""
+        self.action_logs = []
+        self._save_logs()
+        logger.info("🗑️ Логи очищены")
     
     # ===== ПАМЯТЬ =====
     def remember(self, key: str, value: Any):
@@ -184,6 +257,13 @@ class Orchestrator:
             filename = f"{screenshots_dir}/{datetime.now().strftime('%Y%m%d_%H%M%S')}_screen.png"
             with open(filename, "wb") as f:
                 f.write(base64.b64decode(screenshot_base64))
+            
+            self.log_action("screenshot", {
+                "success": True,
+                "message": f"Скриншот сохранён: {filename}",
+                "filename": filename
+            })
+            
             return {
                 "success": True,
                 "message": f"📸 Скриншот сохранён: {filename}",
@@ -197,6 +277,13 @@ class Orchestrator:
             await self.browser.goto(url)
             self.current_url = url
             await self.snapshot(force=True)
+            
+            self.log_action("navigate", {
+                "success": True,
+                "message": f"Перешёл на {url}",
+                "url": url
+            })
+            
             return f"✅ Перешёл на {url}\n📸 Обновил снапшот"
         
         # ===== СНАПШОТ =====
@@ -208,6 +295,13 @@ class Orchestrator:
                 response += f"  {el['ref']}: {el['role']} — {el['name'][:40]}\n"
             if result['total_elements'] > 15:
                 response += f"\n... и ещё {result['total_elements'] - 15} элементов"
+            
+            self.log_action("snapshot", {
+                "success": True,
+                "message": f"Снапшот, {result['total_elements']} элементов",
+                "total_elements": result['total_elements']
+            })
+            
             return response
         
         # ===== КЛИК =====
@@ -218,7 +312,21 @@ class Orchestrator:
                     result = await self.hermes.click(ref)
                     if result.get("success"):
                         await self.snapshot(force=True)
+                        
+                        self.log_action("click", {
+                            "success": True,
+                            "message": f"Клик по '{name}' (ref: {ref})",
+                            "ref": ref,
+                            "name": name
+                        })
+                        
                         return f"✅ Клик по '{name}' выполнен"
+            
+            self.log_action("click", {
+                "success": False,
+                "message": f"Не нашёл '{name}'",
+                "name": name
+            })
             return f"❌ Не нашёл '{name}'"
         
         # ===== ЦЕПОЧКА =====
@@ -250,6 +358,12 @@ class Orchestrator:
             for i, r in enumerate(results):
                 status = "✅" if r.get("success") else "❌"
                 response += f"{status} Шаг {i+1}: {r.get('message', r.get('reason', 'Выполнен'))}\n"
+            
+            self.log_action("chain", {
+                "success": True,
+                "message": f"Цепочка выполнена, {len(results)} шагов",
+                "steps": len(results)
+            })
             
             return response
         
