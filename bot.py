@@ -30,6 +30,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 browser = None
+hermes = None
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -86,6 +87,7 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if browser:
             await browser.close()
             browser = None
+            hermes = None
         
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
@@ -196,6 +198,7 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if browser:
             await browser.close()
             browser = None
+            hermes = None
         
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
@@ -277,6 +280,7 @@ async def accessibility(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if browser:
             await browser.close()
             browser = None
+            hermes = None
         
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
@@ -357,13 +361,14 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if browser:
             await browser.close()
             browser = None
+            hermes = None
         
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
 
 async def x(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Работа с X.com через Accessibility Tree"""
-    global browser
+    global browser, hermes
     
     args = context.args
     if not args:
@@ -390,7 +395,11 @@ async def x(update: Update, context: ContextTypes.DEFAULT_TYPE):
         eval = Eval(browser)
         acc = Accessibility(browser)
         ai_agent = AIAgent(browser, eval, acc)
-        hermes = HermesAgent(browser, acc, eval, ai_agent)
+        
+        # ===== СОЗДАЁМ АГЕНТА ОДИН РАЗ =====
+        if hermes is None:
+            hermes = HermesAgent(browser, acc, eval, ai_agent)
+            logger.info("✅ HermesAgent создан")
         
         if command == "help":
             await update.message.reply_text(
@@ -470,30 +479,26 @@ async def x(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         elif command == "chain":
             await update.message.reply_text("🔄 Выполняю цепочку...")
-            
-            # Пример цепочки (нужно адаптировать под реальные ref)
             await update.message.reply_text(
                 "⚠️ Для цепочки нужны реальные ref из снапшота.\n"
                 "Сначала: /x snapshot https://x.com\n"
                 "Потом: /x chain @e1 @e2 ..."
             )
-            
-            # Пример с реальными ref, если они есть
-            # steps = [
-            #     {"action": "click", "ref": "@e1"},
-            #     {"action": "type", "ref": "@e2", "text": "test"},
-            #     {"action": "enter", "ref": "@e2"}
-            # ]
-            # results = await hermes.execute_chain(steps)
         
         else:
             await update.message.reply_text(f"❌ Неизвестная команда: {command}")
         
-        await ai_agent.close()
+        # Не закрываем агент, чтобы карта сохранялась
         
     except Exception as e:
         error_msg = str(e)
         logger.error(f"Ошибка X: {error_msg}")
+        
+        if browser:
+            await browser.close()
+            browser = None
+            hermes = None
+        
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
 
@@ -502,7 +507,6 @@ async def results(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
     try:
-        # Отправляем test_results.json
         if os.path.exists("test_results.json"):
             with open("test_results.json", "rb") as f:
                 await update.message.reply_document(
@@ -513,7 +517,6 @@ async def results(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("❌ Нет файла test_results.json")
         
-        # Отправляем test_logs.txt
         if os.path.exists("test_logs.txt"):
             with open("test_logs.txt", "rb") as f:
                 await update.message.reply_document(
@@ -522,7 +525,6 @@ async def results(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     caption="📋 Логи тестирования"
                 )
         
-        # Отправляем site_map.json
         if os.path.exists("site_map.json"):
             with open("site_map.json", "rb") as f:
                 await update.message.reply_document(
@@ -531,7 +533,6 @@ async def results(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     caption="🗺️ Карта сайта"
                 )
         
-        # Отправляем скриншоты архивом
         if os.path.exists("screenshots") and os.listdir("screenshots"):
             zip_path = f"screenshots_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
             with zipfile.ZipFile(zip_path, 'w') as zipf:
@@ -589,15 +590,12 @@ async def ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
         url = url_match.group(0) if url_match else None
         text_lower = text.lower()
 
-        # ===== ПОСТРОЕНИЕ КАРТЫ =====
         if url and ('карта' in text_lower or 'map' in text_lower or 'слепок' in text_lower):
             result = await agent.build_site_map(url)
 
-        # ===== АНАЛИЗ СТРУКТУРЫ =====
         elif url and ('анализ' in text_lower or 'структура' in text_lower or 'проанализируй' in text_lower):
             result = await agent.analyze_structure(url)
 
-        # ===== ПОИСК ПО КАРТЕ =====
         elif url and ('где' in text_lower or 'найти' in text_lower or 'покажи' in text_lower):
             site_map = agent.site_map
             map_data = site_map.get(url)
@@ -630,7 +628,6 @@ async def ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 result = f"❌ Нет карты для {url}\n\n💡 Попробуй: /ai карта {url} — чтобы построить карту"
 
-        # ===== ЕСЛИ ЕСТЬ URL, НО НЕТ КЛЮЧЕВЫХ СЛОВ =====
         elif url:
             await browser.goto(url)
             await asyncio.sleep(2)
@@ -641,7 +638,6 @@ async def ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
             prompt = f"Страница: {url}\nЗаголовок: {title}\nКнопок: {len(buttons)}\nПолей: {len(inputs)}\nСсылок: {len(links)}\n\nВопрос: {text}"
             result = await agent.ask(prompt)
 
-        # ===== ПРОСТОЙ ЧАТ =====
         else:
             result = await agent.ask(text)
 
@@ -661,6 +657,7 @@ async def ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if browser:
             await browser.close()
             browser = None
+            hermes = None
 
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
