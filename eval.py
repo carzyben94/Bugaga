@@ -1,5 +1,5 @@
-import asyncio
 import logging
+import json  # ← ДОБАВИТЬ
 logger = logging.getLogger(__name__)
 
 
@@ -7,7 +7,6 @@ class Eval:
     def __init__(self, browser):
         self.browser = browser
 
-    # ===== БАЗОВЫЙ МЕТОД =====
     async def execute(self, js_code: str, return_by_value: bool = True, await_promise: bool = False):
         result = await self.browser.send("Runtime.evaluate", {
             "expression": js_code,
@@ -20,15 +19,6 @@ class Eval:
         if "value" in remote:
             return remote["value"]
         return remote
-
-    # ===== СКРОЛЛ ПЕРЕД СБОРОМ =====
-    async def scroll_page(self, times: int = 3, pause: float = 0.8):
-        """Прокрутить страницу вниз несколько раз для загрузки динамического контента"""
-        for i in range(times):
-            await self.execute(f"window.scrollTo(0, document.body.scrollHeight * {(i+1) / times})")
-            await asyncio.sleep(pause)
-        await self.execute("window.scrollTo(0, 0)")
-        await asyncio.sleep(0.5)
 
     # ===== DOM =====
     async def get_text(self, selector: str) -> str:
@@ -165,8 +155,9 @@ class Eval:
         )
 
     async def exists(self, selector: str) -> bool:
+        safe_selector = json.dumps(selector)
         return await self.execute(
-            f"document.querySelector('{selector}') !== null"
+            f"document.querySelector({safe_selector}) !== null"
         )
 
     # ===== ОЖИДАНИЯ =====
@@ -255,14 +246,18 @@ class Eval:
 
     # ===== ДЕЙСТВИЯ =====
     async def click_js(self, selector: str) -> bool:
-        return await self.execute(f"""
+        """Клик через JS с безопасным экранированием"""
+        safe_selector = json.dumps(selector)
+        return await self.execute(
+            f"""
             (function() {{
-                const el = document.querySelector('{selector}');
+                const el = document.querySelector({safe_selector});
                 if (!el) return false;
                 el.click();
                 return true;
             }})()
-        """)
+            """
+        )
 
     async def type_js(self, selector: str, text: str) -> bool:
         return await self.execute(f"""
@@ -472,9 +467,10 @@ class Eval:
         """)
 
     async def click_button(self, selector: str) -> bool:
+        safe_selector = json.dumps(selector)
         return await self.execute(f"""
             (function() {{
-                const el = document.querySelector('{selector}');
+                const el = document.querySelector({safe_selector});
                 if (!el) return false;
                 el.click();
                 return true;
@@ -482,9 +478,10 @@ class Eval:
         """)
 
     async def fill_input(self, selector: str, text: str) -> bool:
+        safe_selector = json.dumps(selector)
         return await self.execute(f"""
             (function() {{
-                const el = document.querySelector('{selector}');
+                const el = document.querySelector({safe_selector});
                 if (!el) return false;
                 el.focus();
                 el.value = '{text}';
@@ -496,9 +493,10 @@ class Eval:
         """)
 
     async def check_checkbox(self, selector: str, checked: bool = True) -> bool:
+        safe_selector = json.dumps(selector)
         return await self.execute(f"""
             (function() {{
-                const el = document.querySelector('{selector}');
+                const el = document.querySelector({safe_selector});
                 if (!el) return false;
                 if (el.checked !== {str(checked).lower()}) {{
                     el.click();
@@ -508,9 +506,10 @@ class Eval:
         """)
 
     async def select_option(self, selector: str, value: str) -> bool:
+        safe_selector = json.dumps(selector)
         return await self.execute(f"""
             (function() {{
-                const el = document.querySelector('{selector}');
+                const el = document.querySelector({safe_selector});
                 if (!el) return false;
                 el.value = '{value}';
                 el.dispatchEvent(new Event('change', {{ bubbles: true }}));
@@ -573,9 +572,8 @@ class Eval:
             })()
         """)
 
-    # ===== НОВЫЙ МЕТОД ДЛЯ СТРУКТУРЫ С ПРОКРУТКОЙ =====
+    # ===== КОНТЕКСТ =====
     async def get_elements_with_context(self, scroll: bool = True) -> dict:
-        """Получить элементы с контекстом (с прокруткой)"""
         if scroll:
             await self.scroll_page(times=3, pause=0.8)
         
@@ -635,3 +633,10 @@ class Eval:
                 return result;
             })()
         """)
+
+    async def scroll_page(self, times: int = 3, pause: float = 0.8):
+        for i in range(times):
+            await self.execute(f"window.scrollTo(0, document.body.scrollHeight * {(i+1) / times})")
+            await asyncio.sleep(pause)
+        await self.execute("window.scrollTo(0, 0)")
+        await asyncio.sleep(0.5)
