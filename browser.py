@@ -66,7 +66,7 @@ class CDPClient:
             logger.error(f"❌ Ошибка запуска Chrome: {e}")
             raise
     
-    async def connect_cdp(self, navigate_to_x: bool = True):
+    async def connect_cdp(self, navigate_to_x: bool = False):
         """Подключение к CDP с полной настройкой"""
         if not self.ws_url:
             await self.start_chrome()
@@ -78,15 +78,13 @@ class CDPClient:
             # 1. Применяем JS маскировку
             await self.apply_js_mask()
             
-            # 2. Переходим на X.com и устанавливаем куки
+            # 2. Устанавливаем куки X.com сразу (даже без перехода)
+            await self.set_x_cookies()
+            logger.info("🍪 Куки X.com установлены в браузер")
+            
+            # 3. Если нужно сразу перейти на X.com
             if navigate_to_x:
                 await self.navigate_to("https://x.com")
-                
-                # 3. Устанавливаем куки
-                await self.set_x_cookies()
-                
-                # 4. Перезагружаем страницу с куками
-                await self.navigate_to("https://x.com/home")
             
             return self.ws
         except Exception as e:
