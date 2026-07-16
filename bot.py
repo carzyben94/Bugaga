@@ -2,8 +2,8 @@ import os
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# Импорт только browser
-import browser
+# Импорт Browser класса из browser.py
+from browser import Browser
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
@@ -11,13 +11,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Привет! Я бот с браузером.\n\n"
         "Доступные команды:\n"
-        "/browser - запустить браузер"
+        "/browser - запустить браузер и сделать скриншот"
     )
 
 async def browser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        result = browser.some_function()  # замените на реальную функцию
-        await update.message.reply_text(f"🌐 Результат:\n{result}")
+        await update.message.reply_text("🌐 Запускаю браузер...")
+        
+        # Создаем и запускаем браузер
+        browser = await Browser().start()
+        
+        # Переходим на сайт (можно поменять URL)
+        await browser.goto("https://example.com")
+        
+        # Делаем скриншот
+        screenshot_data = await browser.screenshot()
+        
+        # Отправляем скриншот
+        await update.message.reply_photo(
+            photo=screenshot_data,
+            caption="✅ Скриншот страницы"
+        )
+        
+        # Закрываем браузер
+        await browser.close()
+        
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
@@ -27,7 +45,6 @@ def main():
     
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Добавляем обработчики команд
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("browser", browser_cmd))
     
