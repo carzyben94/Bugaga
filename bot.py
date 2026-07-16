@@ -32,8 +32,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 Привет! Я бот с браузером.\n\n"
         "🌐 /browser <url> - Открыть сайт\n"
         "📸 /screen - Сделать скриншот\n"
-        "🔒 /close - Закрыть браузер\n\n"
-        "Пример: /browser https://x.com"
+        "🔒 /close - Закрыть браузер"
     )
 
 async def browser_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -48,8 +47,7 @@ async def browser_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not url:
         await update.message.reply_text(
             "❌ Укажи URL.\n\n"
-            "Пример: /browser https://x.com\n"
-            "Или: /browser https://google.com"
+            "Пример: /browser https://x.com"
         )
         return
     
