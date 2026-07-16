@@ -161,8 +161,40 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Сначала запустите браузер командой /browser")
             return
         
+        # Сохраняем состояние ДО
+        old_url = await ai.eval.get_url()
+        old_elements = await ai.accessibility.get_elements_with_refs()
+        old_count = len(old_elements)
+        
         await update.message.reply_text("🤔 Думаю...")
         response = await ai.ask(query)
+        
+        # Проверяем изменения ПОСЛЕ
+        new_url = await ai.eval.get_url()
+        new_elements = await ai.accessibility.get_elements_with_refs()
+        new_count = len(new_elements)
+        
+        # Анализируем изменения
+        changes = []
+        
+        if old_url != new_url:
+            changes.append(f"🔗 Переход: {old_url} → {new_url}")
+        else:
+            changes.append("⏸️ URL не изменился")
+        
+        if new_count > old_count:
+            changes.append(f"➕ Появилось {new_count - old_count} новых элементов")
+        elif new_count < old_count:
+            changes.append(f"➖ Исчезло {old_count - new_count} элементов")
+        else:
+            changes.append("⏸️ Количество элементов не изменилось")
+        
+        if old_url == new_url and old_count == new_count:
+            changes.append("❌ Клик не сработал или страница не изменилась")
+        
+        response += "\n\n" + "\n".join(changes)
+        response += f"\n\n📍 Текущий URL: {new_url}"
+        
         await update.message.reply_text(response)
         
     except Exception as e:
