@@ -1,4 +1,5 @@
 import os
+import base64
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -16,27 +17,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def browser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    browser = None
     try:
         await update.message.reply_text("🌐 Запускаю браузер...")
         
         browser = await Browser().start()
-        context.user_data['browser'] = browser
-        context.user_data['eval'] = Eval(browser)
         
         await browser.goto("https://example.com")
         
+        # Получаем скриншот в base64
         screenshot_data = await browser.screenshot()
+        
+        # Декодируем base64 в байты
+        image_bytes = base64.b64decode(screenshot_data)
+        
+        # Отправляем как фото
         await update.message.reply_photo(
-            photo=screenshot_data,
+            photo=image_bytes,
             caption="✅ Скриншот страницы"
         )
         
-        await browser.close()
-        context.user_data['browser'] = None
-        context.user_data['eval'] = None
-        
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
+    finally:
+        if browser:
+            await browser.close()
 
 def main():
     if not TELEGRAM_TOKEN:
