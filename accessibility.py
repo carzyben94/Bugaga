@@ -132,8 +132,7 @@ class Accessibility:
         self.client = client
         self.root_node = None
         self._enabled = False
-        self._all_nodes_cache = []
-        self._nodes_by_id = {}  # Словарь для быстрого доступа
+        self._nodes_by_id = {}  # {node_id: AccessibilityNode}
         
     async def enable(self):
         """Включить Accessibility"""
@@ -161,71 +160,55 @@ class Accessibility:
             return await self.enable()
         return True
     
-    def _flatten_tree(self, nodes: List[Dict]) -> List[AccessibilityNode]:
+    async def get_full_tree(self) -> List[Dict]:
         """
-        Рекурсивно обходит дерево, разворачивая ignored узлы и поднимая их детей
-        """
-        result = []
-        
-        for node_data in nodes:
-            node = AccessibilityNode(node_data, self.client)
-            
-            # Если узел ignored - пропускаем его, но обрабатываем детей
-            if node.ignored and node.child_ids:
-                # Получаем детей по ID
-                child_nodes = self._get_nodes_by_ids(node.child_ids)
-                result.extend(self._flatten_tree(child_nodes))
-            else:
-                # Добавляем узел если он не ignored
-                result.append(node)
-                
-                # Обрабатываем детей
-                if node.child_ids:
-                    child_nodes = self._get_nodes_by_ids(node.child_ids)
-                    result.extend(self._flatten_tree(child_nodes))
-        
-        return result
-    
-    def _get_nodes_by_ids(self, node_ids: List[str]) -> List[Dict]:
-        """Получить узлы по ID из словаря"""
-        result = []
-        for node_id in node_ids:
-            node = self._nodes_by_id.get(node_id)
-            if node:
-                result.append(node.node_data)
-        return result
-    
-    async def get_all_nodes(self) -> List[AccessibilityNode]:
-        """
-        Получить все узлы через getFullAXTree с обработкой ignored nodes
+        Получить полное дерево Accessibility
+        CDP: Accessibility.getFullAXTree
         """
         try:
             if not await self.ensure_enabled():
                 return []
             
-            # Получаем полное дерево
             result = await self.client.send_command("Accessibility.getFullAXTree")
-            raw_nodes = result.get("nodes", [])
+            nodes = result.get("nodes", [])
             
-            if not raw_nodes:
+            if not nodes:
                 logger.warning("⚠️ getFullAXTree вернул пустой результат")
+                return []
+            
+            # Строим словарь для быстрого доступа
+            self._nodes_by_id = {}
+            for node_data in nodes:
+                node_id = node_data.get("nodeId")
+                if node_id:
+                    self._nodes_by_id[node_id] = AccessibilityNode(node_data, self.client)
+            
+            logger.info(f"🌳 Получено {len(nodes)} узлов через getFullAXTree")
+            return nodes
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка getFullAXTree: {e}")
+            return []
+    
+    async def get_all_nodes(self) -> List[AccessibilityNode]:
+        """
+        Получить все узлы с обработкой ignored nodes
+        """
+        try:
+            raw_nodes = await self.get_full_tree()
+            if not raw_nodes:
                 return await self._get_all_nodes_js()
             
-            # Создаем словарь для быстрого доступа по ID
-            self._nodes_by_id = {}
+            # Собираем все узлы, пропуская ignored
+            # Используем словарь для быстрого доступа
+            result = []
             for node_data in raw_nodes:
                 node = AccessibilityNode(node_data, self.client)
-                if node.node_id:
-                    self._nodes_by_id[node.node_id] = node
+                if not node.ignored:
+                    result.append(node)
             
-            # Сохраняем в кеш
-            self._all_nodes_cache = list(self._nodes_by_id.values())
-            
-            # Разворачиваем ignored узлы
-            flattened = self._flatten_tree(raw_nodes)
-            
-            logger.info(f"🌳 Получено {len(raw_nodes)} узлов, после разворачивания ignored: {len(flattened)}")
-            return flattened
+            logger.info(f"🌳 После фильтрации ignored: {len(result)} узлов")
+            return result
             
         except Exception as e:
             logger.error(f"❌ Ошибка получения узлов: {e}")
