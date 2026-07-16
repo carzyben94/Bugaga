@@ -534,7 +534,7 @@ async def x(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             result = await orchestrator.hermes.type_text(ref, text)
             if result.get("success"):
-                await update.message.reply_text(f"✅ Ввод在 {ref} выполнен")
+                await update.message.reply_text(f"✅ Ввод в {ref} выполнен")
             else:
                 await update.message.reply_text(f"❌ {result.get('reason')}")
         
@@ -877,7 +877,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             eval = Eval(browser)
             viewer = PageViewer(browser, eval)
         
-        # Выполняем команду
+        # ===== ВЫПОЛНЯЕМ КОМАНДУ =====
         result = await orchestrator.execute(text)
         
         # ===== ОТПРАВЛЯЕМ ОТВЕТ =====
@@ -912,35 +912,51 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("✅ Готово!")
         
-        # ===== АВТО-ОБНОВЛЕНИЕ ОКНА ПРОСМОТРА =====
-        if viewer and viewer.chat_id and viewer.message_id:
-            view_result = await viewer.update()
-            if view_result.get("success"):
-                try:
-                    photo_bytes = base64.b64decode(view_result["screenshot"])
-                    
-                    caption = (
-                        f"🖥️ **Окно просмотра**\n"
-                        f"🔗 {view_result.get('url', 'Неизвестно')}\n"
-                        f"📄 {view_result.get('title', 'Без заголовка')}\n"
-                        f"🕐 {view_result.get('timestamp', '')[:19]}\n\n"
-                        f"💡 Команды:\n"
-                        f"  /view — обновить окно\n"
-                        f"  /view_close — закрыть окно"
-                    )
-                    
-                    await context.bot.edit_message_media(
-                        chat_id=viewer.chat_id,
-                        message_id=viewer.message_id,
-                        media=InputMediaPhoto(media=photo_bytes, caption=caption)
-                    )
-                    logger.info("🔄 Окно просмотра обновлено")
-                except Exception as e:
-                    logger.warning(f"Не удалось отредактировать окно: {e}")
-                    await update.message.reply_text("🔄 Не удалось обновить окно, попробуйте /view")
+        # ===== ОБНОВЛЕНИЕ ОКНА ТОЛЬКО ЕСЛИ БЫЛО ДЕЙСТВИЕ =====
+        action_keywords = [
+            "нажми", "клик", "открой", "перейди", "зайди", "опубликуй", 
+            "скрин", "сделай", "введи", "напиши", "пост", "твит",
+            "удали", "добавь", "покажи", "обнови", "войди", "выйди",
+            "запости", "отправь", "выбери", "открой", "закрой"
+        ]
+        
+        was_action = any(keyword in text.lower() for keyword in action_keywords)
+        
+        if viewer and viewer.chat_id and viewer.message_id and was_action:
+            if hasattr(viewer, '_updating') and viewer._updating:
+                logger.info("⏳ Окно уже обновляется, пропускаем")
+            else:
+                logger.info("🔄 Обновление окна просмотра (было действие)")
+                view_result = await viewer.update()
+                if view_result.get("success"):
+                    try:
+                        photo_bytes = base64.b64decode(view_result["screenshot"])
+                        
+                        caption = (
+                            f"🖥️ **Окно просмотра**\n"
+                            f"🔗 {view_result.get('url', 'Неизвестно')}\n"
+                            f"📄 {view_result.get('title', 'Без заголовка')}\n"
+                            f"🕐 {view_result.get('timestamp', '')[:19]}\n\n"
+                            f"💡 Команды:\n"
+                            f"  /view — обновить окно\n"
+                            f"  /view_close — закрыть окно"
+                        )
+                        
+                        await context.bot.edit_message_media(
+                            chat_id=viewer.chat_id,
+                            message_id=viewer.message_id,
+                            media=InputMediaPhoto(media=photo_bytes, caption=caption)
+                        )
+                        logger.info("🔄 Окно просмотра обновлено")
+                    except Exception as e:
+                        logger.warning(f"Не удалось отредактировать окно: {e}")
+                else:
+                    logger.warning("❌ Не удалось обновить окно")
         
     except Exception as e:
         logger.error(f"Ошибка в Луи: {e}")
+        if viewer and hasattr(viewer, '_updating'):
+            viewer._updating = False
         await update.message.reply_text(f"❌ Ой! Что-то пошло не так: {str(e)[:100]}")
 
 
@@ -961,6 +977,7 @@ def main():
     app.add_handler(CommandHandler("louis_log", louis_log))
     app.add_handler(CommandHandler("log_clear", louis_log_clear))
     
+    # ===== ЛУИ — ОБРАБАТЫВАЕТ ВСЕ ТЕКСТОВЫЕ СООБЩЕНИЯ =====
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     logger.info("🚀 Луи запущен и готов к общению!")
