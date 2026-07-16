@@ -314,6 +314,23 @@ class Orchestrator:
         
         return [{"action": "unknown", "reason": "Не удалось создать план"}]
     
+    # ===== КЛИК ПО REF =====
+    async def _click_by_ref(self, ref: str) -> str:
+        """Кликнуть по элементу по ref (как /x click)"""
+        result = await self.hermes.click(ref)
+        if result.get("success"):
+            await self.snapshot(force=True)
+            
+            changes = result.get("changes", [])
+            has_changes = result.get("has_changes", False)
+            
+            if changes:
+                return f"✅ Клик по {ref} выполнен\n📊 {', '.join(changes)}"
+            else:
+                return f"✅ Клик по {ref} выполнен"
+        else:
+            return f"❌ {result.get('reason', 'Неизвестная ошибка')}"
+    
     # ===== ВЫПОЛНЕНИЕ =====
     async def execute(self, text: str) -> Dict[str, Any]:
         """Выполнить команду с умом"""
@@ -341,6 +358,11 @@ class Orchestrator:
         
         parsed = await self._parse_natural_language(text)
         action = parsed.get("action")
+        
+        # ===== ПРЯМОЙ КЛИК ПО REF =====
+        if action == "click_ref":
+            ref = parsed.get("ref")
+            return await self._click_by_ref(ref)
         
         # ===== СКРИНШОТ =====
         if action == "screenshot":
@@ -397,7 +419,7 @@ class Orchestrator:
             
             return response
         
-        # ===== КЛИК =====
+        # ===== КЛИК ПО ИМЕНИ =====
         if action == "click_by_name":
             name = parsed.get("name")
             for ref, info in self.hermes.element_map.items():
@@ -413,6 +435,9 @@ class Orchestrator:
                             "name": name
                         })
                         
+                        changes = result.get("changes", [])
+                        if changes:
+                            return f"✅ Клик по '{name}' выполнен\n📊 {', '.join(changes)}"
                         return f"✅ Клик по '{name}' выполнен"
             
             self.log_action("click", {
@@ -479,6 +504,8 @@ class Orchestrator:
   "покажи что есть на странице"
   "сделай скрин"
   "введи в поиск 'AI' и нажми Enter"
+  "кликни @e10"
+  "нажми на @e5"
 
 🔥 Я сам пойму, что ты хочешь!
 """
@@ -490,28 +517,41 @@ class Orchestrator:
         """Распарсить команду на естественном языке"""
         text_lower = text.lower()
         
+        # ===== ПРЯМОЙ КЛИК ПО REF (@e10) =====
+        ref_match = re.search(r'@e\d+', text)
+        if ref_match:
+            ref = ref_match.group(0)
+            if any(word in text_lower for word in ["клик", "нажми", "тык"]) or ref in text:
+                return {"action": "click_ref", "ref": ref}
+        
+        # ===== СКРИНШОТ =====
         if any(word in text_lower for word in ["скрин", "screenshot", "фото", "снимок"]):
             return {"action": "screenshot"}
         
+        # ===== КАКИЕ КНОПКИ / ЧТО ЕСТЬ / ПОКАЖИ =====
         if any(word in text_lower for word in ["какие кнопки", "что есть", "покажи", "список", "что видишь", "что тут", "элементы"]):
             return {"action": "snapshot"}
         
+        # ===== ПОМОЩЬ =====
         if any(word in text_lower for word in ["помощь", "help", "что умеешь", "как работать"]):
             return {"action": "help"}
         
+        # ===== НАВИГАЦИЯ =====
         if any(word in text_lower for word in ["открой", "перейди", "зайди", "перейти", "открыть"]):
             url_match = re.search(r'https?://[^\s]+', text)
             if url_match:
                 return {"action": "navigate", "url": url_match.group(0)}
-            if "x.com" in text_lower:
+            if "x.com" in text_lower or "твиттер" in text_lower:
                 return {"action": "navigate", "url": "https://x.com"}
         
+        # ===== ОПУБЛИКОВАТЬ =====
         if any(word in text_lower for word in ["опубликуй", "запости", "твит", "пост", "напиши пост"]):
             quote_match = re.search(r'["\']([^"\']*)["\']', text)
             if quote_match:
                 return {"action": "publish", "text": quote_match.group(1)}
             return {"action": "publish"}
         
+        # ===== КЛИК ПО НАЗВАНИЮ =====
         click_targets = {
             "обзор": "Поиск и обзор",
             "explore": "Поиск и обзор",
@@ -534,6 +574,7 @@ class Orchestrator:
             if key in text_lower:
                 return {"action": "click_by_name", "name": value}
         
+        # ===== КЛИК =====
         if any(word in text_lower for word in ["клик", "нажми", "тык"]):
             words = text.split()
             for i, word in enumerate(words):
@@ -542,6 +583,7 @@ class Orchestrator:
                     if len(name) > 2:
                         return {"action": "click_by_name", "name": name}
         
+        # ===== ВВОД ТЕКСТА =====
         if any(word in text_lower for word in ["введи", "напиши", "ввести", "напечатай"]):
             quote_match = re.search(r'["\']([^"\']*)["\']', text)
             if quote_match:
