@@ -1,23 +1,17 @@
 import asyncio
 import logging
+import os
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from pydoll.browser import Chrome
 from pydoll.browser.options import ChromiumOptions
 from pydoll.constants import PageLoadState, Key
 from pydoll.decorators import retry
-from pydoll.exceptions import (
-    ElementNotFound,
-    WaitElementTimeout,
-    NetworkError,
-    ElementNotVisible,
-    ElementNotInteractable,
-    ClickIntercepted,
-    PageLoadTimeout
-)
+from pydoll.exceptions import ElementNotFound, WaitElementTimeout, NetworkError
 from pydoll.extractor import ExtractionModel, Field
-from pydoll.protocol.fetch.events import FetchEvent, RequestPausedEvent
-from pydoll.protocol.network.types import ErrorReason
+
+# Импортируем модуль с куками
+from cookies import get_cookies_for_domain, format_cookies_for_cdp
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +19,7 @@ SCREENSHOTS_DIR = Path("screenshots")
 SCREENSHOTS_DIR.mkdir(exist_ok=True)
 
 # ============================================================
-# 1. НАСТРОЙКА БРАУЗЕРА (ChromiumOptions)
+# 1. НАСТРОЙКА БРАУЗЕРА
 # ============================================================
 
 def get_optimized_options(user_data_dir: Optional[str] = None) -> ChromiumOptions:
@@ -40,52 +34,25 @@ def get_optimized_options(user_data_dir: Optional[str] = None) -> ChromiumOption
     if user_data_dir:
         options.add_argument(f'--user-data-dir={user_data_dir}')
     
-    # === ПРОИЗВОДИТЕЛЬНОСТЬ ===
     options.add_argument('--disable-gpu')
     options.add_argument('--disable-software-rasterizer')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-extensions')
     options.add_argument('--disable-background-networking')
-    options.add_argument('--disable-background-timer-throttling')
-    options.add_argument('--disable-renderer-backgrounding')
-    options.add_argument('--disable-sync')
-    options.add_argument('--disable-translate')
-    options.add_argument('--disable-features=NetworkPrediction')
-    options.add_argument('--dns-prefetch-disable')
-    options.add_argument('--disable-animations')
-    
-    # === СТЕЛС-РЕЖИМ ===
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
     options.add_argument('--use-gl=swiftshader')
-    options.add_argument('--force-webrtc-ip-handling-policy=disable_non_proxied_udp')
     options.add_argument('--lang=en-US')
-    options.add_argument('--accept-lang=en-US,en;q=0.9')
-    options.add_argument('--tz=America/New_York')
-    options.add_argument('--disable-reading-from-canvas')
-    options.add_argument('--disable-features=AudioServiceOutOfProcess')
-    
-    # === БЕЗОПАСНОСТЬ ===
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-setuid-sandbox')
-    
-    # === ОТОБРАЖЕНИЕ ===
     options.add_argument('--window-size=1920,1080')
-    options.add_argument('--force-device-scale-factor=1')
     
     options.browser_preferences = {
         'profile': {
             'default_content_setting_values': {
                 'notifications': 2,
                 'geolocation': 2,
-            },
-            'password_manager_enabled': False
-        },
-        'intl': {
-            'accept_languages': 'en-US,en',
-        },
-        'browser': {
-            'check_default_browser': False,
+            }
         }
     }
     
@@ -94,283 +61,334 @@ def get_optimized_options(user_data_dir: Optional[str] = None) -> ChromiumOption
 
 
 # ============================================================
-# 2. БАЗОВЫЕ ФУНКЦИИ (С ИСПРАВЛЕННЫМИ МЕТОДАМИ)
+# 2. ФУНКЦИЯ ДЛЯ УСТАНОВКИ КУК ЧЕРЕЗ CDP
 # ============================================================
 
-@retry(
-    max_retries=3,
-    exceptions=[WaitElementTimeout, NetworkError, ElementNotFound, ElementNotVisible],
-    delay=1.0,
-    exponential_backoff=True
-)
-async def search_and_screenshot(query: str) -> str:
-    """Поиск в Google со скриншотом"""
-    screenshot_path = SCREENSHOTS_DIR / f"{query[:20].replace(' ', '_')}.png"
-    options = get_optimized_options()
-    
-    async with Chrome(options=options) as browser:
-        tab = await browser.start()
-        await tab.go_to('https://www.google.com')
-        search_box = await tab.find(tag_name='textarea', name='q')
-        await search_box.type_text(query, humanize=True)
-        await tab.keyboard.press(Key.ENTER)
-        await asyncio.sleep(3)
-        # ✅ Правильный метод для скриншота
-        await tab.take_screenshot(str(screenshot_path))
-        return str(screenshot_path)
-
-
-@retry(max_retries=2, exceptions=[NetworkError, PageLoadTimeout])
-async def get_page_title(url: str) -> str:
-    """Получает заголовок страницы"""
-    options = get_optimized_options()
-    async with Chrome(options=options) as browser:
-        tab = await browser.start()
-        await tab.go_to(url)
-        # ✅ title может быть свойством, а не методом
-        return str(await tab.title)
-
-
-async def execute_javascript(url: str, script: str) -> str:
-    """Выполняет JavaScript на странице"""
-    options = get_optimized_options()
-    async with Chrome(options=options) as browser:
-        tab = await browser.start()
-        await tab.go_to(url)
-        return str(await tab.execute_script(script))
-
-
-async def take_screenshot_of_element(url: str, selector: str) -> str:
-    """Делает скриншот элемента по CSS-селектору"""
-    screenshot_path = SCREENSHOTS_DIR / f"element_{abs(hash(selector))}.png"
-    options = get_optimized_options()
-    
-    async with Chrome(options=options) as browser:
-        tab = await browser.start()
-        await tab.go_to(url)
-        element = await tab.find(css_selector=selector)
-        # ✅ Правильный метод для скриншота элемента
-        await element.take_screenshot(str(screenshot_path))
-        return str(screenshot_path)
+async def set_cookies_via_cdp(tab, domain: str = "x.com") -> bool:
+    """
+    Устанавливает куки через CDP команду Network.setCookies
+    """
+    try:
+        cookies = get_cookies_for_domain(domain)
+        if not cookies:
+            logger.warning(f"❌ Нет кук для домена {domain}")
+            return False
+        
+        # Форматируем куки для CDP
+        cookies_list = format_cookies_for_cdp(cookies)
+        
+        # Отправляем CDP команду
+        await tab.send("Network.setCookies", {
+            "cookies": cookies_list  # все 11 кук одной командой
+        })
+        
+        logger.info(f"✅ Установлено {len(cookies_list)} кук для {domain} через CDP")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка установки кук: {e}")
+        return False
 
 
 # ============================================================
-# 3. SHADOW DOM
+# 3. ФУНКЦИЯ ДЛЯ ПРОВЕРКИ АВТОРИЗАЦИИ
 # ============================================================
 
-async def find_in_shadow_dom(url: str, host_selector: str, inner_selector: str) -> str:
-    """Находит элемент внутри Shadow DOM (включая закрытые shadow roots)"""
-    options = get_optimized_options()
+async def ensure_x_session(tab) -> bool:
+    """
+    Гарантирует авторизованную сессию X.com через куки
+    """
+    # Переходим на X.com
+    await tab.go_to('https://x.com/home')
+    await asyncio.sleep(3)
     
-    async with Chrome(options=options) as browser:
-        tab = await browser.start()
-        await tab.go_to(url)
-        
-        host = await tab.find(css_selector=host_selector)
-        shadow = await host.get_shadow_root()
-        element = await shadow.query(css_selector=inner_selector)
-        
-        return await element.text
-
-
-async def find_all_shadow_roots(url: str) -> List[str]:
-    """Находит все shadow roots на странице"""
-    options = get_optimized_options()
-    
-    async with Chrome(options=options) as browser:
-        tab = await browser.start()
-        await tab.go_to(url)
-        
-        shadow_roots = await tab.find_shadow_roots()
-        
-        results = []
-        for sr in shadow_roots:
-            checkbox = await sr.query('input[type="checkbox"]', raise_exc=False)
-            if checkbox:
-                results.append("Found checkbox in shadow root")
-        
-        return results
-
-
-# ============================================================
-# 4. NETWORK INTERCEPTION
-# ============================================================
-
-async def load_page_without_images(url: str) -> str:
-    """Загружает страницу, блокируя все изображения и стили"""
-    options = get_optimized_options()
-    
-    async with Chrome(options=options) as browser:
-        tab = await browser.start()
-        
-        async def block_resource(event: RequestPausedEvent):
-            request_id = event['params']['requestId']
-            resource_type = event['params']['resourceType']
-            
-            if resource_type in ['Image', 'Stylesheet']:
-                await tab.fail_request(request_id, ErrorReason.BLOCKED_BY_CLIENT)
-            else:
-                await tab.continue_request(request_id)
-        
-        await tab.enable_fetch_events()
-        await tab.on(FetchEvent.REQUEST_PAUSED, block_resource)
-        
-        await tab.go_to(url)
+    # Устанавливаем куки через CDP
+    if await set_cookies_via_cdp(tab, "x.com"):
+        # Перезагружаем страницу после установки кук
+        await tab.refresh()
         await asyncio.sleep(3)
         
-        await tab.disable_fetch_events()
-        
-        screenshot_path = SCREENSHOTS_DIR / f"no_images_{abs(hash(url))}.png"
-        await tab.take_screenshot(str(screenshot_path))
-        
-        return str(screenshot_path)
-
-
-# ============================================================
-# 5. HAR RECORDING
-# ============================================================
-
-async def record_har(url: str, har_path: str = "recording.har") -> Dict[str, Any]:
-    """Записывает HAR (HTTP Archive) при загрузке страницы"""
-    options = get_optimized_options()
-    
-    async with Chrome(options=options) as browser:
-        tab = await browser.start()
-        
-        async with tab.request.record() as capture:
-            await tab.go_to(url)
-            await asyncio.sleep(3)
-        
-        capture.save(har_path)
-        
-        return {
-            "entries_count": len(capture.entries),
-            "file_path": har_path
-        }
-
-
-# ============================================================
-# 6. HYBRID AUTOMATION (UI + API)
-# ============================================================
-
-async def hybrid_automation_example(login_url: str, username: str, password: str, api_url: str) -> Dict[str, Any]:
-    """Пример гибридной автоматизации: логин через UI, затем API-запрос"""
-    options = get_optimized_options()
-    
-    async with Chrome(options=options) as browser:
-        tab = await browser.start()
-        
-        await tab.go_to(login_url)
-        
-        username_field = await tab.find(id='username')
-        await username_field.type_text(username)
-        
-        password_field = await tab.find(id='password')
-        await password_field.type_text(password)
-        
-        login_btn = await tab.find(id='login-btn')
-        await login_btn.click()
-        
-        await asyncio.sleep(2)
-        
-        response = await tab.request.get(api_url)
-        
-        return {
-            "status": response.status,
-            "data": response.json() if response.is_json else response.text[:200]
-        }
-
-
-# ============================================================
-# 7. PAGE BUNDLES
-# ============================================================
-
-async def save_page_bundle(url: str, bundle_path: str = "page.zip", inline: bool = False) -> str:
-    """Сохраняет страницу и все ресурсы в ZIP-архив"""
-    options = get_optimized_options()
-    
-    async with Chrome(options=options) as browser:
-        tab = await browser.start()
-        await tab.go_to(url)
-        await asyncio.sleep(2)
-        
-        if inline:
-            await tab.save_bundle(bundle_path, inline_assets=True)
+        # Проверяем, авторизованы ли
+        current_url = await tab.current_url
+        if 'home' in current_url or 'x.com/home' in current_url:
+            logger.info("✅ Авторизован через куки")
+            return True
         else:
-            await tab.save_bundle(bundle_path)
-        
-        return bundle_path
+            logger.warning("⚠️ Куки установлены, но авторизация не подтверждена")
+            return False
+    else:
+        logger.error("❌ Не удалось установить куки")
+        return False
 
 
 # ============================================================
-# 8. HUMANIZED MOUSE MOVEMENT
+# 4. МОДЕЛИ ДЛЯ ПАРСИНГА X.COM
 # ============================================================
 
-async def human_click_example(url: str, selector: str) -> str:
-    """Кликает по элементу с человеко-подобным движением мыши"""
+class TweetModel(ExtractionModel):
+    """Модель для парсинга твита"""
+    text: str = Field(selector='div[data-testid="tweetText"]', description='Текст твита')
+    author_name: str = Field(selector='div[data-testid="User-Name"] a span', description='Имя автора')
+    author_username: str = Field(selector='div[data-testid="User-Name"] a span[dir="ltr"]', description='Username')
+    timestamp: str = Field(selector='time', attribute='datetime', description='Время')
+    likes: str = Field(selector='button[data-testid="like"] span', description='Лайки')
+    retweets: str = Field(selector='button[data-testid="retweet"] span', description='Ретвиты')
+    replies: str = Field(selector='button[data-testid="reply"] span', description='Ответы')
+    views: str = Field(selector='span[data-testid="views"] span', description='Просмотры')
+
+
+class ProfileModel(ExtractionModel):
+    """Модель для парсинга профиля"""
+    name: str = Field(selector='div[data-testid="UserName"] span', description='Имя')
+    username: str = Field(selector='div[data-testid="UserName"] span[dir="ltr"]', description='Username')
+    bio: str = Field(selector='div[data-testid="UserDescription"]', description='Биография')
+    location: str = Field(selector='span[data-testid="UserLocation"]', description='Локация')
+    joined: str = Field(selector='span[data-testid="UserJoinDate"]', description='Дата регистрации')
+    followers: str = Field(selector='a[href$="/followers"] span', description='Подписчики')
+    following: str = Field(selector='a[href$="/following"] span', description='Подписки')
+
+
+# ============================================================
+# 5. ФУНКЦИИ ДЛЯ РАБОТЫ С X.COM
+# ============================================================
+
+async def post_tweet(text: str) -> bool:
+    """
+    Публикация твита
+    """
     options = get_optimized_options()
     
     async with Chrome(options=options) as browser:
         tab = await browser.start()
-        await tab.go_to(url)
         
-        element = await tab.find(css_selector=selector)
-        await element.click(humanize=True)
+        if not await ensure_x_session(tab):
+            return False
         
+        # Нажимаем кнопку "Написать твит"
+        tweet_btn = await tab.find(css_selector='button[data-testid="tweetButtonInline"]', timeout=10)
+        await tweet_btn.click(humanize=True)
         await asyncio.sleep(1)
         
-        screenshot_path = SCREENSHOTS_DIR / f"human_click_{abs(hash(selector))}.png"
-        await tab.take_screenshot(str(screenshot_path))
+        # Находим поле ввода
+        textarea = await tab.find(css_selector='div[data-testid="tweetTextarea_0"]', timeout=10)
+        await textarea.click(humanize=True)
+        await textarea.type_text(text, humanize=True)
+        await asyncio.sleep(1)
         
-        return str(screenshot_path)
-
-
-# ============================================================
-# 9. CONCURRENT TABS
-# ============================================================
-
-async def concurrent_scraping(urls: List[str]) -> List[str]:
-    """Открывает несколько вкладок параллельно"""
-    options = get_optimized_options()
-    
-    async def scrape_page(url: str, tab) -> str:
-        await tab.go_to(url)
-        return str(await tab.title)
-    
-    async with Chrome(options=options) as browser:
-        tabs = []
-        for i, url in enumerate(urls):
-            if i == 0:
-                tab = await browser.start()
-            else:
-                tab = await browser.new_tab()
-            tabs.append(tab)
+        # Отправляем
+        submit_btn = await tab.find(css_selector='button[data-testid="tweetButton"]', timeout=10)
+        await submit_btn.click(humanize=True)
+        await asyncio.sleep(3)
         
-        results = await asyncio.gather(
-            *[scrape_page(url, tab) for url, tab in zip(urls, tabs)]
-        )
-        
-        return results
+        logger.info(f"✅ Твит опубликован: {text[:50]}...")
+        return True
 
 
-# ============================================================
-# 10. СТРУКТУРИРОВАННЫЙ ПАРСИНГ (ExtractionModel)
-# ============================================================
-
-class QuoteModel(ExtractionModel):
-    """Модель для парсинга цитат"""
-    text: str = Field(selector='.text', description='Текст цитаты')
-    author: str = Field(selector='.author', description='Автор')
-    tags: list[str] = Field(selector='.tag', description='Теги')
-
-async def extract_quotes(url: str) -> list[dict]:
-    """Парсит цитаты со страницы, используя Pydoll Extractor"""
+async def reply_to_tweet(tweet_url: str, text: str) -> bool:
+    """
+    Ответ на твит
+    """
     options = get_optimized_options()
     
     async with Chrome(options=options) as browser:
         tab = await browser.start()
-        await tab.go_to(url)
+        await tab.go_to(tweet_url)
         
-        quotes = await tab.extract_all(QuoteModel, scope='.quote', timeout=5)
+        if not await ensure_x_session(tab):
+            return False
         
-        return [q.model_dump() for q in quotes]
+        # Нажимаем кнопку "Ответить"
+        reply_btn = await tab.find(css_selector='button[data-testid="reply"]', timeout=10)
+        await reply_btn.click(humanize=True)
+        await asyncio.sleep(1)
+        
+        # Находим поле ввода ответа
+        textarea = await tab.find(css_selector='div[data-testid="tweetTextarea_0"]', timeout=10)
+        await textarea.type_text(text, humanize=True)
+        await asyncio.sleep(1)
+        
+        # Отправляем
+        submit_btn = await tab.find(css_selector='button[data-testid="tweetButton"]', timeout=10)
+        await submit_btn.click(humanize=True)
+        await asyncio.sleep(3)
+        
+        logger.info(f"✅ Ответ опубликован: {text[:50]}...")
+        return True
+
+
+async def like_tweet(tweet_url: str) -> bool:
+    """
+    Поставить лайк
+    """
+    options = get_optimized_options()
+    
+    async with Chrome(options=options) as browser:
+        tab = await browser.start()
+        await tab.go_to(tweet_url)
+        
+        if not await ensure_x_session(tab):
+            return False
+        
+        like_btn = await tab.find(css_selector='button[data-testid="like"]', timeout=10)
+        await like_btn.click(humanize=True)
+        await asyncio.sleep(1)
+        
+        logger.info(f"✅ Лайк поставлен: {tweet_url}")
+        return True
+
+
+async def retweet_tweet(tweet_url: str) -> bool:
+    """
+    Сделать ретвит
+    """
+    options = get_optimized_options()
+    
+    async with Chrome(options=options) as browser:
+        tab = await browser.start()
+        await tab.go_to(tweet_url)
+        
+        if not await ensure_x_session(tab):
+            return False
+        
+        # Нажимаем кнопку ретвита
+        retweet_btn = await tab.find(css_selector='button[data-testid="retweet"]', timeout=10)
+        await retweet_btn.click(humanize=True)
+        await asyncio.sleep(1)
+        
+        # Подтверждаем ретвит
+        confirm_btn = await tab.find(css_selector='button[data-testid="retweetConfirm"]', timeout=10)
+        await confirm_btn.click(humanize=True)
+        await asyncio.sleep(2)
+        
+        logger.info(f"✅ Ретвит сделан: {tweet_url}")
+        return True
+
+
+async def get_profile(username: str) -> dict:
+    """
+    Получить информацию о профиле
+    """
+    options = get_optimized_options()
+    
+    async with Chrome(options=options) as browser:
+        tab = await browser.start()
+        await tab.go_to(f'https://x.com/{username}')
+        
+        if not await ensure_x_session(tab):
+            return {}
+        
+        await asyncio.sleep(3)
+        
+        # Парсим профиль
+        profiles = await tab.extract_all(ProfileModel, scope='div[data-testid="primaryColumn"]', timeout=10)
+        
+        if profiles:
+            return profiles[0].model_dump()
+        return {}
+
+
+async def get_timeline(username: str, limit: int = 10) -> list[dict]:
+    """
+    Получить последние твиты пользователя
+    """
+    options = get_optimized_options()
+    
+    async with Chrome(options=options) as browser:
+        tab = await browser.start()
+        await tab.go_to(f'https://x.com/{username}')
+        
+        if not await ensure_x_session(tab):
+            return []
+        
+        await asyncio.sleep(3)
+        
+        # Скроллим для подгрузки
+        for _ in range(3):
+            await tab.execute_script("window.scrollBy(0, 800);")
+            await asyncio.sleep(2)
+        
+        tweets = await tab.extract_all(
+            TweetModel,
+            scope='article[data-testid="tweet"]',
+            timeout=10
+        )
+        
+        return [t.model_dump() for t in tweets[:limit]]
+
+
+async def search_tweets(query: str, limit: int = 10) -> list[dict]:
+    """
+    Поиск твитов по запросу
+    """
+    options = get_optimized_options()
+    
+    async with Chrome(options=options) as browser:
+        tab = await browser.start()
+        await tab.go_to(f'https://x.com/search?q={query}')
+        
+        if not await ensure_x_session(tab):
+            return []
+        
+        await asyncio.sleep(3)
+        
+        # Скроллим для подгрузки
+        for _ in range(3):
+            await tab.execute_script("window.scrollBy(0, 800);")
+            await asyncio.sleep(2)
+        
+        tweets = await tab.extract_all(
+            TweetModel,
+            scope='article[data-testid="tweet"]',
+            timeout=10
+        )
+        
+        return [t.model_dump() for t in tweets[:limit]]
+
+
+async def follow_user(username: str) -> bool:
+    """
+    Подписаться на пользователя
+    """
+    options = get_optimized_options()
+    
+    async with Chrome(options=options) as browser:
+        tab = await browser.start()
+        await tab.go_to(f'https://x.com/{username}')
+        
+        if not await ensure_x_session(tab):
+            return False
+        
+        # Находим кнопку "Подписаться"
+        follow_btn = await tab.find(css_selector='button[data-testid="follow"]', timeout=10)
+        await follow_btn.click(humanize=True)
+        await asyncio.sleep(2)
+        
+        logger.info(f"✅ Подписан на @{username}")
+        return True
+
+
+async def unfollow_user(username: str) -> bool:
+    """
+    Отписаться от пользователя
+    """
+    options = get_optimized_options()
+    
+    async with Chrome(options=options) as browser:
+        tab = await browser.start()
+        await tab.go_to(f'https://x.com/{username}')
+        
+        if not await ensure_x_session(tab):
+            return False
+        
+        # Находим кнопку "Отписаться"
+        unfollow_btn = await tab.find(css_selector='button[data-testid="unfollow"]', timeout=10)
+        await unfollow_btn.click(humanize=True)
+        await asyncio.sleep(1)
+        
+        # Подтверждаем
+        confirm_btn = await tab.find(css_selector='button[data-testid="unfollowConfirm"]', timeout=5)
+        await confirm_btn.click(humanize=True)
+        await asyncio.sleep(2)
+        
+        logger.info(f"✅ Отписан от @{username}")
+        return True
