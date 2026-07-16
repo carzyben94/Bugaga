@@ -1,4 +1,4 @@
-FROM python:3.14-slim
+FROM python:3.14-slim 
 
 # Только самое необходимое для Chromium
 RUN apt-get update && apt-get install -y \
