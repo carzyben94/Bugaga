@@ -1,5 +1,5 @@
 import os
-import logging 
+import logging
 import base64
 import asyncio
 import json
@@ -39,14 +39,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🤖 **Привет! Я Луи!**\n\n"
         "Я — твой AI-помощник для работы с X.com.\n\n"
         "📋 **Команды:**\n"
-        "  /log — скачать лог моих действий\n"
-        "  /log_clear — очистить лог\n\n"
+        "  /louis_log — скачать лог моих действий\n"
+        "  /log_clear — очистить мой лог\n\n"
         "💡 **Просто напиши, что нужно сделать.**\n\n"
         "Примеры:\n"
         "  открой x.com\n"
         "  перейди в обзор\n"
         "  опубликуй пост 'Привет мир!'\n"
-        "  сделай скрин\n\n"
+        "  сделай скрин\n"
+        "  какие кнопки видишь\n"
+        "  нажми на главную\n\n"
         "🔥 Я сам пойму, что ты хочешь!"
     )
 
