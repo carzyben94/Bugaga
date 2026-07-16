@@ -355,14 +355,14 @@ class Orchestrator:
         
         result = await self._continue_execution(text)
         
-        if isinstance(result, str):
-            return {"success": True, "message": result}
         if isinstance(result, dict):
             return result
+        if isinstance(result, str):
+            return {"success": True, "message": result}
         return {"success": True, "message": str(result)}
     
-    async def _continue_execution(self, text: str) -> str:
-        """Продолжить выполнение после инициализации — ВСЕГДА ВОЗВРАЩАЕТ СТРОКУ"""
+    async def _continue_execution(self, text: str):
+        """Продолжить выполнение после инициализации"""
         
         parsed = await self._parse_natural_language(text)
         action = parsed.get("action")
@@ -387,7 +387,12 @@ class Orchestrator:
                 "filename": filename
             })
             
-            return f"📸 Скриншот сохранён: {filename}"
+            return {
+                "success": True,
+                "message": f"📸 Скриншот сохранён: {filename}",
+                "screenshot": screenshot_base64,
+                "filename": filename
+            }
         
         # ===== НАВИГАЦИЯ =====
         if action == "navigate":
