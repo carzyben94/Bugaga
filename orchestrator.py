@@ -10,10 +10,70 @@ from typing import Dict, Any, Optional, List
 logger = logging.getLogger(__name__)
 
 
+class InnerLanguage:
+    """
+    Внутренний язык Луи для структурирования данных.
+    Используется для памяти, планов, логов и коммуникации между модулями.
+    """
+    
+    @staticmethod
+    def page(url: str, title: str, elements: list, total: int = 0) -> str:
+        """Создать описание страницы на внутреннем языке"""
+        if not elements:
+            return f"PAGE {{ url: \"{url}\" | title: \"{title}\" | state: \"empty\" | elements: [] }}"
+        
+        elements_str = " | ".join([
+            f'{el["ref"]}:{el["role"]}:\"{el["name"][:30].replace('"', "'")}\"'
+            for el in elements[:15]
+        ])
+        if total > 15:
+            elements_str += f" | ... +{total - 15} more"
+        
+        return f"PAGE {{ url: \"{url}\" | title: \"{title}\" | state: \"loaded\" | total: {total} | elements: [ {elements_str} ] }}"
+    
+    @staticmethod
+    def plan(goal: str, steps: list, status: str = "ready") -> str:
+        """Создать план действий на внутреннем языке"""
+        if not steps:
+            return f"PLAN {{ goal: \"{goal}\" | status: \"{status}\" | steps: [] }}"
+        
+        steps_str = " | ".join([
+            f'{s.get("action", "unknown")}:{s.get("ref", "none")}'
+            for s in steps
+        ])
+        return f"PLAN {{ goal: \"{goal}\" | status: \"{status}\" | steps: [ {steps_str} ] }}"
+    
+    @staticmethod
+    def memory(action: str, result: str, context: str = "") -> str:
+        """Создать запись памяти на внутреннем языке"""
+        return f"MEM {{ action: \"{action}\" | result: \"{result}\" | ctx: \"{context[:50]}\" | time: \"{datetime.now().strftime('%H:%M:%S')}\" }}"
+    
+    @staticmethod
+    def cache(trigger: str, steps: list) -> str:
+        """Создать запись кэша на внутреннем языке"""
+        steps_str = "->".join(steps)
+        return f"CACHE {{ trigger: \"{trigger}\" | steps: [ {steps_str} ] }}"
+    
+    @staticmethod
+    def log(action: str, details: dict) -> str:
+        """Создать запись лога на внутреннем языке"""
+        return f'LOG {action} | {json.dumps(details, ensure_ascii=False)[:200]}'
+    
+    @staticmethod
+    def state(status: str, url: str = "", step: int = 0) -> str:
+        """Создать запись состояния на внутреннем языке"""
+        return f"STATE {{ status: \"{status}\" | url: \"{url}\" | step: {step} }}"
+    
+    @staticmethod
+    def error(message: str, action: str = "") -> str:
+        """Создать запись ошибки на внутреннем языке"""
+        return f"ERR {{ action: \"{action}\" | msg: \"{message[:50]}\" }}"
+
+
 class Orchestrator:
     """
     Оркестратор — главный агент Луи.
-    Умеет: память, планирование, кэширование, адаптивность, логирование.
+    Умеет: память, планирование, кэширование, адаптивность, логирование, внутренний язык.
     """
     
     def __init__(self, browser, eval, accessibility, ai_agent, hermes_agent):
@@ -22,6 +82,7 @@ class Orchestrator:
         self.accessibility = accessibility
         self.ai = ai_agent
         self.hermes = hermes_agent
+        self.lang = InnerLanguage()
         
         # ===== ПАМЯТЬ =====
         self.memory = {
@@ -30,7 +91,11 @@ class Orchestrator:
             "last_action": None,
             "last_result": None,
             "conversation": [],
-            "current_step": 0
+            "current_step": 0,
+            "lang_state": None,
+            "lang_plan": None,
+            "lang_page": None,
+            "lang_cache": {}
         }
         
         # ===== ЛОГИ ДЕЙСТВИЙ =====
@@ -69,24 +134,26 @@ class Orchestrator:
             logger.error(f"Ошибка сохранения логов: {e}")
     
     def log_action(self, action: str, details: Dict[str, Any]):
-        """Записать действие в логи"""
+        """Записать действие в логи с внутренним языком"""
+        lang_entry = self.lang.log(action, details)
         log_entry = {
             "timestamp": datetime.now().isoformat(),
             "action": action,
             "url": self.current_url,
             "details": details,
-            "success": details.get("success", False)
+            "success": details.get("success", False),
+            "lang": lang_entry
         }
         self.action_logs.append(log_entry)
         self._save_logs()
-        logger.info(f"📝 Лог: {action} - {details.get('message', '')[:50]}")
+        logger.info(f"📝 {lang_entry}")
     
     def get_logs(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Получить последние логи"""
         return self.action_logs[-limit:]
     
     def get_logs_text(self, limit: int = 100) -> str:
-        """Получить логи в текстовом формате"""
+        """Получить логи в текстовом формате с внутренним языком"""
         logs = self.get_logs(limit)
         if not logs:
             return "📋 Логов пока нет."
@@ -96,16 +163,8 @@ class Orchestrator:
             timestamp = log.get("timestamp", "")[:19]
             action = log.get("action", "unknown")
             success = "✅" if log.get("success") else "❌"
-            url = log.get("url", "")
-            details = log.get("details", {})
-            message = details.get("message", "")
-            
-            text += f"{timestamp} {success} {action}"
-            if url:
-                text += f" | {url}"
-            if message:
-                text += f" | {message}"
-            text += "\n"
+            lang = log.get("lang", "")
+            text += f"{timestamp} {success} {lang}\n"
         
         return text
     
@@ -115,28 +174,39 @@ class Orchestrator:
         self._save_logs()
         logger.info("🗑️ Логи очищены")
     
-    # ===== ПАМЯТЬ =====
+    # ===== ПАМЯТЬ НА ВНУТРЕННЕМ ЯЗЫКЕ =====
     def remember(self, key: str, value: Any):
-        """Запомнить что-то"""
+        """Запомнить что-то на внутреннем языке"""
         self.memory[key] = value
         self.memory["conversation"].append({
             "timestamp": datetime.now().isoformat(),
             "key": key,
             "value": str(value)[:100]
         })
-        logger.debug(f"🧠 Запомнил: {key} = {str(value)[:50]}")
+        logger.debug(f"🧠 {self.lang.memory(key, 'saved', str(value)[:50])}")
     
     def recall(self, key: str) -> Any:
         """Вспомнить что-то"""
         return self.memory.get(key)
     
-    # ===== КЭШ =====
+    def get_state(self) -> str:
+        """Получить текущее состояние на внутреннем языке"""
+        return self.lang.state(
+            "active" if self.hermes.snapshot else "idle",
+            self.current_url or "",
+            self.plan_step
+        )
+    
+    # ===== КЭШ НА ВНУТРЕННЕМ ЯЗЫКЕ =====
     def cache_behavior(self, site: str, action: str, steps: List[str]):
         """Сохранить успешную цепочку действий"""
         if site not in self.behavior_cache:
             self.behavior_cache[site] = {}
         self.behavior_cache[site][action] = steps
-        logger.info(f"💾 Закэшировал поведение для {site} -> {action}")
+        
+        lang_cache = self.lang.cache(action, steps)
+        self.memory["lang_cache"][f"{site}:{action}"] = lang_cache
+        logger.info(f"💾 {lang_cache}")
     
     def get_cached_behavior(self, site: str, action: str) -> Optional[List[str]]:
         """Получить закэшированную цепочку"""
@@ -144,7 +214,7 @@ class Orchestrator:
     
     # ===== СНАПШОТ С КЭШИРОВАНИЕМ =====
     async def snapshot(self, url: Optional[str] = None, force: bool = False) -> Dict[str, Any]:
-        """Сделать снапшот с кэшированием"""
+        """Сделать снапшот с кэшированием и внутренним языком"""
         if url:
             await self.browser.goto(url)
             self.current_url = url
@@ -162,6 +232,16 @@ class Orchestrator:
         self.remember("last_snapshot", result)
         self.remember("last_url", self.current_url)
         
+        # Внутренний язык: страница
+        lang_page = self.lang.page(
+            self.current_url or "https://x.com",
+            "X.com",
+            result["elements"][:15],
+            result["total_interactive"]
+        )
+        self.memory["lang_page"] = lang_page
+        logger.info(f"📄 {lang_page}")
+        
         return {
             "success": True,
             "cached": False,
@@ -171,7 +251,7 @@ class Orchestrator:
     
     # ===== ПЛАНИРОВАНИЕ =====
     async def plan(self, goal: str) -> List[Dict[str, Any]]:
-        """Создать план действий для достижения цели"""
+        """Создать план действий с внутренним языком"""
         
         site = "x.com" if self.current_url and "x.com" in self.current_url else "unknown"
         cached = self.get_cached_behavior(site, goal[:30])
@@ -188,17 +268,24 @@ class Orchestrator:
 Ты — Луи, AI-помощник для X.com.
 
 **Текущая страница:** {self.current_url}
+**Состояние:** {self.get_state()}
 
 **Доступные элементы:**
 {snapshot_text}
 
 **Цель:** {goal}
 
+**Подумай вслух (Chain of Thought):**
+1. Что нужно сделать сначала?
+2. Какие элементы для этого нужны?
+3. В каком порядке их использовать?
+4. Что проверить после выполнения?
+
 **Задача:**
 Составь пошаговый план действий для достижения цели.
 Используй только ref-ссылки (@e1, @e2, ...) из списка выше.
 
-Верни JSON:
+**Верни JSON:**
 [
     {{"action": "click", "ref": "@e1"}},
     {{"action": "type", "ref": "@e2", "text": "..."}},
@@ -215,6 +302,12 @@ class Orchestrator:
                 plan = json.loads(response[start:end])
                 if len(plan) > 1:
                     self.cache_behavior(site, goal[:30], [step.get("ref") for step in plan if step.get("ref")])
+                
+                # Внутренний язык: план
+                lang_plan = self.lang.plan(goal, plan, "ready")
+                self.memory["lang_plan"] = lang_plan
+                logger.info(f"📋 {lang_plan}")
+                
                 return plan
         except:
             pass
@@ -397,19 +490,15 @@ class Orchestrator:
         """Распарсить команду на естественном языке"""
         text_lower = text.lower()
         
-        # ===== СКРИНШОТ =====
         if any(word in text_lower for word in ["скрин", "screenshot", "фото", "снимок"]):
             return {"action": "screenshot"}
         
-        # ===== КАКИЕ КНОПКИ / ЧТО ЕСТЬ / ПОКАЖИ =====
         if any(word in text_lower for word in ["какие кнопки", "что есть", "покажи", "список", "что видишь", "что тут", "элементы"]):
             return {"action": "snapshot"}
         
-        # ===== ПОМОЩЬ =====
         if any(word in text_lower for word in ["помощь", "help", "что умеешь", "как работать"]):
             return {"action": "help"}
         
-        # ===== НАВИГАЦИЯ =====
         if any(word in text_lower for word in ["открой", "перейди", "зайди", "перейти", "открыть"]):
             url_match = re.search(r'https?://[^\s]+', text)
             if url_match:
@@ -417,14 +506,12 @@ class Orchestrator:
             if "x.com" in text_lower:
                 return {"action": "navigate", "url": "https://x.com"}
         
-        # ===== ОПУБЛИКОВАТЬ =====
         if any(word in text_lower for word in ["опубликуй", "запости", "твит", "пост", "напиши пост"]):
             quote_match = re.search(r'["\']([^"\']*)["\']', text)
             if quote_match:
                 return {"action": "publish", "text": quote_match.group(1)}
             return {"action": "publish"}
         
-        # ===== КЛИК ПО НАЗВАНИЮ (ОБЗОР, ГЛАВНАЯ, УВЕДОМЛЕНИЯ и т.д.) =====
         click_targets = {
             "обзор": "Поиск и обзор",
             "explore": "Поиск и обзор",
@@ -447,7 +534,6 @@ class Orchestrator:
             if key in text_lower:
                 return {"action": "click_by_name", "name": value}
         
-        # ===== КЛИК =====
         if any(word in text_lower for word in ["клик", "нажми", "тык"]):
             words = text.split()
             for i, word in enumerate(words):
@@ -456,12 +542,10 @@ class Orchestrator:
                     if len(name) > 2:
                         return {"action": "click_by_name", "name": name}
         
-        # ===== ВВОД ТЕКСТА =====
         if any(word in text_lower for word in ["введи", "напиши", "ввести", "напечатай"]):
             quote_match = re.search(r'["\']([^"\']*)["\']', text)
             if quote_match:
                 return {"action": "chain", "description": f"введи '{quote_match.group(1)}' и нажми Enter"}
-            # Если нет кавычек, берём всё после "введи"
             for word in ["введи", "напиши", "ввести", "напечатай"]:
                 if word in text_lower:
                     parts = text_lower.split(word, 1)
