@@ -440,31 +440,25 @@ async def x(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Укажи ref: /x click @e1")
                 return
             
-            result = await orchestrator.hermes.click(ref)
+            result = await orchestrator._click_by_ref(ref)
             if result.get("success"):
-                await update.message.reply_text(f"✅ Клик по {ref} выполнен")
+                await update.message.reply_text(result["message"])
                 
                 if result.get("screenshot_before"):
-                    try:
-                        with open(result["screenshot_before"], "rb") as f:
-                            await update.message.reply_photo(
-                                photo=f,
-                                caption=f"📸 До клика по {ref}"
-                            )
-                    except Exception as e:
-                        logger.error(f"Ошибка отправки скриншота: {e}")
+                    with open(result["screenshot_before"], "rb") as f:
+                        await update.message.reply_photo(
+                            photo=f,
+                            caption=f"📸 До клика по {ref}"
+                        )
                 
                 if result.get("screenshot_after"):
-                    try:
-                        with open(result["screenshot_after"], "rb") as f:
-                            await update.message.reply_photo(
-                                photo=f,
-                                caption=f"📸 После клика по {ref}"
-                            )
-                    except Exception as e:
-                        logger.error(f"Ошибка отправки скриншота: {e}")
+                    with open(result["screenshot_after"], "rb") as f:
+                        await update.message.reply_photo(
+                            photo=f,
+                            caption=f"📸 После клика по {ref}"
+                        )
             else:
-                await update.message.reply_text(f"❌ {result.get('reason')}")
+                await update.message.reply_text(result["message"])
         
         elif command == "type":
             ref = args[1] if len(args) > 1 else None
@@ -813,17 +807,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         result = await orchestrator.execute(text)
         
-        if isinstance(result, dict) and result.get("screenshot"):
-            photo_bytes = base64.b64decode(result["screenshot"])
-            await update.message.reply_photo(
-                photo=photo_bytes,
-                caption=f"📸 {result.get('message', 'Скриншот')}"
-            )
-        elif result.get("success"):
-            message = result.get("message", "✅ Готово!")
-            await update.message.reply_text(message)
+        # ===== ПРОВЕРЯЕМ ТИП РЕЗУЛЬТАТА =====
+        if isinstance(result, dict):
+            # Простой скриншот
+            if result.get("screenshot"):
+                photo_bytes = base64.b64decode(result["screenshot"])
+                await update.message.reply_photo(
+                    photo=photo_bytes,
+                    caption=f"📸 {result.get('message', 'Скриншот')}"
+                )
+            # Скриншоты ДО и ПОСЛЕ клика
+            elif result.get("screenshot_before") or result.get("screenshot_after"):
+                if result.get("message"):
+                    await update.message.reply_text(result["message"])
+                
+                if result.get("screenshot_before"):
+                    with open(result["screenshot_before"], "rb") as f:
+                        await update.message.reply_photo(
+                            photo=f,
+                            caption=f"📸 До клика"
+                        )
+                
+                if result.get("screenshot_after"):
+                    with open(result["screenshot_after"], "rb") as f:
+                        await update.message.reply_photo(
+                            photo=f,
+                            caption=f"📸 После клика"
+                        )
+            else:
+                await update.message.reply_text(result.get("message", "✅ Готово!"))
+        elif isinstance(result, str):
+            await update.message.reply_text(result)
         else:
-            await update.message.reply_text(result.get("message", "❌ Не понял. Попробуй переформулировать."))
+            await update.message.reply_text("✅ Готово!")
         
     except Exception as e:
         logger.error(f"Ошибка в Луи: {e}")
