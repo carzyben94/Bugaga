@@ -2,3 +2,7 @@ python-telegram-bot>=22.8
 requests>=2.34.2
 websockets>=16.0
 httpx==0.28.1
+trio>=0.26.0
+trio-chrome-devtools-protocol>=0.6.0
+chrome-devtools-protocol[io]>=0.4.0
+wsproto>=1.2.0
