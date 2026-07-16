@@ -60,14 +60,13 @@ async def browser_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         # Проверяем, запущен ли браузер
         if not cdp_client.ws:
-            # Запускаем браузер
-            await cdp_client.start_chrome()
+            # Запускаем браузер (куки установятся автоматически)
             await cdp_client.connect_cdp(navigate_to_x=False)
         
         # Переходим по URL
         await cdp_client.navigate_to(url)
         
-        await update.message.reply_text(f"✅ Страница {url} загружена")
+        await update.message.reply_text(f"✅ Страница загружена")
         
     except Exception as e:
         logger.error(f"❌ Ошибка запуска браузера: {e}")
@@ -124,16 +123,16 @@ async def browser_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 async def post_init(application: Application):
-    """Запуск браузера при старте бота"""
+    """Запуск браузера при старте бота с куками"""
     if not BROWSER_AVAILABLE:
         logger.warning("⚠️ Браузер недоступен, пропускаем запуск")
         return
     
     logger.info("🚀 Запуск браузера при старте бота...")
     try:
-        await cdp_client.start_chrome()
+        # Запускаем браузер и сразу устанавливаем куки
         await cdp_client.connect_cdp(navigate_to_x=False)
-        logger.info("✅ Браузер успешно запущен")
+        logger.info("✅ Браузер успешно запущен, куки установлены")
     except Exception as e:
         logger.error(f"❌ Ошибка запуска браузера: {e}")
 
