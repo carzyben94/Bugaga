@@ -912,21 +912,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("✅ Готово!")
         
-        # ===== ОБНОВЛЕНИЕ ОКНА ТОЛЬКО ЕСЛИ БЫЛО ДЕЙСТВИЕ =====
-        action_keywords = [
-            "нажми", "клик", "открой", "перейди", "зайди", "опубликуй", 
-            "скрин", "сделай", "введи", "напиши", "пост", "твит",
-            "удали", "добавь", "покажи", "обнови", "войди", "выйди",
-            "запости", "отправь", "выбери", "открой", "закрой"
-        ]
-        
-        was_action = any(keyword in text.lower() for keyword in action_keywords)
-        
-        if viewer and viewer.chat_id and viewer.message_id and was_action:
+        # ===== ОБНОВЛЯЕМ ОКНО ПОСЛЕ ЗАГРУЗКИ =====
+        if viewer and viewer.chat_id and viewer.message_id:
             if hasattr(viewer, '_updating') and viewer._updating:
                 logger.info("⏳ Окно уже обновляется, пропускаем")
             else:
-                logger.info("🔄 Обновление окна просмотра (было действие)")
+                logger.info("🔄 Ожидание загрузки страницы перед обновлением окна")
+                
+                # ===== ЖДЁМ, ПОКА URL ИЗМЕНИТСЯ =====
+                try:
+                    old_url = await eval.get_url()
+                except:
+                    old_url = None
+                
+                # Ждём до 10 секунд
+                for i in range(10):
+                    await asyncio.sleep(1)
+                    try:
+                        new_url = await eval.get_url()
+                        if new_url and new_url != old_url:
+                            logger.info(f"✅ URL изменился: {old_url} → {new_url}")
+                            break
+                    except:
+                        pass
+                else:
+                    logger.info("⏱️ URL не изменился, обновляем всё равно")
+                
+                # ===== ТЕПЕРЬ ОБНОВЛЯЕМ ОКНО =====
                 view_result = await viewer.update()
                 if view_result.get("success"):
                     try:
