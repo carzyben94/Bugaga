@@ -39,7 +39,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🤖 **Привет! Я Луи!**\n\n"
         "Я — твой AI-помощник для работы с X.com.\n\n"
         "📋 **Команды:**\n"
-        "  /louis_log — скачать лог моих действий\n"
+        "  /louis_log — скачать детальный лог моих действий (JSON)\n"
+        "  /louis_log 50 — скачать последние 50 действий\n"
         "  /log_clear — очистить мой лог\n\n"
         "💡 **Просто напиши, что нужно сделать.**\n\n"
         "Примеры:\n"
@@ -682,7 +683,7 @@ async def ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def louis_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Скачать лог действий Луи"""
+    """Скачать детальный лог действий Луи (JSON)"""
     global orchestrator
     
     user_id = update.effective_user.id
@@ -692,28 +693,58 @@ async def louis_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     args = context.args
-    limit = 100
+    limit = 0
     if args and args[0].isdigit():
         limit = int(args[0])
     
-    log_text = orchestrator.get_logs_text(limit)
+    logs = orchestrator.get_logs(limit) if limit > 0 else orchestrator.action_logs
     
-    if len(log_text) > 4000:
-        filename = f"louis_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write(log_text)
-        
-        with open(filename, "rb") as f:
-            await update.message.reply_document(
-                document=f,
-                filename=filename,
-                caption=f"📋 Лог Луи (последние {limit} действий)"
+    if not logs:
+        await update.message.reply_text("📋 Логов пока нет.")
+        return
+    
+    filename = f"louis_log_detailed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    
+    report = {
+        "meta": {
+            "total_actions": len(logs),
+            "generated_at": datetime.now().isoformat(),
+            "url": orchestrator.current_url,
+            "agent": "Луи",
+            "version": "1.0"
+        },
+        "statistics": {
+            "success": len([l for l in logs if l.get("success")]),
+            "failed": len([l for l in logs if not l.get("success")]),
+            "actions": {}
+        },
+        "logs": logs
+    }
+    
+    for log in logs:
+        action = log.get("action", "unknown")
+        report["statistics"]["actions"][action] = report["statistics"]["actions"].get(action, 0) + 1
+    
+    with open(filename, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+    
+    with open(filename, "rb") as f:
+        await update.message.reply_document(
+            document=f,
+            filename=filename,
+            caption=(
+                f"📋 **Детальный лог Луи**\n\n"
+                f"📊 **Всего действий:** {len(logs)}\n"
+                f"✅ **Успешных:** {report['statistics']['success']}\n"
+                f"❌ **Ошибок:** {report['statistics']['failed']}\n"
+                f"📂 **Файл:** {filename}\n\n"
+                f"📌 **Статистика по типам:**\n" +
+                "\n".join([f"  {k}: {v}" for k, v in report['statistics']['actions'].items()])
             )
-        os.remove(filename)
-    else:
-        await update.message.reply_text(log_text)
+        )
     
-    logger.info(f"User {user_id} скачал лог Луи")
+    os.remove(filename)
+    logger.info(f"User {user_id} скачал детальный лог Луи")
 
 
 async def louis_log_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
