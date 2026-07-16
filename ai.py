@@ -18,15 +18,17 @@ class AI:
         self.eval = eval_obj
         self.accessibility = accessibility
         self.conversation_history = []
-        self.last_snapshot = []  # Последний снэпшот
+        self.last_snapshot = []
         self.system_prompt = self._get_system_prompt()
 
     def _get_system_prompt(self) -> str:
         return """Ты - агент для автоматизации браузера.
 
 ПРАВИЛА:
-1. Всегда выводи список интерактивных элементов в формате:
+1. Всегда выводи ВСЕ интерактивные элементы в формате:
    [E1] Тип "Название" - role: роль
+   [E2] Тип "Название" - role: роль
+   ... и так для всех элементов
 
 2. В конце всегда добавляй:
    "Чтобы кликнуть, скажите: /ask кликни [E1]"
@@ -34,10 +36,10 @@ class AI:
 3. Если пользователь просит кликнуть:
    "✅ Клик по [E1] выполнен"
 
-4. После каждого действия показывай обновленный список элементов
+4. После каждого действия показывай обновленный список всех элементов
 
 ФОРМАТ ОТВЕТА:
-1. Список элементов с рефами
+1. Список ВСЕХ элементов с рефами
 2. Подсказка для клика
 """
 
@@ -47,13 +49,14 @@ class AI:
             url = await self.eval.get_url()
             title = await self.eval.get_title()
             
-            # Свежий снэпшот
+            # Свежий снэпшот - получаем ВСЕ элементы
             elements = await self.accessibility.get_elements_with_refs()
-            self.last_snapshot = elements  # Сохраняем
+            self.last_snapshot = elements
             
             context = f"Страница: {title}\nURL: {url}\n\n"
             context += "Интерактивные элементы:\n"
             
+            # Показываем ВСЕ элементы без ограничения
             for el in elements:
                 name = el['name'] if el['name'] else 'без названия'
                 context += f"  {el['ref']}: {el['role']} - {name}\n"
@@ -69,7 +72,6 @@ class AI:
     async def ask(self, user_input: str) -> str:
         """Отправить запрос к LLM"""
         try:
-            # Получаем свежий контекст (обновленный снэпшот)
             page_context = await self.get_page_context()
             
             messages = [
