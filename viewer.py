@@ -20,28 +20,19 @@ class PageViewer:
         self.last_update = None
         self.chat_id = None
         self.message_id = None
-        self._updating = False  # ← флаг для защиты от конфликтов
+        self._updating = False
         logger.info("🖥️ Окно просмотра создано")
     
     async def capture(self) -> Dict[str, Any]:
-        """Сделать скриншот текущей страницы"""
+        """Сделать скриншот текущей страницы (без сохранения)"""
         try:
             screenshot_base64 = await self.browser.screenshot()
             self.current_screenshot = screenshot_base64
             self.last_update = datetime.now()
             
-            screenshots_dir = "screenshots"
-            os.makedirs(screenshots_dir, exist_ok=True)
-            filename = f"{screenshots_dir}/viewer_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-            with open(filename, "wb") as f:
-                f.write(base64.b64decode(screenshot_base64))
-            
-            logger.info(f"📸 Скриншот окна сохранён: {filename}")
-            
             return {
                 "success": True,
                 "screenshot": screenshot_base64,
-                "filename": filename,
                 "timestamp": self.last_update.isoformat(),
                 "url": await self.eval.get_url(),
                 "title": await self.eval.get_title()
