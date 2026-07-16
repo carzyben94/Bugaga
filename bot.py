@@ -1,20 +1,20 @@
 import os
 import base64
-import json
-import requests
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # Импорт модулей
 from browser import Browser
 from eval import Eval
+from accessibility import Accessibility  # <-- ДОБАВИТЬ
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "/browser - открыть ссылку\n"
-        "/tab - показать активные вкладки\n"
+        "/tab - показать вкладки\n"
+        "/accessibility - проверить доступность\n"
         "/close - закрыть браузер"
     )
 
@@ -34,6 +34,7 @@ async def browser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             browser = await Browser().start()
             context.user_data['browser'] = browser
             context.user_data['eval'] = Eval(browser)
+            context.user_data['accessibility'] = Accessibility(browser, context.user_data['eval'])  # <-- ДОБАВИТЬ
         
         await browser.goto(url)
         
@@ -54,6 +55,7 @@ async def browser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             context.user_data['browser'] = None
             context.user_data['eval'] = None
+            context.user_data['accessibility'] = None
 
 async def tab_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -62,14 +64,12 @@ async def tab_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Браузер не запущен")
             return
         
-        # Получаем список вкладок через CDP
         tabs = await browser.send("Target.getTargets")
         
         if not tabs or 'targetInfos' not in tabs:
             await update.message.reply_text("❌ Нет активных вкладок")
             return
         
-        # Формируем список вкладок
         tab_list = []
         for i, target in enumerate(tabs['targetInfos'], 1):
             url = target.get('url', 'about:blank')
@@ -81,7 +81,57 @@ async def tab_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         text = "📑 Активные вкладки:\n\n" + "\n\n".join(tab_list)
-        await update.message.reply_text(text[:4096])  # Telegram ограничение
+        await update.message.reply_text(text[:4096])
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+# <-- НОВАЯ КОМАНДА
+async def accessibility_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        acc = context.user_data.get('accessibility')
+        if not acc:
+            await update.message.reply_text("❌ Сначала запустите браузер командой /browser")
+            return
+        
+        await update.message.reply_text("🔍 Проверяю доступность страницы...")
+        
+        # Проверяем все
+        headings = await acc.check_heading_hierarchy()
+        images = await acc.check_images_alt()
+        aria = await acc.check_aria_labels()
+        elements = await acc.get_elements_with_refs()
+        
+        # Формируем отчет
+        report = "📊 **Отчет по доступности:**\n\n"
+        
+        # Заголовки
+        report += f"**Заголовки:** {headings.get('total', 0)} найдено\n"
+        if headings.get('issues'):
+            report += f"⚠️ {len(headings['issues'])} проблем\n"
+        else:
+            report += "✅ Иерархия корректна\n"
+        
+        # Изображения
+        report += f"\n**Изображения:** {images.get('total', 0)} всего\n"
+        report += f"✅ С alt: {images.get('passed', 0)}\n"
+        report += f"❌ Без alt: {images.get('failed', 0)}\n"
+        
+        # ARIA
+        report += f"\n**ARIA-метки:** {aria.get('total', 0)} элементов\n"
+        report += f"✅ С метками: {aria.get('has_aria', 0)}\n"
+        if aria.get('issues'):
+            report += f"⚠️ {len(aria['issues'])} элементов без меток\n"
+        
+        # Интерактивные элементы
+        report += f"\n**Интерактивные элементы:** {len(elements)} найдено\n"
+        if elements:
+            refs = [el['ref'] for el in elements[:10]]
+            report += f"🔗 Рефы: {', '.join(refs)}"
+            if len(elements) > 10:
+                report += f" и еще {len(elements)-10}"
+        
+        await update.message.reply_text(report, parse_mode='Markdown')
         
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
@@ -92,6 +142,7 @@ async def close_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await browser.close()
         context.user_data['browser'] = None
         context.user_data['eval'] = None
+        context.user_data['accessibility'] = None
         await update.message.reply_text("✅ Готово!")
     else:
         await update.message.reply_text("❌")
@@ -105,6 +156,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("browser", browser_cmd))
     app.add_handler(CommandHandler("tab", tab_cmd))
+    app.add_handler(CommandHandler("accessibility", accessibility_cmd))  # <-- ДОБАВИТЬ
     app.add_handler(CommandHandler("close", close_cmd))
     
     print("✅ Бот запущен!")
