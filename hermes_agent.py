@@ -124,7 +124,6 @@ class HermesAgent:
                 if attributes[i] == "data-testid":
                     return attributes[i + 1]
         except Exception as e:
-            # Элемент мог быть удалён из DOM — просто пропускаем
             logger.debug(f"Не удалось найти testId для nodeId {node_id}: {e}")
             return None
         
@@ -158,25 +157,9 @@ class HermesAgent:
         except:
             return {"count": 0}
 
-    # ===== СКРИНШОТЫ =====
-    async def _take_screenshot(self, name: str) -> str:
-        """Сделать скриншот и сохранить"""
-        try:
-            screenshot_base64 = await self.browser.screenshot()
-            screenshots_dir = "screenshots"
-            os.makedirs(screenshots_dir, exist_ok=True)
-            filename = f"{screenshots_dir}/{datetime.now().strftime('%Y%m%d_%H%M%S')}_{name}.png"
-            with open(filename, "wb") as f:
-                f.write(base64.b64decode(screenshot_base64))
-            logger.info(f"📸 Скриншот сохранён: {filename}")
-            return filename
-        except Exception as e:
-            logger.error(f"Ошибка скриншота: {e}")
-            return ""
-
     # ===== ДЕЙСТВИЯ =====
     async def click(self, ref: str) -> Dict[str, Any]:
-        """Кликнуть по элементу по ref с проверкой результата"""
+        """Кликнуть по элементу по ref"""
         
         logger.info(f"🔍 Ищу {ref}")
         logger.info(f"📋 В карте {len(self.element_map)} элементов")
@@ -195,89 +178,26 @@ class HermesAgent:
         # ===== ЕСЛИ ЕСТЬ СЕЛЕКТОР — ИСПОЛЬЗУЕМ =====
         if selector:
             try:
-                # Сохраняем состояние ДО клика
-                before_url = await self.eval.get_url()
-                before_state = await self._get_page_state()
-                
                 exists = await self.eval.exists(selector)
                 if not exists:
                     return {"success": False, "reason": f"Элемент {ref} не найден на странице"}
                 
-                screenshot_before = await self._take_screenshot("before_click")
-                
-                # Кликаем
+                # Кликаем (без скриншотов ДО)
                 await self.browser.human_click(selector)
                 await asyncio.sleep(1.5)
                 
-                screenshot_after = await self._take_screenshot("after_click")
+                # ===== ТОЛЬКО СКРИНШОТ ПОСЛЕ (БЕЗ СОХРАНЕНИЯ) =====
+                screenshot_after = await self.browser.screenshot()
                 
-                # Сохраняем состояние ПОСЛЕ клика
-                after_url = await self.eval.get_url()
-                after_state = await self._get_page_state()
-                
-                # ===== АНАЛИЗИРУЕМ ИЗМЕНЕНИЯ =====
-                changes = []
-                
-                # Проверяем URL
-                if before_url != after_url:
-                    changes.append(f"URL: {before_url} → {after_url}")
-                
-                # Проверяем появление новых элементов
-                new_elements = [
-                    "[role='dialog']",
-                    "[role='menu']",
-                    "[role='alert']",
-                    "[data-testid='modal']",
-                    "[data-testid='menu']",
-                    "[data-testid='dropdown']",
-                    ".css-1dbjc4n"  # типичный класс в X.com
-                ]
-                
-                for sel in new_elements:
-                    try:
-                        if await self.eval.exists(sel) and await self.eval.is_visible(sel):
-                            changes.append(f"Появился новый элемент: {sel}")
-                    except:
-                        pass
-                
-                # Проверяем изменение заголовка
-                title = await self.eval.get_title()
-                if title and "X" not in title:
-                    changes.append(f"Заголовок: {title}")
-                
-                # Проверяем изменение количества элементов
-                if before_state.get("count", 0) != after_state.get("count", 0):
-                    changes.append(f"Количество элементов: {before_state.get('count')} → {after_state.get('count')}")
-                
-                # ===== ФОРМИРУЕМ ОТВЕТ =====
-                if changes:
-                    logger.info(f"✅ Изменения после клика: {', '.join(changes)}")
-                    return {
-                        "success": True,
-                        "action": "click",
-                        "ref": ref,
-                        "selector": selector,
-                        "role": role,
-                        "changes": changes,
-                        "has_changes": True,
-                        "screenshot_before": screenshot_before,
-                        "screenshot_after": screenshot_after
-                    }
-                else:
-                    logger.info(f"⚠️ Клик выполнен, но видимых изменений нет")
-                    return {
-                        "success": True,
-                        "action": "click",
-                        "ref": ref,
-                        "selector": selector,
-                        "role": role,
-                        "changes": ["Клик выполнен, но видимых изменений нет"],
-                        "has_changes": False,
-                        "screenshot_before": screenshot_before,
-                        "screenshot_after": screenshot_after
-                    }
+                return {
+                    "success": True,
+                    "action": "click",
+                    "ref": ref,
+                    "selector": selector,
+                    "role": role,
+                    "screenshot_after_base64": screenshot_after
+                }
             except Exception as e:
-                logger.error(f"❌ Ошибка клика: {e}")
                 return {"success": False, "reason": str(e)}
         
         # ===== ЕСЛИ НЕТ СЕЛЕКТОРА — ИЩЕМ ПО ТЕКСТУ =====
@@ -310,14 +230,13 @@ class HermesAgent:
             clicked = await self.eval.execute(js)
             if clicked:
                 await asyncio.sleep(1.5)
-                screenshot_after = await self._take_screenshot("after_click")
+                screenshot_after = await self.browser.screenshot()
                 return {
                     "success": True,
                     "action": "click",
                     "ref": ref,
                     "method": "text_search",
-                    "has_changes": "unknown",
-                    "screenshot_after": screenshot_after
+                    "screenshot_after_base64": screenshot_after
                 }
             
             return {"success": False, "reason": f"Не удалось найти элемент {ref} по тексту '{name}'"}
