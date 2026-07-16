@@ -317,6 +317,10 @@ class Orchestrator:
     # ===== КЛИК ПО REF =====
     async def _click_by_ref(self, ref: str) -> str:
         """Кликнуть по элементу по ref (как /x click)"""
+        logger.info(f"🔍 Клик по ref: {ref}")
+        logger.info(f"📋 В карте {len(self.hermes.element_map)} элементов")
+        logger.info(f"🔑 Доступные ref: {list(self.hermes.element_map.keys())[:10]}")
+        
         result = await self.hermes.click(ref)
         if result.get("success"):
             await self.snapshot(force=True)
@@ -515,13 +519,17 @@ class Orchestrator:
     # ===== ПАРСЕР =====
     async def _parse_natural_language(self, text: str) -> Dict[str, Any]:
         """Распарсить команду на естественном языке"""
+        logger.info(f"🔍 Парсинг: {text}")
+        
         text_lower = text.lower()
         
         # ===== ПРЯМОЙ КЛИК ПО REF (@e10) =====
         ref_match = re.search(r'@e\d+', text)
         if ref_match:
             ref = ref_match.group(0)
+            logger.info(f"✅ Найден ref: {ref}")
             if any(word in text_lower for word in ["клик", "нажми", "тык"]) or ref in text:
+                logger.info(f"✅ Возвращаю click_ref: {ref}")
                 return {"action": "click_ref", "ref": ref}
         
         # ===== СКРИНШОТ =====
