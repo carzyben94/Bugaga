@@ -14,13 +14,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 Привет! Я бот с браузером.\n\n"
         "Доступные команды:\n"
         "/browser <ссылка> - открыть сайт и сделать скриншот\n"
+        "/close - закрыть браузер\n\n"
         "Пример: /browser https://google.com"
     )
 
 async def browser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    browser = None
     try:
-        # Проверяем, есть ли ссылка в аргументах
+        # Проверяем ссылку
         if not context.args:
             await update.message.reply_text(
                 "❌ Укажите ссылку!\n"
@@ -29,24 +29,29 @@ async def browser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         url = context.args[0]
-        
-        # Добавляем http:// если нет протокола
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
         
-        await update.message.reply_text(f"🌐 Запускаю браузер и открываю {url}...")
+        # Проверяем, есть ли уже браузер
+        browser = context.user_data.get('browser')
+        eval_obj = context.user_data.get('eval')
         
-        browser = await Browser().start()
+        if not browser:
+            await update.message.reply_text("🌐 Запускаю браузер...")
+            browser = await Browser().start()
+            context.user_data['browser'] = browser
+            context.user_data['eval'] = Eval(browser)
+        else:
+            await update.message.reply_text("🔄 Браузер уже запущен, открываю ссылку...")
         
+        # Переходим по ссылке
         await browser.goto(url)
         
-        # Получаем скриншот в base64
+        # Делаем скриншот
         screenshot_data = await browser.screenshot()
-        
-        # Декодируем base64 в байты
         image_bytes = base64.b64decode(screenshot_data)
         
-        # Отправляем как фото
+        # Отправляем
         await update.message.reply_photo(
             photo=image_bytes,
             caption=f"✅ Скриншот: {url}"
@@ -54,9 +59,24 @@ async def browser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
-    finally:
-        if browser:
-            await browser.close()
+        # Если ошибка, закрываем браузер
+        if 'browser' in context.user_data:
+            try:
+                await context.user_data['browser'].close()
+            except:
+                pass
+            context.user_data['browser'] = None
+            context.user_data['eval'] = None
+
+async def close_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    browser = context.user_data.get('browser')
+    if browser:
+        await browser.close()
+        context.user_data['browser'] = None
+        context.user_data['eval'] = None
+        await update.message.reply_text("🛑 Браузер закрыт")
+    else:
+        await update.message.reply_text("❌ Браузер не запущен")
 
 def main():
     if not TELEGRAM_TOKEN:
@@ -66,9 +86,10 @@ def main():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("browser", browser_cmd))
+    app.add_handler(CommandHandler("close", close_cmd))
     
     print("✅ Бот запущен!")
-    print("📋 Команда: /browser <ссылка>")
+    print("📋 Команды: /browser <ссылка>, /close")
     app.run_polling()
 
 if __name__ == "__main__":
