@@ -326,14 +326,12 @@ class Orchestrator:
             await self.snapshot(force=True)
             
             changes = result.get("changes", [])
-            screenshot_before = result.get("screenshot_before")
-            screenshot_after = result.get("screenshot_after")
+            screenshot_after_base64 = result.get("screenshot_after_base64")
             
             response = {
                 "success": True,
                 "message": f"✅ Клик по {ref} выполнен",
-                "screenshot_before": screenshot_before,
-                "screenshot_after": screenshot_after
+                "screenshot_after_base64": screenshot_after_base64
             }
             
             if changes:
@@ -385,31 +383,39 @@ class Orchestrator:
         
         # ===== СКРИНШОТ =====
         if action == "screenshot":
+            # Проверяем, что страница загружена
+            try:
+                body_check = await self.eval.execute("document.body && document.body.innerText.length > 0")
+                if not body_check:
+                    logger.info("🌐 Страница пустая, открываю X.com...")
+                    await self.browser.goto("https://x.com")
+                    self.current_url = "https://x.com"
+                    await self.snapshot(force=True)
+                    await asyncio.sleep(2)
+            except:
+                logger.info("🌐 Ошибка проверки страницы, открываю X.com...")
+                await self.browser.goto("https://x.com")
+                self.current_url = "https://x.com"
+                await self.snapshot(force=True)
+                await asyncio.sleep(2)
+            
             screenshot_base64 = await self.browser.screenshot()
-            screenshots_dir = "screenshots"
-            os.makedirs(screenshots_dir, exist_ok=True)
-            filename = f"{screenshots_dir}/{datetime.now().strftime('%Y%m%d_%H%M%S')}_screen.png"
-            with open(filename, "wb") as f:
-                f.write(base64.b64decode(screenshot_base64))
             
             self.log_action("screenshot", {
                 "success": True,
-                "message": f"Скриншот сохранён: {filename}",
-                "filename": filename
+                "message": "Скриншот сделан"
             })
             
             return {
                 "success": True,
-                "message": f"📸 Скриншот сохранён: {filename}",
-                "screenshot": screenshot_base64,
-                "filename": filename
+                "message": "📸 Скриншот",
+                "screenshot": screenshot_base64
             }
         
         # ===== НАВИГАЦИЯ =====
         if action == "navigate":
             url = parsed.get("url")
             
-            # ===== ПРОВЕРКА: УЖЕ НА ЭТОЙ СТРАНИЦЕ? =====
             try:
                 current_url = await self.eval.get_url()
                 if current_url == url or current_url.replace('/', '') == url.replace('/', ''):
@@ -442,7 +448,7 @@ class Orchestrator:
             for el in result['elements'][:15]:
                 response += f"  {el['ref']}: {el['role']} — {el['name'][:40]}\n"
             if result['total_elements'] > 15:
-                response += f"\n... и ещё {result['total_elements'] - 15} elementos"
+                response += f"\n... и ещё {result['total_elements'] - 15} элементов"
             
             self.log_action("snapshot", {
                 "success": True,
@@ -469,14 +475,12 @@ class Orchestrator:
                         })
                         
                         changes = result.get("changes", [])
-                        screenshot_before = result.get("screenshot_before")
-                        screenshot_after = result.get("screenshot_after")
+                        screenshot_after_base64 = result.get("screenshot_after_base64")
                         
                         response = {
                             "success": True,
                             "message": f"✅ Клик по '{name}' выполнен",
-                            "screenshot_before": screenshot_before,
-                            "screenshot_after": screenshot_after
+                            "screenshot_after_base64": screenshot_after_base64
                         }
                         
                         if changes:
