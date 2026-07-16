@@ -100,7 +100,12 @@ async def tab_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         text = "📑 Активные вкладки:\n\n" + "\n\n".join(tab_list)
-        await update.message.reply_text(text[:4096])
+        
+        # Обрезаем если слишком длинное
+        if len(text) > 4000:
+            text = text[:4000] + "\n\n... (обрезано)"
+        
+        await update.message.reply_text(text)
         
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
@@ -142,6 +147,10 @@ async def accessibility_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             report += f"🔗 Рефы: {', '.join(refs)}"
             if len(elements) > 10:
                 report += f" и еще {len(elements)-10}"
+        
+        # Обрезаем если слишком длинное
+        if len(report) > 4000:
+            report = report[:4000] + "\n\n... (обрезано)"
         
         await update.message.reply_text(report, parse_mode='Markdown')
         
@@ -194,6 +203,10 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         response += "\n\n" + "\n".join(changes)
         response += f"\n\n📍 Текущий URL: {new_url}"
+        
+        # Обрезаем если слишком длинное
+        if len(response) > 4000:
+            response = response[:4000] + "\n\n... (обрезано)"
         
         await update.message.reply_text(response)
         
