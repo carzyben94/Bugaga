@@ -1,13 +1,20 @@
 import asyncio
 import logging
-import os
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from pydoll.browser import Chrome
 from pydoll.browser.options import ChromiumOptions
 from pydoll.constants import PageLoadState, Key
 from pydoll.decorators import retry
-from pydoll.exceptions import ElementNotFound, WaitElementTimeout, NetworkError
+from pydoll.exceptions import (
+    ElementNotFound,
+    WaitElementTimeout,
+    NetworkError,
+    ElementNotVisible,
+    ElementNotInteractable,
+    ClickIntercepted,
+    PageLoadTimeout
+)
 from pydoll.extractor import ExtractionModel, Field
 from pydoll.protocol.fetch.events import FetchEvent, RequestPausedEvent
 from pydoll.protocol.network.types import ErrorReason
@@ -18,26 +25,18 @@ SCREENSHOTS_DIR = Path("screenshots")
 SCREENSHOTS_DIR.mkdir(exist_ok=True)
 
 # ============================================================
-# 1. НАСТРОЙКА БРАУЗЕРА (ChromiumOptions) - ИСПРАВЛЕННАЯ
+# 1. НАСТРОЙКА БРАУЗЕРА (ChromiumOptions)
 # ============================================================
 
 def get_optimized_options(user_data_dir: Optional[str] = None) -> ChromiumOptions:
-    """
-    Полностью настроенный ChromiumOptions для Railway
-    с явным указанием пути к Google Chrome
-    """
     options = ChromiumOptions()
     
-    # === ЯВНЫЙ ПУТЬ К БРАУЗЕРУ ===
     options.binary_location = "/usr/bin/google-chrome"
-    
-    # === КРИТИЧЕСКИ ВАЖНО ДЛЯ RAILWAY ===
     options.headless = True
     options.add_argument('--headless=new')
     options.start_timeout = 15
     options.page_load_state = PageLoadState.INTERACTIVE
     
-    # === PERSISTENT CONTEXT (сохранение сессии) ===
     if user_data_dir:
         options.add_argument(f'--user-data-dir={user_data_dir}')
     
@@ -55,7 +54,7 @@ def get_optimized_options(user_data_dir: Optional[str] = None) -> ChromiumOption
     options.add_argument('--dns-prefetch-disable')
     options.add_argument('--disable-animations')
     
-    # === СТЕЛС-РЕЖИМ (обход антибот-систем) ===
+    # === СТЕЛС-РЕЖИМ ===
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
     options.add_argument('--use-gl=swiftshader')
@@ -63,13 +62,10 @@ def get_optimized_options(user_data_dir: Optional[str] = None) -> ChromiumOption
     options.add_argument('--lang=en-US')
     options.add_argument('--accept-lang=en-US,en;q=0.9')
     options.add_argument('--tz=America/New_York')
-    # Убраны дублирующиеся аргументы:
-    # --no-first-run (уже есть по умолчанию)
-    # --no-default-browser-check (уже есть по умолчанию)
     options.add_argument('--disable-reading-from-canvas')
     options.add_argument('--disable-features=AudioServiceOutOfProcess')
     
-    # === БЕЗОПАСНОСТЬ (только для доверенной среды) ===
+    # === БЕЗОПАСНОСТЬ ===
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-setuid-sandbox')
     
@@ -77,7 +73,6 @@ def get_optimized_options(user_data_dir: Optional[str] = None) -> ChromiumOption
     options.add_argument('--window-size=1920,1080')
     options.add_argument('--force-device-scale-factor=1')
     
-    # === ПРЕДПОЧТЕНИЯ БРАУЗЕРА ===
     options.browser_preferences = {
         'profile': {
             'default_content_setting_values': {
@@ -94,19 +89,17 @@ def get_optimized_options(user_data_dir: Optional[str] = None) -> ChromiumOption
         }
     }
     
-    # === ЗАЩИТА ОТ WEBRTC УТЕЧЕК ===
     options.webrtc_leak_protection = True
-    
     return options
 
 
 # ============================================================
-# 2. БАЗОВЫЕ ФУНКЦИИ
+# 2. БАЗОВЫЕ ФУНКЦИИ (С ИСПРАВЛЕННЫМИ МЕТОДАМИ)
 # ============================================================
 
 @retry(
     max_retries=3,
-    exceptions=[ElementNotFound, WaitElementTimeout, NetworkError],
+    exceptions=[WaitElementTimeout, NetworkError, ElementNotFound, ElementNotVisible],
     delay=1.0,
     exponential_backoff=True
 )
@@ -122,18 +115,20 @@ async def search_and_screenshot(query: str) -> str:
         await search_box.type_text(query, humanize=True)
         await tab.keyboard.press(Key.ENTER)
         await asyncio.sleep(3)
-        await tab.screenshot(str(screenshot_path))
+        # ✅ Правильный метод для скриншота
+        await tab.take_screenshot(str(screenshot_path))
         return str(screenshot_path)
 
 
-@retry(max_retries=2, exceptions=[NetworkError], delay=1.0)
+@retry(max_retries=2, exceptions=[NetworkError, PageLoadTimeout])
 async def get_page_title(url: str) -> str:
     """Получает заголовок страницы"""
     options = get_optimized_options()
     async with Chrome(options=options) as browser:
         tab = await browser.start()
         await tab.go_to(url)
-        return await tab.title
+        # ✅ title может быть свойством, а не методом
+        return str(await tab.title)
 
 
 async def execute_javascript(url: str, script: str) -> str:
@@ -154,7 +149,8 @@ async def take_screenshot_of_element(url: str, selector: str) -> str:
         tab = await browser.start()
         await tab.go_to(url)
         element = await tab.find(css_selector=selector)
-        await element.screenshot(str(screenshot_path))
+        # ✅ Правильный метод для скриншота элемента
+        await element.take_screenshot(str(screenshot_path))
         return str(screenshot_path)
 
 
@@ -163,9 +159,7 @@ async def take_screenshot_of_element(url: str, selector: str) -> str:
 # ============================================================
 
 async def find_in_shadow_dom(url: str, host_selector: str, inner_selector: str) -> str:
-    """
-    Находит элемент внутри Shadow DOM (включая закрытые shadow roots)
-    """
+    """Находит элемент внутри Shadow DOM (включая закрытые shadow roots)"""
     options = get_optimized_options()
     
     async with Chrome(options=options) as browser:
@@ -180,9 +174,7 @@ async def find_in_shadow_dom(url: str, host_selector: str, inner_selector: str) 
 
 
 async def find_all_shadow_roots(url: str) -> List[str]:
-    """
-    Находит все shadow roots на странице
-    """
+    """Находит все shadow roots на странице"""
     options = get_optimized_options()
     
     async with Chrome(options=options) as browser:
@@ -205,9 +197,7 @@ async def find_all_shadow_roots(url: str) -> List[str]:
 # ============================================================
 
 async def load_page_without_images(url: str) -> str:
-    """
-    Загружает страницу, блокируя все изображения и стили
-    """
+    """Загружает страницу, блокируя все изображения и стили"""
     options = get_optimized_options()
     
     async with Chrome(options=options) as browser:
@@ -231,7 +221,7 @@ async def load_page_without_images(url: str) -> str:
         await tab.disable_fetch_events()
         
         screenshot_path = SCREENSHOTS_DIR / f"no_images_{abs(hash(url))}.png"
-        await tab.screenshot(str(screenshot_path))
+        await tab.take_screenshot(str(screenshot_path))
         
         return str(screenshot_path)
 
@@ -241,9 +231,7 @@ async def load_page_without_images(url: str) -> str:
 # ============================================================
 
 async def record_har(url: str, har_path: str = "recording.har") -> Dict[str, Any]:
-    """
-    Записывает HAR (HTTP Archive) при загрузке страницы
-    """
+    """Записывает HAR (HTTP Archive) при загрузке страницы"""
     options = get_optimized_options()
     
     async with Chrome(options=options) as browser:
@@ -266,15 +254,12 @@ async def record_har(url: str, har_path: str = "recording.har") -> Dict[str, Any
 # ============================================================
 
 async def hybrid_automation_example(login_url: str, username: str, password: str, api_url: str) -> Dict[str, Any]:
-    """
-    Пример гибридной автоматизации: логин через UI, затем API-запрос
-    """
+    """Пример гибридной автоматизации: логин через UI, затем API-запрос"""
     options = get_optimized_options()
     
     async with Chrome(options=options) as browser:
         tab = await browser.start()
         
-        # Шаг 1: Логинимся через UI
         await tab.go_to(login_url)
         
         username_field = await tab.find(id='username')
@@ -288,7 +273,6 @@ async def hybrid_automation_example(login_url: str, username: str, password: str
         
         await asyncio.sleep(2)
         
-        # Шаг 2: Делаем API-запрос, который наследует сессию браузера
         response = await tab.request.get(api_url)
         
         return {
@@ -302,9 +286,7 @@ async def hybrid_automation_example(login_url: str, username: str, password: str
 # ============================================================
 
 async def save_page_bundle(url: str, bundle_path: str = "page.zip", inline: bool = False) -> str:
-    """
-    Сохраняет страницу и все ресурсы в ZIP-архив
-    """
+    """Сохраняет страницу и все ресурсы в ZIP-архив"""
     options = get_optimized_options()
     
     async with Chrome(options=options) as browser:
@@ -325,9 +307,7 @@ async def save_page_bundle(url: str, bundle_path: str = "page.zip", inline: bool
 # ============================================================
 
 async def human_click_example(url: str, selector: str) -> str:
-    """
-    Кликает по элементу с человеко-подобным движением мыши
-    """
+    """Кликает по элементу с человеко-подобным движением мыши"""
     options = get_optimized_options()
     
     async with Chrome(options=options) as browser:
@@ -340,7 +320,7 @@ async def human_click_example(url: str, selector: str) -> str:
         await asyncio.sleep(1)
         
         screenshot_path = SCREENSHOTS_DIR / f"human_click_{abs(hash(selector))}.png"
-        await tab.screenshot(str(screenshot_path))
+        await tab.take_screenshot(str(screenshot_path))
         
         return str(screenshot_path)
 
@@ -350,14 +330,12 @@ async def human_click_example(url: str, selector: str) -> str:
 # ============================================================
 
 async def concurrent_scraping(urls: List[str]) -> List[str]:
-    """
-    Открывает несколько вкладок параллельно
-    """
+    """Открывает несколько вкладок параллельно"""
     options = get_optimized_options()
     
     async def scrape_page(url: str, tab) -> str:
         await tab.go_to(url)
-        return await tab.title
+        return str(await tab.title)
     
     async with Chrome(options=options) as browser:
         tabs = []
@@ -386,9 +364,7 @@ class QuoteModel(ExtractionModel):
     tags: list[str] = Field(selector='.tag', description='Теги')
 
 async def extract_quotes(url: str) -> list[dict]:
-    """
-    Парсит цитаты со страницы, используя Pydoll Extractor
-    """
+    """Парсит цитаты со страницы, используя Pydoll Extractor"""
     options = get_optimized_options()
     
     async with Chrome(options=options) as browser:
