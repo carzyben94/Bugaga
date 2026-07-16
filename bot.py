@@ -1,12 +1,12 @@
 import os
 import logging
 import base64
-import asyncio 
+import asyncio
 import json
 import re
 import zipfile
 from datetime import datetime
-from telegram import Update
+from telegram import Update, InputMediaPhoto
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 from browser import Browser
@@ -59,7 +59,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def view(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Открыть окно просмотра страницы"""
+    """Открыть окно просмотра страницы (с редактированием)"""
     global browser, orchestrator, viewer
     
     user_id = update.effective_user.id
@@ -90,10 +90,13 @@ async def view(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"  /view_close — закрыть окно"
             )
             
-            await update.message.reply_photo(
+            msg = await update.message.reply_photo(
                 photo=photo_bytes,
                 caption=caption
             )
+            
+            viewer.chat_id = update.effective_chat.id
+            viewer.message_id = msg.message_id
             
             logger.info(f"User {user_id} открыл окно просмотра")
         else:
@@ -531,7 +534,7 @@ async def x(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             result = await orchestrator.hermes.type_text(ref, text)
             if result.get("success"):
-                await update.message.reply_text(f"✅ Ввод в {ref} выполнен")
+                await update.message.reply_text(f"✅ Ввод在 {ref} выполнен")
             else:
                 await update.message.reply_text(f"❌ {result.get('reason')}")
         
@@ -879,14 +882,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # ===== ОТПРАВЛЯЕМ ОТВЕТ =====
         if isinstance(result, dict):
-            # Простой скриншот
             if result.get("screenshot"):
                 photo_bytes = base64.b64decode(result["screenshot"])
                 await update.message.reply_photo(
                     photo=photo_bytes,
                     caption=f"📸 {result.get('message', 'Скриншот')}"
                 )
-            # Скриншоты ДО и ПОСЛЕ клика
             elif result.get("screenshot_before") or result.get("screenshot_after"):
                 if result.get("message"):
                     await update.message.reply_text(result["message"])
@@ -912,11 +913,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("✅ Готово!")
         
         # ===== АВТО-ОБНОВЛЕНИЕ ОКНА ПРОСМОТРА =====
-        if viewer:
-            # Обновляем скриншот
+        if viewer and viewer.chat_id and viewer.message_id:
             view_result = await viewer.update()
             if view_result.get("success"):
-                logger.info("🔄 Окно просмотра обновлено")
+                try:
+                    photo_bytes = base64.b64decode(view_result["screenshot"])
+                    
+                    caption = (
+                        f"🖥️ **Окно просмотра**\n"
+                        f"🔗 {view_result.get('url', 'Неизвестно')}\n"
+                        f"📄 {view_result.get('title', 'Без заголовка')}\n"
+                        f"🕐 {view_result.get('timestamp', '')[:19]}\n\n"
+                        f"💡 Команды:\n"
+                        f"  /view — обновить окно\n"
+                        f"  /view_close — закрыть окно"
+                    )
+                    
+                    await context.bot.edit_message_media(
+                        chat_id=viewer.chat_id,
+                        message_id=viewer.message_id,
+                        media=InputMediaPhoto(media=photo_bytes, caption=caption)
+                    )
+                    logger.info("🔄 Окно просмотра обновлено")
+                except Exception as e:
+                    logger.warning(f"Не удалось отредактировать окно: {e}")
+                    await update.message.reply_text("🔄 Не удалось обновить окно, попробуйте /view")
         
     except Exception as e:
         logger.error(f"Ошибка в Луи: {e}")
@@ -940,7 +961,6 @@ def main():
     app.add_handler(CommandHandler("louis_log", louis_log))
     app.add_handler(CommandHandler("log_clear", louis_log_clear))
     
-    # ===== ЛУИ — ОБРАБАТЫВАЕТ ВСЕ ТЕКСТОВЫЕ СООБЩЕНИЯ =====
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     logger.info("🚀 Луи запущен и готов к общению!")
