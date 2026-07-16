@@ -10,20 +10,12 @@ class Accessibility:
         self.browser = browser
         self.eval = eval_obj
 
-    # ===== ОСНОВНОЙ МЕТОД - ДЕРЕВО ДОСТУПНОСТИ =====
-    
     async def get_accessibility_tree(self, compact: bool = True) -> Dict:
-        """
-        Получить дерево доступности страницы через CDP
-        Как в Hermes - использует Accessibility.getFullAXTree
-        """
+        """Получить дерево доступности страницы через CDP"""
         try:
             result = await self.browser.send("Accessibility.getFullAXTree")
-            
             if compact:
-                # Компактизация дерева (как в Hermes)
                 result = self._compact_tree(result)
-            
             return result
         except Exception as e:
             logger.error(f"Ошибка получения дерева доступности: {e}")
@@ -34,7 +26,6 @@ class Accessibility:
         if not tree or 'nodes' not in tree:
             return tree
         
-        # Фильтруем узлы с интерактивными элементами
         compact_nodes = []
         for node in tree.get('nodes', []):
             if self._is_interactive(node):
@@ -45,27 +36,32 @@ class Accessibility:
     def _is_interactive(self, node: Dict) -> bool:
         """Проверяет, является ли узел интерактивным"""
         roles = node.get('role', {}).get('value', '').lower()
-        interactive_roles = ['button', 'link', 'textbox', 'checkbox', 'radio', 'menuitem', 'tab', 'combobox']
+        interactive_roles = ['button', 'link', 'textbox', 'checkbox', 'radio', 
+                           'menuitem', 'tab', 'combobox', 'searchbox', 'spinbutton',
+                           'slider', 'switch', 'listbox', 'treeitem', 'option']
         return any(role in roles for role in interactive_roles)
 
-    # ===== ПОЛУЧЕНИЕ ЭЛЕМЕНТОВ С РЕФАМИ =====
-    
     async def get_elements_with_refs(self) -> List[Dict]:
-        """
-        Получить все интерактивные элементы с рефами [E1], [E2]...
-        Как в Hermes - присваивает ссылки элементам
-        """
+        """Получить только интерактивные элементы с рефами [E1], [E2]..."""
         result = await self.browser.send("Accessibility.getFullAXTree")
         elements = []
         ref_counter = 1
         
         for node in result.get('nodes', []):
-            if self._is_interactive(node):
+            role = node.get('role', {}).get('value', 'unknown').lower()
+            name = node.get('name', {}).get('value', '')
+            
+            # Только интерактивные элементы
+            interactive_roles = ['button', 'link', 'textbox', 'checkbox', 'radio', 
+                               'menuitem', 'tab', 'combobox', 'searchbox', 'spinbutton',
+                               'slider', 'switch', 'listbox', 'treeitem', 'option']
+            
+            if any(role in r for r in interactive_roles):
                 ref = f"[E{ref_counter}]"
                 elements.append({
                     'ref': ref,
-                    'role': node.get('role', {}).get('value', 'unknown'),
-                    'name': node.get('name', {}).get('value', ''),
+                    'role': role,
+                    'name': name[:100] if name else '',
                     'description': node.get('description', {}).get('value', ''),
                     'nodeId': node.get('nodeId', '')
                 })
@@ -73,8 +69,6 @@ class Accessibility:
         
         return elements
 
-    # ===== ДЕЙСТВИЯ ПО РЕФАМ (как в Hermes) =====
-    
     async def click_by_ref(self, ref: str) -> bool:
         """Клик по элементу по рефу [E1]"""
         elements = await self.get_elements_with_refs()
@@ -83,7 +77,6 @@ class Accessibility:
         if not target:
             return False
         
-        # Находим DOM-элемент по nodeId и кликаем
         js = f"""
             (function() {{
                 const elements = document.querySelectorAll('*');
@@ -98,8 +91,6 @@ class Accessibility:
         """
         return await self.eval.execute(js)
 
-    # ===== ПРОВЕРКИ ДОСТУПНОСТИ =====
-    
     async def check_heading_hierarchy(self) -> Dict:
         """Проверить иерархию заголовков"""
         return await self.eval.execute("""
@@ -190,7 +181,7 @@ class Accessibility:
         """)
 
     async def check_color_contrast(self) -> Dict:
-        """Проверить контрастность текста (базовая проверка)"""
+        """Проверить контрастность текста"""
         return await self.eval.execute("""
             (function() {
                 const elements = document.querySelectorAll('*');
@@ -202,8 +193,6 @@ class Accessibility:
                     const bg = style.backgroundColor;
                     
                     if (color && bg && color !== 'rgba(0, 0, 0, 0)') {
-                        // Простая проверка - если цвет и фон слишком близки
-                        // (упрощенная версия, для полной проверки нужна библиотека)
                         const colorMatch = color === bg;
                         if (colorMatch) {
                             issues.push({
