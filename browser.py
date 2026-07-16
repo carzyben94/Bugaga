@@ -46,8 +46,10 @@ class CDPClient:
                 start_new_session=True
             )
             
+            # Ждем запуска Chrome
             await asyncio.sleep(3)
             
+            # Получаем WebSocket URL через /json/list
             response = requests.get(f"http://localhost:{self.debug_port}/json/list")
             if response.status_code == 200:
                 pages = response.json()
@@ -81,13 +83,10 @@ class CDPClient:
             # Подключаемся с настройками для долгого соединения
             self.ws = await websockets.connect(
                 self.ws_url,
-                ping_interval=30,           
-                ping_timeout=60,            
-                close_timeout=10,           
-                max_size=10 * 1024 * 1024,  
-                max_queue=32,               
-                read_limit=10 * 1024 * 1024,
-                write_limit=10 * 1024 * 1024
+                ping_interval=30,           # Пинг каждые 30 секунд
+                ping_timeout=60,            # Таймаут пинга 60 секунд
+                close_timeout=10,           # Таймаут закрытия
+                max_size=10 * 1024 * 1024   # 10 MB максимальный размер сообщения
             )
             logger.info("✅ Подключен к CDP")
             
@@ -150,10 +149,10 @@ class CDPClient:
                 
                 return response_data.get("result", {})
                 
-            except (websockets.exceptions.ConnectionClosedOK,
-                    websockets.exceptions.ConnectionClosedError,
+            except (websockets.ConnectionClosedOK,
+                    websockets.ConnectionClosedError,
                     asyncio.TimeoutError,
-                    websockets.exceptions.WebSocketException) as e:
+                    websockets.WebSocketException) as e:
                 
                 logger.warning(f"⚠️ Ошибка соединения (попытка {attempt + 1}): {e}")
                 self.ws = None
@@ -196,12 +195,29 @@ class CDPClient:
             logger.error(f"❌ Ошибка переподключения: {e}")
             return False
     
+    async def ensure_connection(self):
+        """Проверяет и восстанавливает соединение если нужно"""
+        try:
+            if self.ws:
+                await self.send_command("Runtime.evaluate", {"expression": "1"})
+                return True
+        except:
+            logger.warning("⚠️ Соединение потеряно, переподключаемся...")
+            await self.reconnect()
+            return True
+        
+        if not self.ws:
+            await self.connect_cdp()
+        
+        return True
+    
     async def navigate_to(self, url: str):
         """Переход по URL с человеческой задержкой"""
         await asyncio.sleep(random.uniform(0.5, 1.5))
         
         result = await self.send_command("Page.navigate", {"url": url})
         
+        # Ждем загрузки страницы
         await self.send_command("Page.loadEventFired", {})
         
         logger.info(f"📄 Переход на {url}")
@@ -218,8 +234,26 @@ class CDPClient:
         logger.info(f"🍪 Установлено {len(formatted_cookies)} кук для X.com")
         return result
     
+    async def set_cookies_for_domain(self, domain: str):
+        """Устанавливает куки для любого домена"""
+        cookies = get_cookies_for_domain(domain)
+        if not cookies:
+            logger.warning(f"⚠️ Нет кук для домена: {domain}")
+            return
+        
+        formatted_cookies = format_cookies_for_cdp(cookies)
+        
+        result = await self.send_command("Network.setCookies", {
+            "cookies": formatted_cookies
+        })
+        
+        logger.info(f"🍪 Установлено {len(formatted_cookies)} кук для {domain}")
+        return result
+    
     async def set_viewport(self, width: int = 1280, height: int = 720):
         """Устанавливает размер вьюпорта для скриншотов"""
+        await self.ensure_connection()
+        
         result = await self.send_command("Emulation.setDeviceMetricsOverride", {
             "width": width,
             "height": height,
@@ -241,7 +275,9 @@ class CDPClient:
     ) -> str:
         """Делает скриншот с повторными попытками"""
         try:
-            # Проверяем страницу
+            await self.ensure_connection()
+            
+            # Проверяем, что страница загружена
             try:
                 ready_state = await self.send_command("Runtime.evaluate", {
                     "expression": "document.readyState"
@@ -251,9 +287,12 @@ class CDPClient:
             except:
                 pass
             
+            # Устанавливаем вьюпорт
             await self.set_viewport(width, height)
+            
             await asyncio.sleep(0.5)
             
+            # Параметры скриншота
             params = {
                 "format": format,
                 "captureBeyondViewport": full_page
@@ -262,6 +301,7 @@ class CDPClient:
             if format == "jpeg" and quality:
                 params["quality"] = quality
             
+            # Делаем скриншот с повторной попыткой
             result = None
             for attempt in range(3):
                 try:
@@ -271,6 +311,8 @@ class CDPClient:
                 except Exception as e:
                     logger.warning(f"⚠️ Попытка {attempt + 1} скриншота: {e}")
                     await asyncio.sleep(0.5)
+                    if attempt < 2:
+                        await self.ensure_connection()
             
             if not result or not result.get("data"):
                 raise Exception("Не удалось получить скриншот (пустые данные)")
@@ -282,13 +324,48 @@ class CDPClient:
             logger.error(f"❌ Ошибка создания скриншота: {e}")
             raise
     
+    async def get_page_content(self) -> str:
+        """Получение HTML страницы"""
+        await self.ensure_connection()
+        
+        result = await self.send_command("Runtime.evaluate", {
+            "expression": "document.documentElement.outerHTML"
+        })
+        return result.get("result", {}).get("value", "")
+    
     async def execute_script(self, script: str) -> Any:
         """Выполнение JavaScript"""
+        await self.ensure_connection()
+        
         result = await self.send_command("Runtime.evaluate", {
             "expression": script,
             "returnByValue": True
         })
         return result.get("result", {}).get("value")
+    
+    async def human_click(self, selector: str) -> bool:
+        """Человеческий клик (из mask.py)"""
+        await self.ensure_connection()
+        
+        js_code = self.mask.get_human_click_js(selector)
+        result = await self.execute_script(js_code)
+        return result
+    
+    async def human_type(self, selector: str, text: str) -> bool:
+        """Человеческий ввод (из mask.py)"""
+        await self.ensure_connection()
+        
+        js_code = self.mask.get_human_type_js(selector, text)
+        result = await self.execute_script(js_code)
+        return result
+    
+    async def human_scroll(self, distance: int) -> bool:
+        """Человеческий скролл (из mask.py)"""
+        await self.ensure_connection()
+        
+        js_code = self.mask.get_human_scroll_js(distance)
+        result = await self.execute_script(js_code)
+        return result
     
     async def close(self):
         """Закрытие Chrome"""
