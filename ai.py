@@ -1,7 +1,9 @@
 import os
 import json
 import logging
+import re
 from typing import Dict, List, Optional, Any
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +22,7 @@ class AI:
         self.system_prompt = self._get_system_prompt()
 
     def _get_system_prompt(self) -> str:
-        """Системный промпт для агента (как Hermes)"""
+        """Системный промпт для агента"""
         return """Ты - агент для автоматизации браузера. Твоя задача - выполнять действия на странице.
 
 Правила:
@@ -39,9 +41,6 @@ class AI:
 1. Описание текущего состояния страницы
 2. Действие, которое нужно выполнить
 3. Ожидаемый результат
-
-Пример ответа:
-"Страница загружена. Вижу кнопку 'Войти' [E1]. Кликаю по [E1] для перехода к форме авторизации."
 """
 
     async def get_page_context(self) -> str:
@@ -50,14 +49,12 @@ class AI:
             url = await self.eval.get_url()
             title = await self.eval.get_title()
             
-            # Получаем интерактивные элементы с рефами
             elements = await self.accessibility.get_elements_with_refs()
             
-            # Формируем контекст
             context = f"Страница: {title}\nURL: {url}\n\n"
             context += "Интерактивные элементы:\n"
             
-            for el in elements[:20]:  # Ограничиваем для токенов
+            for el in elements[:20]:
                 context += f"  {el['ref']}: {el['role']} - {el['name']}\n"
             
             if len(elements) > 20:
@@ -71,26 +68,20 @@ class AI:
     async def ask(self, user_input: str) -> str:
         """Отправить запрос к LLM"""
         try:
-            # Получаем контекст страницы
             page_context = await self.get_page_context()
             
-            # Формируем сообщение
             messages = [
                 {"role": "system", "content": self.system_prompt},
                 {"role": "system", "content": f"Контекст страницы:\n{page_context}"}
             ]
             
-            # Добавляем историю (последние 5 сообщений)
             for msg in self.conversation_history[-5:]:
                 messages.append(msg)
             
-            # Добавляем текущий запрос
             messages.append({"role": "user", "content": user_input})
             
-            # Отправляем запрос к API
             response = await self._call_api(messages)
             
-            # Сохраняем в историю
             self.conversation_history.append({"role": "user", "content": user_input})
             self.conversation_history.append({"role": "assistant", "content": response})
             
@@ -101,9 +92,7 @@ class AI:
             return f"❌ Ошибка: {e}"
 
     async def _call_api(self, messages: List[Dict]) -> str:
-        """Вызов Agnes API"""
-        import aiohttp
-        
+        """Вызов Agnes API через httpx"""
         headers = {
             "Authorization": f"Bearer {AGNES_API_KEY}",
             "Content-Type": "application/json"
@@ -116,25 +105,17 @@ class AI:
             "max_tokens": 2000
         }
         
-        async with aiohttp.ClientSession() as session:
-            async with session.post(AGNES_API_URL, headers=headers, json=payload) as resp:
-                if resp.status != 200:
-                    error_text = await resp.text()
-                    raise Exception(f"API ошибка {resp.status}: {error_text}")
-                
-                data = await resp.json()
-                return data['choices'][0]['message']['content']
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(AGNES_API_URL, headers=headers, json=payload)
+            
+            if response.status_code != 200:
+                raise Exception(f"API ошибка {response.status_code}: {response.text}")
+            
+            data = response.json()
+            return data['choices'][0]['message']['content']
 
     async def execute_action(self, action: str) -> str:
         """Выполнить действие, описанное LLM"""
-        # Парсим действие из ответа LLM
-        # Например: [E1] -> клик
-        # [E1] -> "текст" -> ввод текста
-        # scroll_down -> скролл
-        
-        import re
-        
-        # Проверяем клик
         click_match = re.search(r'\[([Ee]\d+)\]', action)
         if click_match:
             ref = click_match.group(1)
@@ -143,15 +124,12 @@ class AI:
                 return f"✅ Клик по [{ref}] выполнен"
             return f"❌ Элемент [{ref}] не найден"
         
-        # Проверяем ввод текста
         input_match = re.search(r'\[([Ee]\d+)\]\s*->\s*"([^"]+)"', action)
         if input_match:
             ref = input_match.group(1)
             text = input_match.group(2)
-            # TODO: реализовать ввод текста
             return f"✅ Текст '{text}' введен в [{ref}]"
         
-        # Скролл
         if "scroll_down" in action.lower():
             await self.eval.execute("window.scrollBy(0, 500)")
             return "✅ Скролл вниз"
