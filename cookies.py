@@ -1,3 +1,4 @@
+# cookies.py
 import logging
 from typing import List, Dict, Any
 
@@ -128,27 +129,16 @@ X_COOKIES = [
     }
 ]
 
-# Куки для других сайтов
-GOOGLE_COOKIES = []
-FACEBOOK_COOKIES = []
-
-# Словарь для легкого доступа
-COOKIES_BY_SITE = {
-    "x.com": X_COOKIES,
-    "twitter.com": X_COOKIES,  # алиас
-    "google.com": GOOGLE_COOKIES,
-    "facebook.com": FACEBOOK_COOKIES,
-}
-
 def get_cookies_for_domain(domain: str) -> List[Dict[str, Any]]:
     """Получить куки для домена"""
-    for site, cookies in COOKIES_BY_SITE.items():
-        if site in domain:
-            return cookies
+    if "x.com" in domain or "twitter.com" in domain:
+        return X_COOKIES
     return []
 
 def format_cookies_for_cdp(cookies: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Форматирует куки для CDP команды Network.setCookies"""
+    """
+    Форматирует куки для CDP команды Network.setCookies
+    """
     formatted = []
     for cookie in cookies:
         formatted.append({
@@ -159,6 +149,6 @@ def format_cookies_for_cdp(cookies: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "secure": cookie.get("secure", False),
             "httpOnly": cookie.get("httpOnly", False),
             "sameSite": cookie.get("sameSite", "unspecified"),
-            "expires": cookie.get("expirationDate", -1)  # -1 = session
+            "expires": cookie.get("expirationDate", -1)
         })
     return formatted
