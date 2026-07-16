@@ -2,8 +2,9 @@ import os
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# Импорт Browser класса из browser.py
+# Импорт модулей
 from browser import Browser
+from eval import Eval
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
@@ -18,23 +19,21 @@ async def browser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await update.message.reply_text("🌐 Запускаю браузер...")
         
-        # Создаем и запускаем браузер
         browser = await Browser().start()
+        context.user_data['browser'] = browser
+        context.user_data['eval'] = Eval(browser)
         
-        # Переходим на сайт (можно поменять URL)
         await browser.goto("https://example.com")
         
-        # Делаем скриншот
         screenshot_data = await browser.screenshot()
-        
-        # Отправляем скриншот
         await update.message.reply_photo(
             photo=screenshot_data,
             caption="✅ Скриншот страницы"
         )
         
-        # Закрываем браузер
         await browser.close()
+        context.user_data['browser'] = None
+        context.user_data['eval'] = None
         
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
