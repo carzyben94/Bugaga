@@ -54,7 +54,7 @@ class Browser:
                 ping_interval=15,
                 ping_timeout=30,
                 close_timeout=10,
-                max_size=100 * 1024 * 1024,  # ← 100 МБ
+                max_size=100 * 1024 * 1024,
                 max_queue=128
             )
             
@@ -69,9 +69,10 @@ class Browser:
             await self.eval_js(js_mask)
             self._masked = True
             
-            self._start_keepalive()
+            # Keepalive отключен, чтобы избежать конфликтов с recv
+            # self._start_keepalive()
             
-            logger.info("✅ Браузер готов (маскировка + куки + keepalive, max_size=100MB)")
+            logger.info("✅ Браузер готов (маскировка + куки, max_size=100MB)")
             
             return self
         except Exception as e:
@@ -86,7 +87,7 @@ class Browser:
             logger.info("🔁 Keepalive задача запущена")
     
     async def _keepalive_loop(self):
-        """Периодически отправлять ping через CDP"""
+        """Периодически отправлять ping без ожидания ответа"""
         try:
             while not self._is_closing and self.ws is not None:
                 await asyncio.sleep(20)
@@ -95,10 +96,13 @@ class Browser:
                     continue
                 
                 try:
-                    await self.send("Runtime.evaluate", {
-                        "expression": "1+1",
-                        "returnByValue": True
-                    })
+                    # Отправляем без ожидания ответа
+                    msg = {
+                        "id": 0,  # 0 = не ждём ответа
+                        "method": "Runtime.evaluate",
+                        "params": {"expression": "1+1", "returnByValue": True}
+                    }
+                    await self.ws.send(json.dumps(msg))
                     logger.debug("💓 Keepalive ping отправлен")
                 except websockets.exceptions.ConnectionClosed:
                     logger.warning("⚠️ WebSocket закрыт, переподключение...")
@@ -124,7 +128,7 @@ class Browser:
                 ping_interval=15,
                 ping_timeout=30,
                 close_timeout=10,
-                max_size=100 * 1024 * 1024,  # ← 100 МБ
+                max_size=100 * 1024 * 1024,
                 max_queue=128
             )
             await self.send("Page.enable")
