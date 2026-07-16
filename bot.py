@@ -38,23 +38,13 @@ viewer = None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 **Привет! Я Луи!**\n\n"
-        "Я — твой AI-помощник для работы с X.com.\n\n"
         "📋 **Команды:**\n"
-        "  /view — открыть окно просмотра страницы\n"
-        "  /view_close — закрыть окно просмотра\n"
-        "  /louis_log — скачать детальный лог моих действий (JSON)\n"
-        "  /louis_log 50 — скачать последние 50 действий\n"
-        "  /log_clear — очистить мой лог\n\n"
-        "💡 **Просто напиши, что нужно сделать.**\n\n"
-        "Примеры:\n"
-        "  открой x.com\n"
-        "  перейди в обзор\n"
-        "  опубликуй пост 'Привет мир!'\n"
-        "  сделай скрин\n"
-        "  какие кнопки видишь\n"
-        "  нажми на главную\n\n"
-        "🔥 Я сам пойму, что ты хочешь!"
+        "  /view\n"
+        "  /view_close\n"
+        "  /louis_log\n"
+        "  /louis_log 50\n"
+        "  /log_clear\n\n"
+        "💡 Просто напиши, что нужно сделать."
     )
 
 
@@ -355,87 +345,6 @@ async def accessibility(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
 
-async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global browser, orchestrator
-    
-    args = context.args
-    if not args:
-        await update.message.reply_text("❌ Укажи URL: /test https://example.com")
-        return
-    
-    url = args[0]
-    if not url.startswith(("http://", "https://")):
-        url = "https://" + url
-    
-    user_id = update.effective_user.id
-    await update.message.reply_text(f"🧪 Тестирую элементы на {url}...")
-    
-    try:
-        if browser is None:
-            browser = await Browser().start()
-            logger.info("✅ Браузер запущен")
-        
-        eval = Eval(browser)
-        tester = ElementTester(browser, eval)
-        
-        report = await tester.run_full_test(url)
-        
-        results = report.get("results", {})
-        verified_count = results.get('verified', 0)
-        failed_count = results.get('failed', 0)
-        total = results.get('total', 0)
-        success_rate = f"{verified_count / total * 100:.1f}%" if total > 0 else "0%"
-        
-        response = (
-            f"🧪 **Результаты тестирования**\n\n"
-            f"🔗 {url}\n"
-            f"📊 **Всего элементов:** {total}\n"
-            f"✅ **Работают:** {verified_count}\n"
-            f"❌ **Не работают:** {failed_count}\n"
-            f"⏭️ **Пропущено:** {results.get('skipped', 0)}\n"
-            f"📈 **Успешность:** {success_rate}\n\n"
-        )
-        
-        if results.get('actions'):
-            response += "✅ **Проверенные команды (первые 10):**\n"
-            for cmd in results['actions'][:10]:
-                text = cmd.get('text', cmd.get('name', ''))[:30]
-                selector = cmd.get('selector', '')
-                if selector:
-                    response += f"  🔘 {text}\n"
-                    response += f"     → {selector}\n"
-            if len(results['actions']) > 10:
-                response += f"  ... и ещё {len(results['actions']) - 10} команд\n"
-        
-        if results.get('failed_elements'):
-            response += "\n❌ **Упавшие элементы (первые 5):**\n"
-            for el in results['failed_elements'][:5]:
-                text = el.get('text', el.get('name', ''))[:30]
-                error = el.get('error', 'Неизвестная ошибка')
-                response += f"  ❌ {text}: {error}\n"
-        
-        response += f"\n📸 **Скриншотов:** {report.get('screenshots_count', 0)}\n"
-        response += f"💾 **Результаты:** test_results.json, test_logs.txt\n"
-        response += f"🗺️ **Карта:** site_map.json\n"
-        response += f"\n💡 Теперь AI знает, какие элементы работают!"
-        
-        await update.message.reply_text(response)
-        
-        logger.info(f"User {user_id} запустил тест {url}")
-        
-    except Exception as e:
-        error_msg = str(e)
-        logger.error(f"Ошибка тестирования: {error_msg}")
-        
-        if browser:
-            await browser.close()
-            browser = None
-            orchestrator = None
-            viewer = None
-        
-        await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
-
-
 async def x(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global browser, orchestrator
     
@@ -582,59 +491,6 @@ async def x(update: Update, context: ContextTypes.DEFAULT_TYPE):
             viewer = None
         
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
-
-
-async def results(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    try:
-        if os.path.exists("test_results.json"):
-            with open("test_results.json", "rb") as f:
-                await update.message.reply_document(
-                    document=f,
-                    filename=f"test_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                    caption="📊 Результаты тестирования"
-                )
-        else:
-            await update.message.reply_text("❌ Нет файла test_results.json")
-        
-        if os.path.exists("test_logs.txt"):
-            with open("test_logs.txt", "rb") as f:
-                await update.message.reply_document(
-                    document=f,
-                    filename=f"test_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                    caption="📋 Логи тестирования"
-                )
-        
-        if os.path.exists("site_map.json"):
-            with open("site_map.json", "rb") as f:
-                await update.message.reply_document(
-                    document=f,
-                    filename=f"site_map_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                    caption="🗺️ Карта сайта"
-                )
-        
-        if os.path.exists("screenshots") and os.listdir("screenshots"):
-            zip_path = f"screenshots_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
-            with zipfile.ZipFile(zip_path, 'w') as zipf:
-                for root, dirs, files in os.walk("screenshots"):
-                    for file in files:
-                        zipf.write(os.path.join(root, file))
-            
-            with open(zip_path, "rb") as f:
-                await update.message.reply_document(
-                    document=f,
-                    filename=zip_path,
-                    caption="📸 Скриншоты тестирования"
-                )
-            
-            os.remove(zip_path)
-        
-        logger.info(f"User {user_id} скачал результаты теста")
-        
-    except Exception as e:
-        logger.error(f"Ошибка скачивания результатов: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
 
 
 async def ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -981,9 +837,7 @@ def main():
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("analyze", analyze))
     app.add_handler(CommandHandler("accessibility", accessibility))
-    app.add_handler(CommandHandler("test", test))
     app.add_handler(CommandHandler("x", x))
-    app.add_handler(CommandHandler("results", results))
     app.add_handler(CommandHandler("ai", ai))
     app.add_handler(CommandHandler("log", log))
     app.add_handler(CommandHandler("louis_log", louis_log))
