@@ -315,7 +315,7 @@ class Orchestrator:
         return [{"action": "unknown", "reason": "Не удалось создать план"}]
     
     # ===== КЛИК ПО REF =====
-    async def _click_by_ref(self, ref: str) -> str:
+    async def _click_by_ref(self, ref: str):
         """Кликнуть по элементу по ref (как /x click)"""
         logger.info(f"🔍 Клик по ref: {ref}")
         logger.info(f"📋 В карте {len(self.hermes.element_map)} элементов")
@@ -326,14 +326,25 @@ class Orchestrator:
             await self.snapshot(force=True)
             
             changes = result.get("changes", [])
-            has_changes = result.get("has_changes", False)
+            screenshot_before = result.get("screenshot_before")
+            screenshot_after = result.get("screenshot_after")
+            
+            response = {
+                "success": True,
+                "message": f"✅ Клик по {ref} выполнен",
+                "screenshot_before": screenshot_before,
+                "screenshot_after": screenshot_after
+            }
             
             if changes:
-                return f"✅ Клик по {ref} выполнен\n📊 {', '.join(changes)}"
-            else:
-                return f"✅ Клик по {ref} выполнен"
+                response["message"] += f"\n📊 {', '.join(changes)}"
+            
+            return response
         else:
-            return f"❌ {result.get('reason', 'Неизвестная ошибка')}"
+            return {
+                "success": False,
+                "message": f"❌ {result.get('reason', 'Неизвестная ошибка')}"
+            }
     
     # ===== ВЫПОЛНЕНИЕ =====
     async def execute(self, text: str) -> Dict[str, Any]:
@@ -431,7 +442,7 @@ class Orchestrator:
             for el in result['elements'][:15]:
                 response += f"  {el['ref']}: {el['role']} — {el['name'][:40]}\n"
             if result['total_elements'] > 15:
-                response += f"\n... и ещё {result['total_elements'] - 15} элементов"
+                response += f"\n... и ещё {result['total_elements'] - 15} elementos"
             
             self.log_action("snapshot", {
                 "success": True,
@@ -458,9 +469,20 @@ class Orchestrator:
                         })
                         
                         changes = result.get("changes", [])
+                        screenshot_before = result.get("screenshot_before")
+                        screenshot_after = result.get("screenshot_after")
+                        
+                        response = {
+                            "success": True,
+                            "message": f"✅ Клик по '{name}' выполнен",
+                            "screenshot_before": screenshot_before,
+                            "screenshot_after": screenshot_after
+                        }
+                        
                         if changes:
-                            return f"✅ Клик по '{name}' выполнен\n📊 {', '.join(changes)}"
-                        return f"✅ Клик по '{name}' выполнен"
+                            response["message"] += f"\n📊 {', '.join(changes)}"
+                        
+                        return response
             
             self.log_action("click", {
                 "success": False,
