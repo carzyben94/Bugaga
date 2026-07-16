@@ -95,11 +95,8 @@ class HermesAgent:
         
         self.snapshot = snapshot
         
-        # ===== ЛОГИРУЕМ =====
         logger.info(f"📊 Собрано {len(snapshot)} элементов")
         logger.info(f"🔑 Доступные ref: {list(self.element_map.keys())[:20]}")
-        for ref, info in list(self.element_map.items())[:15]:
-            logger.info(f"  {ref}: role={info.get('role')}, name={info.get('name')[:30]}, selector={info.get('selector')}")
         
         return {
             "url": url,
@@ -127,7 +124,9 @@ class HermesAgent:
                 if attributes[i] == "data-testid":
                     return attributes[i + 1]
         except Exception as e:
-            logger.debug(f"Ошибка поиска testId: {e}")
+            # Элемент мог быть удалён из DOM — просто пропускаем
+            logger.debug(f"Не удалось найти testId для nodeId {node_id}: {e}")
+            return None
         
         return None
 
@@ -208,7 +207,6 @@ class HermesAgent:
             # ===== ИЩЕМ ССЫЛКУ ПО ТЕКСТУ =====
             js = f"""
             (function() {{
-                // Ищем все кликабельные элементы
                 const elements = document.querySelectorAll('a, [role="link"], button, [role="button"], div[role="link"], span[role="link"]');
                 for (const el of elements) {{
                     const text = el.innerText || el.textContent || '';
@@ -218,7 +216,6 @@ class HermesAgent:
                     }}
                 }}
                 
-                // Если не нашли — ищем по aria-label
                 const byAria = document.querySelector('[aria-label*={safe_name}]');
                 if (byAria) {{
                     byAria.click();
