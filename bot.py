@@ -1,8 +1,17 @@
 import os
-import logging 
+import logging
+import base64
+import io
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from browser import cdp_client
+
+# Импорт браузера с обработкой ошибок
+try:
+    from browser import cdp_client
+    BROWSER_AVAILABLE = True
+except ImportError as e:
+    BROWSER_AVAILABLE = False
+    print(f"⚠️ Браузер не доступен: {e}")
 
 # Настройка логирования
 logging.basicConfig(
@@ -37,19 +46,30 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /status"""
+    if not BROWSER_AVAILABLE:
+        await update.message.reply_text("❌ Модуль браузера недоступен")
+        return
+    
     status_text = "✅ Бот работает!\n"
     
     # Проверяем состояние браузера
-    if cdp_client.ws:
-        status_text += "✅ Браузер запущен\n"
-        status_text += f"🔗 CDP: {cdp_client.ws_url}\n"
-    else:
-        status_text += "❌ Браузер не запущен\n"
+    try:
+        if cdp_client.ws:
+            status_text += "✅ Браузер запущен\n"
+            status_text += f"🔗 CDP: {cdp_client.ws_url}\n"
+        else:
+            status_text += "❌ Браузер не запущен\n"
+    except Exception as e:
+        status_text += f"❌ Ошибка проверки браузера: {e}\n"
     
     await update.message.reply_text(status_text)
 
 async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /screenshot"""
+    if not BROWSER_AVAILABLE:
+        await update.message.reply_text("❌ Модуль браузера недоступен")
+        return
+    
     await update.message.reply_text("📸 Запускаю браузер и делаю скриншот X.com...")
     
     try:
@@ -57,12 +77,19 @@ async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not cdp_client.ws:
             await cdp_client.connect_cdp()
         
-        # Делаем скриншот
+        # Делаем скриншот (получаем base64)
         screenshot_b64 = await cdp_client.take_screenshot()
+        
+        # ✅ Декодируем base64 в байты
+        screenshot_bytes = base64.b64decode(screenshot_b64)
+        
+        # ✅ Создаем BytesIO объект
+        photo_file = io.BytesIO(screenshot_bytes)
+        photo_file.name = "screenshot.png"  # Важно для Telegram
         
         # Отправляем в чат
         await update.message.reply_photo(
-            photo=screenshot_b64,
+            photo=photo_file,
             caption="📸 X.com"
         )
         
@@ -75,8 +102,50 @@ async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Попробуй позже или /status для проверки."
         )
 
+async def screenshot_jpeg(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /screenshot_jpeg - скриншот в JPEG"""
+    if not BROWSER_AVAILABLE:
+        await update.message.reply_text("❌ Модуль браузера недоступен")
+        return
+    
+    await update.message.reply_text("📸 Делаю скриншот в формате JPEG...")
+    
+    try:
+        # Запускаем браузер если не запущен
+        if not cdp_client.ws:
+            await cdp_client.connect_cdp()
+        
+        # Делаем скриншот в JPEG
+        screenshot_b64 = await cdp_client.take_screenshot(
+            format="jpeg",
+            quality=80
+        )
+        
+        # ✅ Декодируем base64 в байты
+        screenshot_bytes = base64.b64decode(screenshot_b64)
+        
+        # ✅ Создаем BytesIO объект
+        photo_file = io.BytesIO(screenshot_bytes)
+        photo_file.name = "screenshot.jpg"  # Важно для Telegram
+        
+        # Отправляем в чат
+        await update.message.reply_photo(
+            photo=photo_file,
+            caption="📸 X.com (JPEG, качество 80%)"
+        )
+        
+        logger.info(f"✅ JPEG скриншот отправлен пользователю {update.effective_user.id}")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при создании JPEG скриншота: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
 async def screenshot_full(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /screenshot_full - скриншот всей страницы"""
+    if not BROWSER_AVAILABLE:
+        await update.message.reply_text("❌ Модуль браузера недоступен")
+        return
+    
     await update.message.reply_text("📸 Делаю полный скриншот страницы...")
     
     try:
@@ -91,9 +160,16 @@ async def screenshot_full(update: Update, context: ContextTypes.DEFAULT_TYPE):
             full_page=True
         )
         
+        # ✅ Декодируем base64 в байты
+        screenshot_bytes = base64.b64decode(screenshot_b64)
+        
+        # ✅ Создаем BytesIO объект
+        photo_file = io.BytesIO(screenshot_bytes)
+        photo_file.name = "screenshot_full.png"
+        
         # Отправляем в чат
         await update.message.reply_photo(
-            photo=screenshot_b64,
+            photo=photo_file,
             caption="📸 Полный скриншот X.com"
         )
         
@@ -101,33 +177,12 @@ async def screenshot_full(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ Ошибка при создании полного скриншота: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
-async def screenshot_jpeg(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /screenshot_jpeg - скриншот в JPEG"""
-    await update.message.reply_text("📸 Делаю скриншот в формате JPEG...")
-    
-    try:
-        # Запускаем браузер если не запущен
-        if not cdp_client.ws:
-            await cdp_client.connect_cdp()
-        
-        # Делаем скриншот в JPEG
-        screenshot_b64 = await cdp_client.take_screenshot(
-            format="jpeg",
-            quality=80
-        )
-        
-        # Отправляем в чат
-        await update.message.reply_photo(
-            photo=screenshot_b64,
-            caption="📸 X.com (JPEG, качество 80%)"
-        )
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка при создании JPEG скриншота: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-
 async def shutdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /shutdown - закрыть браузер"""
+    if not BROWSER_AVAILABLE:
+        await update.message.reply_text("❌ Модуль браузера недоступен")
+        return
+    
     await update.message.reply_text("🔄 Закрываю браузер...")
     
     try:
@@ -138,6 +193,10 @@ async def shutdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def post_init(application: Application):
     """Запуск браузера при старте бота"""
+    if not BROWSER_AVAILABLE:
+        logger.warning("⚠️ Браузер недоступен, пропускаем запуск")
+        return
+    
     logger.info("🚀 Запуск браузера при старте бота...")
     try:
         await cdp_client.connect_cdp()
@@ -149,6 +208,10 @@ def main():
     """Запуск бота"""
     logger.info("Запуск бота...")
     
+    # Проверяем доступность браузера
+    if not BROWSER_AVAILABLE:
+        logger.warning("⚠️ Браузер не доступен, некоторые функции будут отключены")
+    
     # Создаем приложение
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
@@ -157,8 +220,8 @@ def main():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("screenshot", screenshot))
-    app.add_handler(CommandHandler("screenshot_full", screenshot_full))
     app.add_handler(CommandHandler("screenshot_jpeg", screenshot_jpeg))
+    app.add_handler(CommandHandler("screenshot_full", screenshot_full))
     app.add_handler(CommandHandler("shutdown", shutdown))
     
     # Запускаем браузер при старте
