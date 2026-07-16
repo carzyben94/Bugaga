@@ -14,6 +14,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "/browser - открыть ссылку\n"
+        "/screen - сделать скриншот\n"
         "/tab - показать вкладки\n"
         "/accessibility - проверить доступность\n"
         "/ask - спросить AI\n"
@@ -41,13 +42,7 @@ async def browser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await browser.goto(url)
         
-        screenshot_data = await browser.screenshot()
-        image_bytes = base64.b64decode(screenshot_data)
-        
-        await update.message.reply_photo(
-            photo=image_bytes,
-            caption=f"✅ {url}"
-        )
+        await update.message.reply_text(f"✅ {url}")
         
     except Exception as e:
         await update.message.reply_text(f"❌ {e}")
@@ -60,6 +55,26 @@ async def browser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['eval'] = None
             context.user_data['accessibility'] = None
             context.user_data['ai'] = None
+
+async def screen_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        browser = context.user_data.get('browser')
+        if not browser:
+            await update.message.reply_text("❌ Сначала запустите браузер командой /browser")
+            return
+        
+        await update.message.reply_text("📸 Делаю скриншот...")
+        
+        screenshot_data = await browser.screenshot()
+        image_bytes = base64.b64decode(screenshot_data)
+        
+        await update.message.reply_photo(
+            photo=image_bytes,
+            caption="✅ Скриншот"
+        )
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ {e}")
 
 async def tab_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -173,13 +188,14 @@ def main():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("browser", browser_cmd))
+    app.add_handler(CommandHandler("screen", screen_cmd))
     app.add_handler(CommandHandler("tab", tab_cmd))
     app.add_handler(CommandHandler("accessibility", accessibility_cmd))
     app.add_handler(CommandHandler("ask", ask_cmd))
     app.add_handler(CommandHandler("close", close_cmd))
     
     print("✅ Бот запущен!")
-    print("📋 Команды: /browser, /tab, /accessibility, /ask, /close")
+    print("📋 Команды: /browser, /screen, /tab, /accessibility, /ask, /close")
     app.run_polling()
 
 if __name__ == "__main__":
