@@ -4,8 +4,6 @@ import logging
 from datetime import datetime
 from typing import Dict, Any
 
-# ===== ДОБАВИТЬ ЭТОТ ИМПОРТ =====
-import logging
 logger = logging.getLogger(__name__)
 
 
@@ -20,6 +18,8 @@ class PageViewer:
         self.is_active = True
         self.current_screenshot = None
         self.last_update = None
+        self.chat_id = None
+        self.message_id = None
         logger.info("🖥️ Окно просмотра создано")
     
     async def capture(self) -> Dict[str, Any]:
