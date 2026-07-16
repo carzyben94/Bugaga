@@ -343,10 +343,14 @@ class Orchestrator:
             await self.browser.goto("https://x.com")
             self.current_url = "https://x.com"
             await self.snapshot()
+            
+            result = await self._continue_execution(text)
+            
+            if isinstance(result, dict):
+                return result
             return {
                 "success": True,
-                "message": "🌐 Я открыл X.com и готов помогать!\n\n" +
-                           await self._continue_execution(text)
+                "message": "🌐 Я открыл X.com и готов помогать!\n\n" + result
             }
         
         result = await self._continue_execution(text)
@@ -358,7 +362,7 @@ class Orchestrator:
         return {"success": True, "message": str(result)}
     
     async def _continue_execution(self, text: str) -> str:
-        """Продолжить выполнение после инициализации"""
+        """Продолжить выполнение после инициализации — ВСЕГДА ВОЗВРАЩАЕТ СТРОКУ"""
         
         parsed = await self._parse_natural_language(text)
         action = parsed.get("action")
@@ -383,12 +387,7 @@ class Orchestrator:
                 "filename": filename
             })
             
-            return {
-                "success": True,
-                "message": f"📸 Скриншот сохранён: {filename}",
-                "screenshot": screenshot_base64,
-                "filename": filename
-            }
+            return f"📸 Скриншот сохранён: {filename}"
         
         # ===== НАВИГАЦИЯ =====
         if action == "navigate":
