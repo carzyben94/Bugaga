@@ -5,6 +5,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 # Импортируем все функции из pydoll_handlers
 from pydoll_handlers import (
+    # Базовые функции
     search_and_screenshot,
     get_page_title,
     execute_javascript,
@@ -13,11 +14,20 @@ from pydoll_handlers import (
     find_all_shadow_roots,
     load_page_without_images,
     record_har,
-    hybrid_automation_example,
     save_page_bundle,
     human_click_example,
     concurrent_scraping,
-    extract_quotes
+    extract_quotes,
+    # X.com функции
+    post_tweet,
+    reply_to_tweet,
+    like_tweet,
+    retweet_tweet,
+    get_profile,
+    get_timeline,
+    search_tweets,
+    follow_user,
+    unfollow_user
 )
 
 # Настройка логирования
@@ -35,6 +45,7 @@ if not TELEGRAM_TOKEN:
 # ОБРАБОТЧИКИ КОМАНД
 # ============================================================
 
+# ---------- СТАРТ ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Приветственное сообщение со списком команд"""
     await update.message.reply_text(
@@ -54,9 +65,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/human <url> <селектор> - Клик с humanize=True\n"
         "/concurrent <url1> <url2> ... - Параллельная загрузка\n"
         "/parse <url> - Парсинг цитат (ExtractionModel)\n"
-        "/hybrid <login_url> <user> <pass> <api_url> - Гибридная автоматизация"
+        "/hybrid <login_url> <user> <pass> <api_url> - Гибридная автоматизация\n\n"
+        "🐦 **Команды для X.com (авторизация через куки):**\n"
+        "/tweet <текст> - Опубликовать твит\n"
+        "/reply <url> <текст> - Ответить на твит\n"
+        "/like <url> - Поставить лайк\n"
+        "/retweet <url> - Сделать ретвит\n"
+        "/profile <username> - Информация о профиле\n"
+        "/timeline <username> [количество] - Последние твиты\n"
+        "/search_tweets <запрос> [количество] - Поиск твитов\n"
+        "/follow <username> - Подписаться\n"
+        "/unfollow <username> - Отписаться"
     )
 
+# ---------- БАЗОВЫЕ КОМАНДЫ ----------
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Поиск в Google со скриншотом"""
     if not context.args:
@@ -137,6 +159,7 @@ async def element_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.error(f"Ошибка в element_screenshot: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
 
+# ---------- РАСШИРЕННЫЕ КОМАНДЫ ----------
 async def shadow_dom(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Поиск элемента внутри Shadow DOM"""
     if len(context.args) < 3:
@@ -338,23 +361,235 @@ async def hybrid(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка в hybrid: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
 
+# ---------- X.COM КОМАНДЫ ----------
+async def tweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Опубликовать твит"""
+    if not context.args:
+        await update.message.reply_text("❌ /tweet <текст твита>")
+        return
+    
+    text = " ".join(context.args)
+    await update.message.reply_text(f"🐦 Публикую твит...")
+    
+    try:
+        result = await post_tweet(text)
+        if result:
+            await update.message.reply_text(f"✅ Твит опубликован!\n\n{text[:200]}")
+        else:
+            await update.message.reply_text("❌ Ошибка публикации. Проверь куки.")
+    except Exception as e:
+        logger.error(f"Ошибка в tweet: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
+
+async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ответить на твит"""
+    if len(context.args) < 2:
+        await update.message.reply_text("❌ /reply <url_твита> <текст_ответа>")
+        return
+    
+    tweet_url = context.args[0]
+    text = " ".join(context.args[1:])
+    
+    await update.message.reply_text(f"💬 Отвечаю на твит...")
+    
+    try:
+        result = await reply_to_tweet(tweet_url, text)
+        if result:
+            await update.message.reply_text(f"✅ Ответ опубликован!")
+        else:
+            await update.message.reply_text("❌ Ошибка ответа. Проверь куки.")
+    except Exception as e:
+        logger.error(f"Ошибка в reply: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
+
+async def like(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Поставить лайк"""
+    if not context.args:
+        await update.message.reply_text("❌ /like <url_твита>")
+        return
+    
+    tweet_url = context.args[0]
+    await update.message.reply_text(f"❤️ Ставлю лайк...")
+    
+    try:
+        result = await like_tweet(tweet_url)
+        if result:
+            await update.message.reply_text(f"✅ Лайк поставлен!")
+        else:
+            await update.message.reply_text("❌ Ошибка. Проверь куки.")
+    except Exception as e:
+        logger.error(f"Ошибка в like: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
+
+async def retweet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сделать ретвит"""
+    if not context.args:
+        await update.message.reply_text("❌ /retweet <url_твита>")
+        return
+    
+    tweet_url = context.args[0]
+    await update.message.reply_text(f"🔄 Делаю ретвит...")
+    
+    try:
+        result = await retweet_tweet(tweet_url)
+        if result:
+            await update.message.reply_text(f"✅ Ретвит сделан!")
+        else:
+            await update.message.reply_text("❌ Ошибка. Проверь куки.")
+    except Exception as e:
+        logger.error(f"Ошибка в retweet: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
+
+async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Получить информацию о профиле"""
+    if not context.args:
+        await update.message.reply_text("❌ /profile <username>")
+        return
+    
+    username = context.args[0].replace('@', '')
+    await update.message.reply_text(f"👤 Загружаю профиль @{username}...")
+    
+    try:
+        profile_data = await get_profile(username)
+        
+        if not profile_data:
+            await update.message.reply_text("❌ Профиль не найден или нет авторизации")
+            return
+        
+        message = f"👤 **{profile_data.get('name', '')}**\n"
+        message += f"🔹 @{profile_data.get('username', '')}\n\n"
+        message += f"📝 {profile_data.get('bio', 'Нет описания')[:200]}\n\n"
+        message += f"📍 {profile_data.get('location', '')}\n"
+        message += f"📅 Присоединился: {profile_data.get('joined', '')}\n"
+        message += f"👥 Подписчики: {profile_data.get('followers', '')}\n"
+        message += f"📌 Подписки: {profile_data.get('following', '')}"
+        
+        await update.message.reply_text(message)
+        
+    except Exception as e:
+        logger.error(f"Ошибка в profile: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
+
+async def timeline(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Получить последние твиты пользователя"""
+    if not context.args:
+        await update.message.reply_text("❌ /timeline <username> [количество]")
+        return
+    
+    username = context.args[0].replace('@', '')
+    limit = int(context.args[1]) if len(context.args) > 1 else 5
+    
+    await update.message.reply_text(f"📊 Получаю твиты @{username}...")
+    
+    try:
+        tweets = await get_timeline(username, limit)
+        
+        if not tweets:
+            await update.message.reply_text("❌ Твиты не найдены или нет авторизации")
+            return
+        
+        message = f"📊 Последние {len(tweets)} твитов @{username}:\n\n"
+        for i, t in enumerate(tweets, 1):
+            text = t.get('text', '')[:100]
+            if len(t.get('text', '')) > 100:
+                text += "..."
+            message += f"{i}. ❤️ {t.get('likes', '0')} | 🔁 {t.get('retweets', '0')}\n"
+            message += f"   {text}\n\n"
+        
+        await update.message.reply_text(message[:4000])
+        
+    except Exception as e:
+        logger.error(f"Ошибка в timeline: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
+
+async def search_tweets_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Поиск твитов по запросу"""
+    if not context.args:
+        await update.message.reply_text("❌ /search_tweets <запрос> [количество]")
+        return
+    
+    query = context.args[0]
+    limit = int(context.args[1]) if len(context.args) > 1 else 5
+    
+    await update.message.reply_text(f"🔍 Ищу твиты: {query}...")
+    
+    try:
+        tweets = await search_tweets(query, limit)
+        
+        if not tweets:
+            await update.message.reply_text("❌ Твиты не найдены или нет авторизации")
+            return
+        
+        message = f"🔍 Результаты поиска: {query}\n\n"
+        for i, t in enumerate(tweets, 1):
+            text = t.get('text', '')[:100]
+            if len(t.get('text', '')) > 100:
+                text += "..."
+            message += f"{i}. @{t.get('author_username', '')}: {text}\n"
+            message += f"   ❤️ {t.get('likes', '0')} | 🔁 {t.get('retweets', '0')}\n\n"
+        
+        await update.message.reply_text(message[:4000])
+        
+    except Exception as e:
+        logger.error(f"Ошибка в search_tweets_command: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
+
+async def follow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Подписаться на пользователя"""
+    if not context.args:
+        await update.message.reply_text("❌ /follow <username>")
+        return
+    
+    username = context.args[0].replace('@', '')
+    await update.message.reply_text(f"➕ Подписываюсь на @{username}...")
+    
+    try:
+        result = await follow_user(username)
+        if result:
+            await update.message.reply_text(f"✅ Подписан на @{username}")
+        else:
+            await update.message.reply_text("❌ Ошибка подписки. Проверь куки.")
+    except Exception as e:
+        logger.error(f"Ошибка в follow: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
+
+async def unfollow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отписаться от пользователя"""
+    if not context.args:
+        await update.message.reply_text("❌ /unfollow <username>")
+        return
+    
+    username = context.args[0].replace('@', '')
+    await update.message.reply_text(f"➖ Отписываюсь от @{username}...")
+    
+    try:
+        result = await unfollow_user(username)
+        if result:
+            await update.message.reply_text(f"✅ Отписан от @{username}")
+        else:
+            await update.message.reply_text("❌ Ошибка отписки. Проверь куки.")
+    except Exception as e:
+        logger.error(f"Ошибка в unfollow: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
+
 # ============================================================
 # ЗАПУСК БОТА
 # ============================================================
 
 def main():
     """Запуск бота"""
-    logger.info("🚀 Запуск бота с полным функционалом Pydoll...")
+    logger.info("🚀 Запуск бота с полным функционалом Pydoll и поддержкой X.com...")
     
-    # Создаем приложение
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Добавляем обработчики команд
+    # ---------- БАЗОВЫЕ КОМАНДЫ ----------
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("search", search))
     app.add_handler(CommandHandler("title", title))
     app.add_handler(CommandHandler("js", js))
     app.add_handler(CommandHandler("element", element_screenshot))
+    
+    # ---------- РАСШИРЕННЫЕ КОМАНДЫ ----------
     app.add_handler(CommandHandler("shadow", shadow_dom))
     app.add_handler(CommandHandler("shadows", all_shadows))
     app.add_handler(CommandHandler("block", block_images))
@@ -364,6 +599,17 @@ def main():
     app.add_handler(CommandHandler("concurrent", concurrent))
     app.add_handler(CommandHandler("parse", parse))
     app.add_handler(CommandHandler("hybrid", hybrid))
+    
+    # ---------- X.COM КОМАНДЫ ----------
+    app.add_handler(CommandHandler("tweet", tweet))
+    app.add_handler(CommandHandler("reply", reply))
+    app.add_handler(CommandHandler("like", like))
+    app.add_handler(CommandHandler("retweet", retweet))
+    app.add_handler(CommandHandler("profile", profile))
+    app.add_handler(CommandHandler("timeline", timeline))
+    app.add_handler(CommandHandler("search_tweets", search_tweets_command))
+    app.add_handler(CommandHandler("follow", follow))
+    app.add_handler(CommandHandler("unfollow", unfollow))
     
     # Запускаем поллинг
     logger.info("✅ Бот запущен, ожидаем сообщения...")
