@@ -1,5 +1,7 @@
 import os
 import base64
+import json
+import requests
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -12,6 +14,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "/browser - открыть ссылку\n"
+        "/tab - показать активные вкладки\n"
         "/close - закрыть браузер"
     )
 
@@ -52,6 +55,37 @@ async def browser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['browser'] = None
             context.user_data['eval'] = None
 
+async def tab_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        browser = context.user_data.get('browser')
+        if not browser:
+            await update.message.reply_text("❌ Браузер не запущен")
+            return
+        
+        # Получаем список вкладок через CDP
+        tabs = await browser.send("Target.getTargets")
+        
+        if not tabs or 'targetInfos' not in tabs:
+            await update.message.reply_text("❌ Нет активных вкладок")
+            return
+        
+        # Формируем список вкладок
+        tab_list = []
+        for i, target in enumerate(tabs['targetInfos'], 1):
+            url = target.get('url', 'about:blank')
+            title = target.get('title', 'Без названия')
+            tab_list.append(f"{i}. {title}\n   {url}")
+        
+        if not tab_list:
+            await update.message.reply_text("❌ Нет активных вкладок")
+            return
+        
+        text = "📑 Активные вкладки:\n\n" + "\n\n".join(tab_list)
+        await update.message.reply_text(text[:4096])  # Telegram ограничение
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
 async def close_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     browser = context.user_data.get('browser')
     if browser:
@@ -70,6 +104,7 @@ def main():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("browser", browser_cmd))
+    app.add_handler(CommandHandler("tab", tab_cmd))
     app.add_handler(CommandHandler("close", close_cmd))
     
     print("✅ Бот запущен!")
