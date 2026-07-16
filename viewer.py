@@ -20,6 +20,7 @@ class PageViewer:
         self.last_update = None
         self.chat_id = None
         self.message_id = None
+        self._updating = False  # ← флаг для защиты от конфликтов
         logger.info("🖥️ Окно просмотра создано")
     
     async def capture(self) -> Dict[str, Any]:
@@ -62,5 +63,13 @@ class PageViewer:
     
     async def update(self) -> Dict[str, Any]:
         """Обновить скриншот"""
-        logger.info("🔄 Обновление окна просмотра")
-        return await self.capture()
+        if self._updating:
+            logger.info("⏳ Окно уже обновляется, пропускаем")
+            return {"success": False, "error": "already_updating"}
+        
+        self._updating = True
+        try:
+            logger.info("🔄 Обновление окна просмотра")
+            return await self.capture()
+        finally:
+            self._updating = False
