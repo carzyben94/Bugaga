@@ -133,6 +133,7 @@ class Accessibility:
         self.root_node = None
         self._enabled = False
         self._all_nodes_cache = []
+        self._nodes_by_id = {}  # Словарь для быстрого доступа
         
     async def enable(self):
         """Включить Accessibility"""
@@ -163,7 +164,6 @@ class Accessibility:
     def _flatten_tree(self, nodes: List[Dict]) -> List[AccessibilityNode]:
         """
         Рекурсивно обходит дерево, разворачивая ignored узлы и поднимая их детей
-        это ключевое исправление для проблемы с ignored nodes
         """
         result = []
         
@@ -172,7 +172,7 @@ class Accessibility:
             
             # Если узел ignored - пропускаем его, но обрабатываем детей
             if node.ignored and node.child_ids:
-                # Рекурсивно обрабатываем детей
+                # Получаем детей по ID
                 child_nodes = self._get_nodes_by_ids(node.child_ids)
                 result.extend(self._flatten_tree(child_nodes))
             else:
@@ -187,13 +187,12 @@ class Accessibility:
         return result
     
     def _get_nodes_by_ids(self, node_ids: List[str]) -> List[Dict]:
-        """Получить узлы по ID из кеша"""
+        """Получить узлы по ID из словаря"""
         result = []
         for node_id in node_ids:
-            for cached in self._all_nodes_cache:
-                if cached.node_id == node_id:
-                    result.append(cached.node_data)
-                    break
+            node = self._nodes_by_id.get(node_id)
+            if node:
+                result.append(node.node_data)
         return result
     
     async def get_all_nodes(self) -> List[AccessibilityNode]:
@@ -212,8 +211,15 @@ class Accessibility:
                 logger.warning("⚠️ getFullAXTree вернул пустой результат")
                 return await self._get_all_nodes_js()
             
-            # Кешируем все узлы для быстрого доступа по ID
-            self._all_nodes_cache = [AccessibilityNode(node, self.client) for node in raw_nodes]
+            # Создаем словарь для быстрого доступа по ID
+            self._nodes_by_id = {}
+            for node_data in raw_nodes:
+                node = AccessibilityNode(node_data, self.client)
+                if node.node_id:
+                    self._nodes_by_id[node.node_id] = node
+            
+            # Сохраняем в кеш
+            self._all_nodes_cache = list(self._nodes_by_id.values())
             
             # Разворачиваем ignored узлы
             flattened = self._flatten_tree(raw_nodes)
