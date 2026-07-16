@@ -6,7 +6,8 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 # Импорт модулей
 from browser import Browser
 from eval import Eval
-from accessibility import Accessibility  # <-- ДОБАВИТЬ
+from accessibility import Accessibility
+from ai import AI
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
@@ -15,13 +16,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/browser - открыть ссылку\n"
         "/tab - показать вкладки\n"
         "/accessibility - проверить доступность\n"
+        "/ask - спросить AI\n"
         "/close - закрыть браузер"
     )
 
 async def browser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if not context.args:
-            await update.message.reply_text("❌ Укажите ссылку\nПример: /browser google.com")
+            await update.message.reply_text("❌ Укажите ссылку\nПример: /browser x.com")
             return
         
         url = context.args[0]
@@ -34,7 +36,8 @@ async def browser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             browser = await Browser().start()
             context.user_data['browser'] = browser
             context.user_data['eval'] = Eval(browser)
-            context.user_data['accessibility'] = Accessibility(browser, context.user_data['eval'])  # <-- ДОБАВИТЬ
+            context.user_data['accessibility'] = Accessibility(browser, context.user_data['eval'])
+            context.user_data['ai'] = AI(browser, context.user_data['eval'], context.user_data['accessibility'])
         
         await browser.goto(url)
         
@@ -56,6 +59,7 @@ async def browser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['browser'] = None
             context.user_data['eval'] = None
             context.user_data['accessibility'] = None
+            context.user_data['ai'] = None
 
 async def tab_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -86,7 +90,6 @@ async def tab_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-# <-- НОВАЯ КОМАНДА
 async def accessibility_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         acc = context.user_data.get('accessibility')
@@ -96,34 +99,28 @@ async def accessibility_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text("🔍 Проверяю доступность страницы...")
         
-        # Проверяем все
         headings = await acc.check_heading_hierarchy()
         images = await acc.check_images_alt()
         aria = await acc.check_aria_labels()
         elements = await acc.get_elements_with_refs()
         
-        # Формируем отчет
         report = "📊 **Отчет по доступности:**\n\n"
         
-        # Заголовки
         report += f"**Заголовки:** {headings.get('total', 0)} найдено\n"
         if headings.get('issues'):
             report += f"⚠️ {len(headings['issues'])} проблем\n"
         else:
             report += "✅ Иерархия корректна\n"
         
-        # Изображения
         report += f"\n**Изображения:** {images.get('total', 0)} всего\n"
         report += f"✅ С alt: {images.get('passed', 0)}\n"
         report += f"❌ Без alt: {images.get('failed', 0)}\n"
         
-        # ARIA
         report += f"\n**ARIA-метки:** {aria.get('total', 0)} элементов\n"
         report += f"✅ С метками: {aria.get('has_aria', 0)}\n"
         if aria.get('issues'):
             report += f"⚠️ {len(aria['issues'])} элементов без меток\n"
         
-        # Интерактивные элементы
         report += f"\n**Интерактивные элементы:** {len(elements)} найдено\n"
         if elements:
             refs = [el['ref'] for el in elements[:10]]
@@ -136,6 +133,26 @@ async def accessibility_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
+async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        if not context.args:
+            await update.message.reply_text("❌ Напишите запрос\nПример: /ask что на странице?")
+            return
+        
+        query = " ".join(context.args)
+        
+        ai = context.user_data.get('ai')
+        if not ai:
+            await update.message.reply_text("❌ Сначала запустите браузер командой /browser")
+            return
+        
+        await update.message.reply_text("🤔 Думаю...")
+        response = await ai.ask(query)
+        await update.message.reply_text(response)
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ {e}")
+
 async def close_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     browser = context.user_data.get('browser')
     if browser:
@@ -143,6 +160,7 @@ async def close_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['browser'] = None
         context.user_data['eval'] = None
         context.user_data['accessibility'] = None
+        context.user_data['ai'] = None
         await update.message.reply_text("✅ Готово!")
     else:
         await update.message.reply_text("❌")
@@ -156,10 +174,12 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("browser", browser_cmd))
     app.add_handler(CommandHandler("tab", tab_cmd))
-    app.add_handler(CommandHandler("accessibility", accessibility_cmd))  # <-- ДОБАВИТЬ
+    app.add_handler(CommandHandler("accessibility", accessibility_cmd))
+    app.add_handler(CommandHandler("ask", ask_cmd))
     app.add_handler(CommandHandler("close", close_cmd))
     
     print("✅ Бот запущен!")
+    print("📋 Команды: /browser, /tab, /accessibility, /ask, /close")
     app.run_polling()
 
 if __name__ == "__main__":
