@@ -17,6 +17,7 @@ from tester import ElementTester
 from site_map import SiteMap
 from hermes_agent import HermesAgent
 from orchestrator import Orchestrator
+from viewer import PageViewer
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
@@ -32,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 browser = None
 orchestrator = None
+viewer = None
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -39,6 +41,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🤖 **Привет! Я Луи!**\n\n"
         "Я — твой AI-помощник для работы с X.com.\n\n"
         "📋 **Команды:**\n"
+        "  /view — открыть окно просмотра страницы\n"
+        "  /view_close — закрыть окно просмотра\n"
         "  /louis_log — скачать детальный лог моих действий (JSON)\n"
         "  /louis_log 50 — скачать последние 50 действий\n"
         "  /log_clear — очистить мой лог\n\n"
@@ -52,6 +56,60 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  нажми на главную\n\n"
         "🔥 Я сам пойму, что ты хочешь!"
     )
+
+
+async def view(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Открыть окно просмотра страницы"""
+    global browser, orchestrator, viewer
+    
+    user_id = update.effective_user.id
+    
+    try:
+        if browser is None:
+            browser = await Browser().start()
+            logger.info("✅ Браузер запущен")
+        
+        if viewer is None:
+            eval = Eval(browser)
+            viewer = PageViewer(browser, eval)
+            logger.info("✅ Окно просмотра создано")
+        
+        # Делаем скриншот
+        result = await viewer.capture()
+        
+        if result.get("success"):
+            photo_bytes = base64.b64decode(result["screenshot"])
+            
+            caption = (
+                f"🖥️ **Окно просмотра**\n"
+                f"🔗 {result.get('url', 'Неизвестно')}\n"
+                f"📄 {result.get('title', 'Без заголовка')}\n"
+                f"🕐 {result.get('timestamp', '')[:19]}\n\n"
+                f"💡 Команды:\n"
+                f"  /view — обновить окно\n"
+                f"  /view_close — закрыть окно"
+            )
+            
+            await update.message.reply_photo(
+                photo=photo_bytes,
+                caption=caption
+            )
+            
+            logger.info(f"User {user_id} открыл окно просмотра")
+        else:
+            await update.message.reply_text(f"❌ {result.get('error', 'Ошибка')}")
+        
+    except Exception as e:
+        logger.error(f"Ошибка окна просмотра: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
+
+
+async def view_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Закрыть окно просмотра"""
+    global viewer
+    
+    viewer = None
+    await update.message.reply_text("🖥️ Окно просмотра закрыто")
 
 
 async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -94,6 +152,7 @@ async def screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await browser.close()
             browser = None
             orchestrator = None
+            viewer = None
         
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
@@ -205,6 +264,7 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await browser.close()
             browser = None
             orchestrator = None
+            viewer = None
         
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
@@ -287,6 +347,7 @@ async def accessibility(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await browser.close()
             browser = None
             orchestrator = None
+            viewer = None
         
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
@@ -367,6 +428,7 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await browser.close()
             browser = None
             orchestrator = None
+            viewer = None
         
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
@@ -514,6 +576,7 @@ async def x(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await browser.close()
             browser = None
             orchestrator = None
+            viewer = None
         
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
@@ -672,6 +735,7 @@ async def ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await browser.close()
             browser = None
             orchestrator = None
+            viewer = None
 
         await update.message.reply_text(f"❌ Ошибка: {error_msg[:100]}")
 
@@ -773,7 +837,7 @@ async def log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает все текстовые сообщения — Луи общается с пользователем"""
-    global browser, orchestrator
+    global browser, orchestrator, viewer
     
     user_id = update.effective_user.id
     text = update.message.text
@@ -796,6 +860,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ai_agent = AIAgent(browser, eval, acc)
             hermes_agent = HermesAgent(browser, acc, eval, ai_agent)
             orchestrator = Orchestrator(browser, eval, acc, ai_agent, hermes_agent)
+            viewer = PageViewer(browser, eval)
             logger.info("✅ Луи готов к работе!")
         
         if orchestrator is None:
@@ -805,9 +870,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             hermes_agent = HermesAgent(browser, acc, eval, ai_agent)
             orchestrator = Orchestrator(browser, eval, acc, ai_agent, hermes_agent)
         
+        if viewer is None:
+            eval = Eval(browser)
+            viewer = PageViewer(browser, eval)
+        
+        # Выполняем команду
         result = await orchestrator.execute(text)
         
-        # ===== ПРОВЕРЯЕМ ТИП РЕЗУЛЬТАТА =====
+        # ===== ОТПРАВЛЯЕМ ОТВЕТ =====
         if isinstance(result, dict):
             # Простой скриншот
             if result.get("screenshot"):
@@ -841,6 +911,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("✅ Готово!")
         
+        # ===== АВТО-ОБНОВЛЕНИЕ ОКНА ПРОСМОТРА =====
+        if viewer:
+            # Обновляем скриншот
+            view_result = await viewer.update()
+            if view_result.get("success"):
+                logger.info("🔄 Окно просмотра обновлено")
+        
     except Exception as e:
         logger.error(f"Ошибка в Луи: {e}")
         await update.message.reply_text(f"❌ Ой! Что-то пошло не так: {str(e)[:100]}")
@@ -850,6 +927,8 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("view", view))
+    app.add_handler(CommandHandler("view_close", view_close))
     app.add_handler(CommandHandler("screen", screen))
     app.add_handler(CommandHandler("analyze", analyze))
     app.add_handler(CommandHandler("accessibility", accessibility))
