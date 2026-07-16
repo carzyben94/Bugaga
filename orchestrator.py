@@ -397,29 +397,58 @@ class Orchestrator:
         """Распарсить команду на естественном языке"""
         text_lower = text.lower()
         
-        if "скрин" in text_lower or "screenshot" in text_lower:
+        # ===== СКРИНШОТ =====
+        if any(word in text_lower for word in ["скрин", "screenshot", "фото", "снимок"]):
             return {"action": "screenshot"}
         
-        if "покажи" in text_lower or "что есть" in text_lower:
+        # ===== КАКИЕ КНОПКИ / ЧТО ЕСТЬ / ПОКАЖИ =====
+        if any(word in text_lower for word in ["какие кнопки", "что есть", "покажи", "список", "что видишь", "что тут", "элементы"]):
             return {"action": "snapshot"}
         
-        if "помощь" in text_lower or "help" in text_lower:
+        # ===== ПОМОЩЬ =====
+        if any(word in text_lower for word in ["помощь", "help", "что умеешь", "как работать"]):
             return {"action": "help"}
         
-        if "открой" in text_lower or "перейди" in text_lower or "зайди" in text_lower:
+        # ===== НАВИГАЦИЯ =====
+        if any(word in text_lower for word in ["открой", "перейди", "зайди", "перейти", "открыть"]):
             url_match = re.search(r'https?://[^\s]+', text)
             if url_match:
                 return {"action": "navigate", "url": url_match.group(0)}
             if "x.com" in text_lower:
                 return {"action": "navigate", "url": "https://x.com"}
         
-        if "опубликуй" in text_lower or "запости" in text_lower or "твит" in text_lower:
+        # ===== ОПУБЛИКОВАТЬ =====
+        if any(word in text_lower for word in ["опубликуй", "запости", "твит", "пост", "напиши пост"]):
             quote_match = re.search(r'["\']([^"\']*)["\']', text)
             if quote_match:
                 return {"action": "publish", "text": quote_match.group(1)}
             return {"action": "publish"}
         
-        if "клик" in text_lower or "нажми" in text_lower:
+        # ===== КЛИК ПО НАЗВАНИЮ (ОБЗОР, ГЛАВНАЯ, УВЕДОМЛЕНИЯ и т.д.) =====
+        click_targets = {
+            "обзор": "Поиск и обзор",
+            "explore": "Поиск и обзор",
+            "главная": "Главная",
+            "home": "Главная",
+            "уведомления": "Уведомления",
+            "notifications": "Уведомления",
+            "сообщения": "Личные сообщения",
+            "messages": "Личные сообщения",
+            "профиль": "Профиль",
+            "profile": "Профиль",
+            "чат": "Чат",
+            "chat": "Чат",
+            "закладки": "Закладки",
+            "bookmarks": "Закладки",
+            "grok": "Grok",
+        }
+        
+        for key, value in click_targets.items():
+            if key in text_lower:
+                return {"action": "click_by_name", "name": value}
+        
+        # ===== КЛИК =====
+        if any(word in text_lower for word in ["клик", "нажми", "тык"]):
             words = text.split()
             for i, word in enumerate(words):
                 if word in ["на", "по", "кнопку", "ссылку"] and i + 1 < len(words):
@@ -427,9 +456,18 @@ class Orchestrator:
                     if len(name) > 2:
                         return {"action": "click_by_name", "name": name}
         
-        if "введи" in text_lower or "напиши" in text_lower:
+        # ===== ВВОД ТЕКСТА =====
+        if any(word in text_lower for word in ["введи", "напиши", "ввести", "напечатай"]):
             quote_match = re.search(r'["\']([^"\']*)["\']', text)
             if quote_match:
                 return {"action": "chain", "description": f"введи '{quote_match.group(1)}' и нажми Enter"}
+            # Если нет кавычек, берём всё после "введи"
+            for word in ["введи", "напиши", "ввести", "напечатай"]:
+                if word in text_lower:
+                    parts = text_lower.split(word, 1)
+                    if len(parts) > 1:
+                        text_to_type = parts[1].strip()
+                        if text_to_type:
+                            return {"action": "chain", "description": f"введи '{text_to_type}' и нажми Enter"}
         
         return {"action": "unknown"}
