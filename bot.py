@@ -58,7 +58,7 @@ async def close_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await browser.close()
         context.user_data['browser'] = None
         context.user_data['eval'] = None
-        await update.message.reply_text("✅")
+        await update.message.reply_text("✅ Готово!")
     else:
         await update.message.reply_text("❌")
 
