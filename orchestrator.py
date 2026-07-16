@@ -393,6 +393,20 @@ class Orchestrator:
         # ===== НАВИГАЦИЯ =====
         if action == "navigate":
             url = parsed.get("url")
+            
+            # ===== ПРОВЕРКА: УЖЕ НА ЭТОЙ СТРАНИЦЕ? =====
+            try:
+                current_url = await self.eval.get_url()
+                if current_url == url or current_url.replace('/', '') == url.replace('/', ''):
+                    self.log_action("navigate", {
+                        "success": True,
+                        "message": f"Уже на {url}",
+                        "url": url
+                    })
+                    return f"✅ Уже на {url}"
+            except:
+                pass
+            
             await self.browser.goto(url)
             self.current_url = url
             await self.snapshot(force=True)
