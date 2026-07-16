@@ -18,7 +18,7 @@ SCREENSHOTS_DIR = Path("screenshots")
 SCREENSHOTS_DIR.mkdir(exist_ok=True)
 
 # ============================================================
-# 1. НАСТРОЙКА БРАУЗЕРА (ChromiumOptions) - полная версия
+# 1. НАСТРОЙКА БРАУЗЕРА (ChromiumOptions) - ИСПРАВЛЕННАЯ
 # ============================================================
 
 def get_optimized_options(user_data_dir: Optional[str] = None) -> ChromiumOptions:
@@ -29,13 +29,13 @@ def get_optimized_options(user_data_dir: Optional[str] = None) -> ChromiumOption
     options = ChromiumOptions()
     
     # === ЯВНЫЙ ПУТЬ К БРАУЗЕРУ ===
-    options.binary_location = "/usr/bin/google-chrome"  # Твой путь
+    options.binary_location = "/usr/bin/google-chrome"
     
     # === КРИТИЧЕСКИ ВАЖНО ДЛЯ RAILWAY ===
     options.headless = True
-    options.add_argument('--headless=new')  # Новый headless-режим
+    options.add_argument('--headless=new')
     options.start_timeout = 15
-    options.page_load_state = PageLoadState.INTERACTIVE  # Только DOM
+    options.page_load_state = PageLoadState.INTERACTIVE
     
     # === PERSISTENT CONTEXT (сохранение сессии) ===
     if user_data_dir:
@@ -44,7 +44,7 @@ def get_optimized_options(user_data_dir: Optional[str] = None) -> ChromiumOption
     # === ПРОИЗВОДИТЕЛЬНОСТЬ ===
     options.add_argument('--disable-gpu')
     options.add_argument('--disable-software-rasterizer')
-    options.add_argument('--disable-dev-shm-usage')  # Фикс для Docker
+    options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-extensions')
     options.add_argument('--disable-background-networking')
     options.add_argument('--disable-background-timer-throttling')
@@ -63,13 +63,14 @@ def get_optimized_options(user_data_dir: Optional[str] = None) -> ChromiumOption
     options.add_argument('--lang=en-US')
     options.add_argument('--accept-lang=en-US,en;q=0.9')
     options.add_argument('--tz=America/New_York')
-    options.add_argument('--no-first-run')
-    options.add_argument('--no-default-browser-check')
+    # Убраны дублирующиеся аргументы:
+    # --no-first-run (уже есть по умолчанию)
+    # --no-default-browser-check (уже есть по умолчанию)
     options.add_argument('--disable-reading-from-canvas')
     options.add_argument('--disable-features=AudioServiceOutOfProcess')
     
     # === БЕЗОПАСНОСТЬ (только для доверенной среды) ===
-    options.add_argument('--no-sandbox')  # Нужен в Docker
+    options.add_argument('--no-sandbox')
     options.add_argument('--disable-setuid-sandbox')
     
     # === ОТОБРАЖЕНИЕ ===
