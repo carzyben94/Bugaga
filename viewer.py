@@ -1,8 +1,11 @@
 import base64
 import os
+import logging
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
+# ===== ДОБАВИТЬ ЭТОТ ИМПОРТ =====
+import logging
 logger = logging.getLogger(__name__)
 
 
@@ -14,9 +17,10 @@ class PageViewer:
     def __init__(self, browser, eval):
         self.browser = browser
         self.eval = eval
-        self.is_active = False
+        self.is_active = True
         self.current_screenshot = None
         self.last_update = None
+        logger.info("🖥️ Окно просмотра создано")
     
     async def capture(self) -> Dict[str, Any]:
         """Сделать скриншот текущей страницы"""
@@ -25,12 +29,13 @@ class PageViewer:
             self.current_screenshot = screenshot_base64
             self.last_update = datetime.now()
             
-            # Сохраняем
             screenshots_dir = "screenshots"
             os.makedirs(screenshots_dir, exist_ok=True)
             filename = f"{screenshots_dir}/viewer_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
             with open(filename, "wb") as f:
                 f.write(base64.b64decode(screenshot_base64))
+            
+            logger.info(f"📸 Скриншот окна сохранён: {filename}")
             
             return {
                 "success": True,
@@ -41,6 +46,7 @@ class PageViewer:
                 "title": await self.eval.get_title()
             }
         except Exception as e:
+            logger.error(f"❌ Ошибка скриншота окна: {e}")
             return {"success": False, "error": str(e)}
     
     async def get_view(self) -> Dict[str, Any]:
@@ -56,4 +62,5 @@ class PageViewer:
     
     async def update(self) -> Dict[str, Any]:
         """Обновить скриншот"""
+        logger.info("🔄 Обновление окна просмотра")
         return await self.capture()
