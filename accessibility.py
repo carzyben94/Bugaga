@@ -16,13 +16,14 @@ class AccessibilityNode:
         self.backend_node_id = node_data.get("backendDOMNodeId")
         self.role = node_data.get("role", {}).get("value", "")
         self.name = node_data.get("name", {}).get("value", "")
+        self.ignored = node_data.get("ignored", False)
+        self.child_ids = node_data.get("childIds", [])
         self.description = node_data.get("description", {}).get("value", "")
         self.value = node_data.get("value", {}).get("value", "")
         
     async def click(self):
         """Клик по элементу"""
         try:
-            # Пробуем найти элемент через JS по имени
             js_code = f"""
             (function() {{
                 const elements = document.querySelectorAll('*');
@@ -42,7 +43,6 @@ class AccessibilityNode:
         except:
             pass
         
-        # Если не нашли, пробуем через роль
         try:
             js_code = f"""
             (function() {{
@@ -67,11 +67,9 @@ class AccessibilityNode:
         if self.role not in ["textbox", "searchbox", "text", "textarea", "input"]:
             raise Exception(f"Элемент {self.role} не поддерживает ввод текста")
         
-        # Кликаем для фокуса
         await self.click()
         await asyncio.sleep(0.2)
         
-        # Вводим текст через JS
         try:
             js_code = f"""
             (function() {{
@@ -137,7 +135,7 @@ class Accessibility:
         self._all_nodes_cache = []
         
     async def enable(self):
-        """Включить Accessibility (CDP: Accessibility.enable)"""
+        """Включить Accessibility"""
         try:
             await self.client.send_command("Accessibility.enable")
             self._enabled = True
@@ -148,7 +146,7 @@ class Accessibility:
             return False
     
     async def disable(self):
-        """Выключить Accessibility (CDP: Accessibility.disable)"""
+        """Выключить Accessibility"""
         try:
             await self.client.send_command("Accessibility.disable")
             self._enabled = False
@@ -162,116 +160,95 @@ class Accessibility:
             return await self.enable()
         return True
     
-    async def get_full_tree(self) -> List[AccessibilityNode]:
+    def _flatten_tree(self, nodes: List[Dict]) -> List[AccessibilityNode]:
         """
-        Получить всё дерево Accessibility через getFullAXTree
-        CDP: Accessibility.getFullAXTree
+        Рекурсивно обходит дерево, разворачивая ignored узлы и поднимая их детей
+        это ключевое исправление для проблемы с ignored nodes
+        """
+        result = []
+        
+        for node_data in nodes:
+            node = AccessibilityNode(node_data, self.client)
+            
+            # Если узел ignored - пропускаем его, но обрабатываем детей
+            if node.ignored and node.child_ids:
+                # Рекурсивно обрабатываем детей
+                child_nodes = self._get_nodes_by_ids(node.child_ids)
+                result.extend(self._flatten_tree(child_nodes))
+            else:
+                # Добавляем узел если он не ignored
+                result.append(node)
+                
+                # Обрабатываем детей
+                if node.child_ids:
+                    child_nodes = self._get_nodes_by_ids(node.child_ids)
+                    result.extend(self._flatten_tree(child_nodes))
+        
+        return result
+    
+    def _get_nodes_by_ids(self, node_ids: List[str]) -> List[Dict]:
+        """Получить узлы по ID из кеша"""
+        result = []
+        for node_id in node_ids:
+            for cached in self._all_nodes_cache:
+                if cached.node_id == node_id:
+                    result.append(cached.node_data)
+                    break
+        return result
+    
+    async def get_all_nodes(self) -> List[AccessibilityNode]:
+        """
+        Получить все узлы через getFullAXTree с обработкой ignored nodes
         """
         try:
             if not await self.ensure_enabled():
                 return []
             
+            # Получаем полное дерево
             result = await self.client.send_command("Accessibility.getFullAXTree")
-            nodes = result.get("nodes", [])
+            raw_nodes = result.get("nodes", [])
             
-            # Кешируем
-            self._all_nodes_cache = [AccessibilityNode(node, self.client) for node in nodes]
-            logger.info(f"🌳 Получено {len(self._all_nodes_cache)} узлов Accessibility")
-            return self._all_nodes_cache
+            if not raw_nodes:
+                logger.warning("⚠️ getFullAXTree вернул пустой результат")
+                return await self._get_all_nodes_js()
             
-        except Exception as e:
-            logger.error(f"❌ Ошибка получения полного дерева: {e}")
-            return []
-    
-    async def get_root_node(self) -> Optional[AccessibilityNode]:
-        """
-        Получить корневой узел Accessibility Tree
-        Использует getFullAXTree для надежности
-        """
-        try:
-            if not await self.ensure_enabled():
-                return None
+            # Кешируем все узлы для быстрого доступа по ID
+            self._all_nodes_cache = [AccessibilityNode(node, self.client) for node in raw_nodes]
             
-            # Пробуем через getFullAXTree (более надежно)
-            nodes = await self.get_full_tree()
-            if nodes:
-                # Ищем корневой узел (обычно RootWebArea)
-                for node in nodes:
-                    if node.role in ["RootWebArea", "WebArea", "document"]:
-                        self.root_node = node
-                        return node
-                # Если не нашли, берем первый
-                self.root_node = nodes[0]
-                return nodes[0]
+            # Разворачиваем ignored узлы
+            flattened = self._flatten_tree(raw_nodes)
             
-            # Fallback на getRootAXNode
-            try:
-                result = await self.client.send_command("Accessibility.getRootAXNode")
-                if result and "node" in result:
-                    self.root_node = AccessibilityNode(result["node"], self.client)
-                    return self.root_node
-            except:
-                pass
-            
-            return None
+            logger.info(f"🌳 Получено {len(raw_nodes)} узлов, после разворачивания ignored: {len(flattened)}")
+            return flattened
             
         except Exception as e:
-            logger.error(f"❌ Ошибка получения корневого узла: {e}")
-            return None
+            logger.error(f"❌ Ошибка получения узлов: {e}")
+            return await self._get_all_nodes_js()
     
-    async def get_all_nodes(self) -> List[AccessibilityNode]:
-        """
-        Получить все узлы дерева
-        """
-        if self._all_nodes_cache:
-            return self._all_nodes_cache
-        
-        return await self.get_full_tree()
-    
-    async def find_by_role(self, role: str) -> List[AccessibilityNode]:
-        """
-        Найти все элементы по роли через getFullAXTree
-        """
-        result = []
-        nodes = await self.get_all_nodes()
-        for node in nodes:
-            if node.role.lower() == role.lower():
-                result.append(node)
-        return result
-    
-    async def find_by_name(self, name: str) -> List[AccessibilityNode]:
-        """
-        Найти элементы по имени
-        """
-        result = []
-        nodes = await self.get_all_nodes()
-        for node in nodes:
-            if name.lower() in node.name.lower():
-                result.append(node)
-        return result
-    
-    async def find_by_text(self, text: str) -> List[AccessibilityNode]:
-        """
-        Найти элементы по тексту (через JS fallback)
-        """
+    async def _get_all_nodes_js(self) -> List[AccessibilityNode]:
+        """Получить все элементы через JavaScript (fallback)"""
         try:
-            js_code = f"""
-            (function() {{
+            js_code = """
+            (function() {
                 const elements = [];
                 const all = document.querySelectorAll('*');
-                for (let el of all) {{
-                    if (el.textContent && el.textContent.includes('{text}')) {{
-                        elements.push({{
-                            tag: el.tagName,
-                            text: el.textContent.trim().substring(0, 100),
-                            role: el.getAttribute('role') || el.tagName,
-                            disabled: el.disabled || el.getAttribute('aria-disabled') === 'true',
-                            hidden: el.hidden || el.getAttribute('aria-hidden') === 'true'
-                        }});
-                    }}
-                }}
-                return elements.slice(0, 50);
-            }})()
+                for (let el of all) {
+                    const text = el.textContent ? el.textContent.trim().substring(0, 100) : '';
+                    const role = el.getAttribute('role') || el.tagName;
+                    const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
+                    const hidden = el.hidden || el.getAttribute('aria-hidden') === 'true';
+                    
+                    if (!text && !el.tagName.match(/^(INPUT|TEXTAREA|BUTTON|A)$/)) continue;
+                    
+                    elements.push({
+                        role: role,
+                        name: text,
+                        disabled: disabled,
+                        hidden: hidden
+                    });
+                }
+                return elements.slice(0, 100);
+            })()
             """
             result = await self.client.execute_script(js_code)
             
@@ -280,22 +257,43 @@ class Accessibility:
                 node = AccessibilityNode({
                     "nodeId": f"js_{len(nodes)}",
                     "role": {"value": item.get("role", "unknown")},
-                    "name": {"value": item.get("text", "")},
+                    "name": {"value": item.get("name", "")},
                     "backendDOMNodeId": None,
                     "state": {
                         "disabled": {"value": item.get("disabled", False)},
                         "hidden": {"value": item.get("hidden", False)}
-                    }
+                    },
+                    "ignored": False,
+                    "childIds": []
                 }, self.client)
                 nodes.append(node)
             
+            logger.info(f"🌳 Получено {len(nodes)} узлов через JS fallback")
             return nodes
         except Exception as e:
-            logger.error(f"❌ Ошибка поиска по тексту: {e}")
+            logger.error(f"❌ Ошибка JS fallback: {e}")
             return []
     
+    async def find_by_role(self, role: str) -> List[AccessibilityNode]:
+        """Найти все элементы по роли"""
+        nodes = await self.get_all_nodes()
+        result = []
+        for node in nodes:
+            if node.role.lower() == role.lower():
+                result.append(node)
+        return result
+    
+    async def find_by_name(self, name: str) -> List[AccessibilityNode]:
+        """Найти элементы по имени"""
+        nodes = await self.get_all_nodes()
+        result = []
+        for node in nodes:
+            if name.lower() in node.name.lower():
+                result.append(node)
+        return result
+    
     async def find_button(self, name: Optional[str] = None) -> Optional[AccessibilityNode]:
-        """Найти кнопку (по имени)"""
+        """Найти кнопку"""
         buttons = await self.find_by_role("button")
         if name:
             for btn in buttons:
@@ -305,7 +303,7 @@ class Accessibility:
         return buttons[0] if buttons else None
     
     async def find_input(self, name: Optional[str] = None) -> Optional[AccessibilityNode]:
-        """Найти поле ввода (по имени)"""
+        """Найти поле ввода"""
         roles = ["textbox", "searchbox", "input"]
         inputs = []
         for role in roles:
@@ -319,7 +317,7 @@ class Accessibility:
         return inputs[0] if inputs else None
     
     async def find_link(self, name: Optional[str] = None) -> Optional[AccessibilityNode]:
-        """Найти ссылку (по имени)"""
+        """Найти ссылку"""
         links = await self.find_by_role("link")
         if name:
             for link in links:
@@ -348,74 +346,15 @@ class Accessibility:
         """Получить все заголовки"""
         return await self.find_by_role("heading")
     
-    async def click_by_role(self, role: str, name: Optional[str] = None):
-        """Кликнуть по элементу с ролью (и именем)"""
-        nodes = await self.find_by_role(role)
-        if name:
-            for node in nodes:
-                if name.lower() in node.name.lower():
-                    await node.click()
-                    return True
-            raise Exception(f"Элемент {role} с именем '{name}' не найден")
-        else:
-            if nodes:
-                await nodes[0].click()
-                return True
-            raise Exception(f"Элемент {role} не найден")
-    
-    async def type_by_name(self, name: str, text: str):
-        """Ввести текст в поле по имени"""
-        inputs = await self.find_by_name(name)
-        for inp in inputs:
-            if inp.role in ["textbox", "searchbox", "text", "textarea", "input"]:
-                await inp.type(text)
-                return True
-        raise Exception(f"Поле ввода с именем '{name}' не найдено")
-    
-    async def print_tree(self, node_id: Optional[str] = None, level: int = 0):
-        """Вывести Accessibility Tree в консоль (для отладки)"""
-        if not node_id:
-            root = await self.get_root_node()
-            if not root:
-                print("🌳 Accessibility Tree пуст")
-                return
-            node_id = root.node_id
-        
-        # Получаем все узлы и строим дерево
+    async def get_root_node(self) -> Optional[AccessibilityNode]:
+        """Получить корневой узел (для совместимости)"""
         nodes = await self.get_all_nodes()
-        
-        # Группируем по parent_id
-        children_map = {}
-        for node in nodes:
-            parent_id = node.node_data.get("parentId")
-            if parent_id not in children_map:
-                children_map[parent_id] = []
-            children_map[parent_id].append(node)
-        
-        # Рекурсивно выводим
-        async def print_node(node, level):
-            indent = "  " * level
-            state = ""
-            if not await node.is_enabled():
-                state += " [disabled]"
-            if not await node.is_visible():
-                state += " [hidden]"
-            print(f"{indent}📌 {node.role}: '{node.name}'{state}")
-            
-            for child in children_map.get(node.node_id, []):
-                await print_node(child, level + 1)
-        
-        # Находим корень
-        root = None
-        for node in nodes:
-            if node.role in ["RootWebArea", "WebArea", "document"]:
-                root = node
-                break
-        
-        if root:
-            await print_node(root, level)
-        else:
-            print("🌳 Корневой узел не найден")
+        if nodes:
+            for node in nodes:
+                if node.role in ["RootWebArea", "WebArea", "document"]:
+                    return node
+            return nodes[0]
+        return None
 
 
 # Глобальный экземпляр
