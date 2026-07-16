@@ -139,6 +139,25 @@ class HermesAgent:
                 return value_obj.get("value", "")
         return None
 
+    # ===== СОСТОЯНИЕ СТРАНИЦЫ =====
+    async def _get_page_state(self) -> Dict[str, Any]:
+        """Получить состояние страницы для сравнения"""
+        try:
+            buttons = await self.eval.get_all_buttons()
+            links = await self.eval.get_all_links()
+            inputs = await self.eval.get_all_inputs()
+            
+            return {
+                "count": len(buttons) + len(links) + len(inputs),
+                "buttons": len(buttons),
+                "links": len(links),
+                "inputs": len(inputs),
+                "url": await self.eval.get_url(),
+                "title": await self.eval.get_title()
+            }
+        except:
+            return {"count": 0}
+
     # ===== СКРИНШОТЫ =====
     async def _take_screenshot(self, name: str) -> str:
         """Сделать скриншот и сохранить"""
@@ -157,7 +176,7 @@ class HermesAgent:
 
     # ===== ДЕЙСТВИЯ =====
     async def click(self, ref: str) -> Dict[str, Any]:
-        """Кликнуть по элементу по ref"""
+        """Кликнуть по элементу по ref с проверкой результата"""
         
         logger.info(f"🔍 Ищу {ref}")
         logger.info(f"📋 В карте {len(self.element_map)} элементов")
@@ -176,35 +195,98 @@ class HermesAgent:
         # ===== ЕСЛИ ЕСТЬ СЕЛЕКТОР — ИСПОЛЬЗУЕМ =====
         if selector:
             try:
+                # Сохраняем состояние ДО клика
+                before_url = await self.eval.get_url()
+                before_state = await self._get_page_state()
+                
                 exists = await self.eval.exists(selector)
                 if not exists:
                     return {"success": False, "reason": f"Элемент {ref} не найден на странице"}
                 
                 screenshot_before = await self._take_screenshot("before_click")
+                
+                # Кликаем
                 await self.browser.human_click(selector)
                 await asyncio.sleep(1.5)
+                
                 screenshot_after = await self._take_screenshot("after_click")
                 
-                return {
-                    "success": True,
-                    "action": "click",
-                    "ref": ref,
-                    "selector": selector,
-                    "role": role,
-                    "screenshot_before": screenshot_before,
-                    "screenshot_after": screenshot_after
-                }
+                # Сохраняем состояние ПОСЛЕ клика
+                after_url = await self.eval.get_url()
+                after_state = await self._get_page_state()
+                
+                # ===== АНАЛИЗИРУЕМ ИЗМЕНЕНИЯ =====
+                changes = []
+                
+                # Проверяем URL
+                if before_url != after_url:
+                    changes.append(f"URL: {before_url} → {after_url}")
+                
+                # Проверяем появление новых элементов
+                new_elements = [
+                    "[role='dialog']",
+                    "[role='menu']",
+                    "[role='alert']",
+                    "[data-testid='modal']",
+                    "[data-testid='menu']",
+                    "[data-testid='dropdown']",
+                    ".css-1dbjc4n"  # типичный класс в X.com
+                ]
+                
+                for sel in new_elements:
+                    try:
+                        if await self.eval.exists(sel) and await self.eval.is_visible(sel):
+                            changes.append(f"Появился новый элемент: {sel}")
+                    except:
+                        pass
+                
+                # Проверяем изменение заголовка
+                title = await self.eval.get_title()
+                if title and "X" not in title:
+                    changes.append(f"Заголовок: {title}")
+                
+                # Проверяем изменение количества элементов
+                if before_state.get("count", 0) != after_state.get("count", 0):
+                    changes.append(f"Количество элементов: {before_state.get('count')} → {after_state.get('count')}")
+                
+                # ===== ФОРМИРУЕМ ОТВЕТ =====
+                if changes:
+                    logger.info(f"✅ Изменения после клика: {', '.join(changes)}")
+                    return {
+                        "success": True,
+                        "action": "click",
+                        "ref": ref,
+                        "selector": selector,
+                        "role": role,
+                        "changes": changes,
+                        "has_changes": True,
+                        "screenshot_before": screenshot_before,
+                        "screenshot_after": screenshot_after
+                    }
+                else:
+                    logger.info(f"⚠️ Клик выполнен, но видимых изменений нет")
+                    return {
+                        "success": True,
+                        "action": "click",
+                        "ref": ref,
+                        "selector": selector,
+                        "role": role,
+                        "changes": ["Клик выполнен, но видимых изменений нет"],
+                        "has_changes": False,
+                        "screenshot_before": screenshot_before,
+                        "screenshot_after": screenshot_after
+                    }
             except Exception as e:
+                logger.error(f"❌ Ошибка клика: {e}")
                 return {"success": False, "reason": str(e)}
         
-        # ===== ЕСЛИ НЕТ СЕЛЕКТОРА — ИЩЕМ ПО ТЕКСТУ (ДЛЯ ССЫЛОК) =====
+        # ===== ЕСЛИ НЕТ СЕЛЕКТОРА — ИЩЕМ ПО ТЕКСТУ =====
         if not name:
             return {"success": False, "reason": f"Элемент {ref} не имеет имени"}
         
         try:
             safe_name = json.dumps(name)
             
-            # ===== ИЩЕМ ССЫЛКУ ПО ТЕКСТУ =====
             js = f"""
             (function() {{
                 const elements = document.querySelectorAll('a, [role="link"], button, [role="button"], div[role="link"], span[role="link"]');
@@ -234,6 +316,7 @@ class HermesAgent:
                     "action": "click",
                     "ref": ref,
                     "method": "text_search",
+                    "has_changes": "unknown",
                     "screenshot_after": screenshot_after
                 }
             
