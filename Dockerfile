@@ -23,6 +23,8 @@ RUN mkdir -p /app/docs && \
     curl -L -o /app/docs/js_protocol.json \
     https://raw.githubusercontent.com/ChromeDevTools/devtools-protocol/master/json/js_protocol.json && \
     curl -L -o /app/docs/vbrief-core.schema.json \
-    https://raw.githubusercontent.com/deftai/directive/master/content/vbrief/schemas/xbrief-core-0.8.schema.json
+    https://raw.githubusercontent.com/deftai/directive/master/content/vbrief/schemas/xbrief-core-0.8.schema.json && \
+    curl -L -o /app/docs/browser-logic.json \
+    https://raw.githubusercontent.com/carzyben94/Bugaga/main/browser-logic.json
 
 CMD ["python", "-u", "bot.py"]
