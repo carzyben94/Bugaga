@@ -162,7 +162,6 @@ async def debug_x(update: Update, context):
         text += f"  • SearchBox: {'✅' if elements.get('hasSearchInput') else '❌'}\n"
         text += f"  • ProfileAvatar: {'✅' if elements.get('hasProfileAvatar') else '❌'}\n"
         
-        # Показываем первые 100 символов текста
         body_preview = elements.get('bodyText', '')[:100]
         if body_preview:
             text += f"\n📝 **Текст страницы (первые 100 символов):**\n"
@@ -327,6 +326,38 @@ async def execute_xbrief_plan(update: Update, plan: Dict) -> bool:
             if not browser:
                 browser = await get_browser()
             
+            # ===== ОБРАБОТКА СПЕЦИАЛЬНЫХ МЕТОДОВ =====
+            if method == "extract":
+                model_name = params.get("model")
+                timeout = params.get("timeout", 10)
+                result = await browser.extract(model_name, timeout)
+                formatted = await format_runtime_result(result)
+                await update.message.reply_text(formatted, parse_mode="Markdown")
+                item["status"] = "done"
+                results.append({"id": item_id, "status": "done"})
+                continue
+            
+            elif method == "extract_all":
+                model_name = params.get("model")
+                limit = params.get("limit", 20)
+                timeout = params.get("timeout", 10)
+                result = await browser.extract_all(model_name, timeout, limit)
+                formatted = await format_runtime_result(result)
+                await update.message.reply_text(formatted, parse_mode="Markdown")
+                item["status"] = "done"
+                results.append({"id": item_id, "status": "done"})
+                continue
+            
+            elif method == "wait":
+                selector = params.get("selector")
+                timeout = params.get("timeout", 10)
+                await browser.wait_for_element(selector, timeout)
+                await update.message.reply_text(f"⏳ Элемент найден: {selector}")
+                item["status"] = "done"
+                results.append({"id": item_id, "status": "done"})
+                continue
+            
+            # ===== ОБЫЧНЫЕ CDP-КОМАНДЫ =====
             result = await browser.send_command(method, params)
             
             item["status"] = "done"
