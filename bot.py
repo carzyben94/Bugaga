@@ -8,7 +8,8 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from browser import ChromiumBrowser
 from agent import (
     get_response, parse_command, clear_memory, add_log,
-    get_logs, clear_logs, get_memory_stats, flush_pending_saves
+    get_logs, clear_logs, get_memory_stats, flush_pending_saves,
+    get_protocols_stats
 )
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -35,16 +36,28 @@ async def status(update: Update, context):
     global keep_browser, browser_instance
     stats = get_memory_stats()
     logs = get_logs()
+    proto_stats = get_protocols_stats()
+    
     text = (
-        f"📊 Статус\n"
-        f"Память: {stats['history_count']}/{stats['max_history']}\n"
-        f"Ошибок: {'Есть' if stats['last_error'] else 'Нет'}\n"
-        f"Логов: {len(logs)}\n"
-        f"Удержание: {'ВКЛ' if keep_browser else 'ВЫКЛ'}\n"
-        f"Браузер: {'Запущен' if browser_instance else 'Нет'}\n"
-        f"GitHub: {'✅' if os.environ.get('GITHUB_TOKEN') else '❌'}"
+        f"📊 **Статус бота**\n"
+        f"========================\n\n"
+        f"🧠 **Агент:**\n"
+        f"  • Память: {stats['history_count']}/{stats['max_history']}\n"
+        f"  • Ошибок: {'Есть ❌' if stats['last_error'] else 'Нет ✅'}\n"
+        f"  • Логов: {len(logs)}\n\n"
+        f"📁 **Протоколы:**\n"
+        f"  • CDP Browser: {'✅' if proto_stats['browser']['loaded'] else '❌'} "
+        f"({proto_stats['browser']['domains']} доменов, {proto_stats['browser']['commands']} команд)\n"
+        f"  • vBRIEF: {'✅' if proto_stats['vbrief']['loaded'] else '❌'}\n\n"
+        f"🌐 **Браузер:**\n"
+        f"  • Удержание: {'ВКЛ ✅' if keep_browser else 'ВЫКЛ ❌'}\n"
+        f"  • Экземпляр: {'Запущен ✅' if browser_instance else 'Не запущен ⚪'}\n\n"
+        f"📦 **Система:**\n"
+        f"  • Python: {sys.version.split()[0]}\n"
+        f"  • GitHub: {'✅' if os.environ.get('GITHUB_TOKEN') else '❌'}\n"
+        f"  • Agnes API: {'✅' if os.environ.get('AGNES_API_KEY') else '❌'}"
     )
-    await update.message.reply_text(text)
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 async def toggle_keep_browser(update: Update, context):
     global keep_browser
