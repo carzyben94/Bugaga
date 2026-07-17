@@ -15,6 +15,7 @@ if not TOKEN:
     exit(1)
 
 async def start(update: Update, context):
+    add_log("command_start", "Пользователь вызвал /start", "info")  # ← добавить
     await update.message.reply_text(
         "👋 Бот-агент с самокоррекцией!\n\n"
         "Команды:\n"
@@ -30,7 +31,10 @@ async def clear(update: Update, context):
     await update.message.reply_text("🧹 Память очищена!")
 
 async def show_logs(update: Update, context):
+    print("📋 Команда /logai получена")  # ← добавить для отладки
     logs = get_logs()
+    print(f"📋 Логов: {len(logs)}")       # ← добавить для отладки
+    
     if not logs:
         await update.message.reply_text("📭 Логов нет")
         return
@@ -142,6 +146,7 @@ async def handle_message(update: Update, context):
     await execute_with_retry(update, user_text)
 
 def main():
+    add_log("bot_started", "Бот запущен", "success")  # ← ДОБАВИТЬ
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clear", clear))
