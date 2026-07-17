@@ -296,25 +296,11 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
     harness_instruction = get_browser_harness_instruction()
 
     x_instruction = """
-=== ДЛЯ X.COM (АКТУАЛЬНЫЕ СЕЛЕКТОРЫ) ===
+=== ДЛЯ X.COM (ОБЯЗАТЕЛЬНЫЙ АЛГОРИТМ) ===
 
-Перед извлечением твитов или профиля используй этот алгоритм:
+ВСЕГДА выполняй ЭТИ 3 ШАГА для X.com:
 
-1. ПОЛУЧИ ВСЕ DATA-TESTID:
-   Выполни: document.querySelectorAll('[data-testid]')
-   Посмотри, какие data-testid есть на странице.
-   Найди подходящие для твитов, имени, текста.
-
-2. НАЙДИ СЕЛЕКТОР ДЛЯ ТВИТОВ:
-   - Попробуй: 'article[data-testid="tweet"]'
-   - Если не работает, посмотри из шага 1, какие есть варианты
-
-3. ИЗВЛЕКИ ДАННЫЕ:
-   Используй найденные селекторы в Runtime.evaluate
-
-=== ПРИМЕР С ПОИСКОМ СЕЛЕКТОРОВ ===
-
-Шаг 1: Получить все data-testid
+ШАГ 1 (ОБЯЗАТЕЛЬНО): Найди все data-testid на странице
 {
   "title": "Runtime.evaluate",
   "params": {
@@ -322,27 +308,29 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
   }
 }
 
-Шаг 2: Найти твиты по найденному селектору
+ШАГ 2: Посмотри результат и найди селектор для твитов
+- Если есть 'tweet' → используй '[data-testid=\"tweet\"]'
+- Если есть 'cellInnerDiv' → используй 'div[data-testid=\"cellInnerDiv\"]'
+- Если есть 'tweetText' → используй его для текста
+
+ШАГ 3: Извлеки твиты с найденным селектором
 {
   "title": "Runtime.evaluate",
   "params": {
-    "expression": "Array.from(document.querySelectorAll('article[data-testid=\"tweet\"]')).slice(0,5).map(tweet => ({ text: tweet.querySelector('[data-testid=\"tweetText\"]')?.innerText || '', author: tweet.querySelector('[data-testid=\"User-Name\"] span')?.innerText || '' }))"
+    "expression": "Array.from(document.querySelectorAll('[data-testid=\"tweet\"]')).slice(0,5).map(tweet => ({ text: tweet.querySelector('[data-testid=\"tweetText\"]')?.innerText || '', author: tweet.querySelector('[data-testid=\"User-Name\"] span')?.innerText || '' }))"
   }
 }
 
-=== ЗАПАСНЫЕ СЕЛЕКТОРЫ ===
-
-Если article[data-testid="tweet"] не работает:
-- Используй: 'article[role="article"]'
-- Или: 'div[data-testid="cellInnerDiv"]' и ищи внутри
-
-Если текст не находится:
-- Используй: 'div[data-testid="tweetText"] span'
-- Или: 'div[lang]'
+ШАГ 4: Если твитов нет — добавь задержку и прокрутку
+{
+  "title": "Runtime.evaluate",
+  "params": {
+    "expression": "await new Promise(r => setTimeout(r, 2000)); window.scrollBy(0, 1000); return 'scrolled'"
+  }
+}
 
 === ВАЖНО ===
-Всегда проверяй, что элементы найдены, прежде чем извлекать данные.
-Если элементов нет — добавь задержку: await new Promise(r => setTimeout(r, 3000))
+НЕ ПРОПУСКАЙ ШАГ 1! Всегда сначала узнай, какие data-testid есть на странице.
 """
 
     system_prompt = f"""Ты агент, управляющий браузером через CDP.
@@ -396,6 +384,34 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 - Вместо "navigate" → "Page.navigate"
 - Вместо "screenshot" → "Page.captureScreenshot"
 
+=== ПРИМЕР ДЛЯ X.COM ===
+Пользователь: "покажи твиты elonmusk"
+Твой план (ПРАВИЛЬНЫЙ):
+{{
+  "xBRIEFInfo": {{
+    "version": "0.8",
+    "author": "agent",
+    "created": "2026-07-17T00:00:00Z"
+  }},
+  "plan": {{
+    "title": "Твиты elonmusk",
+    "status": "running",
+    "items": [
+      {{"id": "step1", "title": "Page.navigate", "params": {{"url": "https://x.com/elonmusk"}}}},
+      {{"id": "step2", "title": "Runtime.evaluate", "params": {{"expression": "Array.from(document.querySelectorAll('[data-testid]')).map(el => el.getAttribute('data-testid')).filter((v,i,a) => a.indexOf(v) === i)"}}}},
+      {{"id": "step3", "title": "Runtime.evaluate", "params": {{"expression": "Array.from(document.querySelectorAll('[data-testid=\\\"tweet\\\"]')).slice(0,5).map(tweet => ({{ text: tweet.querySelector('[data-testid=\\\"tweetText\\\"]')?.innerText || '', author: tweet.querySelector('[data-testid=\\\"User-Name\\\"] span')?.innerText || '' }}))"}}}}
+    ],
+    "edges": [
+      {{"from": "step1", "to": "step2"}},
+      {{"from": "step2", "to": "step3"}}
+    ],
+    "narratives": {{
+      "Outcome": "Получены твиты elonmusk",
+      "Lessons": "Сначала находим data-testid, потом извлекаем"
+    }}
+  }}
+}}
+
 === ПРИМЕР ===
 Пользователь: "открой google.com и сделай скриншот"
 Твой ответ:
@@ -430,6 +446,7 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 5. Используй edges для указания порядка шагов
 6. После выполнения плана заполни narratives.Outcome
 7. Для сложных задач используй методы из browser-harness-all.json
+8. Для X.com ВСЕГДА сначала получай data-testid (Шаг 1)
 """
     messages = [{"role": "system", "content": system_prompt}] + get_memory_history()
     try:
