@@ -1,118 +1,190 @@
 import os
-import logging
-import sys
+import asyncio
+import base64
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from browser import ChromiumBrowser
 
-# Импортируем наш модуль управления браузером
-from browser import browser_manager
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
-# Настройка логирования
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+if not TOKEN:
+    print("❌ Ошибка: TELEGRAM_BOT_TOKEN не задан!")
+    print("Установи: export TELEGRAM_BOT_TOKEN='твой_токен'")
+    exit(1)
 
-# Токен бота
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-
-if not TELEGRAM_TOKEN:
-    logger.error("TELEGRAM_BOT_TOKEN не установлен в переменных окружения")
-    sys.exit(1)
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /start"""
-    user = update.effective_user
+async def start(update: Update, context):
     await update.message.reply_text(
-        f"👋 Привет, {user.first_name}!\n"
-        f"Я бот, работающий на Railway с Chromium (CDP) 🚀\n"
-        f"Твой ID: {user.id}"
+        "👋 Привет! Я бот с управлением браузером.\n\n"
+        "Команды:\n"
+        "/start - показать это сообщение\n"
+        "открой <url> - открыть сайт и показать заголовок\n"
+        "скрин <url> - открыть сайт и прислать скриншот\n"
+        "текст <url> - показать текст страницы\n"
+        "клик <url> <селектор> - кликнуть по элементу\n"
+        "введи <url> <текст> - ввести текст в поле (по селектору input)"
     )
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /help"""
-    await update.message.reply_text(
-        "📋 Доступные команды:\n"
-        "/start - Приветствие\n"
-        "/help - Эта справка\n"
-        "/ping - Проверка работы бота\n"
-        "/web <url> - Получить заголовок страницы через CDP"
-    )
-
-async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /ping"""
-    await update.message.reply_text("🏓 Pong! Бот работает!")
-
-async def web_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /web - проверка работы CDP"""
-    if not context.args:
-        await update.message.reply_text("Использование: /web <url>\nНапример: /web https://example.com")
+async def handle_message(update: Update, context):
+    user_text = update.message.text
+    user_id = update.message.from_user.id
+    
+    # ===== КОМАНДА: ОТКРЫТЬ САЙТ =====
+    if user_text.lower().startswith("открой") or user_text.lower().startswith("open"):
+        parts = user_text.split()
+        if len(parts) < 2:
+            await update.message.reply_text("❌ Укажи URL: открой https://example.com")
+            return
+        
+        url = parts[1]
+        if not url.startswith("http"):
+            url = "https://" + url
+        
+        await update.message.reply_text(f"🌐 Открываю {url}...")
+        
+        browser = ChromiumBrowser()
+        browser.launch(headless=True)
+        
+        try:
+            await browser.connect()
+            await browser.navigate(url)
+            title = await browser.evaluate("document.title")
+            await browser.disconnect()
+            browser.close()
+            
+            await update.message.reply_text(f"✅ {url}\n📄 Заголовок: {title}")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+            browser.close()
         return
-
-    url = context.args[0]
-    # Добавляем http:// если пользователь забыл
-    if not url.startswith("http://") and not url.startswith("https://"):
-        url = "https://" + url
-
-    await update.message.reply_text(f"⏳ Открываю {url} через CDP...")
     
-    try:
-        title = await browser_manager.get_page_title(url)
-        await update.message.reply_text(f"📄 Заголовок страницы:\n{title}")
-    except Exception as e:
-        logger.error(f"Ошибка в команде /web: {e}")
-        await update.message.reply_text("⚠️ Не удалось получить данные со страницы.")
-
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Глобальный обработчик ошибок"""
-    logger.error(f"Исключение при обработке обновления: {context.error}", exc_info=context.error)
+    # ===== КОМАНДА: СКРИНШОТ =====
+    if user_text.lower().startswith("скрин") or user_text.lower().startswith("screenshot"):
+        parts = user_text.split()
+        if len(parts) < 2:
+            await update.message.reply_text("❌ Укажи URL: скрин https://example.com")
+            return
+        
+        url = parts[1]
+        if not url.startswith("http"):
+            url = "https://" + url
+        
+        await update.message.reply_text(f"📸 Делаю скриншот {url}...")
+        
+        browser = ChromiumBrowser()
+        browser.launch(headless=True)
+        
+        try:
+            await browser.connect()
+            await browser.set_viewport(1280, 720)
+            await browser.navigate(url)
+            
+            # Делаем скриншот (возвращает bytes)
+            img_data = await browser.screenshot()
+            
+            await browser.disconnect()
+            browser.close()
+            
+            # Отправляем фото (Telegram принимает bytes)
+            await update.message.reply_photo(
+                photo=img_data,
+                caption=f"📸 Скриншот {url}"
+            )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+            browser.close()
+        return
     
-    if update and update.effective_message:
-        await update.effective_message.reply_text(
-            "⚠️ Произошла ошибка. Попробуйте позже."
-        )
-
-async def post_init(application: Application):
-    """Вызывается после инициализации бота, но до начала поллинга"""
-    await browser_manager.start()
-
-async def post_shutdown(application: Application):
-    """Вызывается при остановке бота"""
-    await browser_manager.stop()
+    # ===== КОМАНДА: ПОЛУЧИТЬ ТЕКСТ =====
+    if user_text.lower().startswith("текст") or user_text.lower().startswith("text"):
+        parts = user_text.split()
+        if len(parts) < 2:
+            await update.message.reply_text("❌ Укажи URL: текст https://example.com")
+            return
+        
+        url = parts[1]
+        if not url.startswith("http"):
+            url = "https://" + url
+        
+        await update.message.reply_text(f"📖 Читаю {url}...")
+        
+        browser = ChromiumBrowser()
+        browser.launch(headless=True)
+        
+        try:
+            await browser.connect()
+            await browser.navigate(url)
+            
+            # Получаем текст страницы
+            text = await browser.evaluate("document.body.innerText")
+            text = text[:4000]  # Ограничиваем для Telegram
+            
+            await browser.disconnect()
+            browser.close()
+            
+            await update.message.reply_text(f"📄 Текст страницы {url}:\n\n{text}")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+            browser.close()
+        return
+    
+    # ===== КОМАНДА: КЛИК =====
+    if user_text.lower().startswith("клик") or user_text.lower().startswith("click"):
+        parts = user_text.split()
+        if len(parts) < 3:
+            await update.message.reply_text("❌ Укажи URL и селектор: клик https://example.com h1")
+            return
+        
+        url = parts[1]
+        selector = parts[2]
+        if not url.startswith("http"):
+            url = "https://" + url
+        
+        await update.message.reply_text(f"🖱️ Кликаю по {selector} на {url}...")
+        
+        browser = ChromiumBrowser()
+        browser.launch(headless=True)
+        
+        try:
+            await browser.connect()
+            await browser.navigate(url)
+            await browser.click(selector)
+            await asyncio.sleep(0.5)  # Ждём реакцию
+            
+            # Делаем скриншот после клика
+            img_data = await browser.screenshot()
+            
+            await browser.disconnect()
+            browser.close()
+            
+            await update.message.reply_photo(
+                photo=img_data,
+                caption=f"🖱️ Клик по {selector} выполнен на {url}"
+            )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+            browser.close()
+        return
+    
+    # ===== ЗАГЛУШКА =====
+    await update.message.reply_text(
+        "🤖 Я пока умею только:\n"
+        "• открой <url>\n"
+        "• скрин <url>\n"
+        "• текст <url>\n"
+        "• клик <url> <селектор>\n\n"
+        "Скоро добавлю AI и ввод текста!"
+    )
 
 def main():
-    """Запуск бота"""
-    logger.info("🚀 Запуск бота...")
+    print("🚀 Запуск Telegram бота...")
+    print(f"🤖 Токен: {TOKEN[:10]}...")
     
-    try:
-        # Создаем приложение и привязываем хуки жизненного цикла
-        app = Application.builder() \
-            .token(TELEGRAM_TOKEN) \
-            .post_init(post_init) \
-            .post_shutdown(post_shutdown) \
-            .build()
-        
-        # Добавляем обработчики команд
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("help", help_command))
-        app.add_handler(CommandHandler("ping", ping))
-        app.add_handler(CommandHandler("web", web_command))
-        
-        # Добавляем глобальный обработчик ошибок
-        app.add_error_handler(error_handler)
-        
-        # Запускаем поллинг с настройками для стабильности
-        logger.info("✅ Бот запущен, ожидаем сообщения...")
-        app.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True,  # Пропускает старые обновления при перезапуске
-            timeout=30  # Таймаут в секундах
-        )
-        
-    except Exception as e:
-        logger.error(f"❌ Критическая ошибка: {e}")
-        sys.exit(1)
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    print("✅ Бот запущен! Напиши /start в Telegram")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
