@@ -1,5 +1,5 @@
 import os
-import json 
+import json
 import httpx
 import base64
 import time
@@ -15,7 +15,7 @@ LOGS_PATH = "logs.json"
 
 # ===== ЗАЩИТА ОТ ЧАСТЫХ ЗАПИСЕЙ =====
 _last_github_save = 0
-GITHUB_SAVE_INTERVAL = 30  # секунд
+GITHUB_SAVE_INTERVAL = 30
 _pending_memory_data = None
 _pending_logs_data = None
 
@@ -132,10 +132,12 @@ def flush_pending_saves():
         data, sha = _pending_memory_data
         save_to_github(MEMORY_PATH, data, sha, force=True)
         _pending_memory_data = None
+        print("💾 Принудительное сохранение памяти")
     if _pending_logs_data:
         data, sha = _pending_logs_data
         save_to_github(LOGS_PATH, data, sha, force=True)
         _pending_logs_data = None
+        print("💾 Принудительное сохранение логов")
 
 # ===== ФУНКЦИИ ДЛЯ ПАМЯТИ =====
 def add_to_memory(role: str, content: str):
