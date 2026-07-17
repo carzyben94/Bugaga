@@ -24,6 +24,7 @@ AGNES_API_URL = os.environ.get("AGNES_API_URL", "https://apihub.agnes-ai.com/v1/
 AI_MODEL = os.environ.get("AI_MODEL", "agnes-2.0-flash")
 PROTOCOLS_DIR = os.environ.get("PROTOCOLS_DIR", "/app/docs")
 BROWSER_PROTOCOL = os.path.join(PROTOCOLS_DIR, "browser_protocol.json")
+VBRIEF_SCHEMA_PATH = os.path.join(PROTOCOLS_DIR, "vbrief-core.schema.json")
 
 history: List[Dict[str, str]] = []
 last_error: Optional[str] = None
@@ -126,6 +127,18 @@ load_from_github(MEMORY_PATH)
 load_from_github(LOGS_PATH)
 print("🚀 Агент загружен")
 
+def load_vbrief_schema():
+    try:
+        with open(VBRIEF_SCHEMA_PATH, 'r') as f:
+            schema = json.load(f)
+            print("📄 vBRIEF схема загружена")
+            return schema
+    except Exception as e:
+        print(f"⚠️ vBRIEF схема не загружена: {e}")
+        return None
+
+VBRIEF_SCHEMA = load_vbrief_schema()
+
 def load_protocols():
     try:
         with open(BROWSER_PROTOCOL, 'r') as f:
@@ -173,6 +186,11 @@ def get_all_commands() -> str:
                 lines.append(f"  {domain_name}.{cmd_name} — {desc}")
     return "\n".join(lines[:40])
 
+def get_vbrief_example() -> str:
+    if VBRIEF_SCHEMA:
+        return json.dumps(VBRIEF_SCHEMA.get("example", {}), indent=2)
+    return ""
+
 async def get_response(user_msg: str, error_context: str = None) -> str:
     if not AGNES_API_KEY:
         return "❌ AGNES_API_KEY не задан"
@@ -180,21 +198,31 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
         set_last_error(error_context)
     add_to_memory("user", user_msg)
 
-    system_prompt = """Ты агент, управляющий браузером через CDP.
+    vbrief_example = get_vbrief_example()
+    vbrief_instructions = ""
+    if vbrief_example:
+        vbrief_instructions = f"""
+Пример vBRIEF формата:
+{vbrief_example}
+"""
+
+    system_prompt = f"""Ты агент, управляющий браузером через CDP.
 
 Твоя задача — возвращать ТОЛЬКО JSON-команды. НИКОГДА не пиши текст вместо JSON.
 
 Доступные команды:
-""" + get_all_commands() + """
+{get_all_commands()}
 
 Правила:
-1. ВСЕГДА возвращай ТОЛЬКО JSON: {"method": "Domain.command", "params": {...}}
+1. ВСЕГДА возвращай ТОЛЬКО JSON: {{"method": "Domain.command", "params": {{...}}}}
 2. НИКОГДА не пиши пояснения, только JSON
-3. Если нужно несколько действий — делай их по очереди через JSON
+3. Если нужно несколько действий — используй vBRIEF формат с планом
 4. Если команда не требуется — ответь текстом
 
+{vbrief_instructions}
+
 Пример правильного ответа:
-{"method": "Page.navigate", "params": {"url": "https://google.com"}}
+{{"method": "Page.navigate", "params": {{"url": "https://google.com"}}}}
 
 Пример неправильного ответа:
 ✅ Страница открыта. Теперь сделаю скриншот.
