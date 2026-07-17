@@ -298,7 +298,6 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
     x_extraction_instruction = ""
     if X_EXTRACTION:
         models = X_EXTRACTION.get("models", {})
-        search_flows = X_EXTRACTION.get("search_flows", {})
         
         x_extraction_instruction = f"""
 === ИЗВЛЕЧЕНИЕ ДАННЫХ ИЗ X.COM ===
@@ -307,10 +306,34 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 Доступные модели:
 {chr(10).join([f"- {name}: {model.get('description', '')}" for name, model in models.items()])}
 
-Доступные сценарии поиска:
-{chr(10).join([f"- {name}: {flow.get('description', '')}" for name, flow in search_flows.items()])}
+=== КАК ИСПОЛЬЗОВАТЬ МОДЕЛИ ===
 
-Для извлечения данных используй соответствующие модели.
+У тебя есть доступ к методам:
+1. extract("model_name") — извлекает один объект (профиль, один твит)
+2. extract_all("model_name", limit=20) — извлекает список (твиты, тренды)
+3. wait(selector, timeout) — ждёт появления элемента
+
+=== ПРИМЕР ДЛЯ ПРОФИЛЯ ===
+Пользователь: "профиль @elonmusk"
+Твой план:
+{{
+  "items": [
+    {{"title": "Page.navigate", "params": {{"url": "https://x.com/elonmusk"}}}},
+    {{"title": "wait", "params": {{"selector": "[data-testid='User-Name']", "timeout": 10}}}},
+    {{"title": "extract", "params": {{"model": "profile"}}}}
+  ]
+}}
+
+=== ПРИМЕР ДЛЯ ТВИТОВ ===
+Пользователь: "твиты про ChatGPT"
+Твой план:
+{{
+  "items": [
+    {{"title": "Page.navigate", "params": {{"url": "https://x.com/search?q=ChatGPT"}}}},
+    {{"title": "wait", "params": {{"selector": "article[data-testid='tweet']", "timeout": 10}}}},
+    {{"title": "extract_all", "params": {{"model": "search_result", "limit": 10}}}}
+  ]
+}}
 """
 
     system_prompt = f"""Ты агент, управляющий браузером через CDP.
@@ -329,8 +352,8 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
     "status": "running",
     "items": [
       {{"id": "step1", "type": "task", "title": "Page.navigate", "status": "pending", "params": {{"url": "..."}}}},
-      {{"id": "step2", "type": "task", "title": "Runtime.evaluate", "status": "pending", "params": {{"expression": "..."}}}},
-      {{"id": "step3", "type": "task", "title": "Page.captureScreenshot", "status": "pending", "params": {{"format": "png"}}}}
+      {{"id": "step2", "type": "task", "title": "wait", "status": "pending", "params": {{"selector": "...", "timeout": 10}}}},
+      {{"id": "step3", "type": "task", "title": "extract", "status": "pending", "params": {{"model": "..."}}}}
     ],
     "edges": [
       {{"from": "step1", "to": "step2", "type": "blocks"}},
@@ -355,97 +378,17 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 === ВАЖНОЕ ПРАВИЛО ===
 НЕ используй "recon", "click", "fill", "read", "navigate", "screenshot" как названия шагов ("title").
 Это логика из browser-logic.json, а не CDP-команды.
-Вместо них используй настоящие CDP-команды:
-
-- Вместо "recon" → "Runtime.evaluate" с JS-кодом для получения структуры
-- Вместо "click" → "Runtime.evaluate" с el.click() или "Input.dispatchMouseEvent"
-- Вместо "fill" → "Runtime.evaluate" с el.value = 'text' или "Input.insertText"
-- Вместо "read" → "Runtime.evaluate" с document.body.innerText
-- Вместо "navigate" → "Page.navigate"
-- Вместо "screenshot" → "Page.captureScreenshot"
-
-=== X.COM ИЗВЛЕЧЕНИЕ ДАННЫХ ===
-
-Когда пользователь просит:
-- "профиль @username" → ИЗВЛЕКИ данные профиля, НЕ делай скриншот
-- "твиты про ChatGPT" → ИЗВЛЕКИ твиты, НЕ делай скриншот
-- "тренды" → ИЗВЛЕКИ тренды, НЕ делай скриншот
-- "закладки" → ИЗВЛЕКИ закладки, НЕ делай скриншот
-- "уведомления" → ИЗВЛЕКИ уведомления, НЕ делай скриншот
-- "твит 123456789" → ИЗВЛЕКИ конкретный твит, НЕ делай скриншот
-
-Для извлечения используй Runtime.evaluate с кодом из x-com-extraction.json.
-Скриншот делай ТОЛЬКО когда пользователь явно просит.
-
-=== ПРИМЕРЫ X.COM ===
-
-Пользователь: "профиль @elonmusk"
-{{
-  "items": [
-    {{"title": "Page.navigate", "params": {{"url": "https://x.com/elonmusk"}}}},
-    {{"title": "Runtime.evaluate", "params": {{"expression": "return {{ name: document.querySelector('[data-testid=\"User-Name\"] span')?.innerText, username: document.querySelector('[data-testid=\"User-Name\"] span:last-child')?.innerText, bio: document.querySelector('[data-testid=\"UserDescription\"]')?.innerText, followers: document.querySelector('a[href$=\"/followers\"] span')?.innerText, following: document.querySelector('a[href$=\"/following\"] span')?.innerText, posts: document.querySelector('a[href$=\"/with_replies\"] span')?.innerText, joined: document.querySelector('[data-testid=\"UserJoinDate\"]')?.innerText }}"}}}}
-  ],
-  "narratives": {{"Outcome": "Профиль @elonmusk загружен"}}
-}}
-
-Пользователь: "твиты про ChatGPT"
-{{
-  "items": [
-    {{"title": "Page.navigate", "params": {{"url": "https://x.com/search?q=ChatGPT&src=typed_query"}}}},
-    {{"title": "Runtime.evaluate", "params": {{"expression": "return Array.from(document.querySelectorAll('article[data-testid=\"tweet\"]')).slice(0,5).map(tweet => ({{ text: tweet.querySelector('[data-testid=\"tweetText\"]')?.innerText, author: tweet.querySelector('[data-testid=\"User-Name\"] span')?.innerText, username: tweet.querySelector('[data-testid=\"User-Name\"] span:last-child')?.innerText, likes: tweet.querySelector('[data-testid=\"like\"] span')?.innerText, retweets: tweet.querySelector('[data-testid=\"retweet\"] span')?.innerText }}))"}}}}
-  ],
-  "narratives": {{"Outcome": "Найдено 5 твитов про ChatGPT"}}
-}}
-
-Пользователь: "тренды"
-{{
-  "items": [
-    {{"title": "Page.navigate", "params": {{"url": "https://x.com/explore/tabs/trending"}}}},
-    {{"title": "Runtime.evaluate", "params": {{"expression": "return Array.from(document.querySelectorAll('[data-testid=\"trend\"]')).slice(0,5).map(trend => ({{ name: trend.querySelector('span')?.innerText, tweets: trend.querySelector('span:last-child')?.innerText }}))"}}}}
-  ],
-  "narratives": {{"Outcome": "Получены тренды X.com"}}
-}}
-
-=== ПРИМЕР ДЛЯ ПОИСКА В GOOGLE ===
-Пользователь: "Зайди в google, введи в поиск : вася, пришли скрин"
-Твой ответ (ПРАВИЛЬНЫЙ):
-{{
-  "xBRIEFInfo": {{
-    "version": "0.8",
-    "author": "agent",
-    "created": "2026-07-17T00:00:00Z"
-  }},
-  "plan": {{
-    "title": "Поиск 'вася' в Google",
-    "status": "running",
-    "items": [
-      {{"id": "step1", "title": "Page.navigate", "params": {{"url": "https://www.google.com"}}}},
-      {{"id": "step2", "title": "Runtime.evaluate", "params": {{"expression": "document.querySelector('textarea[name=\\\"q\\\"]').value = 'вася'"}}}},
-      {{"id": "step3", "title": "Runtime.evaluate", "params": {{"expression": "document.querySelector('input[name=\\\"btnK\\\"]')?.click()"}}}},
-      {{"id": "step4", "title": "Page.captureScreenshot", "params": {{"format": "png"}}}}
-    ],
-    "edges": [
-      {{"from": "step1", "to": "step2"}},
-      {{"from": "step2", "to": "step3"}},
-      {{"from": "step3", "to": "step4"}}
-    ],
-    "narratives": {{
-      "Outcome": "Открыт Google, выполнен поиск, сделан скриншот",
-      "Lessons": "Для ввода и клика используем Runtime.evaluate"
-    }}
-  }}
-}}
+Вместо них используй настоящие CDP-команды или методы extract/wait.
 
 === ПРАВИЛА ===
 1. ВСЕГДА возвращай ТОЛЬКО ПОЛНЫЙ валидный JSON с xBRIEF планом
 2. НИКОГДА не пиши пояснения, только JSON
 3. Убедись, что все скобки и кавычки закрыты
-4. Каждый шаг — это одна CDP-команда
+4. Каждый шаг — это одна команда
 5. Используй edges для указания порядка шагов
 6. После выполнения плана заполни narratives.Outcome
-7. Для сложных задач используй методы из browser-harness-all.json
-8. Для X.com используй модели из x-com-extraction.json
-9. Для X.com НЕ делай скриншот, если пользователь не просит
+7. Для X.com используй extract и wait вместо Runtime.evaluate
+8. Для X.com НЕ делай скриншот, если пользователь не просит
 """
     messages = [{"role": "system", "content": system_prompt}] + get_memory_history()
     try:
