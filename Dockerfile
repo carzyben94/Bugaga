@@ -1,4 +1,4 @@
-FROM python:3.14-slim 
+FROM python:3.14-slim
 
 RUN apt-get update && apt-get install -y \
     chromium \
@@ -22,7 +22,7 @@ RUN mkdir -p /app/docs && \
     https://raw.githubusercontent.com/ChromeDevTools/devtools-protocol/master/json/browser_protocol.json && \
     curl -L -o /app/docs/js_protocol.json \
     https://raw.githubusercontent.com/ChromeDevTools/devtools-protocol/master/json/js_protocol.json && \
-    curl -L -o /app/docs/vbrief-core.schema.json \
-    https://raw.githubusercontent.com/deftai/vBRIEF/main/schemas/vbrief-core.schema.json
+    curl -L -o /app/docs/xbrief-core.schema.json \
+    https://xbrief.dev/schemas/xbrief-core-0.8.schema.json
 
 CMD ["python", "-u", "bot.py"]
