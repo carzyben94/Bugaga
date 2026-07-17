@@ -23,4 +23,10 @@ RUN mkdir -p /app/docs && \
     curl -L -o /app/docs/js_protocol.json \
     https://raw.githubusercontent.com/ChromeDevTools/devtools-protocol/master/json/js_protocol.json
 
+# Создаём папку для данных
+RUN mkdir -p /app/data
+
+# В конце (перед CMD)
+VOLUME ["/app/data"]
+
 CMD ["python", "-u", "bot.py"]
