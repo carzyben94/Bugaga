@@ -8,6 +8,7 @@ import base64
 import shutil
 import os
 from typing import Optional, Dict, Any
+from mask import Mask  # ← импортируем маскировку
 
 class ChromiumBrowser:
     def __init__(self, port: int = 9222):
@@ -20,6 +21,7 @@ class ChromiumBrowser:
         self.viewport_height = 720
         self.chrome_path = self._find_chrome()
         self._msg_id = 0
+        self.mask = Mask()  # ← экземпляр маски
         
     def _find_chrome(self) -> str:
         possible_names = [
@@ -63,24 +65,24 @@ class ChromiumBrowser:
         raise Exception("Chromium/Chrome не найден! Установи через: apt-get install chromium")
     
     def launch(self, headless: bool = True):
-        cmd = [
-            self.chrome_path,
-            f"--remote-debugging-port={self.port}",
-            "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"
-        ]
-        if headless:
-            cmd.append("--headless=new")
-            cmd.append("--disable-software-rasterizer")
+        """Запускает Chromium с маскировкой из mask.py"""
         
-        print(f"🚀 Запуск браузера: {self.chrome_path}")
+        # Получаем флаги запуска из Mask
+        cmd = Mask.get_launch_args(self.chrome_path, self.port)
+        
+        print(f"🚀 Запуск браузера с маскировкой: {self.chrome_path}")
+        print(f"📋 Команда: {' '.join(cmd)}")
+        
         self.process = subprocess.Popen(
-            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
         )
         time.sleep(3)
         
         if self.process.poll() is not None:
             raise Exception(f"Браузер упал при запуске (код: {self.process.returncode})")
-        print("✅ Браузер запущен")
+        print("✅ Браузер запущен с маскировкой")
         
     async def get_ws_url(self) -> str:
         async with httpx.AsyncClient() as client:
@@ -106,8 +108,15 @@ class ChromiumBrowser:
             self.ws_url = await self.get_ws_url()
         self.websocket = await websockets.connect(self.ws_url)
         print("🔗 WebSocket подключен")
+        
         await self.send_command("Page.enable")
         await self.send_command("Runtime.enable")
+        
+        # ===== ПРИМЕНЯЕМ JS-МАСКИРОВКУ =====
+        print("🕵️ Применяю JS-маскировку...")
+        js_mask = Mask.get_js_mask()
+        await self.send_command("Page.addScriptToEvaluateOnNewDocument", {"source": js_mask})
+        print("✅ JS-маскировка применена")
         
     async def send_command(self, method: str, params: Dict[str, Any] = None) -> Dict:
         if not self.websocket:
@@ -145,7 +154,6 @@ class ChromiumBrowser:
         await self.send_command("Page.enable")
         result = await self.send_command("Page.navigate", {"url": url})
         
-        # Ожидание полной загрузки страницы
         for attempt in range(30):
             await asyncio.sleep(0.5)
             try:
@@ -156,7 +164,6 @@ class ChromiumBrowser:
             except Exception as e:
                 print(f"⏳ Ожидание загрузки... ({attempt+1}/30)")
         
-        # Дополнительная задержка для полной отрисовки
         await asyncio.sleep(1)
         return result
     
@@ -182,29 +189,32 @@ class ChromiumBrowser:
         else:
             raise Exception(f"Неизвестный ответ CDP: {result}")
     
-    async def click(self, selector: str):
-        js_code = f"""
-        (function() {{
-            const el = document.querySelector('{selector}');
-            if (!el) return null;
-            const rect = el.getBoundingClientRect();
-            return {{ x: rect.left + rect.width/2, y: rect.top + rect.height/2 }};
-        }})()
-        """
-        pos = await self.evaluate(js_code)
-        if not pos:
-            raise Exception(f"Элемент {selector} не найден")
-        
-        params = {"x": pos["x"], "y": pos["y"], "button": "left", "clickCount": 1}
-        await self.send_command("Input.dispatchMouseEvent", {"type": "mouseMoved", **params})
-        await self.send_command("Input.dispatchMouseEvent", {"type": "mousePressed", **params})
-        await self.send_command("Input.dispatchMouseEvent", {"type": "mouseReleased", **params})
-        print(f"🖱️ Клик по {selector}")
+    async def click_human(self, selector: str):
+        """Человеческий клик через mask.py"""
+        print(f"🖱️ Человеческий клик по {selector}")
+        js_code = Mask.get_human_click_js(selector)
+        result = await self.evaluate(js_code)
+        if not result:
+            raise Exception(f"Не удалось кликнуть по {selector}")
+        await asyncio.sleep(0.5)
     
-    async def type_text(self, text: str):
-        for char in text:
-            await self.send_command("Input.insertText", {"text": char})
-        print(f"⌨️ Введён текст: {text}")
+    async def type_human(self, selector: str, text: str):
+        """Человеческий ввод через mask.py"""
+        print(f"⌨️ Человеческий ввод: {text}")
+        js_code = Mask.get_human_type_js(selector, text)
+        result = await self.evaluate(js_code)
+        if not result:
+            raise Exception(f"Не удалось ввести текст в {selector}")
+        await asyncio.sleep(0.5)
+    
+    async def scroll_human(self, distance: int):
+        """Человеческий скролл через mask.py"""
+        print(f"📜 Человеческий скролл: {distance}px")
+        js_code = Mask.get_human_scroll_js(distance)
+        result = await self.evaluate(js_code)
+        if not result:
+            raise Exception("Не удалось выполнить скролл")
+        await asyncio.sleep(0.3)
     
     async def disconnect(self):
         if self.websocket:
