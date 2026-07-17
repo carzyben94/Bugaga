@@ -1,218 +1,38 @@
 [
   {
-    "timestamp": "2026-07-17T16:43:27.130264",
-    "action": "protocols_loaded",
-    "details": "OK",
+    "timestamp": "2026-07-17T21:47:17.805957",
+    "action": "user_input",
+    "details": "\u0417\u0430\u0439\u0434\u0438 \u0432 google,\u0432\u0432\u0435\u0434\u0438 \u0432 \u043f\u043e\u0438\u0441\u043a : \u0432\u0430\u0441\u044f, \u043f\u0440\u0438\u0448\u043b\u0438 \u0441\u043a\u0440\u0438\u043d",
+    "status": "info"
+  },
+  {
+    "timestamp": "2026-07-17T21:47:27.569240",
+    "action": "xbrief_plan",
+    "details": "\u041f\u043e\u043b\u0443\u0447\u0435\u043d xBRIEF \u043f\u043b\u0430\u043d",
+    "status": "info"
+  },
+  {
+    "timestamp": "2026-07-17T21:47:31.152847",
+    "action": "browser_kept",
+    "details": "\u0423\u0434\u0435\u0440\u0436\u0430\u043d",
     "status": "success"
   },
   {
-    "timestamp": "2026-07-17T16:43:27.876342",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
+    "timestamp": "2026-07-17T21:47:43.474836",
+    "action": "user_input",
+    "details": "\u0421\u043a\u0440\u0438\u043d",
+    "status": "info"
   },
   {
-    "timestamp": "2026-07-17T16:43:38.943577",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
+    "timestamp": "2026-07-17T21:47:51.452460",
+    "action": "xbrief_plan",
+    "details": "\u041f\u043e\u043b\u0443\u0447\u0435\u043d xBRIEF \u043f\u043b\u0430\u043d",
+    "status": "info"
   },
   {
-    "timestamp": "2026-07-17T16:43:52.380813",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:44:07.107102",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:46:16.035727",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:47:23.435388",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:48:09.174413",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:48:45.661597",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:49:10.159857",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:49:33.755449",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:50:04.384358",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:50:49.862542",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:51:54.835692",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:52:37.834192",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:53:20.580759",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:53:46.642029",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:53:55.497814",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:54:23.532971",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:54:34.885717",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:54:53.561581",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:55:04.718057",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:55:25.218132",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:55:47.390651",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:56:00.326425",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:56:11.615207",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:56:33.151680",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:56:41.760272",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:56:59.070269",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:57:15.012660",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:57:33.411626",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T16:59:43.417012",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T17:00:22.008624",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T17:00:46.449182",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T17:01:29.927411",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T17:02:29.536521",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
+    "timestamp": "2026-07-17T21:48:26.827309",
+    "action": "browser_closed",
+    "details": "\u0417\u0430\u043a\u0440\u044b\u0442",
+    "status": "info"
   }
 ]
