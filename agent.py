@@ -12,11 +12,6 @@ GITHUB_BRANCH = os.environ.get("GITHUB_BRANCH", "main")
 MEMORY_PATH = "memory.json"
 LOGS_PATH = "logs.json"
 
-_last_github_save = 0
-GITHUB_SAVE_INTERVAL = 80
-_pending_memory_data = None
-_pending_logs_data = None
-
 if GITHUB_TOKEN:
     print("🔑 GitHub токен найден")
     print(f"📁 Репозиторий: {GITHUB_REPO}")
@@ -61,19 +56,11 @@ def load_from_github(path: str):
         print(f"⚠️ Ошибка загрузки {path}: {e}")
 
 def save_to_github(path: str, data, sha: Optional[str] = None, force: bool = False):
-    global _last_github_save, _pending_memory_data, _pending_logs_data
-    if path == MEMORY_PATH:
-        _pending_memory_data = (data, sha)
-    elif path == LOGS_PATH:
-        _pending_logs_data = (data, sha)
-    current_time = time.time()
-    if not force and (current_time - _last_github_save) < GITHUB_SAVE_INTERVAL:
-        print(f"⏳ Отложено {path} ({GITHUB_SAVE_INTERVAL}с)")
+    if not force:
         return sha
     return _save_to_github_immediate(path, data, sha)
 
 def _save_to_github_immediate(path: str, data, sha: Optional[str] = None):
-    global _last_github_save
     try:
         if not GITHUB_TOKEN or not GITHUB_REPO:
             return sha
@@ -85,68 +72,52 @@ def _save_to_github_immediate(path: str, data, sha: Optional[str] = None):
         headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
         resp = httpx.put(url, json=payload, headers=headers) if sha else httpx.post(url, json=payload, headers=headers)
         if resp.status_code in [200, 201]:
-            _last_github_save = time.time()
-            print(f"💾 Сохранено: {path}")
             return resp.json().get("content", {}).get("sha")
-        print(f"⚠️ Ошибка {path}: {resp.status_code}")
         return sha
     except Exception as e:
-        print(f"⚠️ Ошибка: {e}")
         return sha
 
 def flush_pending_saves():
-    global _last_github_save, _pending_memory_data, _pending_logs_data
-    _last_github_save = 0
-    if _pending_memory_data:
-        data, sha = _pending_memory_data
-        save_to_github(MEMORY_PATH, data, sha, force=True)
-        _pending_memory_data = None
-    if _pending_logs_data:
-        data, sha = _pending_logs_data
-        save_to_github(LOGS_PATH, data, sha, force=True)
-        _pending_logs_data = None
+    global history, memory_sha, logs, logs_sha
+    if history:
+        data = {"history": history, "last_error": last_error, "updated_at": datetime.now().isoformat()}
+        memory_sha = save_to_github(MEMORY_PATH, data, memory_sha, force=True)
+    if logs:
+        logs_sha = save_to_github(LOGS_PATH, logs, logs_sha, force=True)
 
 def add_to_memory(role: str, content: str):
-    global history, memory_sha
+    global history
     history.append({"role": role, "content": content})
     if len(history) > 15:
         history.pop(0)
-    data = {"history": history, "last_error": last_error, "updated_at": datetime.now().isoformat()}
-    memory_sha = save_to_github(MEMORY_PATH, data, memory_sha)
 
 def get_memory_history() -> List[Dict[str, str]]:
     return history
 
 def clear_memory():
-    global history, last_error, memory_sha
+    global history, last_error
     history = []
     last_error = None
-    data = {"history": history, "last_error": last_error, "updated_at": datetime.now().isoformat()}
-    memory_sha = save_to_github(MEMORY_PATH, data, memory_sha, force=True)
 
 def set_last_error(error: str):
-    global last_error, memory_sha
+    global last_error
     last_error = error
-    data = {"history": history, "last_error": last_error, "updated_at": datetime.now().isoformat()}
-    memory_sha = save_to_github(MEMORY_PATH, data, memory_sha)
 
 def get_last_error() -> Optional[str]:
     return last_error
 
 def add_log(action: str, details: str, status: str = "info"):
-    global logs, logs_sha
+    global logs
     logs.append({"timestamp": datetime.now().isoformat(), "action": action, "details": details, "status": status})
     if len(logs) > 100:
         logs.pop(0)
-    logs_sha = save_to_github(LOGS_PATH, logs, logs_sha)
 
 def get_logs() -> List[Dict]:
     return logs
 
 def clear_logs():
-    global logs, logs_sha
+    global logs
     logs = []
-    logs_sha = save_to_github(LOGS_PATH, logs, logs_sha, force=True)
 
 def get_memory_stats() -> Dict:
     return {"history_count": len(history), "max_history": 15, "last_error": last_error}
@@ -158,10 +129,8 @@ print("🚀 Агент загружен")
 def load_protocols():
     try:
         with open(BROWSER_PROTOCOL, 'r') as f:
-            add_log("protocols_loaded", "OK", "success")
             return json.load(f)
     except Exception as e:
-        add_log("protocols_error", str(e), "error")
         return None
 
 BROWSER_DOMAINS = load_protocols()
@@ -206,7 +175,6 @@ def get_all_commands() -> str:
 
 async def get_response(user_msg: str, error_context: str = None) -> str:
     if not AGNES_API_KEY:
-        add_log("api_error", "AGNES_API_KEY не задан", "error")
         return "❌ AGNES_API_KEY не задан"
     if error_context:
         set_last_error(error_context)
@@ -242,10 +210,8 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
             )
             result = resp.json()["choices"][0]["message"]["content"]
             add_to_memory("assistant", result)
-            add_log("ai_response", result[:100], "success")
             return result
     except Exception as e:
-        add_log("api_error", str(e), "error")
         return f"❌ Ошибка API: {str(e)}"
 
 def parse_command(response: str) -> Optional[Dict]:
@@ -266,9 +232,8 @@ def parse_command(response: str) -> Optional[Dict]:
                     required = [p.get("name") for p in cmd_info.get("parameters", []) if p.get("optional") is not True]
                     missing = [p for p in required if p not in params]
                     if missing:
-                        add_log("missing_params", f"{method}: {missing}", "error")
                         return None
                 return data
     except Exception as e:
-        add_log("parse_error", str(e), "error")
+        return None
     return None
