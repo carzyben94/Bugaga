@@ -1,0 +1,365 @@
+{
+  "name": "x_com_extraction",
+  "version": "1.0.0",
+  "description": "Модели для извлечения данных из X.com (Twitter) через Pydoll extract",
+  "site": "x.com",
+  "error_handling": {
+    "not_found": {
+      "action": "return_empty",
+      "message": "Элемент не найден на странице"
+    },
+    "captcha": {
+      "action": "detect_and_wait",
+      "max_wait": 30000,
+      "message": "Обнаружена капча, ожидание..."
+    },
+    "login_required": {
+      "action": "use_cookies",
+      "message": "Требуется авторизация, использую куки из cookies.py"
+    },
+    "rate_limit": {
+      "action": "wait_and_retry",
+      "wait_time": 60000,
+      "message": "Превышен лимит запросов, ожидание..."
+    },
+    "timeout": {
+      "action": "retry",
+      "max_retries": 3,
+      "delay": 2000
+    }
+  },
+  "pagination": {
+    "enabled": true,
+    "method": "scroll",
+    "max_scrolls": 5,
+    "wait_between_scrolls": 2000,
+    "load_more_selector": "[data-testid='loadMore']"
+  },
+  "models": {
+    "tweet": {
+      "description": "Извлечение одного твита",
+      "selector": "article[data-testid='tweet']",
+      "fields": {
+        "id": {
+          "selector": "a[href*='/status/']@href",
+          "transform": "extract_tweet_id",
+          "description": "ID твита из URL"
+        },
+        "text": {
+          "selector": "[data-testid='tweetText']",
+          "description": "Текст твита"
+        },
+        "author_name": {
+          "selector": "[data-testid='User-Name'] span",
+          "description": "Имя автора"
+        },
+        "author_username": {
+          "selector": "[data-testid='User-Name'] span:last-child",
+          "description": "Username автора (@handle)"
+        },
+        "author_avatar": {
+          "selector": "img[alt*='avatar']@src",
+          "description": "Ссылка на аватар автора"
+        },
+        "timestamp": {
+          "selector": "time@datetime",
+          "description": "Дата и время публикации"
+        },
+        "likes": {
+          "selector": "[data-testid='like'] span",
+          "transform": "int",
+          "description": "Количество лайков"
+        },
+        "retweets": {
+          "selector": "[data-testid='retweet'] span",
+          "transform": "int",
+          "description": "Количество ретвитов"
+        },
+        "replies": {
+          "selector": "[data-testid='reply'] span",
+          "transform": "int",
+          "description": "Количество ответов"
+        },
+        "views": {
+          "selector": "[data-testid='views'] span",
+          "transform": "int",
+          "description": "Количество просмотров"
+        },
+        "is_verified": {
+          "selector": "[data-testid='User-Name'] svg[aria-label*='Verified']",
+          "transform": "exists",
+          "description": "Есть ли синяя галочка"
+        },
+        "is_retweet": {
+          "selector": "[data-testid='socialContext'] span",
+          "transform": "contains_retweet",
+          "description": "Является ли ретвитом"
+        },
+        "media": {
+          "selector": "[data-testid='tweetPhoto'] img@src",
+          "transform": "list",
+          "description": "Ссылки на изображения"
+        },
+        "quote_tweet": {
+          "selector": "[data-testid='quotedTweet']",
+          "nested": "tweet",
+          "description": "Вложенный твит (цитата)"
+        },
+        "url": {
+          "selector": "a[href*='/status/']@href",
+          "description": "Ссылка на твит"
+        },
+        "language": {
+          "selector": "[lang]",
+          "transform": "lang",
+          "description": "Язык твита"
+        }
+      }
+    },
+    "tweets_list": {
+      "description": "Извлечение списка твитов со страницы",
+      "container": "article[data-testid='tweet']",
+      "item_model": "tweet",
+      "limit": 20,
+      "pagination": true
+    },
+    "profile": {
+      "description": "Извлечение профиля пользователя",
+      "fields": {
+        "name": {
+          "selector": "[data-testid='User-Name'] span",
+          "description": "Имя пользователя"
+        },
+        "username": {
+          "selector": "[data-testid='User-Name'] span:last-child",
+          "description": "Username (@handle)"
+        },
+        "bio": {
+          "selector": "[data-testid='UserDescription']",
+          "description": "Биография"
+        },
+        "location": {
+          "selector": "[data-testid='UserLocation']",
+          "description": "Местоположение"
+        },
+        "avatar": {
+          "selector": "img[alt*='avatar']@src",
+          "description": "Аватар"
+        },
+        "following": {
+          "selector": "a[href$='/following'] span",
+          "transform": "int",
+          "description": "Количество подписок"
+        },
+        "followers": {
+          "selector": "a[href$='/followers'] span",
+          "transform": "int",
+          "description": "Количество подписчиков"
+        },
+        "posts_count": {
+          "selector": "a[href$='/with_replies'] span",
+          "transform": "int",
+          "description": "Количество постов"
+        },
+        "joined_date": {
+          "selector": "[data-testid='UserJoinDate']",
+          "description": "Дата регистрации"
+        },
+        "is_blue": {
+          "selector": "[data-testid='User-Name'] svg[aria-label*='Verified']",
+          "transform": "exists",
+          "description": "Подписка X Premium (синяя галочка)"
+        },
+        "is_gold": {
+          "selector": "[data-testid='User-Name'] svg[aria-label*='Gold']",
+          "transform": "exists",
+          "description": "Золотая галочка (Verified Organizations)"
+        },
+        "website": {
+          "selector": "[data-testid='UserWebsite'] a@href",
+          "description": "Сайт пользователя"
+        },
+        "background_image": {
+          "selector": "[data-testid='ProfileHeader'] img@src",
+          "description": "Фоновое изображение профиля"
+        },
+        "posts_scope": {
+          "selector": "[data-testid='UserPostsScope']",
+          "description": "Настройки видимости постов"
+        },
+        "media_count": {
+          "selector": "a[href$='/media'] span",
+          "transform": "int",
+          "description": "Количество медиа"
+        },
+        "likes_count": {
+          "selector": "a[href$='/likes'] span",
+          "transform": "int",
+          "description": "Количество лайков"
+        }
+      }
+    },
+    "search_result": {
+      "description": "Извлечение результатов поиска",
+      "container": "article[data-testid='tweet']",
+      "item_model": "tweet",
+      "limit": 50,
+      "pagination": true
+    },
+    "trends": {
+      "description": "Извлечение трендов",
+      "container": "[data-testid='trend']",
+      "fields": {
+        "name": {
+          "selector": "span",
+          "description": "Название тренда"
+        },
+        "tweet_count": {
+          "selector": "span:last-child",
+          "transform": "int",
+          "description": "Количество твитов"
+        },
+        "url": {
+          "selector": "a@href",
+          "description": "Ссылка на тренд"
+        },
+        "category": {
+          "selector": "[data-testid='trendCategory']",
+          "description": "Категория тренда"
+        },
+        "position": {
+          "selector": "[data-testid='trendPosition']",
+          "transform": "int",
+          "description": "Позиция в списке трендов"
+        }
+      }
+    },
+    "bookmarks": {
+      "description": "Извлечение закладок пользователя",
+      "container": "article[data-testid='tweet']",
+      "item_model": "tweet",
+      "limit": 20,
+      "pagination": true
+    },
+    "notifications": {
+      "description": "Извлечение уведомлений",
+      "container": "[data-testid='notification']",
+      "fields": {
+        "type": {
+          "selector": "[data-testid='notificationType']",
+          "description": "Тип уведомления"
+        },
+        "text": {
+          "selector": "[data-testid='notificationText']",
+          "description": "Текст уведомления"
+        },
+        "timestamp": {
+          "selector": "time@datetime",
+          "description": "Время уведомления"
+        },
+        "is_read": {
+          "selector": "[data-testid='notificationRead']",
+          "transform": "exists",
+          "description": "Прочитано ли уведомление"
+        }
+      }
+    }
+  },
+  "transformers": {
+    "extract_tweet_id": {
+      "description": "Извлекает ID твита из URL",
+      "code": "lambda url: url.split('/status/')[-1].split('?')[0] if url else None"
+    },
+    "int": {
+      "description": "Преобразует строку в число",
+      "code": "lambda x: int(x.replace(',', '').replace('.', '')) if x else 0"
+    },
+    "exists": {
+      "description": "Проверяет существование элемента",
+      "code": "lambda x: True if x else False"
+    },
+    "list": {
+      "description": "Собирает все значения в список",
+      "code": "lambda x: [x] if x else []"
+    },
+    "contains_retweet": {
+      "description": "Проверяет, является ли твит ретвитом",
+      "code": "lambda x: 'Retweeted' in x if x else False"
+    },
+    "lang": {
+      "description": "Извлекает язык твита",
+      "code": "lambda x: x.get('lang') if x else None"
+    }
+  },
+  "search_flows": {
+    "search_tweets": {
+      "description": "Поиск твитов по ключевому слову",
+      "requires_auth": false,
+      "steps": [
+        {"action": "navigate", "url": "https://x.com/search?q={{query}}&src=typed_query"},
+        {"action": "wait", "selector": "article[data-testid='tweet']", "timeout": 5000},
+        {"action": "scroll", "amount": 3},
+        {"action": "extract", "model": "search_result"}
+      ]
+    },
+    "user_tweets": {
+      "description": "Получение твитов пользователя",
+      "requires_auth": false,
+      "steps": [
+        {"action": "navigate", "url": "https://x.com/{{username}}"},
+        {"action": "wait", "selector": "article[data-testid='tweet']", "timeout": 5000},
+        {"action": "scroll", "amount": 3},
+        {"action": "extract", "model": "tweets_list"}
+      ]
+    },
+    "user_profile": {
+      "description": "Получение профиля пользователя",
+      "requires_auth": false,
+      "steps": [
+        {"action": "navigate", "url": "https://x.com/{{username}}"},
+        {"action": "wait", "selector": "[data-testid='UserDescription']", "timeout": 5000},
+        {"action": "extract", "model": "profile"}
+      ]
+    },
+    "tweet_thread": {
+      "description": "Получение ветки твитов по ID",
+      "requires_auth": false,
+      "steps": [
+        {"action": "navigate", "url": "https://x.com/i/status/{{tweet_id}}"},
+        {"action": "wait", "selector": "article[data-testid='tweet']", "timeout": 5000},
+        {"action": "extract_all", "model": "tweet", "container": "article[data-testid='tweet']"}
+      ]
+    },
+    "trending": {
+      "description": "Получение трендов",
+      "requires_auth": false,
+      "steps": [
+        {"action": "navigate", "url": "https://x.com/explore/tabs/trending"},
+        {"action": "wait", "selector": "[data-testid='trend']", "timeout": 5000},
+        {"action": "extract", "model": "trends"}
+      ]
+    },
+    "bookmarks": {
+      "description": "Получение закладок пользователя",
+      "requires_auth": true,
+      "steps": [
+        {"action": "navigate", "url": "https://x.com/i/bookmarks"},
+        {"action": "wait", "selector": "article[data-testid='tweet']", "timeout": 5000},
+        {"action": "scroll", "amount": 3},
+        {"action": "extract", "model": "bookmarks"}
+      ]
+    },
+    "notifications": {
+      "description": "Получение уведомлений",
+      "requires_auth": true,
+      "steps": [
+        {"action": "navigate", "url": "https://x.com/notifications"},
+        {"action": "wait", "selector": "[data-testid='notification']", "timeout": 5000},
+        {"action": "extract", "model": "notifications"}
+      ]
+    }
+  },
+  "requirements": {
+    "pydoll": ">=2.0.0"
+  }
+}
