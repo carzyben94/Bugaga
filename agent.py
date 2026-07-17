@@ -3,7 +3,7 @@ import json
 import httpx
 import base64
 import time
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 from datetime import datetime
 
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
@@ -24,7 +24,8 @@ AGNES_API_URL = os.environ.get("AGNES_API_URL", "https://apihub.agnes-ai.com/v1/
 AI_MODEL = os.environ.get("AI_MODEL", "agnes-2.0-flash")
 PROTOCOLS_DIR = os.environ.get("PROTOCOLS_DIR", "/app/docs")
 BROWSER_PROTOCOL = os.path.join(PROTOCOLS_DIR, "browser_protocol.json")
-VBRIEF_SCHEMA_PATH = os.path.join(PROTOCOLS_DIR, "vbrief-core.schema.json")
+JS_PROTOCOL = os.path.join(PROTOCOLS_DIR, "js_protocol.json")
+XBRIEF_SCHEMA_PATH = os.path.join(PROTOCOLS_DIR, "vbrief-core.schema.json")
 
 history: List[Dict[str, str]] = []
 last_error: Optional[str] = None
@@ -32,6 +33,7 @@ memory_sha: Optional[str] = None
 logs_sha: Optional[str] = None
 logs: List[Dict] = []
 
+# ===== GITHUB ПАМЯТЬ =====
 def load_from_github(path: str):
     global history, last_error, memory_sha, logs, logs_sha
     try:
@@ -86,6 +88,7 @@ def flush_pending_saves():
     if logs:
         logs_sha = save_to_github(LOGS_PATH, logs, logs_sha, force=True)
 
+# ===== ПАМЯТЬ =====
 def add_to_memory(role: str, content: str):
     global history
     history.append({"role": role, "content": content})
@@ -127,18 +130,20 @@ load_from_github(MEMORY_PATH)
 load_from_github(LOGS_PATH)
 print("🚀 Агент загружен")
 
-def load_vbrief_schema():
+# ===== XBRIEF СХЕМА =====
+def load_xbrief_schema():
     try:
-        with open(VBRIEF_SCHEMA_PATH, 'r') as f:
+        with open(XBRIEF_SCHEMA_PATH, 'r', encoding='utf-8-sig') as f:
             schema = json.load(f)
-            print("📄 vBRIEF схема загружена")
+            print("📄 xBRIEF Core v0.8 загружена")
             return schema
     except Exception as e:
-        print(f"⚠️ vBRIEF схема не загружена: {e}")
+        print(f"⚠️ Ошибка загрузки xBRIEF: {e}")
         return None
 
-VBRIEF_SCHEMA = load_vbrief_schema()
+XBRIEF_SCHEMA = load_xbrief_schema()
 
+# ===== ПРОТОКОЛЫ =====
 def load_protocols():
     try:
         with open(BROWSER_PROTOCOL, 'r') as f:
@@ -146,7 +151,18 @@ def load_protocols():
     except Exception as e:
         return None
 
+def load_js_protocol():
+    try:
+        with open(JS_PROTOCOL, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        return None
+
 BROWSER_DOMAINS = load_protocols()
+JS_DOMAINS = load_js_protocol()
+
+if JS_DOMAINS:
+    print(f"📂 Загружен js_protocol.json ({len(JS_DOMAINS.get('domains', []))} доменов)")
 
 def get_full_command_info(method: str) -> Optional[Dict]:
     if not BROWSER_DOMAINS:
@@ -186,11 +202,7 @@ def get_all_commands() -> str:
                 lines.append(f"  {domain_name}.{cmd_name} — {desc}")
     return "\n".join(lines[:40])
 
-def get_vbrief_example() -> str:
-    if VBRIEF_SCHEMA:
-        return json.dumps(VBRIEF_SCHEMA.get("example", {}), indent=2)
-    return ""
-
+# ===== ОСНОВНАЯ ФУНКЦИЯ =====
 async def get_response(user_msg: str, error_context: str = None) -> str:
     if not AGNES_API_KEY:
         return "❌ AGNES_API_KEY не задан"
@@ -198,41 +210,76 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
         set_last_error(error_context)
     add_to_memory("user", user_msg)
 
-    vbrief_example = get_vbrief_example()
-    vbrief_instructions = ""
-    if vbrief_example:
-        vbrief_instructions = f"""
-Пример vBRIEF формата:
-{vbrief_example}
-"""
-
     system_prompt = f"""Ты агент, управляющий браузером через CDP.
 
-Твоя задача — возвращать ТОЛЬКО JSON-команды. НИКОГДА не пиши текст вместо JSON.
+Твоя задача — создавать xBRIEF планы для выполнения действий в браузере.
 
-Доступные команды:
+=== СТРУКТУРА xBRIEF ПЛАНА ===
+{{
+  "xBRIEFInfo": {{
+    "version": "0.8",
+    "author": "agent",
+    "created": "2026-07-17T00:00:00Z"
+  }},
+  "plan": {{
+    "title": "Название плана",
+    "status": "running",
+    "items": [
+      {{"id": "step1", "type": "task", "title": "Page.navigate", "status": "pending", "params": {{"url": "..."}}}},
+      {{"id": "step2", "type": "task", "title": "Page.captureScreenshot", "status": "pending", "params": {{"format": "png"}}}}
+    ],
+    "edges": [
+      {{"from": "step1", "to": "step2", "type": "blocks"}}
+    ],
+    "narratives": {{
+      "Outcome": "Что получилось",
+      "Lessons": "Что узнали"
+    }}
+  }}
+}}
+
+=== ДОСТУПНЫЕ CDP-КОМАНДЫ ===
 {get_all_commands()}
 
-Правила:
-1. ВСЕГДА возвращай ТОЛЬКО JSON: {{"method": "Domain.command", "params": {{...}}}}
+=== ПРАВИЛА ===
+1. ВСЕГДА возвращай ТОЛЬКО JSON с xBRIEF планом
 2. НИКОГДА не пиши пояснения, только JSON
-3. Если нужно несколько действий — используй vBRIEF формат с планом
-4. Если команда не требуется — ответь текстом
+3. Каждый шаг — это одна CDP-команда
+4. Используй edges для указания порядка шагов
+5. После выполнения плана заполни narratives.Outcome
 
-{vbrief_instructions}
-
-Пример правильного ответа:
-{{"method": "Page.navigate", "params": {{"url": "https://google.com"}}}}
-
-Пример неправильного ответа:
-✅ Страница открыта. Теперь сделаю скриншот.
+=== ПРИМЕР ===
+Пользователь: "открой google.com и сделай скриншот"
+Твой ответ:
+{{
+  "xBRIEFInfo": {{
+    "version": "0.8",
+    "author": "agent",
+    "created": "2026-07-17T00:00:00Z"
+  }},
+  "plan": {{
+    "title": "Открыть сайт и сделать скриншот",
+    "status": "running",
+    "items": [
+      {{"id": "step1", "type": "task", "title": "Page.navigate", "status": "pending", "params": {{"url": "https://google.com"}}}},
+      {{"id": "step2", "type": "task", "title": "Page.captureScreenshot", "status": "pending", "params": {{"format": "png", "captureBeyondViewport": false}}}}
+    ],
+    "edges": [
+      {{"from": "step1", "to": "step2", "type": "blocks"}}
+    ],
+    "narratives": {{
+      "Outcome": "Сайт открыт, скриншот сделан",
+      "Lessons": "Цепочка выполняется автоматически"
+    }}
+  }}
+}}
 """
     messages = [{"role": "system", "content": system_prompt}] + get_memory_history()
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 AGNES_API_URL,
-                json={"model": AI_MODEL, "messages": messages, "temperature": 0.2, "max_tokens": 500},
+                json={"model": AI_MODEL, "messages": messages, "temperature": 0.2, "max_tokens": 600},
                 headers={"Authorization": f"Bearer {AGNES_API_KEY}", "Content-Type": "application/json"},
                 timeout=30.0
             )
@@ -240,36 +287,46 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
             add_to_memory("assistant", result)
             return result
     except Exception as e:
+        add_log("api_error", str(e), "error")
         return f"❌ Ошибка API: {str(e)}"
 
-def parse_command(response: str) -> Optional[Dict]:
+# ===== ПАРСИНГ =====
+def parse_response(response: str) -> Optional[Dict]:
     try:
         if "```json" in response:
             start = response.find("```json") + 7
             end = response.find("```", start)
             response = response[start:end].strip()
-        if "{" in response and "method" in response:
+        if "{" in response:
             start = response.find("{")
             end = response.rfind("}") + 1
             data = json.loads(response[start:end])
-            if "method" in data:
-                method = data.get("method")
-                params = data.get("params", {})
-                cmd_info = get_full_command_info(method)
-                if cmd_info:
-                    required = [p.get("name") for p in cmd_info.get("parameters", []) if p.get("optional") is not True]
-                    missing = [p for p in required if p not in params]
-                    if missing:
-                        return None
-                return data
+            if "xBRIEFInfo" in data and "plan" in data:
+                return {"type": "xbrief", "data": data}
+            elif "method" in data:
+                return {"type": "command", "data": data}
     except Exception as e:
-        return None
+        add_log("parse_error", str(e), "error")
     return None
 
+def parse_xbrief_plan(response: str) -> Optional[Dict]:
+    parsed = parse_response(response)
+    if parsed and parsed.get("type") == "xbrief":
+        return parsed["data"]
+    return None
+
+def parse_simple_command(response: str) -> Optional[Dict]:
+    parsed = parse_response(response)
+    if parsed and parsed.get("type") == "command":
+        return parsed["data"]
+    return None
+
+# ===== СТАТИСТИКА =====
 def get_protocols_stats() -> Dict:
     stats = {
         "browser": {"loaded": False, "domains": 0, "commands": 0},
-        "vbrief": {"loaded": False}
+        "js": {"loaded": False, "domains": 0, "commands": 0},
+        "xbrief": {"loaded": False}
     }
     
     if BROWSER_DOMAINS:
@@ -278,7 +335,13 @@ def get_protocols_stats() -> Dict:
         for domain in BROWSER_DOMAINS.get("domains", []):
             stats["browser"]["commands"] += len(domain.get("commands", []))
     
-    if VBRIEF_SCHEMA:
-        stats["vbrief"]["loaded"] = True
+    if JS_DOMAINS:
+        stats["js"]["loaded"] = True
+        stats["js"]["domains"] = len(JS_DOMAINS.get("domains", []))
+        for domain in JS_DOMAINS.get("domains", []):
+            stats["js"]["commands"] += len(domain.get("commands", []))
+    
+    if XBRIEF_SCHEMA:
+        stats["xbrief"]["loaded"] = True
     
     return stats
