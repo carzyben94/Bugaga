@@ -211,20 +211,30 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
     if error_context:
         set_last_error(error_context)
     add_to_memory("user", user_msg)
+
     system_prompt = f"""Ты агент, управляющий браузером через CDP.
+
+Если пользователь просит несколько действий (например, "открой и сделай скриншот"):
+1. Сначала верни ПЕРВУЮ команду
+2. В ответе напиши, что нужно сделать дальше
 
 Доступные команды:
 {get_all_commands()}
 
 Правила:
-1. Верни JSON: {{"method": "Domain.command", "params": {{...}}}}
-2. Если несколько действий — делай ПО ОЧЕРЕДИ.
-3. Если команда не требуется — ответь текстом.
+- Верни JSON: {"method": "Domain.command", "params": {...}}
+- Если несколько действий — делай по очереди
+- После каждой команды напоминай, что дальше
+- Если команда не требуется — ответь текстом
 
-Примеры:
-- Открыть сайт: {{"method": "Page.navigate", "params": {{"url": "https://google.com"}}}}
-- Скриншот: {{"method": "Page.captureScreenshot", "params": {{"format": "png", "captureBeyondViewport": false}}}}
-- Заголовок: {{"method": "Runtime.evaluate", "params": {{"expression": "document.title"}}}}
+Пример:
+Пользователь: "открой google.com и сделай скриншот"
+Твой ответ:
+{"method": "Page.navigate", "params": {"url": "https://google.com"}}
+✅ Страница открыта. Теперь сделаю скриншот.
+
+Простые команды:
+{get_common_commands()}
 """
     messages = [{"role": "system", "content": system_prompt}] + get_memory_history()
     try:
