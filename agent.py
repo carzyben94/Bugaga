@@ -295,6 +295,56 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 
     harness_instruction = get_browser_harness_instruction()
 
+    x_instruction = """
+=== ДЛЯ X.COM (АКТУАЛЬНЫЕ СЕЛЕКТОРЫ) ===
+
+Перед извлечением твитов или профиля используй этот алгоритм:
+
+1. ПОЛУЧИ ВСЕ DATA-TESTID:
+   Выполни: document.querySelectorAll('[data-testid]')
+   Посмотри, какие data-testid есть на странице.
+   Найди подходящие для твитов, имени, текста.
+
+2. НАЙДИ СЕЛЕКТОР ДЛЯ ТВИТОВ:
+   - Попробуй: 'article[data-testid="tweet"]'
+   - Если не работает, посмотри из шага 1, какие есть варианты
+
+3. ИЗВЛЕКИ ДАННЫЕ:
+   Используй найденные селекторы в Runtime.evaluate
+
+=== ПРИМЕР С ПОИСКОМ СЕЛЕКТОРОВ ===
+
+Шаг 1: Получить все data-testid
+{
+  "title": "Runtime.evaluate",
+  "params": {
+    "expression": "Array.from(document.querySelectorAll('[data-testid]')).map(el => el.getAttribute('data-testid')).filter((v,i,a) => a.indexOf(v) === i)"
+  }
+}
+
+Шаг 2: Найти твиты по найденному селектору
+{
+  "title": "Runtime.evaluate",
+  "params": {
+    "expression": "Array.from(document.querySelectorAll('article[data-testid=\"tweet\"]')).slice(0,5).map(tweet => ({ text: tweet.querySelector('[data-testid=\"tweetText\"]')?.innerText || '', author: tweet.querySelector('[data-testid=\"User-Name\"] span')?.innerText || '' }))"
+  }
+}
+
+=== ЗАПАСНЫЕ СЕЛЕКТОРЫ ===
+
+Если article[data-testid="tweet"] не работает:
+- Используй: 'article[role="article"]'
+- Или: 'div[data-testid="cellInnerDiv"]' и ищи внутри
+
+Если текст не находится:
+- Используй: 'div[data-testid="tweetText"] span'
+- Или: 'div[lang]'
+
+=== ВАЖНО ===
+Всегда проверяй, что элементы найдены, прежде чем извлекать данные.
+Если элементов нет — добавь задержку: await new Promise(r => setTimeout(r, 3000))
+"""
+
     system_prompt = f"""Ты агент, управляющий браузером через CDP.
 
 Твоя задача — создавать xBRIEF планы для выполнения действий в браузере.
@@ -331,6 +381,8 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 {browser_logic_instruction}
 
 {harness_instruction}
+
+{x_instruction}
 
 === ВАЖНОЕ ПРАВИЛО ===
 НЕ используй "recon", "click", "fill", "read", "navigate", "screenshot" как названия шагов ("title").
