@@ -7,7 +7,7 @@ import websockets
 import base64
 import shutil
 import os
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from mask import Mask
 from cookies import get_cookies_for_url
 
@@ -288,6 +288,136 @@ class ChromiumBrowser:
         if "exceptionDetails" in result:
             raise Exception(f"JS Error: {result['exceptionDetails']}")
         return result.get("result", {}).get("result", {}).get("value")
+    
+    async def extract(self, model_name: str, timeout: int = 10) -> Dict:
+        """Извлекает данные по модели из x-com-extraction.json"""
+        from agent import X_EXTRACTION
+        
+        if not X_EXTRACTION:
+            print("⚠️ x-com-extraction.json не загружен")
+            return {}
+        
+        models = X_EXTRACTION.get("models", {})
+        model = models.get(model_name)
+        
+        if not model:
+            print(f"⚠️ Модель '{model_name}' не найдена")
+            return {}
+        
+        container_selector = model.get("container")
+        if container_selector:
+            await self.wait_for_element(container_selector, timeout=timeout)
+        
+        fields = model.get("fields", {})
+        result = {}
+        
+        for field_name, field_config in fields.items():
+            selector = field_config.get("selector")
+            transform = field_config.get("transform")
+            
+            if not selector:
+                continue
+            
+            js = f"""
+            (function() {{
+                const el = document.querySelector('{selector}');
+                if (!el) return '';
+                if (el.tagName === 'IMG') return el.src || '';
+                return el.innerText?.trim() || el.value || el.placeholder || '';
+            }})()
+            """
+            
+            try:
+                value = await self.evaluate(js)
+                
+                if transform == "int":
+                    if isinstance(value, str):
+                        value = value.replace(',', '').replace('.', '').strip()
+                    value = int(value) if value else 0
+                elif transform == "exists":
+                    value = bool(value)
+                elif transform == "list":
+                    value = [value] if value else []
+                elif transform == "extract_tweet_id":
+                    if value and "/status/" in value:
+                        value = value.split("/status/")[-1].split("?")[0]
+                
+                result[field_name] = value
+                
+            except Exception as e:
+                print(f"⚠️ Ошибка извлечения {field_name}: {e}")
+                result[field_name] = None
+        
+        return result
+    
+    async def extract_all(self, model_name: str, timeout: int = 10, limit: int = 20) -> List[Dict]:
+        """Извлекает список элементов по модели из x-com-extraction.json"""
+        from agent import X_EXTRACTION
+        
+        if not X_EXTRACTION:
+            return []
+        
+        models = X_EXTRACTION.get("models", {})
+        model = models.get(model_name)
+        
+        if not model:
+            return []
+        
+        container_selector = model.get("container")
+        if not container_selector:
+            return [await self.extract(model_name, timeout)]
+        
+        await self.wait_for_element(container_selector, timeout=timeout)
+        
+        fields = model.get("fields", {})
+        results = []
+        
+        for i in range(limit):
+            item_result = {}
+            has_value = False
+            
+            for field_name, field_config in fields.items():
+                selector = field_config.get("selector")
+                transform = field_config.get("transform")
+                
+                if not selector:
+                    continue
+                
+                js = f"""
+                (function() {{
+                    const items = document.querySelectorAll('{container_selector}');
+                    if (items.length <= {i}) return '';
+                    const el = items[{i}].querySelector('{selector}');
+                    if (!el) return '';
+                    if (el.tagName === 'IMG') return el.src || '';
+                    return el.innerText?.trim() || el.value || el.placeholder || '';
+                }})()
+                """
+                
+                try:
+                    value = await self.evaluate(js)
+                    
+                    if transform == "int":
+                        if isinstance(value, str):
+                            value = value.replace(',', '').strip()
+                        value = int(value) if value else 0
+                    elif transform == "exists":
+                        value = bool(value)
+                    elif transform == "list":
+                        value = [value] if value else []
+                    
+                    item_result[field_name] = value
+                    if value:
+                        has_value = True
+                except:
+                    item_result[field_name] = None
+            
+            if has_value:
+                results.append(item_result)
+            else:
+                break
+        
+        return results
     
     async def screenshot(self, format: str = "png") -> bytes:
         await self.set_viewport(self.viewport_width, self.viewport_height)
