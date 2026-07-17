@@ -15,7 +15,7 @@ LOGS_PATH = "logs.json"
 
 # ===== ЗАЩИТА ОТ ЧАСТЫХ ЗАПИСЕЙ =====
 _last_github_save = 0
-GITHUB_SAVE_INTERVAL = 30
+GITHUB_SAVE_INTERVAL = 80
 _pending_memory_data = None
 _pending_logs_data = None
 
