@@ -3,6 +3,7 @@ import asyncio
 import json
 import base64
 import sys
+import re
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from browser import ChromiumBrowser
@@ -28,6 +29,16 @@ if not TOKEN:
 
 keep_browser = False
 browser_instance = None
+
+def escape_markdown(text: str) -> str:
+    """Экранирует специальные символы для Telegram Markdown"""
+    if not text:
+        return text
+    if not isinstance(text, str):
+        text = str(text)
+    # Экранируем _, *, [, ], (, ), ~, `, >, #, +, -, =, |, {, }, ., !
+    special_chars = r'_*[]()~`>#+-=|{}.!'
+    return re.sub(f'([{re.escape(special_chars)}])', r'\\\1', text)
 
 async def start(update: Update, context):
     await update.message.reply_text(
@@ -243,24 +254,24 @@ async def format_runtime_result(value) -> str:
         joined = value.get('joined', '')
         
         if username:
-            text += f"👤 **{name}** (@{username})\n\n"
+            text += f"👤 **{escape_markdown(name)}** (@{escape_markdown(username)})\n\n"
         if bio:
-            text += f"📝 {bio}\n\n"
+            text += f"📝 {escape_markdown(bio)}\n\n"
         if followers:
-            text += f"👥 Подписчики: **{followers}**\n"
+            text += f"👥 Подписчики: **{escape_markdown(str(followers))}**\n"
         if following:
-            text += f"📌 Подписки: **{following}**\n"
+            text += f"📌 Подписки: **{escape_markdown(str(following))}**\n"
         if posts:
-            text += f"📊 Постов: **{posts}**\n"
+            text += f"📊 Постов: **{escape_markdown(str(posts))}**\n"
         if joined:
-            text += f"📅 Присоединился: {joined}\n"
+            text += f"📅 Присоединился: {escape_markdown(joined)}\n"
         
         if not username:
             for key, val in value.items():
                 if isinstance(val, (int, float)):
-                    text += f"• **{key}**: {val:,}\n"
+                    text += f"• **{escape_markdown(key)}**: {val:,}\n"
                 else:
-                    text += f"• **{key}**: {val}\n"
+                    text += f"• **{escape_markdown(key)}**: {escape_markdown(str(val))}\n"
         return text
     
     elif isinstance(value, list):
@@ -275,21 +286,21 @@ async def format_runtime_result(value) -> str:
                 likes = item.get('likes', '')
                 retweets = item.get('retweets', '')
                 
-                text += f"{i}. **{author}**: {text_content}"
+                text += f"{i}. **{escape_markdown(author)}**: {escape_markdown(text_content)}"
                 if likes:
-                    text += f" ❤️ {likes}"
+                    text += f" ❤️ {escape_markdown(str(likes))}"
                 if retweets:
-                    text += f" 🔁 {retweets}"
+                    text += f" 🔁 {escape_markdown(str(retweets))}"
                 text += "\n"
             else:
-                text += f"{i}. {item}\n"
+                text += f"{i}. {escape_markdown(str(item))}\n"
         
         if len(value) > 10:
             text += f"\n... и ещё {len(value) - 10} результатов"
         return text
     
     else:
-        return f"📊 {value}"
+        return f"📊 {escape_markdown(str(value))}"
 
 async def execute_xbrief_plan(update: Update, plan: Dict) -> bool:
     items = plan.get("plan", {}).get("items", [])
