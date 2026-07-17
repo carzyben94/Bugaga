@@ -1,0 +1,137 @@
+{
+  "name": "browser_agent_logic",
+  "version": "1.0.0",
+  "description": "Логика для управления браузером через CDP. Агент использует эти инструкции для выполнения действий.",
+  "actions": {
+    "recon": {
+      "description": "Получить структуру страницы: все интерактивные элементы с селекторами, координатами, текстом",
+      "when_to_use": "Первый шаг — всегда используй recon, чтобы понять, что есть на странице",
+      "steps": [
+        {
+          "step": 1,
+          "description": "Найти все интерактивные элементы",
+          "cdp_method": "Runtime.evaluate",
+          "code": "document.querySelectorAll('button, a[href], input:not([type=hidden]), select, textarea, [role=button], [role=link], [role=checkbox], [role=radio], [role=textbox], [role=combobox], [role=listbox], [role=slider], [role=tab], [contenteditable=true]')"
+        },
+        {
+          "step": 2,
+          "description": "Для каждого элемента получить данные",
+          "cdp_method": "Runtime.evaluate",
+          "code": "function getElementData(el) { const rect = el.getBoundingClientRect(); return { tag: el.tagName.toLowerCase(), text: el.innerText?.trim() || el.value || el.placeholder || '', selector: getUniqueSelector(el), x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height), visible: rect.width > 0 && rect.height > 0, enabled: !el.disabled, type: el.type || null, value: el.value || null, href: el.href || null }; }"
+        },
+        {
+          "step": 3,
+          "description": "Сгенерировать уникальный CSS-селектор",
+          "cdp_method": "Runtime.evaluate",
+          "code": "function getUniqueSelector(el) { if (el.id) return '#' + el.id; if (el.className && typeof el.className === 'string') { const classes = el.className.split(' ').filter(c => c).join('.'); if (classes) return el.tagName.toLowerCase() + '.' + classes; } let path = []; let current = el; while (current && current !== document.body) { let index = 0; let sibling = current; while (sibling = sibling.previousElementSibling) { if (sibling.tagName === current.tagName) index++; } let selector = current.tagName.toLowerCase(); if (index > 0) selector += `:nth-of-type(${index + 1})`; path.unshift(selector); current = current.parentElement; } return path.join(' > '); }"
+        },
+        {
+          "step": 4,
+          "description": "Собрать всё в структурированный JSON",
+          "cdp_method": "Runtime.evaluate",
+          "code": "(function() { const elements = []; const selectors = ['button', 'a[href]', 'input:not([type=hidden])', 'select', 'textarea', '[role=button]', '[role=link]', '[role=checkbox]', '[role=radio]', '[role=textbox]', '[role=combobox]', '[role=listbox]', '[role=slider]', '[role=tab]', '[contenteditable=true]']; document.querySelectorAll(selectors.join(',')).forEach(el => { if (el.getBoundingClientRect().width === 0 || el.getBoundingClientRect().height === 0) return; elements.push(getElementData(el)); }); elements.sort((a, b) => a.y - b.y || a.x - b.x); return { elements: elements, count: elements.length, url: window.location.href, title: document.title }; })()"
+        }
+      ],
+      "example_response": {
+        "elements": [
+          {"id": "el-1", "tag": "input", "type": "text", "text": "", "selector": "#search-input", "x": 150, "y": 100, "width": 300, "height": 40, "visible": true, "enabled": true},
+          {"id": "el-2", "tag": "button", "type": "submit", "text": "Search", "selector": "#search-button", "x": 460, "y": 100, "width": 80, "height": 40, "visible": true, "enabled": true}
+        ],
+        "count": 2,
+        "url": "https://example.com",
+        "title": "Example Domain"
+      }
+    },
+    "click": {
+      "description": "Кликнуть по элементу на странице по селектору",
+      "when_to_use": "Когда нужно нажать на кнопку, ссылку или другой элемент",
+      "steps": [
+        {
+          "step": 1,
+          "description": "Найти элемент по селектору",
+          "cdp_method": "Runtime.evaluate",
+          "code": "function findElement(selector) { return document.querySelector(selector); }"
+        },
+        {
+          "step": 2,
+          "description": "Кликнуть по элементу",
+          "cdp_method": "Runtime.evaluate",
+          "code": "function clickElement(selector) { const el = document.querySelector(selector); if (!el) return { success: false, error: 'Элемент не найден' }; el.click(); el.dispatchEvent(new Event('click', { bubbles: true })); return { success: true, tag: el.tagName, text: el.innerText?.trim() || el.value || '' }; }"
+        },
+        {
+          "step": 3,
+          "description": "Дождаться реакции страницы",
+          "cdp_method": "Runtime.evaluate",
+          "code": "await new Promise(r => setTimeout(r, 500));"
+        }
+      ]
+    },
+    "fill": {
+      "description": "Ввести текст в поле на странице",
+      "when_to_use": "Когда нужно ввести текст в поле ввода, поиск или форму",
+      "steps": [
+        {
+          "step": 1,
+          "description": "Найти поле по селектору",
+          "cdp_method": "Runtime.evaluate",
+          "code": "function findInput(selector) { return document.querySelector(selector); }"
+        },
+        {
+          "step": 2,
+          "description": "Очистить поле и ввести текст",
+          "cdp_method": "Runtime.evaluate",
+          "code": "function fillInput(selector, text) { const el = document.querySelector(selector); if (!el) return { success: false, error: 'Элемент не найден' }; el.focus(); el.value = ''; el.value = text; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); return { success: true, value: el.value }; }"
+        }
+      ]
+    },
+    "read": {
+      "description": "Прочитать текст с элемента или страницы",
+      "when_to_use": "Когда нужно получить текст с страницы",
+      "steps": [
+        {
+          "step": 1,
+          "description": "Прочитать текст",
+          "cdp_method": "Runtime.evaluate",
+          "code": "function readPage() { return { url: window.location.href, title: document.title, body: document.body.innerText.slice(0, 2000) }; }"
+        }
+      ]
+    },
+    "navigate": {
+      "description": "Перейти на URL",
+      "when_to_use": "Когда нужно открыть сайт",
+      "steps": [
+        {
+          "step": 1,
+          "description": "Перейти по URL",
+          "cdp_method": "Page.navigate",
+          "code": "Page.navigate({ url: url })"
+        },
+        {
+          "step": 2,
+          "description": "Дождаться загрузки",
+          "cdp_method": "Runtime.evaluate",
+          "code": "await new Promise(r => setTimeout(r, 1000));"
+        }
+      ]
+    },
+    "screenshot": {
+      "description": "Сделать скриншот страницы",
+      "when_to_use": "Когда нужно показать визуальное состояние страницы",
+      "steps": [
+        {
+          "step": 1,
+          "description": "Сделать скриншот",
+          "cdp_method": "Page.captureScreenshot",
+          "code": "Page.captureScreenshot({ format: 'png', captureBeyondViewport: false })"
+        }
+      ]
+    }
+  },
+  "rules": [
+    "Всегда начинай с recon, чтобы понять структуру страницы",
+    "Используй селекторы из recon для click и fill",
+    "После выполнения действий проверяй результат через recon или read",
+    "Закрывай неиспользуемые вкладки, если работаешь в браузере",
+    "Если элемент не найден — попробуй другой селектор или обнови страницу"
+  ]
+}
