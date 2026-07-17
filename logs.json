@@ -1,17 +1,5 @@
 [
   {
-    "timestamp": "2026-07-17T15:50:09.729568",
-    "action": "bot_started",
-    "details": "\u0411\u043e\u0442 \u0437\u0430\u043f\u0443\u0449\u0435\u043d",
-    "status": "success"
-  },
-  {
-    "timestamp": "2026-07-17T15:50:39.004747",
-    "action": "protocols_loaded",
-    "details": "OK",
-    "status": "success"
-  },
-  {
     "timestamp": "2026-07-17T15:50:39.741135",
     "action": "bot_started",
     "details": "\u0411\u043e\u0442 \u0437\u0430\u043f\u0443\u0449\u0435\u043d",
@@ -597,6 +585,18 @@
     "timestamp": "2026-07-17T16:13:53.896650",
     "action": "protocols_loaded",
     "details": "OK",
+    "status": "success"
+  },
+  {
+    "timestamp": "2026-07-17T16:14:01.730024",
+    "action": "protocols_loaded",
+    "details": "OK",
+    "status": "success"
+  },
+  {
+    "timestamp": "2026-07-17T16:14:02.537054",
+    "action": "bot_started",
+    "details": "\u0411\u043e\u0442 \u0437\u0430\u043f\u0443\u0449\u0435\u043d",
     "status": "success"
   }
 ]
