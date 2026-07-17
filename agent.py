@@ -364,7 +364,49 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 - Вместо "navigate" → "Page.navigate"
 - Вместо "screenshot" → "Page.captureScreenshot"
 
-=== ПРИМЕР ДЛЯ ПОИСКА ===
+=== X.COM ИЗВЛЕЧЕНИЕ ДАННЫХ ===
+
+Когда пользователь просит:
+- "профиль @username" → ИЗВЛЕКИ данные профиля, НЕ делай скриншот
+- "твиты про ChatGPT" → ИЗВЛЕКИ твиты, НЕ делай скриншот
+- "тренды" → ИЗВЛЕКИ тренды, НЕ делай скриншот
+- "закладки" → ИЗВЛЕКИ закладки, НЕ делай скриншот
+- "уведомления" → ИЗВЛЕКИ уведомления, НЕ делай скриншот
+- "твит 123456789" → ИЗВЛЕКИ конкретный твит, НЕ делай скриншот
+
+Для извлечения используй Runtime.evaluate с кодом из x-com-extraction.json.
+Скриншот делай ТОЛЬКО когда пользователь явно просит.
+
+=== ПРИМЕРЫ X.COM ===
+
+Пользователь: "профиль @elonmusk"
+{{
+  "items": [
+    {{"title": "Page.navigate", "params": {{"url": "https://x.com/elonmusk"}}}},
+    {{"title": "Runtime.evaluate", "params": {{"expression": "return {{ name: document.querySelector('[data-testid=\"User-Name\"] span')?.innerText, username: document.querySelector('[data-testid=\"User-Name\"] span:last-child')?.innerText, bio: document.querySelector('[data-testid=\"UserDescription\"]')?.innerText, followers: document.querySelector('a[href$=\"/followers\"] span')?.innerText, following: document.querySelector('a[href$=\"/following\"] span')?.innerText, posts: document.querySelector('a[href$=\"/with_replies\"] span')?.innerText, joined: document.querySelector('[data-testid=\"UserJoinDate\"]')?.innerText }}"}}}}
+  ],
+  "narratives": {{"Outcome": "Профиль @elonmusk загружен"}}
+}}
+
+Пользователь: "твиты про ChatGPT"
+{{
+  "items": [
+    {{"title": "Page.navigate", "params": {{"url": "https://x.com/search?q=ChatGPT&src=typed_query"}}}},
+    {{"title": "Runtime.evaluate", "params": {{"expression": "return Array.from(document.querySelectorAll('article[data-testid=\"tweet\"]')).slice(0,5).map(tweet => ({{ text: tweet.querySelector('[data-testid=\"tweetText\"]')?.innerText, author: tweet.querySelector('[data-testid=\"User-Name\"] span')?.innerText, username: tweet.querySelector('[data-testid=\"User-Name\"] span:last-child')?.innerText, likes: tweet.querySelector('[data-testid=\"like\"] span')?.innerText, retweets: tweet.querySelector('[data-testid=\"retweet\"] span')?.innerText }}))"}}}}
+  ],
+  "narratives": {{"Outcome": "Найдено 5 твитов про ChatGPT"}}
+}}
+
+Пользователь: "тренды"
+{{
+  "items": [
+    {{"title": "Page.navigate", "params": {{"url": "https://x.com/explore/tabs/trending"}}}},
+    {{"title": "Runtime.evaluate", "params": {{"expression": "return Array.from(document.querySelectorAll('[data-testid=\"trend\"]')).slice(0,5).map(trend => ({{ name: trend.querySelector('span')?.innerText, tweets: trend.querySelector('span:last-child')?.innerText }}))"}}}}
+  ],
+  "narratives": {{"Outcome": "Получены тренды X.com"}}
+}}
+
+=== ПРИМЕР ДЛЯ ПОИСКА В GOOGLE ===
 Пользователь: "Зайди в google, введи в поиск : вася, пришли скрин"
 Твой ответ (ПРАВИЛЬНЫЙ):
 {{
@@ -394,34 +436,6 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
   }}
 }}
 
-=== ПРИМЕР ДЛЯ X.COM ===
-Пользователь: "найди твиты про ChatGPT"
-Твой ответ:
-{{
-  "xBRIEFInfo": {{
-    "version": "0.8",
-    "author": "agent",
-    "created": "2026-07-17T00:00:00Z"
-  }},
-  "plan": {{
-    "title": "Поиск твитов про ChatGPT",
-    "status": "running",
-    "items": [
-      {{"id": "step1", "title": "Page.navigate", "params": {{"url": "https://x.com/search?q=ChatGPT&src=typed_query"}}}},
-      {{"id": "step2", "title": "Runtime.evaluate", "params": {{"expression": "document.querySelectorAll('article[data-testid=tweet]')"}}}},
-      {{"id": "step3", "title": "Runtime.evaluate", "params": {{"expression": "извлечь текст, автора, лайки из каждого твита"}}}}
-    ],
-    "edges": [
-      {{"from": "step1", "to": "step2"}},
-      {{"from": "step2", "to": "step3"}}
-    ],
-    "narratives": {{
-      "Outcome": "Найдены твиты про ChatGPT",
-      "Lessons": "Используем структуру из x-com-extraction.json"
-    }}
-  }}
-}}
-
 === ПРАВИЛА ===
 1. ВСЕГДА возвращай ТОЛЬКО ПОЛНЫЙ валидный JSON с xBRIEF планом
 2. НИКОГДА не пиши пояснения, только JSON
@@ -431,6 +445,7 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 6. После выполнения плана заполни narratives.Outcome
 7. Для сложных задач используй методы из browser-harness-all.json
 8. Для X.com используй модели из x-com-extraction.json
+9. Для X.com НЕ делай скриншот, если пользователь не просит
 """
     messages = [{"role": "system", "content": system_prompt}] + get_memory_history()
     try:
