@@ -24,6 +24,7 @@ class ChromiumBrowser:
         self._msg_id = 0
         self.mask = Mask()
         self._keep_alive_task = None
+        self._cookies_set = False  # ← флаг, что куки уже установлены
         
     def _find_chrome(self) -> str:
         possible_names = [
@@ -139,10 +140,44 @@ class ChromiumBrowser:
         try:
             result = await self.send_command("Network.setCookies", {"cookies": cdp_cookies})
             print(f"🍪 Установлено {len(cdp_cookies)} кук для {url}")
+            self._cookies_set = True
             return result
         except Exception as e:
             print(f"⚠️ Ошибка установки кук: {e}")
             return None
+    
+    async def set_all_cookies(self):
+        """Устанавливает все куки из cookies.py для всех доменов"""
+        from cookies import SITE_COOKIES
+        total = 0
+        for domain, cookies in SITE_COOKIES.items():
+            if cookies:
+                cdp_cookies = []
+                for cookie in cookies:
+                    cdp_cookie = {
+                        "name": cookie.get("name"),
+                        "value": cookie.get("value"),
+                        "domain": cookie.get("domain"),
+                        "path": cookie.get("path", "/"),
+                        "secure": cookie.get("secure", False),
+                        "httpOnly": cookie.get("httpOnly", False),
+                        "sameSite": cookie.get("sameSite", "unspecified")
+                    }
+                    if not cookie.get("session", True):
+                        cdp_cookie["expires"] = cookie.get("expirationDate", 0)
+                    cdp_cookies.append(cdp_cookie)
+                
+                if cdp_cookies:
+                    try:
+                        await self.send_command("Network.setCookies", {"cookies": cdp_cookies})
+                        total += len(cdp_cookies)
+                        print(f"🍪 Установлено {len(cdp_cookies)} кук для {domain}")
+                    except Exception as e:
+                        print(f"⚠️ Ошибка установки кук для {domain}: {e}")
+        
+        self._cookies_set = True
+        print(f"🍪 Всего установлено {total} кук")
+        return total
     
     async def connect(self):
         if not self.ws_url:
@@ -160,6 +195,9 @@ class ChromiumBrowser:
         await self.send_command("Page.enable")
         await self.send_command("Runtime.enable")
         await self.send_command("Network.enable")  # ← включаем Network для кук
+        
+        # ✅ УСТАНАВЛИВАЕМ ВСЕ КУКИ СРАЗУ ПРИ ПОДКЛЮЧЕНИИ
+        await self.set_all_cookies()
         
         print("🕵️ Применяю JS-маскировку...")
         js_mask = Mask.get_js_mask()
@@ -199,8 +237,9 @@ class ChromiumBrowser:
     async def navigate(self, url: str) -> Dict:
         print(f"🌐 Переход на {url}")
         
-        # ✅ Устанавливаем куки ДО навигации
-        await self.set_cookies_for_url(url)
+        # ✅ Если куки ещё не установлены — устанавливаем для этого URL
+        if not self._cookies_set:
+            await self.set_cookies_for_url(url)
         
         await self.send_command("Page.enable")
         result = await self.send_command("Page.navigate", {"url": url})
