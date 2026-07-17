@@ -26,6 +26,7 @@ PROTOCOLS_DIR = os.environ.get("PROTOCOLS_DIR", "/app/docs")
 BROWSER_PROTOCOL = os.path.join(PROTOCOLS_DIR, "browser_protocol.json")
 JS_PROTOCOL = os.path.join(PROTOCOLS_DIR, "js_protocol.json")
 XBRIEF_SCHEMA_PATH = os.path.join(PROTOCOLS_DIR, "vbrief-core.schema.json")
+BROWSER_LOGIC_PATH = os.path.join(PROTOCOLS_DIR, "browser-logic.json")
 
 history: List[Dict[str, str]] = []
 last_error: Optional[str] = None
@@ -160,6 +161,19 @@ JS_DOMAINS = load_js_protocol()
 if JS_DOMAINS:
     print(f"📂 Загружен js_protocol.json ({len(JS_DOMAINS.get('domains', []))} доменов)")
 
+# ===== ЗАГРУЗКА ЛОГИКИ БРАУЗЕРА =====
+def load_browser_logic():
+    try:
+        with open(BROWSER_LOGIC_PATH, 'r', encoding='utf-8-sig') as f:
+            logic = json.load(f)
+            print("📄 browser-logic.json загружен")
+            return logic
+    except Exception as e:
+        print(f"⚠️ Ошибка загрузки browser-logic.json: {e}")
+        return None
+
+BROWSER_LOGIC = load_browser_logic()
+
 def get_full_command_info(method: str) -> Optional[Dict]:
     if not BROWSER_DOMAINS:
         return None
@@ -205,6 +219,28 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
         set_last_error(error_context)
     add_to_memory("user", user_msg)
 
+    # Формируем инструкцию по browser-logic.json
+    browser_logic_instruction = ""
+    if BROWSER_LOGIC:
+        actions = BROWSER_LOGIC.get("actions", {})
+        rules = BROWSER_LOGIC.get("rules", [])
+        
+        action_list = []
+        for name, action in actions.items():
+            action_list.append(f"- {name}: {action.get('description', '')}")
+        
+        browser_logic_instruction = f"""
+=== ДОПОЛНИТЕЛЬНАЯ ЛОГИКА ДЛЯ БРАУЗЕРА ===
+Ты можешь использовать следующие действия, описанные в browser-logic.json:
+
+{chr(10).join(action_list)}
+
+Правила:
+{chr(10).join([f"- {r}" for r in rules])}
+
+Используй эти действия для получения структуры страницы (recon), кликов (click), ввода текста (fill) и других операций.
+"""
+
     system_prompt = f"""Ты агент, управляющий браузером через CDP.
 
 Твоя задача — создавать xBRIEF планы для выполнения действий в браузере.
@@ -236,12 +272,15 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 === ДОСТУПНЫЕ CDP-КОМАНДЫ ===
 {get_all_commands()}
 
+{browser_logic_instruction}
+
 === ПРАВИЛА ===
 1. ВСЕГДА возвращай ТОЛЬКО JSON с xBRIEF планом
 2. НИКОГДА не пиши пояснения, только JSON
 3. Каждый шаг — это одна CDP-команда
 4. Используй edges для указания порядка шагов
 5. После выполнения плана заполни narratives.Outcome
+6. Используй recon для получения структуры страницы перед click/fill
 
 === ПРИМЕР ===
 Пользователь: "открой google.com и сделай скриншот"
@@ -322,7 +361,8 @@ def get_protocols_stats() -> Dict:
     stats = {
         "browser": {"loaded": False, "domains": 0, "commands": 0},
         "js": {"loaded": False, "domains": 0, "commands": 0},
-        "xbrief": {"loaded": False}
+        "xbrief": {"loaded": False},
+        "browser_logic": {"loaded": False}
     }
     
     if BROWSER_DOMAINS:
@@ -339,5 +379,8 @@ def get_protocols_stats() -> Dict:
     
     if XBRIEF_SCHEMA:
         stats["xbrief"]["loaded"] = True
+    
+    if BROWSER_LOGIC:
+        stats["browser_logic"]["loaded"] = True
     
     return stats
