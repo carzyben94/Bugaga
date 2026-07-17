@@ -162,7 +162,6 @@ JS_DOMAINS = load_js_protocol()
 if JS_DOMAINS:
     print(f"📂 Загружен js_protocol.json ({len(JS_DOMAINS.get('domains', []))} доменов)")
 
-# ===== ЗАГРУЗКА ЛОГИКИ БРАУЗЕРА =====
 def load_browser_logic():
     try:
         with open(BROWSER_LOGIC_PATH, 'r', encoding='utf-8-sig') as f:
@@ -175,7 +174,6 @@ def load_browser_logic():
 
 BROWSER_LOGIC = load_browser_logic()
 
-# ===== ЗАГРУЗКА BROWER-HARNESS-ALL =====
 def load_browser_harness():
     try:
         with open(BROWSER_HARNESS_PATH, 'r', encoding='utf-8-sig') as f:
@@ -227,7 +225,6 @@ def get_all_commands() -> str:
     return "\n".join(lines[:40])
 
 def get_browser_harness_instruction() -> str:
-    """Формирует инструкцию на основе browser-harness-all.json"""
     if not BROWSER_HARNESS:
         return ""
     
@@ -235,7 +232,6 @@ def get_browser_harness_instruction() -> str:
     rules = BROWSER_HARNESS.get("rules", [])
     total_methods = BROWSER_HARNESS.get("total_methods", 0)
     
-    # Берём первые 5 доменов для примера (чтобы не перегружать промпт)
     domain_examples = []
     for domain in domains[:5]:
         domain_name = domain.get("domain", "unknown")
@@ -263,7 +259,6 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
         set_last_error(error_context)
     add_to_memory("user", user_msg)
 
-    # Формируем инструкцию по browser-logic.json
     browser_logic_instruction = ""
     if BROWSER_LOGIC:
         actions = BROWSER_LOGIC.get("actions", {})
@@ -283,7 +278,6 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 {chr(10).join([f"- {r}" for r in rules])}
 """
 
-    # Формируем инструкцию по browser-harness-all.json
     harness_instruction = get_browser_harness_instruction()
 
     system_prompt = f"""Ты агент, управляющий браузером через CDP.
@@ -322,12 +316,13 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 {harness_instruction}
 
 === ПРАВИЛА ===
-1. ВСЕГДА возвращай ТОЛЬКО JSON с xBRIEF планом
+1. ВСЕГДА возвращай ТОЛЬКО ПОЛНЫЙ валидный JSON с xBRIEF планом
 2. НИКОГДА не пиши пояснения, только JSON
-3. Каждый шаг — это одна CDP-команда
-4. Используй edges для указания порядка шагов
-5. После выполнения плана заполни narratives.Outcome
-6. Для сложных задач используй методы из browser-harness-all.json
+3. Убедись, что все скобки и кавычки закрыты
+4. Каждый шаг — это одна CDP-команда
+5. Используй edges для указания порядка шагов
+6. После выполнения плана заполни narratives.Outcome
+7. Для сложных задач используй методы из browser-harness-all.json
 
 === ПРИМЕР ===
 Пользователь: "открой google.com и сделай скриншот"
@@ -360,7 +355,7 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 AGNES_API_URL,
-                json={"model": AI_MODEL, "messages": messages, "temperature": 0.2, "max_tokens": 600},
+                json={"model": AI_MODEL, "messages": messages, "temperature": 0.2, "max_tokens": 800},
                 headers={"Authorization": f"Bearer {AGNES_API_KEY}", "Content-Type": "application/json"},
                 timeout=30.0
             )
@@ -377,16 +372,33 @@ def parse_response(response: str) -> Optional[Dict]:
             start = response.find("```json") + 7
             end = response.find("```", start)
             response = response[start:end].strip()
+        
         if "{" in response:
             start = response.find("{")
             end = response.rfind("}") + 1
-            data = json.loads(response[start:end])
+            
+            json_str = response[start:end].strip()
+            
+            # Восстанавливаем обрезанный JSON
+            open_braces = json_str.count('{')
+            close_braces = json_str.count('}')
+            
+            if open_braces > close_braces:
+                json_str += '}' * (open_braces - close_braces)
+            
+            # Проверяем незакрытые кавычки
+            if json_str.count('"') % 2 != 0:
+                json_str += '"'
+            
+            data = json.loads(json_str)
+            
             if "xBRIEFInfo" in data and "plan" in data:
                 return {"type": "xbrief", "data": data}
             elif "method" in data:
                 return {"type": "command", "data": data}
     except Exception as e:
         add_log("parse_error", str(e), "error")
+        add_log("parse_debug", response[:300], "info")
     return None
 
 def parse_command(response: str) -> Optional[Dict]:
