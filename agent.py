@@ -270,9 +270,11 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
         
         browser_logic_instruction = f"""
 === ДОПОЛНИТЕЛЬНАЯ ЛОГИКА ДЛЯ БРАУЗЕРА (browser-logic.json) ===
-Ты можешь использовать следующие действия:
+Ты можешь использовать следующие ДЕЙСТВИЯ (не CDP-команды):
 
 {chr(10).join(action_list)}
+
+Эти действия НЕ являются CDP-командами! Не используй их в плане как "title".
 
 Правила:
 {chr(10).join([f"- {r}" for r in rules])}
@@ -296,10 +298,12 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
     "status": "running",
     "items": [
       {{"id": "step1", "type": "task", "title": "Page.navigate", "status": "pending", "params": {{"url": "..."}}}},
-      {{"id": "step2", "type": "task", "title": "Page.captureScreenshot", "status": "pending", "params": {{"format": "png"}}}}
+      {{"id": "step2", "type": "task", "title": "Runtime.evaluate", "status": "pending", "params": {{"expression": "..."}}}},
+      {{"id": "step3", "type": "task", "title": "Page.captureScreenshot", "status": "pending", "params": {{"format": "png"}}}}
     ],
     "edges": [
-      {{"from": "step1", "to": "step2", "type": "blocks"}}
+      {{"from": "step1", "to": "step2", "type": "blocks"}},
+      {{"from": "step2", "to": "step3", "type": "blocks"}}
     ],
     "narratives": {{
       "Outcome": "Что получилось",
@@ -308,23 +312,56 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
   }}
 }}
 
-=== ДОСТУПНЫЕ CDP-КОМАНДЫ (из browser_protocol.json) ===
+=== ДОСТУПНЫЕ CDP-КОМАНДЫ (используй ТОЛЬКО их) ===
 {get_all_commands()}
 
 {browser_logic_instruction}
 
 {harness_instruction}
 
-=== ПРАВИЛА ===
-1. ВСЕГДА возвращай ТОЛЬКО ПОЛНЫЙ валидный JSON с xBRIEF планом
-2. НИКОГДА не пиши пояснения, только JSON
-3. Убедись, что все скобки и кавычки закрыты
-4. Каждый шаг — это одна CDP-команда
-5. Используй edges для указания порядка шагов
-6. После выполнения плана заполни narratives.Outcome
-7. Для сложных задач используй методы из browser-harness-all.json
+=== ВАЖНОЕ ПРАВИЛО ===
+НЕ используй "recon", "click", "fill", "read", "navigate", "screenshot" как названия шагов ("title").
+Это логика из browser-logic.json, а не CDP-команды.
+Вместо них используй настоящие CDP-команды:
 
-=== ПРИМЕР ===
+- Вместо "recon" → "Runtime.evaluate" с JS-кодом для получения структуры
+- Вместо "click" → "Runtime.evaluate" с el.click() или "Input.dispatchMouseEvent"
+- Вместо "fill" → "Runtime.evaluate" с el.value = 'text' или "Input.insertText"
+- Вместо "read" → "Runtime.evaluate" с document.body.innerText
+- Вместо "navigate" → "Page.navigate"
+- Вместо "screenshot" → "Page.captureScreenshot"
+
+=== ПРИМЕР ДЛЯ ПОИСКА ===
+Пользователь: "Зайди в google, введи в поиск : вася, пришли скрин"
+Твой ответ (ПРАВИЛЬНЫЙ):
+{{
+  "xBRIEFInfo": {{
+    "version": "0.8",
+    "author": "agent",
+    "created": "2026-07-17T00:00:00Z"
+  }},
+  "plan": {{
+    "title": "Поиск 'вася' в Google",
+    "status": "running",
+    "items": [
+      {{"id": "step1", "title": "Page.navigate", "params": {{"url": "https://www.google.com"}}}},
+      {{"id": "step2", "title": "Runtime.evaluate", "params": {{"expression": "document.querySelector('textarea[name=\\\"q\\\"]').value = 'вася'"}}}},
+      {{"id": "step3", "title": "Runtime.evaluate", "params": {{"expression": "document.querySelector('input[name=\\\"btnK\\\"]')?.click()"}}}},
+      {{"id": "step4", "title": "Page.captureScreenshot", "params": {{"format": "png"}}}}
+    ],
+    "edges": [
+      {{"from": "step1", "to": "step2"}},
+      {{"from": "step2", "to": "step3"}},
+      {{"from": "step3", "to": "step4"}}
+    ],
+    "narratives": {{
+      "Outcome": "Открыт Google, выполнен поиск, сделан скриншот",
+      "Lessons": "Для ввода и клика используем Runtime.evaluate"
+    }}
+  }}
+}}
+
+=== ПРИМЕР ДЛЯ СКРИНШОТА ===
 Пользователь: "открой google.com и сделай скриншот"
 Твой ответ:
 {{
@@ -337,8 +374,8 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
     "title": "Открыть сайт и сделать скриншот",
     "status": "running",
     "items": [
-      {{"id": "step1", "type": "task", "title": "Page.navigate", "status": "pending", "params": {{"url": "https://google.com"}}}},
-      {{"id": "step2", "type": "task", "title": "Page.captureScreenshot", "status": "pending", "params": {{"format": "png", "captureBeyondViewport": false}}}}
+      {{"id": "step1", "title": "Page.navigate", "params": {{"url": "https://google.com"}}}},
+      {{"id": "step2", "title": "Page.captureScreenshot", "params": {{"format": "png", "captureBeyondViewport": false}}}}
     ],
     "edges": [
       {{"from": "step1", "to": "step2", "type": "blocks"}}
@@ -349,6 +386,15 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
     }}
   }}
 }}
+
+=== ПРАВИЛА ===
+1. ВСЕГДА возвращай ТОЛЬКО ПОЛНЫЙ валидный JSON с xBRIEF планом
+2. НИКОГДА не пиши пояснения, только JSON
+3. Убедись, что все скобки и кавычки закрыты
+4. Каждый шаг — это одна CDP-команда
+5. Используй edges для указания порядка шагов
+6. После выполнения плана заполни narratives.Outcome
+7. Для сложных задач используй методы из browser-harness-all.json
 """
     messages = [{"role": "system", "content": system_prompt}] + get_memory_history()
     try:
