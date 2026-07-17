@@ -2,6 +2,7 @@ import os
 import json
 import httpx
 from typing import Dict, Optional, List
+from datetime import datetime
 
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
 AGNES_API_URL = os.environ.get("AGNES_API_URL", "https://apihub.agnes-ai.com/v1/chat/completions")
@@ -9,6 +10,30 @@ AI_MODEL = os.environ.get("AI_MODEL", "agnes-2.0-flash")
 PROTOCOLS_DIR = os.environ.get("PROTOCOLS_DIR", "/app/docs")
 BROWSER_PROTOCOL = os.path.join(PROTOCOLS_DIR, "browser_protocol.json")
 
+# ===== ЛОГИ =====
+_logs = []
+
+def add_log(action: str, details: str, status: str = "info"):
+    """Добавляет запись в лог"""
+    _logs.append({
+        "timestamp": datetime.now().isoformat(),
+        "action": action,
+        "details": details,
+        "status": status
+    })
+    if len(_logs) > 100:
+        _logs.pop(0)
+
+def get_logs() -> List[Dict]:
+    """Возвращает все логи"""
+    return _logs
+
+def clear_logs():
+    """Очищает логи"""
+    global _logs
+    _logs = []
+
+# ===== ПАМЯТЬ =====
 class AgentMemory:
     def __init__(self, max_history: int = 15):
         self.history: List[Dict[str, str]] = []
@@ -25,7 +50,7 @@ class AgentMemory:
     
     def set_error(self, error: str):
         self.last_error = error
-        self.add("system", f"Ошибка CDP: {error}")
+        add_log("error_context", error[:150], "error")
     
     def clear(self):
         self.history = []
@@ -33,17 +58,19 @@ class AgentMemory:
 
 memory = AgentMemory()
 
+# ===== ПРОТОКОЛЫ =====
 def load_protocols():
     try:
         with open(BROWSER_PROTOCOL, 'r') as f:
+            add_log("protocols_loaded", "OK", "success")
             return json.load(f)
-    except:
+    except Exception as e:
+        add_log("protocols_error", str(e), "error")
         return None
 
 BROWSER_DOMAINS = load_protocols()
 
 def get_full_command_info(method: str) -> Optional[Dict]:
-    """Возвращает полную информацию о команде из протокола"""
     if not BROWSER_DOMAINS:
         return None
     
@@ -59,7 +86,6 @@ def get_full_command_info(method: str) -> Optional[Dict]:
     return None
 
 def get_command_params(method: str) -> Dict:
-    """Возвращает параметры команды с типами и описанием"""
     cmd_info = get_full_command_info(method)
     if not cmd_info:
         return {}
@@ -95,19 +121,17 @@ def get_all_commands() -> str:
     return "\n".join(lines[:40])
 
 def get_common_commands() -> str:
-    """Часто используемые команды с примерами"""
     return """
 Page.navigate — открыть URL. Нужен параметр: url
 Page.captureScreenshot — сделать скриншот. Параметры: format (png), captureBeyondViewport (false)
 Runtime.evaluate — выполнить JS. Нужен параметр: expression
-Input.dispatchMouseEvent — кликнуть. Нужны: type (mousePressed/mouseReleased), x, y
 """
 
 async def get_response(user_msg: str, error_context: str = None) -> str:
     if not AGNES_API_KEY:
+        add_log("api_error", "AGNES_API_KEY не задан", "error")
         return "❌ AGNES_API_KEY не задан"
     
-    # Если есть ошибка — добавляем в память
     if error_context:
         memory.set_error(error_context)
     
@@ -118,7 +142,7 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 Доступные команды:
 {get_all_commands()}
 
-Простые команды (рекомендую):
+Простые команды:
 {get_common_commands()}
 
 Правила:
@@ -131,29 +155,33 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 - Открыть сайт: {{"method": "Page.navigate", "params": {{"url": "https://google.com"}}}}
 - Скриншот: {{"method": "Page.captureScreenshot", "params": {{"format": "png", "captureBeyondViewport": false}}}}
 - Заголовок: {{"method": "Runtime.evaluate", "params": {{"expression": "document.title"}}}}
-- Клик: {{"method": "Input.dispatchMouseEvent", "params": {{"type": "mousePressed", "x": 100, "y": 100}}}}
 """
     
     messages = [
         {"role": "system", "content": system_prompt}
     ] + memory.get_messages()
     
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            AGNES_API_URL,
-            json={
-                "model": AI_MODEL,
-                "messages": messages,
-                "temperature": 0.2,
-                "max_tokens": 500
-            },
-            headers={"Authorization": f"Bearer {AGNES_API_KEY}", "Content-Type": "application/json"},
-            timeout=30.0
-        )
-        
-        result = resp.json()["choices"][0]["message"]["content"]
-        memory.add("assistant", result)
-        return result
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                AGNES_API_URL,
+                json={
+                    "model": AI_MODEL,
+                    "messages": messages,
+                    "temperature": 0.2,
+                    "max_tokens": 500
+                },
+                headers={"Authorization": f"Bearer {AGNES_API_KEY}", "Content-Type": "application/json"},
+                timeout=30.0
+            )
+            
+            result = resp.json()["choices"][0]["message"]["content"]
+            memory.add("assistant", result)
+            add_log("ai_response", result[:100], "success")
+            return result
+    except Exception as e:
+        add_log("api_error", str(e), "error")
+        return f"❌ Ошибка API: {str(e)}"
 
 def parse_command(response: str) -> Optional[Dict]:
     try:
@@ -166,7 +194,6 @@ def parse_command(response: str) -> Optional[Dict]:
             end = response.rfind("}") + 1
             data = json.loads(response[start:end])
             if "method" in data:
-                # Проверяем параметры
                 method = data.get("method")
                 params = data.get("params", {})
                 cmd_info = get_full_command_info(method)
@@ -177,15 +204,15 @@ def parse_command(response: str) -> Optional[Dict]:
                     missing = [p for p in required if p not in params]
                     
                     if missing:
-                        # Если не хватает параметров — логируем и возвращаем None
-                        print(f"⚠️ Не хватает параметров: {missing} для {method}")
+                        add_log("missing_params", f"{method}: {missing}", "error")
                         return None
                 
                 return data
     except Exception as e:
-        print(f"⚠️ Ошибка парсинга: {e}")
+        add_log("parse_error", str(e), "error")
     return None
 
 def clear_memory():
     memory.clear()
+    add_log("memory_cleared", "OK", "info")
     print("🧹 Память очищена")
