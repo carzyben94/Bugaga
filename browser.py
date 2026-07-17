@@ -19,7 +19,7 @@ class ChromiumBrowser:
         self.viewport_width = 1280
         self.viewport_height = 720
         self.chrome_path = self._find_chrome()
-        self._msg_id = 0  # ✅ счётчик сообщений
+        self._msg_id = 0
         
     def _find_chrome(self) -> str:
         """Ищет Chromium/Chrome по множеству путей"""
@@ -144,31 +144,34 @@ class ChromiumBrowser:
         await self.send_command("Runtime.enable")
         
     async def send_command(self, method: str, params: Dict[str, Any] = None) -> Dict:
-        """Отправляет CDP-команду с корректным id"""
+        """Отправляет CDP-команду и ждёт ответ с id (пропускает события)"""
         if not self.websocket:
             await self.connect()
         
-        # ✅ Инкремент счётчика для уникального id
         self._msg_id += 1
-        
         msg = {
             "id": self._msg_id,
             "method": method,
             "params": params or {}
         }
         
-        # Логируем для отладки
         print(f"📤 Отправка: {method} (id={self._msg_id})")
-        
         await self.websocket.send(json.dumps(msg))
-        response = await self.websocket.recv()
-        response_data = json.loads(response)
         
-        # Проверяем ошибку CDP
-        if "error" in response_data:
-            raise Exception(f"CDP Error: {response_data['error']}")
-        
-        return response_data
+        # Ждём ответ с id (пропускаем события)
+        while True:
+            response = await self.websocket.recv()
+            data = json.loads(response)
+            
+            # Если есть id — это ответ на команду
+            if "id" in data:
+                if "error" in data:
+                    raise Exception(f"CDP Error: {data['error']}")
+                return data
+            
+            # Если нет id — это событие, игнорируем
+            print(f"📡 Событие: {data.get('method')}")
+            # continue — ждём следующий ответ
     
     async def set_viewport(self, width: int = 1280, height: int = 720):
         """Устанавливает размер окна"""
@@ -218,7 +221,7 @@ class ChromiumBrowser:
             {"format": format, "captureBeyondViewport": False}
         )
         
-        # ✅ Обработка разных форматов ответа
+        # Обработка разных форматов ответа
         if "result" in result and "data" in result["result"]:
             return base64.b64decode(result["result"]["data"])
         elif "data" in result:
