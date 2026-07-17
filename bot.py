@@ -6,7 +6,10 @@ import sys
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from browser import ChromiumBrowser
-from agent import get_response, parse_command, clear_memory, add_log, get_logs, clear_logs, get_memory_stats
+from agent import (
+    get_response, parse_command, clear_memory, add_log,
+    get_logs, clear_logs, get_memory_stats, flush_pending_saves
+)
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
@@ -33,9 +36,6 @@ async def start(update: Update, context):
 
 async def status(update: Update, context):
     global keep_browser, browser_instance
-    from agent import get_memory_stats, get_logs
-    import sys
-    
     stats = get_memory_stats()
     logs = get_logs()
     
@@ -72,12 +72,15 @@ async def close_browser_command(update: Update, context):
         browser_instance = None
         keep_browser = False
         add_log("browser_closed", "Браузер закрыт по команде /close", "info")
-        await update.message.reply_text("🛑 Браузер закрыт")
+        
+        flush_pending_saves()
+        await update.message.reply_text("🛑 Браузер закрыт, данные сохранены")
     else:
         await update.message.reply_text("❌ Браузер не запущен")
 
 async def clear(update: Update, context):
     clear_memory()
+    flush_pending_saves()
     await update.message.reply_text("🧹 Память очищена!")
 
 async def show_logs(update: Update, context):
@@ -105,6 +108,7 @@ async def show_logs(update: Update, context):
 
 async def clear_logs_command(update: Update, context):
     clear_logs()
+    flush_pending_saves()
     await update.message.reply_text("🧹 Логи очищены!")
 
 async def get_browser():
@@ -169,6 +173,7 @@ async def execute_with_retry(update: Update, user_text: str, max_retries: int = 
             if not keep_browser:
                 await browser.disconnect()
                 browser.close()
+                flush_pending_saves()
             
             return True
             
