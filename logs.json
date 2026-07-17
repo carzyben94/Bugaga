@@ -1,11 +1,5 @@
 [
   {
-    "timestamp": "2026-07-17T15:48:51.939775",
-    "action": "bot_started",
-    "details": "\u0411\u043e\u0442 \u0437\u0430\u043f\u0443\u0449\u0435\u043d",
-    "status": "success"
-  },
-  {
     "timestamp": "2026-07-17T15:49:00.143581",
     "action": "protocols_loaded",
     "details": "OK",
@@ -595,6 +589,12 @@
   },
   {
     "timestamp": "2026-07-17T16:10:39.955331",
+    "action": "protocols_loaded",
+    "details": "OK",
+    "status": "success"
+  },
+  {
+    "timestamp": "2026-07-17T16:11:25.528618",
     "action": "protocols_loaded",
     "details": "OK",
     "status": "success"
