@@ -9,8 +9,8 @@ from datetime import datetime
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO = os.environ.get("GITHUB_REPO")
 GITHUB_BRANCH = os.environ.get("GITHUB_BRANCH", "main")
-MEMORY_PATH = "data/memory.json"
-LOGS_PATH = "data/logs.json"
+MEMORY_PATH = "memory.json"
+LOGS_PATH = "logs.json"
 
 # ===== ПРОВЕРКА ТОКЕНА =====
 if GITHUB_TOKEN:
@@ -258,7 +258,3 @@ def parse_command(response: str) -> Optional[Dict]:
     except Exception as e:
         add_log("parse_error", str(e), "error")
     return None
-
-def clear_memory_agent():
-    clear_memory()
-    print("🧹 Память очищена")
