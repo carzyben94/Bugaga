@@ -265,3 +265,20 @@ def parse_command(response: str) -> Optional[Dict]:
     except Exception as e:
         return None
     return None
+
+def get_protocols_stats() -> Dict:
+    stats = {
+        "browser": {"loaded": False, "domains": 0, "commands": 0},
+        "vbrief": {"loaded": False}
+    }
+    
+    if BROWSER_DOMAINS:
+        stats["browser"]["loaded"] = True
+        stats["browser"]["domains"] = len(BROWSER_DOMAINS.get("domains", []))
+        for domain in BROWSER_DOMAINS.get("domains", []):
+            stats["browser"]["commands"] += len(domain.get("commands", []))
+    
+    if VBRIEF_SCHEMA:
+        stats["vbrief"]["loaded"] = True
+    
+    return stats
