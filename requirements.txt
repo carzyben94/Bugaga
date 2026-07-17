@@ -1,7 +1,4 @@
 python-telegram-bot>=22.8
-pydoll-python==2.23.0
-websockets>=14,<17
-aiohttp>=3.9.5
-aiofiles>=25.1.0
-pydantic>=2.0
-typing_extensions>=4.14.0
+requests>=2.34.2
+websockets>=16.0
+httpx==0.28.1
