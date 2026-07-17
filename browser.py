@@ -8,7 +8,7 @@ import base64
 import shutil
 import os
 from typing import Optional, Dict, Any
-from mask import Mask  # ← импортируем маскировку
+from mask import Mask
 
 class ChromiumBrowser:
     def __init__(self, port: int = 9222):
@@ -21,7 +21,8 @@ class ChromiumBrowser:
         self.viewport_height = 720
         self.chrome_path = self._find_chrome()
         self._msg_id = 0
-        self.mask = Mask()  # ← экземпляр маски
+        self.mask = Mask()
+        self._keep_alive_task = None  # ← задача keep-alive
         
     def _find_chrome(self) -> str:
         possible_names = [
@@ -65,9 +66,6 @@ class ChromiumBrowser:
         raise Exception("Chromium/Chrome не найден! Установи через: apt-get install chromium")
     
     def launch(self, headless: bool = True):
-        """Запускает Chromium с маскировкой из mask.py"""
-        
-        # Получаем флаги запуска из Mask
         cmd = Mask.get_launch_args(self.chrome_path, self.port)
         
         print(f"🚀 Запуск браузера с маскировкой: {self.chrome_path}")
@@ -103,16 +101,35 @@ class ChromiumBrowser:
                     else:
                         raise Exception(f"Не удалось подключиться к браузеру: {e}")
     
+    async def _keep_alive(self):
+        """Отправляет пинг каждые 10 секунд, чтобы сохранить WebSocket"""
+        while self.websocket and not self.websocket.closed:
+            try:
+                await asyncio.sleep(10)
+                await self.websocket.ping()
+                print("💓 WebSocket ping отправлен")
+            except Exception as e:
+                print(f"⚠️ Keep-alive ошибка: {e}")
+                break
+    
     async def connect(self):
         if not self.ws_url:
             self.ws_url = await self.get_ws_url()
-        self.websocket = await websockets.connect(self.ws_url)
-        print("🔗 WebSocket подключен")
+        
+        # ✅ WebSocket с лимитом 10 МБ
+        self.websocket = await websockets.connect(
+            self.ws_url,
+            max_size=10 * 1024 * 1024  # 10 МБ
+        )
+        print("🔗 WebSocket подключен (макс. размер: 10 МБ)")
+        
+        # Запускаем keep-alive в фоне
+        if self._keep_alive_task is None or self._keep_alive_task.done():
+            self._keep_alive_task = asyncio.create_task(self._keep_alive())
         
         await self.send_command("Page.enable")
         await self.send_command("Runtime.enable")
         
-        # ===== ПРИМЕНЯЕМ JS-МАСКИРОВКУ =====
         print("🕵️ Применяю JS-маскировку...")
         js_mask = Mask.get_js_mask()
         await self.send_command("Page.addScriptToEvaluateOnNewDocument", {"source": js_mask})
@@ -190,7 +207,6 @@ class ChromiumBrowser:
             raise Exception(f"Неизвестный ответ CDP: {result}")
     
     async def click_human(self, selector: str):
-        """Человеческий клик через mask.py"""
         print(f"🖱️ Человеческий клик по {selector}")
         js_code = Mask.get_human_click_js(selector)
         result = await self.evaluate(js_code)
@@ -199,7 +215,6 @@ class ChromiumBrowser:
         await asyncio.sleep(0.5)
     
     async def type_human(self, selector: str, text: str):
-        """Человеческий ввод через mask.py"""
         print(f"⌨️ Человеческий ввод: {text}")
         js_code = Mask.get_human_type_js(selector, text)
         result = await self.evaluate(js_code)
@@ -208,7 +223,6 @@ class ChromiumBrowser:
         await asyncio.sleep(0.5)
     
     async def scroll_human(self, distance: int):
-        """Человеческий скролл через mask.py"""
         print(f"📜 Человеческий скролл: {distance}px")
         js_code = Mask.get_human_scroll_js(distance)
         result = await self.evaluate(js_code)
@@ -217,6 +231,15 @@ class ChromiumBrowser:
         await asyncio.sleep(0.3)
     
     async def disconnect(self):
+        # Останавливаем keep-alive
+        if self._keep_alive_task and not self._keep_alive_task.done():
+            self._keep_alive_task.cancel()
+            try:
+                await self._keep_alive_task
+            except:
+                pass
+            self._keep_alive_task = None
+        
         if self.websocket:
             await self.websocket.close()
             self.websocket = None
