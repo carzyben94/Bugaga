@@ -5,7 +5,7 @@ import base64
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from browser import ChromiumBrowser
-from agent import get_response, parse_command
+from agent import get_response, parse_command, clear_memory
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
@@ -15,15 +15,26 @@ if not TOKEN:
 
 async def start(update: Update, context):
     await update.message.reply_text(
-        "👋 Я бот-агент с управлением браузером.\n"
-        "Напиши что нужно сделать."
+        "👋 Я бот-агент с памятью!\n\n"
+        "Я запоминаю контекст разговора.\n"
+        "Команды:\n"
+        "/clear — очистить память\n"
+        "/start — это сообщение\n\n"
+        "Просто пиши, что нужно сделать."
     )
+
+async def clear(update: Update, context):
+    clear_memory()
+    await update.message.reply_text("🧹 Память очищена!")
 
 async def handle_message(update: Update, context):
     user_text = update.message.text
-    await update.message.reply_text("🤔 Анализирую...")
+    user_id = str(update.message.from_user.id)
     
-    agent_response = await get_response(user_text)
+    await update.message.reply_text("🤔 Думаю...")
+    
+    # Передаём user_id для разделения памяти по пользователям
+    agent_response = await get_response(user_text, user_id)
     cmd = parse_command(agent_response)
     
     if not cmd:
@@ -71,8 +82,9 @@ async def handle_message(update: Update, context):
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("clear", clear))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("✅ Бот запущен")
+    print("✅ Бот запущен с памятью")
     app.run_polling()
 
 if __name__ == "__main__":
