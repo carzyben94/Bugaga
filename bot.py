@@ -24,7 +24,8 @@ async def start(update: Update, context):
         "/clear — очистить память\n"
         "/logai — показать логи агента\n"
         "/logclear — очистить логи\n"
-        "/keep — включить/выключить удержание браузера\n\n"
+        "/keep — включить/выключить удержание браузера\n"
+        "/close — закрыть браузер\n\n"
         "Просто пиши, что нужно сделать."
     )
 
@@ -33,6 +34,18 @@ async def toggle_keep_browser(update: Update, context):
     keep_browser = not keep_browser
     status = "ВКЛЮЧЕН ✅" if keep_browser else "ВЫКЛЮЧЕН ❌"
     await update.message.reply_text(f"🔄 Режим удержания браузера: {status}")
+
+async def close_browser_command(update: Update, context):
+    global browser_instance, keep_browser
+    if browser_instance:
+        await browser_instance.disconnect()
+        browser_instance.close()
+        browser_instance = None
+        keep_browser = False
+        add_log("browser_closed", "Браузер закрыт по команде /close", "info")
+        await update.message.reply_text("🛑 Браузер закрыт")
+    else:
+        await update.message.reply_text("❌ Браузер не запущен")
 
 async def clear(update: Update, context):
     clear_memory()
@@ -79,14 +92,6 @@ async def get_browser():
         browser.launch(headless=True)
         await browser.connect()
         return browser
-
-async def close_browser(browser):
-    global browser_instance
-    if keep_browser:
-        return
-    else:
-        await browser.disconnect()
-        browser.close()
 
 async def execute_with_retry(update: Update, user_text: str, max_retries: int = 2) -> bool:
     add_log("user_input", user_text, "info")
@@ -174,6 +179,7 @@ def main():
     app.add_handler(CommandHandler("logai", show_logs))
     app.add_handler(CommandHandler("logclear", clear_logs_command))
     app.add_handler(CommandHandler("keep", toggle_keep_browser))
+    app.add_handler(CommandHandler("close", close_browser_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print("✅ Бот запущен")
