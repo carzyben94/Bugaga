@@ -9,6 +9,7 @@ import shutil
 import os
 from typing import Optional, Dict, Any
 from mask import Mask
+from cookies import get_cookies_for_url  # ← импорт кук
 
 class ChromiumBrowser:
     def __init__(self, port: int = 9222):
@@ -22,7 +23,7 @@ class ChromiumBrowser:
         self.chrome_path = self._find_chrome()
         self._msg_id = 0
         self.mask = Mask()
-        self._keep_alive_task = None  # ← задача keep-alive
+        self._keep_alive_task = None
         
     def _find_chrome(self) -> str:
         possible_names = [
@@ -102,7 +103,7 @@ class ChromiumBrowser:
                         raise Exception(f"Не удалось подключиться к браузеру: {e}")
     
     async def _keep_alive(self):
-        """Отправляет пинг каждые 10 секунд, чтобы сохранить WebSocket"""
+        """Отправляет пинг каждые 10 секунд"""
         while self.websocket and not self.websocket.closed:
             try:
                 await asyncio.sleep(10)
@@ -112,23 +113,53 @@ class ChromiumBrowser:
                 print(f"⚠️ Keep-alive ошибка: {e}")
                 break
     
+    async def set_cookies_for_url(self, url: str):
+        """Устанавливает куки для URL из cookies.py"""
+        cookies = get_cookies_for_url(url)
+        
+        if not cookies:
+            print(f"🍪 Нет кук для {url}")
+            return
+        
+        cdp_cookies = []
+        for cookie in cookies:
+            cdp_cookie = {
+                "name": cookie.get("name"),
+                "value": cookie.get("value"),
+                "domain": cookie.get("domain"),
+                "path": cookie.get("path", "/"),
+                "secure": cookie.get("secure", False),
+                "httpOnly": cookie.get("httpOnly", False),
+                "sameSite": cookie.get("sameSite", "unspecified")
+            }
+            if not cookie.get("session", True):
+                cdp_cookie["expires"] = cookie.get("expirationDate", 0)
+            cdp_cookies.append(cdp_cookie)
+        
+        try:
+            result = await self.send_command("Network.setCookies", {"cookies": cdp_cookies})
+            print(f"🍪 Установлено {len(cdp_cookies)} кук для {url}")
+            return result
+        except Exception as e:
+            print(f"⚠️ Ошибка установки кук: {e}")
+            return None
+    
     async def connect(self):
         if not self.ws_url:
             self.ws_url = await self.get_ws_url()
         
-        # ✅ WebSocket с лимитом 10 МБ
         self.websocket = await websockets.connect(
             self.ws_url,
-            max_size=10 * 1024 * 1024  # 10 МБ
+            max_size=10 * 1024 * 1024
         )
         print("🔗 WebSocket подключен (макс. размер: 10 МБ)")
         
-        # Запускаем keep-alive в фоне
         if self._keep_alive_task is None or self._keep_alive_task.done():
             self._keep_alive_task = asyncio.create_task(self._keep_alive())
         
         await self.send_command("Page.enable")
         await self.send_command("Runtime.enable")
+        await self.send_command("Network.enable")  # ← включаем Network для кук
         
         print("🕵️ Применяю JS-маскировку...")
         js_mask = Mask.get_js_mask()
@@ -167,6 +198,9 @@ class ChromiumBrowser:
     
     async def navigate(self, url: str) -> Dict:
         print(f"🌐 Переход на {url}")
+        
+        # ✅ Устанавливаем куки ДО навигации
+        await self.set_cookies_for_url(url)
         
         await self.send_command("Page.enable")
         result = await self.send_command("Page.navigate", {"url": url})
@@ -231,7 +265,6 @@ class ChromiumBrowser:
         await asyncio.sleep(0.3)
     
     async def disconnect(self):
-        # Останавливаем keep-alive
         if self._keep_alive_task and not self._keep_alive_task.done():
             self._keep_alive_task.cancel()
             try:
