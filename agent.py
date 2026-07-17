@@ -2,6 +2,7 @@ import os
 import json
 import httpx
 import base64
+import time
 from typing import Dict, Optional, List
 from datetime import datetime
 
@@ -11,6 +12,12 @@ GITHUB_REPO = os.environ.get("GITHUB_REPO")
 GITHUB_BRANCH = os.environ.get("GITHUB_BRANCH", "main")
 MEMORY_PATH = "memory.json"
 LOGS_PATH = "logs.json"
+
+# ===== ЗАЩИТА ОТ ЧАСТЫХ ЗАПИСЕЙ =====
+_last_github_save = 0
+GITHUB_SAVE_INTERVAL = 30  # секунд
+_pending_memory_data = None
+_pending_logs_data = None
 
 # ===== ПРОВЕРКА ТОКЕНА =====
 if GITHUB_TOKEN:
@@ -63,7 +70,23 @@ def load_from_github(path: str):
         print(f"⚠️ Ошибка загрузки {path}: {e}")
 
 # ===== СОХРАНЕНИЕ В GITHUB =====
-def save_to_github(path: str, data, sha: Optional[str] = None):
+def save_to_github(path: str, data, sha: Optional[str] = None, force: bool = False):
+    global _last_github_save, _pending_memory_data, _pending_logs_data
+    
+    if path == MEMORY_PATH:
+        _pending_memory_data = (data, sha)
+    elif path == LOGS_PATH:
+        _pending_logs_data = (data, sha)
+    
+    current_time = time.time()
+    if not force and (current_time - _last_github_save) < GITHUB_SAVE_INTERVAL:
+        print(f"⏳ Отложено сохранение {path} (интервал {GITHUB_SAVE_INTERVAL}с)")
+        return sha
+    
+    return _save_to_github_immediate(path, data, sha)
+
+def _save_to_github_immediate(path: str, data, sha: Optional[str] = None):
+    global _last_github_save
     try:
         if not GITHUB_TOKEN or not GITHUB_REPO:
             return sha
@@ -78,13 +101,19 @@ def save_to_github(path: str, data, sha: Optional[str] = None):
             payload["sha"] = sha
         
         url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
-        headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+        headers = {
+            "Authorization": f"token {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
+        }
         
-        method = "PUT" if sha else "POST"
-        resp = httpx.request(method, url, json=payload, headers=headers)
+        if sha:
+            resp = httpx.put(url, json=payload, headers=headers)
+        else:
+            resp = httpx.post(url, json=payload, headers=headers)
         
         if resp.status_code in [200, 201]:
             new_sha = resp.json().get("content", {}).get("sha")
+            _last_github_save = time.time()
             print(f"💾 Сохранено в GitHub: {path}")
             return new_sha
         else:
@@ -93,6 +122,20 @@ def save_to_github(path: str, data, sha: Optional[str] = None):
     except Exception as e:
         print(f"⚠️ Ошибка: {e}")
         return sha
+
+def flush_pending_saves():
+    """Принудительно сохраняет все отложенные данные"""
+    global _last_github_save, _pending_memory_data, _pending_logs_data
+    
+    _last_github_save = 0
+    if _pending_memory_data:
+        data, sha = _pending_memory_data
+        save_to_github(MEMORY_PATH, data, sha, force=True)
+        _pending_memory_data = None
+    if _pending_logs_data:
+        data, sha = _pending_logs_data
+        save_to_github(LOGS_PATH, data, sha, force=True)
+        _pending_logs_data = None
 
 # ===== ФУНКЦИИ ДЛЯ ПАМЯТИ =====
 def add_to_memory(role: str, content: str):
@@ -111,7 +154,7 @@ def clear_memory():
     history = []
     last_error = None
     data = {"history": history, "last_error": last_error, "updated_at": datetime.now().isoformat()}
-    memory_sha = save_to_github(MEMORY_PATH, data, memory_sha)
+    memory_sha = save_to_github(MEMORY_PATH, data, memory_sha, force=True)
 
 def set_last_error(error: str):
     global last_error, memory_sha
@@ -136,7 +179,7 @@ def get_logs() -> List[Dict]:
 def clear_logs():
     global logs, logs_sha
     logs = []
-    logs_sha = save_to_github(LOGS_PATH, logs, logs_sha)
+    logs_sha = save_to_github(LOGS_PATH, logs, logs_sha, force=True)
 
 def get_memory_stats() -> Dict:
     return {"history_count": len(history), "max_history": 15, "last_error": last_error}
