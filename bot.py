@@ -6,7 +6,7 @@ from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from browser import ChromiumBrowser
-from agent import get_response, parse_command, clear_memory, memory, get_logs, clear_logs
+from agent import get_response, parse_command, clear_memory, memory, add_log, get_logs, clear_logs
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
@@ -35,7 +35,6 @@ async def show_logs(update: Update, context):
         await update.message.reply_text("📭 Логов нет")
         return
     
-    # Формируем вывод (последние 20 логов)
     lines = []
     for log in logs[-20:]:
         timestamp = log.get("timestamp", "")[11:19]
@@ -53,13 +52,11 @@ async def show_logs(update: Update, context):
     
     await update.message.reply_text(text, parse_mode="Markdown")
 
-async def clear_logs(update: Update, context):
+async def clear_logs_command(update: Update, context):
     clear_logs()
     await update.message.reply_text("🧹 Логи очищены!")
 
 async def execute_with_retry(update: Update, user_text: str, max_retries: int = 2) -> bool:
-    from agent import add_log
-    
     add_log("user_input", user_text, "info")
     
     for attempt in range(max_retries + 1):
@@ -141,8 +138,6 @@ async def execute_with_retry(update: Update, user_text: str, max_retries: int = 
 
 async def handle_message(update: Update, context):
     user_text = update.message.text
-    user_id = str(update.message.from_user.id)
-    
     await update.message.reply_text("🤔 Думаю...")
     await execute_with_retry(update, user_text)
 
@@ -151,10 +146,10 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clear", clear))
     app.add_handler(CommandHandler("logai", show_logs))
-    app.add_handler(CommandHandler("logclear", clear_logs))
+    app.add_handler(CommandHandler("logclear", clear_logs_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("✅ Бот запущен с логированием")
+    print("✅ Бот запущен")
     app.run_polling()
 
 if __name__ == "__main__":
