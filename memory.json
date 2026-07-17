@@ -15,8 +15,16 @@
     {
       "role": "assistant",
       "content": "{\"method\": \"Page.navigate\", \"params\": {\"url\": \"https://www.google.com\"}}"
+    },
+    {
+      "role": "user",
+      "content": "\u041f\u0440\u043e\u0434\u043e\u043b\u0436\u0438"
+    },
+    {
+      "role": "assistant",
+      "content": "{\"method\": \"Page.captureScreenshot\", \"params\": {\"format\": \"png\", \"captureBeyondViewport\": false}}"
     }
   ],
   "last_error": null,
-  "updated_at": "2026-07-17T16:15:13.220359"
+  "updated_at": "2026-07-17T16:16:14.930135"
 }
