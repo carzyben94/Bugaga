@@ -22,7 +22,7 @@ RUN mkdir -p /app/docs && \
     https://raw.githubusercontent.com/ChromeDevTools/devtools-protocol/master/json/browser_protocol.json && \
     curl -L -o /app/docs/js_protocol.json \
     https://raw.githubusercontent.com/ChromeDevTools/devtools-protocol/master/json/js_protocol.json && \
-    curl -L -o /app/docs/xbrief-core-0.8.schema.json \
+    curl -L -o /app/docs/xbrief-core.schema.json \
     https://raw.githubusercontent.com/deftai/directive/master/content/vbrief/schemas/xbrief-core-0.8.schema.json
 
 CMD ["python", "-u", "bot.py"]
