@@ -212,14 +212,14 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
         set_last_error(error_context)
     add_to_memory("user", user_msg)
 
-    system_prompt = f"""Ты агент, управляющий браузером через CDP.
+    system_prompt = """Ты агент, управляющий браузером через CDP.
 
 Если пользователь просит несколько действий (например, "открой и сделай скриншот"):
 1. Сначала верни ПЕРВУЮ команду
 2. В ответе напиши, что нужно сделать дальше
 
 Доступные команды:
-{get_all_commands()}
+""" + get_all_commands() + """
 
 Правила:
 - Верни JSON: {"method": "Domain.command", "params": {...}}
@@ -234,8 +234,8 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 ✅ Страница открыта. Теперь сделаю скриншот.
 
 Простые команды:
-{get_common_commands()}
-"""
+""" + get_common_commands()
+
     messages = [{"role": "system", "content": system_prompt}] + get_memory_history()
     try:
         async with httpx.AsyncClient() as client:
