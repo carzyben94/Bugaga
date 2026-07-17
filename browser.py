@@ -9,7 +9,7 @@ import shutil
 import os
 from typing import Optional, Dict, Any
 from mask import Mask
-from cookies import get_cookies_for_url  # ← импорт кук
+from cookies import get_cookies_for_url
 
 class ChromiumBrowser:
     def __init__(self, port: int = 9222):
@@ -24,7 +24,7 @@ class ChromiumBrowser:
         self._msg_id = 0
         self.mask = Mask()
         self._keep_alive_task = None
-        self._cookies_set = False  # ← флаг, что куки уже установлены
+        self._cookies_set = False
         
     def _find_chrome(self) -> str:
         possible_names = [
@@ -194,9 +194,8 @@ class ChromiumBrowser:
         
         await self.send_command("Page.enable")
         await self.send_command("Runtime.enable")
-        await self.send_command("Network.enable")  # ← включаем Network для кук
+        await self.send_command("Network.enable")
         
-        # ✅ УСТАНАВЛИВАЕМ ВСЕ КУКИ СРАЗУ ПРИ ПОДКЛЮЧЕНИИ
         await self.set_all_cookies()
         
         print("🕵️ Применяю JS-маскировку...")
@@ -234,16 +233,33 @@ class ChromiumBrowser:
         await self.send_command("Emulation.setDeviceMetricsOverride", params)
         print(f"📐 Установлен размер окна: {width}x{height}")
     
+    async def wait_for_element(self, selector: str, timeout: int = 15, interval: float = 0.5):
+        """Ожидает появления элемента на странице"""
+        print(f"⏳ Ожидание элемента: {selector}")
+        for attempt in range(int(timeout / interval)):
+            try:
+                exists = await self.evaluate(f"!!document.querySelector('{selector}')")
+                if exists:
+                    print(f"✅ Элемент найден: {selector} (попытка {attempt+1})")
+                    return True
+            except:
+                pass
+            if attempt % 4 == 0:
+                print(f"⏳ Ожидание... ({attempt+1}/{int(timeout/interval)})")
+            await asyncio.sleep(interval)
+        print(f"⚠️ Элемент не найден: {selector}")
+        return False
+    
     async def navigate(self, url: str) -> Dict:
         print(f"🌐 Переход на {url}")
         
-        # ✅ Если куки ещё не установлены — устанавливаем для этого URL
         if not self._cookies_set:
             await self.set_cookies_for_url(url)
         
         await self.send_command("Page.enable")
         result = await self.send_command("Page.navigate", {"url": url})
         
+        # ✅ Ожидание загрузки страницы
         for attempt in range(30):
             await asyncio.sleep(0.5)
             try:
@@ -253,6 +269,13 @@ class ChromiumBrowser:
                     break
             except Exception as e:
                 print(f"⏳ Ожидание загрузки... ({attempt+1}/30)")
+        
+        # ✅ Дополнительное ожидание для X.com
+        if "x.com" in url or "twitter.com" in url:
+            print("🐦 Дополнительное ожидание для X.com (3 сек)...")
+            await asyncio.sleep(3)
+            # Ждём появления основного контента
+            await self.wait_for_element("article[data-testid='tweet']", timeout=10)
         
         await asyncio.sleep(1)
         return result
