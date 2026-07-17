@@ -33,7 +33,6 @@ memory_sha: Optional[str] = None
 logs_sha: Optional[str] = None
 logs: List[Dict] = []
 
-# ===== GITHUB ПАМЯТЬ =====
 def load_from_github(path: str):
     global history, last_error, memory_sha, logs, logs_sha
     try:
@@ -88,7 +87,6 @@ def flush_pending_saves():
     if logs:
         logs_sha = save_to_github(LOGS_PATH, logs, logs_sha, force=True)
 
-# ===== ПАМЯТЬ =====
 def add_to_memory(role: str, content: str):
     global history
     history.append({"role": role, "content": content})
@@ -130,7 +128,6 @@ load_from_github(MEMORY_PATH)
 load_from_github(LOGS_PATH)
 print("🚀 Агент загружен")
 
-# ===== XBRIEF СХЕМА =====
 def load_xbrief_schema():
     try:
         with open(XBRIEF_SCHEMA_PATH, 'r', encoding='utf-8-sig') as f:
@@ -143,7 +140,6 @@ def load_xbrief_schema():
 
 XBRIEF_SCHEMA = load_xbrief_schema()
 
-# ===== ПРОТОКОЛЫ =====
 def load_protocols():
     try:
         with open(BROWSER_PROTOCOL, 'r') as f:
@@ -202,7 +198,6 @@ def get_all_commands() -> str:
                 lines.append(f"  {domain_name}.{cmd_name} — {desc}")
     return "\n".join(lines[:40])
 
-# ===== ОСНОВНАЯ ФУНКЦИЯ =====
 async def get_response(user_msg: str, error_context: str = None) -> str:
     if not AGNES_API_KEY:
         return "❌ AGNES_API_KEY не задан"
@@ -290,7 +285,6 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
         add_log("api_error", str(e), "error")
         return f"❌ Ошибка API: {str(e)}"
 
-# ===== ПАРСИНГ =====
 def parse_response(response: str) -> Optional[Dict]:
     try:
         if "```json" in response:
@@ -309,6 +303,9 @@ def parse_response(response: str) -> Optional[Dict]:
         add_log("parse_error", str(e), "error")
     return None
 
+def parse_command(response: str) -> Optional[Dict]:
+    return parse_response(response)
+
 def parse_xbrief_plan(response: str) -> Optional[Dict]:
     parsed = parse_response(response)
     if parsed and parsed.get("type") == "xbrief":
@@ -321,7 +318,6 @@ def parse_simple_command(response: str) -> Optional[Dict]:
         return parsed["data"]
     return None
 
-# ===== СТАТИСТИКА =====
 def get_protocols_stats() -> Dict:
     stats = {
         "browser": {"loaded": False, "domains": 0, "commands": 0},
