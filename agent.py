@@ -13,7 +13,7 @@ MEMORY_PATH = "memory.json"
 LOGS_PATH = "logs.json"
 
 _last_github_save = 0
-GITHUB_SAVE_INTERVAL = 300
+GITHUB_SAVE_INTERVAL = 80
 _pending_memory_data = None
 _pending_logs_data = None
 
@@ -214,28 +214,23 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 
     system_prompt = """Ты агент, управляющий браузером через CDP.
 
-Если пользователь просит несколько действий (например, "открой и сделай скриншот"):
-1. Сначала верни ПЕРВУЮ команду
-2. В ответе напиши, что нужно сделать дальше
+Твоя задача — возвращать ТОЛЬКО JSON-команды. НИКОГДА не пиши текст вместо JSON.
 
 Доступные команды:
 """ + get_all_commands() + """
 
 Правила:
-- Верни JSON: {"method": "Domain.command", "params": {...}}
-- Если несколько действий — делай по очереди
-- После каждой команды напоминай, что дальше
-- Если команда не требуется — ответь текстом
+1. ВСЕГДА возвращай ТОЛЬКО JSON: {"method": "Domain.command", "params": {...}}
+2. НИКОГДА не пиши пояснения, только JSON
+3. Если нужно несколько действий — делай их по очереди через JSON
+4. Если команда не требуется — ответь текстом
 
-Пример:
-Пользователь: "открой google.com и сделай скриншот"
-Твой ответ:
+Пример правильного ответа:
 {"method": "Page.navigate", "params": {"url": "https://google.com"}}
+
+Пример неправильного ответа:
 ✅ Страница открыта. Теперь сделаю скриншот.
-
-Простые команды:
-""" + get_common_commands()
-
+"""
     messages = [{"role": "system", "content": system_prompt}] + get_memory_history()
     try:
         async with httpx.AsyncClient() as client:
