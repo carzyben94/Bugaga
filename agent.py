@@ -13,7 +13,7 @@ MEMORY_PATH = "memory.json"
 LOGS_PATH = "logs.json"
 
 _last_github_save = 0
-GITHUB_SAVE_INTERVAL = 120
+GITHUB_SAVE_INTERVAL = 300
 _pending_memory_data = None
 _pending_logs_data = None
 
