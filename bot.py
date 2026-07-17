@@ -60,13 +60,12 @@ async def close_browser_command(update: Update, context):
         keep_browser = False
         add_log("browser_closed", "Закрыт", "info")
         flush_pending_saves()
-        await update.message.reply_text("🛑 Браузер закрыт")
+        await update.message.reply_text("🛑 Браузер закрыт, данные сохранены")
     else:
         await update.message.reply_text("❌ Браузер не запущен")
 
 async def clear(update: Update, context):
     clear_memory()
-    flush_pending_saves()
     await update.message.reply_text("🧹 Память очищена")
 
 async def show_logs(update: Update, context):
@@ -86,7 +85,6 @@ async def show_logs(update: Update, context):
 
 async def clear_logs_command(update: Update, context):
     clear_logs()
-    flush_pending_saves()
     await update.message.reply_text("🧹 Логи очищены")
 
 async def get_browser():
@@ -113,7 +111,6 @@ async def execute_with_retry(update: Update, user_text: str, max_retries: int = 
             cmd = parse_command(agent_response)
             
             if not cmd:
-                # Если агент ответил текстом, но там есть "скриншот" — принудительно выполняем
                 if "скриншот" in agent_response.lower() or "сделал скриншот" in agent_response.lower():
                     cmd = {"method": "Page.captureScreenshot", "params": {"format": "png", "captureBeyondViewport": False}}
                     await update.message.reply_text("⚡ Page.captureScreenshot (принудительно)")
@@ -147,7 +144,6 @@ async def execute_with_retry(update: Update, user_text: str, max_retries: int = 
             if not keep_browser:
                 await browser.disconnect()
                 browser.close()
-                flush_pending_saves()
             return True
         except Exception as e:
             error_msg = str(e)
