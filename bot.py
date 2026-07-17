@@ -1,11 +1,12 @@
 import os
-import asyncio  
+import asyncio
 import json
 import base64
+import sys
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from browser import ChromiumBrowser
-from agent import get_response, parse_command, clear_memory, add_log, get_logs, clear_logs
+from agent import get_response, parse_command, clear_memory, add_log, get_logs, clear_logs, get_memory_stats
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
@@ -25,15 +26,43 @@ async def start(update: Update, context):
         "/logai — показать логи агента\n"
         "/logclear — очистить логи\n"
         "/keep — включить/выключить удержание браузера\n"
-        "/close — закрыть браузер\n\n"
+        "/close — закрыть браузер\n"
+        "/status — статус всех систем\n\n"
         "Просто пиши, что нужно сделать."
     )
+
+async def status(update: Update, context):
+    global keep_browser, browser_instance
+    from agent import get_memory_stats, get_logs
+    import sys
+    
+    stats = get_memory_stats()
+    logs = get_logs()
+    
+    text = (
+        "📊 **СТАТУС БОТА**\n"
+        "========================\n\n"
+        "🤖 **Агент:**\n"
+        f"  • Память: {stats['history_count']}/{stats['max_history']} сообщений\n"
+        f"  • Ошибок: {'Есть ❌' if stats['last_error'] else 'Нет ✅'}\n"
+        f"  • Логов: {len(logs)}\n\n"
+        "🌐 **Браузер:**\n"
+        f"  • Удержание: {'ВКЛ ✅' if keep_browser else 'ВЫКЛ ❌'}\n"
+        f"  • Экземпляр: {'Запущен ✅' if browser_instance else 'Не запущен ⚪'}\n\n"
+        "📦 **Система:**\n"
+        f"  • Python: {sys.version.split()[0]}\n"
+        f"  • GitHub: {'✅ Подключён' if os.environ.get('GITHUB_TOKEN') else '❌ Нет токена'}\n"
+        f"  • Agnes API: {'✅' if os.environ.get('AGNES_API_KEY') else '❌'}\n"
+        "========================\n"
+        "✅ Все системы работают"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 async def toggle_keep_browser(update: Update, context):
     global keep_browser
     keep_browser = not keep_browser
-    status = "ВКЛЮЧЕН ✅" if keep_browser else "ВЫКЛЮЧЕН ❌"
-    await update.message.reply_text(f"🔄 Режим удержания браузера: {status}")
+    status_text = "ВКЛЮЧЕН ✅" if keep_browser else "ВЫКЛЮЧЕН ❌"
+    await update.message.reply_text(f"🔄 Режим удержания браузера: {status_text}")
 
 async def close_browser_command(update: Update, context):
     global browser_instance, keep_browser
@@ -62,9 +91,9 @@ async def show_logs(update: Update, context):
         timestamp = log.get("timestamp", "")[11:19]
         action = log.get("action", "")
         details = log.get("details", "")
-        status = log.get("status", "")
+        status_log = log.get("status", "")
         
-        emoji = "✅" if status == "success" else "❌" if status == "error" else "ℹ️"
+        emoji = "✅" if status_log == "success" else "❌" if status_log == "error" else "ℹ️"
         lines.append(f"{timestamp} {emoji} {action}: {details}")
     
     text = "📋 **Логи агента**\n" + "=" * 30 + "\n\n" + "\n".join(lines)
@@ -99,7 +128,6 @@ async def execute_with_retry(update: Update, user_text: str, max_retries: int = 
     for attempt in range(max_retries + 1):
         browser = None
         try:
-            # error_context убрал, так как memory теперь в GitHub
             agent_response = await get_response(user_text)
             cmd = parse_command(agent_response)
             
@@ -177,6 +205,7 @@ def main():
     app.add_handler(CommandHandler("logclear", clear_logs_command))
     app.add_handler(CommandHandler("keep", toggle_keep_browser))
     app.add_handler(CommandHandler("close", close_browser_command))
+    app.add_handler(CommandHandler("status", status))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print("✅ Бот запущен")
