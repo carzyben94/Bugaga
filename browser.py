@@ -23,7 +23,6 @@ class ChromiumBrowser:
     def _find_chrome(self) -> str:
         """Ищет Chromium/Chrome по множеству путей"""
         
-        # Список возможных имён
         possible_names = [
             "chromium",
             "chromium-browser",
@@ -33,33 +32,26 @@ class ChromiumBrowser:
             "chrome-browser"
         ]
         
-        # Список возможных путей
         possible_paths = [
-            # Стандартные пути
             "/usr/bin/chromium",
             "/usr/bin/chromium-browser",
             "/usr/bin/chrome",
             "/usr/bin/google-chrome",
             "/usr/bin/google-chrome-stable",
-            "/usr/bin/chrome-browser",
-            # Snap
             "/snap/bin/chromium",
             "/snap/bin/chrome",
-            # Пользовательские
             "/usr/local/bin/chromium",
             "/usr/local/bin/chrome",
             "/opt/google/chrome/chrome",
             "/opt/chromium/chrome",
-            # Дополнительные
             "/usr/lib/chromium-browser/chromium-browser",
             "/usr/lib/chromium/chromium",
             "/app/chromium/chrome",
-            # Вендорские
             "/usr/lib/google-chrome/chrome",
             "/usr/lib64/google-chrome/chrome"
         ]
         
-        # 1. Проверяем через which (поиск в PATH)
+        # 1. Проверяем через which
         for name in possible_names:
             path = shutil.which(name)
             if path:
@@ -72,10 +64,10 @@ class ChromiumBrowser:
                 print(f"✅ Найден Chrome (путь): {path}")
                 return path
         
-        # 3. Ищем через find (на всякий случай)
+        # 3. Ищем через find
         try:
             result = subprocess.run(
-                ["find", "/", "-name", "chromium", "-type", "f", "-executable", "2>/dev/null"],
+                ["find", "/", "-name", "chromium", "-type", "f", "-executable"],
                 capture_output=True,
                 text=True,
                 timeout=5
@@ -88,26 +80,7 @@ class ChromiumBrowser:
         except:
             pass
         
-        # 4. Пробуем через dpkg (Debian/Ubuntu)
-        try:
-            result = subprocess.run(
-                ["dpkg", "-L", "chromium", "2>/dev/null"],
-                capture_output=True,
-                text=True,
-                timeout=3
-            )
-            for line in result.stdout.split('\n'):
-                if line.endswith("/chromium") and os.access(line, os.X_OK):
-                    print(f"✅ Найден Chrome (dpkg): {line}")
-                    return line
-        except:
-            pass
-        
-        raise Exception(
-            "Chromium/Chrome не найден!\n"
-            "Установи через: apt-get install chromium\n"
-            "Или укажи путь вручную в CHROME_PATH переменной окружения"
-        )
+        raise Exception("Chromium/Chrome не найден! Установи через: apt-get install chromium")
     
     def launch(self, headless: bool = True):
         """Запускает Chromium"""
@@ -123,7 +96,6 @@ class ChromiumBrowser:
             cmd.append("--disable-software-rasterizer")
         
         print(f"🚀 Запуск браузера: {self.chrome_path}")
-        print(f"📋 Команда: {' '.join(cmd)}")
         
         self.process = subprocess.Popen(
             cmd,
@@ -131,19 +103,16 @@ class ChromiumBrowser:
             stderr=subprocess.DEVNULL
         )
         
-        # Ждём запуска
         time.sleep(3)
         
-        # Проверяем, что процесс жив
         if self.process.poll() is not None:
             raise Exception(f"Браузер упал при запуске (код: {self.process.returncode})")
         
         print("✅ Браузер запущен")
         
     async def get_ws_url(self) -> str:
-        """Получает WebSocket URL первой вкладки через /json/list"""
+        """Получает WebSocket URL первой вкладки"""
         async with httpx.AsyncClient() as client:
-            # Пробуем несколько раз, пока браузер не запустится
             for attempt in range(5):
                 try:
                     resp = await client.get(f"http://localhost:{self.port}/json/list")
@@ -170,12 +139,11 @@ class ChromiumBrowser:
         self.websocket = await websockets.connect(self.ws_url)
         print("🔗 WebSocket подключен")
         
-        # Включаем необходимые домены
         await self.send_command("Page.enable")
         await self.send_command("Runtime.enable")
         
     async def send_command(self, method: str, params: Dict[str, Any] = None) -> Dict:
-        """Отправляет CDP-команду и возвращает ответ"""
+        """Отправляет CDP-команду"""
         if not self.websocket:
             await self.connect()
             
@@ -207,16 +175,13 @@ class ChromiumBrowser:
             "positionY": 0
         }
         
-        result = await self.send_command("Emulation.setDeviceMetricsOverride", params)
+        await self.send_command("Emulation.setDeviceMetricsOverride", params)
         print(f"📐 Установлен размер окна: {width}x{height}")
-        return result
     
     async def navigate(self, url: str) -> Dict:
         """Переходит по URL"""
         print(f"🌐 Переход на {url}")
         result = await self.send_command("Page.navigate", {"url": url})
-        
-        # Ждём загрузки
         await asyncio.sleep(1)
         return result
     
@@ -232,22 +197,22 @@ class ChromiumBrowser:
         
         return result.get("result", {}).get("result", {}).get("value")
     
-    async def screenshot(self, format: str = "png", full_page: bool = False) -> bytes:
+    async def screenshot(self, format: str = "png") -> bytes:
         """Делает скриншот"""
         await self.set_viewport(self.viewport_width, self.viewport_height)
         
-        params = {
-            "format": format,
-            "captureBeyondViewport": False
-        }
+        result = await self.send_command(
+            "Page.captureScreenshot",
+            {"format": format, "captureBeyondViewport": False}
+        )
         
-        if full_page:
-            height = await self.evaluate("document.documentElement.scrollHeight")
-            if height and height > self.viewport_height:
-                await self.set_viewport(self.viewport_width, min(int(height), 10000))
-        
-        result = await self.send_command("Page.captureScreenshot", params)
-        return base64.b64decode(result["result"]["data"])
+        # ✅ Обработка разных форматов ответа
+        if "result" in result and "data" in result["result"]:
+            return base64.b64decode(result["result"]["data"])
+        elif "data" in result:
+            return base64.b64decode(result["data"])
+        else:
+            raise Exception(f"Неизвестный ответ CDP: {result}")
     
     async def click(self, selector: str):
         """Кликает по элементу"""
@@ -280,8 +245,7 @@ class ChromiumBrowser:
     async def type_text(self, text: str):
         """Вводит текст"""
         for char in text:
-            params = {"text": char}
-            await self.send_command("Input.insertText", params)
+            await self.send_command("Input.insertText", {"text": char})
         print(f"⌨️ Введён текст: {text}")
     
     async def disconnect(self):
@@ -298,35 +262,3 @@ class ChromiumBrowser:
             self.process.wait()
             self.process = None
             print("🛑 Браузер закрыт")
-
-
-# === ТЕСТ ===
-async def test_browser():
-    print("🚀 Запуск теста браузера")
-    
-    browser = ChromiumBrowser()
-    browser.launch(headless=True)
-    
-    try:
-        await browser.connect()
-        print("✅ Подключение успешно!")
-        
-        await browser.set_viewport(1280, 720)
-        await browser.navigate("https://example.com")
-        
-        title = await browser.evaluate("document.title")
-        print(f"📄 Заголовок: {title}")
-        
-        img = await browser.screenshot()
-        with open("screenshot.png", "wb") as f:
-            f.write(img)
-        print("📸 Скриншот сохранён")
-        
-    except Exception as e:
-        print(f"❌ Ошибка: {e}")
-    finally:
-        await browser.disconnect()
-        browser.close()
-
-if __name__ == "__main__":
-    asyncio.run(test_browser())
