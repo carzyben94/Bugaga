@@ -295,47 +295,6 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 
     harness_instruction = get_browser_harness_instruction()
 
-    x_extraction_instruction = ""
-    if X_EXTRACTION:
-        models = X_EXTRACTION.get("models", {})
-        
-        x_extraction_instruction = f"""
-=== ИЗВЛЕЧЕНИЕ ДАННЫХ ИЗ X.COM ===
-Ты можешь извлекать данные из X.com (Twitter) используя готовые модели.
-
-Доступные модели:
-{chr(10).join([f"- {name}: {model.get('description', '')}" for name, model in models.items()])}
-
-=== КАК ИСПОЛЬЗОВАТЬ МОДЕЛИ ===
-
-У тебя есть доступ к методам:
-1. extract("model_name") — извлекает один объект (профиль, один твит)
-2. extract_all("model_name", limit=20) — извлекает список (твиты, тренды)
-3. wait(selector, timeout) — ждёт появления элемента
-
-=== ПРИМЕР ДЛЯ ПРОФИЛЯ ===
-Пользователь: "профиль @elonmusk"
-Твой план:
-{{
-  "items": [
-    {{"title": "Page.navigate", "params": {{"url": "https://x.com/elonmusk"}}}},
-    {{"title": "wait", "params": {{"selector": "[data-testid='User-Name']", "timeout": 10}}}},
-    {{"title": "extract", "params": {{"model": "profile"}}}}
-  ]
-}}
-
-=== ПРИМЕР ДЛЯ ТВИТОВ ===
-Пользователь: "твиты про ChatGPT"
-Твой план:
-{{
-  "items": [
-    {{"title": "Page.navigate", "params": {{"url": "https://x.com/search?q=ChatGPT"}}}},
-    {{"title": "wait", "params": {{"selector": "article[data-testid='tweet']", "timeout": 10}}}},
-    {{"title": "extract_all", "params": {{"model": "search_result", "limit": 10}}}}
-  ]
-}}
-"""
-
     system_prompt = f"""Ты агент, управляющий браузером через CDP.
 
 Твоя задача — создавать xBRIEF планы для выполнения действий в браузере.
@@ -352,8 +311,8 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
     "status": "running",
     "items": [
       {{"id": "step1", "type": "task", "title": "Page.navigate", "status": "pending", "params": {{"url": "..."}}}},
-      {{"id": "step2", "type": "task", "title": "wait", "status": "pending", "params": {{"selector": "...", "timeout": 10}}}},
-      {{"id": "step3", "type": "task", "title": "extract", "status": "pending", "params": {{"model": "..."}}}}
+      {{"id": "step2", "type": "task", "title": "Runtime.evaluate", "status": "pending", "params": {{"expression": "..."}}}},
+      {{"id": "step3", "type": "task", "title": "Page.captureScreenshot", "status": "pending", "params": {{"format": "png"}}}}
     ],
     "edges": [
       {{"from": "step1", "to": "step2", "type": "blocks"}},
@@ -373,22 +332,52 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 
 {harness_instruction}
 
-{x_extraction_instruction}
-
 === ВАЖНОЕ ПРАВИЛО ===
 НЕ используй "recon", "click", "fill", "read", "navigate", "screenshot" как названия шагов ("title").
 Это логика из browser-logic.json, а не CDP-команды.
-Вместо них используй настоящие CDP-команды или методы extract/wait.
+Вместо них используй настоящие CDP-команды:
+
+- Вместо "recon" → "Runtime.evaluate" с JS-кодом для получения структуры
+- Вместо "click" → "Runtime.evaluate" с el.click() или "Input.dispatchMouseEvent"
+- Вместо "fill" → "Runtime.evaluate" с el.value = 'text' или "Input.insertText"
+- Вместо "read" → "Runtime.evaluate" с document.body.innerText
+- Вместо "navigate" → "Page.navigate"
+- Вместо "screenshot" → "Page.captureScreenshot"
+
+=== ПРИМЕР ===
+Пользователь: "открой google.com и сделай скриншот"
+Твой ответ:
+{{
+  "xBRIEFInfo": {{
+    "version": "0.8",
+    "author": "agent",
+    "created": "2026-07-17T00:00:00Z"
+  }},
+  "plan": {{
+    "title": "Открыть сайт и сделать скриншот",
+    "status": "running",
+    "items": [
+      {{"id": "step1", "title": "Page.navigate", "params": {{"url": "https://google.com"}}}},
+      {{"id": "step2", "title": "Page.captureScreenshot", "params": {{"format": "png", "captureBeyondViewport": false}}}}
+    ],
+    "edges": [
+      {{"from": "step1", "to": "step2", "type": "blocks"}}
+    ],
+    "narratives": {{
+      "Outcome": "Сайт открыт, скриншот сделан",
+      "Lessons": "Цепочка выполняется автоматически"
+    }}
+  }}
+}}
 
 === ПРАВИЛА ===
 1. ВСЕГДА возвращай ТОЛЬКО ПОЛНЫЙ валидный JSON с xBRIEF планом
 2. НИКОГДА не пиши пояснения, только JSON
 3. Убедись, что все скобки и кавычки закрыты
-4. Каждый шаг — это одна команда
+4. Каждый шаг — это одна CDP-команда
 5. Используй edges для указания порядка шагов
 6. После выполнения плана заполни narratives.Outcome
-7. Для X.com используй extract и wait вместо Runtime.evaluate
-8. Для X.com НЕ делай скриншот, если пользователь не просит
+7. Для сложных задач используй методы из browser-harness-all.json
 """
     messages = [{"role": "system", "content": system_prompt}] + get_memory_history()
     try:
