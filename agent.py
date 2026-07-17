@@ -27,6 +27,7 @@ BROWSER_PROTOCOL = os.path.join(PROTOCOLS_DIR, "browser_protocol.json")
 JS_PROTOCOL = os.path.join(PROTOCOLS_DIR, "js_protocol.json")
 XBRIEF_SCHEMA_PATH = os.path.join(PROTOCOLS_DIR, "vbrief-core.schema.json")
 BROWSER_LOGIC_PATH = os.path.join(PROTOCOLS_DIR, "browser-logic.json")
+BROWSER_HARNESS_PATH = os.path.join(PROTOCOLS_DIR, "browser-harness-all.json")
 
 history: List[Dict[str, str]] = []
 last_error: Optional[str] = None
@@ -174,6 +175,19 @@ def load_browser_logic():
 
 BROWSER_LOGIC = load_browser_logic()
 
+# ===== ЗАГРУЗКА BROWER-HARNESS-ALL =====
+def load_browser_harness():
+    try:
+        with open(BROWSER_HARNESS_PATH, 'r', encoding='utf-8-sig') as f:
+            harness = json.load(f)
+            print(f"📄 browser-harness-all.json загружен ({harness.get('total_methods', 0)} методов, {harness.get('total_domains', 0)} доменов)")
+            return harness
+    except Exception as e:
+        print(f"⚠️ Ошибка загрузки browser-harness-all.json: {e}")
+        return None
+
+BROWSER_HARNESS = load_browser_harness()
+
 def get_full_command_info(method: str) -> Optional[Dict]:
     if not BROWSER_DOMAINS:
         return None
@@ -212,6 +226,36 @@ def get_all_commands() -> str:
                 lines.append(f"  {domain_name}.{cmd_name} — {desc}")
     return "\n".join(lines[:40])
 
+def get_browser_harness_instruction() -> str:
+    """Формирует инструкцию на основе browser-harness-all.json"""
+    if not BROWSER_HARNESS:
+        return ""
+    
+    domains = BROWSER_HARNESS.get("domains", [])
+    rules = BROWSER_HARNESS.get("rules", [])
+    total_methods = BROWSER_HARNESS.get("total_methods", 0)
+    
+    # Берём первые 5 доменов для примера (чтобы не перегружать промпт)
+    domain_examples = []
+    for domain in domains[:5]:
+        domain_name = domain.get("domain", "unknown")
+        methods = [m.get("name") for m in domain.get("methods", [])[:3]]
+        domain_examples.append(f"  • {domain_name}: {', '.join(methods)}...")
+    
+    instruction = f"""
+=== ПОЛНАЯ ЛОГИКА CDP (browser-harness-all.json) ===
+У тебя есть доступ ко всем {total_methods} методам CDP через 56 доменов.
+
+Примеры доменов и методов:
+{chr(10).join(domain_examples)}
+
+Основные правила:
+{chr(10).join([f"- {r}" for r in rules[:8]])}
+
+Ты можешь использовать ЛЮБОЙ CDP-метод напрямую. Если нужного метода нет в списке — ищи в browser-harness-all.json.
+"""
+    return instruction
+
 async def get_response(user_msg: str, error_context: str = None) -> str:
     if not AGNES_API_KEY:
         return "❌ AGNES_API_KEY не задан"
@@ -230,16 +274,17 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
             action_list.append(f"- {name}: {action.get('description', '')}")
         
         browser_logic_instruction = f"""
-=== ДОПОЛНИТЕЛЬНАЯ ЛОГИКА ДЛЯ БРАУЗЕРА ===
-Ты можешь использовать следующие действия, описанные в browser-logic.json:
+=== ДОПОЛНИТЕЛЬНАЯ ЛОГИКА ДЛЯ БРАУЗЕРА (browser-logic.json) ===
+Ты можешь использовать следующие действия:
 
 {chr(10).join(action_list)}
 
 Правила:
 {chr(10).join([f"- {r}" for r in rules])}
-
-Используй эти действия для получения структуры страницы (recon), кликов (click), ввода текста (fill) и других операций.
 """
+
+    # Формируем инструкцию по browser-harness-all.json
+    harness_instruction = get_browser_harness_instruction()
 
     system_prompt = f"""Ты агент, управляющий браузером через CDP.
 
@@ -269,10 +314,12 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
   }}
 }}
 
-=== ДОСТУПНЫЕ CDP-КОМАНДЫ ===
+=== ДОСТУПНЫЕ CDP-КОМАНДЫ (из browser_protocol.json) ===
 {get_all_commands()}
 
 {browser_logic_instruction}
+
+{harness_instruction}
 
 === ПРАВИЛА ===
 1. ВСЕГДА возвращай ТОЛЬКО JSON с xBRIEF планом
@@ -280,7 +327,7 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 3. Каждый шаг — это одна CDP-команда
 4. Используй edges для указания порядка шагов
 5. После выполнения плана заполни narratives.Outcome
-6. Используй recon для получения структуры страницы перед click/fill
+6. Для сложных задач используй методы из browser-harness-all.json
 
 === ПРИМЕР ===
 Пользователь: "открой google.com и сделай скриншот"
@@ -362,7 +409,8 @@ def get_protocols_stats() -> Dict:
         "browser": {"loaded": False, "domains": 0, "commands": 0},
         "js": {"loaded": False, "domains": 0, "commands": 0},
         "xbrief": {"loaded": False},
-        "browser_logic": {"loaded": False}
+        "browser_logic": {"loaded": False},
+        "browser_harness": {"loaded": False, "total_methods": 0, "total_domains": 0}
     }
     
     if BROWSER_DOMAINS:
@@ -382,5 +430,10 @@ def get_protocols_stats() -> Dict:
     
     if BROWSER_LOGIC:
         stats["browser_logic"]["loaded"] = True
+    
+    if BROWSER_HARNESS:
+        stats["browser_harness"]["loaded"] = True
+        stats["browser_harness"]["total_methods"] = BROWSER_HARNESS.get("total_methods", 0)
+        stats["browser_harness"]["total_domains"] = BROWSER_HARNESS.get("total_domains", 0)
     
     return stats
