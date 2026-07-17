@@ -7,10 +7,18 @@ from datetime import datetime
 
 # ===== GITHUB НАСТРОЙКИ =====
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
-GITHUB_REPO = os.environ.get("GITHUB_REPO")  # username/repo
+GITHUB_REPO = os.environ.get("GITHUB_REPO")
 GITHUB_BRANCH = os.environ.get("GITHUB_BRANCH", "main")
 MEMORY_PATH = "data/memory.json"
 LOGS_PATH = "data/logs.json"
+
+# ===== ПРОВЕРКА ТОКЕНА =====
+if GITHUB_TOKEN:
+    print("🔑 GitHub токен найден")
+    print(f"📁 Репозиторий: {GITHUB_REPO}")
+    print(f"🌿 Ветка: {GITHUB_BRANCH}")
+else:
+    print("⚠️ GitHub токен НЕ задан! Память не будет сохраняться.")
 
 # ===== AGNES API =====
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
@@ -58,7 +66,7 @@ def load_from_github(path: str):
 def save_to_github(path: str, data, sha: Optional[str] = None):
     try:
         if not GITHUB_TOKEN or not GITHUB_REPO:
-            return
+            return sha
         
         content = base64.b64encode(json.dumps(data, indent=2).encode()).decode()
         payload = {
@@ -250,3 +258,7 @@ def parse_command(response: str) -> Optional[Dict]:
     except Exception as e:
         add_log("parse_error", str(e), "error")
     return None
+
+def clear_memory_agent():
+    clear_memory()
+    print("🧹 Память очищена")
