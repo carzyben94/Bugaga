@@ -5,7 +5,7 @@ import base64
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from browser import ChromiumBrowser
-from agent import get_response, parse_command, clear_memory, memory, add_log, get_logs, clear_logs
+from agent import get_response, parse_command, clear_memory, add_log, get_logs, clear_logs
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
@@ -99,8 +99,8 @@ async def execute_with_retry(update: Update, user_text: str, max_retries: int = 
     for attempt in range(max_retries + 1):
         browser = None
         try:
-            error_context = memory.last_error if attempt > 0 else None
-            agent_response = await get_response(user_text, error_context)
+            # error_context убрал, так как memory теперь в GitHub
+            agent_response = await get_response(user_text)
             cmd = parse_command(agent_response)
             
             if not cmd:
@@ -117,7 +117,6 @@ async def execute_with_retry(update: Update, user_text: str, max_retries: int = 
             browser = await get_browser()
             result = await browser.send_command(method, params)
             
-            memory.last_error = None
             add_log("success", method, "success")
             
             if method == "Page.captureScreenshot":
@@ -149,8 +148,6 @@ async def execute_with_retry(update: Update, user_text: str, max_retries: int = 
             error_msg = str(e)
             add_log("error", error_msg[:150], "error")
             await update.message.reply_text(f"❌ {error_msg}")
-            
-            memory.set_error(error_msg)
             
             if browser and not keep_browser:
                 await browser.disconnect()
