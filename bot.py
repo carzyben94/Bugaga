@@ -130,6 +130,72 @@ async def get_browser():
         await browser.connect()
         return browser
 
+async def format_runtime_result(value) -> str:
+    """Форматирует результат Runtime.evaluate для красивого вывода"""
+    if value is None:
+        return "📊 Результат: пусто"
+    
+    if isinstance(value, dict):
+        text = "📊 **Результат:**\n\n"
+        # Красивое форматирование для профиля
+        name = value.get('name', '')
+        username = value.get('username', '')
+        bio = value.get('bio', '')
+        followers = value.get('followers', '')
+        following = value.get('following', '')
+        posts = value.get('posts', '')
+        joined = value.get('joined', '')
+        
+        if username:
+            text += f"👤 **{name}** (@{username})\n\n"
+        if bio:
+            text += f"📝 {bio}\n\n"
+        if followers:
+            text += f"👥 Подписчики: **{followers}**\n"
+        if following:
+            text += f"📌 Подписки: **{following}**\n"
+        if posts:
+            text += f"📊 Постов: **{posts}**\n"
+        if joined:
+            text += f"📅 Присоединился: {joined}\n"
+        
+        # Если это не профиль — показываем все ключи
+        if not username:
+            for key, val in value.items():
+                if isinstance(val, (int, float)):
+                    text += f"• **{key}**: {val:,}\n"
+                else:
+                    text += f"• **{key}**: {val}\n"
+        return text
+    
+    elif isinstance(value, list):
+        if not value:
+            return "📊 Результат: пусто"
+        
+        text = "📊 **Результат:**\n\n"
+        for i, item in enumerate(value[:10], 1):
+            if isinstance(item, dict):
+                author = item.get('author', item.get('username', 'Неизвестно'))
+                text_content = item.get('text', item.get('name', str(item)))[:80]
+                likes = item.get('likes', '')
+                retweets = item.get('retweets', '')
+                
+                text += f"{i}. **{author}**: {text_content}"
+                if likes:
+                    text += f" ❤️ {likes}"
+                if retweets:
+                    text += f" 🔁 {retweets}"
+                text += "\n"
+            else:
+                text += f"{i}. {item}\n"
+        
+        if len(value) > 10:
+            text += f"\n... и ещё {len(value) - 10} результатов"
+        return text
+    
+    else:
+        return f"📊 {value}"
+
 async def execute_xbrief_plan(update: Update, plan: Dict) -> bool:
     items = plan.get("plan", {}).get("items", [])
     edges = plan.get("plan", {}).get("edges", [])
@@ -182,7 +248,8 @@ async def execute_xbrief_plan(update: Update, plan: Dict) -> bool:
                 await update.message.reply_text(f"✅ {params.get('url')}\n📄 {title}")
             elif method == "Runtime.evaluate":
                 value = result.get("result", {}).get("result", {}).get("value")
-                await update.message.reply_text(f"📊 {value}")
+                formatted = await format_runtime_result(value)
+                await update.message.reply_text(formatted, parse_mode="Markdown")
             else:
                 await update.message.reply_text("✅ Выполнено")
                 
@@ -243,7 +310,8 @@ async def execute_with_retry(update: Update, user_text: str, max_retries: int = 
                     await update.message.reply_text(f"✅ {params.get('url')}\n📄 {title}")
                 elif method == "Runtime.evaluate":
                     value = result.get("result", {}).get("result", {}).get("value")
-                    await update.message.reply_text(f"📊 {value}")
+                    formatted = await format_runtime_result(value)
+                    await update.message.reply_text(formatted, parse_mode="Markdown")
                 else:
                     await update.message.reply_text("✅ Выполнено")
                 
