@@ -38,7 +38,8 @@ async def start(update: Update, context):
         "/logclear — очистить логи\n"
         "/keep — удержание браузера\n"
         "/close — закрыть браузер\n"
-        "/status — статус"
+        "/status — статус\n"
+        "/debug_x — диагностика X.com"
     )
 
 async def status(update: Update, context):
@@ -72,6 +73,104 @@ async def status(update: Update, context):
         f"  • GitHub: {'✅' if os.environ.get('GITHUB_TOKEN') else '❌'}\n"
         f"  • Agnes API: {'✅' if os.environ.get('AGNES_API_KEY') else '❌'}"
     )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+async def debug_x(update: Update, context):
+    """Диагностика X.com — проверяет куки, селекторы и состояние страницы"""
+    global keep_browser, browser_instance
+    
+    await update.message.reply_text("🔍 Проверяю состояние X.com...")
+    
+    if not browser_instance or not browser_instance.websocket:
+        await update.message.reply_text("❌ Браузер не запущен. Используй /keep для запуска.")
+        return
+    
+    text = "📊 **ДИАГНОСТИКА X.COM**\n"
+    text += "========================\n\n"
+    
+    try:
+        # ===== 1. КУКИ =====
+        cookies_result = await browser_instance.send_command("Network.getCookies")
+        all_cookies = cookies_result.get("cookies", [])
+        x_cookies = [c for c in all_cookies if "x.com" in c.get("domain", "") or "twitter.com" in c.get("domain", "")]
+        
+        text += "🍪 **Куки для X.com:**\n"
+        text += f"  • Всего кук: {len(x_cookies)}\n"
+        
+        auth_cookie = next((c for c in x_cookies if c.get("name") == "auth_token"), None)
+        if auth_cookie:
+            text += f"  • auth_token: ✅ есть\n"
+            text += f"    ({auth_cookie.get('value')[:30]}...)\n"
+        else:
+            text += f"  • auth_token: ❌ НЕТ\n"
+        
+        ct0_cookie = next((c for c in x_cookies if c.get("name") == "ct0"), None)
+        if ct0_cookie:
+            text += f"  • ct0: ✅ есть\n"
+        else:
+            text += f"  • ct0: ❌ НЕТ\n"
+        
+        guest_cookie = next((c for c in x_cookies if c.get("name") == "guest_id"), None)
+        if guest_cookie:
+            text += f"  • guest_id: ✅ есть\n"
+        else:
+            text += f"  • guest_id: ❌ НЕТ\n"
+        
+        text += "\n"
+        
+        # ===== 2. ТЕКУЩАЯ СТРАНИЦА =====
+        url = await browser_instance.evaluate("window.location.href")
+        title = await browser_instance.evaluate("document.title")
+        body_len = await browser_instance.evaluate("document.body?.innerText?.length || 0")
+        has_login = await browser_instance.evaluate("document.body?.innerText?.includes('Sign in') || document.body?.innerText?.includes('Войти') || false")
+        
+        text += "📄 **Текущая страница:**\n"
+        text += f"  • URL: {url}\n"
+        text += f"  • Заголовок: {title}\n"
+        text += f"  • Текст: {body_len:,} символов\n"
+        
+        if has_login:
+            text += "  • ⚠️ Страница требует ВХОДА!\n"
+        else:
+            text += "  • ✅ Страница загружена\n"
+        text += "\n"
+        
+        # ===== 3. ЭЛЕМЕНТЫ X.COM =====
+        js = """
+        (function() {
+            return {
+                hasUserName: !!document.querySelector('[data-testid="User-Name"]'),
+                hasUserDescription: !!document.querySelector('[data-testid="UserDescription"]'),
+                hasFollowers: !!document.querySelector('a[href$="/followers"]'),
+                hasFollowing: !!document.querySelector('a[href$="/following"]'),
+                hasTweet: !!document.querySelector('article[data-testid="tweet"]'),
+                tweetCount: document.querySelectorAll('article[data-testid="tweet"]').length,
+                hasSearchInput: !!document.querySelector('[data-testid="SearchBox"]'),
+                hasProfileAvatar: !!document.querySelector('img[alt*="avatar"]'),
+                bodyText: document.body?.innerText?.slice(0, 200) || ''
+            };
+        })()
+        """
+        elements = await browser_instance.evaluate(js)
+        
+        text += "🔍 **Элементы X.com:**\n"
+        text += f"  • User-Name: {'✅' if elements.get('hasUserName') else '❌'}\n"
+        text += f"  • UserDescription: {'✅' if elements.get('hasUserDescription') else '❌'}\n"
+        text += f"  • Followers: {'✅' if elements.get('hasFollowers') else '❌'}\n"
+        text += f"  • Following: {'✅' if elements.get('hasFollowing') else '❌'}\n"
+        text += f"  • Tweet: {'✅' if elements.get('hasTweet') else '❌'} ({elements.get('tweetCount', 0)})\n"
+        text += f"  • SearchBox: {'✅' if elements.get('hasSearchInput') else '❌'}\n"
+        text += f"  • ProfileAvatar: {'✅' if elements.get('hasProfileAvatar') else '❌'}\n"
+        
+        # Показываем первые 100 символов текста
+        body_preview = elements.get('bodyText', '')[:100]
+        if body_preview:
+            text += f"\n📝 **Текст страницы (первые 100 символов):**\n"
+            text += f"  {body_preview}...\n"
+        
+    except Exception as e:
+        text += f"\n❌ **Ошибка диагностики:**\n{str(e)}"
+    
     await update.message.reply_text(text, parse_mode="Markdown")
 
 async def toggle_keep_browser(update: Update, context):
@@ -131,13 +230,11 @@ async def get_browser():
         return browser
 
 async def format_runtime_result(value) -> str:
-    """Форматирует результат Runtime.evaluate для красивого вывода"""
     if value is None:
         return "📊 Результат: пусто"
     
     if isinstance(value, dict):
         text = "📊 **Результат:**\n\n"
-        # Красивое форматирование для профиля
         name = value.get('name', '')
         username = value.get('username', '')
         bio = value.get('bio', '')
@@ -159,7 +256,6 @@ async def format_runtime_result(value) -> str:
         if joined:
             text += f"📅 Присоединился: {joined}\n"
         
-        # Если это не профиль — показываем все ключи
         if not username:
             for key, val in value.items():
                 if isinstance(val, (int, float)):
@@ -346,6 +442,7 @@ def main():
     app.add_handler(CommandHandler("keep", toggle_keep_browser))
     app.add_handler(CommandHandler("close", close_browser_command))
     app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("debug_x", debug_x))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("✅ Бот запущен с xBRIEF")
     app.run_polling()
