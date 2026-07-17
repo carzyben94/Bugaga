@@ -19,6 +19,7 @@ class ChromiumBrowser:
         self.viewport_width = 1280
         self.viewport_height = 720
         self.chrome_path = self._find_chrome()
+        self._msg_id = 0  # ✅ счётчик сообщений
         
     def _find_chrome(self) -> str:
         """Ищет Chromium/Chrome по множеству путей"""
@@ -143,20 +144,31 @@ class ChromiumBrowser:
         await self.send_command("Runtime.enable")
         
     async def send_command(self, method: str, params: Dict[str, Any] = None) -> Dict:
-        """Отправляет CDP-команду"""
+        """Отправляет CDP-команду с корректным id"""
         if not self.websocket:
             await self.connect()
-            
-        msg_id = int(time.time() * 1000)
+        
+        # ✅ Инкремент счётчика для уникального id
+        self._msg_id += 1
+        
         msg = {
-            "id": msg_id,
+            "id": self._msg_id,
             "method": method,
             "params": params or {}
         }
         
+        # Логируем для отладки
+        print(f"📤 Отправка: {method} (id={self._msg_id})")
+        
         await self.websocket.send(json.dumps(msg))
         response = await self.websocket.recv()
-        return json.loads(response)
+        response_data = json.loads(response)
+        
+        # Проверяем ошибку CDP
+        if "error" in response_data:
+            raise Exception(f"CDP Error: {response_data['error']}")
+        
+        return response_data
     
     async def set_viewport(self, width: int = 1280, height: int = 720):
         """Устанавливает размер окна"""
