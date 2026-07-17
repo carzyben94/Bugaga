@@ -3,7 +3,7 @@ import asyncio
 import base64
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
-from browser import ChromiumBrowser
+from browser import ChromiumBrowser  # ← правильный импорт
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
@@ -20,15 +20,13 @@ async def start(update: Update, context):
         "открой <url> - открыть сайт и показать заголовок\n"
         "скрин <url> - открыть сайт и прислать скриншот\n"
         "текст <url> - показать текст страницы\n"
-        "клик <url> <селектор> - кликнуть по элементу\n"
-        "введи <url> <текст> - ввести текст в поле (по селектору input)"
+        "клик <url> <селектор> - кликнуть по элементу"
     )
 
 async def handle_message(update: Update, context):
     user_text = update.message.text
-    user_id = update.message.from_user.id
     
-    # ===== КОМАНДА: ОТКРЫТЬ САЙТ =====
+    # ===== ОТКРЫТЬ САЙТ =====
     if user_text.lower().startswith("открой") or user_text.lower().startswith("open"):
         parts = user_text.split()
         if len(parts) < 2:
@@ -57,7 +55,7 @@ async def handle_message(update: Update, context):
             browser.close()
         return
     
-    # ===== КОМАНДА: СКРИНШОТ =====
+    # ===== СКРИНШОТ =====
     if user_text.lower().startswith("скрин") or user_text.lower().startswith("screenshot"):
         parts = user_text.split()
         if len(parts) < 2:
@@ -78,13 +76,11 @@ async def handle_message(update: Update, context):
             await browser.set_viewport(1280, 720)
             await browser.navigate(url)
             
-            # Делаем скриншот (возвращает bytes)
             img_data = await browser.screenshot()
             
             await browser.disconnect()
             browser.close()
             
-            # Отправляем фото (Telegram принимает bytes)
             await update.message.reply_photo(
                 photo=img_data,
                 caption=f"📸 Скриншот {url}"
@@ -94,7 +90,7 @@ async def handle_message(update: Update, context):
             browser.close()
         return
     
-    # ===== КОМАНДА: ПОЛУЧИТЬ ТЕКСТ =====
+    # ===== ТЕКСТ СТРАНИЦЫ =====
     if user_text.lower().startswith("текст") or user_text.lower().startswith("text"):
         parts = user_text.split()
         if len(parts) < 2:
@@ -114,9 +110,8 @@ async def handle_message(update: Update, context):
             await browser.connect()
             await browser.navigate(url)
             
-            # Получаем текст страницы
             text = await browser.evaluate("document.body.innerText")
-            text = text[:4000]  # Ограничиваем для Telegram
+            text = text[:4000]
             
             await browser.disconnect()
             browser.close()
@@ -127,7 +122,7 @@ async def handle_message(update: Update, context):
             browser.close()
         return
     
-    # ===== КОМАНДА: КЛИК =====
+    # ===== КЛИК =====
     if user_text.lower().startswith("клик") or user_text.lower().startswith("click"):
         parts = user_text.split()
         if len(parts) < 3:
@@ -148,9 +143,8 @@ async def handle_message(update: Update, context):
             await browser.connect()
             await browser.navigate(url)
             await browser.click(selector)
-            await asyncio.sleep(0.5)  # Ждём реакцию
+            await asyncio.sleep(0.5)
             
-            # Делаем скриншот после клика
             img_data = await browser.screenshot()
             
             await browser.disconnect()
@@ -171,8 +165,7 @@ async def handle_message(update: Update, context):
         "• открой <url>\n"
         "• скрин <url>\n"
         "• текст <url>\n"
-        "• клик <url> <селектор>\n\n"
-        "Скоро добавлю AI и ввод текста!"
+        "• клик <url> <селектор>"
     )
 
 def main():
