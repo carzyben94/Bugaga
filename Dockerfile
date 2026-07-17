@@ -21,7 +21,8 @@ RUN mkdir -p /app/docs && \
     curl -L -o /app/docs/browser_protocol.json \
     https://raw.githubusercontent.com/ChromeDevTools/devtools-protocol/master/json/browser_protocol.json && \
     curl -L -o /app/docs/js_protocol.json \
-    https://raw.githubusercontent.com/ChromeDevTools/devtools-protocol/master/json/js_protocol.json
-
+    https://raw.githubusercontent.com/ChromeDevTools/devtools-protocol/master/json/js_protocol.json && \
+    curl -L -o /app/docs/vbrief-core.schema.json \
+    https://raw.githubusercontent.com/deftai/vBRIEF/main/schemas/vbrief-core.schema.json
 
 CMD ["python", "-u", "bot.py"]
