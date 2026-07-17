@@ -28,6 +28,7 @@ JS_PROTOCOL = os.path.join(PROTOCOLS_DIR, "js_protocol.json")
 XBRIEF_SCHEMA_PATH = os.path.join(PROTOCOLS_DIR, "vbrief-core.schema.json")
 BROWSER_LOGIC_PATH = os.path.join(PROTOCOLS_DIR, "browser-logic.json")
 BROWSER_HARNESS_PATH = os.path.join(PROTOCOLS_DIR, "browser-harness-all.json")
+X_EXTRACTION_PATH = os.path.join(PROTOCOLS_DIR, "x-com-extraction.json")
 
 history: List[Dict[str, str]] = []
 last_error: Optional[str] = None
@@ -186,6 +187,18 @@ def load_browser_harness():
 
 BROWSER_HARNESS = load_browser_harness()
 
+def load_x_extraction():
+    try:
+        with open(X_EXTRACTION_PATH, 'r', encoding='utf-8-sig') as f:
+            data = json.load(f)
+            print(f"📄 x-com-extraction.json загружен")
+            return data
+    except Exception as e:
+        print(f"⚠️ Ошибка загрузки x-com-extraction.json: {e}")
+        return None
+
+X_EXTRACTION = load_x_extraction()
+
 def get_full_command_info(method: str) -> Optional[Dict]:
     if not BROWSER_DOMAINS:
         return None
@@ -282,6 +295,24 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 
     harness_instruction = get_browser_harness_instruction()
 
+    x_extraction_instruction = ""
+    if X_EXTRACTION:
+        models = X_EXTRACTION.get("models", {})
+        search_flows = X_EXTRACTION.get("search_flows", {})
+        
+        x_extraction_instruction = f"""
+=== ИЗВЛЕЧЕНИЕ ДАННЫХ ИЗ X.COM ===
+Ты можешь извлекать данные из X.com (Twitter) используя готовые модели.
+
+Доступные модели:
+{chr(10).join([f"- {name}: {model.get('description', '')}" for name, model in models.items()])}
+
+Доступные сценарии поиска:
+{chr(10).join([f"- {name}: {flow.get('description', '')}" for name, flow in search_flows.items()])}
+
+Для извлечения данных используй соответствующие модели.
+"""
+
     system_prompt = f"""Ты агент, управляющий браузером через CDP.
 
 Твоя задача — создавать xBRIEF планы для выполнения действий в браузере.
@@ -318,6 +349,8 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 {browser_logic_instruction}
 
 {harness_instruction}
+
+{x_extraction_instruction}
 
 === ВАЖНОЕ ПРАВИЛО ===
 НЕ используй "recon", "click", "fill", "read", "navigate", "screenshot" как названия шагов ("title").
@@ -361,8 +394,8 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
   }}
 }}
 
-=== ПРИМЕР ДЛЯ СКРИНШОТА ===
-Пользователь: "открой google.com и сделай скриншот"
+=== ПРИМЕР ДЛЯ X.COM ===
+Пользователь: "найди твиты про ChatGPT"
 Твой ответ:
 {{
   "xBRIEFInfo": {{
@@ -371,18 +404,20 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
     "created": "2026-07-17T00:00:00Z"
   }},
   "plan": {{
-    "title": "Открыть сайт и сделать скриншот",
+    "title": "Поиск твитов про ChatGPT",
     "status": "running",
     "items": [
-      {{"id": "step1", "title": "Page.navigate", "params": {{"url": "https://google.com"}}}},
-      {{"id": "step2", "title": "Page.captureScreenshot", "params": {{"format": "png", "captureBeyondViewport": false}}}}
+      {{"id": "step1", "title": "Page.navigate", "params": {{"url": "https://x.com/search?q=ChatGPT&src=typed_query"}}}},
+      {{"id": "step2", "title": "Runtime.evaluate", "params": {{"expression": "document.querySelectorAll('article[data-testid=tweet]')"}}}},
+      {{"id": "step3", "title": "Runtime.evaluate", "params": {{"expression": "извлечь текст, автора, лайки из каждого твита"}}}}
     ],
     "edges": [
-      {{"from": "step1", "to": "step2", "type": "blocks"}}
+      {{"from": "step1", "to": "step2"}},
+      {{"from": "step2", "to": "step3"}}
     ],
     "narratives": {{
-      "Outcome": "Сайт открыт, скриншот сделан",
-      "Lessons": "Цепочка выполняется автоматически"
+      "Outcome": "Найдены твиты про ChatGPT",
+      "Lessons": "Используем структуру из x-com-extraction.json"
     }}
   }}
 }}
@@ -395,6 +430,7 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 5. Используй edges для указания порядка шагов
 6. После выполнения плана заполни narratives.Outcome
 7. Для сложных задач используй методы из browser-harness-all.json
+8. Для X.com используй модели из x-com-extraction.json
 """
     messages = [{"role": "system", "content": system_prompt}] + get_memory_history()
     try:
@@ -468,7 +504,8 @@ def get_protocols_stats() -> Dict:
         "js": {"loaded": False, "domains": 0, "commands": 0},
         "xbrief": {"loaded": False},
         "browser_logic": {"loaded": False},
-        "browser_harness": {"loaded": False, "total_methods": 0, "total_domains": 0}
+        "browser_harness": {"loaded": False, "total_methods": 0, "total_domains": 0},
+        "x_extraction": {"loaded": False}
     }
     
     if BROWSER_DOMAINS:
@@ -493,5 +530,8 @@ def get_protocols_stats() -> Dict:
         stats["browser_harness"]["loaded"] = True
         stats["browser_harness"]["total_methods"] = BROWSER_HARNESS.get("total_methods", 0)
         stats["browser_harness"]["total_domains"] = BROWSER_HARNESS.get("total_domains", 0)
+    
+    if X_EXTRACTION:
+        stats["x_extraction"]["loaded"] = True
     
     return stats
