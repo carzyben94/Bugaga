@@ -111,10 +111,17 @@ async def execute_with_retry(update: Update, user_text: str, max_retries: int = 
         try:
             agent_response = await get_response(user_text)
             cmd = parse_command(agent_response)
+            
             if not cmd:
-                add_log("agent_response", agent_response[:100], "info")
-                await update.message.reply_text(agent_response)
-                return True
+                # Если агент ответил текстом, но там есть "скриншот" — принудительно выполняем
+                if "скриншот" in agent_response.lower() or "сделал скриншот" in agent_response.lower():
+                    cmd = {"method": "Page.captureScreenshot", "params": {"format": "png", "captureBeyondViewport": False}}
+                    await update.message.reply_text("⚡ Page.captureScreenshot (принудительно)")
+                else:
+                    add_log("agent_response", agent_response[:100], "info")
+                    await update.message.reply_text(agent_response)
+                    return True
+            
             method = cmd.get("method")
             params = cmd.get("params", {})
             add_log("command", f"{method}", "info")
