@@ -1,62 +1,142 @@
 import os
 import json
 import httpx
+import base64
 from typing import Dict, Optional, List
 from datetime import datetime
 
+# ===== GITHUB НАСТРОЙКИ =====
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+GITHUB_REPO = os.environ.get("GITHUB_REPO")  # username/repo
+GITHUB_BRANCH = os.environ.get("GITHUB_BRANCH", "main")
+MEMORY_PATH = "data/memory.json"
+LOGS_PATH = "data/logs.json"
+
+# ===== AGNES API =====
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
 AGNES_API_URL = os.environ.get("AGNES_API_URL", "https://apihub.agnes-ai.com/v1/chat/completions")
 AI_MODEL = os.environ.get("AI_MODEL", "agnes-2.0-flash")
 PROTOCOLS_DIR = os.environ.get("PROTOCOLS_DIR", "/app/docs")
 BROWSER_PROTOCOL = os.path.join(PROTOCOLS_DIR, "browser_protocol.json")
 
-# ===== ЛОГИ =====
-_logs = []
+# ===== ПАМЯТЬ (в оперативной памяти) =====
+history: List[Dict[str, str]] = []
+last_error: Optional[str] = None
+memory_sha: Optional[str] = None
+logs_sha: Optional[str] = None
+logs: List[Dict] = []
 
+# ===== ЗАГРУЗКА ИЗ GITHUB =====
+def load_from_github(path: str):
+    global history, last_error, memory_sha, logs, logs_sha
+    try:
+        if not GITHUB_TOKEN or not GITHUB_REPO:
+            return
+        
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
+        headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+        
+        resp = httpx.get(url, headers=headers)
+        if resp.status_code == 200:
+            data = resp.json()
+            content = base64.b64decode(data["content"]).decode("utf-8")
+            parsed = json.loads(content)
+            
+            if path == MEMORY_PATH:
+                memory_sha = data["sha"]
+                history = parsed.get("history", [])
+                last_error = parsed.get("last_error")
+                print(f"📂 Загружено {len(history)} сообщений из GitHub")
+            elif path == LOGS_PATH:
+                logs_sha = data["sha"]
+                logs = parsed
+                print(f"📂 Загружено {len(logs)} логов из GitHub")
+    except Exception as e:
+        print(f"⚠️ Ошибка загрузки {path}: {e}")
+
+# ===== СОХРАНЕНИЕ В GITHUB =====
+def save_to_github(path: str, data, sha: Optional[str] = None):
+    try:
+        if not GITHUB_TOKEN or not GITHUB_REPO:
+            return
+        
+        content = base64.b64encode(json.dumps(data, indent=2).encode()).decode()
+        payload = {
+            "message": f"Update {path} {datetime.now().isoformat()}",
+            "content": content,
+            "branch": GITHUB_BRANCH
+        }
+        if sha:
+            payload["sha"] = sha
+        
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
+        headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+        
+        method = "PUT" if sha else "POST"
+        resp = httpx.request(method, url, json=payload, headers=headers)
+        
+        if resp.status_code in [200, 201]:
+            new_sha = resp.json().get("content", {}).get("sha")
+            print(f"💾 Сохранено в GitHub: {path}")
+            return new_sha
+        else:
+            print(f"⚠️ Ошибка сохранения {path}: {resp.status_code}")
+            return sha
+    except Exception as e:
+        print(f"⚠️ Ошибка: {e}")
+        return sha
+
+# ===== ФУНКЦИИ ДЛЯ ПАМЯТИ =====
+def add_to_memory(role: str, content: str):
+    global history, memory_sha
+    history.append({"role": role, "content": content})
+    if len(history) > 15:
+        history.pop(0)
+    data = {"history": history, "last_error": last_error, "updated_at": datetime.now().isoformat()}
+    memory_sha = save_to_github(MEMORY_PATH, data, memory_sha)
+
+def get_memory_history() -> List[Dict[str, str]]:
+    return history
+
+def clear_memory():
+    global history, last_error, memory_sha
+    history = []
+    last_error = None
+    data = {"history": history, "last_error": last_error, "updated_at": datetime.now().isoformat()}
+    memory_sha = save_to_github(MEMORY_PATH, data, memory_sha)
+
+def set_last_error(error: str):
+    global last_error, memory_sha
+    last_error = error
+    data = {"history": history, "last_error": last_error, "updated_at": datetime.now().isoformat()}
+    memory_sha = save_to_github(MEMORY_PATH, data, memory_sha)
+
+def get_last_error() -> Optional[str]:
+    return last_error
+
+# ===== ФУНКЦИИ ДЛЯ ЛОГОВ =====
 def add_log(action: str, details: str, status: str = "info"):
-    """Добавляет запись в лог"""
-    _logs.append({
-        "timestamp": datetime.now().isoformat(),
-        "action": action,
-        "details": details,
-        "status": status
-    })
-    if len(_logs) > 100:
-        _logs.pop(0)
+    global logs, logs_sha
+    logs.append({"timestamp": datetime.now().isoformat(), "action": action, "details": details, "status": status})
+    if len(logs) > 100:
+        logs.pop(0)
+    logs_sha = save_to_github(LOGS_PATH, logs, logs_sha)
 
 def get_logs() -> List[Dict]:
-    """Возвращает все логи"""
-    return _logs
+    return logs
 
 def clear_logs():
-    """Очищает логи"""
-    global _logs
-    _logs = []
+    global logs, logs_sha
+    logs = []
+    logs_sha = save_to_github(LOGS_PATH, logs, logs_sha)
 
-# ===== ПАМЯТЬ =====
-class AgentMemory:
-    def __init__(self, max_history: int = 15):
-        self.history: List[Dict[str, str]] = []
-        self.max_history = max_history
-        self.last_error: Optional[str] = None
-    
-    def add(self, role: str, content: str):
-        self.history.append({"role": role, "content": content})
-        if len(self.history) > self.max_history:
-            self.history.pop(0)
-    
-    def get_messages(self) -> List[Dict[str, str]]:
-        return self.history
-    
-    def set_error(self, error: str):
-        self.last_error = error
-        add_log("error_context", error[:150], "error")
-    
-    def clear(self):
-        self.history = []
-        self.last_error = None
+def get_memory_stats() -> Dict:
+    return {"history_count": len(history), "max_history": 15, "last_error": last_error}
 
-memory = AgentMemory()
+# ===== ЗАГРУЖАЕМ ДАННЫЕ ПРИ СТАРТЕ =====
+load_from_github(MEMORY_PATH)
+load_from_github(LOGS_PATH)
+print("🚀 Агент загружен с GitHub-памятью")
 
 # ===== ПРОТОКОЛЫ =====
 def load_protocols():
@@ -73,7 +153,6 @@ BROWSER_DOMAINS = load_protocols()
 def get_full_command_info(method: str) -> Optional[Dict]:
     if not BROWSER_DOMAINS:
         return None
-    
     try:
         domain_name, cmd_name = method.split(".", 1)
         for domain in BROWSER_DOMAINS.get("domains", []):
@@ -84,24 +163,6 @@ def get_full_command_info(method: str) -> Optional[Dict]:
     except:
         pass
     return None
-
-def get_command_params(method: str) -> Dict:
-    cmd_info = get_full_command_info(method)
-    if not cmd_info:
-        return {}
-    
-    params = {}
-    for p in cmd_info.get("parameters", []):
-        name = p.get("name")
-        p_type = p.get("type", "string")
-        optional = p.get("optional", False)
-        description = p.get("description", "")[:60]
-        params[name] = {
-            "type": p_type,
-            "optional": optional,
-            "description": description
-        }
-    return params
 
 def get_all_commands() -> str:
     if not BROWSER_DOMAINS:
@@ -120,30 +181,20 @@ def get_all_commands() -> str:
                 lines.append(f"  {domain_name}.{cmd_name} — {desc}")
     return "\n".join(lines[:40])
 
-def get_common_commands() -> str:
-    return """
-Page.navigate — открыть URL. Нужен параметр: url
-Page.captureScreenshot — сделать скриншот. Параметры: format (png), captureBeyondViewport (false)
-Runtime.evaluate — выполнить JS. Нужен параметр: expression
-"""
-
 async def get_response(user_msg: str, error_context: str = None) -> str:
     if not AGNES_API_KEY:
         add_log("api_error", "AGNES_API_KEY не задан", "error")
         return "❌ AGNES_API_KEY не задан"
     
     if error_context:
-        memory.set_error(error_context)
+        set_last_error(error_context)
     
-    memory.add("user", user_msg)
+    add_to_memory("user", user_msg)
     
     system_prompt = f"""Ты агент, управляющий браузером через CDP.
 
 Доступные команды:
 {get_all_commands()}
-
-Простые команды:
-{get_common_commands()}
 
 Правила:
 1. Верни JSON: {{"method": "Domain.command", "params": {{...}}}}
@@ -157,26 +208,18 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 - Заголовок: {{"method": "Runtime.evaluate", "params": {{"expression": "document.title"}}}}
 """
     
-    messages = [
-        {"role": "system", "content": system_prompt}
-    ] + memory.get_messages()
+    messages = [{"role": "system", "content": system_prompt}] + get_memory_history()
     
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 AGNES_API_URL,
-                json={
-                    "model": AI_MODEL,
-                    "messages": messages,
-                    "temperature": 0.2,
-                    "max_tokens": 500
-                },
+                json={"model": AI_MODEL, "messages": messages, "temperature": 0.2, "max_tokens": 500},
                 headers={"Authorization": f"Bearer {AGNES_API_KEY}", "Content-Type": "application/json"},
                 timeout=30.0
             )
-            
             result = resp.json()["choices"][0]["message"]["content"]
-            memory.add("assistant", result)
+            add_to_memory("assistant", result)
             add_log("ai_response", result[:100], "success")
             return result
     except Exception as e:
@@ -197,22 +240,13 @@ def parse_command(response: str) -> Optional[Dict]:
                 method = data.get("method")
                 params = data.get("params", {})
                 cmd_info = get_full_command_info(method)
-                
                 if cmd_info:
-                    required = [p.get("name") for p in cmd_info.get("parameters", []) 
-                               if p.get("optional") is not True]
+                    required = [p.get("name") for p in cmd_info.get("parameters", []) if p.get("optional") is not True]
                     missing = [p for p in required if p not in params]
-                    
                     if missing:
                         add_log("missing_params", f"{method}: {missing}", "error")
                         return None
-                
                 return data
     except Exception as e:
         add_log("parse_error", str(e), "error")
     return None
-
-def clear_memory():
-    memory.clear()
-    add_log("memory_cleared", "OK", "info")
-    print("🧹 Память очищена")
