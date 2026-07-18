@@ -271,13 +271,15 @@ async def format_runtime_result(value) -> str:
                 text += f"• **{escape_markdown(key)}**: {val:,}\n"
             elif isinstance(val, list):
                 text += f"• **{escape_markdown(key)}**: {len(val)} элементов\n"
-                if val and len(val) <= 5:
-                    for i, item in enumerate(val[:5], 1):
+                if val and len(val) <= 10:
+                    for i, item in enumerate(val[:10], 1):
                         if isinstance(item, dict):
                             item_str = json.dumps(item, ensure_ascii=False)[:100]
                             text += f"  {i}. {escape_markdown(item_str)}\n"
                         else:
                             text += f"  {i}. {escape_markdown(str(item)[:100])}\n"
+                elif val:
+                    text += f"  (первые 10 из {len(val)})\n"
             else:
                 text += f"• **{escape_markdown(key)}**: {escape_markdown(str(val)[:100])}\n"
         return text
@@ -305,6 +307,9 @@ async def execute_xbrief_plan(update: Update, plan: Dict) -> bool:
     items = plan.get("plan", {}).get("items", [])
     edges = plan.get("plan", {}).get("edges", [])
     
+    # Логируем план в консоль для отладки
+    print(f"📋 Выполнение плана: {json.dumps(plan, indent=2, ensure_ascii=False)[:500]}")
+    
     order = []
     if edges:
         for edge in edges:
@@ -316,15 +321,19 @@ async def execute_xbrief_plan(update: Update, plan: Dict) -> bool:
     else:
         order = [item["id"] for item in items]
     
+    print(f"📋 Порядок выполнения: {order}")
+    
     browser = None
     results = {}
     
     for item_id in order:
         item = next((i for i in items if i["id"] == item_id), None)
         if not item:
+            print(f"⚠️ Шаг {item_id} не найден в items")
             continue
         
         if item.get("status") == "done":
+            print(f"⏭️ Шаг {item_id} уже выполнен")
             continue
             
         method = item.get("title")
@@ -374,6 +383,9 @@ async def execute_xbrief_plan(update: Update, plan: Dict) -> bool:
                 value = result.get("result", {}).get("result", {}).get("value")
                 results[item_id] = {"result": value}
                 
+                # Отладочный вывод в консоль
+                print(f"🔍 Runtime.evaluate результат: {value}")
+                
                 try:
                     os.makedirs("logs", exist_ok=True)
                     with open("logs/evaluate_results.log", "a", encoding="utf-8") as f:
@@ -421,6 +433,9 @@ async def execute_xbrief_plan(update: Update, plan: Dict) -> bool:
     narratives = plan.get("plan", {}).get("narratives", {})
     outcome = narratives.get("Outcome", "")
     
+    print(f"📋 Исходный Outcome: {outcome}")
+    print(f"📋 Результаты шагов: {json.dumps(results, indent=2, ensure_ascii=False)[:500]}")
+    
     def replace_vars(match):
         var_path = match.group(1).strip()
         parts = var_path.split('.')
@@ -435,13 +450,18 @@ async def execute_xbrief_plan(update: Update, plan: Dict) -> bool:
                     if isinstance(value, dict) and key in value:
                         value = value[key]
                     else:
+                        print(f"⚠️ Не найден ключ {key} в {value}")
                         return "не найдено"
                 if value is None:
                     return "не найдено"
+                print(f"✅ Подстановка: {var_path} → {value}")
                 return str(value)
+        print(f"⚠️ Не удалось распарсить переменную: {var_path}")
         return match.group(0)
     
     outcome = re.sub(r'{{(.*?)}}', replace_vars, outcome)
+    
+    print(f"📋 Итоговый Outcome: {outcome}")
     
     if outcome:
         await update.message.reply_text(f"📋 **Итог:** {outcome}")
@@ -679,8 +699,6 @@ async def show_eval_logs(update: Update, context):
     except Exception as e:
         await update.message.reply_text(f"❌ {str(e)}")
 
-# ===== НОВАЯ КОМАНДА ДЛЯ ПРОСМОТРА ПЛАНА =====
-
 async def show_last_plan(update: Update, context):
     """Показать последний xBRIEF план"""
     try:
@@ -698,7 +716,6 @@ async def show_last_plan(update: Update, context):
                     parse_mode="Markdown"
                 )
         else:
-            # Проверяем сырой ответ
             if os.path.exists("logs/last_plan_raw.json"):
                 with open("logs/last_plan_raw.json", "r", encoding="utf-8") as f:
                     raw = json.load(f)
@@ -708,6 +725,24 @@ async def show_last_plan(update: Update, context):
                     )
             else:
                 await update.message.reply_text("❌ Нет сохранённого плана. Сначала дай команду боту.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ {str(e)}")
+
+async def show_debug_logs(update: Update, context):
+    """Показать последние отладочные логи из консоли"""
+    try:
+        # Читаем последние строки из лога выполнения
+        if os.path.exists("logs/debug.log"):
+            with open("logs/debug.log", "r", encoding="utf-8") as f:
+                lines = f.readlines()[-30:]
+            
+            if lines:
+                text = "🐞 **Отладочные логи:**\n\n```\n" + "".join(lines[-20:]) + "\n```"
+                await update.message.reply_text(text[:4000], parse_mode="Markdown")
+            else:
+                await update.message.reply_text("📭 Нет отладочных логов")
+        else:
+            await update.message.reply_text("❌ Файл logs/debug.log не найден")
     except Exception as e:
         await update.message.reply_text(f"❌ {str(e)}")
 
@@ -732,6 +767,7 @@ def main():
     app.add_handler(CommandHandler("cdp_stats", cdp_stats))
     app.add_handler(CommandHandler("logs_eval", show_eval_logs))
     app.add_handler(CommandHandler("last_plan", show_last_plan))
+    app.add_handler(CommandHandler("debug_logs", show_debug_logs))
     
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
@@ -743,6 +779,7 @@ def main():
     print("  /cdp_stats — статистика CDP команд")
     print("  /logs_eval — показать eval логи")
     print("  /last_plan — показать последний xBRIEF план")
+    print("  /debug_logs — показать отладочные логи")
     app.run_polling()
 
 if __name__ == "__main__":
