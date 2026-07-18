@@ -89,6 +89,7 @@ class ChromiumBrowser:
         self._keep_alive_task = None
         self._cookies_set = False
         self.logger = CDPLogger(max_entries=500)
+        self._load_event_future = None  # Для ожидания загрузки страницы
         
     def _find_chrome(self) -> str:
         possible_names = [
@@ -319,7 +320,6 @@ class ChromiumBrowser:
         
         # ===== ЗАПИСЫВАЕМ В ОТДЕЛЬНЫЙ ФАЙЛ =====
         try:
-            # Создаём папку если нет
             os.makedirs("logs", exist_ok=True)
             
             log_entry = {
@@ -333,11 +333,9 @@ class ChromiumBrowser:
                 "success": True
             }
             
-            # В отдельный файл для eval
             with open("logs/evaluate.log", "a", encoding="utf-8") as f:
                 f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
             
-            # Также в общий лог
             with open("cdp_responses.log", "a", encoding="utf-8") as f:
                 f.write(json.dumps({
                     "timestamp": datetime.now().isoformat(),
@@ -385,6 +383,17 @@ class ChromiumBrowser:
             while True:
                 response = await self.websocket.recv()
                 data = json.loads(response)
+                
+                # ===== ОБРАБОТКА СОБЫТИЙ =====
+                if "method" in data:
+                    if data["method"] == "Page.loadEventFired":
+                        print(f"{Colors.MAGENTA}📡 Получено событие Page.loadEventFired{Colors.RESET}")
+                        if self._load_event_future and not self._load_event_future.done():
+                            self._load_event_future.set_result(data)
+                    print(f"{Colors.YELLOW}📡 Событие: {data.get('method')}{Colors.RESET}")
+                    continue
+                # ===== КОНЕЦ ОБРАБОТКИ СОБЫТИЙ =====
+                
                 if "id" in data:
                     duration = (datetime.now() - start_time).total_seconds()
                     
@@ -437,7 +446,6 @@ class ChromiumBrowser:
                             pass
                     
                     return data
-                print(f"{Colors.YELLOW}📡 Событие: {data.get('method')}{Colors.RESET}")
                 
         except (websockets.exceptions.ConnectionClosed, websockets.exceptions.WebSocketException) as e:
             print(f"{Colors.RED}⚠️ WebSocket упал: {e}. Переподключаюсь...{Colors.RESET}")
@@ -511,18 +519,32 @@ class ChromiumBrowser:
         if not self._cookies_set:
             await self.set_cookies_for_url(url)
         
+        # ===== ВКЛЮЧАЕМ СОБЫТИЯ PAGE =====
         await self.send_command("Page.enable")
+        
+        # ===== СОЗДАЁМ FUTURE ДЛЯ ОЖИДАНИЯ ЗАГРУЗКИ =====
+        self._load_event_future = asyncio.Future()
+        # ===== КОНЕЦ =====
+        
         result = await self.send_command("Page.navigate", {"url": url})
         
-        for attempt in range(30):
-            await asyncio.sleep(0.5)
-            try:
-                ready_state = await self.evaluate("document.readyState")
-                if ready_state == "complete":
-                    print(f"{Colors.GREEN}✅ Страница загружена (попытка {attempt+1}){Colors.RESET}")
-                    break
-            except Exception as e:
-                print(f"{Colors.YELLOW}⏳ Ожидание загрузки... ({attempt+1}/30){Colors.RESET}")
+        # ===== ЖДЁМ СОБЫТИЕ ЗАГРУЗКИ =====
+        try:
+            await asyncio.wait_for(self._load_event_future, timeout=30.0)
+            print(f"{Colors.GREEN}✅ Страница загружена (Page.loadEventFired){Colors.RESET}")
+        except asyncio.TimeoutError:
+            print(f"{Colors.YELLOW}⚠️ Таймаут Page.loadEventFired, пробуем readyState{Colors.RESET}")
+            # Фолбэк: проверяем readyState
+            for attempt in range(10):
+                try:
+                    ready_state = await self.evaluate("document.readyState")
+                    if ready_state == "complete":
+                        print(f"{Colors.GREEN}✅ Страница загружена (readyState, попытка {attempt+1}){Colors.RESET}")
+                        break
+                except:
+                    pass
+                await asyncio.sleep(0.5)
+        # ===== КОНЕЦ =====
         
         if "x.com" in url or "twitter.com" in url:
             print(f"{Colors.CYAN}🐦 Дополнительное ожидание для X.com (3 сек)...{Colors.RESET}")
